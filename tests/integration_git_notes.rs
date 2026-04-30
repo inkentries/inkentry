@@ -109,19 +109,19 @@ async fn git_notes_list_without_kind_returns_all() {
     // Make a second commit so the two notes don't overwrite each other.
     std::fs::write(dir.path().join("a.txt"), "a").expect("write");
     std::process::Command::new("git")
-        .args(["add", ".", "&&"])
-        .current_dir(dir.path())
+        .args(["-C", dir.path().to_str().unwrap(), "add", "."])
         .output()
         .ok();
     std::process::Command::new("git")
         .args([
+            "-C",
+            dir.path().to_str().unwrap(),
             "commit",
             "--no-gpg-sign",
             "--allow-empty",
             "-m",
             "second commit",
         ])
-        .current_dir(dir.path())
         .output()
         .expect("second commit");
 

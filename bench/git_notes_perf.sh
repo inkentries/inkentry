@@ -64,8 +64,8 @@ echo "Creating $COMMITS commits (attaching a note every $NOTE_INTERVAL commits)�
 
 for i in $(seq 1 "$COMMITS"); do
     echo "$i" > "file_$i.txt"
-    git add . -q
-    git commit --no-gpg-sign -q --allow-empty -m "commit $i" 2>/dev/null
+    git add . >/dev/null 2>&1
+    git commit --no-gpg-sign -q --allow-empty -m "commit $i" >/dev/null 2>&1
 
     if (( i % NOTE_INTERVAL == 0 )); then
         SHA=$(git rev-parse HEAD)
@@ -79,13 +79,17 @@ echo "Created $COMMITS commits, attached $NOTES_WRITTEN notes."
 echo
 
 # ── benchmarks ───────────────────────────────────────────────────────────────
+ms_now() {
+    python3 -c "import time; print(int(time.time()*1000))"
+}
+
 run_timed() {
     local label="$1"; shift
     local start end elapsed_ms
 
-    start=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
-    "$SPELUNK" "$@" --backend git-notes > /dev/null
-    end=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
+    start=$(ms_now)
+    ( cd "$FIXTURE_DIR" && "$SPELUNK" memory "$@" --backend git-notes > /dev/null )
+    end=$(ms_now)
     elapsed_ms=$(( end - start ))
 
     printf "%-55s %4dms\n" "$label" "$elapsed_ms"
@@ -97,13 +101,13 @@ run_timed() {
 
 echo "=== Benchmark results ==="
 run_timed "memory list --kind decision --limit 10  (primary)" \
-    -C "$FIXTURE_DIR" memory list --kind decision --limit 10
+    list --kind decision --limit 10
 
 run_timed "memory list --limit 10" \
-    -C "$FIXTURE_DIR" memory list --limit 10
+    list --limit 10
 
 run_timed "memory list  (no limit, worst-case)" \
-    -C "$FIXTURE_DIR" memory list --limit 9999
+    list --limit 9999
 
 echo
 echo "=== Notes ==="
