@@ -9,6 +9,7 @@ pub(super) async fn memory_timeline(
     args: MemoryTimelineArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     let sp = super::super::ui::spinner("Embedding query…");
     let embedder = crate::backends::ActiveEmbedder::load(cfg)
@@ -17,7 +18,7 @@ pub(super) async fn memory_timeline(
     let blob = embed_query(&embedder, "question answering", &args.query).await?;
     sp.finish_and_clear();
 
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let notes = backend.search_timeline(&blob, args.limit).await?;
 
     if notes.is_empty() {

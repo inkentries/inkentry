@@ -42,6 +42,7 @@ pub(super) async fn harvest_claude_code(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     use crate::llm::LlmBackend;
 
@@ -98,7 +99,7 @@ pub(super) async fn harvest_claude_code(
     };
 
     // 5. Load known source_refs.
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let known_refs = backend.harvested_shas().await?;
 
     // 6. Stream-read history file; accumulate sessions relevant to this repo.

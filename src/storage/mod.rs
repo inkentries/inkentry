@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod db;
+pub mod git_notes;
 pub mod memory;
 pub mod remote;
 
@@ -15,6 +16,7 @@ mod stats;
 pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use db::Database;
 pub use files::FileRecord;
+pub use git_notes::GitNotesBackend;
 pub use graph::GraphEdge;
 pub use memory::{MemoryEdge, MemoryStore};
 pub use remote::RemoteMemoryBackend;
@@ -25,15 +27,20 @@ pub use stats::{DriftCandidate, IndexStats, StalenessReport, record_usage_at};
 use anyhow::Result;
 use std::path::Path;
 
-/// Open the appropriate memory backend based on config.
+/// Open the appropriate memory backend.
 ///
-/// - If `memory_server_url` is set in config, returns a `RemoteMemoryBackend`.
-///   `project_id` must also be set (validated by `Config::validate()`).
-/// - Otherwise, opens local SQLite at `mem_path`.
+/// Priority:
+/// 1. `backend_override = Some("git-notes")` → `GitNotesBackend`
+/// 2. `memory_server_url` set in config → `RemoteMemoryBackend`
+/// 3. Otherwise → local SQLite at `mem_path`
 pub fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
+    backend_override: Option<&str>,
 ) -> Result<Box<dyn MemoryBackend + Send>> {
+    if backend_override == Some("git-notes") {
+        return Ok(Box::new(GitNotesBackend::new()));
+    }
     if let Some(url) = &cfg.memory_server_url {
         let project_id = cfg.project_id.clone().expect(
             "project_id must be set when memory_server_url is configured; \

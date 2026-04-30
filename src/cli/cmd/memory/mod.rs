@@ -10,6 +10,10 @@ pub struct MemoryArgs {
     /// Path to the memory database (overrides auto-detect)
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
+
+    /// Storage backend: sqlite (default) or git-notes
+    #[arg(long, global = true, default_value = "sqlite", value_name = "BACKEND")]
+    pub backend: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -288,20 +292,30 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
     let mem_path = args.db.clone().unwrap_or_else(|| {
         crate::config::resolve_db(None, &cfg.db_path).with_file_name("memory.db")
     });
+    let be = backend_override(&args.backend);
     match args.command {
-        MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg).await,
-        MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg).await,
-        MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg).await,
-        MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg).await,
-        MemoryCommand::Harvest(a) => harvest::memory_harvest(a, &mem_path, &cfg).await,
-        MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg).await,
-        MemoryCommand::Supersede(a) => supersede::memory_supersede(a, &mem_path, &cfg).await,
-        MemoryCommand::Push(a) => push::memory_push(a, &mem_path, &cfg).await,
-        MemoryCommand::Timeline(a) => timeline::memory_timeline(a, &mem_path, &cfg).await,
-        MemoryCommand::Graph(a) => graph_cmd::memory_graph(a, &mem_path, &cfg).await,
-        MemoryCommand::Since(a) => since::memory_since(a, &mem_path, &cfg).await,
+        MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg, be).await,
+        MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Harvest(a) => harvest::memory_harvest(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Supersede(a) => supersede::memory_supersede(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Push(a) => push::memory_push(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Timeline(a) => timeline::memory_timeline(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Graph(a) => graph_cmd::memory_graph(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Since(a) => since::memory_since(a, &mem_path, &cfg, be).await,
         MemoryCommand::Watch(a) => watch::memory_watch(a, &cfg).await,
-        MemoryCommand::Failures(a) => failures::memory_failures(a, &mem_path, &cfg).await,
+        MemoryCommand::Failures(a) => failures::memory_failures(a, &mem_path, &cfg, be).await,
+    }
+}
+
+/// Convert the `--backend` string to a static override token for `open_memory_backend`.
+/// Returns `None` for the default "sqlite" to fall through to config-based dispatch.
+fn backend_override(s: &str) -> Option<&'static str> {
+    match s {
+        "git-notes" => Some("git-notes"),
+        _ => None,
     }
 }
 

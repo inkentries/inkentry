@@ -11,11 +11,14 @@ pub(super) async fn memory_harvest(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     match args.source.as_str() {
-        "git" => memory_harvest_git(args, mem_path, cfg).await,
-        "claude-code" => super::harvest_claude::harvest_claude_code(args, mem_path, cfg).await,
-        "failures" => memory_harvest_failures(args, mem_path, cfg).await,
+        "git" => memory_harvest_git(args, mem_path, cfg, backend_override).await,
+        "claude-code" => {
+            super::harvest_claude::harvest_claude_code(args, mem_path, cfg, backend_override).await
+        }
+        "failures" => memory_harvest_failures(args, mem_path, cfg, backend_override).await,
         other => {
             anyhow::bail!("Unknown --source '{other}'. Valid values: git, claude-code, failures")
         }
@@ -26,6 +29,7 @@ async fn memory_harvest_git(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     use crate::llm::LlmBackend;
 
@@ -66,7 +70,7 @@ async fn memory_harvest_git(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let known_shas = backend.harvested_shas().await?;
     let new_commits: Vec<_> = commits
         .iter()
@@ -390,6 +394,7 @@ async fn memory_harvest_failures(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     use crate::llm::LlmBackend;
 
@@ -442,7 +447,7 @@ async fn memory_harvest_failures(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let known_shas = backend.harvested_shas().await?;
     let new_commits: Vec<_> = failure_commits
         .into_iter()

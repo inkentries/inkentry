@@ -7,8 +7,9 @@ pub(super) async fn memory_failures(
     args: MemoryFailuresArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let notes = backend
         .list(Some("antipattern"), args.limit, false, as_of)

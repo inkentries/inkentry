@@ -7,8 +7,9 @@ pub(super) async fn memory_supersede(
     args: MemorySupersededArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     if backend.get(args.new_id).await?.is_none() {
         anyhow::bail!("No memory entry with id {} (new).", args.new_id);
     }

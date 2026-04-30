@@ -7,8 +7,9 @@ pub(super) async fn memory_graph(
     args: MemoryGraphArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let root = backend
         .get(args.id)
         .await?

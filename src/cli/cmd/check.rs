@@ -102,7 +102,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     // Show active intent entries (text mode only; silently skip if memory unavailable).
     if effective == "text" || effective == "porcelain" {
         let mem_path = resolve_db(args.db.as_deref(), &cfg.db_path).with_file_name("memory.db");
-        if let Ok(backend) = open_memory_backend(&cfg, &mem_path)
+        if let Ok(backend) = open_memory_backend(&cfg, &mem_path, None)
             && let Ok(intents) = backend.list(Some("intent"), 20, false, None).await
             && !intents.is_empty()
         {

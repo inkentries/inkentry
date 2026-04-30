@@ -34,7 +34,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         let drift = db.drift_candidates(30, 10).unwrap_or_default();
         let usage = db.usage_last_7_days().unwrap_or_default();
         let mem_path = resolve_db(None, &cfg.db_path).with_file_name("memory.db");
-        let memory_count = match open_memory_backend(&cfg, &mem_path).ok() {
+        let memory_count = match open_memory_backend(&cfg, &mem_path, None).ok() {
             Some(b) => b.count().await.unwrap_or(0),
             None => 0,
         };

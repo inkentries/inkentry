@@ -9,12 +9,13 @@ pub(super) async fn memory_search(
     args: MemorySearchArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
     crate::storage::record_usage_at(&index_db_path, "memory search");
 
     let mode = args.mode.as_str();
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
 
     let notes = if mode == "text" {
