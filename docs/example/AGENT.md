@@ -9,29 +9,23 @@
 
 ## Context retrieval — use spelunk
 
-This project is indexed with [spelunk](https://github.com/usercise/spelunk).
-Before reading files directly, search the index — it's faster and surfaces
-semantically relevant code that grep would miss.
+This project uses [spelunk](https://github.com/usercise/spelunk) for code graph traversal, memory, and search.
 
 ```bash
-# Find code by meaning
-spelunk search "how does authentication work"
-spelunk search "database connection pooling"
-
-# Trace a symbol's callers and callees
+# Trace a symbol's callers and callees (no server needed)
 spelunk graph verify_token
 
-# Ask a natural language question (requires a local LLM)
-spelunk ask "what does the retry logic do when the upstream times out?"
+# Full-text search (no server needed)
+spelunk search "error handling" --mode text
 
-# List what's indexed
-spelunk status
-spelunk plumbing ls-files
+# Semantic search — finds code by meaning (requires embedding server + index)
+spelunk search "how does authentication work"
+
+# Ask a natural language question (requires llm_model in config)
+spelunk ask "what does the retry logic do when the upstream times out?"
 ```
 
-**Rule:** run `spelunk search "<topic>"` before opening any file you haven't
-already read this session. Only fall back to `Read`/`Grep`/`Glob` when the
-search returns nothing useful.
+**Rule:** run `spelunk graph <symbol>` and `spelunk search "<topic>" --mode text` before opening files you haven't read this session. Fall back to `Read`/`Grep`/`Glob` when these return nothing useful.
 
 ---
 
@@ -87,7 +81,7 @@ All plumbing commands emit NDJSON. Exit 0 = results, 1 = no results, 2 = error.
 
 ---
 
-## Re-indexing
+## Re-indexing (if project uses semantic search)
 
 spelunk indexes are incremental. Re-run after significant changes:
 
@@ -96,7 +90,7 @@ spelunk index .            # index the current directory
 spelunk check              # verify the index is fresh
 ```
 
-A pre-commit hook can do this automatically — see `spelunk hooks install`.
+A post-commit hook can do this automatically — see `spelunk hooks install`.
 
 ---
 
@@ -114,6 +108,6 @@ A pre-commit hook can do this automatically — see `spelunk hooks install`.
 ## What spelunk cannot do
 
 - It cannot run your tests or build the project — use shell commands for that
-- Search results are only as fresh as the last `spelunk index` run
-- `spelunk ask` requires a local LLM server at `http://127.0.0.1:1234`
-  (configurable via `~/.config/spelunk/config.toml`)
+- Semantic search results are only as fresh as the last `spelunk index` run
+- `spelunk ask` and `spelunk explore` require `llm_model` in `~/.config/spelunk/config.toml`
+- `spelunk search` (semantic) requires an embedding server and a built index; use `--mode text` for full-text search without either

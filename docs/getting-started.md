@@ -34,27 +34,87 @@ spelunk --version
 
 > Building from source? See [Building](building.md).
 
-## 2. Set up an inference server
+## 2. Start using it
 
-spelunk works with any **OpenAI-compatible** inference server. The easiest options:
+No configuration needed. From inside any git repository:
+
+```bash
+# Trace callers and callees for any symbol
+spelunk graph validate_token
+
+# Full-text search
+spelunk search "error handling" --mode text
+
+# Store a decision
+spelunk memory add --kind decision \
+  --title "Chose token bucket for rate limiting" \
+  --body "Simpler than sliding window; sufficient for <1k RPS"
+
+# Read it back
+spelunk memory list --kind decision
+```
+
+Memory is stored in git notes — no server, no database, no setup.
+
+## 3. Try search and memory together
+
+```bash
+# Search memory for context on a topic
+spelunk memory search "why did we choose this"
+
+# Full-text code search
+spelunk search "handleRequest" --mode text
+
+# Trace a symbol's call graph
+spelunk graph Database --kind calls
+
+# Get JSON output (for agents)
+AGENT=true spelunk memory list --kind decision
+```
+
+## 4. Set up automatic memory harvesting
+
+Install a git post-commit hook so `spelunk` harvests memory on every commit:
+
+```bash
+spelunk hooks install
+```
+
+Other developers without `spelunk` installed are unaffected — the hook checks for the binary first.
+
+To remove:
+
+```bash
+spelunk hooks uninstall
+```
+
+---
+
+## Optional: semantic search
+
+For concept-level search (finding code by meaning rather than text), you need:
+1. An OpenAI-compatible embedding server
+2. A built index
+
+### Set up an inference server
+
+The easiest options:
 
 - **[LM Studio](https://lmstudio.ai/)** — desktop app for macOS/Windows/Linux; enable the local server (default port `1234`)
 - **[Ollama](https://ollama.com/)** — `ollama serve` (default port `11434`)
 - **vLLM / any OpenAI proxy** — point `api_base_url` at your endpoint
 
-Load two models in your server of choice:
+Recommended models:
+- **Embedding** — `google/embeddinggemma-300m-qat` (300M params, low VRAM, fast)
+- **Chat (optional)** — any instruction-tuned model; needed only for `memory harvest` and `plan create`
 
-1. **Embedding model** — recommended: `google/embeddinggemma-300m-qat` (fast, 300M params, low VRAM)
-2. **Chat model** — any instruction-tuned model; `google/gemma-3-4b-it` is a good starting point on 8 GB RAM (optional — only needed for `memory harvest` and `plan create`)
+### Configure spelunk
 
-## 3. Configuration
-
-`spelunk` looks for a config file at `~/.config/spelunk/config.toml`. If it doesn't exist, all defaults apply.
+`spelunk` looks for a config file at `~/.config/spelunk/config.toml`:
 
 ```toml
 # ~/.config/spelunk/config.toml
 
-# Base URL for your OpenAI-compatible server
 # LM Studio default:  http://127.0.0.1:1234
 # Ollama default:     http://127.0.0.1:11434
 api_base_url = "http://127.0.0.1:1234"
@@ -62,38 +122,29 @@ api_base_url = "http://127.0.0.1:1234"
 # Must match the model's API identifier on your server
 embedding_model = "text-embedding-embeddinggemma-300m-qat"
 
-# Optional: set a chat model to enable `memory harvest` and `plan create`
+# Optional: enables `memory harvest` and `plan create`
 # llm_model = "google/gemma-3n-e4b"
 
-# Embedding batch size — lower this if you run out of memory
+# Embedding batch size — lower if you run out of memory
 batch_size = 32
 
 # Default database location (default: ~/.local/share/spelunk/<project-slug>.db)
 # db_path = "/custom/path/myproject.db"
-
-# Directory (relative to project root) where `spelunk plan create` writes plan files
-# plans_dir = "docs/plans"
-
-# Directory (relative to project root) where spec markdown files are discovered
-# during `spelunk index` and where `spelunk spec link` defaults to looking
-# specs_dir = "docs/specs"
 ```
 
 You can also override the database path per-command with `--db <path>`.
 
-## 4. Initialise your project
-
-The quickest way to get started is `spelunk init`. Run it from inside your project directory:
+### Index your project
 
 ```bash
 cd /path/to/your/project
 spelunk init
 ```
 
-This single command:
+`spelunk init`:
 1. Registers the project in the global spelunk registry
-2. Walks the file tree (respecting `.gitignore`), parses every source file, embeds each chunk, and stores everything in SQLite
-3. Prints a summary with file/chunk counts, the DB path, and suggested next commands
+2. Parses every source file, embeds each chunk, and stores everything in SQLite
+3. Prints a summary with file/chunk counts and suggested next commands
 
 ```
 spelunk initialised for my-project
@@ -101,13 +152,7 @@ spelunk initialised for my-project
   Index:   142 files, 1 840 chunks
   DB:      ~/.local/share/spelunk/my-project.db
   Hook:    not installed — run `spelunk hooks install` to add
-
-Next steps:
-  spelunk search "your query"
-  spelunk ask "how does X work?"
 ```
-
-### Optional flags
 
 ```bash
 # Also install the post-commit git hook in one step
@@ -117,74 +162,47 @@ spelunk init --hook
 spelunk init --no-index
 ```
 
-Running `spelunk init` again is safe — it notices an existing index and won't re-register.
+Running `spelunk init` again is safe — it won't re-register an existing project.
 
 ### Manual indexing
-
-If you prefer to manage indexing yourself, you can skip `init` and call `spelunk index` directly:
 
 ```bash
 spelunk index /path/to/your/project
 
-# Force a full re-index (ignore change detection)
+# Force a full re-index (after changing embedding model)
 spelunk index /path/to/your/project --force
 ```
 
 On subsequent runs, only changed files are re-processed (blake3 hash comparison).
 
-## 5. Try it out
+### Semantic search
 
 ```bash
-# Semantic search — finds code by meaning
+# Finds code by meaning, not just text
 spelunk search "error handling in the HTTP layer"
 
-# Hybrid search (semantic + full-text) — the default
+# Hybrid search (semantic + full-text)
 spelunk search "authentication" --mode hybrid
-
-# Pure text search — no embedding model needed
-spelunk search "handleRequest" --mode text
-
-# Fit results within a token budget (useful for agent context windows)
-spelunk search "database layer" --budget 4000
 
 # With call-graph enrichment
 spelunk search "authentication" --graph
 
-# Return JSON instead of text
+# Fit results within a token budget
+spelunk search "database layer" --budget 4000
+
+# JSON output
 spelunk search "database migrations" --format json
 ```
 
-## 6. Check index health
+### Check index health
 
 ```bash
-# Show statistics for the current project
-spelunk status
-
-# Check whether the index is up to date (exits 1 if stale)
-spelunk check
-
-# Machine-readable output for scripts
-spelunk check --porcelain
-
-# List which files are stale
-spelunk check --porcelain --files
+spelunk status          # index statistics
+spelunk check           # verify index is up to date (exits 1 if stale)
+spelunk check --porcelain --files   # list stale files
 ```
 
-## 7. Set up automatic indexing
-
-Install a git post-commit hook so `spelunk` indexes and harvests memory on every commit (or use `spelunk init --hook` to do this at init time):
-
-```bash
-spelunk hooks install
-```
-
-This adds a hook that runs `spelunk index` and `spelunk memory harvest` after each commit. Other developers without `spelunk` installed are unaffected — the hook checks for the binary first.
-
-To remove:
-
-```bash
-spelunk hooks uninstall
-```
+---
 
 ## Next steps
 

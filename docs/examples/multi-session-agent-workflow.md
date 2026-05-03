@@ -8,20 +8,21 @@ The agent receives a task: "Add rate limiting to the API."
 
 ```bash
 # Orient
-spelunk check   # index is fresh
 AGENT=true spelunk memory list --kind question  # no open questions
 AGENT=true spelunk memory list --kind handoff --limit 3  # no handoffs yet
 
 # Understand the codebase
-AGENT=true spelunk search "HTTP middleware handler" --graph --format json
-AGENT=true spelunk ask "How is the HTTP layer structured? Where would middleware be added?" --json
+AGENT=true spelunk graph Router --kind calls    # trace middleware wiring
+AGENT=true spelunk search "HTTP middleware handler" --mode text --format json
 
-# Generate a plan
-spelunk plan create "add rate limiting to the HTTP API layer"
-# → writes docs/plans/add-rate-limiting-to-the-http-api-layer.md
+# With server: richer search + AI-generated plan
+# AGENT=true spelunk search "HTTP middleware handler" --graph --format json
+# AGENT=true spelunk ask "How is the HTTP layer structured? Where would middleware be added?" --json
+# spelunk plan create "add rate limiting to the HTTP API layer"
 ```
 
-The plan checklist:
+The agent writes a plan manually (or generates one via `spelunk plan create` if a chat model is configured):
+
 ```
 - [ ] Research token bucket vs sliding window for this use case
 - [ ] Add RateLimiter struct in src/ratelimit/
@@ -49,7 +50,7 @@ The agent marks off the first item and writes a handoff:
 ```bash
 spelunk memory add \
   --title "Handoff: rate limiting, session 1 done" \
-  --body "Plan created at docs/plans/add-rate-limiting-to-the-http-api-layer.md. Decision made: token bucket per IP. Open question stored about per-endpoint config. No code written yet." \
+  --body "Plan in docs/plans/add-rate-limiting.md. Decision: token bucket per IP. Open question stored about per-endpoint config. No code written yet." \
   --kind handoff --tags ratelimit
 ```
 
@@ -72,18 +73,15 @@ spelunk memory add \
   --kind answer --tags ratelimit,api
 
 # Check existing middleware patterns
-AGENT=true spelunk search "middleware router registration" --format json
-AGENT=true spelunk chunks src/api/router.rs
+AGENT=true spelunk search "middleware router registration" --mode text --format json
+AGENT=true spelunk graph Router --kind calls   # trace how middleware is wired
 ```
 
 The agent implements `src/ratelimit/bucket.rs` and wires the middleware.
 
 ```bash
-# Re-index
+# Re-index if project uses semantic search (skippable otherwise)
 spelunk index .
-
-# Verify the new code is retrievable
-spelunk verify src/ratelimit/bucket.rs
 ```
 
 Marks off two more checklist items in the plan file, then:
@@ -105,14 +103,17 @@ AGENT=true spelunk memory list --kind handoff --limit 1
 AGENT=true spelunk memory search "rate limiting decisions" --limit 5
 
 # Find existing test patterns
-AGENT=true spelunk search "unit test tokio test mock" --format json
-AGENT=true spelunk ask "What testing patterns are used in this codebase? How are middleware components tested?"
+AGENT=true spelunk search "unit test tokio test mock" --mode text --format json
+AGENT=true spelunk graph RateLimiter --kind calls   # find what already calls into it
+
+# With server: ask for a synthesis
+# AGENT=true spelunk ask "What testing patterns are used in this codebase? How are middleware components tested?"
 ```
 
 The agent writes tests, updates docs, marks remaining checklist items complete.
 
 ```bash
-spelunk index .
+spelunk index .   # only if project is indexed
 spelunk plan status add-rate-limiting-to-the-http-api-layer
 # → [##########] 6/6 (100%)
 ```
@@ -121,9 +122,8 @@ spelunk plan status add-rate-limiting-to-the-http-api-layer
 
 ## Key patterns shown
 
-1. **Session start ritual**: check + read handoff + read open questions
+1. **Session start ritual**: read handoff + read open questions
 2. **Decision logging**: every non-obvious choice stored with rationale
 3. **Question parking**: blockers stored as questions, answered when resolved
-4. **Plan as shared state**: the checklist file tracks progress across sessions
+4. **Plan as shared state**: a plain markdown checklist tracks progress across sessions
 5. **Handoff as context transfer**: structured summary for the next session
-6. **Verify after changes**: confirm new code is semantically reachable

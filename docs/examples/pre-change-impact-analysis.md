@@ -22,46 +22,59 @@ Incoming to 'validate_token':
 ## Step 2: Understand each call site
 
 ```bash
-spelunk search "validate_token call site usage" --graph --limit 20
+# Full-text — no server needed
+spelunk search "validate_token" --mode text --limit 20
+
+# Semantic — requires server + index
+# spelunk search "validate_token call site usage" --graph --limit 20
 ```
 
-## Step 3: Ask about downstream effects
+## Step 3: Check memory for prior context
 
 ```bash
-spelunk ask "If I add a required 'scope' parameter to validate_token, what would I need to update across the codebase?" --context-chunks 30
+spelunk memory search "validate_token authentication"
+```
+
+If you have a chat model configured, you can also ask for a synthesis:
+
+```bash
+# spelunk ask "If I add a required 'scope' parameter to validate_token, what would I need to update across the codebase?" --context-chunks 30
 ```
 
 ## Step 4: Find the tests
 
 ```bash
-spelunk search "validate_token test mock"
-spelunk ask "How is validate_token tested? Are there mocks or stubs I need to update?"
+spelunk search "validate_token test" --mode text
 ```
 
 ## Step 5: Check for related documentation
 
 ```bash
-spelunk search "validate_token authentication documentation comment"
+spelunk search "validate_token" --mode text
+spelunk memory search "validate_token authentication"
 ```
 
-## Step 6: Create a plan
+## Step 6: Write a plan
+
+Create a checklist in `docs/plans/` manually, or generate one with `spelunk plan create` if you have a chat model configured:
 
 ```bash
-spelunk plan create "add scope parameter to validate_token"
-# writes docs/plans/add-scope-parameter-to-validate-token.md
+# spelunk plan create "add scope parameter to validate_token"
+# → writes docs/plans/add-scope-parameter-to-validate-token.md
 ```
 
-The generated checklist will include steps like:
+Either way, the checklist should cover:
 - `- [ ] Update validate_token signature in src/auth/token.rs`
 - `- [ ] Update call sites in middleware, routes, and interceptor`
 - `- [ ] Update test fixtures and mocks`
-- etc.
 
 ## Step 7: After the change, verify
 
 ```bash
+# Confirm all call sites are updated
+spelunk graph validate_token --kind calls
+
+# If the project is indexed, verify semantic connectivity
 spelunk index .
 spelunk verify src/auth/token.rs
 ```
-
-`spelunk verify` re-embeds the changed file and shows its nearest neighbours. If the function is still semantically close to its call sites, it's likely still well-connected in the index.

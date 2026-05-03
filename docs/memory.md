@@ -2,7 +2,7 @@
 
 `spelunk memory` is a per-project knowledge store. Use it to capture decisions, context, requirements, questions, and handoff notes that would otherwise live only in chat history or someone's head.
 
-Memory entries are stored in a local SQLite database alongside your index and are searchable by meaning (semantic similarity), not just keywords.
+Memory entries are stored in git notes by default — they travel with the repository and require no database or server. An optional SQLite backend is available for projects that use semantic search. Entries are searchable by full text at all times; semantic search (by meaning) is available when an embedding server is configured.
 
 ## Why memory?
 
@@ -154,7 +154,7 @@ spelunk memory graph 42 --format json
 
 ## Harvesting from git history
 
-`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries:
+`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires `llm_model` in `~/.config/spelunk/config.toml`.
 
 ```bash
 # Default: last 10 commits
