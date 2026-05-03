@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use super::super::helpers::embed_query;
 use super::super::status::format_age;
-use super::MemoryTimelineArgs;
+use super::{MemoryTimelineArgs, backend_err};
 use crate::{config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_timeline(
@@ -19,7 +19,10 @@ pub(super) async fn memory_timeline(
     sp.finish_and_clear();
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
-    let notes = backend.search_timeline(&blob, args.limit).await?;
+    let notes = backend
+        .search_timeline(&blob, args.limit)
+        .await
+        .map_err(backend_err)?;
 
     if notes.is_empty() {
         println!("No memory entries found for topic: {}", args.query);

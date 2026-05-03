@@ -276,9 +276,7 @@ impl MemoryBackend for GitNotesBackend {
         _include_archived: bool,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(anyhow!(
-            "git-notes backend does not support list_by_source_ref"
-        ))
+        Err(crate::error::SpelunkError::BackendUnsupported("list_by_source_ref".into()).into())
     }
 
     async fn get(&self, id: i64) -> Result<Option<Note>> {
@@ -317,9 +315,7 @@ impl MemoryBackend for GitNotesBackend {
     // ── Unsupported ──────────────────────────────────────────────────────────
 
     async fn search_timeline(&self, _query_blob: &[u8], _limit: usize) -> Result<Vec<Note>> {
-        Err(anyhow!(
-            "git-notes backend does not support semantic search — run spelunk index first"
-        ))
+        Err(crate::error::SpelunkError::BackendUnsupported("search_timeline".into()).into())
     }
 
     async fn search(
@@ -328,9 +324,7 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(anyhow!(
-            "git-notes backend does not support semantic search — run spelunk index first"
-        ))
+        Err(crate::error::SpelunkError::BackendUnsupported("search".into()).into())
     }
 
     async fn search_text(
@@ -339,9 +333,7 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(anyhow!(
-            "git-notes backend does not support text search — run spelunk index first"
-        ))
+        Err(crate::error::SpelunkError::BackendUnsupported("search_text".into()).into())
     }
 
     async fn search_hybrid(
@@ -351,28 +343,26 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(anyhow!(
-            "git-notes backend does not support semantic search — run spelunk index first"
-        ))
+        Err(crate::error::SpelunkError::BackendUnsupported("search_hybrid".into()).into())
     }
 
     async fn supersede(&self, _old_id: i64, _new_id: i64) -> Result<bool> {
-        Err(anyhow!("git-notes backend does not support supersede"))
+        Err(crate::error::SpelunkError::BackendUnsupported("supersede".into()).into())
     }
 
     async fn harvested_shas(&self) -> Result<HashSet<String>> {
-        Err(anyhow!("git-notes backend does not support harvested_shas"))
+        Err(crate::error::SpelunkError::BackendUnsupported("harvested_shas".into()).into())
     }
 
     async fn has_source_ref(&self, _sha: &str) -> Result<bool> {
-        Err(anyhow!("git-notes backend does not support has_source_ref"))
+        Err(crate::error::SpelunkError::BackendUnsupported("has_source_ref".into()).into())
     }
 
     async fn add_edge(&self, _from_id: i64, _to_id: i64, _kind: &str) -> Result<()> {
-        Err(anyhow!("git-notes backend does not support graph edges"))
+        Err(crate::error::SpelunkError::BackendUnsupported("add_edge".into()).into())
     }
 
     async fn get_edges(&self, _id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
-        Err(anyhow!("git-notes backend does not support graph edges"))
+        Err(crate::error::SpelunkError::BackendUnsupported("get_edges".into()).into())
     }
 }

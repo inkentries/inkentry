@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::MemorySupersededArgs;
+use super::{MemorySupersededArgs, backend_err};
 use crate::{config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_supersede(
@@ -13,7 +13,11 @@ pub(super) async fn memory_supersede(
     if backend.get(args.new_id).await?.is_none() {
         anyhow::bail!("No memory entry with id {} (new).", args.new_id);
     }
-    if backend.supersede(args.old_id, args.new_id).await? {
+    if backend
+        .supersede(args.old_id, args.new_id)
+        .await
+        .map_err(backend_err)?
+    {
         println!(
             "Archived #{old} → superseded by #{new}.",
             old = args.old_id,

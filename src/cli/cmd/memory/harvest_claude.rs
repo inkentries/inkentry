@@ -9,7 +9,7 @@ use std::io::BufRead as _;
 
 use anyhow::{Context, Result};
 
-use super::MemoryHarvestArgs;
+use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
     embeddings::{EmbeddingBackend as _, vec_to_blob},
@@ -100,7 +100,7 @@ pub(super) async fn harvest_claude_code(
 
     // 5. Load known source_refs.
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
-    let known_refs = backend.harvested_shas().await?;
+    let known_refs = backend.harvested_shas().await.map_err(backend_err)?;
 
     // 6. Stream-read history file; accumulate sessions relevant to this repo.
     let file = std::fs::File::open(&history_path)
@@ -364,7 +364,11 @@ pub(super) async fn harvest_claude_code(
 
             let source_ref = format!("claude-code:{session_id}");
 
-            if backend.has_source_ref(&source_ref).await? {
+            if backend
+                .has_source_ref(&source_ref)
+                .await
+                .map_err(backend_err)?
+            {
                 println!("  [skip] already harvested session {session_id}");
                 continue;
             }

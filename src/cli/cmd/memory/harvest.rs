@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::MemoryHarvestArgs;
+use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
     embeddings::{EmbeddingBackend as _, vec_to_blob},
@@ -71,7 +71,7 @@ async fn memory_harvest_git(
     }
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
-    let known_shas = backend.harvested_shas().await?;
+    let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = commits
         .iter()
         .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
@@ -285,7 +285,11 @@ async fn memory_harvest_git(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend.has_source_ref(&full_sha).await? {
+            if backend
+                .has_source_ref(&full_sha)
+                .await
+                .map_err(backend_err)?
+            {
                 println!("  [skip] already harvested {full_sha}");
                 continue;
             }
@@ -448,7 +452,7 @@ async fn memory_harvest_failures(
     }
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
-    let known_shas = backend.harvested_shas().await?;
+    let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = failure_commits
         .into_iter()
         .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
@@ -622,7 +626,11 @@ async fn memory_harvest_failures(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend.has_source_ref(&full_sha).await? {
+            if backend
+                .has_source_ref(&full_sha)
+                .await
+                .map_err(backend_err)?
+            {
                 println!("  [skip] already harvested {full_sha}");
                 continue;
             }

@@ -420,3 +420,18 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
 
 // Re-export from the shared dates module for use within this submodule tree.
 pub(super) use crate::utils::dates::parse_as_of;
+
+/// Convert a `BackendUnsupported` error into a user-friendly message.
+/// Pass as `.map_err(backend_err)?` at each call site that invokes an
+/// unsupported git-notes method.
+pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
+    if e.downcast_ref::<crate::error::SpelunkError>()
+        .is_some_and(|s| matches!(s, crate::error::SpelunkError::BackendUnsupported(_)))
+    {
+        anyhow::anyhow!(
+            "This operation requires the sqlite backend. Re-run without --backend git-notes."
+        )
+    } else {
+        e
+    }
+}

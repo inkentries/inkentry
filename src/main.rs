@@ -5,7 +5,9 @@ mod cli;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
-use spelunk::{backends, config, embeddings, indexer, llm, registry, search, storage, utils};
+use spelunk::{
+    backends, config, embeddings, error, indexer, llm, registry, search, storage, utils,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
