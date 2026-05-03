@@ -40,4 +40,7 @@ pub enum SearchError {
 pub enum SpelunkError {
     #[error("backend does not support this operation: {0}")]
     BackendUnsupported(String),
+
+    #[error("schema version {found} is newer than max known {max_known}; upgrade spelunk")]
+    SchemaMismatch { found: u8, max_known: u8 },
 }

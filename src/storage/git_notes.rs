@@ -16,8 +16,13 @@ use super::memory::{MemoryEdge, Note};
 const GIT_NOTES_MAX_LIST: usize = 500;
 
 /// Serialised form stored inside a git note blob.
+///
+/// `schema_version` 0 = legacy (field absent in old blobs), 1 = current.
 #[derive(Debug, Serialize, Deserialize)]
 struct NoteRecord {
+    /// Absent in legacy blobs — treated as version 0 via `#[serde(default)]`.
+    #[serde(default)]
+    schema_version: u8,
     id: i64,
     kind: String,
     title: String,
@@ -156,6 +161,14 @@ impl GitNotesBackend {
         let json = String::from_utf8_lossy(&out.stdout);
         let record: NoteRecord = serde_json::from_str(json.trim())
             .map_err(|e| anyhow!("parsing spelunk note on {commit_sha}: {e}"))?;
+        if record.schema_version > 1 {
+            return Err(anyhow::Error::new(
+                crate::error::SpelunkError::SchemaMismatch {
+                    found: record.schema_version,
+                    max_known: 1,
+                },
+            ));
+        }
         Ok(Some(record))
     }
 
@@ -235,6 +248,7 @@ impl MemoryBackend for GitNotesBackend {
     async fn add(&self, input: NoteInput) -> Result<i64> {
         let id = now_millis();
         let record = NoteRecord {
+            schema_version: 1,
             id,
             kind: input.kind,
             title: input.title,
