@@ -8,6 +8,13 @@ use tokio::process::Command;
 use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note};
 
+/// Hard cap on entries returned by `list()`.
+///
+/// Each entry requires one `git notes show` subprocess call (~13 ms).
+/// Without a guard, `list(5000)` would take ~65 seconds.
+/// Callers needing unbounded listing should use `--backend sqlite`.
+const GIT_NOTES_MAX_LIST: usize = 500;
+
 /// Serialised form stored inside a git note blob.
 #[derive(Debug, Serialize, Deserialize)]
 struct NoteRecord {
@@ -265,7 +272,16 @@ impl MemoryBackend for GitNotesBackend {
         include_archived: bool,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        self.collect(kind_filter, include_archived, as_of, limit)
+        let effective_limit = limit.min(GIT_NOTES_MAX_LIST);
+        if limit > GIT_NOTES_MAX_LIST {
+            tracing::warn!(
+                "GitNotesBackend::list: caller requested {} entries; capped at {} to prevent \
+                 O(n) subprocess hang. Use --backend sqlite for unbounded listing.",
+                limit,
+                GIT_NOTES_MAX_LIST
+            );
+        }
+        self.collect(kind_filter, include_archived, as_of, effective_limit)
             .await
     }
 
