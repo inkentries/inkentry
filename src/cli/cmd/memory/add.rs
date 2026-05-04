@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use super::MemoryAddArgs;
 use crate::{
     config::Config,
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -11,6 +10,7 @@ pub(super) async fn memory_add(
     args: MemoryAddArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     let (title, body) = if let Some(url) = &args.from_url {
         let (fetched_title, fetched_body) = fetch_url_content(url)
@@ -50,22 +50,9 @@ pub(super) async fn memory_add(
         .unwrap_or_default();
 
     let embed_text = format!("title: {title} | text: {body}");
-    let sp = super::super::ui::spinner("Embedding…");
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
-    let vecs = embedder
-        .embed(&[&embed_text])
-        .await
-        .context("embedding memory entry")?;
-    let blob = vecs
-        .into_iter()
-        .next()
-        .map(|v| vec_to_blob(&v))
-        .context("embedding returned empty")?;
-    sp.finish_and_clear();
+    let embedding = try_embed(cfg, &embed_text).await;
 
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let id = backend
         .add(NoteInput {
             kind: args.kind.clone(),
@@ -73,7 +60,7 @@ pub(super) async fn memory_add(
             body: body.clone(),
             tags: tags.clone(),
             linked_files: files.clone(),
-            embedding: Some(blob),
+            embedding,
             source_ref: None,
             valid_at: args
                 .valid_at
@@ -173,4 +160,39 @@ fn html_unescape(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
+}
+
+/// Try to embed `text` using the configured model.
+///
+/// Returns `None` (with a log warning) if no model is reachable, so that
+/// callers can store entries without embeddings rather than failing outright.
+/// Semantic search will not surface unembedded entries.
+async fn try_embed(cfg: &Config, text: &str) -> Option<Vec<u8>> {
+    use crate::embeddings::{EmbeddingBackend as _, vec_to_blob};
+    let sp = super::super::ui::spinner("Embedding…");
+    let result: anyhow::Result<Vec<u8>> = async {
+        let embedder = crate::backends::ActiveEmbedder::load(cfg)
+            .await
+            .context("loading embedding model")?;
+        let vecs = embedder
+            .embed(&[text])
+            .await
+            .context("embedding memory entry")?;
+        vecs.into_iter()
+            .next()
+            .map(|v| vec_to_blob(&v))
+            .context("embedding returned empty")
+    }
+    .await;
+    sp.finish_and_clear();
+    match result {
+        Ok(blob) => Some(blob),
+        Err(e) => {
+            tracing::warn!(
+                "No embedding model configured — entry stored without vector; \
+                 semantic search will not surface it. ({e})"
+            );
+            None
+        }
+    }
 }

@@ -8,8 +8,9 @@ pub(super) async fn memory_list(
     args: MemoryListArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let notes = if let Some(ref sha_prefix) = args.source_ref {
         backend

@@ -35,3 +35,9 @@ pub enum SearchError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 }
+
+#[derive(Error, Debug)]
+pub enum SpelunkError {
+    #[error("backend does not support this operation: {0}")]
+    BackendUnsupported(String),
+}

@@ -1,20 +1,21 @@
 use anyhow::Result;
 
-use super::MemoryGraphArgs;
+use super::{MemoryGraphArgs, backend_err};
 use crate::{config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_graph(
     args: MemoryGraphArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let root = backend
         .get(args.id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("No memory entry with id {}.", args.id))?;
 
-    let (outgoing, incoming) = backend.get_edges(args.id).await?;
+    let (outgoing, incoming) = backend.get_edges(args.id).await.map_err(backend_err)?;
 
     if crate::utils::effective_format(&args.format) == "json" {
         #[derive(serde::Serialize)]

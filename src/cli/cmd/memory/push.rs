@@ -10,6 +10,7 @@ pub(super) async fn memory_push(
     args: MemoryPushArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     if cfg.memory_server_url.is_none() {
         anyhow::bail!(
@@ -28,7 +29,7 @@ pub(super) async fn memory_push(
         return Ok(());
     }
 
-    let remote = open_memory_backend(cfg, mem_path)?;
+    let remote = open_memory_backend(cfg, mem_path, backend_override)?;
     println!(
         "Pushing {} entries to {}…",
         notes.len(),

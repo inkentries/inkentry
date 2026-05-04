@@ -7,8 +7,9 @@ pub(super) async fn memory_archive(
     args: MemoryArchiveArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     if backend.archive(args.id).await? {
         println!("Archived memory entry #{}.", args.id);
     } else {

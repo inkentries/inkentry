@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::MemoryHarvestArgs;
+use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
     embeddings::{EmbeddingBackend as _, vec_to_blob},
@@ -11,11 +11,14 @@ pub(super) async fn memory_harvest(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     match args.source.as_str() {
-        "git" => memory_harvest_git(args, mem_path, cfg).await,
-        "claude-code" => super::harvest_claude::harvest_claude_code(args, mem_path, cfg).await,
-        "failures" => memory_harvest_failures(args, mem_path, cfg).await,
+        "git" => memory_harvest_git(args, mem_path, cfg, backend_override).await,
+        "claude-code" => {
+            super::harvest_claude::harvest_claude_code(args, mem_path, cfg, backend_override).await
+        }
+        "failures" => memory_harvest_failures(args, mem_path, cfg, backend_override).await,
         other => {
             anyhow::bail!("Unknown --source '{other}'. Valid values: git, claude-code, failures")
         }
@@ -26,6 +29,7 @@ async fn memory_harvest_git(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     use crate::llm::LlmBackend;
 
@@ -66,8 +70,8 @@ async fn memory_harvest_git(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path)?;
-    let known_shas = backend.harvested_shas().await?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = commits
         .iter()
         .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
@@ -281,7 +285,11 @@ async fn memory_harvest_git(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend.has_source_ref(&full_sha).await? {
+            if backend
+                .has_source_ref(&full_sha)
+                .await
+                .map_err(backend_err)?
+            {
                 println!("  [skip] already harvested {full_sha}");
                 continue;
             }
@@ -390,6 +398,7 @@ async fn memory_harvest_failures(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     use crate::llm::LlmBackend;
 
@@ -442,8 +451,8 @@ async fn memory_harvest_failures(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path)?;
-    let known_shas = backend.harvested_shas().await?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = failure_commits
         .into_iter()
         .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
@@ -617,7 +626,11 @@ async fn memory_harvest_failures(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend.has_source_ref(&full_sha).await? {
+            if backend
+                .has_source_ref(&full_sha)
+                .await
+                .map_err(backend_err)?
+            {
                 println!("  [skip] already harvested {full_sha}");
                 continue;
             }

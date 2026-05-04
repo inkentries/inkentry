@@ -8,7 +8,7 @@ pub(super) async fn read_memory(
     mem_path: &std::path::Path,
     cfg: &Config,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, None)?;
 
     if let Some(id) = args.id {
         match backend.get(id).await? {

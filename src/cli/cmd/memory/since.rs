@@ -24,6 +24,7 @@ pub(super) async fn memory_since(
     args: MemorySinceArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     // ── Remote path ───────────────────────────────────────────────────────────
     if let (Some(base_url), Some(project_id)) =
@@ -57,7 +58,7 @@ pub(super) async fn memory_since(
     }
 
     // ── Local path ────────────────────────────────────────────────────────────
-    let backend = crate::storage::open_memory_backend(cfg, mem_path)?;
+    let backend = crate::storage::open_memory_backend(cfg, mem_path, backend_override)?;
     let all = backend
         .list(None, args.limit, false, None)
         .await

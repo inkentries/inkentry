@@ -77,7 +77,7 @@ async fn plan_create(
     let mem_path = resolve_db(None, &cfg.db_path).with_file_name("memory.db");
     let memory_context = {
         let mblob = vec_to_blob(&query_vec);
-        match open_memory_backend(cfg, &mem_path).ok() {
+        match open_memory_backend(cfg, &mem_path, None).ok() {
             Some(b) => b.search(&mblob, 5, None).await.ok().and_then(|notes| {
                 if notes.is_empty() {
                     None

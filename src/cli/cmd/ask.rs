@@ -161,34 +161,35 @@ pub async fn ask(args: AskArgs, cfg: Config) -> Result<()> {
 
     // ── Step 2c: memory context (decisions / requirements / background) ──────
     let mem_path = resolve_db(None, &cfg.db_path).with_file_name("memory.db");
-    let memory_context: Option<String> = if let Ok(backend) = open_memory_backend(&cfg, &mem_path) {
-        match backend.search(&vec_to_blob(&query_vec), 5, None).await {
-            Ok(notes) if !notes.is_empty() => {
-                let text = notes
-                    .iter()
-                    .map(|n| {
-                        let tags = if n.tags.is_empty() {
-                            String::new()
-                        } else {
-                            format!("  [{}]", n.tags.join(", "))
-                        };
-                        format!(
-                            "### [{kind}] {title}{tags}\n{body}",
-                            kind = escape_xml(&n.kind),
-                            title = escape_xml(&n.title),
-                            tags = escape_xml(&tags),
-                            body = escape_xml(&n.body)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                Some(text)
+    let memory_context: Option<String> =
+        if let Ok(backend) = open_memory_backend(&cfg, &mem_path, None) {
+            match backend.search(&vec_to_blob(&query_vec), 5, None).await {
+                Ok(notes) if !notes.is_empty() => {
+                    let text = notes
+                        .iter()
+                        .map(|n| {
+                            let tags = if n.tags.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  [{}]", n.tags.join(", "))
+                            };
+                            format!(
+                                "### [{kind}] {title}{tags}\n{body}",
+                                kind = escape_xml(&n.kind),
+                                title = escape_xml(&n.title),
+                                tags = escape_xml(&tags),
+                                body = escape_xml(&n.body)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    Some(text)
+                }
+                _ => None,
             }
-            _ => None,
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     // ── Step 2c: prompt injection pre-flight ─────────────────────────────────
     const INJECTION_PATTERNS: &[&str] = &[

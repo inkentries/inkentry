@@ -2,24 +2,28 @@ use anyhow::{Context, Result};
 
 use super::super::helpers::embed_query;
 use super::MemorySearchArgs;
-use super::{parse_as_of, print_note_summary};
+use super::{backend_err, parse_as_of, print_note_summary};
 use crate::{config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_search(
     args: MemorySearchArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
     crate::storage::record_usage_at(&index_db_path, "memory search");
 
     let mode = args.mode.as_str();
-    let backend = open_memory_backend(cfg, mem_path)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
 
     let notes = if mode == "text" {
         let sp = super::super::ui::spinner("Searching (text)…");
-        let result = backend.search_text(&args.query, args.limit, as_of).await?;
+        let result = backend
+            .search_text(&args.query, args.limit, as_of)
+            .await
+            .map_err(backend_err)?;
         sp.finish_and_clear();
         result
     } else {
@@ -31,11 +35,15 @@ pub(super) async fn memory_search(
         sp.finish_and_clear();
 
         if mode == "semantic" {
-            backend.search(&blob, args.limit, as_of).await?
+            backend
+                .search(&blob, args.limit, as_of)
+                .await
+                .map_err(backend_err)?
         } else {
             backend
                 .search_hybrid(&blob, &args.query, args.limit, as_of)
-                .await?
+                .await
+                .map_err(backend_err)?
         }
     };
 
@@ -49,7 +57,7 @@ pub(super) async fn memory_search(
         let mut expanded = notes;
         let mut neighbours = vec![];
         for n in &expanded {
-            let (outgoing, incoming) = backend.get_edges(n.id).await?;
+            let (outgoing, incoming) = backend.get_edges(n.id).await.map_err(backend_err)?;
             for e in outgoing.iter().chain(incoming.iter()) {
                 if e.kind != "relates_to" {
                     continue;
