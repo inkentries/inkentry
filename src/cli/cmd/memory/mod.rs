@@ -11,7 +11,7 @@ pub struct MemoryArgs {
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
 
-    /// Storage backend: sqlite (default) or git-notes
+    /// Storage backend: sqlite (default), git-meta, or git-notes
     #[arg(long, global = true, default_value = "sqlite", value_name = "BACKEND")]
     pub backend: String,
 }
@@ -314,6 +314,7 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
 /// Returns `None` for the default "sqlite" to fall through to config-based dispatch.
 fn backend_override(s: &str) -> Option<&'static str> {
     match s {
+        "git-meta" => Some("git-meta"),
         "git-notes" => Some("git-notes"),
         _ => None,
     }
@@ -423,13 +424,14 @@ pub(super) use crate::utils::dates::parse_as_of;
 
 /// Convert a `BackendUnsupported` error into a user-friendly message.
 /// Pass as `.map_err(backend_err)?` at each call site that invokes an
-/// unsupported git-notes method.
+/// unsupported method on a limited backend.
 pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
     if e.downcast_ref::<crate::error::SpelunkError>()
         .is_some_and(|s| matches!(s, crate::error::SpelunkError::BackendUnsupported(_)))
     {
         anyhow::anyhow!(
-            "This operation requires the sqlite backend. Re-run without --backend git-notes."
+            "This operation requires the sqlite backend. \
+             Re-run without --backend git-meta or --backend git-notes."
         )
     } else {
         e
