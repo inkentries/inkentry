@@ -1,12 +1,11 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note};
+use super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
 
 /// Hard cap on entries returned by `list()`.
 ///
@@ -14,32 +13,6 @@ use super::memory::{MemoryEdge, Note};
 /// Without a guard, `list(5000)` would take ~65 seconds.
 /// Callers needing unbounded listing should use `--backend sqlite`.
 const GIT_NOTES_MAX_LIST: usize = 500;
-
-/// Serialised form stored inside a git note blob.
-///
-/// `schema_version` 0 = legacy (field absent in old blobs), 1 = current.
-#[derive(Debug, Serialize, Deserialize)]
-struct NoteRecord {
-    /// Absent in legacy blobs — treated as version 0 via `#[serde(default)]`.
-    #[serde(default)]
-    schema_version: u8,
-    id: i64,
-    kind: String,
-    title: String,
-    body: String,
-    tags: Vec<String>,
-    linked_files: Vec<String>,
-    created_at: i64,
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_ref: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    valid_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    invalid_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    superseded_by: Option<i64>,
-}
 
 /// Memory backend backed by `git notes` in the `refs/notes/spelunk` namespace.
 ///
@@ -208,39 +181,6 @@ impl GitNotesBackend {
 
         Ok(notes)
     }
-}
-
-fn record_to_note(r: NoteRecord) -> Note {
-    Note {
-        id: r.id,
-        kind: r.kind,
-        title: r.title,
-        body: r.body,
-        tags: r.tags,
-        linked_files: r.linked_files,
-        created_at: r.created_at,
-        status: r.status,
-        superseded_by: r.superseded_by,
-        source_ref: r.source_ref,
-        valid_at: r.valid_at,
-        invalid_at: r.invalid_at,
-        distance: None,
-        score: None,
-    }
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 #[async_trait]

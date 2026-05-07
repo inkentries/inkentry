@@ -1,7 +1,9 @@
 pub mod backend;
 pub mod db;
+pub mod git_meta;
 pub mod git_notes;
 pub mod memory;
+pub mod note_record;
 pub mod remote;
 
 // Storage sub-modules: each holds impl blocks for Database or standalone types.
@@ -16,6 +18,7 @@ mod stats;
 pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use db::Database;
 pub use files::FileRecord;
+pub use git_meta::GitMetaBackend;
 pub use git_notes::GitNotesBackend;
 pub use graph::GraphEdge;
 pub use memory::{MemoryEdge, MemoryStore};
@@ -30,14 +33,18 @@ use std::path::Path;
 /// Open the appropriate memory backend.
 ///
 /// Priority:
-/// 1. `backend_override = Some("git-notes")` → `GitNotesBackend`
-/// 2. `memory_server_url` set in config → `RemoteMemoryBackend`
-/// 3. Otherwise → local SQLite at `mem_path`
+/// 1. `backend_override = Some("git-meta")` → `GitMetaBackend`
+/// 2. `backend_override = Some("git-notes")` → `GitNotesBackend`
+/// 3. `memory_server_url` set in config → `RemoteMemoryBackend`
+/// 4. Otherwise → local SQLite at `mem_path`
 pub fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
     backend_override: Option<&str>,
 ) -> Result<Box<dyn MemoryBackend + Send>> {
+    if backend_override == Some("git-meta") {
+        return Ok(Box::new(GitMetaBackend::new()));
+    }
     if backend_override == Some("git-notes") {
         return Ok(Box::new(GitNotesBackend::new()));
     }
