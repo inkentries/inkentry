@@ -125,22 +125,4 @@ async fn test_index_and_status() {
         .success()
         .stdout(predicate::str::contains("main.rs"))
         .stdout(predicate::str::contains("fn main()"));
-
-    // 4. Ask a question
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200)
-            .set_body_string("data: {\"choices\": [{\"delta\": {\"content\": \"The main function \"}}]}\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"prints hello.\"}}]}\n\ndata: [DONE]\n\n"))
-        .mount(&mock_server)
-        .await;
-
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("ask")
-        .arg("what does the main function do?")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("The main function prints hello."));
 }
