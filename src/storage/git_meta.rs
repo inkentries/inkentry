@@ -82,7 +82,7 @@ fn read_records(session: &Session) -> Result<Vec<NoteRecord>> {
 
     // Return newest-first by id (id = now_millis() at insert time, so higher = newer)
     let mut records: Vec<NoteRecord> = by_id.into_values().map(|(_, r)| r).collect();
-    records.sort_by(|a, b| b.id.cmp(&a.id));
+    records.sort_by_key(|r| std::cmp::Reverse(r.id));
     Ok(records)
 }
 
