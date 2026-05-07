@@ -39,9 +39,8 @@ async fn main() -> Result<()> {
         .map(|c| c.llm_model.is_some())
         .unwrap_or(false);
 
-    // Hide `ask` and `explore` from help when no chat model is configured.
+    // Hide `explore` from help when no chat model is configured.
     let matches = Cli::command()
-        .mut_subcommand("ask", |c| c.hide(!llm_configured))
         .mut_subcommand("explore", |c| c.hide(!llm_configured))
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
@@ -52,24 +51,18 @@ async fn main() -> Result<()> {
         Command::Init(args) => cli::cmd::init(args, cfg).await,
         Command::Index(args) => cli::cmd::index(args, cfg).await,
         Command::Search(args) => cli::cmd::search(args, cfg).await,
-        Command::Ask(args) => cli::cmd::ask(args, cfg).await,
         Command::Status(args) => cli::cmd::status(args, cfg).await,
         Command::Check(args) => cli::cmd::check(args, cfg).await,
         Command::Languages => cli::cmd::languages(),
         Command::Graph(args) => cli::cmd::graph(args, cfg),
         Command::Chunks(args) => cli::cmd::chunks(args, cfg),
-        Command::Verify(args) => cli::cmd::verify(args, cfg).await,
         Command::Link(args) => cli::cmd::link(args, cfg),
         Command::Unlink(args) => cli::cmd::unlink(args, cfg),
         Command::Autoclean => cli::cmd::autoclean(cfg),
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
         Command::Hooks(args) => cli::cmd::hooks(args),
-        Command::Plan(args) => cli::cmd::plan(args, cfg).await,
-        Command::Spec(args) => cli::cmd::spec(args, cfg),
         Command::Explore(args) => cli::cmd::explore(args, cfg).await,
         Command::Links(args) => cli::cmd::links(args, cfg).await,
-        Command::Snapshot(args) => cli::cmd::snapshot(args, cfg).await,
-        Command::History(args) => cli::cmd::history(args, cfg),
         Command::Plumbing(args) => {
             if let Err(e) = cli::cmd::plumbing(args, cfg).await {
                 eprintln!("error: {e:#}");

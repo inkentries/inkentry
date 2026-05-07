@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use ignore::WalkBuilder;
 use indicatif::MultiProgress;
 use std::path::PathBuf;
 
@@ -33,7 +32,7 @@ pub struct IndexArgs {
     #[arg(long, default_value = "10")]
     pub summary_batch_size: usize,
 
-    /// Internal: run only phases 3-5 (graph rank, spec discovery, summaries).
+    /// Internal: run only phases 3-5 (graph rank, summaries).
     /// Used by the background process spawned after a large foreground index.
     #[arg(long = "_background-phases", hide = true, default_value_t = false)]
     pub background_phases: bool,
@@ -190,10 +189,7 @@ async fn run_phases_3_to_5(
         }
     }
 
-    // Phase 4: auto-discover spec files
-    run_spec_discovery(root_canonical, db, cfg)?;
-
-    // Phase 5: LLM summaries — spawn a background thread so the caller
+    // Phase 4: LLM summaries — spawn a background thread so the caller
     // returns immediately. The thread opens its own DB connection because
     // `Database` (rusqlite::Connection) is not Send.
     let no_summaries = args.no_summaries;
@@ -245,33 +241,4 @@ async fn run_background_phases(
     db_path: &std::path::Path,
 ) -> Result<()> {
     run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
-}
-
-fn run_spec_discovery(root: &std::path::Path, db: &Database, cfg: &Config) -> Result<()> {
-    let files: Vec<_> = {
-        let mut walk = WalkBuilder::new(root);
-        walk.standard_filters(true);
-        walk.build()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
-            .collect()
-    };
-    let mut specs_found = 0u32;
-    for entry in &files {
-        let path = entry.path();
-        if super::spec::is_spec_file(path, &cfg.specs_dir) {
-            let path_str = path.to_string_lossy().into_owned();
-            let title = super::spec::extract_spec_title(path).unwrap_or_default();
-            if let Err(e) = db.upsert_spec(&path_str, &title, true) {
-                tracing::warn!("spec registration failed for {path_str}: {e}");
-            } else {
-                specs_found += 1;
-            }
-        }
-    }
-    if specs_found > 0 {
-        eprintln!("Registered {specs_found} spec file(s).");
-    }
-    Ok(())
 }

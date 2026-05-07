@@ -35,18 +35,6 @@ pub(crate) async fn load_embedder(cfg: &Config) -> Result<crate::backends::Activ
     Ok(embedder)
 }
 
-/// Show a "Loading LLM (…)…" spinner, load `ActiveLlm`, clear the spinner,
-/// and return the LLM.
-pub(crate) async fn load_llm(cfg: &Config) -> Result<crate::backends::ActiveLlm> {
-    let model_name = cfg.llm_model.as_deref().unwrap_or("<not configured>");
-    let sp = spinner(format!("Loading LLM ({model_name})…"));
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .with_context(|| format!("loading LLM '{model_name}'"))?;
-    sp.finish_and_clear();
-    Ok(llm)
-}
-
 /// Embed a query with the given task prefix and return the raw float vector.
 pub(crate) async fn embed_query_vec(
     embedder: &crate::backends::ActiveEmbedder,
