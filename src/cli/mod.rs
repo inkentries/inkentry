@@ -6,6 +6,7 @@ pub mod cmd;
 // Sub-command Args types (Memory*Args, Plumbing*Args, etc.) are accessed via
 // their owning modules (e.g. `crate::cli::cmd::memory::MemoryAddArgs`) when needed.
 pub use cmd::check::CheckArgs;
+pub use cmd::context::ContextArgs;
 pub use cmd::explore::ExploreArgs;
 pub use cmd::graph::GraphArgs;
 pub use cmd::hooks::HooksArgs;
@@ -43,6 +44,8 @@ pub enum Command {
     Status(StatusArgs),
     /// Check whether the index is in sync with the current source tree (exit 1 if stale)
     Check(CheckArgs),
+    /// Print agent session context: handoffs, open questions, decisions, and requirements
+    Context(ContextArgs),
     /// List supported languages
     Languages,
     /// Query the code graph (imports, calls, extends/implements)
