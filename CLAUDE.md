@@ -73,23 +73,18 @@ src/
     mod.rs         — clap structs (Cli, Command, *Args)
     cmd/
       mod.rs       — re-exports one pub fn per subcommand
-      ask.rs       — `spelunk ask` handler
       check.rs     — `spelunk check` handler
+      context.rs   — `spelunk context` handler (agent session entry point)
       explore.rs   — `spelunk explore` handler
       graph.rs     — `spelunk graph` handler
       helpers.rs   — shared output / progress helpers
-      history.rs   — `spelunk history` handler
       hooks.rs     — `spelunk hooks` handler
       init.rs      — `spelunk init` handler
       link.rs      — `spelunk link/unlink/autoclean` handlers
       links.rs     — `spelunk links` handler
       misc.rs      — `spelunk chunks` / `spelunk languages` handlers
-      plan.rs      — `spelunk plan` handler
       search.rs    — `spelunk search` handler
-      snapshot.rs  — `spelunk snapshot` handler
-      spec.rs      — `spelunk spec` handler
       status.rs    — `spelunk status` handler
-      verify.rs    — `spelunk verify` handler
       ui.rs        — TUI helpers (private)
       index/
         mod.rs         — `spelunk index` entry point

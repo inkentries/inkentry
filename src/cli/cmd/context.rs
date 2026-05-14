@@ -6,6 +6,9 @@ use super::memory::print_note_summary;
 use crate::storage::memory::Note;
 use crate::{config::Config, storage::open_memory_backend};
 
+/// Fallback per-section limit when `--kind` names a kind not in SECTIONS.
+const DEFAULT_UNKNOWN_KIND_LIMIT: usize = 20;
+
 /// Agent-facing entry-point command: pull the most relevant memory sections
 /// in one shot (handoffs → questions → decisions → requirements).
 #[derive(Args, Debug)]
@@ -22,9 +25,13 @@ pub struct ContextArgs {
     #[arg(short, long, value_name = "KIND")]
     pub kind: Option<String>,
 
-    /// Maximum entries per section (defaults: handoff=3, question=all, decision=10, requirement=all)
+    /// Maximum entries per section (defaults: handoff=3, question=500, decision=10, requirement=500)
     #[arg(short, long, value_name = "N")]
     pub limit: Option<usize>,
+
+    /// Only show entries tagged with this file or directory path
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<String>,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -33,6 +40,7 @@ pub struct ContextArgs {
 
 struct Section {
     kind: &'static str,
+    /// Fetch this many entries before optional path post-filter; 500 is the NoteStore hard-cap.
     default_limit: usize,
 }
 
@@ -43,7 +51,7 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         kind: "question",
-        default_limit: 1000,
+        default_limit: 500,
     },
     Section {
         kind: "decision",
@@ -51,7 +59,7 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         kind: "requirement",
-        default_limit: 1000,
+        default_limit: 500,
     },
 ];
 
@@ -67,13 +75,17 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     };
     let backend = open_memory_backend(&cfg, &mem_path, be)?;
 
+    let sections = collect_sections(
+        &*backend,
+        args.kind.as_deref(),
+        args.limit,
+        args.path.as_deref(),
+    )
+    .await?;
+
     match crate::utils::effective_format(&args.format) {
-        "json" => {
-            let sections = collect_sections(&*backend, args.kind.as_deref(), args.limit).await?;
-            println!("{}", serde_json::to_string_pretty(&sections)?);
-        }
+        "json" => println!("{}", serde_json::to_string(&sections)?),
         _ => {
-            let sections = collect_sections(&*backend, args.kind.as_deref(), args.limit).await?;
             for (kind, notes) in &sections {
                 if notes.is_empty() {
                     continue;
@@ -92,6 +104,7 @@ async fn collect_sections(
     backend: &dyn crate::storage::MemoryBackend,
     kind_filter: Option<&str>,
     limit_override: Option<usize>,
+    path_filter: Option<&str>,
 ) -> Result<Vec<(String, Vec<Note>)>> {
     let mut result = Vec::new();
 
@@ -100,7 +113,7 @@ async fn collect_sections(
             .iter()
             .find(|s| s.kind == k)
             .map(|s| s.default_limit)
-            .unwrap_or(20);
+            .unwrap_or(DEFAULT_UNKNOWN_KIND_LIMIT);
         vec![(k, limit_override.unwrap_or(default_limit))]
     } else {
         SECTIONS
@@ -110,7 +123,10 @@ async fn collect_sections(
     };
 
     for (kind, limit) in sections {
-        let notes = backend.list(Some(kind), limit, false, None).await?;
+        let mut notes = backend.list(Some(kind), limit, false, None).await?;
+        if let Some(p) = path_filter {
+            notes.retain(|n| n.linked_files.iter().any(|f| f.contains(p)));
+        }
         result.push((kind.to_string(), notes));
     }
     Ok(result)
