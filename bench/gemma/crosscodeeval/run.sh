@@ -12,8 +12,9 @@
 #   --repo-path    PATH                      path to indexed repo (required for spelunk)
 #   --split        cross_file_first|cross_file_random|in_file  (default: cross_file_first)
 #   --samples      N                         samples (default: 200)
-#   --model        MODEL                     model name (default: gemma-4-e2b-it)
-#   --api-base-url URL                       (default: http://127.0.0.1:1234/v1)
+#   --model        MODEL                     model name (default: deepseek-v4-flash)
+#   --api-base-url URL                       (default: https://api.deepseek.com/v1)
+#   --api-key      KEY                       API key (falls back to DEEPSEEK_API_KEY)
 #   --out          FILE                      output path (default: bench/results/...)
 
 set -euo pipefail
@@ -34,8 +35,9 @@ CONDITION=""
 REPO_PATH=""
 SPLIT="cross_file_first"
 SAMPLES=200
-MODEL="gemma-4-e2b-it"
-API_BASE_URL="http://127.0.0.1:1234/v1"
+MODEL="deepseek-v4-flash"
+API_BASE_URL="https://api.deepseek.com/v1"
+API_KEY="${DEEPSEEK_API_KEY:-}"
 OUT_FILE=""
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --samples)      SAMPLES="$2";      shift 2 ;;
         --model)        MODEL="$2";        shift 2 ;;
         --api-base-url) API_BASE_URL="$2"; shift 2 ;;
+        --api-key)      API_KEY="$2";      shift 2 ;;
         --out)          OUT_FILE="$2";     shift 2 ;;
         -h|--help)      usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
@@ -85,7 +88,9 @@ if [[ "$CONDITION" == "spelunk" ]]; then
     fi
 fi
 
-EXTRA_ARGS=()
+API_KEY="${API_KEY:-${DEEPSEEK_API_KEY:-}}"
+
+EXTRA_ARGS=(--api-key "$API_KEY")
 if [[ -n "$REPO_PATH" ]]; then
     EXTRA_ARGS+=(--repo-path "$REPO_PATH")
 fi
@@ -95,6 +100,7 @@ echo "Split:        ${SPLIT}"
 echo "Samples:      ${SAMPLES}"
 echo "Model:        ${MODEL}"
 echo "API base:     ${API_BASE_URL}"
+echo "API key:      ${API_KEY:0:8}..." if API_KEY else "(not set)"
 echo "Output:       ${OUT_FILE}"
 echo ""
 
