@@ -32,7 +32,14 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+# Auto-load .env.local from project root if present
+_load_root = Path(__file__).resolve().parents[2]
+_dotenv_path = _load_root / ".env.local"
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path)
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -397,6 +404,9 @@ def run_agent(
         turns += 1
 
         assistant_entry: dict = {"role": "assistant", "content": msg.content or ""}
+        # DeepSeek thinking mode: preserve reasoning_content if present
+        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+            assistant_entry["reasoning_content"] = msg.reasoning_content
         if msg.tool_calls:
             assistant_entry["tool_calls"] = [
                 {

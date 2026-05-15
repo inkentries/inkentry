@@ -143,6 +143,9 @@ def complete_spelunk(
 
         # Build assistant entry — include tool_calls only if present
         assistant_entry: dict = {"role": "assistant", "content": msg.content or ""}
+        # DeepSeek thinking mode: preserve reasoning_content if present
+        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+            assistant_entry["reasoning_content"] = msg.reasoning_content
         if msg.tool_calls:
             assistant_entry["tool_calls"] = [
                 {

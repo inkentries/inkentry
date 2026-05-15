@@ -29,6 +29,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Load .env.local via python-dotenv if present
+if [[ -f "${REPO_ROOT}/.env.local" ]]; then
+    eval "$(uv run --with python-dotenv python3 -c "
+import os, dotenv
+dotenv.load_dotenv('${REPO_ROOT}/.env.local')
+for k, v in os.environ.items():
+    if k.startswith('DEEPSEEK_'):
+        print(f'export {k}=%s' % repr(v))
+" 2>/dev/null)"
+fi
+
 CONDITION=""
 MODEL="deepseek-v4-flash"
 API_BASE_URL="https://api.deepseek.com/v1"
@@ -152,7 +163,7 @@ for TASK_ID in $ALL_TASK_IDS; do
     )
 
     echo "  Running agent..."
-    RESULT=$(python3 "${SCRIPT_DIR}/agent.py" "${AGENT_ARGS[@]}" 2>&1) || {
+    RESULT=$(uv run --with-requirements "${SCRIPT_DIR}/../requirements.txt" python3 "${SCRIPT_DIR}/agent.py" "${AGENT_ARGS[@]}" 2>&1) || {
         echo "  ERROR: agent crashed for ${TASK_ID}"
         ALL_RESULTS+=("{\"task_id\": \"${TASK_ID}\", \"error\": true, \"stderr\": $(printf '%s' "${RESULT}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
         continue
