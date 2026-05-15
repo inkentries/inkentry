@@ -12,6 +12,8 @@
 #   --tasks N           only set up first N tasks  (default: all)
 #   --repos-dir DIR     checkout root              (default: bench/repos)
 #   --dataset SLUG      HuggingFace dataset        (default: princeton-nlp/SWE-bench_Verified)
+#   --retries N         max retries per git op     (default: 3)
+#   --git-timeout SEC   timeout per git command    (default: 120)
 #   -h|--help
 
 set -euo pipefail
@@ -20,9 +22,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TASKS_FILE="${SCRIPT_DIR}/swebench/tasks_50.json"
-TASKS=0   # 0 = all
-REPOS_DIR="${SCRIPT_DIR}/repos"
+TASKS=0          # 0 = all
+
+# Default to the shared spelunk-bench checkout if it exists
+if [[ -d "${HOME}/opensource/spelunk-bench/repos" ]]; then
+    REPOS_DIR="${HOME}/opensource/spelunk-bench/repos"
+else
+    REPOS_DIR="${SCRIPT_DIR}/repos"
+fi
 DATASET="princeton-nlp/SWE-bench_Verified"
+MAX_RETRIES=3
+GIT_TIMEOUT=120
 
 usage() {
     grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
@@ -31,10 +41,12 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --tasks-file) TASKS_FILE="$2"; shift 2 ;;
-        --tasks)      TASKS="$2";      shift 2 ;;
-        --repos-dir)  REPOS_DIR="$2";  shift 2 ;;
-        --dataset)    DATASET="$2";    shift 2 ;;
+        --tasks-file) TASKS_FILE="$2";  shift 2 ;;
+        --tasks)      TASKS="$2";       shift 2 ;;
+        --repos-dir)  REPOS_DIR="$2";   shift 2 ;;
+        --dataset)    DATASET="$2";     shift 2 ;;
+        --retries)    MAX_RETRIES="$2"; shift 2 ;;
+        --git-timeout) GIT_TIMEOUT="$2"; shift 2 ;;
         -h|--help)    usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
@@ -42,14 +54,45 @@ done
 
 mkdir -p "$REPOS_DIR"
 
-echo "Tasks file:  ${TASKS_FILE}"
-echo "Repos dir:   ${REPOS_DIR}"
-echo "Dataset:     ${DATASET}"
-echo ""
+# ---------------------------------------------------------------------------
+# Retry helper — retries a command with exponential backoff.
+# Usage: retry <attempts> <description> <command...>
+# ---------------------------------------------------------------------------
+retry() {
+    local attempts="$1"
+    local desc="$2"
+    shift 2
 
-# Fetch metadata for all requested task IDs and emit NDJSON lines:
-#   {"instance_id": "...", "repo": "owner/name", "base_commit": "abc123", "problem_statement": "..."}
-METADATA_NDJSON="$(uv run --with datasets --with huggingface_hub python3 - <<PYEOF
+    local attempt=1
+    local delay=5
+    while [[ $attempt -le $attempts ]]; do
+        if "$@" 2>/tmp/spelunk-setup-git-stderr.$$; then
+            return 0
+        fi
+        local rc=$?
+        if [[ $attempt -lt $attempts ]]; then
+            echo "    Retry ${attempt}/${attempts}: ${desc} failed (exit ${rc}), retrying in ${delay}s..." >&2
+            sleep "$delay"
+            delay=$((delay * 2))
+            # Cap at 60s
+            [[ $delay -gt 60 ]] && delay=60
+        fi
+        attempt=$((attempt + 1))
+    done
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Fetch metadata with retry
+# ---------------------------------------------------------------------------
+fetch_metadata() {
+    local max_attempts=3
+    local attempt=1
+    local delay=5
+
+    while [[ $attempt -le $max_attempts ]]; do
+        local result
+        result="$(uv run --with datasets --with huggingface_hub python3 - <<PYEOF 2>/tmp/spelunk-setup-hf-stderr.$$
 import json, sys
 from datasets import load_dataset
 
@@ -73,12 +116,53 @@ for row in ds:
         }))
 PYEOF
 )"
+        local rc=$?
+        if [[ $rc -eq 0 ]]; then
+            echo "$result"
+            return 0
+        fi
+        if [[ $attempt -lt $max_attempts ]]; then
+            echo "  WARNING: dataset fetch failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s..." >&2
+            echo "  stderr: $(head -5 /tmp/spelunk-setup-hf-stderr.$$ 2>/dev/null || true)" >&2
+            sleep "$delay"
+            delay=$((delay * 2))
+            [[ $delay -gt 60 ]] && delay=60
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo ""  # empty = failure
+    return 1
+}
+
+echo "Tasks file:  ${TASKS_FILE}"
+echo "Repos dir:   ${REPOS_DIR}"
+echo "Dataset:     ${DATASET}"
+echo "Retries:     ${MAX_RETRIES}"
+echo "Git timeout: ${GIT_TIMEOUT}s"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Fetch metadata
+# ---------------------------------------------------------------------------
+echo "Fetching task metadata from HuggingFace..."
+METADATA_NDJSON="$(fetch_metadata)"
+if [[ -z "$METADATA_NDJSON" ]]; then
+    echo "ERROR: Failed to fetch dataset metadata after retries." >&2
+    exit 1
+fi
 
 TOTAL="$(echo "$METADATA_NDJSON" | grep -c . || true)"
 echo "Fetched metadata for ${TOTAL} tasks."
 echo ""
 
+# ---------------------------------------------------------------------------
+# Clone / update each repo
+# ---------------------------------------------------------------------------
 IDX=0
+SUCCESS=0
+SKIPPED=0
+FAILED_TASKS=()
+
 while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     IDX=$((IDX + 1))
@@ -89,32 +173,92 @@ while IFS= read -r line; do
     PROBLEM="$(echo     "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['problem_statement'])")"
 
     DEST="${REPOS_DIR}/${INSTANCE_ID}"
-    echo "[${IDX}/${TOTAL}] ${INSTANCE_ID}"
+    echo "[${IDX}/${TOTAL}] ${INSTANCE_ID} (${REPO} @ ${BASE_COMMIT:0:12})"
 
+    # --- Check if already at the correct commit ---
     if [[ -f "${DEST}/ISSUE.txt" ]] && git -C "$DEST" rev-parse --verify HEAD &>/dev/null; then
         CURRENT="$(git -C "$DEST" rev-parse HEAD)"
         if [[ "$CURRENT" == "$BASE_COMMIT" ]]; then
-            echo "  Already set up at ${BASE_COMMIT:0:12} — skipping."
+            echo "  Already set up — skipping."
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        else
+            echo "  Repo exists at wrong commit (${CURRENT:0:12}), re-fetching..."
+        fi
+    fi
+
+    # --- Clone or update the repo ---
+    CLONE_URL="https://github.com/${REPO}.git"
+    CLONE_OK=true
+
+    if [[ -d "$DEST/.git" ]]; then
+        # Existing repo: fetch with timeout and retry
+        echo "  Fetching origin..."
+        if ! retry "$MAX_RETRIES" "git fetch" \
+            timeout "$GIT_TIMEOUT" git -C "$DEST" fetch --quiet origin; then
+            echo "  ERROR: git fetch failed after ${MAX_RETRIES} retries."
+            FAILED_TASKS+=("${INSTANCE_ID}: git fetch failed")
+            continue
+        fi
+    else
+        # New clone — try partial (blobless) clone first, fall back to full clone
+        echo "  Cloning ${CLONE_URL}..."
+        if retry "$MAX_RETRIES" "git clone (blobless)" \
+            timeout "$GIT_TIMEOUT" git clone --filter=blob:none --no-checkout --quiet "$CLONE_URL" "$DEST" 2>/dev/null; then
+            echo "    (partial clone OK)"
+        elif retry "$MAX_RETRIES" "git clone (full)" \
+            timeout "$GIT_TIMEOUT" git clone --no-checkout --quiet "$CLONE_URL" "$DEST" 2>/dev/null; then
+            echo "    (full clone OK — partial clone not supported by server)"
+        else
+            echo "  ERROR: git clone failed after retries."
+            FAILED_TASKS+=("${INSTANCE_ID}: git clone failed")
+            # Clean up partial clone dir so it doesn't look like a repo
+            rm -rf "$DEST" 2>/dev/null || true
             continue
         fi
     fi
 
-    CLONE_URL="https://github.com/${REPO}.git"
-
-    if [[ -d "$DEST/.git" ]]; then
-        echo "  Repo exists, fetching and checking out ${BASE_COMMIT:0:12}..."
-        git -C "$DEST" fetch --quiet origin
-    else
-        echo "  Cloning ${CLONE_URL}..."
-        # Partial (blobless) clone — much faster than a full clone
-        git clone --filter=blob:none --no-checkout --quiet "$CLONE_URL" "$DEST"
+    # --- Checkout target commit ---
+    echo "  Checking out ${BASE_COMMIT:0:12}..."
+    if ! retry "$MAX_RETRIES" "git checkout" \
+        git -C "$DEST" checkout --quiet "$BASE_COMMIT"; then
+        echo "  ERROR: git checkout failed (commit may not exist on remote)."
+        FAILED_TASKS+=("${INSTANCE_ID}: git checkout ${BASE_COMMIT:0:12} failed")
+        continue
     fi
 
-    git -C "$DEST" checkout --quiet "$BASE_COMMIT"
+    # --- Verify checkout ---
+    VERIFIED="$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "")"
+    if [[ "$VERIFIED" != "$BASE_COMMIT" ]]; then
+        echo "  ERROR: checkout verification failed. Expected ${BASE_COMMIT:0:12}, got ${VERIFIED:0:12}."
+        FAILED_TASKS+=("${INSTANCE_ID}: checkout verification failed")
+        continue
+    fi
+
+    # --- Write ISSUE.txt ---
     printf '%s\n' "$PROBLEM" > "${DEST}/ISSUE.txt"
     echo "  Done: checked out ${BASE_COMMIT:0:12}"
+    SUCCESS=$((SUCCESS + 1))
 
 done <<< "$METADATA_NDJSON"
 
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 echo ""
-echo "Setup complete. ${IDX} repos ready under ${REPOS_DIR}/"
+echo "=============================================="
+echo "Setup complete."
+echo "  Success: ${SUCCESS}"
+echo "  Skipped (already current): ${SKIPPED}"
+echo "  Failed:  ${#FAILED_TASKS[@]}"
+
+if [[ ${#FAILED_TASKS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Failed tasks:"
+    for ft in "${FAILED_TASKS[@]}"; do
+        echo "  - ${ft}"
+    done
+    echo ""
+    echo "Re-run to retry:"
+    echo "  bash bench/setup_repos.sh --retries 5 --git-timeout 300"
+fi

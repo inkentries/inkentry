@@ -37,7 +37,13 @@ TASKS=50
 MAX_TURNS=20
 SEED=42
 SKIP_INDEX=false
-REPOS_DIR="${SCRIPT_DIR}/../repos"
+
+# Default to the shared spelunk-bench checkout if it exists
+if [[ -d "${HOME}/opensource/spelunk-bench/repos" ]]; then
+    REPOS_DIR="${HOME}/opensource/spelunk-bench/repos"
+else
+    REPOS_DIR="${SCRIPT_DIR}/../repos"
+fi
 
 usage() {
     grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
