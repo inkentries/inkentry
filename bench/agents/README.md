@@ -63,7 +63,7 @@ bash bench/agents/swebench_run.sh \
     [--tasks 50] [--max-turns 20] [--seed 42] [--skip-index]
 ```
 
-Reads `bench/swebench/tasks_50.json`, expects repos checked out at
+Reads `bench/agents/tasks_50.json`, expects repos checked out at
 `bench/repos/<task_id>/` (via `bench/setup_repos.sh`).
 
 For `spelunk_search` and `spelunk_full` conditions, runs `spelunk index` on
@@ -108,3 +108,13 @@ bash bench/agents/swebench_run.sh --condition spelunk_full --seed 42
 - The spelunk CLI must be in PATH. The agent handles exit code 1 (no results)
   gracefully.
 - DeepSeek API may have rate limits — the orchestrator pauses 1 s between tasks.
+- **Infrastructure vs. resolve_rate:** Infrastructure fixes (Phase 3) unblock
+  benchmarks by ensuring tasks run without crashes. They do not improve
+  `resolve_rate` — that requires a capable model (deepseek-v4-flash).
+- **spelunk_full vs spelunk_search:** For SWE-bench repos checked out at single
+  commits, `spelunk memory harvest` has no git history — memory tools return
+  empty results. `spelunk_full` is equivalent to `spelunk_search` for these
+  repos. The condition differentiates only on repos with prior spelunk memory
+  (Phase 6 benchmarks).
+- **Phase 6a prerequisite:** `spelunk context` (#201) must be merged before the
+  cross-session handoff benchmark can be scripted as described in the plan.

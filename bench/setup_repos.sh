@@ -8,7 +8,7 @@
 #   bash bench/setup_repos.sh [options]
 #
 # Options:
-#   --tasks-file FILE   path to tasks JSON array  (default: bench/swebench/tasks_50.json)
+#   --tasks-file FILE   path to tasks JSON array  (default: bench/agents/tasks_50.json)
 #   --tasks N           only set up first N tasks  (default: all)
 #   --repos-dir DIR     checkout root              (default: bench/repos)
 #   --dataset SLUG      HuggingFace dataset        (default: princeton-nlp/SWE-bench_Verified)
@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-TASKS_FILE="${SCRIPT_DIR}/swebench/tasks_50.json"
+TASKS_FILE="${SCRIPT_DIR}/../agents/tasks_50.json"
 TASKS=0          # 0 = all
 
 # Default to the shared spelunk-bench checkout if it exists

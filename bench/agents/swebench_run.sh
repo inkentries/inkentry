@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrate SWE-bench agent runs across the pinned 50-task set.
 #
-# Reads task IDs from bench/swebench/tasks_50.json, expects repos to be
+# Reads task IDs from bench/agents/tasks_50.json, expects repos to be
 # checked out at bench/repos/<task_id>/ (via bench/setup_repos.sh).
 #
 # Usage:
@@ -90,7 +90,7 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve task list
 # ---------------------------------------------------------------------------
-TASKS_FILE="${SCRIPT_DIR}/../swebench/tasks_50.json"
+TASKS_FILE="${SCRIPT_DIR}/tasks_50.json"
 if [[ ! -f "$TASKS_FILE" ]]; then
     echo "Error: tasks file not found: ${TASKS_FILE}" >&2
     exit 1
@@ -149,6 +149,13 @@ for TASK_ID in $ALL_TASK_IDS; do
         spelunk index "$TASK_REPO" 2>&1 | tail -1 || true
     fi
 
+    # For spelunk_full: attempt memory harvest from git history.
+    # Best-effort — single-commit SWE-bench repos have no harvestable history.
+    if [[ "$CONDITION" == "spelunk_full" ]]; then
+        echo "  Harvesting memory (best-effort)..."
+        spelunk memory harvest --git-range HEAD~50..HEAD "$TASK_REPO" 2>&1 | tail -1 || true
+    fi
+
     # Run the agent
     AGENT_ARGS=(
         --condition "$CONDITION"
@@ -163,7 +170,7 @@ for TASK_ID in $ALL_TASK_IDS; do
     )
 
     echo "  Running agent..."
-    RESULT=$(uv run --with-requirements "${SCRIPT_DIR}/../requirements.txt" python3 "${SCRIPT_DIR}/agent.py" "${AGENT_ARGS[@]}" 2>&1) || {
+    RESULT=$(uv run --quiet --with-requirements "${SCRIPT_DIR}/../requirements.txt" python3 "${SCRIPT_DIR}/agent.py" "${AGENT_ARGS[@]}" 2>&1) || {
         echo "  ERROR: agent crashed for ${TASK_ID}"
         ALL_RESULTS+=("{\"task_id\": \"${TASK_ID}\", \"error\": true, \"stderr\": $(printf '%s' "${RESULT}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
         continue
