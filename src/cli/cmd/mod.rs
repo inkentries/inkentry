@@ -1,4 +1,5 @@
 pub mod check;
+pub mod context;
 pub mod explore;
 pub mod graph;
 pub mod helpers;
@@ -15,6 +16,7 @@ pub mod status;
 mod ui;
 
 pub use check::check;
+pub use context::context;
 pub use explore::explore;
 pub use graph::graph;
 pub use hooks::hooks;

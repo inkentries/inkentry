@@ -39,18 +39,18 @@ At the start of a session, orient yourself:
 # Check the index is fresh
 spelunk check
 
-# Review open questions from previous sessions
-AGENT=true spelunk memory list --kind question
-
-# Review recent handoff notes
-AGENT=true spelunk memory list --kind handoff --limit 5
-
-# Understand what's been decided
-AGENT=true spelunk memory search "architecture decisions"
+# Pull handoffs, open questions, decisions, and requirements in one shot
+spelunk context
 
 # Check antipatterns — things to avoid repeating
 AGENT=true spelunk memory failures
 ```
+
+`spelunk context` replaces the old multi-command sequence. It prints the four
+most agent-relevant memory sections (handoffs, open questions, decisions,
+requirements) sorted newest-first with per-section defaults. Add `--format json`
+for machine-readable output, `--kind decision` to narrow to one section, or
+`--path src/auth` to filter to entries tagged with a specific path.
 
 ## Searching before writing
 
@@ -197,7 +197,7 @@ spelunk memory add \
 At the start of the next session, read it:
 
 ```bash
-AGENT=true spelunk memory list --kind handoff --limit 3
+spelunk context
 ```
 
 ## Multi-agent coordination

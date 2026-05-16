@@ -114,7 +114,54 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 6. Print success summary ──────────────────────────────────────────────
+    // ── 6. Write CLAUDE.md if missing ─────────────────────────────────────────
+    let claude_md_path = project_root.join("CLAUDE.md");
+    if !claude_md_path.exists() {
+        let claude_md = format!(
+            "# CLAUDE.md — {name}\n\
+             \n\
+             Developer guide for AI agents working on this codebase.\n\
+             \n\
+             ---\n\
+             \n\
+             ## Agent workflow\n\
+             \n\
+             This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.\n\
+             \n\
+             **At the start of every session:**\n\
+             ```bash\n\
+             spelunk check                 # verify index is fresh\n\
+             spelunk context               # review handoffs, open questions, decisions, requirements\n\
+             ```\n\
+             \n\
+             **Before reading any file, search first:**\n\
+             ```bash\n\
+             spelunk search \"<topic>\"      # find relevant chunks by meaning\n\
+             spelunk graph <symbol>        # trace callers/callees when needed\n\
+             ```\n\
+             \n\
+             **Store decisions as you make them:**\n\
+             ```bash\n\
+             spelunk memory add --kind decision --title \"...\" --body \"why, alternatives, tradeoffs\"\n\
+             spelunk memory add --kind requirement --title \"...\"\n\
+             spelunk memory add --kind note --title \"...\"      # surprising/non-obvious facts\n\
+             ```\n\
+             \n\
+             **At the end of every session:**\n\
+             ```bash\n\
+             spelunk memory add --kind handoff --title \"Handoff: <summary>\" --body \"done, next, open\"\n\
+             spelunk index .               # re-index after any commits\n\
+             ```\n",
+            name = project_name
+        );
+        if let Err(e) = std::fs::write(&claude_md_path, claude_md) {
+            eprintln!("Warning: could not write CLAUDE.md: {e}");
+        } else {
+            println!("  CLAUDE.md written to {}", claude_md_path.display());
+        }
+    }
+
+    // ── 7. Print success summary ──────────────────────────────────────────────
     println!();
     println!("spelunk initialised for {}", project_name);
     println!();
@@ -124,7 +171,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     println!();
     println!("Next steps:");
     println!("  spelunk search \"your query\"");
-    println!("  spelunk ask \"how does X work?\"");
+    println!("  spelunk context");
 
     Ok(())
 }
