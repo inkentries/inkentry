@@ -205,9 +205,19 @@ pub struct MemoryHarvestArgs {
     #[arg(long)]
     pub since: Option<String>,
 
-    /// Confirm reading ~/.claude/history.jsonl (required for --source claude-code)
+    /// Confirm reading git objects or history files (required for --source claude-code and --source entire)
     #[arg(long)]
     pub confirm: bool,
+
+    /// Path to the repo containing refs/entire/checkpoints/v1 (default: current repo).
+    /// Only used with --source entire.
+    #[arg(long)]
+    pub entire_repo: Option<std::path::PathBuf>,
+
+    /// List checkpoints that would be harvested without writing anything.
+    /// Only used with --source entire.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -278,6 +288,7 @@ mod failures;
 mod graph_cmd;
 mod harvest;
 mod harvest_claude;
+mod harvest_entire;
 mod list;
 mod push;
 mod search;
