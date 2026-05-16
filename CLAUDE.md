@@ -34,7 +34,7 @@ spelunk memory add --kind note --title "..."                       # surprising/
 **At the end of every session:**
 ```bash
 spelunk memory add --kind handoff --title "Handoff: <summary>" --body "what's done, what's next, open questions"
-spelunk index .                   # re-index after any commits (hook does this, but run manually if no commit)
+spelunk index .                   # re-index if project uses semantic search (hook does this on commit)
 ```
 
 Full reference: `SKILL.md` and `docs/agent-guide.md`.
@@ -43,17 +43,15 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 ## What This Project Is
 
-`spelunk` (`spelunk`) is a Rust CLI that indexes a source tree using
-tree-sitter AST chunking, embeds every chunk via any OpenAI-compatible API
-(EmbeddingGemma 300M by default), and stores vectors in SQLite for semantic search.
+`spelunk` (`spelunk`) is a Rust CLI and context retrieval engine for AI agents.
 
-It is a **context retrieval engine** for AI agents like you. You search with
-spelunk, then reason over the results yourself.
+**Core (no server required):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking.
 
-**Requirement**: Any OpenAI-compatible server (LM Studio, Ollama, vLLM, etc.)
-running at `http://127.0.0.1:1234` (configurable via `api_base_url`) with an
-**embedding model** loaded. A chat model is optional (enables `memory harvest`
-and `plan create`).
+**With inference server** (any OpenAI-compatible endpoint, default `http://127.0.0.1:1234`): semantic search via embeddings (EmbeddingGemma 300M by default), `spelunk explore`, `spelunk memory harvest`, LLM summaries, `spelunk plan create`. Chat model is also optional and enables harvest/plan.
+
+**With remote server** (`memory_server_url`): team-shared memory, `spelunk memory watch`, conflict detection.
+
+You search with spelunk, then reason over the results yourself.
 
 ---
 

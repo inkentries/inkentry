@@ -8,12 +8,51 @@ code and prior decisions, then reason over the results yourself.
 ## Setup
 
 - `spelunk` in PATH
-- OpenAI-compatible server at `http://127.0.0.1:1234` with an **embedding model** loaded
-  (override with `api_base_url` in `~/.config/spelunk/config.toml`)
+
+Core features (memory, full-text search, code graph) work without any inference server.
+
+**Optional — for semantic search and AI features:** an OpenAI-compatible server with an embedding model loaded (default: `http://127.0.0.1:1234`; override with `api_base_url` in `~/.config/spelunk/config.toml`). Commands that require this are marked **(requires server)** below.
 
 ---
 
-## Indexing
+## Code search
+
+```bash
+# Full-text search — no server needed
+spelunk search "<query>" --mode text
+
+# Call/import graph — no server needed
+spelunk graph <symbol-or-file>
+spelunk graph <symbol> --kind calls       # calls | imports | extends | implements
+spelunk graph <file> --format text|json|ndjson
+
+# Semantic search — (requires server + index)
+spelunk search "<query>"
+spelunk search "<query>" --limit 20
+spelunk search "<query>" --graph          # include call-graph neighbours
+spelunk search "<query>" --format text|json|ndjson
+
+# Deep search — iterative, uses LLM (requires server + llm_model in config)
+spelunk explore "<question>"
+spelunk explore "<question>" --max-steps 5
+spelunk explore "<question>" --json       # {answer, sources, steps}
+
+# Status and checks
+spelunk status --format text|json|ndjson
+spelunk check --format text|json|ndjson
+
+# Inspect what was indexed for a file
+spelunk chunks <file-path>
+spelunk chunks <file-path> --format text|json|ndjson
+```
+
+Use `search --mode text` for targeted lookups without a server. Use semantic `search` (with server) for concept-level queries. Use `explore` when the answer requires tracing across multiple files — it runs autonomously and reports back.
+
+---
+
+## Indexing (requires server)
+
+Indexing embeds chunks for semantic search. Skip this if you only need full-text search, memory, or code graph.
 
 ```bash
 spelunk index <path>           # index (subsequent runs are incremental)
@@ -25,66 +64,32 @@ Add a `.spelunkignore` file (same syntax as `.gitignore`) to exclude paths from 
 
 ---
 
-## Code search
-
-```bash
-# Semantic search — primary lookup
-spelunk search "<query>"
-spelunk search "<query>" --limit 20
-spelunk search "<query>" --graph          # include call-graph neighbours
-spelunk search "<query>" --format text|json|ndjson
-spelunk search "<query>" --mode text      # FTS only, no embedding model needed
-
-# Deep search — iterative, uses LLM (requires llm_model in config)
-spelunk explore "<question>"
-spelunk explore "<question>" --max-steps 5
-spelunk explore "<question>" --json       # {answer, sources, steps}
-
-# Call/import graph
-spelunk graph <symbol-or-file>
-spelunk graph <symbol> --kind calls       # calls | imports | extends | implements
-spelunk graph <file> --format text|json|ndjson
-
-# Status and checks
-spelunk status --format text|json|ndjson
-spelunk check --format text|json|ndjson
-
-# Inspect what was indexed for a file
-spelunk chunks <file-path>
-spelunk chunks <file-path> --format text|json|ndjson
-```
-
-Use `search` for targeted lookups. Use `explore` when the answer requires
-tracing across multiple files — it runs autonomously and reports back.
-
----
-
 ## Plumbing commands
 
 Plumbing commands emit NDJSON and are designed for scripts and pipelines.
 Exit codes: `0` = success, `1` = no results, `2` = error. See [Plumbing and Porcelain](docs/plumbing-and-porcelain.md) for full details.
 
 ```bash
-# Emit indexed chunks for a file
-spelunk plumbing cat-chunks <file>
-
-# List all indexed files (optionally filtered by prefix or staleness)
-spelunk plumbing ls-files [--prefix <p>] [--stale]
-
-# Parse a file without writing to the index
+# Parse a file and emit AST chunks (no DB, no server)
 spelunk plumbing parse-file <file>
 
-# Compute and verify file hash
+# Compute and verify file hash (no server)
 spelunk plumbing hash-file <file>
 
-# Read embedding from stdin, return nearest chunks by similarity
-echo "your query" | spelunk plumbing embed --query | spelunk plumbing knn --limit 10
-
-# Emit code graph edges (imports, calls, extends)
+# Emit code graph edges (no server)
 spelunk plumbing graph-edges --file <f> | --symbol <s>
 
-# Emit memory entries as NDJSON
+# Emit memory entries as NDJSON (no server)
 spelunk plumbing read-memory [--kind <k>] [--limit N]
+
+# Emit indexed chunks for a file (requires index)
+spelunk plumbing cat-chunks <file>
+
+# List all indexed files (requires index)
+spelunk plumbing ls-files [--prefix <p>] [--stale]
+
+# Read embedding from stdin, return nearest chunks by similarity (requires server + index)
+echo "your query" | spelunk plumbing embed --query | spelunk plumbing knn --limit 10
 ```
 
 ---
@@ -201,31 +206,32 @@ AGENT=true spelunk graph src/storage/db.rs
 
 **Start of every session:**
 ```bash
-spelunk check                              # includes active intents and overlapping work
-spelunk memory list --kind decision --limit 10
-spelunk memory list --kind handoff --limit 3
-spelunk memory list --kind intent          # see what teammates are working on
-spelunk memory list --kind question
-spelunk memory failures                    # check antipatterns — things to avoid
+AGENT=true spelunk check                              # includes active intents and overlapping work
+AGENT=true spelunk memory list --kind decision --limit 10
+AGENT=true spelunk memory list --kind handoff --limit 3
+AGENT=true spelunk memory list --kind intent          # see what teammates are working on
+AGENT=true spelunk memory list --kind question
+AGENT=true spelunk memory failures                    # check antipatterns — things to avoid
 ```
 
 **Understanding code:**
-1. `spelunk search "<topic>"` — find relevant chunks
-2. Read reported file/line ranges
-3. `spelunk graph <symbol>` — trace call chains
-4. `spelunk memory search "<topic>"` — check recorded context for *why*
+1. `AGENT=true spelunk search "<topic>" --mode text` — full-text search, no server needed
+2. `AGENT=true spelunk search "<topic>"` — semantic search (requires server + index)
+3. Read reported file/line ranges
+4. `AGENT=true spelunk graph <symbol>` — trace call chains
+5. `AGENT=true spelunk memory search "<topic>"` — check recorded context for *why*
 
 **Making changes:**
 1. Search and read before changing
 2. Store significant decisions: `spelunk memory add --kind decision …`
 3. Store constraints the human states: `spelunk memory add --kind requirement …`
-4. After committing: `spelunk index <project-root>`
+4. After committing (if indexed): `spelunk index <project-root>`
 
 **End of session:**
 ```bash
 spelunk memory add --kind handoff --title "Handoff: <summary>" \
   --body "what's done, what's next, open questions"
-spelunk index .
+spelunk index .   # only if project is indexed
 ```
 
 **Writing good memory entries:**
@@ -238,6 +244,8 @@ spelunk index .
 
 ## Tips
 
-- All commands except `spelunk index` can be run from any subdirectory — the index is found automatically.
-- After changing the embedding model, run `spelunk index <path> --force`.
-- `spelunk search` only needs the embedding model; `spelunk explore`, `spelunk memory harvest`, and LLM summaries also require `llm_model`.
+- Memory and code graph commands work from any subdirectory — no server or index needed.
+- All indexed-project commands can be run from any subdirectory — the index is found automatically.
+- `spelunk search --mode text` is always available. Semantic `spelunk search` requires an embedding server and a built index.
+- `spelunk explore`, `spelunk memory harvest`, and LLM summaries also require `llm_model` in config.
+- After changing the embedding model, run `spelunk index <path> --force` to rebuild the index.

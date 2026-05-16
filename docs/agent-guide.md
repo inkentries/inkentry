@@ -2,7 +2,9 @@
 
 `spelunk` is designed to work as infrastructure for AI coding agents, not just as a human developer tool. This guide covers the patterns that make agents most effective when paired with `spelunk`.
 
-**The key mental model**: spelunk retrieves context; you reason over it. Use `spelunk search` to find the right code, read the results, then synthesise the answer yourself — just as you would after reading documentation. spelunk is a fast, semantic grep with memory, not an oracle.
+**The key mental model**: spelunk retrieves context; you reason over it. Use `spelunk graph` and `spelunk search` to find the right code, read the results, then synthesise the answer yourself. spelunk is a persistent memory store and code navigation tool, not an oracle.
+
+**What needs a server:** semantic `spelunk search`, `spelunk explore`, `spelunk ask`, `spelunk plan create`, and `spelunk memory harvest` all require an inference server. Everything else — memory, code graph, full-text search — works with just the binary.
 
 ## The core loop
 
@@ -57,48 +59,49 @@ for machine-readable output, `--kind decision` to narrow to one section, or
 Before modifying any file, search for related code:
 
 ```bash
-# Find relevant chunks
-AGENT=true spelunk search "authentication middleware" --graph
+# Trace the call graph around a symbol (no server needed)
+AGENT=true spelunk graph validate_token
 
-# Get the raw chunks for a specific file
+# Full-text search (no server needed)
+AGENT=true spelunk search "authentication middleware" --mode text
+
+# Get the raw chunks for a specific file (requires index)
 AGENT=true spelunk chunks src/auth/middleware.rs
 
-# Understand the call graph around a symbol
-AGENT=true spelunk graph validate_token
+# Semantic search with call-graph expansion (requires server + index)
+AGENT=true spelunk search "authentication middleware" --graph
 ```
 
-The `--graph` flag on `spelunk search` adds 1-hop callers and callees to the result set, which is often exactly the context needed to understand blast radius before a change.
+The `--graph` flag adds 1-hop callers and callees to the result set — the right context for understanding blast radius before a change.
 
 ## Retrieving targeted context
 
-Use `spelunk search` with a focused query, then read the returned chunks and reason over them yourself:
+Use `spelunk graph` and `spelunk search` to find relevant code, then read and reason over the results yourself:
 
 ```bash
-# Find what touches the embedding format
-AGENT=true spelunk search "embedding format storage" --graph --format json
-
-# Trace call chains across the request lifecycle
+# Trace call chains
 AGENT=true spelunk graph handle_request
-AGENT=true spelunk search "request lifecycle middleware" --limit 20 --format json
+AGENT=true spelunk search "request lifecycle middleware" --mode text --limit 20 --format json
+
+# Semantic search (requires server + index)
+AGENT=true spelunk search "embedding format storage" --graph --format json
 ```
 
-For open-ended questions that require tracing through several files, use `spelunk explore` instead. It runs the same search/graph/read tools in an LLM-driven loop and returns a synthesised answer:
+For open-ended questions that require tracing through several files, use `spelunk explore` (requires server + `llm_model`). It runs an LLM-driven search loop and returns a synthesised answer:
 
 ```bash
-# Let spelunk drive the search loop; get a final answer + sources
 AGENT=true spelunk explore "how does incremental indexing decide which files to skip?"
-
-# Limit steps if you want a fast, shallow answer
 AGENT=true spelunk explore "where is the embedding model loaded?" --max-steps 3
 ```
 
-`explore` is slower than `search` (multiple LLM calls) — use `search` for targeted lookups and `explore` for questions that need synthesis across multiple code paths.
+`explore` is slower than `search` (multiple LLM calls) — use it only for questions that genuinely need synthesis across many code paths.
 
 ## Creating plans
 
-Before a significant change, generate a plan:
+Write a markdown checklist in `docs/plans/` manually, or generate one with `spelunk plan create` if `llm_model` is configured:
 
 ```bash
+# Requires llm_model in config
 spelunk plan create "add rate limiting to the API layer"
 # → writes docs/plans/add-rate-limiting.md with a - [ ] checklist
 
@@ -106,15 +109,16 @@ spelunk plan create "add rate limiting to the API layer"
 spelunk plan status
 ```
 
-Check off items as you complete them by editing the markdown file directly (`- [ ]` → `- [x]`). `spelunk plan status` reads the file and shows completion percentages.
+Check off items by editing the markdown file directly (`- [ ]` → `- [x]`). `spelunk plan status` reads the file and shows completion percentages.
 
 ## After making changes
 
 ```bash
-# Verify a modified file is still semantically retrievable
-spelunk verify src/auth/middleware.rs
+# Confirm call sites still match using the code graph (no server needed)
+spelunk graph validate_token --kind calls
 
-# Re-index to incorporate changes
+# If the project is indexed: verify semantic retrievability and re-index
+spelunk verify src/auth/middleware.rs
 spelunk index .
 ```
 
@@ -244,7 +248,9 @@ Exit codes across all plumbing commands:
 - **1** — no results (empty set, not an error)
 - **2** — hard error (bad flags, missing DB, I/O failure) — diagnostics on stderr
 
-### cat-chunks
+Commands marked **(requires server)** need an embedding model running on the configured endpoint.
+
+### cat-chunks *(requires index)*
 
 ```
 spelunk plumbing cat-chunks <file>
@@ -272,7 +278,7 @@ spelunk plumbing cat-chunks src/indexer/chunker.rs \
 
 ---
 
-### ls-files
+### ls-files *(requires index)*
 
 ```
 spelunk plumbing ls-files [--prefix <prefix>] [--stale] [--root <dir>]
@@ -353,7 +359,7 @@ spelunk plumbing hash-file src/config.rs
 
 ---
 
-### knn
+### knn *(requires server + index)*
 
 ```
 spelunk plumbing knn [--limit N] [--min-score F] [--lang <lang>]
@@ -383,7 +389,7 @@ Example output:
 
 ---
 
-### embed
+### embed *(requires server)*
 
 ```
 spelunk plumbing embed [--query]
@@ -470,21 +476,24 @@ spelunk plumbing read-memory --kind decision --limit 5 | jq '{id, title}'
 ## Summary: agent workflow at a glance
 
 ```bash
-# Session start
-spelunk check
+# Session start (no server needed)
 AGENT=true spelunk memory list --kind handoff --limit 3
 AGENT=true spelunk memory list --kind question
+AGENT=true spelunk memory failures
 
 # Before writing code — retrieve context, then reason yourself
-AGENT=true spelunk search "<topic>" --graph --format json
+AGENT=true spelunk graph <symbol>                             # call graph, no server
+AGENT=true spelunk search "<topic>" --mode text --format json # full-text, no server
+AGENT=true spelunk search "<topic>" --graph --format json     # semantic (requires server)
 AGENT=true spelunk memory search "<topic>" --format json
 
 # Planning
-spelunk plan create "<description>"
+# spelunk plan create "<description>"  ← requires llm_model
 
 # After changes
-spelunk index .
-spelunk verify <changed-file>
+spelunk graph <symbol> --kind calls    # confirm call sites, no server
+spelunk index .                         # only if project is indexed
+spelunk verify <changed-file>           # only if project is indexed
 
 # Session end
 spelunk memory add --title "Handoff: ..." --kind handoff
