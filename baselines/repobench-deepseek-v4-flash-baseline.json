@@ -1,0 +1,19 @@
+{
+  "run_id": "20260516T064936Z",
+  "benchmark": "repobench",
+  "condition": "baseline",
+  "model": "deepseek-v4-flash",
+  "model_source": "api",
+  "api_base_url": "https://api.deepseek.com/v1",
+  "api_key_source": "env:DEEPSEEK_API_KEY",
+  "spelunk_version": "0.6.0",
+  "scaffold_hash": "2f4ad59a0f02310180cca8fa0c89bef23ed50e73",
+  "split": "cross_file_first",
+  "samples": 100,
+  "exact_match": 0.02,
+  "edit_similarity": 0.0345,
+  "identifier_recall": 0.0275,
+  "median_input_tokens": 967.0,
+  "median_output_tokens": 256.0,
+  "median_wall_seconds": 3.667
+}
