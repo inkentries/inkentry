@@ -34,8 +34,15 @@ from pathlib import Path
 
 import numpy as np
 from datasets import load_dataset
+from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
+
+# Auto-load .env.local from project root if present
+_load_root = Path(__file__).resolve().parents[3]
+_dotenv_path = _load_root / ".env.local"
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path)
 
 MAX_SEARCH_TURNS = 5
 MAX_OUTPUT_CHARS = 4_000
