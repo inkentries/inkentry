@@ -11,6 +11,7 @@ use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
     embeddings::{EmbeddingBackend as _, vec_to_blob},
+    indexer::secrets::contains_secret,
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -465,6 +466,13 @@ pub(super) async fn harvest_entire(
                     }
                 };
                 if !text.is_empty() {
+                    if contains_secret(&text) {
+                        eprintln!(
+                            "warning: skipping checkpoint {} (secret detected in prompt.txt)",
+                            cp.id
+                        );
+                        continue;
+                    }
                     checkpoint_texts.push((cp.id.clone(), text, cp.files_touched.clone()));
                 }
             }
@@ -570,6 +578,11 @@ pub(super) async fn harvest_entire(
                     .find(|(id, _, _)| *id == cp_id || id.starts_with(&cp_id))
                     .map(|(_, _, f)| f.clone())
                     .unwrap_or_default();
+
+                if contains_secret(&body) {
+                    eprintln!("warning: skipping entry '{title}' (secret detected in LLM body)");
+                    continue;
+                }
 
                 let source_ref = format!("entire:{cp_id}");
                 if backend
