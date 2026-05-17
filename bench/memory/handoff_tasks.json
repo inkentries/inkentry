@@ -1,0 +1,14 @@
+[
+    {
+        "task": "Fix the failing test in tests/test_parser.py so that 'pytest tests/test_parser.py' passes",
+        "repo_url": "https://github.com/user/repo.git",
+        "setup_cmd": "pip install -e '.[dev]' 2>/dev/null || true",
+        "verify_cmd": "python -m pytest tests/test_parser.py -x -q"
+    },
+    {
+        "task": "Add a '--verbose' flag to the CLI that enables debug logging. Verify with: 'python -m mymodule --verbose 2>&1 | grep DEBUG'",
+        "repo_url": "https://github.com/user/repo.git",
+        "setup_cmd": "pip install -e . 2>/dev/null || true",
+        "verify_cmd": "python -m mymodule --verbose 2>&1 | grep -q DEBUG"
+    }
+]
