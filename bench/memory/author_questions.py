@@ -31,6 +31,8 @@ def export_git_log(repo_path: Path, num_commits: int) -> list[dict]:
         "--format=%H%x00%s%x00%b%x00---",
     ]
     result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"git log failed: {result.stderr.strip()}")
 
     commits = []
     for block in result.stdout.strip().split("---"):

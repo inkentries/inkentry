@@ -21,13 +21,15 @@ database. The protocol:
 3. **Ground truth:** For each question, record the commit SHA(s) that best
    answer it. Derive this from the raw git log, NOT from memory entries.
 4. **Review:** Have the question set reviewed by a second party with no
-   access to the spelunk memory database.
+   access to the spelunk memory database. Record the reviewer and date
+   in the `reviewed_by` field.
 5. **Format:** Save as `bench/memory/questions-<repo>.json`:
    ```json
    [
        {
            "question": "How does error handling work in the parser?",
-           "ground_truth_commit": "abc123def456"
+           "ground_truth_commit": "abc123def456",
+           "reviewed_by": "<name> on <date>"
        }
    ]
    ```
@@ -74,7 +76,7 @@ python bench/memory/decision_archaeology.py \
 
 ## Cross-Session Handoff
 
-See `bench/memory/cross_session_handoff.py`. Under redesign per issue #228.
+See `bench/memory/cross_session_handoff.py`. TODO(#228): update once redesign lands.
 
 ### Current limitations
 
