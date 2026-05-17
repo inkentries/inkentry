@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""Evaluate Gemma on CrossCodeEval with and without spelunk.
+"""Evaluate DeepSeek on RepoBench-Python cross-file completion.
 
-CrossCodeEval tasks each present a code file truncated at a completion point.
-The ground truth is a single line that requires understanding of symbols
-defined in other files — exactly what spelunk_search helps with.
+Four conditions for controlled comparison:
 
-Baseline condition: model sees only the truncated prompt.
-Spelunk condition:  model has spelunk_search as a function-call tool and can
-                    retrieve cross-file context before generating the completion.
+    baseline_single_shot — one API call, no tools, no loop
+    multi_turn_no_tools — 5-turn loop, no tools (isolates loop from retrieval)
+    naive_search        — 5-turn loop with read_file + run_grep tools
+    spelunk             — 5-turn loop with spelunk_search tool
 
 Usage:
-    python bench/gemma/crosscodeeval/evaluate.py --condition baseline
-    python bench/gemma/crosscodeeval/evaluate.py --condition spelunk --repo-path /path/to/indexed/repo
-
-    # Multiple languages, limit samples, custom output
-    python bench/gemma/crosscodeeval/evaluate.py \\
-        --condition spelunk \\
-        --repo-path /path/to/repo \\
-        --languages python,typescript \\
-        --samples 200 \\
-        --out bench/results/cce-spelunk.json
+    python bench/gemma/crosscodeeval/evaluate.py --condition baseline_single_shot
+    python bench/gemma/crosscodeeval/evaluate.py --condition multi_turn_no_tools
+    python bench/gemma/crosscodeeval/evaluate.py --condition naive_search --repo-path /path/to/repo
+    python bench/gemma/crosscodeeval/evaluate.py --condition spelunk --repo-path /path/to/repo
 """
 
 import argparse
@@ -46,11 +39,35 @@ if _dotenv_path.exists():
 
 MAX_SEARCH_TURNS = 5
 MAX_OUTPUT_CHARS = 4_000
+VALID_CONDITIONS = (
+    "baseline_single_shot",
+    "multi_turn_no_tools",
+    "naive_search",
+    "spelunk",
+)
+
+# ---------------------------------------------------------------------------
+# System prompts
+# ---------------------------------------------------------------------------
 
 SYSTEM_BASELINE = (
     "You are a code completion assistant. "
     "Complete the next line of the given code. "
     "Output only the completion line, nothing else — no explanation, no markdown fences."
+)
+
+SYSTEM_MULTI_TURN = (
+    "You are a code completion assistant. You have several turns to think about "
+    "the code before producing the final answer. On each turn you may analyse the "
+    "code and reason about what the next line should be. When you are ready, "
+    "output only the completion line — nothing else, no explanation, no markdown fences."
+)
+
+SYSTEM_NAIVE = (
+    "You are a code completion assistant. You can use read_file to inspect other "
+    "files in the codebase and run_grep to search for symbols before completing "
+    "the code. Output only the completion line — nothing else, no explanation, "
+    "no markdown fences, no code fences."
 )
 
 SYSTEM_SPELUNK = (
@@ -59,6 +76,10 @@ SYSTEM_SPELUNK = (
     "from other files in the codebase before completing the code. "
     "Output only the completion line, nothing else — no explanation, no markdown fences."
 )
+
+# ---------------------------------------------------------------------------
+# Tool definitions (OpenAI function-calling format)
+# ---------------------------------------------------------------------------
 
 SPELUNK_TOOL = {
     "type": "function",
@@ -86,8 +107,87 @@ SPELUNK_TOOL = {
     },
 }
 
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read the contents of a file in the repository. Use this to inspect cross-file dependencies.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to the repo root.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+}
 
-def spelunk_search(repo_path: Path, query: str, limit: int = 5) -> str:
+RUN_GREP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_grep",
+        "description": "Search for a pattern in the repository using grep. Use this to find where a symbol is defined or used.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex or literal pattern to search for.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Subdirectory to search (default: repo root).",
+                    "default": ".",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+
+def _read_file(repo_path: Path, path: str) -> str:
+    target = (repo_path / path).resolve()
+    if not str(target).startswith(str(repo_path.resolve())):
+        return "Error: path is outside the repository."
+    try:
+        content = target.read_text(errors="replace")
+        if len(content) > MAX_OUTPUT_CHARS:
+            content = content[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+        return content
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+def _run_grep(repo_path: Path, pattern: str, search_path: str = ".") -> str:
+    target = (repo_path / search_path).resolve()
+    if not str(target).startswith(str(repo_path.resolve())):
+        target = repo_path
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "--include=*.py", pattern, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        output = result.stdout + result.stderr
+        if not output.strip():
+            return "(no matches)"
+        if len(output) > MAX_OUTPUT_CHARS:
+            output = output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+        return output
+    except Exception as e:
+        return f"Error running grep: {e}"
+
+
+def _spelunk_search(repo_path: Path, query: str, limit: int = 5) -> str:
     cmd = ["spelunk", "search", query, "--limit", str(limit), "--format", "json"]
     try:
         result = subprocess.run(
@@ -105,12 +205,53 @@ def spelunk_search(repo_path: Path, query: str, limit: int = 5) -> str:
     return output or "(no results)"
 
 
-def complete_baseline(client: OpenAI, model: str, prompt: str) -> tuple[str, int, int]:
-    """Ask the model to complete the next line. Returns (completion, input_tokens, output_tokens)."""
+def _append_assistant(msg, messages: list) -> None:
+    """Append assistant message, preserving reasoning_content for DeepSeek."""
+    entry: dict = {"role": "assistant", "content": msg.content or ""}
+    if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+        entry["reasoning_content"] = msg.reasoning_content
+    if msg.tool_calls:
+        entry["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in msg.tool_calls
+        ]
+    messages.append(entry)
+
+
+def _dispatch_naive(repo_path: Path, name: str, args: dict) -> str:
+    if name == "read_file":
+        return _read_file(repo_path, args["path"])
+    elif name == "run_grep":
+        return _run_grep(repo_path, args["pattern"], args.get("path", "."))
+    return f"Unknown tool: {name}"
+
+
+def _dispatch_spelunk(repo_path: Path, name: str, args: dict) -> str:
+    if name == "spelunk_search":
+        return _spelunk_search(repo_path, args["query"], args.get("limit", 5))
+    return f"Unknown tool: {name}"
+
+
+# ---------------------------------------------------------------------------
+# Completion functions — each returns (prediction, input_tokens, output_tokens)
+# ---------------------------------------------------------------------------
+
+
+def complete_baseline_single_shot(
+    client: OpenAI, model: str, prompt: str, seed: int
+) -> tuple[str, int, int]:
     response = client.chat.completions.create(
         model=model,
         max_tokens=256,
         temperature=0.0,
+        seed=seed,
         messages=[
             {"role": "system", "content": SYSTEM_BASELINE},
             {"role": "user", "content": f"Complete the next line:\n\n{prompt}"},
@@ -124,10 +265,118 @@ def complete_baseline(client: OpenAI, model: str, prompt: str) -> tuple[str, int
     )
 
 
-def complete_spelunk(
-    client: OpenAI, model: str, prompt: str, repo_path: Path
+def complete_multi_turn_no_tools(
+    client: OpenAI, model: str, prompt: str, seed: int
 ) -> tuple[str, int, int]:
-    """Run a tool-use loop: model may call spelunk_search before returning the completion."""
+    """5-turn loop with no tools — same compute budget as spelunk, no retrieval."""
+    messages = [
+        {"role": "system", "content": SYSTEM_MULTI_TURN},
+        {"role": "user", "content": f"Complete the next line:\n\n{prompt}"},
+    ]
+    input_tokens = 0
+    output_tokens = 0
+
+    for turn in range(MAX_SEARCH_TURNS):
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=512,
+            temperature=0.0,
+            seed=seed,
+            messages=messages,
+        )
+        msg = response.choices[0].message
+        input_tokens += response.usage.prompt_tokens
+        output_tokens += response.usage.completion_tokens
+
+        _append_assistant(msg, messages)
+
+        if response.choices[0].finish_reason == "stop":
+            return (msg.content or "").strip(), input_tokens, output_tokens
+
+        # Re-prompt to keep the model thinking
+        if turn < MAX_SEARCH_TURNS - 1:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Continue analysing. When ready, output only the completion line.",
+                }
+            )
+
+    # Fell through — ask for final answer
+    messages.append({"role": "user", "content": "Now output only the completion line."})
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=256,
+        temperature=0.0,
+        seed=seed,
+        messages=messages,
+    )
+    input_tokens += response.usage.prompt_tokens
+    output_tokens += response.usage.completion_tokens
+    return (
+        (response.choices[0].message.content or "").strip(),
+        input_tokens,
+        output_tokens,
+    )
+
+
+def complete_naive_search(
+    client: OpenAI, model: str, prompt: str, repo_path: Path, seed: int
+) -> tuple[str, int, int]:
+    """5-turn loop with read_file + run_grep tools."""
+    tools = [READ_FILE_TOOL, RUN_GREP_TOOL]
+    messages = [
+        {"role": "system", "content": SYSTEM_NAIVE},
+        {"role": "user", "content": f"Complete the next line:\n\n{prompt}"},
+    ]
+    input_tokens = 0
+    output_tokens = 0
+
+    for _ in range(MAX_SEARCH_TURNS):
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=512,
+            temperature=0.0,
+            seed=seed,
+            tools=tools,
+            tool_choice="auto",
+            messages=messages,
+        )
+        msg = response.choices[0].message
+        input_tokens += response.usage.prompt_tokens
+        output_tokens += response.usage.completion_tokens
+
+        _append_assistant(msg, messages)
+
+        if response.choices[0].finish_reason != "tool_calls" or not msg.tool_calls:
+            return (msg.content or "").strip(), input_tokens, output_tokens
+
+        for tc in msg.tool_calls:
+            args = json.loads(tc.function.arguments)
+            result = _dispatch_naive(repo_path, tc.function.name, args)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    messages.append({"role": "user", "content": "Now output only the completion line."})
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=256,
+        temperature=0.0,
+        seed=seed,
+        messages=messages,
+    )
+    input_tokens += response.usage.prompt_tokens
+    output_tokens += response.usage.completion_tokens
+    return (
+        (response.choices[0].message.content or "").strip(),
+        input_tokens,
+        output_tokens,
+    )
+
+
+def complete_spelunk(
+    client: OpenAI, model: str, prompt: str, repo_path: Path, seed: int
+) -> tuple[str, int, int]:
+    """5-turn loop with spelunk_search tool."""
     messages = [
         {"role": "system", "content": SYSTEM_SPELUNK},
         {"role": "user", "content": f"Complete the next line:\n\n{prompt}"},
@@ -140,6 +389,7 @@ def complete_spelunk(
             model=model,
             max_tokens=512,
             temperature=0.0,
+            seed=seed,
             tools=[SPELUNK_TOOL],
             tool_choice="auto",
             messages=messages,
@@ -148,41 +398,23 @@ def complete_spelunk(
         input_tokens += response.usage.prompt_tokens
         output_tokens += response.usage.completion_tokens
 
-        # Build assistant entry — include tool_calls only if present
-        assistant_entry: dict = {"role": "assistant", "content": msg.content or ""}
-        # DeepSeek thinking mode: preserve reasoning_content if present
-        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
-            assistant_entry["reasoning_content"] = msg.reasoning_content
-        if msg.tool_calls:
-            assistant_entry["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in msg.tool_calls
-            ]
-        messages.append(assistant_entry)
+        _append_assistant(msg, messages)
 
         if response.choices[0].finish_reason != "tool_calls" or not msg.tool_calls:
             return (msg.content or "").strip(), input_tokens, output_tokens
 
-        # Execute tool calls
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
-            result = spelunk_search(repo_path, args["query"], args.get("limit", 5))
+            result = _dispatch_spelunk(repo_path, tc.function.name, args)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
-    # Fell through max turns — ask for final answer without tools
+    messages.append({"role": "user", "content": "Now output only the completion line."})
     response = client.chat.completions.create(
         model=model,
         max_tokens=256,
         temperature=0.0,
-        messages=messages
-        + [{"role": "user", "content": "Now output only the completion line."}],
+        seed=seed,
+        messages=messages,
     )
     input_tokens += response.usage.prompt_tokens
     output_tokens += response.usage.completion_tokens
@@ -193,17 +425,20 @@ def complete_spelunk(
     )
 
 
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+
 def edit_similarity(pred: str, truth: str) -> float:
     return difflib.SequenceMatcher(None, pred, truth).ratio()
 
 
 def extract_identifiers(code: str) -> set[str]:
-    """Return the set of identifier tokens (word characters, length >= 2)."""
     return {t for t in re.findall(r"\b[A-Za-z_]\w+\b", code)}
 
 
 def identifier_recall(pred: str, truth: str) -> float:
-    """Fraction of identifiers in ground truth that appear in the prediction."""
     truth_ids = extract_identifiers(truth)
     if not truth_ids:
         return 1.0
@@ -216,13 +451,13 @@ def get_spelunk_version() -> str:
         r = subprocess.run(
             ["spelunk", "--version"], capture_output=True, text=True, timeout=10
         )
-        return r.stdout.strip().split()[-1] if r.stdout.strip() else "unknown"
+        return r.stdout.strip()
     except Exception:
         return "unknown"
 
 
 def scaffold_hash() -> str:
-    bench_dir = Path(__file__).parents[3]  # repo root / bench
+    bench_dir = Path(__file__).parents[3]
     try:
         r = subprocess.run(
             ["git", "log", "-1", "--format=%H", "--", "bench/"],
@@ -236,10 +471,11 @@ def scaffold_hash() -> str:
         return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Dataset + evaluation
+# ---------------------------------------------------------------------------
+
 DATASET = "tianyang/repobench_python_v1.1"
-# cross_file_first: completion requires a symbol introduced in another file that
-# appears first in the cross-file context — the hardest and most relevant split
-# for measuring spelunk's retrieval benefit.
 VALID_SPLITS = ("cross_file_first", "cross_file_random", "in_file")
 
 
@@ -250,8 +486,8 @@ def evaluate_split(
     client: OpenAI,
     model: str,
     repo_path: Path | None,
+    seed: int,
 ) -> tuple[list, list, list, list, list, list]:
-    """Returns (exact_matches, edit_sims, id_recalls, input_tokens, output_tokens, wall_times)."""
     print(f"Loading RepoBench-Python ({split})...")
     dataset = load_dataset(DATASET, split=split)
 
@@ -263,8 +499,6 @@ def evaluate_split(
     input_tokens_list, output_tokens_list, wall_times = [], [], []
 
     for item in tqdm(sampled, desc=f"{split} ({condition})", unit="task"):
-        # RepoBench fields: cropped_code = prompt up to completion point,
-        # next_line = the line to predict.
         prompt = item.get("cropped_code", "")
         truth = (item.get("next_line") or "").strip()
 
@@ -273,12 +507,24 @@ def evaluate_split(
 
         start = time.monotonic()
         try:
-            if condition == "baseline":
-                pred, inp_tok, out_tok = complete_baseline(client, model, prompt)
-            else:
-                pred, inp_tok, out_tok = complete_spelunk(
-                    client, model, prompt, repo_path
+            if condition == "baseline_single_shot":
+                pred, inp_tok, out_tok = complete_baseline_single_shot(
+                    client, model, prompt, seed
                 )
+            elif condition == "multi_turn_no_tools":
+                pred, inp_tok, out_tok = complete_multi_turn_no_tools(
+                    client, model, prompt, seed
+                )
+            elif condition == "naive_search":
+                pred, inp_tok, out_tok = complete_naive_search(
+                    client, model, prompt, repo_path, seed
+                )
+            elif condition == "spelunk":
+                pred, inp_tok, out_tok = complete_spelunk(
+                    client, model, prompt, repo_path, seed
+                )
+            else:
+                raise ValueError(f"Unknown condition: {condition}")
         except Exception as e:
             print(f"\nWarning: inference failed — {e}")
             continue
@@ -301,28 +547,33 @@ def evaluate_split(
     )
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate Gemma on RepoBench-Python cross-file completion."
+        description="Evaluate on RepoBench-Python cross-file completion."
     )
-    parser.add_argument("--condition", choices=["baseline", "spelunk"], required=True)
+    parser.add_argument("--condition", choices=list(VALID_CONDITIONS), required=True)
     parser.add_argument(
         "--repo-path",
         default=None,
-        help="Path to an indexed repo (required for --condition spelunk).",
+        help="Path to an indexed repo (required for naive_search and spelunk).",
     )
     parser.add_argument(
         "--split",
         default="cross_file_first",
-        help=f"Dataset split to use. One of: {', '.join(VALID_SPLITS)} (default: cross_file_first).",
+        help=f"Dataset split: {', '.join(VALID_SPLITS)} (default: cross_file_first).",
     )
-    parser.add_argument("--samples", type=int, default=200)
+    parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--api-base-url", default="https://api.deepseek.com/v1")
     parser.add_argument(
         "--api-key",
         default=None,
-        help="API key (falls back to DEEPSEEK_API_KEY env var)",
+        help="API key (falls back to DEEPSEEK_API_KEY env var).",
     )
     parser.add_argument(
         "--scaffold-hash",
@@ -335,14 +586,13 @@ def main() -> None:
 
     if args.split not in VALID_SPLITS:
         parser.error(f"--split must be one of: {', '.join(VALID_SPLITS)}")
-    if args.condition == "spelunk" and not args.repo_path:
-        parser.error("--repo-path is required for --condition spelunk")
+    if args.condition in ("naive_search", "spelunk") and not args.repo_path:
+        parser.error(f"--repo-path is required for --condition {args.condition}")
 
     repo_path = Path(args.repo_path).resolve() if args.repo_path else None
     if repo_path and not repo_path.is_dir():
         parser.error(f"--repo-path does not exist: {repo_path}")
 
-    # Resolve API key
     api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "local")
     api_key_source = (
         "flag:--api-key"
@@ -357,18 +607,15 @@ def main() -> None:
     np.random.seed(args.seed)
     client = OpenAI(base_url=args.api_base_url, api_key=api_key)
 
-    all_exact, all_edit, all_id_recall = [], [], []
-    all_inp_tok, all_out_tok, all_wall = [], [], []
-
     exact, edit, id_rec, inp_tok, out_tok, wall = evaluate_split(
-        args.split, args.samples, args.condition, client, args.model, repo_path
+        args.split,
+        args.samples,
+        args.condition,
+        client,
+        args.model,
+        repo_path,
+        args.seed,
     )
-    all_exact.extend(exact)
-    all_edit.extend(edit)
-    all_id_recall.extend(id_rec)
-    all_inp_tok.extend(inp_tok)
-    all_out_tok.extend(out_tok)
-    all_wall.extend(wall)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = {
@@ -381,22 +628,15 @@ def main() -> None:
         "api_key_source": api_key_source,
         "spelunk_version": get_spelunk_version(),
         "scaffold_hash": args.scaffold_hash or scaffold_hash(),
+        "seed": args.seed,
         "split": args.split,
-        "samples": len(all_exact),
-        "exact_match": round(float(np.mean(all_exact)), 4) if all_exact else 0.0,
-        "edit_similarity": round(float(np.mean(all_edit)), 4) if all_edit else 0.0,
-        "identifier_recall": round(float(np.mean(all_id_recall)), 4)
-        if all_id_recall
-        else 0.0,
-        "median_input_tokens": round(float(np.median(all_inp_tok)), 1)
-        if all_inp_tok
-        else 0.0,
-        "median_output_tokens": round(float(np.median(all_out_tok)), 1)
-        if all_out_tok
-        else 0.0,
-        "median_wall_seconds": round(float(np.median(all_wall)), 3)
-        if all_wall
-        else 0.0,
+        "samples": len(exact),
+        "exact_match": round(float(np.mean(exact)), 4) if exact else 0.0,
+        "edit_similarity": round(float(np.mean(edit)), 4) if edit else 0.0,
+        "identifier_recall": round(float(np.mean(id_rec)), 4) if id_rec else 0.0,
+        "median_input_tokens": round(float(np.median(inp_tok)), 1) if inp_tok else 0.0,
+        "median_output_tokens": round(float(np.median(out_tok)), 1) if out_tok else 0.0,
+        "median_wall_seconds": round(float(np.median(wall)), 3) if wall else 0.0,
     }
 
     if args.out:
