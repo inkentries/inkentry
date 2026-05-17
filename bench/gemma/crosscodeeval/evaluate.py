@@ -472,6 +472,22 @@ def scaffold_hash() -> str:
         return "unknown"
 
 
+def detect_repo_owner_name(repo_path: Path) -> str | None:
+    """Return 'owner/name' from the git remote origin URL, or None."""
+    try:
+        url = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        m = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$", url)
+        return f"{m.group(1)}/{m.group(2)}" if m else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Dataset + evaluation
 # ---------------------------------------------------------------------------
