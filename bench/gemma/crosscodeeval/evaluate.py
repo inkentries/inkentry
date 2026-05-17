@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -471,6 +472,22 @@ def scaffold_hash() -> str:
         return "unknown"
 
 
+def detect_repo_owner_name(repo_path: Path) -> str | None:
+    """Return 'owner/name' from the git remote origin URL, or None."""
+    try:
+        url = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        m = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$", url)
+        return f"{m.group(1)}/{m.group(2)}" if m else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Dataset + evaluation
 # ---------------------------------------------------------------------------
@@ -487,9 +504,16 @@ def evaluate_split(
     model: str,
     repo_path: Path | None,
     seed: int,
-) -> tuple[list, list, list, list, list, list]:
+    repo_filter: str | None = None,
+) -> tuple[list, list, list, list, list, list, float]:
     print(f"Loading RepoBench-Python ({split})...")
     dataset = load_dataset(DATASET, split=split)
+
+    if repo_filter:
+        dataset = dataset.filter(lambda x: x["repo_name"] == repo_filter)
+        print(f"  Filtered to repo '{repo_filter}': {len(dataset)} tasks")
+        if len(dataset) == 0:
+            raise ValueError(f"No tasks found for repo '{repo_filter}'")
 
     n = min(samples, len(dataset))
     indices = np.random.choice(len(dataset), size=n, replace=False).tolist()
@@ -537,6 +561,12 @@ def evaluate_split(
         output_tokens_list.append(out_tok)
         wall_times.append(elapsed)
 
+    indexed_name = detect_repo_owner_name(repo_path) if repo_path else None
+    if indexed_name:
+        hits = sum(1 for s in sampled if s.get("repo_name") == indexed_name)
+        overlap_pct = (hits / len(sampled)) * 100 if sampled else 0.0
+    else:
+        overlap_pct = 0.0
     return (
         exact_matches,
         edit_sims,
@@ -544,6 +574,7 @@ def evaluate_split(
         input_tokens_list,
         output_tokens_list,
         wall_times,
+        overlap_pct,
     )
 
 
@@ -580,6 +611,11 @@ def main() -> None:
         default=None,
         help="Passed by run.sh; auto-computed if omitted.",
     )
+    parser.add_argument(
+        "--repo-filter",
+        default=None,
+        help="Only evaluate tasks from this GitHub repo (owner/name).",
+    )
     parser.add_argument("--out", default=None)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -592,6 +628,17 @@ def main() -> None:
     repo_path = Path(args.repo_path).resolve() if args.repo_path else None
     if repo_path and not repo_path.is_dir():
         parser.error(f"--repo-path does not exist: {repo_path}")
+
+    # Cross-validate --repo-filter against --repo-path git remote
+    if args.repo_filter and repo_path:
+        indexed_name = detect_repo_owner_name(repo_path)
+        if indexed_name and args.repo_filter != indexed_name:
+            print(
+                f"Warning: --repo-filter ({args.repo_filter}) does not match "
+                f"git remote of --repo-path ({indexed_name}). "
+                f"The benchmark will search a different repo than it samples from.",
+                file=sys.stderr,
+            )
 
     api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "local")
     api_key_source = (
@@ -607,7 +654,7 @@ def main() -> None:
     np.random.seed(args.seed)
     client = OpenAI(base_url=args.api_base_url, api_key=api_key)
 
-    exact, edit, id_rec, inp_tok, out_tok, wall = evaluate_split(
+    exact, edit, id_rec, inp_tok, out_tok, wall, overlap_pct = evaluate_split(
         args.split,
         args.samples,
         args.condition,
@@ -615,6 +662,7 @@ def main() -> None:
         args.model,
         repo_path,
         args.seed,
+        repo_filter=args.repo_filter,
     )
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -628,6 +676,8 @@ def main() -> None:
         "api_key_source": api_key_source,
         "spelunk_version": get_spelunk_version(),
         "scaffold_hash": args.scaffold_hash or scaffold_hash(),
+        "repo_filter": args.repo_filter,
+        "indexed_repo_overlap_pct": round(overlap_pct, 1),
         "seed": args.seed,
         "split": args.split,
         "samples": len(exact),

@@ -11,6 +11,7 @@ spuriously invalidate itself.
 | File | Benchmark | Model | Status |
 |------|-----------|-------|--------|
 | `repobench-gemma-4-e2b-it-baseline.json` | RepoBench-Python | gemma-4-e2b-it | Superseded — regenerate with deepseek-v4-flash |
+| `repobench-deepseek-v4-flash-baseline.json` | RepoBench-Python | deepseek-v4-flash | **STALE** — pre-control run, 0% overlap. Delete after #225 rerun. |
 | `swebench-local-gemma-4-e2b-it-baseline.json` | SWE-bench local | gemma-4-e2b-it | Superseded — regenerate with deepseek-v4-flash |
 
 ## When to regenerate
