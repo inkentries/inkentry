@@ -31,6 +31,7 @@ import re
 import sqlite3
 import statistics
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,21 +50,15 @@ def extract_keywords(question: str) -> list[str]:
     """
     keywords: list[str] = []
 
-    # Quoted strings
     quoted = re.findall(r'"([^"]+)"', question)
     keywords.extend(quoted)
-
-    # CAPITALISED acronyms
     caps = re.findall(r"\b[A-Z][A-Z_]{2,}\b", question)
     keywords.extend(caps)
-
-    # snake_case and CamelCase identifiers
     snake = re.findall(r"\b[a-z]+_[a-z_]+\b", question, re.IGNORECASE)
     keywords.extend(snake)
     camel = re.findall(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b", question)
     keywords.extend(camel)
 
-    # Deduplicate, sort by length desc, take top 5
     seen = set()
     unique = []
     for kw in keywords:
@@ -136,12 +131,10 @@ def _git_log_grep(repo_path: Path, pattern: str, limit: int = 10) -> list[dict]:
 
 
 def run_grep_literal(repo_path: Path, query: str, limit: int = 10) -> list[dict]:
-    """Grep using the full question string (verbatim)."""
     return _git_log_grep(repo_path, query, limit)
 
 
 def run_grep_keywords(repo_path: Path, query: str, limit: int = 10) -> list[dict]:
-    """Extract keywords from the question, grep for each, merge results."""
     keywords = extract_keywords(query)
     all_results: list[dict] = []
     seen_commits: set[str] = set()
@@ -156,7 +149,6 @@ def run_grep_keywords(repo_path: Path, query: str, limit: int = 10) -> list[dict
 
 
 def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
-    """Build a SQLite FTS5 index over commit messages. Returns path to the DB."""
     db_path = repo_path / ".git" / "spelunk_fts_commits.db"
     if rebuild and db_path.exists():
         db_path.unlink()
@@ -169,7 +161,6 @@ def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
     )
     conn.commit()
 
-    # Stream commits via git log
     proc = subprocess.Popen(
         ["git", "--no-pager", "log", "--format=%H%x00%s%x00%b%x00---"],
         cwd=repo_path,
@@ -197,18 +188,25 @@ def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
     return db_path
 
 
-def run_fts_commit_messages(repo_path: Path, query: str, limit: int = 10) -> list[dict]:
+def run_fts_commit_messages(
+    repo_path: Path, query: str, limit: int = 10, rebuild_fts: bool = False
+) -> list[dict]:
     """Build FTS5 index over commit messages and query with the full question."""
     try:
-        db_path = _build_fts_index(repo_path)
+        db_path = _build_fts_index(repo_path, rebuild=rebuild_fts)
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
-            "SELECT commit, title, body FROM commits WHERE commits MATCH ? ORDER BY rank LIMIT ?",
+            "SELECT sha, title, body FROM commits WHERE commits MATCH ? ORDER BY rank LIMIT ?",
             (query, limit),
         ).fetchall()
         conn.close()
         return [{"commit": r[0], "title": r[1], "body": r[2]} for r in rows]
-    except Exception:
+    except sqlite3.OperationalError as e:
+        # FTS query syntax errors — treat as no results
+        print(f"  FTS query failed (syntax): {e}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  FTS query failed: {type(e).__name__}: {e}", file=sys.stderr)
         return []
 
 
@@ -276,7 +274,6 @@ def main() -> None:
     print(f"Questions: {len(questions)}")
     print()
 
-    # Accumulators per condition
     conditions = {
         "grep_literal": {"hits": [], "ranks": [], "wall": []},
         "grep_keywords": {"hits": [], "ranks": [], "wall": []},
@@ -314,7 +311,6 @@ def main() -> None:
             status = "HIT" if hit else "MISS"
             print(f"  {cond_name:<22} {status:4} (rank={rank or '-'}, {elapsed:.2f}s)")
 
-    # Build output
     output: dict = {
         "benchmark": "decision_archaeology",
         "repo": str(repo_path),
