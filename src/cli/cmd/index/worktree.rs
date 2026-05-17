@@ -28,14 +28,25 @@ pub(super) fn ensure_spelunk_symlink(root: &std::path::Path) {
     };
     let gitdir = std::path::PathBuf::from(gitdir_str.trim());
 
-    // Walk up two levels: worktrees/<name> → .git → main worktree root
-    let Some(main_root) = gitdir
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-    else {
+    // Validate expected structure: <main>/.git/worktrees/<name>
+    // parent()  → worktrees/
+    // parent()  → .git/
+    // parent()  → main worktree root
+    let Some(worktrees_dir) = gitdir.parent() else {
         return;
     };
+    if worktrees_dir.file_name() != Some(std::ffi::OsStr::new("worktrees")) {
+        return; // unexpected gitdir layout — don't guess
+    }
+    let Some(main_root) = worktrees_dir.parent().and_then(|p| p.parent()) else {
+        return;
+    };
+
+    // Guard: never create a symlink that points to itself.
+    if main_root == root {
+        return;
+    }
+
     let main_spelunk = main_root.join(".spelunk");
     if !main_spelunk.exists() {
         return; // main worktree not yet indexed — skip
