@@ -188,16 +188,26 @@ def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
     return db_path
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Strip FTS5-special characters; return space-separated tokens."""
+    cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in query)
+    tokens = cleaned.split()
+    return " ".join(tokens) if tokens else ""
+
+
 def run_fts_commit_messages(
     repo_path: Path, query: str, limit: int = 10, rebuild_fts: bool = False
 ) -> list[dict]:
     """Build FTS5 index over commit messages and query with the full question."""
     try:
+        clean = _sanitize_fts_query(query)
+        if not clean:
+            return []
         db_path = _build_fts_index(repo_path, rebuild=rebuild_fts)
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
             "SELECT sha, title, body FROM commits WHERE commits MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
+            (clean, limit),
         ).fetchall()
         conn.close()
         return [{"commit": r[0], "title": r[1], "body": r[2]} for r in rows]
