@@ -75,17 +75,17 @@ pub(super) async fn harvest_claude_code(
     }
 
     // 3. Resolve current git repo root.
-    let git_out = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .context("running git rev-parse (is git installed?)")?;
-
-    if !git_out.status.success() {
-        anyhow::bail!("Not inside a git repository — cannot determine project root for filtering.");
-    }
-    let repo_root = String::from_utf8(git_out.stdout)
-        .context("git rev-parse output not UTF-8")?
-        .trim()
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    let repo_root = gix::discover(&cwd)
+        .context("Not inside a git repository — cannot determine project root for filtering.")?
+        .workdir()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Not inside a git worktree — cannot determine project root for filtering."
+            )
+        })?
+        .to_string_lossy()
+        .trim_end_matches('/')
         .to_string();
 
     // 4. Parse --since into milliseconds threshold.
@@ -250,7 +250,7 @@ pub(super) async fn harvest_claude_code(
 
     let estimate_tokens = |s: &str| s.len() / 3;
     let context_length = cfg.llm_context_length;
-    let output_budget = |n: usize| (n * 400).clamp(256, context_length / 2);
+    let output_budget = |n: usize| (n * 1200).clamp(512, context_length / 2);
 
     let mut work: std::collections::VecDeque<Vec<(String, String)>> = new_sessions
         .chunks(batch_size)

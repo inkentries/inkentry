@@ -54,15 +54,9 @@ const CI_STEP: &str = r#"# Add to your .github/workflows/ file:
 "#;
 
 fn find_git_dir() -> Result<std::path::PathBuf> {
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
-        .context("running git rev-parse --absolute-git-dir (is git installed?)")?;
-    if !out.status.success() {
-        anyhow::bail!("Not inside a git repository.");
-    }
-    let path = String::from_utf8(out.stdout).context("git output not UTF-8")?;
-    Ok(std::path::PathBuf::from(path.trim()))
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    let repo = gix::discover(&cwd).context("Not inside a git repository.")?;
+    Ok(repo.git_dir().to_path_buf())
 }
 
 fn hooks_install(args: HooksInstallArgs) -> Result<()> {

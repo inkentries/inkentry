@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -195,14 +195,11 @@ fn install_hook_for_init() -> Result<String> {
     // Re-use the hook installation logic from hooks.rs by calling the same
     // underlying helper used there: replicate it inline to avoid making private
     // functions pub, keeping the hook module self-contained.
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()?;
-    if !out.status.success() {
-        anyhow::bail!("not inside a git repository");
-    }
-    let git_dir_str = String::from_utf8(out.stdout)?;
-    let git_dir = std::path::PathBuf::from(git_dir_str.trim());
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    let git_dir = gix::discover(&cwd)
+        .context("not inside a git repository")?
+        .git_dir()
+        .to_path_buf();
     let hooks_dir = git_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("post-commit");
