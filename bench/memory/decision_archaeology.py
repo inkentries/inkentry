@@ -188,11 +188,21 @@ def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
     return db_path
 
 
+FTS5_RESERVED = {"and", "or", "not", "near"}
+
+
 def _sanitize_fts_query(query: str) -> str:
-    """Strip FTS5-special characters; return space-separated tokens."""
+    """Convert natural-language query to FTS5 OR-of-quoted-tokens.
+
+    FTS5 defaults to AND semantics; OR avoids requiring every token
+    to appear in the same commit message. Tokens are quoted to protect
+    against FTS5 reserved words and special characters.
+    """
     cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in query)
-    tokens = cleaned.split()
-    return " ".join(tokens) if tokens else ""
+    tokens = [
+        t for t in cleaned.split() if len(t) >= 2 and t.lower() not in FTS5_RESERVED
+    ]
+    return " OR ".join(f'"{t}"' for t in tokens) if tokens else ""
 
 
 def run_fts_commit_messages(
