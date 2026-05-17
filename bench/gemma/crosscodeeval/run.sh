@@ -11,7 +11,7 @@
 #   --condition    baseline_single_shot|multi_turn_no_tools|naive_search|spelunk  (required)
 #   --repo-path    PATH                      path to indexed repo (required for naive_search, spelunk)
 #   --split        cross_file_first|cross_file_random|in_file  (default: cross_file_first)
-#   --samples      N                         samples (default: 200)
+#   --samples      N                         samples (default: 100)
 #   --model        MODEL                     model name (default: deepseek-v4-flash)
 #   --api-base-url URL                       (default: https://api.deepseek.com/v1)
 #   --api-key      KEY                       API key (falls back to DEEPSEEK_API_KEY)
