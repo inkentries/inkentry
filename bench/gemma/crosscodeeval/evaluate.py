@@ -25,6 +25,7 @@ Usage:
 import argparse
 import difflib
 import json
+import os
 import re
 import subprocess
 import time
@@ -33,8 +34,15 @@ from pathlib import Path
 
 import numpy as np
 from datasets import load_dataset
+from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
+
+# Auto-load .env.local from project root if present
+_load_root = Path(__file__).resolve().parents[3]
+_dotenv_path = _load_root / ".env.local"
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path)
 
 MAX_SEARCH_TURNS = 5
 MAX_OUTPUT_CHARS = 4_000
@@ -63,8 +71,15 @@ SPELUNK_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Natural-language search query."},
-                "limit": {"type": "integer", "description": "Max results (default 5).", "default": 5},
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 5).",
+                    "default": 5,
+                },
             },
             "required": ["query"],
         },
@@ -75,7 +90,9 @@ SPELUNK_TOOL = {
 def spelunk_search(repo_path: Path, query: str, limit: int = 5) -> str:
     cmd = ["spelunk", "search", query, "--limit", str(limit), "--format", "json"]
     try:
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd, cwd=repo_path, capture_output=True, text=True, timeout=30
+        )
         output = result.stdout
         if result.returncode != 0:
             return f"spelunk search failed: {result.stderr.strip()}"
@@ -133,12 +150,18 @@ def complete_spelunk(
 
         # Build assistant entry — include tool_calls only if present
         assistant_entry: dict = {"role": "assistant", "content": msg.content or ""}
+        # DeepSeek thinking mode: preserve reasoning_content if present
+        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+            assistant_entry["reasoning_content"] = msg.reasoning_content
         if msg.tool_calls:
             assistant_entry["tool_calls"] = [
                 {
                     "id": tc.id,
                     "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
                 }
                 for tc in msg.tool_calls
             ]
@@ -158,11 +181,16 @@ def complete_spelunk(
         model=model,
         max_tokens=256,
         temperature=0.0,
-        messages=messages + [{"role": "user", "content": "Now output only the completion line."}],
+        messages=messages
+        + [{"role": "user", "content": "Now output only the completion line."}],
     )
     input_tokens += response.usage.prompt_tokens
     output_tokens += response.usage.completion_tokens
-    return (response.choices[0].message.content or "").strip(), input_tokens, output_tokens
+    return (
+        (response.choices[0].message.content or "").strip(),
+        input_tokens,
+        output_tokens,
+    )
 
 
 def edit_similarity(pred: str, truth: str) -> float:
@@ -185,7 +213,9 @@ def identifier_recall(pred: str, truth: str) -> float:
 
 def get_spelunk_version() -> str:
     try:
-        r = subprocess.run(["spelunk", "--version"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["spelunk", "--version"], capture_output=True, text=True, timeout=10
+        )
         return r.stdout.strip().split()[-1] if r.stdout.strip() else "unknown"
     except Exception:
         return "unknown"
@@ -246,7 +276,9 @@ def evaluate_split(
             if condition == "baseline":
                 pred, inp_tok, out_tok = complete_baseline(client, model, prompt)
             else:
-                pred, inp_tok, out_tok = complete_spelunk(client, model, prompt, repo_path)
+                pred, inp_tok, out_tok = complete_spelunk(
+                    client, model, prompt, repo_path
+                )
         except Exception as e:
             print(f"\nWarning: inference failed — {e}")
             continue
@@ -259,7 +291,14 @@ def evaluate_split(
         output_tokens_list.append(out_tok)
         wall_times.append(elapsed)
 
-    return exact_matches, edit_sims, id_recalls, input_tokens_list, output_tokens_list, wall_times
+    return (
+        exact_matches,
+        edit_sims,
+        id_recalls,
+        input_tokens_list,
+        output_tokens_list,
+        wall_times,
+    )
 
 
 def main() -> None:
@@ -278,9 +317,18 @@ def main() -> None:
         help=f"Dataset split to use. One of: {', '.join(VALID_SPLITS)} (default: cross_file_first).",
     )
     parser.add_argument("--samples", type=int, default=200)
-    parser.add_argument("--model", default="gemma-4-e2b-it")
-    parser.add_argument("--api-base-url", default="http://127.0.0.1:1234/v1")
-    parser.add_argument("--scaffold-hash", default=None, help="Passed by run.sh; auto-computed if omitted.")
+    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--api-base-url", default="https://api.deepseek.com/v1")
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (falls back to DEEPSEEK_API_KEY env var)",
+    )
+    parser.add_argument(
+        "--scaffold-hash",
+        default=None,
+        help="Passed by run.sh; auto-computed if omitted.",
+    )
     parser.add_argument("--out", default=None)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -294,8 +342,20 @@ def main() -> None:
     if repo_path and not repo_path.is_dir():
         parser.error(f"--repo-path does not exist: {repo_path}")
 
+    # Resolve API key
+    api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "local")
+    api_key_source = (
+        "flag:--api-key"
+        if args.api_key
+        else (
+            "env:DEEPSEEK_API_KEY"
+            if os.environ.get("DEEPSEEK_API_KEY")
+            else "default:local"
+        )
+    )
+
     np.random.seed(args.seed)
-    client = OpenAI(base_url=args.api_base_url, api_key="local")
+    client = OpenAI(base_url=args.api_base_url, api_key=api_key)
 
     all_exact, all_edit, all_id_recall = [], [], []
     all_inp_tok, all_out_tok, all_wall = [], [], []
@@ -316,18 +376,27 @@ def main() -> None:
         "benchmark": "repobench",
         "condition": args.condition,
         "model": args.model,
-        "model_source": "local",
+        "model_source": "api",
         "api_base_url": args.api_base_url,
+        "api_key_source": api_key_source,
         "spelunk_version": get_spelunk_version(),
         "scaffold_hash": args.scaffold_hash or scaffold_hash(),
         "split": args.split,
         "samples": len(all_exact),
         "exact_match": round(float(np.mean(all_exact)), 4) if all_exact else 0.0,
         "edit_similarity": round(float(np.mean(all_edit)), 4) if all_edit else 0.0,
-        "identifier_recall": round(float(np.mean(all_id_recall)), 4) if all_id_recall else 0.0,
-        "median_input_tokens": round(float(np.median(all_inp_tok)), 1) if all_inp_tok else 0.0,
-        "median_output_tokens": round(float(np.median(all_out_tok)), 1) if all_out_tok else 0.0,
-        "median_wall_seconds": round(float(np.median(all_wall)), 3) if all_wall else 0.0,
+        "identifier_recall": round(float(np.mean(all_id_recall)), 4)
+        if all_id_recall
+        else 0.0,
+        "median_input_tokens": round(float(np.median(all_inp_tok)), 1)
+        if all_inp_tok
+        else 0.0,
+        "median_output_tokens": round(float(np.median(all_out_tok)), 1)
+        if all_out_tok
+        else 0.0,
+        "median_wall_seconds": round(float(np.median(all_wall)), 3)
+        if all_wall
+        else 0.0,
     }
 
     if args.out:

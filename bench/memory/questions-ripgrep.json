@@ -1,0 +1,27 @@
+[
+    {
+        "question": "Why was RIPGREP_CONFIG_PATH added?",
+        "answer_keywords": ["RIPGREP_CONFIG_PATH", "config path", "DEBUG"],
+        "ground_truth_commit": "cb66736f"
+    },
+    {
+        "question": "What container types were added for Docker support?",
+        "answer_keywords": ["container", "Dockerfile", "Containerfile"],
+        "ground_truth_commit": "9b84e154"
+    },
+    {
+        "question": "What change was made to path checking in ignore logic?",
+        "answer_keywords": ["path checking", "Ignore", "stat calls"],
+        "ground_truth_commit": "85edf4c7"
+    },
+    {
+        "question": "How was command existence verification updated?",
+        "answer_keywords": ["command existence", "spawned process", "verify"],
+        "ground_truth_commit": "0a88cccd"
+    },
+    {
+        "question": "What version was ripgrep updated to recently?",
+        "answer_keywords": ["version", "15.1.0"],
+        "ground_truth_commit": "af60c2de"
+    }
+]

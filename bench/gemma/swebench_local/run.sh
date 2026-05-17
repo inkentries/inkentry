@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPO_ROOT="$(cd "${BENCH_DIR}/.." && pwd)"
 BASELINES_DIR="${REPO_ROOT}/baselines"
-TASKS_FILE="${BENCH_DIR}/swebench/tasks_50.json"
+TASKS_FILE="${BENCH_DIR}/agents/tasks_50.json"
 
 usage() {
     grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'

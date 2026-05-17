@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Orchestrate local Gemma benchmarks.
+# Orchestrate benchmarks (DeepSeek V4 Flash or any OpenAI-compatible API).
 #
 # Usage:
 #   bash bench/gemma/run.sh --suite crosscodeeval --condition spelunk --repo-path /path/to/repo
-#   bash bench/gemma/run.sh --suite swebench_local --condition spelunk
+#   bash bench/gemma/run.sh --suite swebench --condition spelunk_full
 #   bash bench/gemma/run.sh --suite all --condition spelunk --repo-path /path/to/repo
 #
 # Options:
-#   --suite        crosscodeeval|swebench_local|all   (required)
-#   --condition    baseline|spelunk                   (required)
-#   --repo-path    PATH      path to indexed repo (required for spelunk condition)
+#   --suite        crosscodeeval|swebench|all       (required)
+#   --condition    baseline|spelunk|spelunk_full     (required)
+#   --repo-path    PATH      path to indexed repo (required for spelunk conditions)
 #   --samples      N         CrossCodeEval samples per language (default: 200)
 #   --tasks        N         SWE-bench tasks (default: 50)
-#   --model        MODEL     (default: gemma-4-e2b-it)
-#   --api-base-url URL       (default: http://127.0.0.1:1234/v1)
+#   --model        MODEL     (default: deepseek-v4-flash)
+#   --api-base-url URL       (default: https://api.deepseek.com/v1)
+#   --api-key      KEY       API key (falls back to DEEPSEEK_API_KEY)
 
 set -euo pipefail
 
@@ -29,8 +30,9 @@ CONDITION=""
 REPO_PATH=""
 SAMPLES=200
 TASKS=50
-MODEL="gemma-4-e2b-it"
-API_BASE_URL="http://127.0.0.1:1234/v1"
+MODEL="deepseek-v4-flash"
+API_BASE_URL="https://api.deepseek.com/v1"
+API_KEY="${DEEPSEEK_API_KEY:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,6 +43,7 @@ while [[ $# -gt 0 ]]; do
         --tasks)        TASKS="$2";        shift 2 ;;
         --model)        MODEL="$2";        shift 2 ;;
         --api-base-url) API_BASE_URL="$2"; shift 2 ;;
+        --api-key)      API_KEY="$2";      shift 2 ;;
         -h|--help)      usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
@@ -50,7 +53,9 @@ if [[ -z "$SUITE" || -z "$CONDITION" ]]; then
     echo "Error: --suite and --condition are required." >&2; usage
 fi
 
-COMMON_ARGS=(--condition "$CONDITION" --model "$MODEL" --api-base-url "$API_BASE_URL")
+API_KEY="${API_KEY:-${DEEPSEEK_API_KEY:-}}"
+
+COMMON_ARGS=(--condition "$CONDITION" --model "$MODEL" --api-base-url "$API_BASE_URL" --api-key "$API_KEY")
 REPO_ARGS=()
 if [[ -n "$REPO_PATH" ]]; then
     REPO_ARGS+=(--repo-path "$REPO_PATH")
@@ -64,20 +69,21 @@ run_crosscodeeval() {
         "${REPO_ARGS[@]}"
 }
 
-run_swebench_local() {
-    echo "=== SWE-bench local ==="
-    bash "${SCRIPT_DIR}/swebench_local/run.sh" \
+run_swebench() {
+    echo "=== SWE-bench (unified agent) ==="
+    bash "${SCRIPT_DIR}/../agents/swebench_run.sh" \
         "${COMMON_ARGS[@]}" \
         --tasks "$TASKS"
 }
 
 case "$SUITE" in
     crosscodeeval)  run_crosscodeeval ;;
-    swebench_local) run_swebench_local ;;
+    swebench)       run_swebench ;;
+    swebench_local) run_swebench ;;
     all)
         run_crosscodeeval
         echo ""
-        run_swebench_local
+        run_swebench
         ;;
-    *) echo "Error: unknown suite '${SUITE}'. Must be crosscodeeval, swebench_local, or all." >&2; exit 1 ;;
+    *) echo "Error: unknown suite '${SUITE}'. Must be crosscodeeval, swebench, or all." >&2; exit 1 ;;
 esac
