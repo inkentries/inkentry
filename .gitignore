@@ -5,6 +5,7 @@
 .env
 .DS_Store
 /models
+.spelunk
 .spelunk/
 .claude/settings.local.json
 .claude/worktrees/
