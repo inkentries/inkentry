@@ -44,8 +44,8 @@ def extract_keywords(question: str) -> list[str]:
     """Extract search keywords from a natural-language question.
 
     Heuristic: capitalised words, underscored symbols, quoted strings,
-    and CamelCase tokens. Returns ≤5 keywords, sorted by length descending
-    (longer tokens are more specific).
+    and CamelCase tokens. Returns ≤5 keywords, sorted by length descending.
+    Returns empty list if no technical tokens found (caller handles honestly).
     """
     keywords: list[str] = []
 
@@ -72,7 +72,7 @@ def extract_keywords(question: str) -> list[str]:
             seen.add(low)
             unique.append(kw)
     unique.sort(key=len, reverse=True)
-    return unique[:5] if unique else [question.split()[0]]
+    return unique[:5]  # empty if no technical tokens — caller scores 0 honestly
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +155,17 @@ def run_grep_keywords(repo_path: Path, query: str, limit: int = 10) -> list[dict
     return all_results[:limit]
 
 
-def _build_fts_index(repo_path: Path) -> Path:
+def _build_fts_index(repo_path: Path, rebuild: bool = False) -> Path:
     """Build a SQLite FTS5 index over commit messages. Returns path to the DB."""
     db_path = repo_path / ".git" / "spelunk_fts_commits.db"
+    if rebuild and db_path.exists():
+        db_path.unlink()
     if db_path.exists():
         return db_path
 
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS commits USING fts5(commit, title, body)"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS commits USING fts5(sha, title, body)"
     )
     conn.commit()
 
@@ -184,13 +186,11 @@ def _build_fts_index(repo_path: Path) -> Path:
             batch.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
         if len(batch) >= 1000:
             conn.executemany(
-                "INSERT INTO commits(commit, title, body) VALUES(?,?,?)", batch
+                "INSERT INTO commits(sha, title, body) VALUES(?,?,?)", batch
             )
             batch = []
     if batch:
-        conn.executemany(
-            "INSERT INTO commits(commit, title, body) VALUES(?,?,?)", batch
-        )
+        conn.executemany("INSERT INTO commits(sha, title, body) VALUES(?,?,?)", batch)
     conn.commit()
     proc.wait()
     conn.close()
@@ -218,9 +218,16 @@ def run_fts_commit_messages(repo_path: Path, query: str, limit: int = 10) -> lis
 
 
 def check_hit(results: list[dict], commit: str) -> tuple[bool, int | None]:
-    """Check if ground-truth commit appears in results."""
+    """Check if ground-truth commit appears in results.
+
+    Handles both grep/FTS results (commit field) and memory results
+    (source_ref field). Prefix-matches so short SHAs work with full SHAs.
+    """
+    if not commit:
+        return False, None
     for i, r in enumerate(results):
-        if commit and r.get("commit", "") == commit:
+        candidate = r.get("commit") or r.get("source_ref") or ""
+        if candidate.startswith(commit) or commit.startswith(candidate):
             return True, i + 1
     return False, None
 
@@ -251,6 +258,11 @@ def main() -> None:
     parser.add_argument("--questions", required=True)
     parser.add_argument("--out", default=None)
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument(
+        "--rebuild-fts",
+        action="store_true",
+        help="Rebuild the FTS5 commit index from scratch.",
+    )
     args = parser.parse_args()
 
     repo_path = Path(args.repo_path).resolve()
@@ -285,7 +297,9 @@ def main() -> None:
             elif cond_name == "grep_keywords":
                 results = run_grep_keywords(repo_path, question, args.limit)
             elif cond_name == "fts_commit_messages":
-                results = run_fts_commit_messages(repo_path, question, args.limit)
+                results = run_fts_commit_messages(
+                    repo_path, question, args.limit, rebuild_fts=args.rebuild_fts
+                )
             elif cond_name == "memory_search":
                 results = run_memory_search(repo_path, question, args.limit)
             else:
@@ -305,6 +319,7 @@ def main() -> None:
         "benchmark": "decision_archaeology",
         "repo": str(repo_path),
         "spelunk_version": get_spelunk_version(),
+        "fts_rebuilt": args.rebuild_fts,
         "timestamp": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "num_questions": len(questions),
     }
