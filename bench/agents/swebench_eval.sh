@@ -75,7 +75,14 @@ python3 "${SCRIPT_DIR}/export_patches.py" \
     --patches-dir "$PATCHES_DIR" \
     --out "$PREDICTIONS_FILE"
 
-# Step 2: Run SWE-bench evaluation
+# Step 2: Extract condition from metadata sidecar for run_id
+CONDITION="unknown"
+META_FILE="${PREDICTIONS_FILE%.json}.meta.json"
+if [[ -f "$META_FILE" ]]; then
+    CONDITION=$(python3 -c "import json; print(json.load(open('${META_FILE}')).get('condition','unknown'))" 2>/dev/null || echo "unknown")
+fi
+RUN_ID="spelunk-${CONDITION}-${TIMESTAMP}"
+
 echo ""
 echo "--- Running Docker evaluation ---"
 python3 -m swebench.harness.run_evaluation \
@@ -84,8 +91,36 @@ python3 -m swebench.harness.run_evaluation \
     --predictions_path "$PREDICTIONS_FILE" \
     --max_workers "$MAX_WORKERS" \
     --timeout "$TIMEOUT" \
-    --run_id "spelunk-${TIMESTAMP}"
+    --run_id "$RUN_ID"
+
+# Step 3: Merge harness results back into result JSON
+echo ""
+echo "--- Merging resolve data ---"
+HARNESS_DIR="swebench_eval_outputs/${RUN_ID}"
+if [[ -d "$HARNESS_DIR" ]]; then
+    python3 -c "
+import json, sys
+from pathlib import Path
+
+results = json.load(open('${RESULTS}'))
+harness = json.load(open('${HARNESS_DIR}/results.json')) if Path('${HARNESS_DIR}/results.json').exists() else {}
+
+resolved_map = {}
+for r in harness.get('resolved', []):
+    resolved_map[r] = True
+
+for r in results:
+    tid = r.get('task_id','')
+    r['resolved'] = resolved_map.get(tid, False)
+
+tasks_evaluated = len([r for r in results if not r.get('skipped') and not r.get('error')])
+tasks_resolved = sum(1 for r in results if r.get('resolved'))
+print(f'  Evaluated: {tasks_evaluated}  Resolved: {tasks_resolved}')
+
+json.dump(results, open('${RESULTS}','w'), indent=2)
+"
+fi
 
 echo ""
 echo "=== Done ==="
-echo "Results in: swebench_eval_outputs/spelunk-${TIMESTAMP}/"
+echo "Results in: ${HARNESS_DIR}/"
