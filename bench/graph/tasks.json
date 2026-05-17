@@ -1,0 +1,17 @@
+[
+    {
+        "symbol": "run_agent",
+        "repo_path": "~/Projects/deepseek-spelunk",
+        "ground_truth_files": [
+            "bench/agents/agent.py",
+            "bench/memory/cross_session_handoff.py"
+        ]
+    },
+    {
+        "symbol": "check_hit",
+        "repo_path": "~/Projects/deepseek-spelunk",
+        "ground_truth_files": [
+            "bench/memory/decision_archaeology.py"
+        ]
+    }
+]
