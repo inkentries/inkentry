@@ -116,7 +116,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 proptest = "1"
-assert_cmd = "2.0"
+assert_cmd = "2.2"
 predicates = "3.1"
 
 
