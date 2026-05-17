@@ -35,10 +35,7 @@ impl GitMetaBackend {
 
 fn open_session(root: &Option<PathBuf>) -> Result<Session> {
     match root {
-        Some(path) => {
-            let repo = gix::open(path).map_err(|e| anyhow!("git-meta: open repo: {e}"))?;
-            Session::open(repo).map_err(|e| anyhow!("git-meta: open session: {e}"))
-        }
+        Some(path) => Session::open(path).map_err(|e| anyhow!("git-meta: open session: {e}")),
         None => Session::discover().map_err(|e| anyhow!("git-meta: discover session: {e}")),
     }
 }
