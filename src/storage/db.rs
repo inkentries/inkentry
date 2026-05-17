@@ -15,6 +15,16 @@ impl Database {
     /// load the sqlite-vec extension into every new connection.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
+            // If the .spelunk path exists as a broken or self-referential symlink,
+            // create_dir_all will fail with EEXIST. Detect and explain that case.
+            if parent.is_symlink() && !parent.exists() {
+                anyhow::bail!(
+                    "creating db directory {}: path exists as a broken symlink. \
+                     Remove it with `rm {}` and re-run.",
+                    parent.display(),
+                    parent.display(),
+                );
+            }
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating db directory {}", parent.display()))?;
         }
