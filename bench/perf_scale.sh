@@ -93,8 +93,8 @@ for entry in "${REPO_ENTRIES[@]}"; do
 
     # Count files and chunks via spelunk status
     STATS=$(cd "$REPO_DIR" && "$SPELUNK" status --format json 2>/dev/null || echo '{"files":0,"chunks":0}')
-    FILES=$(echo "$STATS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('files',0))")
-    CHUNKS=$(echo "$STATS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('chunks',0))")
+    FILES=$(echo "$STATS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('file_count',0))")
+    CHUNKS=$(echo "$STATS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('chunk_count',0))")
     echo "    ${FILES} files, ${CHUNKS} chunks"
 
     # Search latency — 2/7/16 word queries
