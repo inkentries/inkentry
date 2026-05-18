@@ -2,9 +2,9 @@
 """Cross-session handoff benchmark — verifiable tasks, forced cutoff, n>=10.
 
 Three conditions for Session 2:
-    no_memory_no_session_1 — cold start, clean repo, no prior session
-    no_memory_present      — Session 1 file changes on disk, no memory tools
-    with_memory            — full spelunk memory access
+    s2a_cold_start   — fresh clone, no S1 files, no memory
+    s2b_files_present — S1 file changes on disk, no memory tools
+    s2c_with_memory  — S1 files + spelunk memory access
 
 Each task has a verify_cmd that produces a binary pass/fail signal.
 Tasks are defined in bench/memory/handoff_tasks.json.
@@ -16,17 +16,10 @@ Usage:
         --session-1-turns 5 \\
         --session-2-turns 15 \\
         --out bench/results/handoff.json
-
-Workflow per task:
-  1. Clone fresh repo, run setup_cmd (installs deps)
-  2. Session 1: agent runs --session-1-turns, forced cutoff, stores handoff
-  3. Session 2a: fresh clone, no memory, no S1 files
-  4. Session 2b: S1 files on disk, no memory tools
-  5. Session 2c: S1 files + spelunk memory access
-  6. Verify each session's outcome with verify_cmd
 """
 
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -67,9 +60,7 @@ def run_agent(
     extra_system: str = "",
 ) -> dict:
     issue_file = repo_path / "ISSUE.txt"
-    task_text = task
-    if extra_system:
-        task_text = extra_system + "\n\n" + task
+    task_text = extra_system + "\n\n" + task if extra_system else task
     issue_file.write_text(task_text)
 
     cmd = [
@@ -108,14 +99,23 @@ def run_agent(
     return {"error": True, "stderr": result.stderr[:500]}
 
 
-def run_verify(repo_path: Path, cmd: str) -> bool:
+def run_verify(repo_path: Path, cmd: str) -> tuple[bool, str]:
+    """Return (success, truncated_output)."""
     try:
         r = subprocess.run(
-            cmd, shell=True, cwd=repo_path, capture_output=True, text=True, timeout=60
+            cmd,
+            shell=True,
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
-        return r.returncode == 0
-    except Exception:
-        return False
+        output = (r.stdout + r.stderr)[-2000:]
+        return r.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, "TIMEOUT after 60s"
+    except Exception as e:
+        return False, f"verify_cmd error: {e}"
 
 
 def store_handoff(repo_path: Path, task: str, turns: int) -> None:
@@ -154,16 +154,14 @@ def get_spelunk_version() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Cross-session handoff benchmark.")
-    parser.add_argument("--tasks", required=True, help="Tasks JSON file.")
+    parser.add_argument("--tasks", required=True)
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--api-base-url", default="https://api.deepseek.com/v1")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--session-1-turns", type=int, default=5)
     parser.add_argument("--session-2-turns", type=int, default=15)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--workdir", default=None, help="Scratch directory (default: tmp)."
-    )
+    parser.add_argument("--workdir", default=None)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -174,12 +172,15 @@ def main():
     with open(args.tasks) as f:
         tasks = json.load(f)
 
+    user_workdir = args.workdir is not None
     workdir = (
         Path(args.workdir)
-        if args.workdir
+        if user_workdir
         else Path(tempfile.mkdtemp(prefix="handoff-"))
     )
     workdir.mkdir(parents=True, exist_ok=True)
+    if not user_workdir:
+        atexit.register(shutil.rmtree, str(workdir), ignore_errors=True)
 
     print(f"Tasks:     {len(tasks)}")
     print(f"S1 turns:  {args.session_1_turns}")
@@ -194,18 +195,18 @@ def main():
         repo_url = task["repo_url"]
         setup_cmd = task.get("setup_cmd", "true")
         verify_cmd = task["verify_cmd"]
-        repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
 
         print(f"[{ti + 1}/{len(tasks)}] {task_name[:80]}")
 
-        # ── Clone fresh repo ─────────────────────────────────────────────
+        # ── Clone all four copies; run setup on all ─────────────────────
         base = workdir / f"task{ti}"
-        for clone_dir, label in [
-            (base / "s1", "Session 1"),
-            (base / "s2a", "S2 cold start"),
-            (base / "s2b", "S2 files present"),
-            (base / "s2c", "S2 with memory"),
-        ]:
+        clones = {
+            "s1": base / "s1",
+            "s2a": base / "s2a",
+            "s2b": base / "s2b",
+            "s2c": base / "s2c",
+        }
+        for clone_dir in clones.values():
             clone_dir.parent.mkdir(parents=True, exist_ok=True)
             if not (clone_dir / ".git").exists():
                 subprocess.run(
@@ -213,23 +214,38 @@ def main():
                     capture_output=True,
                     timeout=120,
                 )
+            if setup_cmd != "true":
+                subprocess.run(
+                    setup_cmd,
+                    shell=True,
+                    cwd=clone_dir,
+                    capture_output=True,
+                    timeout=120,
+                )
 
-        # Run setup once on a template
-        template = base / "s1"
-        if setup_cmd != "true":
-            subprocess.run(
-                setup_cmd, shell=True, cwd=template, capture_output=True, timeout=120
-            )
-
-        # Index for spelunk conditions
+        # Index s1 and s2c for spelunk
         subprocess.run(
-            ["spelunk", "index", str(template)], capture_output=True, timeout=120
+            ["spelunk", "index", str(clones["s1"])], capture_output=True, timeout=120
+        )
+        subprocess.run(
+            ["spelunk", "index", str(clones["s2c"])], capture_output=True, timeout=120
         )
 
-        # ── Session 1: forced cutoff ─────────────────────────────────────
-        print(f"  Session 1 (baseline, {args.session_1_turns} turns)...")
+        # Pre-flight: verify_cmd must FAIL on unmodified clone
+        pre_ok, pre_out = run_verify(clones["s2a"], verify_cmd)
+        if pre_ok:
+            print(
+                f"  WARNING: verify_cmd passes on unmodified repo — task may be degenerate"
+            )
+        else:
+            print(
+                f'  Pre-flight: verify_cmd fails as expected ("{pre_out[:60].strip()}")'
+            )
+
+        # ── Session 1: forced cutoff ────────────────────────────────────
+        print(f"  Session 1 ({args.session_1_turns} turns)...")
         s1 = run_agent(
-            template,
+            clones["s1"],
             task_name,
             "baseline",
             args.model,
@@ -240,29 +256,23 @@ def main():
             extra_system=SESSION_1_SYSTEM_ADDON,
         )
         s1_turns = s1.get("turns", 0)
-        if not s1.get("error"):
-            store_handoff(template, task_name, s1_turns)
-            print(f"    {s1_turns} turns, handoff stored")
-        else:
+        if s1.get("error"):
             print(f"    ERROR: {s1.get('stderr', '')[:80]}")
             all_results.append({"task": task_name, "error": "session_1_failed"})
             continue
+        store_handoff(clones["s1"], task_name, s1_turns)
+        print(f"    {s1_turns} turns, handoff stored")
 
-        # Copy S1 state to S2b and S2c
-        for label, dest in [("s2b", base / "s2b"), ("s2c", base / "s2c")]:
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(str(template), str(dest), symlinks=True)
-            # Index S2c for memory
-            if label == "s2c":
-                subprocess.run(
-                    ["spelunk", "index", str(dest)], capture_output=True, timeout=120
-                )
+        # Copy S1 state to s2b and s2c
+        for key in ("s2b", "s2c"):
+            if clones[key].exists():
+                shutil.rmtree(clones[key])
+            shutil.copytree(str(clones["s1"]), str(clones[key]), symlinks=True)
 
-        # ── Session 2a: cold start ───────────────────────────────────────
-        print(f"  Session 2a (cold start, no memory)...")
+        # ── Session 2a: cold start ──────────────────────────────────────
+        print(f"  Session 2a (cold start)...")
         s2a = run_agent(
-            base / "s2a",
+            clones["s2a"],
             task_name,
             "baseline",
             args.model,
@@ -271,13 +281,14 @@ def main():
             args.session_2_turns,
             args.seed,
         )
-        s2a_ok = run_verify(base / "s2a", verify_cmd)
-        print(f"    {'PASS' if s2a_ok else 'FAIL'}  turns={s2a.get('turns', '?')}")
+        s2a_ok, s2a_out = run_verify(clones["s2a"], verify_cmd)
+        status = "PASS" if s2a_ok else "FAIL"
+        print(f"    {status}  turns={s2a.get('turns', '?')}  ({s2a_out[:60].strip()})")
 
-        # ── Session 2b: files present, no memory ─────────────────────────
+        # ── Session 2b: files present ───────────────────────────────────
         print(f"  Session 2b (S1 files, no memory)...")
         s2b = run_agent(
-            base / "s2b",
+            clones["s2b"],
             task_name,
             "baseline",
             args.model,
@@ -286,13 +297,14 @@ def main():
             args.session_2_turns,
             args.seed,
         )
-        s2b_ok = run_verify(base / "s2b", verify_cmd)
-        print(f"    {'PASS' if s2b_ok else 'FAIL'}  turns={s2b.get('turns', '?')}")
+        s2b_ok, s2b_out = run_verify(clones["s2b"], verify_cmd)
+        status = "PASS" if s2b_ok else "FAIL"
+        print(f"    {status}  turns={s2b.get('turns', '?')}  ({s2b_out[:60].strip()})")
 
-        # ── Session 2c: with memory ──────────────────────────────────────
+        # ── Session 2c: with memory ─────────────────────────────────────
         print(f"  Session 2c (S1 files + memory)...")
         s2c = run_agent(
-            base / "s2c",
+            clones["s2c"],
             task_name,
             "spelunk_search",
             args.model,
@@ -301,21 +313,34 @@ def main():
             args.session_2_turns,
             args.seed,
         )
-        s2c_ok = run_verify(base / "s2c", verify_cmd)
-        print(f"    {'PASS' if s2c_ok else 'FAIL'}  turns={s2c.get('turns', '?')}")
+        s2c_ok, s2c_out = run_verify(clones["s2c"], verify_cmd)
+        status = "PASS" if s2c_ok else "FAIL"
+        print(f"    {status}  turns={s2c.get('turns', '?')}  ({s2c_out[:60].strip()})")
 
         all_results.append(
             {
                 "task": task_name,
                 "repo": repo_url,
                 "session_1_turns": s1_turns,
-                "s2a_cold_start": {"success": s2a_ok, "turns": s2a.get("turns", 0)},
-                "s2b_files_present": {"success": s2b_ok, "turns": s2b.get("turns", 0)},
-                "s2c_with_memory": {"success": s2c_ok, "turns": s2c.get("turns", 0)},
+                "s2a_cold_start": {
+                    "success": s2a_ok,
+                    "turns": s2a.get("turns", 0),
+                    "verify_output": s2a_out,
+                },
+                "s2b_files_present": {
+                    "success": s2b_ok,
+                    "turns": s2b.get("turns", 0),
+                    "verify_output": s2b_out,
+                },
+                "s2c_with_memory": {
+                    "success": s2c_ok,
+                    "turns": s2c.get("turns", 0),
+                    "verify_output": s2c_out,
+                },
             }
         )
 
-    # ── Aggregate ────────────────────────────────────────────────────────
+    # ── Aggregate ───────────────────────────────────────────────────────
     ran = [r for r in all_results if "s2a_cold_start" in r]
     n = len(ran)
     print()
