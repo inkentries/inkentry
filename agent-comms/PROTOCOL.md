@@ -15,27 +15,67 @@ Files live in `agent-comms/inbox/<recipient>.ndjson`.
 
 A message is one JSON object per line:
 ```json
-{"from": "implementer", "to": "architect", "re": "#42", "ts": "2026-04-16T10:00:00Z", "session_id": "sess_abc123", "body": "Spec is ambiguous: does knn emit one JSON object or one per line?", "priority": "blocking"}
+{"from": "implementer", "to": "architect", "re": "#42", "ts": "2026-04-16T10:00:00Z", "session_id": "sess_abc123", "kind": "question", "body": "Spec is ambiguous: does knn emit one JSON object or one per line?", "priority": "blocking"}
 ```
 
 Fields:
-- `from` — sender persona name (architect | implementer | test-engineer | docs-writer | qa-reviewer)
-- `to` — recipient persona name
+- `from` — sender persona name (see persona table below)
+- `to` — recipient persona name (or `founder` for human-in-the-loop)
 - `re` — GitHub issue reference e.g. `"#42"` (required)
 - `ts` — ISO-8601 timestamp
 - `session_id` — opaque session identifier; set when an agent claims a task. Prevents parallel agents from picking up the same issue and allows querying stuck sessions.
+- `kind` — message type: `"message"` (general), `"question"` (sender is blocked and needs a reply before continuing), `"handoff"` (session handover), or `"amendment"` (correction to a prior message)
 - `body` — free text, keep under 500 chars
-- `priority` — `"blocking"` | `"fyi"` | `"question"`
+- `priority` — `"blocking"` | `"fyi"`
 
-**Routing**: messages are placed directly into the recipient's inbox file.
+#### Personas
+
+| Alias | Full name | Inbox file |
+|-------|-----------|------------|
+| `architect` | Architect | `agent-comms/inbox/architect.ndjson` |
+| `implementer`, `impl` | Implementer | `agent-comms/inbox/implementer.ndjson` |
+| `pm` | Product Manager | `agent-comms/inbox/product-manager.ndjson` |
+| `test`, `te` | Test Engineer | `agent-comms/inbox/test-engineer.ndjson` |
+| `qa` | QA Reviewer | `agent-comms/inbox/qa-reviewer.ndjson` |
+| `docs` | Docs Writer | `agent-comms/inbox/docs-writer.ndjson` |
+| `founder` | Founder (human-in-the-loop) | `agent-comms/inbox/founder.ndjson` |
+
+`founder` is not a persona — it's the back-pressure point for human
+feedback and questions. Messages to `founder` are for decisions only
+the human can make, blocking issues that need unblocking, and
+context the human should be aware of.
+
+#### Routing
+
+To send a message, append a JSON line to `agent-comms/inbox/<recipient>.ndjson`:
+```json
+{"from":"<sender>","to":"<recipient>","re":"#<N>","ts":"<ISO-8601>","session_id":"<id>","kind":"<message|question|handoff|amendment>","priority":"<blocking|fyi>","body":"..."}
+```
+
 Each agent reads their own inbox at session start.
 
-**Inbox lifecycle**: agents MUST remove messages from their inbox as they
-finish processing them (rewrite the file without the consumed lines). A
-message with a `session_id` indicates an agent has claimed the referenced
-issue — other agents MUST NOT pick up that issue while the message is
-present. If a session appears stuck, the `session_id` can be used to
-query its status.
+#### Inbox processing (session startup)
+
+Every agent session MUST:
+
+1. **Read and process the inbox.** For each message:
+   - Print: sender, date, priority, kind, summary (first 80 chars of body)
+   - Flag `"priority":"blocking"` with **[BLOCKING]**
+   - Flag `"kind":"question"` with **[NEEDS REPLY]**
+
+2. **Run spelunk startup checks.** Dog-food the product:
+   ```bash
+   spelunk check                                    # verify index is fresh
+   spelunk memory list --kind decision --limit 10   # review prior decisions
+   spelunk memory list --kind handoff --limit 3     # pick up where last session left off
+   spelunk memory list --kind question              # check open questions
+   ```
+
+3. **Clear consumed messages.** After processing, remove consumed entries
+   from the inbox file (rewrite without consumed lines, or truncate).
+   A message with a `session_id` indicates an active claim — other agents
+   MUST NOT pick up that issue while the message is present. If a session
+   appears stuck, the `session_id` can be used to query its status.
 
 ### 3. spelunk memory (tertiary — decisions and context)
 ```bash
@@ -74,7 +114,9 @@ agent-comms/
   inbox/
     architect.ndjson   — messages waiting for Architect
     implementer.ndjson
+    product-manager.ndjson
     test-engineer.ndjson
-    docs-writer.ndjson
     qa-reviewer.ndjson
+    docs-writer.ndjson
+    founder.ndjson     — human-in-the-loop back-pressure
 ```
