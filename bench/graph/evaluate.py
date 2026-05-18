@@ -30,25 +30,28 @@ Task format (JSON):
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-def run_grep(repo_path: Path, symbol: str) -> set[str]:
-    """Return set of file paths containing the symbol via git grep."""
+def run_grep(repo_path: Path, symbol: str, limit: int = 10) -> set[str]:
+    """Return set of file paths containing the symbol via git grep, capped at limit."""
     try:
         result = subprocess.run(
-            ["git", "grep", "-l", symbol],
+            ["git", "grep", "-l", "-E", f"\\b{re.escape(symbol)}\\b"],
             cwd=repo_path,
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode == 0:
-            return set(result.stdout.strip().split("\n"))
+            files = result.stdout.strip().split("\n")
+            return set(files[:limit])
         return set()
     except Exception:
         return set()
@@ -84,15 +87,24 @@ def run_spelunk_graph(repo_path: Path, symbol: str, limit: int = 10) -> set[str]
         )
         if result.returncode == 0 and result.stdout.strip():
             results = json.loads(result.stdout)
-            files = set()
+            files_ordered = []
+            seen = set()
             for r in results if isinstance(results, list) else [results]:
+                if "edges" not in r and not isinstance(r, dict):
+                    print(
+                        f"  graph: unexpected shape for {symbol}: {str(r)[:120]}",
+                        file=sys.stderr,
+                    )
+                    continue
                 for edge in r.get("edges", []):
                     f = edge.get("file") or edge.get("target_file")
-                    if f:
-                        files.add(f)
-            return set(list(files)[:limit])
+                    if f and f not in seen:
+                        seen.add(f)
+                        files_ordered.append(f)
+            return set(files_ordered[:limit])
         return set()
-    except Exception:
+    except Exception as e:
+        print(f"  graph: parse failed for {symbol}: {e}", file=sys.stderr)
         return set()
 
 
@@ -151,7 +163,7 @@ def main():
         print(f"[{i + 1}/{len(tasks)}] {symbol} ({len(relevant)} ground-truth files)")
 
         for cond_name, runners in [
-            ("grep", lambda: run_grep(repo_path, symbol)),
+            ("grep", lambda: run_grep(repo_path, symbol, args.k)),
             ("spelunk_search", lambda: run_spelunk_search(repo_path, symbol, args.k)),
             ("spelunk_graph", lambda: run_spelunk_graph(repo_path, symbol, args.k)),
         ]:
