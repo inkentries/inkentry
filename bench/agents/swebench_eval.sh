@@ -100,7 +100,8 @@ if [[ -d "$HARNESS_DIR" ]]; then
         echo "  Found: ${HARNESS_FILE}"
         python3 -c "
 import json
-results = json.load(open('${RESULTS}'))
+raw = json.load(open('${RESULTS}'))
+results = raw['tasks'] if isinstance(raw, dict) and 'tasks' in raw else raw
 harness = json.load(open('${HARNESS_FILE}'))
 resolved_map = {r: True for r in harness.get('resolved', [])}
 
