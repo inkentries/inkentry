@@ -152,6 +152,17 @@ def get_spelunk_version() -> str:
         return "unknown"
 
 
+def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion."""
+    if n == 0:
+        return (0.0, 0.0)
+    p = successes / n
+    denom = 1 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / denom
+    margin = (z * (p * (1 - p) / n + z**2 / (4 * n**2)) ** 0.5) / denom
+    return (max(0, centre - margin), min(1, centre + margin))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cross-session handoff benchmark.")
     parser.add_argument("--tasks", required=True)
@@ -263,11 +274,25 @@ def main():
         store_handoff(clones["s1"], task_name, s1_turns)
         print(f"    {s1_turns} turns, handoff stored")
 
-        # Copy S1 state to s2b and s2c
+        # Copy S1 state to s2b and s2c; strip memory from s2b (no-memory condition)
         for key in ("s2b", "s2c"):
             if clones[key].exists():
                 shutil.rmtree(clones[key])
             shutil.copytree(str(clones["s1"]), str(clones[key]), symlinks=True)
+            if key == "s2b":
+                shutil.rmtree(clones[key] / ".spelunk", ignore_errors=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(clones[key]),
+                        "notes",
+                        "remove",
+                        "--ignore-missing",
+                        "HEAD",
+                    ],
+                    capture_output=True,
+                )
 
         # ── Session 2a: cold start ──────────────────────────────────────
         print(f"  Session 2a (cold start)...")
@@ -346,14 +371,19 @@ def main():
     print()
     print(f"=== Results ({n} tasks) ===")
 
+    aggregate = {}
     for cond, key in [
-        ("Cold start", "s2a_cold_start"),
-        ("Files present", "s2b_files_present"),
-        ("With memory", "s2c_with_memory"),
+        ("cold_start", "s2a_cold_start"),
+        ("files_present", "s2b_files_present"),
+        ("with_memory", "s2c_with_memory"),
     ]:
         successes = [r[key]["success"] for r in ran]
-        rate = sum(successes) / n if n else 0
-        print(f"  {cond:<18} success={rate:.0%} ({sum(successes)}/{n})")
+        s = sum(successes)
+        lo, hi = wilson_ci(s, n)
+        rate = s / n if n else 0
+        aggregate[f"{cond}_success_rate"] = round(rate, 4)
+        aggregate[f"{cond}_ci_95"] = [round(lo, 4), round(hi, 4)]
+        print(f"  {cond:<18} success={rate:.0%} [{lo:.0%}, {hi:.0%}] ({s}/{n})")
 
     output = {
         "benchmark": "cross_session_handoff",
@@ -363,6 +393,7 @@ def main():
         "seed": args.seed,
         "spelunk_version": get_spelunk_version(),
         "num_tasks": len(all_results),
+        "aggregate": aggregate,
         "results": all_results,
     }
 
