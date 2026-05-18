@@ -76,9 +76,47 @@ python bench/memory/decision_archaeology.py \
 
 ## Cross-Session Handoff
 
-See `bench/memory/cross_session_handoff.py`. TODO(#228): update once redesign lands.
+Measures whether spelunk memory improves completion success for a fresh
+agent picking up partially-completed work.
 
-### Current limitations
+### Three conditions
 
-The 2026-05-15 proof-of-concept (n=1, no correctness check) is a demo,
-not a benchmark. See #228 for the redesign requirements.
+| Condition | Session 1 files | Memory access | Measures |
+|-----------|----------------|---------------|----------|
+| Cold start | None | None | Intrinsic task difficulty |
+| Files present | On disk | None | Value of file state alone |
+| With memory | On disk | Full | Value of files + memory |
+
+### Task format
+
+Tasks live in `bench/memory/handoff_tasks.json`:
+
+```json
+[
+    {
+        "task": "Fix the failing test in tests/test_parser.py",
+        "repo_url": "https://github.com/user/repo.git",
+        "setup_cmd": "pip install -e '.[dev]'",
+        "verify_cmd": "python -m pytest tests/test_parser.py -x -q"
+    }
+]
+```
+
+- `task`: natural-language description
+- `repo_url`: git clone URL (repo cloned fresh per task)
+- `setup_cmd`: shell command to install dependencies
+- `verify_cmd`: shell command that exits 0 on success (binary pass/fail)
+
+Session 1 is cut off at `--session-1-turns` (default 5) with a system
+prompt instructing the agent to write a detailed handoff. Three Session 2
+clones then attempt the task under the three conditions.
+
+Usage:
+
+```bash
+python bench/memory/cross_session_handoff.py \
+    --tasks bench/memory/handoff_tasks.json \
+    --session-1-turns 5 \
+    --session-2-turns 15 \
+    --out bench/results/handoff.json
+```
