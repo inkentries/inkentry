@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 # bench/agents/swebench_eval.sh — run SWE-bench Docker evaluation
 #
-# Converts agent patches to SWE-bench prediction format and runs the
-# official Docker harness to compute resolve_rate.
+# Converts agent patches to SWE-bench prediction format, runs the
+# official Docker harness, and merges resolve data back into the
+# result JSON with explicit denominator.
 #
 # Prerequisites:
 #   - SWE-bench harness installed: pip install swebench
 #   - Docker images pulled for the target dataset
 #   - Agent patches saved via agent.py --save-patch
-#
-# Usage:
-#   bash bench/agents/swebench_eval.sh \\
-#       --results bench/results/swebench-baseline-batch.json \\
-#       --patches-dir bench/patches/baseline \\
-#       --dataset princeton-nlp/SWE-bench_Verified \\
-#       --split test
 #
 # Options:
 #   --results FILE     batch result JSON from agent run
@@ -98,27 +92,46 @@ echo ""
 echo "--- Merging resolve data ---"
 HARNESS_DIR="swebench_eval_outputs/${RUN_ID}"
 if [[ -d "$HARNESS_DIR" ]]; then
-    python3 -c "
-import json, sys
-from pathlib import Path
-
+    # Glob for harness output file (filename varies by SWE-bench version)
+    HARNESS_FILE=$(find "$HARNESS_DIR" -maxdepth 2 -name '*.json' -exec grep -l '"resolved"' {} \; 2>/dev/null | head -1)
+    if [[ -z "$HARNESS_FILE" ]]; then
+        echo "ERROR: no harness output with 'resolved' field under ${HARNESS_DIR}" >&2
+    else
+        echo "  Found: ${HARNESS_FILE}"
+        python3 -c "
+import json
 results = json.load(open('${RESULTS}'))
-harness = json.load(open('${HARNESS_DIR}/results.json')) if Path('${HARNESS_DIR}/results.json').exists() else {}
+harness = json.load(open('${HARNESS_FILE}'))
+resolved_map = {r: True for r in harness.get('resolved', [])}
 
-resolved_map = {}
-for r in harness.get('resolved', []):
-    resolved_map[r] = True
+skipped_pre = sum(1 for r in results if r.get('skipped'))
+errored = sum(1 for r in results if r.get('error'))
+evaluated = 0
+resolved_count = 0
 
 for r in results:
-    tid = r.get('task_id','')
-    r['resolved'] = resolved_map.get(tid, False)
+    if not r.get('skipped') and not r.get('error'):
+        evaluated += 1
+        r['resolved'] = resolved_map.get(r.get('task_id', ''), False)
+        if r['resolved']:
+            resolved_count += 1
 
-tasks_evaluated = len([r for r in results if not r.get('skipped') and not r.get('error')])
-tasks_resolved = sum(1 for r in results if r.get('resolved'))
-print(f'  Evaluated: {tasks_evaluated}  Resolved: {tasks_resolved}')
-
-json.dump(results, open('${RESULTS}','w'), indent=2)
+rate = resolved_count / evaluated if evaluated else 0
+output = {
+    'aggregate': {
+        'tasks_total': len(results),
+        'tasks_evaluated': evaluated,
+        'tasks_resolved': resolved_count,
+        'tasks_skipped_pre_eval': skipped_pre,
+        'tasks_errored': errored,
+        'resolve_rate': round(rate, 4),
+    },
+    'tasks': results,
+}
+json.dump(output, open('${RESULTS}', 'w'), indent=2)
+print(f'  Evaluated: {evaluated}  Resolved: {resolved_count}  Rate: {rate:.1%}')
 "
+    fi
 fi
 
 echo ""
