@@ -473,6 +473,11 @@ def main() -> None:
     )
     parser.add_argument("--max-turns", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--save-patch",
+        default=None,
+        help="Save git diff to this file after agent finishes (for SWE-bench eval).",
+    )
     args = parser.parse_args()
 
     repo_path = Path(args.repo_path).resolve()
@@ -507,6 +512,34 @@ def main() -> None:
         seed=args.seed,
     )
 
+    # Save git diff for SWE-bench evaluation
+    patch_path = None
+    if args.save_patch:
+        try:
+            # Stage all changes (including untracked files from write_file)
+            # then diff against HEAD to capture everything.
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            diff = subprocess.run(
+                ["git", "diff", "--cached", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            ).stdout
+            patch_path = Path(args.save_patch)
+            patch_path.parent.mkdir(parents=True, exist_ok=True)
+            patch_path.write_text(diff)
+        except Exception as e:
+            print(f"Warning: failed to save patch: {e}", file=sys.stderr)
+
     # Reproducibility contract
     output = {
         "benchmark": "swebench-verified",
@@ -518,6 +551,7 @@ def main() -> None:
         "spelunk_version": get_spelunk_version(),
         "seed": args.seed,
         "max_turns": args.max_turns,
+        "patch_file": str(patch_path) if patch_path else None,
         **agent_result,
     }
     print(json.dumps(output))

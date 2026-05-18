@@ -74,6 +74,8 @@ def run_task(
         str(max_turns),
         "--seed",
         str(seed),
+        "--save-patch",
+        str(SCRIPT_DIR.parent / "patches" / condition / f"{task_id}.patch"),
     ]
 
     try:
