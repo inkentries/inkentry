@@ -82,7 +82,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .find(|s| s.commit_sha.starts_with(sha_prefix.as_str()))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No snapshot found for '{}'. Run `spelunk snapshot list` to see available snapshots.",
+                    "No snapshot found for '{}'. Provide a full or partial commit SHA from your indexed history.",
                     sha_prefix
                 )
             })?;
