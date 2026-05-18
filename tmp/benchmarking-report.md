@@ -5,6 +5,12 @@
 **spelunk version:** 0.6.0
 **Status:** Infrastructure complete. Controlled reruns pending.
 
+*This report replaces a preliminary version whose headline numbers were
+found to conflate multi-turn looping with spelunk retrieval, use
+corpus-derived questions, and lack correctness checks. See the
+[original benchmark review](tmp/benchmark-fix-plan.md) for the full
+analysis that motivated this rewrite.*
+
 ---
 
 ## Executive Summary
@@ -73,7 +79,7 @@ both `source_ref` (memory) and `commit` (grep/FTS) fields.
 **Blindness protocol** documented in `bench/memory/README.md`. Questions
 must be authored from raw `git log` via `author_questions.py`, without
 access to the spelunk memory database. Pending blind question sets for
->=3 repos with >=10 questions each.
+>=3 repos with >=10 questions each. Tracked in [#237](https://github.com/usercise/spelunk/issues/237).
 
 **Scripts:** `bench/memory/decision_archaeology.py`, `author_questions.py`, `README.md`
 
@@ -102,7 +108,7 @@ python bench/memory/decision_archaeology.py \
 Session 1 is force-cut at `--session-1-turns` (default 5) with a system
 prompt instructing the agent to write a detailed handoff. Each task has a
 `verify_cmd` for binary pass/fail. Pending a task corpus with >=10 tasks
-across >=2 repos.
+across >=2 repos. Tracked in [#247](https://github.com/usercise/spelunk/issues/247).
 
 **Scripts:** `bench/memory/cross_session_handoff.py`, `handoff_tasks.json`, `README.md`
 
@@ -120,7 +126,8 @@ python bench/memory/cross_session_handoff.py \
 
 **Three conditions:** `grep` (git grep), `spelunk_search` (semantic),
 `spelunk_graph` (code graph edges). Metrics: precision@k, recall@k, F1.
-No LLM required.
+No LLM required. Pending a task corpus with >=30 tasks across >=3 repos.
+Tracked in [#248](https://github.com/usercise/spelunk/issues/248).
 
 **Scripts:** `bench/graph/evaluate.py`, `tasks.json`
 
@@ -194,7 +201,10 @@ bench/perf_scale.sh, perf_index.sh, perf_search.sh, git_meta_perf.sh, git_notes_
 - **API non-determinism:** even at `temperature=0.0`, API responses vary
   slightly between runs. `seed` is passed to the API where supported.
 - **Repo availability:** the SWE-bench Verified dataset contains 24 of the
-  50 pinned tasks. The remaining 26 require the full SWE-bench dataset.
+  50 pinned tasks in `bench/agents/tasks_50.json`. The remaining 26 are not
+  in the Verified split and must be sourced from the full SWE-bench dataset.
+  Any `resolve_rate` headline must use 24 as the denominator — a rate
+  computed over the full 50 would overstate coverage by 2.1×.
 - **Indexed-repo overlap:** RepoBench spans 1,751 repos. Without
   `--repo-filter`, overlap between indexed codebase and sampled tasks is ~0%.
 - **Blind question sets:** the decision archaeology benchmark has 4
