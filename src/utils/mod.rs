@@ -88,39 +88,21 @@ pub fn format_age(created_at: i64) -> String {
     }
 }
 
-/// Collect files modified or untracked relative to HEAD using git.
+/// Collect files modified or untracked relative to HEAD using gix.
 /// Returns an empty set on any error (graceful degradation).
 pub fn worktree_modified_files() -> std::collections::HashSet<String> {
-    let mut files = std::collections::HashSet::new();
-
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["diff", "--name-only", "HEAD"])
-        .output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let s = line.trim();
-            if !s.is_empty() {
-                files.insert(s.to_string());
-            }
-        }
-    }
-
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let s = line.trim();
-            if s.len() > 3 {
-                let path = s[3..].trim();
-                if !path.is_empty() {
-                    files.insert(path.to_string());
-                }
-            }
-        }
-    }
-
-    files
+    let Ok(repo) = gix::discover(".") else {
+        return std::collections::HashSet::new();
+    };
+    let Ok(platform) = repo.status(gix::progress::Discard) else {
+        return std::collections::HashSet::new();
+    };
+    let Ok(iter) = platform.into_iter(Vec::<gix::bstr::BString>::new()) else {
+        return std::collections::HashSet::new();
+    };
+    iter.filter_map(|res| res.ok())
+        .map(|item| item.location().to_string())
+        .collect()
 }
 
 #[cfg(test)]
