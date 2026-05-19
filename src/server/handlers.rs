@@ -32,7 +32,9 @@ pub struct AddNoteRequest {
     /// Source file paths this entry is linked to.
     #[serde(default)]
     pub linked_files: Vec<String>,
-    /// Pre-computed embedding vector from the client (required for semantic search).
+    /// Pre-computed embedding vector from the client. Optional — if omitted and the server has an
+    /// embedding backend configured (`SPELUNK_EMBEDDING_URL`), the server embeds the entry.
+    /// If neither is available, the entry is stored without a vector (text search only).
     pub embedding: Option<Vec<f32>>,
 }
 
@@ -135,8 +137,9 @@ pub async fn list_projects(State(state): State<AppState>) -> Result<impl IntoRes
 
 /// Add a memory entry to a project. The project is auto-created on first write.
 ///
-/// The client must supply a pre-computed `embedding` vector. All entries in
-/// a project must use the same embedding dimension — the first write fixes it.
+/// The `embedding` field is optional. If omitted and the server has `SPELUNK_EMBEDDING_URL`
+/// configured, the server embeds the entry before storage. If neither is available, the
+/// entry is stored without a vector (text search only, no KNN).
 ///
 /// Returns **201** on success. Returns **409** when the new entry is semantically
 /// close to one or more existing active entries (similarity ≥ conflict_threshold).
@@ -162,7 +165,26 @@ pub async fn add_note(
     Path(project_id): Path<String>,
     Json(body): Json<AddNoteRequest>,
 ) -> Result<Response, AppError> {
-    let embedding = body.embedding.as_deref();
+    // Server-side embedding: embed the entry when no client vector is supplied.
+    let server_embedding: Option<Vec<f32>> = if body.embedding.is_none() {
+        if let Some(embedder) = &state.embedder {
+            let text = format!("title: {} | text: {}", body.title, body.body);
+            match embedder.embed(&[text.as_str()]).await {
+                Ok(mut vecs) if !vecs.is_empty() => vecs.pop(),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("server-side embedding failed, storing without vector: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let embedding = body.embedding.as_deref().or(server_embedding.as_deref());
     let dim = embedding.map(|v| v.len()).unwrap_or(0);
 
     let db = state.db.lock().await;
@@ -621,6 +643,7 @@ mod tests {
             db: Arc::new(tokio::sync::Mutex::new(db)),
             api_key: None,
             conflict_threshold,
+            embedder: None,
         };
         (router(state), dim as i32)
     }
