@@ -249,6 +249,17 @@ pub(crate) fn maybe_warn_stale(db_path: &std::path::Path) {
     }
 }
 
+/// Return `true` when the index exists and the staleness probe indicates changed files.
+pub(crate) fn index_is_stale(db_path: &std::path::Path) -> bool {
+    if !db_path.exists() {
+        return false;
+    }
+    Database::open(db_path)
+        .ok()
+        .and_then(|db| db.sample_staleness_check(20).ok())
+        .is_some_and(|report| report.stale > 0)
+}
+
 /// Resolve the primary DB path and any dep projects via the registry.
 /// Falls back to `resolve_db` if the registry can't find a project.
 pub(crate) fn resolve_project_and_deps(
