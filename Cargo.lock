@@ -1808,13 +1808,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc08e0fa1a91ff5f24affeab052f198056645e1de004910bde7b82b50ea5982a"
 dependencies = [
  "bstr",
+ "gix-attributes 0.33.0",
  "gix-command 0.9.0",
  "gix-filter 0.30.0",
  "gix-fs 0.21.1",
  "gix-hash 0.25.0",
  "gix-imara-diff",
+ "gix-index 0.51.0",
  "gix-object 0.60.0",
  "gix-path 0.12.0",
+ "gix-pathspec 0.18.0",
  "gix-tempfile 23.0.0",
  "gix-trace",
  "gix-traverse 0.57.0",
