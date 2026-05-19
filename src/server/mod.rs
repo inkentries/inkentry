@@ -1,5 +1,6 @@
 pub mod db;
 pub mod handlers;
+pub mod security;
 
 use std::sync::Arc;
 

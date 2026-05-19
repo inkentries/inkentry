@@ -144,6 +144,7 @@ pub async fn list_projects(State(state): State<AppState>) -> Result<impl IntoRes
 /// Returns **201** on success. Returns **409** when the new entry is semantically
 /// close to one or more existing active entries (similarity ≥ conflict_threshold).
 /// The entry is still stored in both cases; the 409 is informational.
+/// Returns **422** when the entry contains prompt-injection patterns.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory",
@@ -156,6 +157,7 @@ pub async fn list_projects(State(state): State<AppState>) -> Result<impl IntoRes
         (status = 400, description = "Embedding dimension mismatch"),
         (status = 401, description = "Unauthorized"),
         (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
+        (status = 422, description = "Entry rejected — prompt injection detected"),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -165,6 +167,21 @@ pub async fn add_note(
     Path(project_id): Path<String>,
     Json(body): Json<AddNoteRequest>,
 ) -> Result<Response, AppError> {
+    // Reject entries that contain prompt-injection patterns.
+    if let Some(m) = super::security::scan_for_injection(&body.title, &body.body) {
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error": "injection_detected",
+                "field": m.field,
+                "category": m.category,
+                "message": "Entry contains patterns associated with prompt injection. \
+                            Review and revise the entry.",
+            })),
+        )
+            .into_response());
+    }
+
     // Server-side embedding: embed the entry when no client vector is supplied.
     let server_embedding: Option<Vec<f32>> = if body.embedding.is_none() {
         if let Some(embedder) = &state.embedder {
