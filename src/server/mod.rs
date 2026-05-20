@@ -22,6 +22,10 @@ pub struct AppState {
     /// Cosine similarity threshold above which a new entry is flagged as conflicting (0.0–1.0).
     /// Default: 0.92. Set to 1.0 to disable conflict detection.
     pub conflict_threshold: f32,
+    /// Optional server-side embedder. When set, the server embeds entries that arrive without
+    /// a pre-computed vector. If absent, entries without a vector are stored without one
+    /// (text search only).
+    pub embedder: Option<Arc<dyn crate::embeddings::EmbeddingBackend>>,
 }
 
 pub fn default_conflict_threshold() -> f32 {

@@ -23,6 +23,7 @@ fn make_state() -> AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: None,
         conflict_threshold: spelunk::server::default_conflict_threshold(),
+        embedder: None,
     }
 }
 
@@ -258,6 +259,7 @@ async fn protected_endpoint_rejects_missing_token() {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: Some("secret".into()),
         conflict_threshold: spelunk::server::default_conflict_threshold(),
+        embedder: None,
     };
     let resp = send(state, "GET", "/v1/projects", Body::empty(), false).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -271,6 +273,7 @@ async fn protected_endpoint_accepts_correct_token() {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: Some("secret".into()),
         conflict_threshold: spelunk::server::default_conflict_threshold(),
+        embedder: None,
     };
     let req = Request::builder()
         .method("GET")
@@ -367,6 +370,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: None,
         conflict_threshold: spelunk::server::default_conflict_threshold(),
+        embedder: None,
     };
 
     // Query with t=1500 — should return only the note at t=2000.
