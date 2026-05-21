@@ -65,7 +65,9 @@ fn hash_file_is_current_for_relative_indexed_path() {
     let expected_hash = format!("{}", blake3::hash(&content));
 
     // hash-file with the relative path should find the indexed hash.
+    // Run from the fixture root so "src/lib.rs" resolves to the actual file.
     let output = spelunk_cmd(&db_path, &config_path)
+        .current_dir(plumbing_helpers::fixture_path())
         .arg("hash-file")
         .arg("src/lib.rs") // relative path as stored in DB
         .assert()
