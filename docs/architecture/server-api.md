@@ -8,8 +8,8 @@
 ## Overview
 
 This document specifies the HTTP API surface that `spelunk-cli` calls on
-`spelunk-server`, the auth trait that allows cloud to replace API-key auth with
-OAuth2, and the changes required to existing endpoints.
+`spelunk-server`, the auth trait that allows us to replace API-key auth with
+OAuth2 in future, and the changes required to existing endpoints.
 
 The server already has a working memory API (`src/server/handlers.rs`). This
 document covers:
@@ -26,8 +26,8 @@ document covers:
 
 Auth is currently implemented as a plain axum middleware function
 (`auth_middleware`) that compares a bearer token against `AppState.api_key:
-Option<String>`. This must be replaced with a trait so cloud can provide an
-OAuth2/JWT implementation without forking the repo.
+Option<String>`. This must be replaced with a trait so the auth strategy can be swapped
+(e.g. OAuth2/JWT) without forking the repo.
 
 ### Target design
 
@@ -46,11 +46,11 @@ pub struct AuthContext {
     pub principal: Principal,
 }
 
-/// Caller identity. OSS uses ApiKey; cloud substitutes User.
+/// Caller identity. Extensible for alternative auth strategies.
 pub enum Principal {
-    /// OSS: bearer token matched the configured key.
+    /// Default: bearer token matched the configured key.
     ApiKey(String),
-    /// Cloud: authenticated user identity (not used in OSS).
+    /// Future: authenticated user identity (e.g. OAuth2).
     User { id: String },
 }
 
@@ -120,8 +120,8 @@ impl AuthProvider for ApiKeyAuth {
 }
 ```
 
-Cloud supplies its own `impl AuthProvider` in its own crate. No changes to OSS
-handlers are needed.
+Any alternative auth strategy supplies its own `impl AuthProvider`. No changes
+to handlers are needed.
 
 ### Server construction
 
