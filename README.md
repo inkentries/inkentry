@@ -149,6 +149,22 @@ All other file types are indexed as plain text with a sliding-window chunker.
 - [Architecture](docs/architecture.md) — system design for contributors
 - [Examples](docs/examples/) — real-world workflows
 
+## Repository structure
+
+This is a Cargo workspace with three crates:
+
+| Crate | Path | Purpose |
+|---|---|---|
+| `spelunk-core` | `crates/spelunk-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
+| `spelunk-cli` | `crates/spelunk-cli` | `spelunk` binary — CLI commands; depends on `spelunk-core` |
+| `spelunk-server` | `crates/spelunk-server` | `spelunk-server` binary + lib — shared memory server; depends on `spelunk-core` |
+
+```bash
+cargo build -p spelunk-cli    # build the CLI
+cargo build -p spelunk-server # build the server
+cargo test                    # test all crates
+```
+
 ## Contributing
 
 Contributions welcome. See [Building from source](docs/building.md) for setup instructions.
