@@ -32,6 +32,7 @@ async-stream = "0.3"
 tokio-stream = "0.1"
 utoipa       = { version = "5", features = ["axum_extras"] }
 clap         = { version = "4", features = ["derive", "env"] }
+regex        = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile          = { workspace = true }
