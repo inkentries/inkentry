@@ -137,6 +137,11 @@ fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathB
 /// the config, which matches where `setup_context_project` seeds entries.
 fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    // Run from the temp dir so find_project_db doesn't walk up and discover
+    // the real .spelunk/index.db in the project root.
+    if let Some(dir) = config_path.parent() {
+        cmd.current_dir(dir);
+    }
     cmd.arg("--config").arg(config_path).arg("context");
     cmd
 }
@@ -488,6 +493,7 @@ fn context_exits_nonzero_when_config_invalid() {
 
     Command::cargo_bin("spelunk")
         .unwrap()
+        .current_dir(&tmp)
         .arg("--config")
         .arg(&config_path)
         .arg("context")
