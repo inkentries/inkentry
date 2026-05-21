@@ -1,4 +1,4 @@
-//! Integration tests for `spelunk::storage::Database`.
+//! Integration tests for `spelunk_core::storage::Database`.
 //!
 //! These tests open real (in-memory) SQLite databases with the sqlite-vec
 //! extension loaded.  They must run serially because sqlite3_auto_extension
@@ -7,8 +7,8 @@
 mod common;
 
 use serial_test::serial;
-use spelunk::embeddings::vec_to_blob;
-use spelunk::indexer::graph::{Edge, EdgeKind};
+use spelunk_core::embeddings::vec_to_blob;
+use spelunk_core::indexer::graph::{Edge, EdgeKind};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

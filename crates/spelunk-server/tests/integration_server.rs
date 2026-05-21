@@ -11,7 +11,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serial_test::serial;
-use spelunk::server::{AppState, router};
+use spelunk_server::{AppState, router};
 use std::sync::Arc;
 use tower::ServiceExt; // for `.oneshot()`
 
@@ -22,7 +22,7 @@ fn make_state() -> AppState {
     AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: None,
-        conflict_threshold: spelunk::server::default_conflict_threshold(),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
     }
 }
@@ -258,7 +258,7 @@ async fn protected_endpoint_rejects_missing_token() {
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: Some("secret".into()),
-        conflict_threshold: spelunk::server::default_conflict_threshold(),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
     };
     let resp = send(state, "GET", "/v1/projects", Body::empty(), false).await;
@@ -272,7 +272,7 @@ async fn protected_endpoint_accepts_correct_token() {
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: Some("secret".into()),
-        conflict_threshold: spelunk::server::default_conflict_threshold(),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
     };
     let req = Request::builder()
@@ -334,7 +334,7 @@ async fn search_returns_closest_note() {
 #[tokio::test]
 #[serial]
 async fn since_endpoint_returns_entries_after_timestamp() {
-    use spelunk::server::db::ServerDb;
+    use spelunk_server::db::ServerDb;
 
     common::register_sqlite_vec();
 
@@ -369,7 +369,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         api_key: None,
-        conflict_threshold: spelunk::server::default_conflict_threshold(),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
     };
 

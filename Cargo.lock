@@ -4911,18 +4911,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk"
+name = "spelunk-cli"
 version = "0.7.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "async-stream",
+ "blake3",
+ "clap",
+ "dirs",
+ "futures-util",
+ "gix 0.83.0",
+ "ignore",
+ "indicatif",
+ "predicates",
+ "pretty_assertions",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "spelunk-core",
+ "sqlite-vec",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
+name = "spelunk-core"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
  "async-trait",
- "axum",
  "blake3",
  "calamine",
  "cargo-audit",
- "clap",
  "dirs",
  "docx-rs",
  "futures-util",
@@ -4931,7 +4957,6 @@ dependencies = [
  "ignore",
  "indicatif",
  "lopdf",
- "predicates",
  "pretty_assertions",
  "proptest",
  "regex",
@@ -4944,10 +4969,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "toml 1.1.2+spec-1.1.0",
- "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
@@ -4965,6 +4987,33 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-sequel",
  "tree-sitter-typescript",
+ "wiremock",
+]
+
+[[package]]
+name = "spelunk-server"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "clap",
+ "pretty_assertions",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "spelunk-core",
+ "sqlite-vec",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "utoipa",
  "wiremock",
 ]

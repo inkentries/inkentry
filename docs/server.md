@@ -8,7 +8,7 @@ only memory entries travel to the server.
 
 ```bash
 # Clone and build
-git clone https://github.com/usercise/spelunk
+git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
 # Start the server (no auth — dev only)

@@ -5,7 +5,7 @@ Agents communicate via NDJSON files in this directory and via GitHub Issues + sp
 ## Channels
 
 ### 1. GitHub Issues (primary — task tracking)
-- All work is tracked as GitHub Issues in `usercise/spelunk`
+- All work is tracked as GitHub Issues in `spelunk-cloud/spelunk`
 - Every agent that starts a task comments on the issue: "Starting work on #N"
 - Every agent that completes a task comments: "Done — PR #M / ready for QA"
 - Labels signal which persona should pick up the work (see label descriptions)

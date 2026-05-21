@@ -68,10 +68,10 @@ That's it. The release workflow triggers automatically on the pushed tag.
 ### 3. Monitor the workflow
 
 Watch progress at:
-`https://github.com/usercise/spelunk/actions/workflows/release.yml`
+`https://github.com/spelunk-cloud/spelunk/actions/workflows/release.yml`
 
 Once all jobs pass, the release appears at:
-`https://github.com/usercise/spelunk/releases/tag/v0.7.0`
+`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.7.0`
 
 ## Pre-releases
 
@@ -89,23 +89,23 @@ git push origin v0.7.0-rc.1
 After a release is published, assets follow this URL pattern:
 
 ```
-https://github.com/usercise/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz
 ```
 
 Examples:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz
 
 # macOS universal (x86_64 + Apple Silicon)
-https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz
 ```
 
 ## Deleting a bad release

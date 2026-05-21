@@ -40,7 +40,7 @@ AI coding agents lose context between sessions and can't trace how code connects
 cargo install spelunk
 ```
 
-> Or download a binary from the [releases page](https://github.com/usercise/spelunk/releases). See [Getting Started](docs/getting-started.md) for full instructions.
+> Or download a binary from the [releases page](https://github.com/spelunk-cloud/spelunk/releases). See [Getting Started](docs/getting-started.md) for full instructions.
 
 **2. Use it**
 

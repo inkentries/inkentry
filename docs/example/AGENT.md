@@ -9,7 +9,7 @@
 
 ## Context retrieval — use spelunk
 
-This project uses [spelunk](https://github.com/usercise/spelunk) for code graph traversal, memory, and search.
+This project uses [spelunk](https://github.com/spelunk-cloud/spelunk) for code graph traversal, memory, and search.
 
 ```bash
 # Trace a symbol's callers and callees (no server needed)

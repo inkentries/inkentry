@@ -1,13 +1,13 @@
 //! Unit tests for the chunker module (no I/O, no SQLite).
 
-use spelunk::indexer::{Chunk, ChunkKind};
+use spelunk_core::indexer::{Chunk, ChunkKind};
 
 // ── sliding_window ───────────────────────────────────────────────────────────
 
 #[test]
 fn sliding_window_single_chunk_when_file_fits() {
     let src = "line1\nline2\nline3";
-    let chunks = spelunk::indexer::sliding_window(src, "test.txt", "text", 10, 2);
+    let chunks = spelunk_core::indexer::sliding_window(src, "test.txt", "text", 10, 2);
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].start_line, 1);
     assert_eq!(chunks[0].end_line, 3);
@@ -22,7 +22,7 @@ fn sliding_window_produces_overlap() {
         .map(|n| format!("line{n}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let chunks = spelunk::indexer::sliding_window(&src, "test.txt", "text", 4, 2);
+    let chunks = spelunk_core::indexer::sliding_window(&src, "test.txt", "text", 4, 2);
     assert_eq!(chunks.len(), 2);
     assert_eq!(chunks[0].start_line, 1);
     assert_eq!(chunks[0].end_line, 4);
@@ -32,14 +32,14 @@ fn sliding_window_produces_overlap() {
 
 #[test]
 fn sliding_window_empty_source_returns_no_chunks() {
-    let chunks = spelunk::indexer::sliding_window("", "test.txt", "text", 10, 2);
+    let chunks = spelunk_core::indexer::sliding_window("", "test.txt", "text", 10, 2);
     assert!(chunks.is_empty());
 }
 
 #[test]
 fn sliding_window_all_chunks_are_verbatim() {
     let src = "a\nb\nc\nd\ne\nf\ng\nh";
-    let chunks = spelunk::indexer::sliding_window(src, "f.txt", "text", 3, 1);
+    let chunks = spelunk_core::indexer::sliding_window(src, "f.txt", "text", 3, 1);
     for c in &chunks {
         assert!(matches!(c.kind, ChunkKind::Verbatim));
     }

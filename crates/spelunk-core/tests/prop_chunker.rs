@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use spelunk::indexer::chunker::sliding_window;
+use spelunk_core::indexer::chunker::sliding_window;
 
 proptest! {
     // Every chunk's content must be a substring of the original source

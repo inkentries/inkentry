@@ -5,7 +5,7 @@ mod cli;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
-use spelunk::{
+use spelunk_core::{
     backends, config, embeddings, error, indexer, llm, registry, search, storage, utils,
 };
 

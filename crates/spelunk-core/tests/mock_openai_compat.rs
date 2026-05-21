@@ -4,8 +4,8 @@
 //! instance is needed.  They exercise the JSON contract and error handling
 //! of `OpenAiCompatEmbedder`.
 
-use spelunk::config::Config;
-use spelunk::embeddings::{EmbeddingBackend, openai_compat::OpenAiCompatEmbedder};
+use spelunk_core::config::Config;
+use spelunk_core::embeddings::{EmbeddingBackend, openai_compat::OpenAiCompatEmbedder};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

@@ -12,7 +12,7 @@
 **Please do not file public GitHub issues for security vulnerabilities.**
 
 Report security issues privately via GitHub's built-in private vulnerability reporting:
-**Security → Report a vulnerability** on the [spelunk repository](https://github.com/usercise/spelunk/security/advisories/new).
+**Security → Report a vulnerability** on the [spelunk repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
 
 ### What to include
 

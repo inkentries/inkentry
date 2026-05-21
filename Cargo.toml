@@ -1,148 +1,28 @@
-[package]
-name = "spelunk"
-version = "0.7.0"
-edition = "2024"
-default-run = "spelunk"
-description = "Local context engine for AI coding agents — tree-sitter AST chunking, semantic search, code graph"
-license = "MIT"
-repository = "https://github.com/usercise/spelunk"
-homepage = "https://github.com/usercise/spelunk"
-keywords = ["code-search", "semantic-search", "tree-sitter", "ai-agents", "embeddings"]
-categories = ["command-line-utilities", "development-tools", "text-processing"]
+[workspace]
+members = [
+    "crates/spelunk-core",
+    "crates/spelunk-cli",
+    "crates/spelunk-server",
+]
+resolver = "2"
 
-[lib]
-name = "spelunk"
-path = "src/lib.rs"
-
-[[bin]]
-name = "spelunk"
-path = "src/main.rs"
-
-[[bin]]
-name = "spelunk-server"
-path = "src/bin/spelunk_server.rs"
-
-[features]
-default = ["backend-lmstudio"]
-backend-lmstudio = ["dep:futures-util"]
-rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
-
-[dependencies]
-
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Async traits
+[workspace.dependencies]
+anyhow      = "1"
 async-trait = "0.1"
-
-# Error handling
-anyhow = "1"
-thiserror = "2"
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# Config file
-toml = "1.1"
-dirs = "6"
-
-# SQLite
-rusqlite = { version = "0.39", features = ["bundled"] }
-
-# Zero-infrastructure memory backend: SQLite in .git/ + refs/meta/ for push/fetch
-git-meta-lib = "0.1.10"
-# gix is a transitive dep of git-meta-lib; declared directly to call Session::open()
-gix = { version = "0.83.0", default-features = false, features = ["sha1", "status"] }
-
-# Vector extension for SQLite
-sqlite-vec = "0.1"
-
-# Tree-sitter core + language grammars
-tree-sitter = "0.26"
-tree-sitter-rust = "0.24"
-tree-sitter-python = "0.25"
-tree-sitter-javascript = "0.25"
-tree-sitter-typescript = "0.23"
-tree-sitter-go = "0.25"
-tree-sitter-java = "0.23"
-tree-sitter-c = "0.24"
-tree-sitter-cpp = "0.23"
-tree-sitter-json = "0.24"
-tree-sitter-html = "0.23"
-tree-sitter-css = "0.25"
-tree-sitter-hcl = "1.1"
-tree-sitter-proto = "0.4"
-tree-sitter-sequel = "0.3"
-
-# HTTP client — used by OpenAI-compatible backend and remote memory backend
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-futures-util = { version = "0.3", optional = true }
-
-# HTTP server — used by spelunk-server binary
-axum = { version = "0.8", features = ["macros"] }
-tower-http = { version = "0.6", features = ["auth"] }
-
-# SSE stream helpers for /memory/stream endpoint
-async-stream = "0.3"
-tokio-stream = "0.1"
-
-# OpenAPI documentation
-utoipa = { version = "5", features = ["axum_extras"] }
-
-# Secret scanning in indexer
-regex = { version = "1", default-features = false, features = ["std"] }
-
-# Content hashing (change detection for incremental indexing)
-blake3 = "1"
-
-# Document format parsers
-docx-rs  = { version = "0.4", optional = true }
-calamine = { version = "0.35", features = ["dates"], optional = true }
-lopdf    = { version = "0.40", optional = true }
-
-# Filesystem traversal + .gitignore support
-ignore = "0.4"
-
-# Progress bars
-indicatif = "0.18"
-
-# Logging
-tracing = "0.1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
-proptest = "1"
-assert_cmd = "2.2"
-predicates = "3.1"
-
-
-# Temporary files/directories for integration tests
-tempfile = "3"
-
-# HTTP mock server for OpenAI-compatible API tests
-wiremock = "0.6"
-
-# Cleaner assertion diffs
+rusqlite    = { version = "0.39", features = ["bundled"] }
+sqlite-vec  = "0.1"
+reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tempfile    = "3"
 pretty_assertions = "1"
-
-# Serialise assertions stay serial (sqlite-vec auto_extension is process-global)
 serial_test = "3"
-
-# axum oneshot testing
-tower = { version = "0.5", features = ["util"] }
-
-# OpenAPI docs — also used by server handler tests
-utoipa = { version = "5", features = ["axum_extras"] }
-
-# Security audit tool — declared here so Cargo.lock pins the version and the
-# registry cache covers the source, avoiding a full download on every CI run.
-cargo-audit = { version = "0.22", features = ["fix"] }
+wiremock    = "0.6"
 
 [profile.release]
-lto = true
+lto           = true
 codegen-units = 1
-opt-level = 3
+opt-level     = 3
