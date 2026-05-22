@@ -1,15 +1,12 @@
 use anyhow::{Context, Result};
 
 use super::MemoryWatchArgs;
-use crate::config::Config;
+use crate::{capability, config::Config};
 
 pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<()> {
-    let base_url = cfg.server_url.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "'spelunk memory watch' requires spelunk-server.\n\
-             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
-        )
-    })?;
+    let tier = capability::get_tier(cfg).await;
+    capability::require_tier1("memory watch", tier, cfg.server_url.as_deref())?;
+    let base_url = cfg.server_url.as_deref().expect("require_tier1 passed");
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. \

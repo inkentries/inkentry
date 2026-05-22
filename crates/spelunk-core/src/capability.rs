@@ -105,6 +105,11 @@ impl Tier {
 ///
 /// On the first call, probes the server (if `server_url` is set) with a 2-second
 /// timeout. Subsequent calls return immediately from the cache.
+///
+/// **Per-process cache**: the result is stored in a `static OnceCell` and is fixed
+/// for the lifetime of the process. This is correct for CLI invocations (one process
+/// = one config), but unsuitable for long-running daemons that may use multiple
+/// configs — they would always see the tier determined by the first call.
 pub async fn get_tier(cfg: &Config) -> &'static Tier {
     let url = cfg.server_url.clone();
     let key = cfg.server_key.clone();

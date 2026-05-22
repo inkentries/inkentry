@@ -80,6 +80,17 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
             }
         }
     } else if effective == "json" {
+        let tier = capability::get_tier(&cfg).await;
+        let (server_reachable, server_url_val) = match tier {
+            capability::Tier::Server { url, .. } => (true, serde_json::Value::String(url.clone())),
+            capability::Tier::Offline => (
+                false,
+                cfg.server_url
+                    .as_deref()
+                    .map(|u| serde_json::Value::String(u.to_string()))
+                    .unwrap_or(serde_json::Value::Null),
+            ),
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -88,6 +99,8 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                 "stale_files": stale.len(),
                 "stale": stale,
                 "last_indexed_at": last_indexed,
+                "server_reachable": server_reachable,
+                "server_url": server_url_val,
             }))?
         );
     } else if fresh {

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 
 use super::MemoryPushArgs;
 use crate::{
+    capability,
     config::Config,
     storage::{NoteInput, open_memory_backend},
 };
@@ -12,12 +13,8 @@ pub(super) async fn memory_push(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    if cfg.server_url.is_none() {
-        anyhow::bail!(
-            "'spelunk memory push' requires spelunk-server.\n\
-             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
-        );
-    }
+    let tier = capability::get_tier(cfg).await;
+    capability::require_tier1("memory push", tier, cfg.server_url.as_deref())?;
 
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = crate::storage::MemoryStore::open(src_path)
