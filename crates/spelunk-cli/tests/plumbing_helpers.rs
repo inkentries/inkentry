@@ -73,7 +73,7 @@ pub fn write_config_with_server(
 /// Parses the request body `{"chunks":[{"chunk_id":"…","content":"…"}]}` and
 /// returns `{"chunks":[{"chunk_id":"…","vector":[0.1,…,0.1]}]}` for each
 /// chunk so the CLI can store the (fake) vectors in the local DB.
-struct IndexEmbedResponder;
+pub struct IndexEmbedResponder;
 
 impl wiremock::Respond for IndexEmbedResponder {
     fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {

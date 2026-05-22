@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use tempfile::TempDir;
+
 /// Returns `~/.config/spelunk/`.
 ///
 /// On all platforms we use `~/.config` rather than the OS-native config dir
@@ -268,5 +271,295 @@ impl Config {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unset all spelunk-related env vars to prevent cross-test contamination.
+    fn clear_spelunk_env() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_URL");
+            std::env::remove_var("SPELUNK_MEMORY_SERVER_URL");
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("SPELUNK_PROJECT_ID");
+        }
+    }
+
+    // ── serde alias: memory_server_url → server_url ─────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn memory_server_url_alias_loads_as_server_url() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+memory_server_url = "http://old.example.com:7777"
+project_id = "my-proj"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://old.example.com:7777".to_string())
+        );
+        assert_eq!(cfg.project_id, Some("my-proj".to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn memory_server_key_alias_loads_as_server_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+memory_server_key = "secret-token"
+project_id = "my-proj"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("secret-token".to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn loads_without_any_server_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_url, None);
+        assert_eq!(cfg.server_key, None);
+        assert_eq!(cfg.project_id, None);
+    }
+
+    // ── validate() cross-field constraints ───────────────────────────────────
+
+    #[test]
+    fn validate_fails_when_server_url_set_without_project_id() {
+        let mut cfg = Config::default();
+        cfg.server_url = Some("http://example.com".to_string());
+        let result = cfg.validate();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("server_url"));
+        assert!(msg.contains("project_id"));
+    }
+
+    #[test]
+    fn validate_passes_when_both_server_url_and_project_id_set() {
+        let mut cfg = Config::default();
+        cfg.server_url = Some("http://example.com".to_string());
+        cfg.project_id = Some("my-proj".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_passes_when_neither_server_url_nor_project_id_set() {
+        let cfg = Config::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_passes_when_only_project_id_set() {
+        let mut cfg = Config::default();
+        cfg.project_id = Some("my-proj".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    // ── env var overrides ────────────────────────────────────────────────────
+    //
+    // Env var tests are #[serial] because they mutate process-global state.
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_server_url_overrides_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"server_url = "http://config.example.com:7777"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_SERVER_URL", "http://env.example.com:7777");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://env.example.com:7777".to_string())
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_server_key_overrides_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"server_key = "config-token"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_SERVER_KEY", "env-token");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("env-token".to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_project_id_overrides_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"project_id = "config-proj"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_PROJECT_ID", "env-proj");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.project_id, Some("env-proj".to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_memory_server_url_deprecated_fallback() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        // Only set the deprecated var; SPELUNK_SERVER_URL must be absent.
+        unsafe {
+            std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://old.example.com:7777".to_string())
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_server_url_precedence_over_memory_fallback() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_SERVER_URL", "http://new.example.com:7777");
+            std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://new.example.com:7777".to_string())
+        );
+    }
+
+    // ── .spelunk/config.toml project-level merge ─────────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn project_level_config_merges_server_url() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("project");
+        let spelunk_dir = proj_dir.join(".spelunk");
+        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        std::fs::write(
+            spelunk_dir.join("config.toml"),
+            r#"server_url = "http://proj.example.com:7777"
+project_id = "team/proj"
+"#,
+        )
+        .unwrap();
+
+        let global_config = tmp.path().join("global.toml");
+        std::fs::write(&global_config, "").unwrap();
+
+        let original_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_current_dir(&proj_dir).unwrap();
+        }
+
+        let cfg = Config::load(Some(&global_config)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://proj.example.com:7777".to_string())
+        );
+        assert_eq!(cfg.project_id, Some("team/proj".to_string()));
+
+        if let Some(d) = original_cwd {
+            unsafe {
+                std::env::set_current_dir(d).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn project_level_config_accepts_memory_server_url_alias() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("project");
+        let spelunk_dir = proj_dir.join(".spelunk");
+        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        std::fs::write(
+            spelunk_dir.join("config.toml"),
+            r#"memory_server_url = "http://old.example.com:7777"
+project_id = "team/old"
+"#,
+        )
+        .unwrap();
+
+        let global_config = tmp.path().join("global.toml");
+        std::fs::write(&global_config, "").unwrap();
+
+        let original_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_current_dir(&proj_dir).unwrap();
+        }
+
+        let cfg = Config::load(Some(&global_config)).unwrap();
+        assert_eq!(
+            cfg.server_url,
+            Some("http://old.example.com:7777".to_string())
+        );
+        assert_eq!(cfg.project_id, Some("team/old".to_string()));
+
+        if let Some(d) = original_cwd {
+            unsafe {
+                std::env::set_current_dir(d).unwrap();
+            }
+        }
     }
 }

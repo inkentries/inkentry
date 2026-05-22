@@ -193,3 +193,203 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
          Set server_url in ~/.config/spelunk/config.toml to enable this feature.{tried}"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Capabilities::from_server_caps ──────────────────────────────────────
+
+    #[test]
+    fn from_server_caps_empty_returns_all_false() {
+        let caps = Capabilities::from_server_caps(&[]);
+        assert!(!caps.search_semantic);
+        assert!(!caps.index_embed);
+        assert!(!caps.memory_push);
+        assert!(!caps.memory_pull);
+        assert!(!caps.memory_search);
+        assert!(!caps.memory_harvest);
+        assert!(!caps.explore);
+        assert!(!caps.plan);
+    }
+
+    #[test]
+    fn from_server_caps_full_set() {
+        let caps = Capabilities::from_server_caps(&[
+            "search.semantic",
+            "index.embed",
+            "memory",
+            "explore",
+            "plan",
+        ]);
+        assert!(caps.search_semantic);
+        assert!(caps.index_embed);
+        assert!(caps.memory_push);
+        assert!(caps.memory_pull);
+        assert!(caps.memory_search);
+        assert!(caps.memory_harvest);
+        assert!(caps.explore);
+        assert!(caps.plan);
+    }
+
+    #[test]
+    fn from_server_caps_memory_only() {
+        let caps = Capabilities::from_server_caps(&["memory"]);
+        assert!(!caps.search_semantic);
+        assert!(!caps.index_embed);
+        assert!(!caps.explore);
+        assert!(!caps.plan);
+        assert!(caps.memory_push);
+        assert!(caps.memory_pull);
+        assert!(caps.memory_search);
+        assert!(caps.memory_harvest);
+    }
+
+    #[test]
+    fn from_server_caps_partial_set() {
+        let caps = Capabilities::from_server_caps(&["search.semantic", "plan"]);
+        assert!(caps.search_semantic);
+        assert!(!caps.index_embed);
+        assert!(!caps.explore);
+        assert!(caps.plan);
+        assert!(!caps.memory_push);
+        assert!(!caps.memory_pull);
+        assert!(!caps.memory_search);
+        assert!(!caps.memory_harvest);
+    }
+
+    #[test]
+    fn from_server_caps_unknown_capability_is_ignored() {
+        let caps = Capabilities::from_server_caps(&["search.semantic", "unknown.future", "memory"]);
+        assert!(caps.search_semantic);
+        assert!(!caps.index_embed);
+        assert!(caps.memory_push);
+        // Unknown capability should not affect any flag.
+    }
+
+    // ── Capabilities::legacy_memory_only ─────────────────────────────────────
+
+    #[test]
+    fn legacy_memory_only_values() {
+        let caps = Capabilities::legacy_memory_only();
+        assert!(!caps.search_semantic);
+        assert!(!caps.index_embed);
+        assert!(!caps.explore);
+        assert!(!caps.plan);
+        assert!(caps.memory_push);
+        assert!(caps.memory_pull);
+        assert!(caps.memory_search);
+        assert!(!caps.memory_harvest);
+    }
+
+    // ── Capabilities::all ────────────────────────────────────────────────────
+
+    #[test]
+    fn all_values_are_true() {
+        let caps = Capabilities::all();
+        assert!(caps.search_semantic);
+        assert!(caps.index_embed);
+        assert!(caps.memory_push);
+        assert!(caps.memory_pull);
+        assert!(caps.memory_search);
+        assert!(caps.memory_harvest);
+        assert!(caps.explore);
+        assert!(caps.plan);
+    }
+
+    // ── Tier ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tier_server_is_server_true() {
+        let tier = Tier::Server {
+            url: "http://example.com".to_string(),
+            caps: Capabilities::all(),
+        };
+        assert!(tier.is_server());
+    }
+
+    #[test]
+    fn tier_offline_is_server_false() {
+        let tier = Tier::Offline;
+        assert!(!tier.is_server());
+    }
+
+    #[test]
+    fn tier_server_returns_url() {
+        let tier = Tier::Server {
+            url: "http://spelunk.internal:7777".to_string(),
+            caps: Capabilities::all(),
+        };
+        assert_eq!(tier.server_url(), Some("http://spelunk.internal:7777"));
+    }
+
+    #[test]
+    fn tier_offline_returns_none_url() {
+        let tier = Tier::Offline;
+        assert_eq!(tier.server_url(), None);
+    }
+
+    #[test]
+    fn tier_server_returns_caps() {
+        let caps = Capabilities::all();
+        let tier = Tier::Server {
+            url: "http://example.com".to_string(),
+            caps: caps.clone(),
+        };
+        assert!(tier.caps().is_some());
+    }
+
+    #[test]
+    fn tier_offline_returns_none_caps() {
+        let tier = Tier::Offline;
+        assert!(tier.caps().is_none());
+    }
+
+    // ── require_tier1 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn require_tier1_ok_for_server() {
+        let tier = Tier::Server {
+            url: "http://example.com".to_string(),
+            caps: Capabilities::all(),
+        };
+        assert!(require_tier1("explore", &tier, Some("http://example.com")).is_ok());
+    }
+
+    #[test]
+    fn require_tier1_err_for_offline_no_url() {
+        let tier = Tier::Offline;
+        let err = require_tier1("explore", &tier, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'spelunk explore'"));
+        assert!(msg.contains("requires spelunk-server"));
+        assert!(msg.contains("server_url"));
+    }
+
+    #[test]
+    fn require_tier1_err_for_offline_with_url_includes_tried() {
+        let tier = Tier::Offline;
+        let err = require_tier1("plan", &tier, Some("http://bad:7777")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'spelunk plan'"));
+        assert!(msg.contains("requires spelunk-server"));
+        assert!(msg.contains("http://bad:7777"));
+        assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn require_tier1_uses_feature_name_in_message() {
+        let tier = Tier::Offline;
+        let err = require_tier1("memory push", &tier, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'spelunk memory push'"));
+    }
+
+    #[test]
+    fn require_tier1_no_tried_line_when_url_not_set() {
+        let tier = Tier::Offline;
+        let err = require_tier1("explore", &tier, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(!msg.contains("Tried:"));
+    }
+}
