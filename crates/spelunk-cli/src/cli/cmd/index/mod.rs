@@ -38,7 +38,7 @@ pub struct IndexArgs {
     pub background_phases: bool,
 }
 
-use crate::{config::Config, registry::Registry, storage::Database};
+use crate::{capability, config::Config, registry::Registry, storage::Database};
 
 mod embed_phase;
 mod mentions;
@@ -47,6 +47,9 @@ mod summaries;
 mod worktree;
 
 pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
+    // Validate config: server_url requires project_id.
+    cfg.validate()?;
+
     // Compile secret-scanning regexes once before the hot loop.
     crate::indexer::secrets::init();
 
@@ -122,17 +125,33 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         eprintln!("Removed {} stale file(s) from index.", result.removed);
     }
 
+    // ── Phase 2: embed chunks (Tier 1 only) ─────────────────────────────────
+    let tier = capability::get_tier(&cfg).await;
+
     if result.chunk_ids_and_texts.is_empty() {
         let stats = db.stats()?;
         println!(
-            "Index: {} files, {} chunks, {} embeddings (nothing new to embed)",
+            "Index: {} files, {} chunks, {} embeddings (nothing new to process)",
             stats.file_count, stats.chunk_count, stats.embedding_count
         );
         return Ok(());
     }
 
-    // ── Phase 2: embed chunks ────────────────────────────────────────────────
-    embed_phase::run_embed_phase(result.chunk_ids_and_texts, &db, &cfg, &args, &mp).await?;
+    if tier.is_server() {
+        embed_phase::run_embed_phase(result.chunk_ids_and_texts, &db, &cfg, tier, &mp).await?;
+    } else if cfg.server_url.is_some() {
+        eprintln!(
+            "Warning: spelunk-server at {} is unreachable — skipping embedding phase.",
+            cfg.server_url.as_deref().unwrap_or("?")
+        );
+        eprintln!(
+            "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` when the server is back to add embeddings."
+        );
+    } else {
+        eprintln!(
+            "Note: configure server_url in ~/.config/spelunk/config.toml to enable semantic search."
+        );
+    }
 
     let stats = db.stats()?;
     println!(

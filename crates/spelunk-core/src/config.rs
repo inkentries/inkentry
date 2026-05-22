@@ -49,9 +49,14 @@ fn find_project_config(start: &Path) -> Option<PathBuf> {
 /// Only contains fields safe to share with the team (no secrets).
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
-    memory_server_url: Option<String>,
+    /// Canonical server URL (preferred).
+    server_url: Option<String>,
     /// Shared API key — acceptable if the server is behind a VPN/firewall.
     /// For secrets, prefer `SPELUNK_SERVER_KEY` env var instead.
+    server_key: Option<String>,
+    /// Deprecated alias for server_url.
+    memory_server_url: Option<String>,
+    /// Deprecated alias for server_key.
     memory_server_key: Option<String>,
     project_id: Option<String>,
 }
@@ -103,21 +108,24 @@ pub struct Config {
     #[serde(default = "Config::default_api_base_url", alias = "lmstudio_base_url")]
     pub api_base_url: String,
 
-    // ── Shared memory server (optional) ──────────────────────────────────────
+    // ── spelunk-server (optional) ─────────────────────────────────────────────
     /// URL of the spelunk-server instance, e.g. `http://spelunk.internal:7777`.
+    /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
+    /// semantic search, embedding, explore, and plan features.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.
-    /// If unset, memory is stored locally in memory.db.
-    #[serde(default)]
-    pub memory_server_url: Option<String>,
+    /// The old `memory_server_url` TOML key is accepted as a backward-compat alias.
+    #[serde(default, alias = "memory_server_url")]
+    pub server_url: Option<String>,
 
     /// Bearer token for spelunk-server auth.
     /// Set in `~/.config/spelunk/config.toml` (personal) or via `SPELUNK_SERVER_KEY`.
     /// Do NOT commit this to `.spelunk/config.toml`.
-    #[serde(default)]
-    pub memory_server_key: Option<String>,
+    /// The old `memory_server_key` TOML key is accepted as a backward-compat alias.
+    #[serde(default, alias = "memory_server_key")]
+    pub server_key: Option<String>,
 
-    /// Project slug for the shared memory server (e.g. `my-awesome-app`).
-    /// Required when `memory_server_url` is set.
+    /// Project slug for the spelunk-server (e.g. `acme/my-app`).
+    /// Required when `server_url` is set.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_PROJECT_ID`.
     #[serde(default)]
     pub project_id: Option<String>,
@@ -178,8 +186,8 @@ impl Default for Config {
             llm_model: None,
             batch_size: Self::default_batch_size(),
             api_base_url: Self::default_api_base_url(),
-            memory_server_url: None,
-            memory_server_key: None,
+            server_url: None,
+            server_key: None,
             project_id: None,
             plans_dir: Self::default_plans_dir(),
             specs_dir: Self::default_specs_dir(),
@@ -218,11 +226,13 @@ impl Config {
                 .with_context(|| format!("reading project config at {}", proj_path.display()))?;
             let proj: ProjectConfig =
                 toml::from_str(&raw).context("parsing .spelunk/config.toml")?;
-            if let Some(v) = proj.memory_server_url {
-                cfg.memory_server_url = Some(v);
+
+            // Prefer new name; fall back to deprecated alias.
+            if let Some(v) = proj.server_url.or(proj.memory_server_url) {
+                cfg.server_url = Some(v);
             }
-            if let Some(v) = proj.memory_server_key {
-                cfg.memory_server_key = Some(v);
+            if let Some(v) = proj.server_key.or(proj.memory_server_key) {
+                cfg.server_key = Some(v);
             }
             if let Some(v) = proj.project_id {
                 cfg.project_id = Some(v);
@@ -231,10 +241,15 @@ impl Config {
 
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
-            cfg.memory_server_url = Some(v);
+            cfg.server_url = Some(v);
+        } else if let Ok(v) = std::env::var("SPELUNK_MEMORY_SERVER_URL") {
+            tracing::warn!(
+                "SPELUNK_MEMORY_SERVER_URL is deprecated; use SPELUNK_SERVER_URL instead"
+            );
+            cfg.server_url = Some(v);
         }
         if let Ok(v) = std::env::var("SPELUNK_SERVER_KEY") {
-            cfg.memory_server_key = Some(v);
+            cfg.server_key = Some(v);
         }
         if let Ok(v) = std::env::var("SPELUNK_PROJECT_ID") {
             cfg.project_id = Some(v);
@@ -245,9 +260,9 @@ impl Config {
 
     /// Validate cross-field constraints. Call after `load()`.
     pub fn validate(&self) -> Result<()> {
-        if self.memory_server_url.is_some() && self.project_id.is_none() {
+        if self.server_url.is_some() && self.project_id.is_none() {
             anyhow::bail!(
-                "memory_server_url is set but project_id is missing.\n\
+                "server_url is set but project_id is missing.\n\
                  Add `project_id = \"my-project\"` to .spelunk/config.toml \
                  or set SPELUNK_PROJECT_ID."
             );

@@ -6,7 +6,7 @@ mod cli;
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use spelunk_core::{
-    backends, config, embeddings, error, indexer, llm, registry, search, storage, utils,
+    backends, capability, config, embeddings, error, indexer, llm, registry, search, storage, utils,
 };
 
 #[tokio::main]

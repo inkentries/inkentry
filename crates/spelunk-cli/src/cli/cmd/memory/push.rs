@@ -12,10 +12,10 @@ pub(super) async fn memory_push(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    if cfg.memory_server_url.is_none() {
+    if cfg.server_url.is_none() {
         anyhow::bail!(
-            "memory_server_url is not configured.\n\
-             Set it in .spelunk/config.toml or via SPELUNK_SERVER_URL."
+            "'spelunk memory push' requires spelunk-server.\n\
+             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
         );
     }
 
@@ -33,7 +33,7 @@ pub(super) async fn memory_push(
     println!(
         "Pushing {} entries to {}…",
         notes.len(),
-        cfg.memory_server_url.as_deref().unwrap_or("?")
+        cfg.server_url.as_deref().unwrap_or("?")
     );
     let mut pushed = 0usize;
     let mut skipped = 0usize;

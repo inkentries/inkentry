@@ -22,6 +22,7 @@ pub struct CheckArgs {
 }
 
 use crate::{
+    capability,
     config::{Config, resolve_db},
     storage::{Database, open_memory_backend},
     utils::{format_age, worktree_modified_files},
@@ -97,6 +98,33 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
             println!("  {p}");
         }
         println!("\nRun `spelunk index .` to update.");
+    }
+
+    // Show server status line (text mode only, when server_url is configured).
+    if (effective == "text" || effective == "porcelain") && cfg.server_url.is_some() {
+        let tier = capability::get_tier(&cfg).await;
+        match tier {
+            capability::Tier::Server { url, caps } => {
+                let features: Vec<&str> = [
+                    caps.search_semantic.then_some("semantic search"),
+                    caps.explore.then_some("explore"),
+                    caps.plan.then_some("plan"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let feature_str = if features.is_empty() {
+                    "memory sync".to_string()
+                } else {
+                    features.join(", ")
+                };
+                println!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
+            }
+            capability::Tier::Offline => {
+                let url = cfg.server_url.as_deref().unwrap_or("?");
+                println!("Server:  {url}  \x1b[31m✗\x1b[0m  unreachable — offline mode");
+            }
+        }
     }
 
     // Show active intent entries (text mode only; silently skip if memory unavailable).

@@ -42,7 +42,16 @@ fn test_languages_output() {
 fn test_status_empty_project() {
     let temp = tempdir().unwrap();
     let config_path = temp.path().join("config.toml");
-    fs::write(&config_path, "llm_model = \"test-model\"\n").unwrap();
+    // Pin db_path to a non-existent temp path so the test is machine-independent.
+    let db_path = temp.path().join("nonexistent.db");
+    fs::write(
+        &config_path,
+        format!(
+            "llm_model = \"test-model\"\ndb_path = {:?}\n",
+            db_path.display().to_string()
+        ),
+    )
+    .unwrap();
 
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
     cmd.current_dir(temp.path())

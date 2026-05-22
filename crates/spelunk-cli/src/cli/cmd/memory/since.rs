@@ -28,7 +28,7 @@ pub(super) async fn memory_since(
 ) -> Result<()> {
     // ── Remote path ───────────────────────────────────────────────────────────
     if let (Some(base_url), Some(project_id)) =
-        (cfg.memory_server_url.as_deref(), cfg.project_id.as_deref())
+        (cfg.server_url.as_deref(), cfg.project_id.as_deref())
     {
         let limit = args.limit.min(500);
         let url = format!(
@@ -40,7 +40,7 @@ pub(super) async fn memory_since(
         let mut req = client
             .get(&url)
             .query(&[("t", args.since.to_string()), ("limit", limit.to_string())]);
-        if let Some(key) = cfg.memory_server_key.as_deref() {
+        if let Some(key) = cfg.server_key.as_deref() {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
         let notes: Vec<NoteResponse> = req

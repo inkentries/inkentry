@@ -1,4 +1,5 @@
 pub mod backends;
+pub mod capability;
 pub mod config;
 pub mod embeddings;
 pub mod error;

@@ -4,10 +4,10 @@ use super::MemoryWatchArgs;
 use crate::config::Config;
 
 pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<()> {
-    let base_url = cfg.memory_server_url.as_deref().ok_or_else(|| {
+    let base_url = cfg.server_url.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
-            "`memory_server_url` is not configured. \
-             Set it in `.spelunk/config.toml` or via `SPELUNK_SERVER_URL`."
+            "'spelunk memory watch' requires spelunk-server.\n\
+             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
         )
     })?;
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
@@ -27,7 +27,7 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
 
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
-    if let Some(key) = cfg.memory_server_key.as_deref() {
+    if let Some(key) = cfg.server_key.as_deref() {
         req = req.header("Authorization", format!("Bearer {key}"));
     }
 
