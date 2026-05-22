@@ -350,8 +350,10 @@ project_id = "my-proj"
 
     #[test]
     fn validate_fails_when_server_url_set_without_project_id() {
-        let mut cfg = Config::default();
-        cfg.server_url = Some("http://example.com".to_string());
+        let cfg = Config {
+            server_url: Some("http://example.com".to_string()),
+            ..Default::default()
+        };
         let result = cfg.validate();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -361,9 +363,11 @@ project_id = "my-proj"
 
     #[test]
     fn validate_passes_when_both_server_url_and_project_id_set() {
-        let mut cfg = Config::default();
-        cfg.server_url = Some("http://example.com".to_string());
-        cfg.project_id = Some("my-proj".to_string());
+        let cfg = Config {
+            server_url: Some("http://example.com".to_string()),
+            project_id: Some("my-proj".to_string()),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
     }
 
@@ -375,8 +379,10 @@ project_id = "my-proj"
 
     #[test]
     fn validate_passes_when_only_project_id_set() {
-        let mut cfg = Config::default();
-        cfg.project_id = Some("my-proj".to_string());
+        let cfg = Config {
+            project_id: Some("my-proj".to_string()),
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
     }
 
@@ -507,9 +513,7 @@ project_id = "team/proj"
         std::fs::write(&global_config, "").unwrap();
 
         let original_cwd = std::env::current_dir().ok();
-        unsafe {
-            std::env::set_current_dir(&proj_dir).unwrap();
-        }
+        std::env::set_current_dir(&proj_dir).unwrap();
 
         let cfg = Config::load(Some(&global_config)).unwrap();
         assert_eq!(
@@ -519,9 +523,7 @@ project_id = "team/proj"
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
 
         if let Some(d) = original_cwd {
-            unsafe {
-                std::env::set_current_dir(d).unwrap();
-            }
+            std::env::set_current_dir(d).unwrap();
         }
     }
 
@@ -545,9 +547,7 @@ project_id = "team/old"
         std::fs::write(&global_config, "").unwrap();
 
         let original_cwd = std::env::current_dir().ok();
-        unsafe {
-            std::env::set_current_dir(&proj_dir).unwrap();
-        }
+        std::env::set_current_dir(&proj_dir).unwrap();
 
         let cfg = Config::load(Some(&global_config)).unwrap();
         assert_eq!(
@@ -557,9 +557,7 @@ project_id = "team/old"
         assert_eq!(cfg.project_id, Some("team/old".to_string()));
 
         if let Some(d) = original_cwd {
-            unsafe {
-                std::env::set_current_dir(d).unwrap();
-            }
+            std::env::set_current_dir(d).unwrap();
         }
     }
 }
