@@ -26,7 +26,7 @@ pub struct AppState {
     /// Optional server-side embedder. When set, the server embeds entries that arrive without
     /// a pre-computed vector. If absent, entries without a vector are stored without one
     /// (text search only).
-    pub embedder: Option<Arc<dyn crate::embeddings::EmbeddingBackend>>,
+    pub embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>>,
 }
 
 pub fn default_conflict_threshold() -> f32 {
@@ -43,7 +43,7 @@ pub fn default_conflict_threshold() -> f32 {
         description = "Shared memory server for spelunk. Stores decisions, requirements, \
                         and context for a team and serves them over HTTP. Clients embed \
                         locally and send pre-computed vectors; the server stores and searches them.",
-        contact(name = "spelunk", url = "https://github.com/usercise/spelunk"),
+        contact(name = "spelunk", url = "https://github.com/spelunk-cloud/spelunk"),
         license(name = "MIT"),
     ),
     paths(

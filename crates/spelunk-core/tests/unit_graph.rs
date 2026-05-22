@@ -1,6 +1,6 @@
 //! Unit tests for graph EdgeKind parsing and Display.
 
-use spelunk::indexer::graph::EdgeKind;
+use spelunk_core::indexer::graph::EdgeKind;
 
 #[test]
 fn parse_known_kinds() {

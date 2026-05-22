@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use spelunk::search::tokens::estimate_tokens;
+use spelunk_core::search::tokens::estimate_tokens;
 
 proptest! {
     // estimate_tokens always returns >= 1

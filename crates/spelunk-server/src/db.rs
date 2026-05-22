@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::embeddings::blob_to_vec;
+use spelunk_core::embeddings::blob_to_vec;
 
 /// Shared state for all DB operations on the server.
 pub struct ServerDb {
@@ -56,7 +56,7 @@ impl ServerDb {
 
     fn migrate(&self) -> Result<()> {
         self.conn
-            .execute_batch(include_str!("../../migrations/server_001.sql"))
+            .execute_batch(include_str!("../migrations/server_001.sql"))
             .context("server migration 001")?;
         // Create the embeddings virtual table with the configured dimension.
         // IF NOT EXISTS means this is a no-op if the table already exists.
@@ -69,7 +69,7 @@ impl ServerDb {
             ))
             .context("creating note_embeddings virtual table")?;
         self.conn
-            .execute_batch(include_str!("../../migrations/server_002.sql"))
+            .execute_batch(include_str!("../migrations/server_002.sql"))
             .context("server migration 002")?;
         Ok(())
     }
@@ -178,7 +178,7 @@ impl ServerDb {
         let note_id = self.conn.last_insert_rowid();
 
         if let Some(vec) = embedding {
-            let blob = crate::embeddings::vec_to_blob(vec);
+            let blob = spelunk_core::embeddings::vec_to_blob(vec);
             self.conn.execute(
                 "INSERT INTO note_embeddings (note_id, embedding) VALUES (?1, ?2)",
                 rusqlite::params![note_id, blob],
@@ -248,7 +248,7 @@ impl ServerDb {
         limit: usize,
     ) -> Result<Vec<ServerNote>> {
         let limit = limit.min(100);
-        let blob = crate::embeddings::vec_to_blob(query_vec);
+        let blob = spelunk_core::embeddings::vec_to_blob(query_vec);
         let sql = format!(
             "WITH knn AS (
                  SELECT note_id, distance
@@ -284,7 +284,7 @@ impl ServerDb {
         limit: usize,
     ) -> Result<Vec<ServerNote>> {
         let limit = limit.min(50);
-        let blob = crate::embeddings::vec_to_blob(query_vec);
+        let blob = spelunk_core::embeddings::vec_to_blob(query_vec);
         // We search with a generous k (limit + 1 for the excluded entry) and filter in Rust.
         let search_limit = limit + 1;
         let sql = format!(
@@ -495,7 +495,7 @@ fn now_unix() -> i64 {
 }
 
 // Need blob_to_vec for search — it's in embeddings module so the import works.
-// But we also need vec_to_blob for the vec0 match query. Both are in crate::embeddings.
+// But we also need vec_to_blob for the vec0 match query. Both are in spelunk_core::embeddings.
 impl ServerDb {
     /// Convenience: decode a raw embedding blob to f32 vec for use with search_notes.
     pub fn decode_embedding(blob: &[u8]) -> Vec<f32> {

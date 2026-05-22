@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use spelunk::server::db::ServerDb;
-use spelunk::server::{ApiDoc, AppState, default_conflict_threshold, router};
+use spelunk_server::db::ServerDb;
+use spelunk_server::{ApiDoc, AppState, default_conflict_threshold, router};
 use utoipa::OpenApi;
 
 #[derive(Parser, Debug)]
@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     }
 
     // Build the optional server-side embedder.
-    let embedder: Option<Arc<dyn spelunk::embeddings::EmbeddingBackend>> =
+    let embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> =
         if let Some(base_url) = args.embedding_url {
             let model = if args.embedding_model.is_empty() {
                 "default".to_string()
@@ -137,7 +137,7 @@ struct ServerEmbedder {
 }
 
 #[async_trait::async_trait]
-impl spelunk::embeddings::EmbeddingBackend for ServerEmbedder {
+impl spelunk_core::embeddings::EmbeddingBackend for ServerEmbedder {
     async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
         #[derive(serde::Serialize)]
         struct Req<'a> {

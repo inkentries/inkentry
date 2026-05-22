@@ -27,7 +27,7 @@ for model recommendations and alternative servers (Ollama, vLLM).
 ## Build
 
 ```bash
-git clone https://github.com/usercise/spelunk
+git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
 # Debug build (faster compile, slower runtime)

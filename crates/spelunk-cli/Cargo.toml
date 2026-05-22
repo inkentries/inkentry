@@ -1,0 +1,45 @@
+[package]
+name        = "spelunk-cli"
+version     = "0.7.0"
+edition     = "2024"
+description = "spelunk — AI agent context retrieval CLI"
+license     = "MIT"
+repository  = "https://github.com/spelunk-cloud/spelunk"
+homepage    = "https://github.com/spelunk-cloud/spelunk"
+keywords    = ["code-search", "semantic-search", "tree-sitter", "ai-agents", "embeddings"]
+categories  = ["command-line-utilities", "development-tools", "text-processing"]
+
+[features]
+rich-formats = ["spelunk-core/rich-formats"]
+
+[[bin]]
+name = "spelunk"
+path = "src/main.rs"
+
+[dependencies]
+spelunk-core = { path = "../spelunk-core" }
+anyhow       = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+rusqlite     = { workspace = true }
+sqlite-vec   = { workspace = true }
+clap         = { version = "4", features = ["derive", "env"] }
+serde        = { workspace = true }
+indicatif    = "0.18"
+futures-util = "0.3"
+ignore       = "0.4"
+reqwest      = { workspace = true }
+blake3       = "1"
+regex        = { version = "1", default-features = false, features = ["std"] }
+dirs         = "6"
+gix          = { version = "0.83.0", default-features = false, features = ["sha1", "status"] }
+
+[dev-dependencies]
+assert_cmd        = "2.2"
+predicates        = "3.1"
+tempfile          = { workspace = true }
+wiremock          = { workspace = true }
+pretty_assertions = { workspace = true }
+serial_test       = { workspace = true }

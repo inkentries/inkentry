@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use spelunk::embeddings::{blob_to_vec, vec_to_blob};
+use spelunk_core::embeddings::{blob_to_vec, vec_to_blob};
 
 proptest! {
     // Roundtrip: blob_to_vec(vec_to_blob(v)) == v

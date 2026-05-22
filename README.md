@@ -40,7 +40,7 @@ AI coding agents lose context between sessions and can't trace how code connects
 cargo install spelunk
 ```
 
-> Or download a binary from the [releases page](https://github.com/usercise/spelunk/releases). See [Getting Started](docs/getting-started.md) for full instructions.
+> Or download a binary from the [releases page](https://github.com/spelunk-cloud/spelunk/releases). See [Getting Started](docs/getting-started.md) for full instructions.
 
 **2. Use it**
 
@@ -148,6 +148,22 @@ All other file types are indexed as plain text with a sliding-window chunker.
 - [Agent Guide](docs/agent-guide.md) — using spelunk with AI coding agents
 - [Architecture](docs/architecture.md) — system design for contributors
 - [Examples](docs/examples/) — real-world workflows
+
+## Repository structure
+
+This is a Cargo workspace with three crates:
+
+| Crate | Path | Purpose |
+|---|---|---|
+| `spelunk-core` | `crates/spelunk-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
+| `spelunk-cli` | `crates/spelunk-cli` | `spelunk` binary — CLI commands; depends on `spelunk-core` |
+| `spelunk-server` | `crates/spelunk-server` | `spelunk-server` binary + lib — shared memory server; depends on `spelunk-core` |
+
+```bash
+cargo build -p spelunk-cli    # build the CLI
+cargo build -p spelunk-server # build the server
+cargo test                    # test all crates
+```
 
 ## Contributing
 

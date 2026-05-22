@@ -2,27 +2,27 @@
 
 ## 1. Install spelunk
 
-Download the latest binary for your platform from the [releases page](https://github.com/usercise/spelunk/releases) and put it somewhere on your `$PATH`:
+Download the latest binary for your platform from the [releases page](https://github.com/spelunk-cloud/spelunk/releases) and put it somewhere on your `$PATH`:
 
 ```bash
 # macOS (Apple Silicon) — universal binary also available
-curl -L https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-apple-darwin.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # macOS (universal — works on both Intel and Apple Silicon)
-curl -L https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Linux x86_64
-curl -L https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Linux ARM64
-curl -L https://github.com/usercise/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Verify
@@ -30,7 +30,7 @@ spelunk --version
 ```
 
 > Replace `v0.1.0` with the version you want. The URL pattern is:
-> `https://github.com/usercise/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz`
+> `https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz`
 
 > Building from source? See [Building](building.md).
 

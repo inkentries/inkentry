@@ -5,7 +5,7 @@
     "description": "Shared memory server for spelunk. Stores decisions, requirements, and context for a team and serves them over HTTP. Clients embed locally and send pre-computed vectors; the server stores and searches them.",
     "contact": {
       "name": "spelunk",
-      "url": "https://github.com/usercise/spelunk"
+      "url": "https://github.com/spelunk-cloud/spelunk"
     },
     "license": {
       "name": "MIT"

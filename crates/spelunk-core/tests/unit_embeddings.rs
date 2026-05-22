@@ -1,6 +1,6 @@
 //! Unit tests for embedding helpers (vec_to_blob / blob_to_vec roundtrip).
 
-use spelunk::embeddings::{blob_to_vec, vec_to_blob};
+use spelunk_core::embeddings::{blob_to_vec, vec_to_blob};
 
 #[test]
 fn roundtrip_empty_vec() {
