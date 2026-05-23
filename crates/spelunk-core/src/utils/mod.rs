@@ -1,5 +1,60 @@
 pub mod dates;
 
+/// If `root` (or any ancestor) is a git linked worktree, returns the main
+/// worktree root. Otherwise returns `root` itself.
+///
+/// Tries gix first (no subprocess), then falls back to reading the `.git` file
+/// at `root` directly. The fallback covers the case where `root` is exactly the
+/// worktree root even when gix cannot fully open the repository.
+pub fn resolve_main_worktree_root(root: &std::path::Path) -> std::path::PathBuf {
+    // ── gix path ─────────────────────────────────────────────────────────────
+    // gix::discover walks up from root, so it works whether root is the
+    // worktree root itself or a subdirectory inside it.
+    if let Ok(repo) = gix::discover(root) {
+        let git_dir = repo.git_dir();
+        // A linked worktree has git_dir at: <main>/.git/worktrees/<name>
+        // Parent of git_dir is the "worktrees" directory.
+        if let Some(parent) = git_dir.parent()
+            && parent.file_name() == Some(std::ffi::OsStr::new("worktrees"))
+        {
+            // parent.parent() == <main>/.git ; its parent == <main>
+            if let Some(main_root) = parent.parent().and_then(|p| p.parent())
+                && main_root != root
+            {
+                return main_root.to_path_buf();
+            }
+        }
+        return root.to_path_buf();
+    }
+
+    // ── fallback: parse .git file at root directly ────────────────────────
+    let git = root.join(".git");
+    if !git.is_file() {
+        return root.to_path_buf();
+    }
+    let Ok(content) = std::fs::read_to_string(&git) else {
+        return root.to_path_buf();
+    };
+    // Format: "gitdir: /abs/path/to/main/.git/worktrees/<name>\n"
+    let Some(gitdir_str) = content.strip_prefix("gitdir:") else {
+        return root.to_path_buf();
+    };
+    let gitdir = std::path::PathBuf::from(gitdir_str.trim());
+    let Some(worktrees_dir) = gitdir.parent() else {
+        return root.to_path_buf();
+    };
+    if worktrees_dir.file_name() != Some(std::ffi::OsStr::new("worktrees")) {
+        return root.to_path_buf();
+    }
+    let Some(main_root) = worktrees_dir.parent().and_then(|p| p.parent()) else {
+        return root.to_path_buf();
+    };
+    if main_root == root {
+        return root.to_path_buf();
+    }
+    main_root.to_path_buf()
+}
+
 /// Returns true when the process is running in agent mode (`AGENT=true`).
 ///
 /// In agent mode all output defaults to structured JSON and progress spinners
@@ -108,6 +163,51 @@ pub fn worktree_modified_files() -> std::collections::HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── resolve_main_worktree_root ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_main_worktree_root_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("feat-branch");
+        std::fs::create_dir_all(&main_root).unwrap();
+        std::fs::create_dir_all(&wt_root).unwrap();
+
+        // Simulate: main_root/.git/worktrees/feat-branch (the gitdir entry)
+        let gitdir_entry = main_root.join(".git").join("worktrees").join("feat-branch");
+        std::fs::create_dir_all(&gitdir_entry).unwrap();
+
+        // wt_root/.git is a file pointing to the worktrees entry
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", gitdir_entry.display()),
+        )
+        .unwrap();
+
+        let resolved = resolve_main_worktree_root(&wt_root);
+        assert_eq!(resolved, main_root);
+    }
+
+    #[test]
+    fn resolve_main_worktree_root_normal_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = tmp.path().join("myrepo");
+        // Normal repo: .git is a directory, not a file
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+
+        let resolved = resolve_main_worktree_root(&repo_root);
+        assert_eq!(resolved, repo_root);
+    }
+
+    #[test]
+    fn resolve_main_worktree_root_no_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_main_worktree_root(tmp.path());
+        assert_eq!(resolved, tmp.path());
+    }
+
+    // ── strip_ansi ────────────────────────────────────────────────────────────
 
     #[test]
     fn strips_csi_colour() {
