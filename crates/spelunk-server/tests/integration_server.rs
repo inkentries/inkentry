@@ -11,6 +11,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serial_test::serial;
+use spelunk_server::auth::ApiKeyAuth;
 use spelunk_server::{AppState, router};
 use std::sync::Arc;
 use tower::ServiceExt; // for `.oneshot()`
@@ -21,9 +22,10 @@ fn make_state() -> AppState {
     let db = common::open_test_server_db(4);
     AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
-        api_key: None,
+        auth: Arc::new(ApiKeyAuth::new(None)),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
+        llm: None,
     }
 }
 
@@ -257,9 +259,10 @@ async fn protected_endpoint_rejects_missing_token() {
     let db = common::open_test_server_db(4);
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
-        api_key: Some("secret".into()),
+        auth: Arc::new(ApiKeyAuth::new(Some("secret".into()))),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
+        llm: None,
     };
     let resp = send(state, "GET", "/v1/projects", Body::empty(), false).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -271,9 +274,10 @@ async fn protected_endpoint_accepts_correct_token() {
     let db = common::open_test_server_db(4);
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
-        api_key: Some("secret".into()),
+        auth: Arc::new(ApiKeyAuth::new(Some("secret".into()))),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
+        llm: None,
     };
     let req = Request::builder()
         .method("GET")
@@ -287,29 +291,28 @@ async fn protected_endpoint_accepts_correct_token() {
 
 // ── search ────────────────────────────────────────────────────────────────────
 
+/// memory/search now accepts `{"query": String}` and requires an embedder.
+/// Without an embedder, the endpoint must return 400.
 #[tokio::test]
 #[serial]
-async fn search_returns_closest_note() {
-    let state = make_state();
+async fn search_without_embedder_returns_400() {
+    let state = make_state(); // no embedder configured
 
-    // Add two notes with distinct embeddings.
-    for (title, emb) in [
-        ("alpha", [1.0_f32, 0.0, 0.0, 0.0]),
-        ("beta", [0.0_f32, 1.0, 0.0, 0.0]),
-    ] {
-        send(
-            state.clone(),
-            "POST",
-            "/v1/projects/s/memory",
-            json_body(serde_json::json!({"kind":"note","title":title,"embedding":emb})),
-            true,
-        )
-        .await;
-    }
+    // Create the project first.
+    send(
+        state.clone(),
+        "POST",
+        "/v1/projects/s/memory",
+        json_body(
+            serde_json::json!({"kind":"note","title":"alpha","embedding":[1.0_f32,0.0,0.0,0.0]}),
+        ),
+        true,
+    )
+    .await;
 
-    // Query near alpha.
+    // Query with text query — must return 400 (no embedder).
     let search_payload = serde_json::json!({
-        "embedding": [1.0_f32, 0.0, 0.0, 0.0],
+        "query": "how does authentication work",
         "limit": 2,
     });
     let resp = send(
@@ -320,13 +323,16 @@ async fn search_returns_closest_note() {
         true,
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "search without embedder must return 400"
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let notes: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(!notes.as_array().unwrap().is_empty());
-    assert_eq!(notes[0]["title"], "alpha");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["code"], "bad_request");
 }
 
 // ── /memory/since ─────────────────────────────────────────────────────────────
@@ -368,9 +374,10 @@ async fn since_endpoint_returns_entries_after_timestamp() {
 
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
-        api_key: None,
+        auth: Arc::new(ApiKeyAuth::new(None)),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
+        llm: None,
     };
 
     // Query with t=1500 — should return only the note at t=2000.
