@@ -11,7 +11,9 @@
 #   --tasks-file FILE   path to tasks JSON array  (default: bench/agents/tasks_50.json)
 #   --tasks N           only set up first N tasks  (default: all)
 #   --repos-dir DIR     checkout root              (default: bench/repos)
-#   --dataset SLUG      HuggingFace dataset        (default: princeton-nlp/SWE-bench_Verified)
+#   --dataset SLUG      HuggingFace dataset        (default: princeton-nlp/SWE-bench)
+#                       NOTE: full split used (not SWE-bench_Verified) so all 50 tasks
+#                       in tasks_50.json resolve — see issue #252.
 #   --retries N         max retries per git op     (default: 3)
 #   --git-timeout SEC   timeout per git command    (default: 120)
 #   -h|--help
@@ -30,7 +32,7 @@ if [[ -d "${HOME}/opensource/spelunk-bench/repos" ]]; then
 else
     REPOS_DIR="${SCRIPT_DIR}/repos"
 fi
-DATASET="princeton-nlp/SWE-bench_Verified"
+DATASET="princeton-nlp/SWE-bench"
 MAX_RETRIES=3
 GIT_TIMEOUT=120
 
