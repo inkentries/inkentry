@@ -177,7 +177,7 @@ fn context_outputs_all_four_sections_by_default() {
 // ── happy path: JSON output ───────────────────────────────────────────────────
 
 #[test]
-fn context_json_output_is_valid_array() {
+fn context_json_output_is_valid_object() {
     let (_tmp, db_path, config_path) = setup_context_project();
 
     let output = context_cmd(&db_path, &config_path)
@@ -191,12 +191,15 @@ fn context_json_output_is_valid_array() {
 
     let stdout = String::from_utf8_lossy(&output);
 
-    // Should be valid JSON: an array of [kind, [notes]] pairs.
-    let parsed: Vec<serde_json::Value> =
+    // Should be valid JSON object: {"sections": [[kind, notes], ...], "conventions": [...]}
+    let obj: serde_json::Value =
         serde_json::from_str(&stdout).expect("--format json should produce valid JSON");
+    let parsed = obj["sections"]
+        .as_array()
+        .expect("sections should be array");
 
     assert!(!parsed.is_empty(), "expected at least one section");
-    for item in &parsed {
+    for item in parsed {
         let arr = item.as_array().expect("each item should be [kind, notes]");
         assert_eq!(arr.len(), 2, "each item should be a [kind, notes] pair");
         assert!(arr[0].is_string(), "first element should be kind string");
@@ -218,7 +221,8 @@ fn context_json_includes_all_kinds() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
     let kinds: Vec<&str> = parsed
         .iter()
@@ -292,7 +296,8 @@ fn context_kind_filter_json_returns_single_section() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
     assert_eq!(parsed.len(), 1, "--kind should return exactly one section");
     assert_eq!(parsed[0][0].as_str().unwrap(), "question");
@@ -318,7 +323,8 @@ fn context_limit_flag_respects_count() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
     let notes = parsed[0][1].as_array().expect("notes should be array");
     assert_eq!(
@@ -348,7 +354,8 @@ fn context_default_limits_respected() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
     let notes = parsed[0][1].as_array().expect("notes should be array");
     assert_eq!(
@@ -384,10 +391,11 @@ fn context_empty_memory_exits_zero_with_no_output() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
     // All sections should be present but empty.
-    for item in &parsed {
+    for item in parsed {
         let notes = item[1].as_array().expect("notes should be array");
         assert!(
             notes.is_empty(),
@@ -460,9 +468,10 @@ fn context_json_notes_have_required_fields() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output);
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("valid JSON");
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
 
-    for item in &parsed {
+    for item in parsed {
         let notes = item[1].as_array().expect("notes should be array");
         for note in notes {
             assert!(note.get("id").is_some(), "note missing 'id': {note}");
