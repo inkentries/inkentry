@@ -43,7 +43,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 ## What This Project Is
 
-`spelunk` (`spelunk`) is a Rust CLI and context retrieval engine for AI agents.
+`spelunk` is a Rust CLI and context retrieval engine for AI agents.
 
 **Core (no server required):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking.
 
