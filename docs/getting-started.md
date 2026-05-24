@@ -5,38 +5,35 @@
 Download the latest binary for your platform from the [releases page](https://github.com/spelunk-cloud/spelunk/releases) and put it somewhere on your `$PATH`:
 
 ```bash
-# macOS (Apple Silicon) — universal binary also available
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz \
+# macOS (Apple Silicon)
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.8.0-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-apple-darwin.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.8.0-x86_64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
-# macOS (universal — works on both Intel and Apple Silicon)
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz \
+# macOS (universal)
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.8.0-universal-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Linux x86_64
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.8.0-x86_64-unknown-linux-gnu.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Linux ARM64
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz \
+curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.8.0-aarch64-unknown-linux-gnu.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Verify
 spelunk --version
 ```
 
-> Replace `v0.1.0` with the version you want. The URL pattern is:
-> `https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz`
+Building from source? See [Building](building.md).
 
-> Building from source? See [Building](building.md).
+## 2. Start using it immediately — no setup required
 
-## 2. Start using it
-
-No configuration needed. From inside any git repository:
+No configuration needed. From inside any git repository, you can immediately:
 
 ```bash
 # Trace callers and callees for any symbol
@@ -45,44 +42,41 @@ spelunk graph validate_token
 # Full-text search
 spelunk search "error handling" --mode text
 
-# Store a decision
+# Store a decision for your team
 spelunk memory add --kind decision \
   --title "Chose token bucket for rate limiting" \
   --body "Simpler than sliding window; sufficient for <1k RPS"
 
-# Read it back
+# List your decisions
 spelunk memory list --kind decision
 ```
 
-Memory is stored in git notes — no server, no database, no setup.
+Memory is stored in git notes — no server, no database, no configuration.
 
-## 3. Try search and memory together
+## 3. Start an agent session
+
+When your agent or team is starting a new coding session, pull all relevant context in one command:
 
 ```bash
-# Search memory for context on a topic
-spelunk memory search "why did we choose this"
+# Agent entry point — pulls decisions, requirements, questions, handoffs
+spelunk context
 
-# Full-text code search
-spelunk search "handleRequest" --mode text
+# Filter by kind
+spelunk context --kind decision
 
-# Trace a symbol's call graph
-spelunk graph Database --kind calls
-
-# Get JSON output (for agents)
-AGENT=true spelunk memory list --kind decision
+# Get JSON for machine processing
+AGENT=true spelunk context
 ```
 
-## 4. Set up automatic memory harvesting
+## 4. Set up automatic memory harvesting (optional)
 
-Install a git post-commit hook so `spelunk` harvests memory on every commit:
+Install a git post-commit hook so `spelunk` automatically extracts memories from commit messages:
 
 ```bash
 spelunk hooks install
 ```
 
-Other developers without `spelunk` installed are unaffected — the hook checks for the binary first.
-
-To remove:
+Other developers without `spelunk` installed are unaffected. To remove:
 
 ```bash
 spelunk hooks uninstall
@@ -90,116 +84,100 @@ spelunk hooks uninstall
 
 ---
 
-## Optional: semantic search
+## Optional: Semantic Search
 
 For concept-level search (finding code by meaning rather than text), you need:
-1. An OpenAI-compatible embedding server
-2. A built index
+1. An OpenAI-compatible embedding server (e.g., LM Studio, Ollama)
+2. To index your project
 
-### Set up an inference server
+### Set up an embedding server
 
-The easiest options:
+Choose one:
 
-- **[LM Studio](https://lmstudio.ai/)** — desktop app for macOS/Windows/Linux; enable the local server (default port `1234`)
+- **[LM Studio](https://lmstudio.ai/)** — desktop app; load a model and enable the local server (default port `1234`)
 - **[Ollama](https://ollama.com/)** — `ollama serve` (default port `11434`)
-- **vLLM / any OpenAI proxy** — point `api_base_url` at your endpoint
+- **vLLM / OpenAI-compatible proxy** — point `api_base_url` at your endpoint
 
-Recommended models:
-- **Embedding** — `google/embeddinggemma-300m-qat` (300M params, low VRAM, fast)
-- **Chat (optional)** — any instruction-tuned model; needed only for `memory harvest` and `plan create`
+**Recommended embedding model:** `google/embeddinggemma-300m-qat` (300M params, low VRAM, fast)
 
-### Configure spelunk
+### Configure spelunk (optional)
 
-`spelunk` looks for a config file at `~/.config/spelunk/config.toml`:
+If you want to use a non-default server, create `~/.config/spelunk/config.toml`:
 
 ```toml
 # ~/.config/spelunk/config.toml
 
-# LM Studio default:  http://127.0.0.1:1234
-# Ollama default:     http://127.0.0.1:11434
+# Default: http://127.0.0.1:1234 (LM Studio)
 api_base_url = "http://127.0.0.1:1234"
 
-# Must match the model's API identifier on your server
+# Must match your server's model identifier
 embedding_model = "text-embedding-embeddinggemma-300m-qat"
 
-# Optional: enables `memory harvest` and `plan create`
-# llm_model = "google/gemma-3n-e4b"
-
-# Embedding batch size — lower if you run out of memory
+# Embedding batch size (tune if you run out of memory)
 batch_size = 32
-
-# Default database location (default: ~/.local/share/spelunk/<project-slug>.db)
-# db_path = "/custom/path/myproject.db"
 ```
 
-You can also override the database path per-command with `--db <path>`.
+### Index your project for semantic search
 
-### Index your project
+Once your embedding server is running:
 
 ```bash
 cd /path/to/your/project
 spelunk init
 ```
 
-`spelunk init`:
-1. Registers the project in the global spelunk registry
-2. Parses every source file, embeds each chunk, and stores everything in SQLite
-3. Prints a summary with file/chunk counts and suggested next commands
+This:
+1. Registers your project in the global registry
+2. Parses every source file and indexes chunks
+3. Embeds chunks using your configured server
+4. Stores everything in `~/.local/share/spelunk/<project-slug>.db`
 
+Output:
 ```
 spelunk initialised for my-project
 
   Index:   142 files, 1 840 chunks
   DB:      ~/.local/share/spelunk/my-project.db
-  Hook:    not installed — run `spelunk hooks install` to add
+  Embeddings: 1 840 vectors
 ```
 
-```bash
-# Also install the post-commit git hook in one step
-spelunk init --hook
-
-# Register without indexing (index later with `spelunk index .`)
-spelunk init --no-index
-```
-
-Running `spelunk init` again is safe — it won't re-register an existing project.
-
-### Manual indexing
+**Subsequent runs** only re-index changed files (via blake3 hash):
 
 ```bash
 spelunk index /path/to/your/project
+```
 
-# Force a full re-index (after changing embedding model)
+Force a full re-index after changing the embedding model:
+
+```bash
 spelunk index /path/to/your/project --force
 ```
 
-On subsequent runs, only changed files are re-processed (blake3 hash comparison).
-
-### Semantic search
+### Use semantic search
 
 ```bash
-# Finds code by meaning, not just text
+# Finds code by concept, not just text
 spelunk search "error handling in the HTTP layer"
 
 # Hybrid search (semantic + full-text)
 spelunk search "authentication" --mode hybrid
 
-# With call-graph enrichment
+# Expand with 1-hop call graph
 spelunk search "authentication" --graph
 
-# Fit results within a token budget
+# Fit results within a token budget for agents
 spelunk search "database layer" --budget 4000
 
-# JSON output
+# Machine-readable output
 spelunk search "database migrations" --format json
 ```
 
 ### Check index health
 
 ```bash
-spelunk status          # index statistics
-spelunk check           # verify index is up to date (exits 1 if stale)
-spelunk check --porcelain --files   # list stale files
+spelunk status                              # index statistics
+spelunk check                               # verify index is up to date
+spelunk check --porcelain --files           # list files that need re-indexing
 ```
 
 ---
@@ -211,15 +189,20 @@ spelunk check --porcelain --files   # list stale files
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
 - [Building from source](building.md) — for contributors and platform builders
 
-## Team setup (shared memory)
+---
 
-Working with teammates? Run `spelunk-server` so the whole team shares memory
-instead of each person siloing their own decisions and context.
+## Team setup: Shared memory with spelunk-server
 
-Add a `.spelunk/config.toml` at your repo root and commit it:
+Working with a team? Run `spelunk-server` so everyone shares decisions, requirements, and context instead of siloing them locally.
+
+Each team member's code stays local — only memory travels to the server.
+
+### Quick setup
+
+Add `.spelunk/config.toml` at your repo root (commit it):
 
 ```toml
-# .spelunk/config.toml — commit this, it contains no secrets
+# .spelunk/config.toml — commit this, no secrets
 memory_server_url = "http://spelunk.internal:7777"
 project_id        = "my-awesome-app"
 ```
@@ -227,11 +210,14 @@ project_id        = "my-awesome-app"
 Each developer adds the API key to their personal config:
 
 ```toml
-# ~/.config/spelunk/config.toml — never commit
-memory_server_key = "shared-team-key"
+# ~/.config/spelunk/config.toml — never commit this
+memory_server_key = "your-shared-api-key"
 ```
 
-After that, all `spelunk memory` commands transparently use the server. Push
-any existing local entries with `spelunk memory push`.
+After setup, all `spelunk memory` commands transparently use the server. To migrate existing local memories:
 
-→ **[Server setup guide](server.md)** — Docker, API reference, production tips
+```bash
+spelunk memory push
+```
+
+For full setup and deployment guide: **[Server setup](server.md)** — Docker, configuration, API reference.

@@ -10,16 +10,15 @@ This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.
 
 **At the start of every session:**
 ```bash
-spelunk check                                    # verify index is fresh
-spelunk memory list --kind decision --limit 10   # review prior decisions
-spelunk memory list --kind handoff --limit 3     # pick up where last session left off
-spelunk memory list --kind question              # check open questions
+spelunk context                                   # pull prior decisions, handoffs, questions, requirements
+spelunk check                                     # verify index is fresh (only if indexed)
 ```
 
 **Before reading any file, search first:**
 ```bash
-spelunk search "<topic>"          # find relevant chunks by meaning
-spelunk graph <symbol>            # trace callers/callees when needed
+spelunk graph <symbol>                            # trace callers/callees (always works)
+spelunk search "<topic>" --mode text              # full-text search (always works)
+spelunk search "<topic>"                          # semantic search (if indexed + server running)
 ```
 
 spelunk retrieves context — you synthesise the answer.
@@ -34,7 +33,8 @@ spelunk memory add --kind note --title "..."                       # surprising/
 **At the end of every session:**
 ```bash
 spelunk memory add --kind handoff --title "Handoff: <summary>" --body "what's done, what's next, open questions"
-spelunk index .                   # re-index if project uses semantic search (hook does this on commit)
+# Optional: re-index if you've indexed the project
+spelunk index .
 ```
 
 Full reference: `SKILL.md` and `docs/agent-guide.md`.
@@ -45,11 +45,11 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 `spelunk` is a Rust CLI and context retrieval engine for AI agents.
 
-**Core (no server required):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking.
+**Built-in (zero infrastructure):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Works immediately with no setup.
 
-**With inference server** (any OpenAI-compatible endpoint, default `http://127.0.0.1:1234`): semantic search via embeddings (EmbeddingGemma 300M by default), `spelunk explore`, `spelunk memory harvest`, LLM summaries, `spelunk plan create`. Chat model is also optional and enables harvest/plan.
+**Optional: semantic search** (any OpenAI-compatible embedding endpoint, e.g., LM Studio on port `1234`): Point spelunk at your server, run `spelunk init` to index, then use semantic search and `spelunk explore`. Chat model is also optional and enables `spelunk memory harvest` and `spelunk plan create`.
 
-**With remote server** (`memory_server_url`): team-shared memory, `spelunk memory watch`, conflict detection.
+**Optional: team memory server** (`memory_server_url`): Share memory (decisions, requirements) across a team via `spelunk-server`. Each developer's code stays local.
 
 You search with spelunk, then reason over the results yourself.
 

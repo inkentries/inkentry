@@ -206,13 +206,17 @@ AGENT=true spelunk graph src/storage/db.rs
 
 **Start of every session:**
 ```bash
-AGENT=true spelunk check                              # includes active intents and overlapping work
-AGENT=true spelunk memory list --kind decision --limit 10
-AGENT=true spelunk memory list --kind handoff --limit 3
-AGENT=true spelunk memory list --kind intent          # see what teammates are working on
-AGENT=true spelunk memory list --kind question
-AGENT=true spelunk memory failures                    # check antipatterns — things to avoid
+# Agent entry point — pulls all prior context in one command
+AGENT=true spelunk context
+
+# Or filter to a specific memory kind
+AGENT=true spelunk context --kind decision
+
+# If you've indexed the project: verify the index is fresh
+AGENT=true spelunk check
 ```
+
+`spelunk context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call.
 
 **Understanding code:**
 1. `AGENT=true spelunk search "<topic>" --mode text` — full-text search, no server needed
