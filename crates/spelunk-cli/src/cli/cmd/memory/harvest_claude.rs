@@ -325,13 +325,30 @@ pub(super) async fn harvest_claude_code(
             }
             buf
         };
-        let (_, raw_json) =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) })?;
-        let raw_json = crate::utils::strip_ansi(&raw_json);
+        let llm_result =
+            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
+        let raw_json = match llm_result {
+            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+            Err(e) => {
+                eprintln!(
+                    "  warning: LLM call failed for batch {batch_num} ({} session(s)), skipping: {e:#}",
+                    batch.len()
+                );
+                continue;
+            }
+        };
 
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json).with_context(|| {
-            format!("parsing LLM harvest response (batch {batch_num}):\n{raw_json}")
-        })?;
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not parse LLM response for batch {batch_num} ({} session(s)), skipping: {e}\n  Raw: {}",
+                    batch.len(),
+                    &raw_json[..raw_json.len().min(200)]
+                );
+                continue;
+            }
+        };
 
         let entries = parsed["entries"].as_array().cloned().unwrap_or_default();
 
@@ -364,23 +381,44 @@ pub(super) async fn harvest_claude_code(
 
             let source_ref = format!("claude-code:{session_id}");
 
-            if backend
+            match backend
                 .has_source_ref(&source_ref)
                 .await
-                .map_err(backend_err)?
+                .map_err(backend_err)
             {
-                println!("  [skip] already harvested session {session_id}");
-                continue;
+                Ok(true) => {
+                    println!("  [skip] already harvested session {session_id}");
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("  warning: could not check source_ref for {source_ref}: {e:#}");
+                    continue;
+                }
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = embedder.embed(&[&embed_text]).await?;
+            let vecs = match embedder.embed(&[&embed_text]).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: embedding failed for entry '{title}' (session {session_id}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
             let Some(vec) = vecs.into_iter().next() else {
                 continue;
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = backend.search(&blob, 1, None).await?;
+            let neighbors = match backend.search(&blob, 1, None).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
+                    continue;
+                }
+            };
             if let Some(top) = neighbors.first()
                 && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
             {
@@ -395,7 +433,7 @@ pub(super) async fn harvest_claude_code(
                 continue;
             }
 
-            let note_id = backend
+            let note_id = match backend
                 .add(NoteInput {
                     kind: kind.to_string(),
                     title: title.clone(),
@@ -407,7 +445,16 @@ pub(super) async fn harvest_claude_code(
                     valid_at: None,
                     supersedes: None,
                 })
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to store entry '{title}' (session {session_id}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
 
             let short_id = &session_id[..session_id.len().min(8)];
             println!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_id}…)\x1b[0m");
