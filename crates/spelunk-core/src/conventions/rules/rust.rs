@@ -47,7 +47,14 @@ pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
     let fn_names = function_names(chunks);
     let (snake, camel, pascal, screaming, total_fn) = count_cases(&fn_names);
     let (dom_style, dom_count) = dominant(snake, camel, pascal, screaming);
-    if let Some(r) = naming_record(lang, "naming.functions", dom_style, dom_count, total_fn, now) {
+    if let Some(r) = naming_record(
+        lang,
+        "naming.functions",
+        dom_style,
+        dom_count,
+        total_fn,
+        now,
+    ) {
         records.push(r);
     }
 
@@ -116,21 +123,23 @@ fn error_handling_record(chunks: &[&ChunkSummary], now: i64) -> Option<Conventio
         return None;
     }
 
-    let (description, dominant_count) = if anyhow_count >= thiserror_count
-        && anyhow_count >= app_error_count
-    {
-        ("Error handling via anyhow::Result".to_string(), anyhow_count)
-    } else if thiserror_count >= app_error_count {
-        (
-            "Error types defined with thiserror".to_string(),
-            thiserror_count,
-        )
-    } else {
-        (
-            "Custom AppError type for error handling".to_string(),
-            app_error_count,
-        )
-    };
+    let (description, dominant_count) =
+        if anyhow_count >= thiserror_count && anyhow_count >= app_error_count {
+            (
+                "Error handling via anyhow::Result".to_string(),
+                anyhow_count,
+            )
+        } else if thiserror_count >= app_error_count {
+            (
+                "Error types defined with thiserror".to_string(),
+                thiserror_count,
+            )
+        } else {
+            (
+                "Custom AppError type for error handling".to_string(),
+                app_error_count,
+            )
+        };
 
     let confidence = dominant_count as f32 / total as f32;
     Some(ConventionRecord {

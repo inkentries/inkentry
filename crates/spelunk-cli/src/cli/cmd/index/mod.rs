@@ -242,6 +242,17 @@ async fn run_phases_3_to_5(
         }
     });
 
+    // Phase 5: convention extraction (heuristic, no LLM).
+    eprintln!("Extracting conventions\u{2026}");
+    match crate::conventions::run_extraction(db) {
+        Ok(records) => {
+            if !records.is_empty() {
+                eprintln!("Conventions: {} record(s) detected.", records.len());
+            }
+        }
+        Err(e) => tracing::warn!("convention extraction failed (non-fatal): {e}"),
+    }
+
     // Register / update this project in the global registry.
     if let Ok(reg) = Registry::open() {
         let db_canonical = db_path.canonicalize().unwrap_or(db_path.to_path_buf());

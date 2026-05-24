@@ -11,11 +11,17 @@ const DEFAULT_UNKNOWN_KIND_LIMIT: usize = 20;
 
 /// Agent-facing entry-point command: pull the most relevant memory sections
 /// in one shot (handoffs → questions → decisions → requirements).
+/// Appends a "conventions" section from the local index when available.
 #[derive(Args, Debug)]
 pub struct ContextArgs {
     /// Path to the memory database (overrides auto-detect)
     #[arg(long)]
     pub db: Option<PathBuf>,
+
+    /// Path to the spelunk index database (overrides auto-detect).
+    /// Used to load the conventions section.
+    #[arg(long, value_name = "INDEX_DB")]
+    pub index_db: Option<PathBuf>,
 
     /// Storage backend: sqlite (default), git-meta, or git-notes
     #[arg(long, default_value = "sqlite", value_name = "BACKEND")]
@@ -36,6 +42,10 @@ pub struct ContextArgs {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Skip the conventions section (default: false)
+    #[arg(long)]
+    pub no_conventions: bool,
 }
 
 struct Section {
@@ -83,8 +93,22 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     )
     .await?;
 
+    // Load conventions from the index DB (best-effort; skip if unavailable).
+    let conventions: Vec<crate::conventions::ConventionRecord> =
+        if !args.no_conventions && args.kind.is_none() {
+            load_conventions(args.index_db.as_deref(), &cfg)
+        } else {
+            vec![]
+        };
+
     match crate::utils::effective_format(&args.format) {
-        "json" => println!("{}", serde_json::to_string(&sections)?),
+        "json" => {
+            let output = serde_json::json!({
+                "sections": sections,
+                "conventions": conventions,
+            });
+            println!("{output}");
+        }
         _ => {
             for (kind, notes) in &sections {
                 if notes.is_empty() {
@@ -95,9 +119,35 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
                     print_note_summary(n);
                 }
             }
+            if !conventions.is_empty() {
+                print_conventions_section(&conventions);
+            }
         }
     }
     Ok(())
+}
+
+/// Load conventions from the project index DB.
+/// Returns an empty vec if the DB doesn't exist or conventions table is empty.
+fn load_conventions(
+    index_db_override: Option<&std::path::Path>,
+    cfg: &Config,
+) -> Vec<crate::conventions::ConventionRecord> {
+    let db_path = if let Some(p) = index_db_override {
+        p.to_path_buf()
+    } else {
+        crate::config::resolve_db(None, &cfg.db_path)
+    };
+    if !db_path.exists() {
+        return vec![];
+    }
+    match crate::storage::Database::open(&db_path) {
+        Ok(db) => crate::conventions::list_conventions(&db, None).unwrap_or_default(),
+        Err(e) => {
+            tracing::debug!("conventions: could not open index db: {e}");
+            vec![]
+        }
+    }
 }
 
 async fn collect_sections(
@@ -142,4 +192,28 @@ fn print_section_header(kind: &str) {
     };
     println!("\x1b[1;34m── {label} \x1b[0m");
     println!();
+}
+
+fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
+    println!("\x1b[1;34m── Conventions \x1b[0m");
+    println!();
+
+    // Group by language for readability.
+    let mut by_lang: std::collections::BTreeMap<&str, Vec<&crate::conventions::ConventionRecord>> =
+        std::collections::BTreeMap::new();
+    for r in records {
+        by_lang.entry(r.language.as_str()).or_default().push(r);
+    }
+    for (lang, recs) in &by_lang {
+        println!("\x1b[1m{lang}\x1b[0m");
+        for r in recs {
+            println!(
+                "  [{:.0}%] {} — {}",
+                r.confidence * 100.0,
+                r.category,
+                r.description
+            );
+        }
+        println!();
+    }
 }

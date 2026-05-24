@@ -37,6 +37,7 @@ impl Database {
         db.apply_snapshot_migration()?;
         db.apply_snapshot_vector_migration()?;
         db.apply_compound_graph_idx_migration()?;
+        db.apply_conventions_migration()?;
         Ok(db)
     }
 

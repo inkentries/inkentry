@@ -8,6 +8,7 @@ pub mod remote;
 
 // Storage sub-modules: each holds impl blocks for Database or standalone types.
 mod chunks;
+mod conventions;
 mod files;
 mod graph;
 mod search;
@@ -16,6 +17,7 @@ mod specs;
 mod stats;
 
 pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
+pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::Database;
 pub use files::FileRecord;
 pub use git_meta::GitMetaBackend;

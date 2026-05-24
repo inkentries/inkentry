@@ -35,7 +35,14 @@ pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
     let fn_names = function_names(chunks);
     let (snake, camel, pascal, screaming, total_fn) = count_cases(&fn_names);
     let (dom_style, dom_count) = dominant(snake, camel, pascal, screaming);
-    if let Some(r) = naming_record(lang, "naming.functions", dom_style, dom_count, total_fn, now) {
+    if let Some(r) = naming_record(
+        lang,
+        "naming.functions",
+        dom_style,
+        dom_count,
+        total_fn,
+        now,
+    ) {
         records.push(r);
     }
 
@@ -98,7 +105,7 @@ fn async_record(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Option<Conven
     Some(ConventionRecord {
         language: lang.to_string(),
         category: "async".to_string(),
-        description: "Async/await is widely used".to_string(),
+        description: "async/await is widely used".to_string(),
         confidence: ratio,
         evidence_count: async_count,
         extracted_at: now,
