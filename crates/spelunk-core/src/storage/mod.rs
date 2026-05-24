@@ -35,7 +35,7 @@ use std::path::Path;
 /// Priority:
 /// 1. `backend_override = Some("git-meta")` → `GitMetaBackend`
 /// 2. `backend_override = Some("git-notes")` → `GitNotesBackend`
-/// 3. `memory_server_url` set in config → `RemoteMemoryBackend`
+/// 3. `server_url` set in config → `RemoteMemoryBackend`
 /// 4. Otherwise → local SQLite at `mem_path`
 pub fn open_memory_backend(
     cfg: &crate::config::Config,
@@ -48,9 +48,9 @@ pub fn open_memory_backend(
     if backend_override == Some("git-notes") {
         return Ok(Box::new(GitNotesBackend::new()));
     }
-    if let Some(url) = &cfg.memory_server_url {
+    if let Some(url) = &cfg.server_url {
         let project_id = cfg.project_id.clone().expect(
-            "project_id must be set when memory_server_url is configured; \
+            "project_id must be set when server_url is configured; \
              call Config::validate() before open_memory_backend()",
         );
         let client = reqwest::Client::builder()
@@ -60,7 +60,7 @@ pub fn open_memory_backend(
             client,
             base_url: url.clone(),
             project_id,
-            api_key: cfg.memory_server_key.clone(),
+            api_key: cfg.server_key.clone(),
         }))
     } else {
         Ok(Box::new(LocalMemoryBackend::new(MemoryStore::open(

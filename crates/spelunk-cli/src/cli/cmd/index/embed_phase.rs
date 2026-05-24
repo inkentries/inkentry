@@ -1,86 +1,114 @@
 use anyhow::{Context, Result};
-use futures_util::StreamExt as _;
 use indicatif::{MultiProgress, ProgressBar};
+use serde::{Deserialize, Serialize};
 
 use super::super::ui::{is_tty, progress_style};
-use super::IndexArgs;
-use crate::{
-    config::Config,
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
-    storage::Database,
-};
+use crate::{capability::Tier, config::Config, embeddings::vec_to_blob, storage::Database};
 
-/// Embed all pending chunks and write their vectors to the DB.
+/// Maximum chunks per request — enforced by the server (returns 413 if exceeded).
+const MAX_BATCH: usize = 256;
+
+#[derive(Serialize)]
+struct EmbedRequest {
+    chunks: Vec<ReqChunk>,
+}
+
+#[derive(Serialize)]
+struct ReqChunk {
+    chunk_id: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct EmbedResponse {
+    chunks: Vec<RespChunk>,
+}
+
+#[derive(Deserialize)]
+struct RespChunk {
+    chunk_id: String,
+    vector: Vec<f32>,
+}
+
+/// Send pending chunks to `spelunk-server` for embedding and write the returned
+/// vectors into the local DB.
 ///
-/// Returns the number of chunks embedded.
+/// Returns the number of chunks successfully embedded.
+///
+/// Requires `Tier::Server`; returns `Ok(0)` immediately for `Tier::Offline`.
 pub(super) async fn run_embed_phase(
     chunk_ids_and_texts: Vec<(i64, String)>,
     db: &Database,
     cfg: &Config,
-    args: &IndexArgs,
+    tier: &Tier,
     mp: &MultiProgress,
 ) -> Result<u64> {
-    eprintln!("Embedding via: {}", cfg.embedding_model);
+    let (server_url, server_key) = match tier {
+        Tier::Server { url, .. } => (url.clone(), cfg.server_key.clone()),
+        Tier::Offline => return Ok(0),
+    };
 
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .with_context(|| format!("loading embedding model '{}'", cfg.embedding_model))?;
+    let project_id = cfg
+        .project_id
+        .as_deref()
+        .context("project_id is required when server_url is set")?;
 
-    let batch_size = args.batch_size.max(1);
-    let total_chunks = chunk_ids_and_texts.len() as u64;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .context("building HTTP client for embed phase")?;
 
-    let embed_bar = if is_tty() && !crate::utils::is_agent_mode() {
-        let bar = mp.add(ProgressBar::new(total_chunks));
-        bar.set_style(progress_style("Embedding"));
-        bar
+    let total = chunk_ids_and_texts.len() as u64;
+    let bar = if is_tty() && !crate::utils::is_agent_mode() {
+        let b = mp.add(ProgressBar::new(total));
+        b.set_style(progress_style("Embedding"));
+        b
     } else {
         ProgressBar::hidden()
     };
 
-    let concurrency = batch_size;
+    let mut embedded = 0u64;
 
-    let results: Vec<(i64, Vec<f32>)> = futures_util::stream::iter(
-        chunk_ids_and_texts
+    for batch in chunk_ids_and_texts.chunks(MAX_BATCH) {
+        let req_chunks: Vec<ReqChunk> = batch
             .iter()
-            .map(|(chunk_id, text)| (*chunk_id, text.clone())),
-    )
-    .map(|(chunk_id, text)| {
-        let embedder = &embedder;
-        let embed_bar = &embed_bar;
-        async move {
-            // Simple exponential-backoff retry for transient 429 / server errors.
-            let mut delay_ms = 100u64;
-            let mut last_err: anyhow::Error = anyhow::anyhow!("unreachable");
-            for attempt in 0..3u32 {
-                match embedder.embed(&[text.as_str()]).await {
-                    Ok(mut vecs) => {
-                        embed_bar.inc(1);
-                        return Ok::<(i64, Vec<f32>), anyhow::Error>((chunk_id, vecs.remove(0)));
-                    }
-                    Err(e) => {
-                        last_err = e;
-                        if attempt < 2 {
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                            delay_ms *= 2;
-                        }
-                    }
-                }
-            }
-            Err(last_err.context("generating embedding (3 attempts failed)"))
-        }
-    })
-    .buffer_unordered(concurrency)
-    .collect::<Vec<_>>()
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>>>()?;
+            .map(|(id, text)| ReqChunk {
+                chunk_id: id.to_string(),
+                content: text.clone(),
+            })
+            .collect();
 
-    // Write embeddings serially — rusqlite connections are not Send.
-    for (chunk_id, embedding) in results {
-        let blob = vec_to_blob(&embedding);
-        db.insert_embedding(chunk_id, &blob)?;
+        let url = format!(
+            "{}/v1/projects/{}/index/embed",
+            server_url.trim_end_matches('/'),
+            project_id,
+        );
+
+        let mut req = client.post(&url).json(&EmbedRequest { chunks: req_chunks });
+        if let Some(k) = &server_key {
+            req = req.bearer_auth(k);
+        }
+
+        let resp: EmbedResponse = req
+            .send()
+            .await
+            .with_context(|| format!("calling {url}"))?
+            .error_for_status()
+            .context("server returned an error for index/embed")?
+            .json()
+            .await
+            .context("parsing index/embed response")?;
+
+        for item in &resp.chunks {
+            if let Ok(row_id) = item.chunk_id.parse::<i64>() {
+                let blob = vec_to_blob(&item.vector);
+                db.insert_embedding(row_id, &blob)?;
+                embedded += 1;
+                bar.inc(1);
+            }
+        }
     }
 
-    embed_bar.finish_with_message(format!("{total_chunks} chunks embedded"));
-    Ok(total_chunks)
+    bar.finish_with_message(format!("{embedded} chunks embedded"));
+    Ok(embedded)
 }

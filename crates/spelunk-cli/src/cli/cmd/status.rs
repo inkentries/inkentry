@@ -18,6 +18,7 @@ pub struct StatusArgs {
 
 use super::search::resolve_project_and_deps;
 use crate::{
+    capability::{self, Tier},
     config::{Config, resolve_db},
     registry::Registry,
     storage::{Database, open_memory_backend},
@@ -28,6 +29,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
     // JSON mode: current project stats only
     if fmt == "json" {
+        let tier = capability::get_tier(&cfg).await;
         let (db_path, _) = resolve_project_and_deps(None, &cfg)?;
         let db = Database::open(&db_path)?;
         let stats = db.stats()?;
@@ -40,9 +42,20 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         };
         let usage_map: std::collections::HashMap<&str, i64> =
             usage.iter().map(|(c, n)| (c.as_str(), *n)).collect();
+        let (tier_str, tier_url, caps_json) = match tier {
+            Tier::Offline => ("offline", serde_json::Value::Null, serde_json::Value::Null),
+            Tier::Server { url, caps } => (
+                "server",
+                serde_json::Value::String(url.clone()),
+                serde_json::to_value(caps).unwrap_or(serde_json::Value::Null),
+            ),
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
+                "tier": tier_str,
+                "server_url": tier_url,
+                "capabilities": caps_json,
                 "file_count": stats.file_count,
                 "chunk_count": stats.chunk_count,
                 "embedding_count": stats.embedding_count,
@@ -132,6 +145,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     // Current project only
+    let tier = capability::get_tier(&cfg).await;
+
     let reg = Registry::open().ok();
     let project = reg.as_ref().and_then(|r| {
         std::env::current_dir()
@@ -152,6 +167,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
     let db = Database::open(&db_path)?;
     let s = db.stats()?;
+
+    // ── Capability tier section ───────────────────────────────────────────────
+    print_tier_section(tier, &cfg);
 
     if let Some(p) = &project {
         println!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
@@ -220,6 +238,51 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_tier_section(tier: &Tier, cfg: &Config) {
+    match tier {
+        Tier::Offline => {
+            let server_hint = if cfg.server_url.is_some() {
+                "  [unreachable]"
+            } else {
+                "  [set server_url to enable semantic search]"
+            };
+            println!("Capability tier:  \x1b[33mOffline\x1b[0m");
+            println!("  search          ast-grep + text{server_hint}");
+            println!("  memory          git-notes (local)");
+            println!("  explore         unavailable  [set server_url to enable]");
+            println!("  plan            unavailable  [set server_url to enable]");
+        }
+        Tier::Server { url, caps } => {
+            println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url})\x1b[0m");
+            let search_label = if caps.search_semantic {
+                "ast-grep + text + semantic"
+            } else {
+                "ast-grep + text"
+            };
+            println!("  search          {search_label}");
+            let mem_label = if caps.memory_push {
+                "git-notes + server sync"
+            } else {
+                "git-notes (local)"
+            };
+            println!("  memory          {mem_label}");
+            let explore_label = if caps.explore {
+                "available"
+            } else {
+                "unavailable"
+            };
+            println!("  explore         {explore_label}");
+            let plan_label = if caps.plan {
+                "available"
+            } else {
+                "unavailable"
+            };
+            println!("  plan            {plan_label}");
+        }
+    }
+    println!();
 }
 
 pub(crate) fn format_age(unix_ts: i64) -> String {

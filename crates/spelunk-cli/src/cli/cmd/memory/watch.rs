@@ -1,15 +1,12 @@
 use anyhow::{Context, Result};
 
 use super::MemoryWatchArgs;
-use crate::config::Config;
+use crate::{capability, config::Config};
 
 pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<()> {
-    let base_url = cfg.memory_server_url.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "`memory_server_url` is not configured. \
-             Set it in `.spelunk/config.toml` or via `SPELUNK_SERVER_URL`."
-        )
-    })?;
+    let tier = capability::get_tier(cfg).await;
+    capability::require_tier1("memory watch", tier, cfg.server_url.as_deref())?;
+    let base_url = cfg.server_url.as_deref().expect("require_tier1 passed");
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. \
@@ -27,7 +24,7 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
 
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
-    if let Some(key) = cfg.memory_server_key.as_deref() {
+    if let Some(key) = cfg.server_key.as_deref() {
         req = req.header("Authorization", format!("Bearer {key}"));
     }
 

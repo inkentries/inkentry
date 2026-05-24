@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::MemorySinceArgs;
-use crate::config::Config;
+use crate::{capability, config::Config};
 
 /// Wire type that matches the server's `ServerNote` JSON schema.
 #[derive(Debug, serde::Serialize, Deserialize)]
@@ -27,9 +27,11 @@ pub(super) async fn memory_since(
     backend_override: Option<&str>,
 ) -> Result<()> {
     // ── Remote path ───────────────────────────────────────────────────────────
-    if let (Some(base_url), Some(project_id)) =
-        (cfg.memory_server_url.as_deref(), cfg.project_id.as_deref())
+    let tier = capability::get_tier(cfg).await;
+    if let (capability::Tier::Server { url: base_url, .. }, Some(project_id)) =
+        (tier, cfg.project_id.as_deref())
     {
+        let base_url = base_url.as_str();
         let limit = args.limit.min(500);
         let url = format!(
             "{}/v1/projects/{}/memory/since",
@@ -40,7 +42,7 @@ pub(super) async fn memory_since(
         let mut req = client
             .get(&url)
             .query(&[("t", args.since.to_string()), ("limit", limit.to_string())]);
-        if let Some(key) = cfg.memory_server_key.as_deref() {
+        if let Some(key) = cfg.server_key.as_deref() {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
         let notes: Vec<NoteResponse> = req
