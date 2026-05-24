@@ -17,6 +17,34 @@ document covers:
 1. The `AuthProvider` trait (replaces the inline `auth_middleware` function).
 2. Changes to existing endpoints.
 3. New endpoints needed for CLI integration.
+4. The server's **data promise** to the CLI.
+
+---
+
+## Data promise (server → CLI)
+
+The CLI is the only durable store for index data. The server's behaviour is
+constrained as follows; cloud implementations MUST uphold the same contract.
+
+| Resource | Server may receive | Server may store | Server may cache (in-memory, bounded TTL) |
+|---|:---:|:---:|:---:|
+| Chunk content (text) for embedding | yes | **no** | yes (eviction within session) |
+| Embedding vectors generated for the CLI | n/a (server emits) | **no** | yes (request-scoped) |
+| Search queries (text) | yes | **no** (logs may carry metadata only — never the query body in plaintext) | yes (LRU for rate limiting) |
+| `context_chunks` sent with `/explore` and `/plan` | yes | **no** | request-scoped only |
+| Memory entries (notes) | yes | **yes** (this IS the server's persistence role) | n/a |
+| Project metadata (id, slug, stats) | yes | yes | n/a |
+| Auth principals (api keys, user ids) | yes | hash/identifier only — never the raw bearer | yes |
+
+**Rationale.** The server is an inference + memory peer, not a code-index
+mirror. The CLI fingerprints every chunk locally (blake3) and writes vectors
+to its own sqlite-vec store; the server has no business duplicating that.
+Persisting embeddings server-side would also force the OSS deployment into a
+data-residency conversation we do not want before cloud.
+
+This promise is testable: server integration tests assert that the embedding
+DB table is empty after `/v1/projects/{id}/index/embed` returns, and that
+`/explore` writes nothing to memory.
 
 ---
 
@@ -130,6 +158,22 @@ to handlers are needed.
 let auth: Arc<dyn AuthProvider> = Arc::new(ApiKeyAuth::from_env());
 let state = AppState { db, auth, conflict_threshold, embedder };
 ```
+
+### Implementer wiring checklist
+
+The complete trait and `ApiKeyAuth` impl above are the literal stub. Drop them
+into a new file at:
+
+```
+crates/spelunk-server/src/auth.rs
+```
+
+…and add `pub mod auth;` to `crates/spelunk-server/src/lib.rs`. The existing
+inline `auth_middleware` in `lib.rs` is replaced by the trait-driven version
+shown above; `state.api_key: Option<String>` is removed in the same change.
+No handler files (`handlers.rs`) require edits beyond switching consumers from
+`api_key` reads to `Extension<AuthContext>` extraction where they care about
+the principal (today, none do).
 
 ---
 
@@ -335,6 +379,27 @@ All per-project endpoints accept `project_id` as a URL path segment. The CLI
 derives this from the `project_id` config field. Convention: `{owner}/{repo}`
 (e.g. `acme/my-app`) — any slug is accepted, projects are auto-created on
 first write.
+
+---
+
+## OpenAPI commitment
+
+The server publishes its full contract at `GET /api-docs/openapi.json`
+(already wired via `utoipa`). Every endpoint listed in this document MUST
+appear there, with request/response schema components. The `utoipa::ApiDoc`
+type in `crates/spelunk-server/src/lib.rs` is the source of truth — the
+implementer extends it as endpoints land.
+
+CLI integration tests pull `openapi.json` and assert presence + shape of:
+
+- `paths./v1/health.get.responses.200.content.application/json.schema.properties.capabilities`
+- `paths./v1/projects/{project_id}/index/embed.post`
+- `paths./v1/projects/{project_id}/memory/search.post.requestBody` includes
+  `query: string` (not `embedding: array`).
+
+A snapshot of the generated `openapi.json` is committed under
+`docs/openapi.json` and refreshed by the implementer on every change.
+A CI check diffs the committed file against a freshly generated one.
 
 ---
 
