@@ -13,6 +13,7 @@ spuriously invalidate itself.
 | `repobench-gemma-4-e2b-it-baseline.json` | RepoBench-Python | gemma-4-e2b-it | Superseded — regenerate with deepseek-v4-flash |
 | `repobench-deepseek-v4-flash-baseline.json` | RepoBench-Python | deepseek-v4-flash | **STALE** — pre-control run, 0% overlap. Delete after #225 rerun. |
 | `swebench-local-gemma-4-e2b-it-baseline.json` | SWE-bench local | gemma-4-e2b-it | Superseded — regenerate with deepseek-v4-flash |
+| `perf-scale-deepseek-v4-flash-macbook.json` | Perf scale (index+search) | EmbeddingGemma-300M-QAT | **Current** — cold-start runs for ripgrep/django/sympy on Apple M-series. Closes #251. |
 
 ## When to regenerate
 
