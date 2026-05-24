@@ -103,9 +103,16 @@ impl Registry {
     /// Find the closest ancestor of `start` that is a registered project root.
     /// If none found in the registry, falls back to filesystem walk looking for
     /// `.spelunk/index.db` and auto-registers what it finds.
+    ///
+    /// If `start` is inside a git linked worktree, the walk begins from the
+    /// main worktree root so commands run inside a worktree find the shared DB.
     pub fn find_project_for_path(&self, start: &Path) -> Result<Option<Project>> {
+        // If start is inside a git linked worktree, resolve to the main
+        // worktree root so the shared index is found without a symlink.
+        let search_root = crate::utils::resolve_main_worktree_root(start);
+
         // 1. Registry walk-up (most specific first)
-        let mut dir = start.to_path_buf();
+        let mut dir = search_root.clone();
         loop {
             let dir_str = dir.to_string_lossy().to_string();
             let maybe: Option<(i64, String, String, i64)> = self
@@ -133,7 +140,7 @@ impl Registry {
         }
 
         // 2. Filesystem fallback — look for .spelunk/index.db and auto-register.
-        let mut dir = start.to_path_buf();
+        let mut dir = search_root;
         loop {
             let candidate = dir.join(".spelunk").join("index.db");
             if candidate.exists() {

@@ -17,8 +17,12 @@ fn spelunk_config_dir() -> PathBuf {
 
 /// Walk up from `start` looking for `.spelunk/index.db`.
 /// Returns the first match found, or `None` if the filesystem root is reached.
+///
+/// If `start` is inside a git linked worktree, the walk begins from the main
+/// worktree root so that linked worktrees share the same index without a symlink.
 pub fn find_project_db(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
+    let resolved = crate::utils::resolve_main_worktree_root(start);
+    let mut dir = resolved;
     loop {
         let candidate = dir.join(".spelunk").join("index.db");
         if candidate.exists() {

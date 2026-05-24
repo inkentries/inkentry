@@ -50,15 +50,15 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // Compile secret-scanning regexes once before the hot loop.
     crate::indexer::secrets::init();
 
-    // If running inside a git worktree, symlink .spelunk to the main worktree's
-    // .spelunk so all worktrees share one index (SQLite WAL handles concurrent access).
-    worktree::ensure_spelunk_symlink(&args.path);
+    // If running inside a git linked worktree, resolve to the main worktree root
+    // so all worktrees share one index without creating any symlink.
+    let project_root = worktree::resolve_main_worktree_root(&args.path);
 
-    // Default DB lives inside the indexed directory, scoping the index to the project.
+    // Default DB lives inside the project root, scoping the index to the project.
     let db_path = args
         .db
         .clone()
-        .unwrap_or_else(|| args.path.join(".spelunk").join("index.db"));
+        .unwrap_or_else(|| project_root.join(".spelunk").join("index.db"));
     let db = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
