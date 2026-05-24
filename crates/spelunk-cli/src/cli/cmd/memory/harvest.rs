@@ -254,13 +254,30 @@ async fn memory_harvest_git(
             }
             buf
         };
-        let (_, raw_json) =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) })?;
-        let raw_json = crate::utils::strip_ansi(&raw_json);
+        let llm_result =
+            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
+        let raw_json = match llm_result {
+            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+            Err(e) => {
+                eprintln!(
+                    "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
+                    batch.len()
+                );
+                continue;
+            }
+        };
 
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json).with_context(|| {
-            format!("parsing LLM harvest response (batch {batch_num}):\n{raw_json}")
-        })?;
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not parse LLM response for batch {batch_num} ({} commit(s)), skipping: {e}\n  Raw: {}",
+                    batch.len(),
+                    &raw_json[..raw_json.len().min(200)]
+                );
+                continue;
+            }
+        };
 
         let entries = parsed["entries"].as_array().cloned().unwrap_or_default();
 
@@ -290,23 +307,40 @@ async fn memory_harvest_git(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend
-                .has_source_ref(&full_sha)
-                .await
-                .map_err(backend_err)?
-            {
-                println!("  [skip] already harvested {full_sha}");
-                continue;
+            match backend.has_source_ref(&full_sha).await.map_err(backend_err) {
+                Ok(true) => {
+                    println!("  [skip] already harvested {full_sha}");
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("  warning: could not check source_ref for {full_sha}: {e:#}");
+                    continue;
+                }
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = embedder.embed(&[&embed_text]).await?;
+            let vecs = match embedder.embed(&[&embed_text]).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: embedding failed for entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
             let Some(vec) = vecs.into_iter().next() else {
                 continue;
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = backend.search(&blob, 1, None).await?;
+            let neighbors = match backend.search(&blob, 1, None).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
+                    continue;
+                }
+            };
             if let Some(top) = neighbors.first()
                 && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
             {
@@ -321,7 +355,7 @@ async fn memory_harvest_git(
                 continue;
             }
 
-            let note_id = backend
+            let note_id = match backend
                 .add(NoteInput {
                     kind: kind.to_string(),
                     title: title.clone(),
@@ -333,7 +367,16 @@ async fn memory_harvest_git(
                     valid_at: None,
                     supersedes: None,
                 })
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to store entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
             println!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
@@ -597,13 +640,30 @@ async fn memory_harvest_failures(
             }
             buf
         };
-        let (_, raw_json) =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) })?;
-        let raw_json = crate::utils::strip_ansi(&raw_json);
+        let llm_result =
+            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
+        let raw_json = match llm_result {
+            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+            Err(e) => {
+                eprintln!(
+                    "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
+                    batch.len()
+                );
+                continue;
+            }
+        };
 
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json).with_context(|| {
-            format!("parsing LLM failures response (batch {batch_num}):\n{raw_json}")
-        })?;
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not parse LLM response for batch {batch_num} ({} commit(s)), skipping: {e}\n  Raw: {}",
+                    batch.len(),
+                    &raw_json[..raw_json.len().min(200)]
+                );
+                continue;
+            }
+        };
 
         let entries = parsed["entries"].as_array().cloned().unwrap_or_default();
         if entries.is_empty() {
@@ -631,23 +691,40 @@ async fn memory_harvest_failures(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend
-                .has_source_ref(&full_sha)
-                .await
-                .map_err(backend_err)?
-            {
-                println!("  [skip] already harvested {full_sha}");
-                continue;
+            match backend.has_source_ref(&full_sha).await.map_err(backend_err) {
+                Ok(true) => {
+                    println!("  [skip] already harvested {full_sha}");
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("  warning: could not check source_ref for {full_sha}: {e:#}");
+                    continue;
+                }
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = embedder.embed(&[&embed_text]).await?;
+            let vecs = match embedder.embed(&[&embed_text]).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: embedding failed for entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
             let Some(vec) = vecs.into_iter().next() else {
                 continue;
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = backend.search(&blob, 1, None).await?;
+            let neighbors = match backend.search(&blob, 1, None).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
+                    continue;
+                }
+            };
             if let Some(top) = neighbors.first()
                 && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
             {
@@ -662,7 +739,7 @@ async fn memory_harvest_failures(
                 continue;
             }
 
-            let note_id = backend
+            let note_id = match backend
                 .add(NoteInput {
                     kind: "antipattern".to_string(),
                     title: title.clone(),
@@ -674,7 +751,16 @@ async fn memory_harvest_failures(
                     valid_at: None,
                     supersedes: None,
                 })
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to store entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
             println!("  + [antipattern] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
@@ -682,10 +768,7 @@ async fn memory_harvest_failures(
         }
     }
 
-    println!(
-        "\nStored {stored} antipattern(s). Skipped {} near-duplicate.",
-        dedup_skipped
-    );
+    println!("\nStored {stored} antipattern(s). Skipped {dedup_skipped} near-duplicate.");
     Ok(())
 }
 
