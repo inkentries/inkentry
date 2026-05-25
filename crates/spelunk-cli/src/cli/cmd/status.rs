@@ -16,11 +16,10 @@ pub struct StatusArgs {
     pub format: String,
 }
 
-use super::search::resolve_project_and_deps;
 use crate::{
     capability::{self, Tier},
     config::{Config, resolve_db},
-    registry::Registry,
+    registry::{Registry, resolve_project_context},
     storage::{Database, open_memory_backend},
 };
 
@@ -54,24 +53,12 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     if fmt == "json" {
         let tier = capability::get_tier(&cfg).await;
 
-        // Resolve project and DB path. Prefer the registry-registered path so
-        // `project` can be populated; fall back to config default if needed.
-        let reg = Registry::open().ok();
-        let project_entry = reg.as_ref().and_then(|r| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|cwd| r.find_project_for_path(&cwd).ok().flatten())
-        });
-        let db_path = match &project_entry {
-            Some(p) => p.db_path.clone(),
-            None => {
-                let (p, _) = resolve_project_and_deps(None, &cfg)?;
-                p
-            }
-        };
-        let project_root: Option<String> = project_entry
+        let resolved = resolve_project_context(None, &cfg.db_path)?;
+        let project_root: Option<String> = resolved
+            .project
             .as_ref()
             .map(|p| p.root_path.display().to_string());
+        let db_path = resolved.db_path;
 
         let db = Database::open(&db_path)?;
         let stats = db.stats()?;
@@ -95,16 +82,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
         // ISO-8601 UTC timestamp for last_indexed_at
         let last_indexed_at: Option<String> = stats.last_indexed.and_then(|ts| {
-            use std::time::{Duration, UNIX_EPOCH};
-            UNIX_EPOCH
-                .checked_add(Duration::from_secs(ts as u64))
-                .map(|t| {
-                    let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                    // Format as RFC3339/ISO-8601 without pulling in chrono.
-                    let s = secs;
-                    let (date, time) = iso8601_from_unix(s);
-                    format!("{date}T{time}Z")
-                })
+            chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0)
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
         });
 
         // Embedding dimension: use the compile-time constant when embeddings
@@ -241,17 +220,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     // Current project only
     let tier = capability::get_tier(&cfg).await;
 
-    let reg = Registry::open().ok();
-    let project = reg.as_ref().and_then(|r| {
-        std::env::current_dir()
-            .ok()
-            .and_then(|cwd| r.find_project_for_path(&cwd).ok().flatten())
-    });
-
-    let db_path = match &project {
-        Some(p) => p.db_path.clone(),
-        None => resolve_db(None, &cfg.db_path),
-    };
+    let resolved = resolve_project_context(None, &cfg.db_path)?;
+    let db_path = &resolved.db_path;
 
     if !db_path.exists() {
         println!("No index found for the current directory (checked parents too).");
@@ -259,13 +229,13 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    let db = Database::open(&db_path)?;
+    let db = Database::open(db_path)?;
     let s = db.stats()?;
 
     // ── Capability tier section ───────────────────────────────────────────────
     print_tier_section(tier, &cfg);
 
-    if let Some(p) = &project {
+    if let Some(p) = &resolved.project {
         println!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
     }
     println!("Index:      {}", db_path.display());
@@ -280,17 +250,14 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     // Show dependencies
-    if let (Some(reg), Some(p)) = (&reg, &project) {
-        let deps = reg.get_deps(p.id)?;
-        if !deps.is_empty() {
-            println!("\nDependencies:");
-            for dep in &deps {
-                let dep_stats = Database::open(&dep.db_path).and_then(|db| db.stats()).ok();
-                let summary = dep_stats
-                    .map(|s| format!("{} files, {} chunks", s.file_count, s.chunk_count))
-                    .unwrap_or_else(|| "not indexed".to_string());
-                println!("  → {}  ({})", dep.root_path.display(), summary);
-            }
+    if !resolved.deps.is_empty() {
+        println!("\nDependencies:");
+        for dep in &resolved.deps {
+            let dep_stats = Database::open(&dep.db_path).and_then(|db| db.stats()).ok();
+            let summary = dep_stats
+                .map(|s| format!("{} files, {} chunks", s.file_count, s.chunk_count))
+                .unwrap_or_else(|| "not indexed".to_string());
+            println!("  → {}  ({})", dep.root_path.display(), summary);
         }
     }
 
@@ -379,55 +346,19 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
     println!();
 }
 
-/// Convert a Unix timestamp (seconds) to a `(date, time)` tuple formatted as
-/// `"YYYY-MM-DD"` and `"HH:MM:SS"` (UTC), without pulling in an external date
-/// library.
-///
-/// Returns `("1970-01-01", "00:00:00")` for `ts = 0`.
-fn iso8601_from_unix(ts: u64) -> (String, String) {
-    // Days from epoch
-    let days = ts / 86400;
-    let rem = ts % 86400;
-    let h = rem / 3600;
-    let m = (rem % 3600) / 60;
-    let s = rem % 60;
-
-    // Gregorian calendar computation (no external crate)
-    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if mo <= 2 { y + 1 } else { y };
-
-    (
-        format!("{:04}-{:02}-{:02}", y, mo, d),
-        format!("{:02}:{:02}:{:02}", h, m, s),
-    )
-}
-
 pub(crate) fn format_age(unix_ts: i64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
-    if let Ok(t) = UNIX_EPOCH
-        .checked_add(Duration::from_secs(unix_ts as u64))
-        .ok_or(())
-        && let Ok(elapsed) = std::time::SystemTime::now().duration_since(t)
-    {
-        let secs = elapsed.as_secs();
-        return if secs < 60 {
-            format!("{secs}s ago")
-        } else if secs < 3600 {
-            format!("{}m ago", secs / 60)
-        } else if secs < 86400 {
-            format!("{}h ago", secs / 3600)
-        } else {
-            format!("{}d ago", secs / 86400)
-        };
+    let Some(then) = chrono::DateTime::<chrono::Utc>::from_timestamp(unix_ts, 0) else {
+        return "unknown".to_string();
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(then);
+    let secs = elapsed.num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
-    "unknown".to_string()
 }

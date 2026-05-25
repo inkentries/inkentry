@@ -318,6 +318,74 @@ impl Registry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Project context resolution
+// ---------------------------------------------------------------------------
+
+/// Resolved project context for the current working directory.
+///
+/// Combines registry lookup, explicit `--db` override, and filesystem fallback
+/// into a single value that any CLI/server command can use to find its index.
+pub struct ResolvedProject {
+    /// Registered `Project` entry if CWD resolved into the registry.
+    /// `None` for explicit `--db` overrides and filesystem-fallback paths.
+    pub project: Option<Project>,
+    /// Path to the SQLite index. May not exist on disk — callers requiring
+    /// existence must check it themselves.
+    pub db_path: PathBuf,
+    /// Linked dependency projects (only populated when `project` is `Some`).
+    /// Filtered to those whose `db_path` exists on disk.
+    pub deps: Vec<Project>,
+}
+
+/// Resolve the project context for the current working directory.
+///
+/// Priority:
+/// 1. Explicit `--db` override (skips registry; `project` and `deps` are empty).
+/// 2. Registry lookup for the closest ancestor of CWD that has a registered
+///    project (or `.spelunk/index.db` auto-detection via `find_project_for_path`).
+/// 3. Filesystem fallback — `resolve_db(None, cfg_default_db)`.
+///
+/// Never fails based on file existence. Callers that require the index to
+/// exist must check `db_path.exists()` themselves.
+pub fn resolve_project_context(
+    explicit_db: Option<&Path>,
+    cfg_default_db: &Path,
+) -> Result<ResolvedProject> {
+    if let Some(p) = explicit_db {
+        return Ok(ResolvedProject {
+            project: None,
+            db_path: p.to_path_buf(),
+            deps: vec![],
+        });
+    }
+
+    if let Ok(reg) = Registry::open()
+        && let Ok(cwd) = std::env::current_dir()
+        && let Ok(Some(project)) = reg.find_project_for_path(&cwd)
+        && project.db_path.exists()
+    {
+        let deps = reg
+            .get_deps(project.id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.db_path.exists())
+            .collect();
+        let db_path = project.db_path.clone();
+        return Ok(ResolvedProject {
+            project: Some(project),
+            db_path,
+            deps,
+        });
+    }
+
+    Ok(ResolvedProject {
+        project: None,
+        db_path: crate::config::resolve_db(None, cfg_default_db),
+        deps: vec![],
+    })
+}
+
 /// Returns true if `path` exists but contains only a `.spelunk` subdirectory —
 /// i.e. it is a git worktree remnant where everything tracked was removed but
 /// the gitignored `.spelunk` folder was left behind.

@@ -127,11 +127,7 @@ pub fn strip_ansi(s: &str) -> String {
 
 /// Format a Unix timestamp as a human-readable age string (e.g. "3 min ago").
 pub fn format_age(created_at: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let secs = (now - created_at).max(0) as u64;
+    let secs = (chrono::Utc::now().timestamp() - created_at).max(0);
     if secs < 90 {
         format!("{secs} sec ago")
     } else if secs < 3600 {
