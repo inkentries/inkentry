@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+use spelunk_server::auth::ApiKeyAuth;
 use spelunk_server::db::ServerDb;
 use spelunk_server::{ApiDoc, AppState, default_conflict_threshold, router};
 use utoipa::OpenApi;
@@ -50,6 +51,15 @@ struct Args {
     #[arg(long, env = "SPELUNK_EMBEDDING_MODEL", default_value = "")]
     embedding_model: String,
 
+    /// Base URL of an OpenAI-compatible chat completions server for LLM features
+    /// (`/explore`, `/plan`). Overrides `SPELUNK_LLM_URL`.
+    #[arg(long, env = "SPELUNK_LLM_URL")]
+    llm_url: Option<String>,
+
+    /// LLM model name (e.g. `google/gemma-3n-e4b`). Overrides `SPELUNK_LLM_MODEL`.
+    #[arg(long, env = "SPELUNK_LLM_MODEL", default_value = "")]
+    llm_model: String,
+
     /// Print the OpenAPI spec as JSON and exit (for Postman / Newman import).
     #[arg(long)]
     print_openapi: bool,
@@ -87,6 +97,10 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Build the auth provider from the configured key.
+    let auth: Arc<dyn spelunk_server::auth::AuthProvider> =
+        Arc::new(ApiKeyAuth::new(args.key.clone()));
+
     // Build the optional server-side embedder.
     let embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> =
         if let Some(base_url) = args.embedding_url {
@@ -109,11 +123,33 @@ async fn main() -> Result<()> {
             None
         };
 
+    // Build the optional LLM backend.
+    let llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url {
+        let model = if args.llm_model.is_empty() {
+            "default".to_string()
+        } else {
+            args.llm_model.clone()
+        };
+        tracing::info!("server-side LLM enabled: {base_url} model={model}");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .context("building HTTP client for server-side LLM")?;
+        Some(Arc::new(ServerLlm {
+            client,
+            base_url,
+            model,
+        }))
+    } else {
+        None
+    };
+
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
-        api_key: args.key,
+        auth,
         conflict_threshold: args.conflict_threshold,
         embedder,
+        llm,
     };
 
     let app = router(state);
@@ -175,5 +211,121 @@ impl spelunk_core::embeddings::EmbeddingBackend for ServerEmbedder {
 
     fn dimension(&self) -> usize {
         0 // dimension is model-dependent; not used server-side
+    }
+}
+
+// ── Inline LLM for the server binary ─────────────────────────────────────────
+
+struct ServerLlm {
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+}
+
+#[async_trait::async_trait]
+impl spelunk_core::llm::LlmBackend for ServerLlm {
+    async fn generate(
+        &self,
+        messages: &[spelunk_core::llm::Message],
+        max_tokens: usize,
+        tx: tokio::sync::mpsc::Sender<spelunk_core::llm::Token>,
+        json_schema: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        use futures_util::StreamExt;
+
+        #[derive(serde::Serialize)]
+        struct ChatReq<'a> {
+            model: &'a str,
+            messages: Vec<ChatMsg<'a>>,
+            stream: bool,
+            max_tokens: usize,
+            temperature: f32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            response_format: Option<serde_json::Value>,
+        }
+        #[derive(serde::Serialize)]
+        struct ChatMsg<'a> {
+            role: &'a str,
+            content: &'a str,
+        }
+        #[derive(serde::Deserialize)]
+        struct StreamChunk {
+            choices: Vec<StreamChoice>,
+        }
+        #[derive(serde::Deserialize)]
+        struct StreamChoice {
+            delta: Delta,
+        }
+        #[derive(serde::Deserialize)]
+        struct Delta {
+            content: Option<String>,
+        }
+
+        let chat_messages: Vec<ChatMsg> = messages
+            .iter()
+            .map(|m| ChatMsg {
+                role: &m.role,
+                content: &m.content,
+            })
+            .collect();
+
+        let response_format =
+            json_schema.map(|s| serde_json::json!({ "type": "json_schema", "json_schema": s }));
+
+        let req = ChatReq {
+            model: &self.model,
+            messages: chat_messages,
+            stream: true,
+            max_tokens,
+            temperature: 0.7,
+            response_format,
+        };
+
+        let mut stream = self
+            .client
+            .post(format!("{}/v1/chat/completions", self.base_url))
+            .json(&req)
+            .send()
+            .await
+            .context("calling LLM server")?
+            .error_for_status()
+            .context("LLM server returned an error")?
+            .bytes_stream();
+
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.context("reading SSE byte chunk")?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            while let Some(pos) = buffer.find("\n\n") {
+                let event = buffer[..pos].to_string();
+                buffer.drain(..pos + 2);
+
+                for line in event.lines() {
+                    let data = match line.strip_prefix("data: ") {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    if data == "[DONE]" {
+                        return Ok(());
+                    }
+                    if data.is_empty() {
+                        continue;
+                    }
+                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                        for choice in chunk.choices {
+                            if let Some(content) = choice.delta.content
+                                && !content.is_empty()
+                                && tx.send(content).await.is_err()
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
