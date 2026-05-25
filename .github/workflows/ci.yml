@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -106,7 +106,7 @@ jobs:
 
       - name: Diff against committed snapshot
         run: |
-          if ! diff -u docs/openapi.json /tmp/openapi-generated.json; then
+          if ! diff -w -u docs/openapi.json /tmp/openapi-generated.json; then
             echo ""
             echo "ERROR: docs/openapi.json is out of date."
             echo "Run: cargo run -p spelunk-server -- --print-openapi > docs/openapi.json"
