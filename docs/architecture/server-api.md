@@ -31,7 +31,7 @@ constrained as follows; cloud implementations MUST uphold the same contract.
 | Chunk content (text) for embedding | yes | **no** | yes (eviction within session) |
 | Embedding vectors generated for the CLI | n/a (server emits) | **no** | yes (request-scoped) |
 | Search queries (text) | yes | **no** (logs may carry metadata only — never the query body in plaintext) | yes (LRU for rate limiting) |
-| `context_chunks` sent with `/explore` and `/plan` | yes | **no** | request-scoped only |
+| `context_chunks` sent with `/explore` | yes | **no** | request-scoped only |
 | Memory entries (notes) | yes | **yes** (this IS the server's persistence role) | n/a |
 | Project metadata (id, slug, stats) | yes | yes | n/a |
 | Auth principals (api keys, user ids) | yes | hash/identifier only — never the raw bearer | yes |
@@ -212,8 +212,7 @@ emit this format (currently some return plain text):
     "memory",
     "index.embed",
     "search.semantic",
-    "explore",
-    "plan"
+    "explore"
   ]
 }
 ```
@@ -337,40 +336,6 @@ Event `kind` values: `thought`, `answer`, `done`, `error`.
 
 **Response `503`:** no LLM configured on this server.
 
-### `POST /v1/projects/{project_id}/plan`
-
-Generate a structured implementation plan via LLM. Same context assembly
-pattern as explore.
-
-**Request:**
-
-```json
-{
-  "goal": "Add rate limiting to the memory push endpoint",
-  "context_chunks": [ ... ],
-  "style": "steps"
-}
-```
-
-`style`: `"steps"` (numbered list, default) or `"checklist"` (markdown
-checkbox list).
-
-**Response `200`:**
-
-```json
-{
-  "plan": {
-    "title": "Add rate limiting to memory push",
-    "steps": [
-      "Add a `RateLimiter` struct to `spelunk-server/src/middleware/`...",
-      ...
-    ]
-  }
-}
-```
-
-**Response `503`:** no LLM configured on this server.
-
 ---
 
 ## Project identity
@@ -423,7 +388,6 @@ A CI check diffs the committed file against a freshly generated one.
 | `GET` | `/v1/projects/{id}/stats` | Bearer | 1 | No change |
 | `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | **New** |
 | `POST` | `/v1/projects/{id}/explore` | Bearer | 1 | **New** (SSE) |
-| `POST` | `/v1/projects/{id}/plan` | Bearer | 1 | **New** |
 
 ---
 
@@ -437,7 +401,6 @@ A CI check diffs the committed file against a freshly generated one.
 - [ ] `POST /v1/projects/{id}/memory/search` accepts `{"query": String}`
 - [ ] `POST /v1/projects/{id}/index/embed` implemented
 - [ ] `POST /v1/projects/{id}/explore` implemented (SSE)
-- [ ] `POST /v1/projects/{id}/plan` implemented
 - [ ] Error responses use `{"error": {"code": "...", "message": "..."}}` format
 - [ ] OpenAPI spec updated for all new/changed endpoints
 - [ ] All existing `cargo test` suites pass; `cargo fmt` + `cargo clippy` clean
