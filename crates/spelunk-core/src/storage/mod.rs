@@ -27,7 +27,7 @@ pub use memory::{MemoryEdge, MemoryStore};
 pub use remote::RemoteMemoryBackend;
 pub use snapshots::{Snapshot, SymbolVersion};
 pub use specs::{SpecRecord, StaleSpec};
-pub use stats::{DriftCandidate, IndexStats, StalenessReport, record_usage_at};
+pub use stats::{DriftCandidate, IndexStats, LanguageStat, StalenessReport, record_usage_at};
 
 use anyhow::Result;
 use std::path::Path;

@@ -51,9 +51,9 @@ pub struct SearchArgs {
 use super::helpers::{embed_query_vec, load_embedder, project_display_name};
 use super::ui::{print_results_text, spinner};
 use crate::{
-    config::{Config, resolve_db},
+    config::Config,
     embeddings::vec_to_blob,
-    registry::{Project, Registry},
+    registry::{Project, resolve_project_context},
     search::{SearchResult, rag},
     storage::Database,
 };
@@ -261,46 +261,29 @@ pub(crate) fn index_is_stale(db_path: &std::path::Path) -> bool {
 }
 
 /// Resolve the primary DB path and any dep projects via the registry.
-/// Falls back to `resolve_db` if the registry can't find a project.
+/// Errors if the resolved DB does not exist on disk.
 pub(crate) fn resolve_project_and_deps(
     explicit_db: Option<&std::path::PathBuf>,
     cfg: &Config,
 ) -> Result<(std::path::PathBuf, Vec<Project>)> {
-    // Explicit --db skips registry entirely.
-    if let Some(p) = explicit_db {
-        if !p.exists() {
+    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+
+    if !resolved.db_path.exists() {
+        if explicit_db.is_some() {
             anyhow::bail!(
                 "Database not found at '{}'. Run `spelunk index <path>` first.",
-                p.display()
+                resolved.db_path.display()
             );
         }
-        return Ok((p.clone(), vec![]));
-    }
-
-    // Try registry first.
-    if let Ok(reg) = Registry::open()
-        && let Ok(cwd) = std::env::current_dir()
-        && let Ok(Some(project)) = reg.find_project_for_path(&cwd)
-        && project.db_path.exists()
-    {
-        let deps = reg
-            .get_deps(project.id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|d| d.db_path.exists())
-            .collect();
-        return Ok((project.db_path, deps));
-    }
-
-    // Fallback: filesystem walk-up.
-    let db_path = resolve_db(None, &cfg.db_path);
-    if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
              Run `spelunk index <path>` inside your project first."
         );
     }
-    Ok((db_path, vec![]))
+
+    // If the registry returned a project whose DB no longer exists, the
+    // existence check above would have caught it via resolved.db_path.
+    Ok((resolved.db_path, resolved.deps))
 }
 
 /// Annotate results with governing specs from the primary DB, and set

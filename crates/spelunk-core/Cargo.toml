@@ -14,6 +14,7 @@ rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 [dependencies]
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
