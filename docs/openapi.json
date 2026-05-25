@@ -946,73 +946,6 @@
         ]
       }
     },
-    "/v1/projects/{project_id}/plan": {
-      "post": {
-        "tags": [
-          "inference"
-        ],
-        "summary": "Generate a structured implementation plan via LLM over caller-supplied context.\nReturns 503 if no LLM is configured.",
-        "operationId": "plan",
-        "parameters": [
-          {
-            "name": "project_id",
-            "in": "path",
-            "description": "Project slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Structured implementation plan",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlanResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "No LLM configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
     "/v1/projects/{project_id}/stats": {
       "get": {
         "tags": [
@@ -1289,7 +1222,7 @@
       },
       "ExploreContextChunk": {
         "type": "object",
-        "description": "A single context chunk supplied by the CLI for `/explore` and `/plan`.",
+        "description": "A single context chunk supplied by the CLI for `/explore`.",
         "required": [
           "file",
           "start_line",
@@ -1381,59 +1314,6 @@
             "type": "integer",
             "description": "Maximum number of results to return (default: 20).",
             "minimum": 0
-          }
-        }
-      },
-      "PlanRequest": {
-        "type": "object",
-        "description": "Request body for `POST /v1/projects/{project_id}/plan`.",
-        "required": [
-          "goal"
-        ],
-        "properties": {
-          "context_chunks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ExploreContextChunk"
-            }
-          },
-          "goal": {
-            "type": "string"
-          },
-          "style": {
-            "type": "string",
-            "description": "`\"steps\"` (default) or `\"checklist\"`."
-          }
-        }
-      },
-      "PlanResponse": {
-        "type": "object",
-        "description": "Response body for `POST /v1/projects/{project_id}/plan`.",
-        "required": [
-          "plan"
-        ],
-        "properties": {
-          "plan": {
-            "$ref": "#/components/schemas/PlanResult"
-          }
-        }
-      },
-      "PlanResult": {
-        "type": "object",
-        "description": "A structured plan returned by the plan endpoint.",
-        "required": [
-          "title",
-          "steps"
-        ],
-        "properties": {
-          "steps": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "title": {
-            "type": "string"
           }
         }
       },
@@ -1648,7 +1528,7 @@
     },
     {
       "name": "inference",
-      "description": "LLM-powered explore and plan"
+      "description": "LLM-powered code exploration"
     }
   ]
 }

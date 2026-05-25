@@ -52,7 +52,7 @@ struct Args {
     embedding_model: String,
 
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
-    /// (`/explore`, `/plan`). Overrides `SPELUNK_LLM_URL`.
+    /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
     #[arg(long, env = "SPELUNK_LLM_URL")]
     llm_url: Option<String>,
 
