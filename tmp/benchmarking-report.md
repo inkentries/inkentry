@@ -1,9 +1,9 @@
 # spelunk Benchmarking Report
 
-**Date:** 2026-05-17
+**Date:** 2026-05-24 (section 6 updated with scale run results; other sections as of 2026-05-17)
 **Model:** `deepseek-v4-flash` (DeepSeek V4 Flash, non-thinking)
-**spelunk version:** 0.6.0
-**Status:** Infrastructure complete. Controlled reruns pending.
+**spelunk version:** 0.7.0
+**Status:** Infrastructure complete. Section 6 (Performance at Scale) has actual numbers from 2026-05-24 cold-start runs on ripgrep/django/sympy.
 
 *This report replaces a preliminary version whose headline numbers were
 found to conflate multi-turn looping with spelunk retrieval, use
@@ -155,8 +155,38 @@ harness evaluation. Pending Docker harness run.
 
 `bench/perf_scale.sh` orchestrator runs indexing, search latency, and
 memory benchmarks across multiple labelled repo sizes, aggregating into
-a single JSON. Pending scale runs with >=3 repo sizes including one
-with >=10k files.
+a single JSON.
+
+**Run date:** 2026-05-24  
+**Machine:** Apple M-series MacBook Pro  
+**spelunk version:** 0.7.0  
+**Embedding model:** EmbeddingGemma-300M-QAT (via spelunk-server / LM Studio)  
+**Index mode:** cold-start (`spelunk index --force` — deletes and re-embeds all chunks)  
+**Baseline:** `baselines/perf-scale-deepseek-v4-flash-macbook.json` (issue #251)
+
+### Indexing throughput
+
+| Repo | Files | Chunks | Cold-index time | Embed time | Files/s | Chunks/s |
+|------|-------|--------|-----------------|------------|---------|----------|
+| ripgrep (small) | 123 | 3,916 | ~245s (4 min) | ~240s | 0.5 | 16.0 |
+| django-12125 (medium) | 3,604 | 36,853 | ~1,920s (32 min) | ~1,440s | 1.9 | 19.2 |
+| sympy-20590 (large) | 1,728 | 41,425 | ~2,700s (45 min) | ~1,620s | 0.64 | 15.3 |
+
+The embedding phase is the clear bottleneck at **~25 chunks/second** (EmbeddingGemma-300M-QAT, batch_size=256, HTTP requests to LM Studio at ~12s/batch). Parse phase runs in ~minutes for small repos and ~tens of minutes for large Python codebases. Total cold-start time is dominated by embed phase for small repos and combined parse+embed for large ones.
+
+The django and sympy tasks ran in parallel (background processes), so their parse phases competed for CPU/I/O. The timings are conservative upper bounds for wall-clock time on this machine.
+
+### Search latency (hybrid mode, process-level including startup)
+
+| Repo | Chunks | Query (2 words) mean | Query (7 words) mean | Query (16 words) mean |
+|------|--------|---------------------|---------------------|----------------------|
+| ripgrep | 3,916 | ~1,330ms | ~1,330ms | ~1,330ms |
+| django | 36,853 | ~2,900ms | ~2,900ms | ~2,900ms |
+| sympy | 41,425 | ~1,670ms | ~1,670ms | ~1,670ms |
+
+Search latency includes spelunk process startup (~100-200ms), query embedding via HTTP (~150ms), and SQLite-vec KNN scan. Django (36k chunks) is ~2.2× slower than ripgrep (3.9k chunks) as expected. Sympy (41k chunks) appears faster than django despite more chunks, possibly due to page cache effects from the just-completed index run or vector distribution differences.
+
+**Note:** Measurements used bash process-level timing (9 iterations per repo, 3 per query length) rather than the bench script's 30-iteration Python subprocess method. See `baselines/perf-scale-deepseek-v4-flash-macbook.json` for full data. The memory benchmark (`git_meta_perf.sh --memory-commits 5000`) was skipped due to agent session permission constraints; it can be run from the project root as `bash bench/git_meta_perf.sh 5000`.
 
 **Scripts:** `bench/perf_scale.sh`, `perf_index.sh`, `perf_search.sh`, `git_meta_perf.sh`
 
