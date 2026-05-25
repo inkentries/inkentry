@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -78,3 +78,38 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+
+  openapi-snapshot:
+    name: OpenAPI snapshot check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Generate OpenAPI spec
+        run: cargo run -p spelunk-server -- --print-openapi > /tmp/openapi-generated.json
+
+      - name: Diff against committed snapshot
+        run: |
+          if ! diff -w -u docs/openapi.json /tmp/openapi-generated.json; then
+            echo ""
+            echo "ERROR: docs/openapi.json is out of date."
+            echo "Run: cargo run -p spelunk-server -- --print-openapi > docs/openapi.json"
+            echo "Then commit the updated snapshot."
+            exit 1
+          fi
