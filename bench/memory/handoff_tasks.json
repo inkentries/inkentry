@@ -1,14 +1,145 @@
 [
     {
-        "task": "Fix the failing test in tests/test_parser.py so that 'pytest tests/test_parser.py' passes",
-        "repo_url": "https://github.com/user/repo.git",
-        "setup_cmd": "pip install -e '.[dev]' 2>/dev/null || true",
-        "verify_cmd": "python -m pytest tests/test_parser.py -x -q"
+        "id": "ripgrep-01",
+        "repo": "ripgrep",
+        "task": "Add a top-level integration test in tests/integration/ (or tests/) that invokes the rg binary with the --count flag on a small fixture directory and asserts the output is of the form '<filename>:<number>'. Name the test file 'count_flag.rs' or add a #[test] fn test_count_flag_output to an existing integration test module. The test must compile and pass under 'cargo test --test integration'.",
+        "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -r 'count_flag\\|test_count_flag' tests/ && cargo test --test integration 2>&1 | grep -E 'count_flag|test_count_flag' | grep -q 'ok'",
+        "difficulty": "medium",
+        "category": "add_test",
+        "notes": "verify_cmd fails on unmodified clone because neither the grep nor the test pass exists."
     },
     {
-        "task": "Add a '--verbose' flag to the CLI that enables debug logging. Verify with: 'python -m mymodule --verbose 2>&1 | grep DEBUG'",
-        "repo_url": "https://github.com/user/repo.git",
-        "setup_cmd": "pip install -e . 2>/dev/null || true",
-        "verify_cmd": "python -m mymodule --verbose 2>&1 | grep -q DEBUG"
+        "id": "ripgrep-02",
+        "repo": "ripgrep",
+        "task": "The ripgrep binary accepts a --max-depth flag. Add a new integration test named 'test_max_depth_zero' that calls rg with --max-depth 0 on a nested directory fixture and asserts the exit code is 1 (no matches found because depth-0 means no files are searched). The test must pass under 'cargo test'.",
+        "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -rq 'test_max_depth_zero' tests/ && cargo test test_max_depth_zero 2>&1 | grep -q 'ok'",
+        "difficulty": "medium",
+        "category": "add_test",
+        "notes": "verify_cmd fails on unmodified clone because the test function does not exist."
+    },
+    {
+        "id": "ripgrep-03",
+        "repo": "ripgrep",
+        "task": "ripgrep's README contains the heading '## Building'. Add a new subsection '### Cross-compiling' immediately after that heading with at least two sentences describing how to cross-compile for a different target (e.g., 'cargo build --target x86_64-unknown-linux-musl'). The verify_cmd checks that this subsection exists in README.md.",
+        "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -q '### Cross-compiling' README.md",
+        "difficulty": "easy",
+        "category": "docs",
+        "notes": "verify_cmd fails on unmodified clone. Tests that a session-1 agent that started but did not finish this doc task can be resumed."
+    },
+    {
+        "id": "ripgrep-04",
+        "repo": "ripgrep",
+        "task": "Add a CHANGELOG entry for an imaginary v14.2.0 release at the top of the CHANGELOG.md file. The entry must include the header '## 14.2.0 (unreleased)' and at least one bullet point. The verify_cmd checks for the presence of this header.",
+        "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -q '## 14.2.0' CHANGELOG.md",
+        "difficulty": "easy",
+        "category": "changelog",
+        "notes": "verify_cmd fails on unmodified clone. Models the common 'update the changelog' step that gets forgotten mid-session."
+    },
+    {
+        "id": "ripgrep-05",
+        "repo": "ripgrep",
+        "task": "Add a Rust unit test inside crates/grep-searcher/src/searcher/mod.rs (or the file that contains the Searcher struct) that asserts the default SearcherBuilder produces a Searcher whose 'binary_detection' method returns the expected default value. Name the test 'test_searcher_default_binary_detection'. Run 'cargo test -p grep-searcher test_searcher_default_binary_detection' to verify.",
+        "repo_url": "https://github.com/BurntSushi/ripgrep.git",
+        "setup_cmd": "true",
+        "verify_cmd": "cargo test -p grep-searcher test_searcher_default_binary_detection 2>&1 | grep -q 'test_searcher_default_binary_detection.*ok'",
+        "difficulty": "hard",
+        "category": "add_unit_test",
+        "notes": "verify_cmd fails on unmodified clone. Requires navigating the internal crate structure."
+    },
+    {
+        "id": "ruff-01",
+        "repo": "ruff",
+        "task": "Add a CONTRIBUTING.md section titled '## Running benchmarks' that describes how to run ruff's micro-benchmarks with 'cargo bench'. The section must contain the literal string 'cargo bench'. The verify_cmd checks for its presence in CONTRIBUTING.md.",
+        "repo_url": "https://github.com/astral-sh/ruff.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -q '## Running benchmarks' CONTRIBUTING.md && grep -q 'cargo bench' CONTRIBUTING.md",
+        "difficulty": "easy",
+        "category": "docs",
+        "notes": "verify_cmd fails on unmodified clone. Tests resumption of a documentation task."
+    },
+    {
+        "id": "ruff-02",
+        "repo": "ruff",
+        "task": "In the file crates/ruff_linter/src/rules/pycodestyle/rules/logical_lines/mod.rs (or any file under ruff_linter/src/rules/pycodestyle/), add a Rust unit test named 'test_smoke_empty_line' that calls the module's tokenize or related public function with an empty string and asserts it returns without panicking. The test must pass under 'cargo test -p ruff_linter test_smoke_empty_line'.",
+        "repo_url": "https://github.com/astral-sh/ruff.git",
+        "setup_cmd": "true",
+        "verify_cmd": "cargo test -p ruff_linter test_smoke_empty_line 2>&1 | grep -q 'test_smoke_empty_line.*ok'",
+        "difficulty": "hard",
+        "category": "add_unit_test",
+        "notes": "verify_cmd fails on unmodified clone. Requires locating and using the right internal module."
+    },
+    {
+        "id": "ruff-03",
+        "repo": "ruff",
+        "task": "Add a new fixture file at crates/ruff_linter/resources/test/fixtures/pycodestyle/E501_custom.py containing at least one Python line that exceeds 88 characters (the default line-length limit). The file content should be a real Python statement, not just a comment. Verify the file exists and is non-empty.",
+        "repo_url": "https://github.com/astral-sh/ruff.git",
+        "setup_cmd": "true",
+        "verify_cmd": "test -s crates/ruff_linter/resources/test/fixtures/pycodestyle/E501_custom.py",
+        "difficulty": "easy",
+        "category": "add_fixture",
+        "notes": "verify_cmd fails on unmodified clone. Tests the 'add a test fixture' step that is often left half-done."
+    },
+    {
+        "id": "ruff-04",
+        "repo": "ruff",
+        "task": "Create a new file docs/rule-decisions/E501-line-length.md that explains in 3-5 sentences why ruff uses 88 characters (not 79) as the default line-length limit, referencing Black's formatting philosophy. The file must contain the word 'Black'. Verify with a grep.",
+        "repo_url": "https://github.com/astral-sh/ruff.git",
+        "setup_cmd": "true",
+        "verify_cmd": "test -f docs/rule-decisions/E501-line-length.md && grep -q 'Black' docs/rule-decisions/E501-line-length.md",
+        "difficulty": "easy",
+        "category": "docs",
+        "notes": "verify_cmd fails on unmodified clone. Both the file and the directory are new."
+    },
+    {
+        "id": "ruff-05",
+        "repo": "ruff",
+        "task": "In the Python script scripts/add_rule.py (or any .py file under scripts/ that is already present), add a module-level docstring at the very top of the file if it does not already have one. The docstring must mention 'ruff' and 'rule'. Verify that the file starts with a triple-quoted string containing both words.",
+        "repo_url": "https://github.com/astral-sh/ruff.git",
+        "setup_cmd": "true",
+        "verify_cmd": "python3 -c \"import ast, sys; tree = ast.parse(open('scripts/add_rule.py').read()); d = ast.get_docstring(tree); sys.exit(0 if d and 'ruff' in d.lower() and 'rule' in d.lower() else 1)\"",
+        "difficulty": "medium",
+        "category": "add_docstring",
+        "notes": "verify_cmd fails on unmodified clone. Uses ast.get_docstring for robust check."
+    },
+    {
+        "id": "tokio-01",
+        "repo": "tokio",
+        "task": "Add a markdown file tokio/ARCHITECTURE.md (inside the tokio/ subdirectory of the repo) with a top-level heading '# Tokio Architecture' and at least one section '## Runtime' describing the multi-threaded work-stealing scheduler in at least two sentences. Verify both the heading and the section exist.",
+        "repo_url": "https://github.com/tokio-rs/tokio.git",
+        "setup_cmd": "true",
+        "verify_cmd": "grep -q '# Tokio Architecture' tokio/ARCHITECTURE.md && grep -q '## Runtime' tokio/ARCHITECTURE.md",
+        "difficulty": "easy",
+        "category": "docs",
+        "notes": "verify_cmd fails on unmodified clone. The file does not exist."
+    },
+    {
+        "id": "tokio-02",
+        "repo": "tokio",
+        "task": "In tokio/src/runtime/mod.rs (or the closest existing file in tokio/src/runtime/), add a Rust unit test named 'test_builder_thread_name_default' inside a #[cfg(test)] mod tests block that creates a Runtime via Builder::new_current_thread().enable_all().build() and asserts the build succeeds (i.e., unwrap() does not panic). The test must pass under 'cargo test -p tokio test_builder_thread_name_default'.",
+        "repo_url": "https://github.com/tokio-rs/tokio.git",
+        "setup_cmd": "true",
+        "verify_cmd": "cargo test -p tokio test_builder_thread_name_default 2>&1 | grep -q 'test_builder_thread_name_default.*ok'",
+        "difficulty": "hard",
+        "category": "add_unit_test",
+        "notes": "verify_cmd fails on unmodified clone. Requires navigating the tokio runtime internals."
+    },
+    {
+        "id": "tokio-03",
+        "repo": "tokio",
+        "task": "Add a new example file tokio/examples/hello_interval.rs that uses tokio::time::interval to print 'tick' to stdout 3 times with a 10ms interval, then exits. The example must compile and run successfully with 'cargo run --example hello_interval -p tokio --features full'.",
+        "repo_url": "https://github.com/tokio-rs/tokio.git",
+        "setup_cmd": "true",
+        "verify_cmd": "cargo run --example hello_interval -p tokio --features full 2>&1 | grep -q 'tick'",
+        "difficulty": "medium",
+        "category": "add_example",
+        "notes": "verify_cmd fails on unmodified clone. The example file does not exist."
     }
 ]
