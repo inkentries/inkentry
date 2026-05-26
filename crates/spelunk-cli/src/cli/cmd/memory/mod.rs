@@ -263,6 +263,23 @@ pub struct MemoryWatchArgs {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Comma-separated kind filter, e.g. `intent,decision`.
+    /// When absent all event kinds are streamed.
+    #[arg(long)]
+    pub kind: Option<String>,
+
+    /// Resume from a specific sequence ID (seq-NNNNNNN or plain integer).
+    /// When set, the server replays missed events before switching to live.
+    /// In the default mode the CLI tracks the last-seen ID automatically and
+    /// reconnects on transient errors.
+    #[arg(long, value_name = "SEQ")]
+    pub since_seq: Option<String>,
+
+    /// Maximum number of automatic reconnect attempts on connection error.
+    /// Set to 0 to disable reconnection (one-shot mode).
+    #[arg(long, default_value_t = 10)]
+    pub reconnect_limit: u32,
 }
 
 #[derive(Args, Debug)]
