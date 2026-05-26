@@ -27,8 +27,8 @@ pub struct SearchArgs {
     #[arg(long, default_value = "10")]
     pub graph_limit: usize,
 
-    /// Search mode: text (FTS only) or semantic/hybrid (default, uses LinearRAG)
-    #[arg(long, default_value = "hybrid")]
+    /// Search mode: auto (default), text (FTS only), semantic/hybrid (LinearRAG), or ast-grep
+    #[arg(long, default_value = "auto")]
     pub mode: String,
 
     /// Path to the SQLite database (overrides config)
@@ -59,6 +59,23 @@ use crate::{
 };
 
 pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
+    let mode = args.mode.as_str();
+    let auto_mode = mode == "auto";
+
+    // ── No-index / no-embedder fast path ─────────────────────────────────────
+    // When the user hasn't asked for a specific mode (auto) and either the
+    // index is missing or the embedder is unavailable, silently fall back to
+    // ast-grep — mirroring the `graph --live` pattern.
+    if auto_mode {
+        let db_result = resolve_project_and_deps(args.db.as_ref(), &cfg);
+        if db_result.is_err() {
+            // No index found — fall back to ast-grep silently.
+            return search_live(&args.query, &args.format, std::path::Path::new("."));
+        }
+        // Index exists but embedder may not be available. We'll check below
+        // after attempting to load it; for now, fall through to normal path.
+    }
+
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
 
@@ -91,8 +108,6 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         None
     };
 
-    let mode = args.mode.as_str();
-
     let mut results = if mode == "text" && snapshot_id.is_none() {
         // Text mode: FTS5 only, no embedding model required.
         let sp = spinner("Searching (text)…");
@@ -102,13 +117,32 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .unwrap_or_default();
         sp.finish_and_clear();
         res
+    } else if mode == "ast-grep" && snapshot_id.is_none() {
+        // Explicit ast-grep mode: skip index entirely.
+        return search_live(&args.query, &args.format, std::path::Path::new("."));
     } else {
-        // semantic, hybrid, or snapshot search: need an embedding.
-        let sp = spinner("Loading model…");
+        // semantic, hybrid, auto, or snapshot search: need an embedding.
+        // Note: load_embedder only constructs an HTTP client and always succeeds.
+        // The actual network call (and potential failure) happens in embed_query_vec.
         let embedder = load_embedder(&cfg).await?;
 
-        sp.set_message("Embedding query…");
-        let query_vec = embed_query_vec(&embedder, "code retrieval", &args.query).await?;
+        let sp = spinner("Embedding query…");
+        let query_vec_result = embed_query_vec(&embedder, "code retrieval", &args.query).await;
+
+        // In auto mode, if the embedding call fails (e.g. embedder unreachable),
+        // fall back to ast-grep silently.
+        if auto_mode && query_vec_result.is_err() && snapshot_id.is_none() {
+            sp.finish_and_clear();
+            return search_live(&args.query, &args.format, std::path::Path::new("."));
+        }
+
+        let query_vec = query_vec_result.map_err(|e| {
+            anyhow::anyhow!(
+                "{e}\n\
+                 No embedder configured. Run `spelunk index` with a server_url to enable \
+                 semantic search, or use `--mode text` or `--mode ast-grep`."
+            )
+        })?;
         let query_blob = vec_to_blob(&query_vec);
 
         // Budget mode overfetches a candidate pool; limit is applied after packing.
@@ -132,11 +166,17 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             )?
         };
         sp.finish_and_clear();
+
+        // Auto mode: stale index + empty results → fall back to ast-grep silently.
+        if auto_mode && res.is_empty() && !args.no_stale_check && index_is_stale(&db_path) {
+            return search_live(&args.query, &args.format, std::path::Path::new("."));
+        }
+
         res
     };
 
     if results.is_empty() {
-        println!("No results found. Make sure the index has embeddings (`spelunk index <path>`).");
+        println!("No results found.");
         return Ok(());
     }
 
@@ -314,6 +354,61 @@ fn annotate_specs(all: &mut [SearchResult], primary_db_path: &std::path::Path) {
             }
         }
     }
+}
+
+/// Run an ast-grep pattern search for `query` over the working tree rooted at `root`.
+///
+/// This is the zero-infra fallback: no index and no embedder required.
+/// It mirrors the `graph_live` pattern in `graph.rs`.
+pub(crate) fn search_live(query: &str, format: &str, root: &std::path::Path) -> Result<()> {
+    if std::process::Command::new("ast-grep")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        anyhow::bail!(
+            "ast-grep not found. Install with: brew install ast-grep\n\
+             (or: cargo install ast-grep --locked)\n\
+             Run `spelunk index .` to enable index-backed search."
+        );
+    }
+
+    let out = std::process::Command::new("ast-grep")
+        .args(["run", "--pattern", query, "--json"])
+        .arg(root)
+        .output()?;
+
+    if !out.status.success() && out.stdout.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    let matches: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+
+    if matches.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    match crate::utils::effective_format(format) {
+        "json" => println!("{}", serde_json::to_string_pretty(&matches)?),
+        "ndjson" => {
+            for m in &matches {
+                println!("{}", serde_json::to_string(m)?);
+            }
+        }
+        _ => {
+            println!("\x1b[1mResults (ast-grep live scan):\x1b[0m");
+            for m in &matches {
+                let file = m["path"].as_str().unwrap_or("?");
+                let line = m["range"]["start"]["line"].as_u64().unwrap_or(0);
+                let text = m["text"].as_str().unwrap_or("").trim();
+                println!("  \x1b[36m{file}\x1b[0m:\x1b[33m{line}\x1b[0m  {text}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Search a primary DB and any dep projects, merge results by distance, return top `limit`.
