@@ -307,7 +307,7 @@ mod harvest;
 mod harvest_claude;
 mod harvest_entire;
 mod list;
-mod push;
+pub mod push;
 mod search;
 mod show;
 mod since;

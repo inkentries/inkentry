@@ -25,6 +25,7 @@ pub use init::init;
 pub use link::{autoclean, link, unlink};
 pub use links::links;
 pub use memory::memory;
+pub use memory::push::memory_push;
 pub use misc::{chunks, languages};
 pub use plumbing::plumbing;
 pub use search::search;
