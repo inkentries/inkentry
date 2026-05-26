@@ -218,6 +218,11 @@ pub struct MemoryHarvestArgs {
     /// Only used with --source entire.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Useful in git hooks so the hook does not block the git process.
+    #[arg(long, default_value_t = false)]
+    pub detach: bool,
 }
 
 #[derive(Args, Debug)]

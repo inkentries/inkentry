@@ -36,6 +36,11 @@ pub struct IndexArgs {
     /// Used by the background process spawned after a large foreground index.
     #[arg(long = "_background-phases", hide = true, default_value_t = false)]
     pub background_phases: bool,
+
+    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Useful in git hooks so the hook does not block the git process.
+    #[arg(long, default_value_t = false)]
+    pub detach: bool,
 }
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
@@ -47,6 +52,11 @@ mod summaries;
 mod worktree;
 
 pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
+    if args.detach {
+        super::helpers::spawn_detached()?;
+        return Ok(());
+    }
+
     // Validate config: server_url requires project_id.
     cfg.validate()?;
 
