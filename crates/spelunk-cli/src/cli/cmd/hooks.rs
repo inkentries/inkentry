@@ -40,16 +40,16 @@ fi
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
-spelunk index "$PROJECT_ROOT"
-spelunk memory harvest --git-range HEAD~1..HEAD
+spelunk index "$PROJECT_ROOT" --detach
+spelunk memory harvest --git-range HEAD~1..HEAD --detach
 "#;
 
 const CI_STEP: &str = r#"# Add to your .github/workflows/ file:
 - name: Update spelunk index
   run: |
     if command -v spelunk >/dev/null 2>&1; then
-      spelunk index .
-      spelunk memory harvest --git-range HEAD~1..HEAD
+      spelunk index . --detach
+      spelunk memory harvest --git-range HEAD~1..HEAD --detach
     fi
 "#;
 

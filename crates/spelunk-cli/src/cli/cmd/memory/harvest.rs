@@ -13,6 +13,11 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    if args.detach {
+        super::super::helpers::spawn_detached()?;
+        return Ok(());
+    }
+
     match args.source.as_str() {
         "git" => memory_harvest_git(args, mem_path, cfg, backend_override).await,
         "claude-code" => {

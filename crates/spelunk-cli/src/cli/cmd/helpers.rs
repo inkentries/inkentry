@@ -64,3 +64,22 @@ pub(crate) fn project_display_name(path: &std::path::Path) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
+
+/// Detach: re-exec this binary with the same CLI arguments but without
+/// `--detach`, with all stdio closed, so the caller (e.g. a git hook) regains
+/// its prompt immediately while spelunk continues in the background.
+pub(crate) fn spawn_detached() -> Result<()> {
+    let exe = std::env::current_exe().context("resolving current executable")?;
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--detach")
+        .collect();
+    std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("spawning detached background process")?;
+    Ok(())
+}
