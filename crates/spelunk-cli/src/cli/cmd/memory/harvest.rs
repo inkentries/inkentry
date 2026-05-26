@@ -13,6 +13,13 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    if cfg.server_url.is_none() && cfg.llm_model.is_none() {
+        anyhow::bail!(
+            "Harvest requires a remote server (--remote-url) or a local model (SPELUNK_LLM_URL). \
+             Run 'spelunk sync' to push entries to the server, or configure a model."
+        );
+    }
+
     if args.detach {
         super::super::helpers::spawn_detached()?;
         return Ok(());
