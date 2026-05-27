@@ -32,17 +32,14 @@ use super::helpers::open_project_db;
 use super::search::maybe_warn_stale;
 use super::ui::spinner;
 use crate::{
+    capability,
     config::Config,
     search::explore::{ExploreResult, Explorer},
 };
 
 pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
-    if cfg.llm_model.is_none() {
-        anyhow::bail!(
-            "spelunk explore requires a chat model. \
-             Set `llm_model` in ~/.config/spelunk/config.toml."
-        );
-    }
+    let tier = capability::get_tier(&cfg).await;
+    capability::require_tier1("explore", tier, cfg.server_url.as_deref())?;
 
     let (db_path, _db) = open_project_db(args.db.as_deref(), &cfg.db_path)?;
     maybe_warn_stale(&db_path);
