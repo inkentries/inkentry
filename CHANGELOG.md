@@ -7,6 +7,63 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.1] — 2026-05-27
+
+### Added
+
+- **`spelunk-server` HTTP API** — Axum-based REST server with AuthProvider
+  trait, `/v1/embed`, `/v1/explore`, `/v1/plan` endpoints, and an OpenAPI spec
+  committed alongside the binary. Server-side embedding is optional; pass
+  `SPELUNK_EMBEDDING_URL` to enable it. Prompt-injection patterns are rejected
+  server-side before storage. (#261, #221, #222)
+
+- **`spelunk status --format json`** — stable machine-readable schema for
+  status output, suitable for CI dashboards and agent health checks. (#269)
+
+- **Heuristic convention extraction** — `spelunk index` now detects and stores
+  project conventions (naming patterns, async style, test coverage, doc
+  coverage) derived from the AST. Results are surfaced in `spelunk context`
+  output. (#268)
+
+- **Compatibility tier model** — `spelunk check` reports a capability tier
+  (Local / Embedded / Full) so agents can adapt their strategy to the available
+  inference backend at runtime. (#259)
+
+- **`spelunk graph --live`** — passes the query to ast-grep as a fallback when
+  the indexed call graph has no results, giving live symbol resolution for
+  unindexed or recently changed code. (#216)
+
+### Changed
+
+- **3-crate Cargo workspace** — the codebase is now split into `spelunk-core`
+  (library), `spelunk-cli` (binary), and `spelunk-server` (binary + lib) under
+  a shared workspace root. `CLAUDE.md` and `README.md` updated accordingly.
+  (#220)
+
+- **`gix` status API** — subprocess calls to `git status` replaced with
+  `gix::status` API, removing a shell dependency and improving reliability
+  inside IDE integrations. (#215)
+
+### Fixed
+
+- `spelunk-server` OpenAPI spec gaps: `SearchRequest` missing `text` field,
+  JSON error shapes aligned to `application/json` responses, CI step added to
+  gate spec drift. (#288)
+
+- `.spelunk` symlink replaced with runtime worktree-root resolution, fixing an
+  infinite-symlink issue when indexing inside a git worktree. (#266)
+
+- `spelunk memory harvest` now swallows per-entry errors and continues rather
+  than aborting the entire run on a single bad entry. (#270)
+
+### Dependencies
+
+- `serde_json` 1.0.149 → 1.0.150
+- `tree-sitter` 0.26.8 → 0.26.9
+- `tower-http` 0.6.10 → 0.6.11
+
+---
+
 ## [0.7.0] — 2026-05-17
 
 ### Added
