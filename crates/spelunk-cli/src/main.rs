@@ -72,5 +72,9 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Sync(args) => {
+            let mem_path = config::resolve_db(None, &cfg.db_path).with_file_name("memory.db");
+            cli::cmd::memory_push(args, &mem_path, &cfg, None).await
+        }
     }
 }

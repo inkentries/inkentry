@@ -82,6 +82,7 @@ spelunk memory add --kind decision --title "Chose sqlite-vec over pgvector" \
 spelunk memory list --kind decision --limit 10
 spelunk memory search "why did we choose this database"
 spelunk memory harvest   # auto-extract decisions from recent commits (requires llm_model)
+spelunk sync             # push local memory entries to the configured server (alias for `memory push`)
 ```
 
 Memory is stored in git notes by default — it travels with the repo. Point at `memory_server_url` to share across a team.

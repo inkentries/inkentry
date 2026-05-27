@@ -300,6 +300,7 @@ cargo run -p spelunk-cli -- status --all
 cargo run -p spelunk-cli -- graph <symbol>
 cargo run -p spelunk-cli -- chunks src/some/file.rs
 cargo run -p spelunk-cli -- languages
+cargo run -p spelunk-cli -- sync              # push local memory to server (alias for memory push)
 
 # Run the server
 cargo run -p spelunk-server -- --port 7777
