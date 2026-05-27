@@ -44,6 +44,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `gix::status` API, removing a shell dependency and improving reliability
   inside IDE integrations. (#215)
 
+- **`spelunk explore` now requires a configured server** — the command is gated
+  behind the Tier 2/3 capability check (`server_url` must be set and reachable).
+  The previous check for `llm_model` has been removed in line with decision #47
+  (no LLM inference in the CLI without a server). Run `spelunk status` for
+  guidance if the command is unavailable.
+
 ### Fixed
 
 - `spelunk-server` OpenAPI spec gaps: `SearchRequest` missing `text` field,

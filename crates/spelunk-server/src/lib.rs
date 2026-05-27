@@ -31,7 +31,7 @@ pub struct AppState {
     /// a pre-computed vector. If absent, entries without a vector are stored without one
     /// (text search only).
     pub embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>>,
-    /// Optional LLM backend for `/explore` and `/plan`.
+    /// Optional LLM backend for `/explore`.
     pub llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>>,
 }
 
@@ -67,7 +67,6 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::memory_stream,
         handlers::index_embed,
         handlers::explore,
-        handlers::plan,
     ),
     components(schemas(
         handlers::AddNoteRequest,
@@ -87,9 +86,6 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::EmbedChunkOut,
         handlers::ExploreRequest,
         handlers::ExploreContextChunk,
-        handlers::PlanRequest,
-        handlers::PlanResponse,
-        handlers::PlanResult,
         ErrorBody,
         ErrorDetail,
         db::Project,
@@ -101,7 +97,7 @@ pub fn default_conflict_threshold() -> f32 {
         (name = "projects", description = "Project management"),
         (name = "memory", description = "Memory CRUD and semantic search"),
         (name = "index", description = "Code index / embedding"),
-        (name = "inference", description = "LLM-powered explore and plan"),
+        (name = "inference", description = "LLM-powered code exploration"),
     ),
     security(
         ("bearer_auth" = [])
@@ -183,7 +179,6 @@ pub fn router(state: AppState) -> Router {
             post(handlers::index_embed),
         )
         .route("/v1/projects/{project_id}/explore", post(handlers::explore))
-        .route("/v1/projects/{project_id}/plan", post(handlers::plan))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

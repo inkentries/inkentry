@@ -599,3 +599,143 @@ fn test_status_json_offline_tier() {
     assert!(body["server_url"].is_null());
     assert!(body["capabilities"].is_null());
 }
+
+// ── Issue #284: search falls back to ast-grep when no index / no embedder ───
+
+/// When there is no .spelunk/index.db, `spelunk search` in auto mode must
+/// succeed (via ast-grep fallback) rather than printing an opaque error.
+#[test]
+fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    // Write a small Rust file so ast-grep has something to scan.
+    fs::write(
+        project_dir.join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hello {name}\") }",
+    )
+    .unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("nonexistent.db"); // deliberately absent
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    // With no index, auto mode must not fail with a hard error.
+    // It either returns ast-grep results or a clean "No results found." message.
+    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let assert = cmd
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("search")
+        .arg("greet") // simple pattern ast-grep can match
+        .assert()
+        .success();
+
+    // Must not print the old opaque error message.
+    assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
+}
+
+/// When the index exists but there is no embedder (api_base_url points
+/// nowhere), `spelunk search` in auto mode must fall back to ast-grep and
+/// succeed, not bail out with a hard error.
+#[test]
+fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(
+        project_dir.join("lib.rs"),
+        "pub fn compute(x: i32) -> i32 { x * 2 }",
+    )
+    .unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    // Point at an unreachable endpoint so there's no embedder.
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    // Build the index (offline — no embedder needed for parse phase).
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // Now search in auto mode: embedder is unavailable, so fallback kicks in.
+    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let assert = cmd
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("search")
+        .arg("compute")
+        .assert()
+        .success();
+
+    // Must not print the old opaque error message.
+    assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
+}
+
+/// Explicit `--mode hybrid` with an unreachable embedder must fail with a
+/// helpful message telling the user what to do, not the old opaque message.
+#[test]
+fn test_search_explicit_hybrid_no_embedder_shows_helpful_error() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("lib.rs"), "pub fn foo() {}").unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // Explicit --mode hybrid must fail with a helpful error message.
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("search")
+        .arg("--mode")
+        .arg("hybrid")
+        .arg("foo")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("--mode text").or(predicate::str::contains("--mode ast-grep")),
+        );
+}

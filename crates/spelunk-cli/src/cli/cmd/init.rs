@@ -101,6 +101,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             no_summaries: true,
             summary_batch_size: 10,
             background_phases: false,
+            detach: false,
         };
         super::index::index(index_args, cfg).await?;
 

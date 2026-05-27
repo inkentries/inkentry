@@ -131,7 +131,6 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     }
     if state.llm.is_some() {
         capabilities.push("explore".to_string());
-        capabilities.push("plan".to_string());
     }
     Json(HealthResponse {
         status: "ok",
@@ -775,7 +774,7 @@ pub async fn index_embed(
 
 // ── Explore (SSE) ─────────────────────────────────────────────────────────────
 
-/// A single context chunk supplied by the CLI for `/explore` and `/plan`.
+/// A single context chunk supplied by the CLI for `/explore`.
 #[derive(Deserialize, ToSchema)]
 pub struct ExploreContextChunk {
     pub file: String,
@@ -904,147 +903,6 @@ pub async fn explore(
     };
 
     Ok(Sse::new(s).keep_alive(KeepAlive::default()).into_response())
-}
-
-// ── Plan ──────────────────────────────────────────────────────────────────────
-
-/// Request body for `POST /v1/projects/{project_id}/plan`.
-#[derive(Deserialize, ToSchema)]
-pub struct PlanRequest {
-    pub goal: String,
-    #[serde(default)]
-    pub context_chunks: Vec<ExploreContextChunk>,
-    /// `"steps"` (default) or `"checklist"`.
-    #[serde(default = "default_plan_style")]
-    pub style: String,
-}
-fn default_plan_style() -> String {
-    "steps".to_string()
-}
-
-/// A structured plan returned by the plan endpoint.
-#[derive(Serialize, ToSchema)]
-pub struct PlanResult {
-    pub title: String,
-    pub steps: Vec<String>,
-}
-
-/// Response body for `POST /v1/projects/{project_id}/plan`.
-#[derive(Serialize, ToSchema)]
-pub struct PlanResponse {
-    pub plan: PlanResult,
-}
-
-/// Generate a structured implementation plan via LLM over caller-supplied context.
-/// Returns 503 if no LLM is configured.
-#[utoipa::path(
-    post,
-    path = "/v1/projects/{project_id}/plan",
-    params(
-        ("project_id" = String, Path, description = "Project slug"),
-    ),
-    request_body = PlanRequest,
-    responses(
-        (status = 200, description = "Structured implementation plan", body = PlanResponse),
-        (status = 401, description = "Unauthorized", body = ErrorBody),
-        (status = 503, description = "No LLM configured", body = ErrorBody),
-    ),
-    security(("bearer_auth" = [])),
-    tag = "inference"
-)]
-pub async fn plan(
-    State(state): State<AppState>,
-    Path(_project_id): Path<String>,
-    Json(body): Json<PlanRequest>,
-) -> Result<Response, AppError> {
-    let llm = state.llm.clone().ok_or_else(|| {
-        AppError::ServiceUnavailable(
-            "This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."
-                .to_string(),
-        )
-    })?;
-
-    // Build context block.
-    let context_text = if body.context_chunks.is_empty() {
-        "(no context provided)".to_string()
-    } else {
-        body.context_chunks
-            .iter()
-            .map(|c| {
-                format!(
-                    "// {}:{}-{}\n{}",
-                    c.file, c.start_line, c.end_line, c.content
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n---\n\n")
-    };
-
-    let style_instruction = match body.style.as_str() {
-        "checklist" => "Format each step as a markdown checkbox list item: `- [ ] step text`.",
-        _ => "Format each step as a numbered list item: `1. step text`.",
-    };
-
-    let system_prompt = "You are an expert software architect. \
-        Generate a clear, actionable implementation plan for the given goal. \
-        Return a JSON object with this exact shape: \
-        {\"title\": \"<one-line title>\", \"steps\": [\"<step 1>\", \"<step 2>\", ...]}. \
-        Return only the JSON object, no markdown fences, no extra text.";
-
-    let user_prompt = format!(
-        "<code_context>\n{context_text}\n</code_context>\n\n\
-         <goal>\n{goal}\n</goal>\n\n\
-         {style_instruction}\n\
-         Return a JSON object: {{\"title\": \"...\", \"steps\": [\"...\", ...]}}",
-        goal = body.goal
-    );
-
-    let messages = vec![
-        spelunk_core::llm::Message::system(system_prompt),
-        spelunk_core::llm::Message::user(user_prompt),
-    ];
-
-    let (tx, mut rx) = mpsc::channel::<String>(256);
-
-    tokio::spawn(async move {
-        if let Err(e) = llm.generate(&messages, 2048, tx, None).await {
-            tracing::warn!("plan LLM generate error: {e}");
-        }
-    });
-
-    // Collect all tokens into one string.
-    let mut full_response = String::new();
-    while let Some(token) = rx.recv().await {
-        full_response.push_str(&token);
-    }
-
-    // Parse the JSON plan.
-    #[derive(serde::Deserialize)]
-    struct LlmPlan {
-        title: String,
-        steps: Vec<String>,
-    }
-
-    // Strip markdown code fences if present (some models wrap output).
-    let json_str = full_response
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    let llm_plan: LlmPlan = serde_json::from_str(json_str).map_err(|e| {
-        tracing::warn!("plan: failed to parse LLM response as JSON: {e}; raw: {json_str:?}");
-        AppError::Internal(anyhow::anyhow!("LLM returned malformed plan JSON: {e}"))
-    })?;
-
-    Ok(Json(PlanResponse {
-        plan: PlanResult {
-            title: llm_plan.title,
-            steps: llm_plan.steps,
-        },
-    })
-    .into_response())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1331,25 +1189,6 @@ mod tests {
             resp.status(),
             http::StatusCode::SERVICE_UNAVAILABLE,
             "explore without LLM must return 503"
-        );
-    }
-
-    /// POST /v1/projects/{slug}/plan with no LLM should return 503.
-    #[tokio::test]
-    async fn plan_without_llm_returns_503() {
-        let (app, _) = make_app(0.92);
-        let body = json!({"goal": "add rate limiting", "context_chunks": []});
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/projects/proj/plan")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            http::StatusCode::SERVICE_UNAVAILABLE,
-            "plan without LLM must return 503"
         );
     }
 
