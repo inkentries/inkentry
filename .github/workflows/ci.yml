@@ -76,6 +76,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install ast-grep
+        run: npm install --global @ast-grep/cli
+
       - name: Run tests
         run: cargo test --verbose
 
