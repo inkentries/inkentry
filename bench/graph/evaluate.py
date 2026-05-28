@@ -35,7 +35,6 @@ Task format (JSON):
 import argparse
 import json
 import os
-import re
 import statistics
 import subprocess
 import sys
@@ -48,7 +47,7 @@ def run_grep(repo_path: Path, symbol: str, limit: int = 10) -> set[str]:
     """Return set of file paths containing the symbol via git grep, capped at limit."""
     try:
         result = subprocess.run(
-            ["git", "grep", "-l", "-E", f"\\b{re.escape(symbol)}\\b"],
+            ["git", "grep", "-wl", symbol, "--", ":!.spelunk"],
             cwd=repo_path,
             capture_output=True,
             text=True,
