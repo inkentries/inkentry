@@ -73,7 +73,7 @@ def run_spelunk_search(repo_path: Path, symbol: str, limit: int = 10) -> set[str
         )
         if result.returncode == 0 and result.stdout.strip():
             results = json.loads(result.stdout)
-            return {r.get("file", "") for r in results if r.get("file")}
+            return {r.get("file_path", "") for r in results if r.get("file_path")}
         return set()
     except Exception:
         return set()
@@ -90,21 +90,17 @@ def run_spelunk_graph(repo_path: Path, symbol: str, limit: int = 10) -> set[str]
             timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
-            results = json.loads(result.stdout)
-            files_ordered = []
-            seen = set()
-            for r in results if isinstance(results, list) else [results]:
-                if "edges" not in r and not isinstance(r, dict):
-                    print(
-                        f"  graph: unexpected shape for {symbol}: {str(r)[:120]}",
-                        file=sys.stderr,
-                    )
-                    continue
-                for edge in r.get("edges", []):
-                    f = edge.get("file") or edge.get("target_file")
-                    if f and f not in seen:
-                        seen.add(f)
-                        files_ordered.append(f)
+            # Output is a flat list of edge objects: {source_file, source_name,
+            # target_name, kind, line}. Collect unique source_file values in
+            # order of first appearance.
+            edges = json.loads(result.stdout)
+            seen: set[str] = set()
+            files_ordered: list[str] = []
+            for edge in edges if isinstance(edges, list) else []:
+                f = edge.get("source_file", "")
+                if f and f not in seen:
+                    seen.add(f)
+                    files_ordered.append(f)
             return set(files_ordered[:limit])
         return set()
     except Exception as e:
