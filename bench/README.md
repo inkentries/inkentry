@@ -12,6 +12,7 @@ Developer-only scripts for measuring whether spelunk improves agent task complet
 | **Primary** | SWE-bench (local) | gemma-4-e2b-it (local) | Pre-release |
 | Secondary | SWE-bench (Claude) | claude-sonnet-4-6 | Major releases only |
 | Retrieval | CodeSearchNet | model-agnostic | On indexer/chunker changes |
+| Retrieval | Code-graph | model-agnostic | On graph/indexer changes |
 
 ---
 
@@ -91,6 +92,44 @@ bash bench/swebench/run.sh --condition spelunk  --tasks 50
 ```
 
 Requires `ANTHROPIC_API_KEY`. Results go to `bench/results/swebench-{condition}-{timestamp}.json`.
+
+---
+
+## Code-graph — call graph retrieval quality
+
+Model-agnostic. Measures how well `spelunk graph` retrieves files containing callers/callees/implementers of a symbol, compared against `git grep` and `spelunk search` as baselines.
+
+**Repo setup** — clone the benchmark repos somewhere *outside* this repository (to avoid polluting the spelunk index), then point the evaluator at them:
+
+```bash
+mkdir -p ~/spelunk-bench/repos
+git clone https://github.com/BurntSushi/ripgrep      ~/spelunk-bench/repos/ripgrep
+git clone https://github.com/django/django            ~/spelunk-bench/repos/django__django-12125
+git clone https://github.com/sympy/sympy              ~/spelunk-bench/repos/sympy__sympy-20590
+```
+
+Index each repo with spelunk before running:
+
+```bash
+for repo in ~/spelunk-bench/repos/*/; do spelunk index "$repo"; done
+```
+
+**Run:**
+
+```bash
+# via --repos-dir flag
+python bench/graph/evaluate.py \
+    --tasks bench/graph/tasks.json \
+    --repos-dir ~/spelunk-bench/repos \
+    --k 10 \
+    --out bench/results/graph.json
+
+# or via environment variable
+export SPELUNK_BENCH_REPOS=~/spelunk-bench/repos
+python bench/graph/evaluate.py --tasks bench/graph/tasks.json --k 10
+```
+
+**Metrics:** `precision@k`, `recall@k`, `F1` — averaged across all 42 tasks in three repos (ripgrep, django, sympy).
 
 ---
 
