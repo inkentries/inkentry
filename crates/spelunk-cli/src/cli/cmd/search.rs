@@ -70,7 +70,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         let db_result = resolve_project_and_deps(args.db.as_ref(), &cfg);
         if db_result.is_err() {
             // No index found — fall back to ast-grep silently.
-            return search_live(&args.query, &args.format, std::path::Path::new("."));
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
         }
         // Index exists but embedder may not be available. We'll check below
         // after attempting to load it; for now, fall through to normal path.
@@ -119,7 +124,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         res
     } else if mode == "ast-grep" && snapshot_id.is_none() {
         // Explicit ast-grep mode: skip index entirely.
-        return search_live(&args.query, &args.format, std::path::Path::new("."));
+        return search_live(
+            &args.query,
+            &args.format,
+            std::path::Path::new("."),
+            args.limit,
+        );
     } else {
         // semantic, hybrid, auto, or snapshot search: need an embedding.
         // Note: load_embedder only constructs an HTTP client and always succeeds.
@@ -133,7 +143,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // fall back to ast-grep silently.
         if auto_mode && query_vec_result.is_err() && snapshot_id.is_none() {
             sp.finish_and_clear();
-            return search_live(&args.query, &args.format, std::path::Path::new("."));
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
         }
 
         let query_vec = query_vec_result.map_err(|e| {
@@ -169,7 +184,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
 
         // Auto mode: stale index + empty results → fall back to ast-grep silently.
         if auto_mode && res.is_empty() && !args.no_stale_check && index_is_stale(&db_path) {
-            return search_live(&args.query, &args.format, std::path::Path::new("."));
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
         }
 
         res
@@ -356,61 +376,6 @@ fn annotate_specs(all: &mut [SearchResult], primary_db_path: &std::path::Path) {
     }
 }
 
-/// Run an ast-grep pattern search for `query` over the working tree rooted at `root`.
-///
-/// This is the zero-infra fallback: no index and no embedder required.
-/// It mirrors the `graph_live` pattern in `graph.rs`.
-pub(crate) fn search_live(query: &str, format: &str, root: &std::path::Path) -> Result<()> {
-    if std::process::Command::new("ast-grep")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        anyhow::bail!(
-            "ast-grep not found. Install with: brew install ast-grep\n\
-             (or: cargo install ast-grep --locked)\n\
-             Run `spelunk index .` to enable index-backed search."
-        );
-    }
-
-    let out = std::process::Command::new("ast-grep")
-        .args(["run", "--pattern", query, "--json"])
-        .arg(root)
-        .output()?;
-
-    if !out.status.success() && out.stdout.is_empty() {
-        println!("No results found.");
-        return Ok(());
-    }
-
-    let matches: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
-
-    if matches.is_empty() {
-        println!("No results found.");
-        return Ok(());
-    }
-
-    match crate::utils::effective_format(format) {
-        "json" => println!("{}", serde_json::to_string_pretty(&matches)?),
-        "ndjson" => {
-            for m in &matches {
-                println!("{}", serde_json::to_string(m)?);
-            }
-        }
-        _ => {
-            println!("\x1b[1mResults (ast-grep live scan):\x1b[0m");
-            for m in &matches {
-                let file = m["path"].as_str().unwrap_or("?");
-                let line = m["range"]["start"]["line"].as_u64().unwrap_or(0);
-                let text = m["text"].as_str().unwrap_or("").trim();
-                println!("  \x1b[36m{file}\x1b[0m:\x1b[33m{line}\x1b[0m  {text}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Search a primary DB and any dep projects, merge results by distance, return top `limit`.
 /// LinearRAG search across a primary DB and any dep projects.
 /// Runs LinearRAG on each DB independently and merges by score (distance).
@@ -458,4 +423,104 @@ pub(crate) fn search_all_dbs_linearrag(
     annotate_specs(&mut all, primary_db_path);
 
     Ok(all)
+}
+
+/// Run an ast-grep pattern search for `query` over the working tree rooted at `root`.
+///
+/// This is the zero-infra fallback: no index and no embedder required.
+/// It mirrors the `graph_live` pattern in `graph.rs`, but maps ast-grep matches
+/// into `SearchResult` structs so the output shape is **identical** to the
+/// regular/semantic search paths.
+///
+/// Field mapping from ast-grep JSON to `SearchResult`:
+/// - `path`                → `file_path`
+/// - `range.start.line`    → `start_line` (ast-grep 0-indexed → spelunk 1-indexed)
+/// - `range.end.line`      → `end_line`   (same conversion)
+/// - `text`                → `content`
+/// - `language`            → `language`   (defaults to "unknown")
+/// - `chunk_id`            → `-1` sentinel (not indexed)
+/// - `node_type`           → `"live"`
+/// - `distance`            → `0.0` (not meaningful for pattern search)
+pub(crate) fn search_live(
+    query: &str,
+    format: &str,
+    root: &std::path::Path,
+    limit: usize,
+) -> Result<()> {
+    if std::process::Command::new("ast-grep")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        anyhow::bail!(
+            "ast-grep not found. Install with: brew install ast-grep\n\
+             (or: cargo install ast-grep --locked)\n\
+             Run `spelunk index .` to enable index-backed search."
+        );
+    }
+
+    let out = std::process::Command::new("ast-grep")
+        .args(["run", "--pattern", query, "--json"])
+        .arg(root)
+        .output()?;
+
+    if !out.status.success() && out.stdout.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    let raw: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+
+    // Map ast-grep matches to the canonical SearchResult shape so downstream
+    // consumers (agents, benchmarks) see a consistent structure regardless of
+    // which backend produced the results.
+    let results: Vec<SearchResult> = raw
+        .into_iter()
+        .filter_map(|m| {
+            let file_path = m["path"].as_str()?.to_string();
+            let start_raw = m["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
+            let end_raw = m["range"]["end"]["line"]
+                .as_u64()
+                .unwrap_or(start_raw as u64) as usize;
+            let start_line = start_raw + 1;
+            let end_line = end_raw + 1;
+            let content = m["text"].as_str().unwrap_or("").to_string();
+            let language = m["language"].as_str().unwrap_or("unknown").to_string();
+            Some(SearchResult {
+                chunk_id: -1,
+                file_path,
+                language,
+                node_type: "live".to_string(),
+                name: None,
+                start_line,
+                end_line,
+                content,
+                distance: 0.0,
+                from_graph: false,
+                governing_specs: vec![],
+                token_count: 0,
+                project_name: None,
+                project_path: None,
+                summary: None,
+            })
+        })
+        .take(limit)
+        .collect();
+
+    if results.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    match crate::utils::effective_format(format) {
+        "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+        "ndjson" => {
+            for item in &results {
+                println!("{}", serde_json::to_string(item)?);
+            }
+        }
+        _ => print_results_text(&results),
+    }
+
+    Ok(())
 }
