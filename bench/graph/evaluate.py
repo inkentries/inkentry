@@ -15,14 +15,18 @@ Metrics: precision@k, recall@k, F1. No LLM, no API costs.
 Usage:
     python bench/graph/evaluate.py \\
         --tasks bench/graph/tasks.json \\
+        --repos-dir ~/spelunk-bench/repos \\
         --k 10 \\
         --out bench/results/graph.json
+
+    # or via environment variable:
+    SPELUNK_BENCH_REPOS=~/spelunk-bench/repos python bench/graph/evaluate.py ...
 
 Task format (JSON):
     [
         {
             "symbol": "parse_args",
-            "repo_path": "/path/to/indexed/repo",
+            "repo": "ripgrep",
             "ground_truth_files": ["src/cli.rs", "src/parser.rs"]
         }
     ]
@@ -30,6 +34,7 @@ Task format (JSON):
 
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -139,9 +144,21 @@ def get_spelunk_version() -> str:
 def main():
     parser = argparse.ArgumentParser(description="Code-graph benchmark.")
     parser.add_argument("--tasks", required=True, help="Tasks JSON file.")
+    parser.add_argument(
+        "--repos-dir",
+        default=os.environ.get("SPELUNK_BENCH_REPOS"),
+        help="Directory containing benchmark repos (overrides $SPELUNK_BENCH_REPOS).",
+    )
     parser.add_argument("--k", type=int, default=10, help="Result limit (default: 10).")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+
+    if not args.repos_dir:
+        parser.error(
+            "Provide --repos-dir or set $SPELUNK_BENCH_REPOS to the directory "
+            "containing the benchmark repos."
+        )
+    repos_dir = Path(args.repos_dir).expanduser().resolve()
 
     with open(args.tasks) as f:
         tasks = json.load(f)
@@ -157,7 +174,7 @@ def main():
 
     for i, task in enumerate(tasks):
         symbol = task["symbol"]
-        repo_path = Path(task["repo_path"]).expanduser().resolve()
+        repo_path = (repos_dir / task["repo"]).resolve()
         relevant = set(task["ground_truth_files"])
 
         print(f"[{i + 1}/{len(tasks)}] {symbol} ({len(relevant)} ground-truth files)")

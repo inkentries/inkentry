@@ -1,7 +1,7 @@
 [
   {
     "symbol": "is_readable_stdin",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/core/flags/hiargs.rs"
@@ -9,7 +9,7 @@
   },
   {
     "symbol": "unescape_os",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/escape.rs",
       "crates/cli/src/lib.rs"
@@ -17,7 +17,7 @@
   },
   {
     "symbol": "escape_os",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/escape.rs",
       "crates/cli/src/lib.rs",
@@ -26,7 +26,7 @@
   },
   {
     "symbol": "stdout_buffered_line",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/cli/src/wtr.rs",
@@ -35,7 +35,7 @@
   },
   {
     "symbol": "stdout_buffered_block",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/cli/src/wtr.rs",
@@ -44,7 +44,7 @@
   },
   {
     "symbol": "parse_human_readable_size",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/human.rs",
       "crates/cli/src/lib.rs",
@@ -53,7 +53,7 @@
   },
   {
     "symbol": "hyperlink_aliases",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/core/flags/complete/zsh.rs",
       "crates/core/flags/defs.rs",
@@ -63,7 +63,7 @@
   },
   {
     "symbol": "default_color_specs",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/core/flags/hiargs.rs",
       "crates/printer/src/color.rs",
@@ -72,7 +72,7 @@
   },
   {
     "symbol": "pattern_from_bytes",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/cli/src/pattern.rs"
@@ -80,7 +80,7 @@
   },
   {
     "symbol": "patterns_from_path",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/cli/src/pattern.rs",
@@ -89,7 +89,7 @@
   },
   {
     "symbol": "patterns_from_reader",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/cli/src/lib.rs",
       "crates/cli/src/pattern.rs"
@@ -97,7 +97,7 @@
   },
   {
     "symbol": "SinkMatch",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/printer/src/json.rs",
       "crates/printer/src/standard.rs",
@@ -111,7 +111,7 @@
   },
   {
     "symbol": "SinkContext",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/printer/src/json.rs",
       "crates/printer/src/standard.rs",
@@ -124,7 +124,7 @@
   },
   {
     "symbol": "PrinterPath",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/printer/src/path.rs",
       "crates/printer/src/standard.rs",
@@ -134,7 +134,7 @@
   },
   {
     "symbol": "sink_matched",
-    "repo_path": "/Users/johan/opensource/ripgrep",
+    "repo": "ripgrep",
     "ground_truth_files": [
       "crates/searcher/src/searcher/core.rs",
       "crates/searcher/src/searcher/glue.rs"
@@ -142,7 +142,7 @@
   },
   {
     "symbol": "get_dated_items",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/views/generic/dates.py",
       "tests/generic_views/test_dates.py"
@@ -150,7 +150,7 @@
   },
   {
     "symbol": "references_model",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/db/migrations/operations/base.py",
       "django/db/migrations/operations/fields.py",
@@ -160,7 +160,7 @@
   },
   {
     "symbol": "make_msgid",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/core/mail/__init__.py",
       "django/core/mail/message.py"
@@ -168,7 +168,7 @@
   },
   {
     "symbol": "send_robust",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/dispatch/dispatcher.py",
       "django/test/utils.py",
@@ -177,7 +177,7 @@
   },
   {
     "symbol": "get_storage_class",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/contrib/staticfiles/storage.py",
       "django/core/files/storage.py",
@@ -186,7 +186,7 @@
   },
   {
     "symbol": "get_language_info",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/templatetags/i18n.py",
       "django/utils/translation/__init__.py",
@@ -196,7 +196,7 @@
   },
   {
     "symbol": "get_format_modules",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/utils/formats.py",
       "tests/i18n/tests.py"
@@ -204,7 +204,7 @@
   },
   {
     "symbol": "get_object_or_404",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/contrib/flatpages/views.py",
       "django/shortcuts.py",
@@ -215,7 +215,7 @@
   },
   {
     "symbol": "get_list_or_404",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/shortcuts.py",
       "tests/get_object_or_404/models.py",
@@ -224,7 +224,7 @@
   },
   {
     "symbol": "get_paginator",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/contrib/admin/options.py",
       "django/contrib/admin/views/autocomplete.py",
@@ -235,7 +235,7 @@
   },
   {
     "symbol": "get_cache_key",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/middleware/cache.py",
       "django/utils/cache.py",
@@ -244,7 +244,7 @@
   },
   {
     "symbol": "generate_filename",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/core/files/storage.py",
       "django/db/models/fields/files.py",
@@ -253,7 +253,7 @@
   },
   {
     "symbol": "from_db_value",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/django__django-12125",
+    "repo": "django__django-12125",
     "ground_truth_files": [
       "django/contrib/gis/db/models/fields.py",
       "django/contrib/gis/db/models/sql/conversion.py",
@@ -267,7 +267,7 @@
   },
   {
     "symbol": "rcollect",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/core/tests/test_noncommutative.py",
@@ -279,7 +279,7 @@
   },
   {
     "symbol": "primefactors",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/combinatorics/perm_groups.py",
@@ -291,7 +291,7 @@
   },
   {
     "symbol": "primitive_root",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/crypto/crypto.py",
@@ -303,7 +303,7 @@
   },
   {
     "symbol": "jacobi_symbol",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/ntheory/__init__.py",
@@ -315,7 +315,7 @@
   },
   {
     "symbol": "legendre_symbol",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/ntheory/__init__.py",
@@ -327,7 +327,7 @@
   },
   {
     "symbol": "divisor_count",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/ntheory/__init__.py",
@@ -337,7 +337,7 @@
   },
   {
     "symbol": "continued_fraction_iterator",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/ntheory/__init__.py",
@@ -348,7 +348,7 @@
   },
   {
     "symbol": "continued_fraction_reduce",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/ntheory/__init__.py",
@@ -359,7 +359,7 @@
   },
   {
     "symbol": "nT",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/functions/combinatorial/numbers.py",
       "sympy/functions/combinatorial/tests/test_comb_numbers.py",
@@ -369,7 +369,7 @@
   },
   {
     "symbol": "multiset_permutations",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/functions/combinatorial/numbers.py",
       "sympy/functions/combinatorial/tests/test_comb_numbers.py",
@@ -379,7 +379,7 @@
   },
   {
     "symbol": "multiset_combinations",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/functions/combinatorial/numbers.py",
       "sympy/functions/combinatorial/tests/test_comb_numbers.py",
@@ -389,7 +389,7 @@
   },
   {
     "symbol": "strongly_connected_components",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/solvers/ode/systems.py",
       "sympy/stats/stochastic_process_types.py",
@@ -399,7 +399,7 @@
   },
   {
     "symbol": "necklaces",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/utilities/iterables.py",
       "sympy/utilities/tests/test_iterables.py"
@@ -407,7 +407,7 @@
   },
   {
     "symbol": "is_primitive_root",
-    "repo_path": "/Users/johan/opensource/spelunk-bench/repos/sympy__sympy-20590",
+    "repo": "sympy__sympy-20590",
     "ground_truth_files": [
       "sympy/__init__.py",
       "sympy/crypto/crypto.py",
