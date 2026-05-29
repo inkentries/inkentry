@@ -93,6 +93,72 @@ newer endpoints.
 
 ---
 
+## Loopback auto-discovery
+
+**Issue:** #303
+
+In v0.8.0 the common case is no `server_url` at all: the CLI discovers (or
+starts) a **local** server on the loopback address. This is what makes Tier 1
+the default for a fresh single-user install — semantic search, `explore`, and
+`plan` work out of the box without the user configuring or managing a server.
+
+Discovery runs before the configured-`server_url` probe and only on loopback:
+
+```
+fn discover_local_server() -> Option<ServerHandle> {
+    if env::var("SPELUNK_NO_SERVER").is_ok() { return None; }   // hard opt-out
+
+    // 1. Probe the well-known loopback endpoint.
+    match GET http://127.0.0.1:7777/v1/health within 500ms {
+        Ok(200, body) => {
+            // 2. Only reuse a server this user owns.
+            if body["started_by"] == current_uid() {
+                return Some(ServerHandle::existing(body["instance_id"]));
+            }
+            // Owned by another UID — do not reuse; fall through to no-server.
+            warn!("server on 127.0.0.1:7777 started by another user — not reusing");
+            return None;
+        }
+        _ => {}
+    }
+
+    // 3. Nothing reachable — autostart the bundled server in the background.
+    Some(ServerHandle::spawn_bundled())
+}
+```
+
+Key points:
+
+- **Address.** Discovery is fixed to `127.0.0.1:7777` — loopback only, never a
+  routable interface. A team/remote server is reached through explicit
+  `server_url` config, not discovery.
+- **`instance_id`.** Each running server reports a unique `instance_id` in its
+  `/v1/health` body. The CLI uses it to confirm it's talking to the same
+  instance across probes within a session (detects a server that was restarted
+  underneath it).
+- **`started_by` (UID check).** The health body includes the UID that started
+  the server. The CLI reuses a discovered loopback server **only if
+  `started_by` equals the current user's UID.** A server owned by another user
+  on the same host is ignored — a security boundary so one user can't be
+  silently bound to another user's inference process on a shared machine.
+- **Autostart.** If nothing is reachable, the CLI spawns the bundled
+  `spelunk-server` as a background child owned by the current user, then waits
+  for its health endpoint before proceeding.
+- **`SPELUNK_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
+  autostart. The CLI runs in Tier 0 and inference-only commands exit 2 with the
+  locked-feature message.
+
+<!-- TODO: confirm with Implementer — exact health-body field names
+     (`instance_id`, `started_by`), the discovery timeout (500ms vs 2s), and
+     the autostart/handshake UX. Written against issue #303; verify when the
+     server-default change lands. -->
+
+User-facing behaviour for these tiers is documented in
+[getting-started.md → Server mode vs no-server mode](../getting-started.md#server-mode-vs-no-server-mode)
+and [server.md → Local server](../server.md#local-server-automatic--no-setup).
+
+---
+
 ## spelunk status — capability section
 
 `spelunk status` gains a capability section above the index stats.
