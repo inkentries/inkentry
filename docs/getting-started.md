@@ -261,6 +261,8 @@ spelunk check --porcelain --files           # list files that need re-indexing
 - [Commands reference](commands.md) — every flag and option
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
+- [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
+- [Self-hosting](self-hosting.md) — exposing spelunk-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders
 
 ---
