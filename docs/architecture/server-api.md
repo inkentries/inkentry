@@ -338,6 +338,66 @@ Event `kind` values: `thought`, `answer`, `done`, `error`.
 
 ---
 
+### `POST /v1/projects/{project_id}/llm/complete`
+
+Run a single LLM completion over caller-supplied messages. This is the generic
+inference primitive (ADR-002): it is a 1:1 lift of the `LlmBackend::generate`
+trait. The server performs **no** orchestration, adds **no** system prompt, and
+stores **nothing**. The CLI owns all prompt assembly (this is how `spelunk
+memory harvest` runs after #260: ~2300 LoC of CLI-side orchestration calling
+this primitive for raw inference).
+
+**Request:**
+
+```json
+{
+  "messages": [
+    { "role": "system", "content": "You extract decisions from commits." },
+    { "role": "user", "content": "<commit batch>" }
+  ],
+  "max_tokens": 2048,
+  "json_schema": { "name": "harvested_decisions", "schema": { } }
+}
+```
+
+`messages[].role` ∈ `system`|`user`|`assistant`. `max_tokens` is a request; the
+server **clamps** it to its configured ceiling. `json_schema` (optional) is the
+OpenAI-style `response_format.json_schema`; backends without structured output
+ignore it.
+
+**Response `200`:** SSE stream, one JSON event per line:
+
+```
+data: {"kind":"token","content":"The "}
+
+data: {"kind":"done"}
+```
+
+`kind` ∈ `token` (`content`), `done`, `error` (`code`, `message`).
+
+**Errors:** `400` malformed messages / `max_tokens ≤ 0`; `401` auth; `413` body
+too large; `429` per-principal token budget exceeded; `503` no LLM configured:
+
+```json
+{ "error": { "code": "llm_unavailable", "message": "llm.complete requires an LLM backend. Configure the chat model on the server." } }
+```
+
+**Security (see THREAT-MODEL.md, ADR-002):** Tier-1 + Bearer only; server-side
+`max_tokens` ceiling; per-principal rate limit; BYOK key never leaves the server
+(decisions #25/#26); prompt-injection isolation is the **caller's**
+responsibility — the server adds no system prompt and makes no trust
+assumptions about message content. `capabilities` array gains `"llm.complete"`.
+
+### Query embedding for memory — reuse `/index/embed`
+
+`memory add`/`search`/`timeline` obtain **local** query vectors by calling
+`/index/embed` with a synthetic chunk (`{"chunk_id":"query:<uuid>","content":
+"..."}`); the server echoes the id back opaquely. No dedicated query-embed route
+is added. Server-side memory KNN continues to use the text-query
+`/memory/search` form above.
+
+---
+
 ## Project identity
 
 All per-project endpoints accept `project_id` as a URL path segment. The CLI
@@ -386,8 +446,9 @@ A CI check diffs the committed file against a freshly generated one.
 | `GET` | `/v1/projects/{id}/memory/stream` | Bearer | 1 | No change |
 | `GET` | `/v1/projects/{id}/memory/harvested-shas` | Bearer | 1 | No change |
 | `GET` | `/v1/projects/{id}/stats` | Bearer | 1 | No change |
-| `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | **New** |
+| `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | **New** (also serves memory query-embed via synthetic chunk) |
 | `POST` | `/v1/projects/{id}/explore` | Bearer | 1 | **New** (SSE) |
+| `POST` | `/v1/projects/{id}/llm/complete` | Bearer | 1 | **New** (SSE) — generic inference primitive (ADR-002) |
 
 ---
 
