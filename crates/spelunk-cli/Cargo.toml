@@ -35,7 +35,7 @@ reqwest      = { workspace = true }
 blake3       = "1"
 regex        = { version = "1", default-features = false, features = ["std"] }
 dirs         = "6"
-gix          = { version = "0.83.0", default-features = false, features = ["sha1", "status"] }
+gix          = { version = "0.84.0", default-features = false, features = ["sha1", "status"] }
 
 [dev-dependencies]
 assert_cmd        = "2.2"

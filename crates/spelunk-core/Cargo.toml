@@ -29,7 +29,7 @@ toml        = "1.1"
 dirs        = "6"
 
 git-meta-lib = "0.1.10"
-gix          = { version = "0.83.0", default-features = false, features = ["sha1", "status"] }
+gix          = { version = "0.84.0", default-features = false, features = ["sha1", "status"] }
 
 tree-sitter          = "0.26"
 tree-sitter-rust     = "0.24"
