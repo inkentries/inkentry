@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
+    embeddings::vec_to_blob,
+    server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -13,11 +14,9 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    if cfg.server_url.is_none() && cfg.llm_model.is_none() {
-        anyhow::bail!(
-            "Harvest requires a remote server (--remote-url) or a local model (SPELUNK_LLM_URL). \
-             Run 'spelunk sync' to push entries to the server, or configure a model."
-        );
+    // Tier-0: harvest requires server (#259 locked-feature error).
+    if cfg.server_url.is_none() {
+        return Err(harvest_requires_server(None));
     }
 
     if args.detach {
@@ -48,8 +47,6 @@ async fn memory_harvest_git(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    use crate::llm::LlmBackend;
-
     let (git_ref, range_label) = match &args.branch {
         Some(branch) => (branch.clone(), format!("full history of '{branch}'")),
         None => (args.git_range.clone(), format!("'{}'", args.git_range)),
@@ -153,15 +150,8 @@ async fn memory_harvest_git(
         }
     });
 
-    let sp = super::super::ui::spinner("Loading LLM for harvest…");
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .context("loading LLM")?;
-    sp.finish_and_clear();
-
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
+    let server = ServerInferenceClient::from_config(cfg)
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -252,24 +242,13 @@ async fn memory_harvest_git(
             println!("\nBatch {} ({} commits)…", batch_num, batch.len());
         }
 
-        let messages = vec![
-            crate::llm::Message::system(system),
-            crate::llm::Message::user(user),
-        ];
+        let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::llm::Token>(256);
-        let generate = llm.generate(&messages, max_tokens, tx, Some(schema.clone()));
-        let collect = async move {
-            let mut buf = String::new();
-            while let Some(t) = rx.recv().await {
-                buf.push_str(&t);
-            }
-            buf
-        };
-        let llm_result =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
-        let raw_json = match llm_result {
-            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+        let raw_json = match server
+            .llm_complete(&messages, max_tokens, Some(schema.clone()))
+            .await
+        {
+            Ok(raw) => crate::utils::strip_ansi(&raw),
             Err(e) => {
                 eprintln!(
                     "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
@@ -332,7 +311,7 @@ async fn memory_harvest_git(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = match embedder.embed(&[&embed_text]).await {
+            let vec = match server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
@@ -340,9 +319,6 @@ async fn memory_harvest_git(
                     );
                     continue;
                 }
-            };
-            let Some(vec) = vecs.into_iter().next() else {
-                continue;
             };
             let blob = vec_to_blob(&vec);
 
@@ -460,8 +436,6 @@ async fn memory_harvest_failures(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    use crate::llm::LlmBackend;
-
     let git_ref = match &args.branch {
         Some(branch) => branch.clone(),
         None => args.git_range.clone(),
@@ -560,14 +534,8 @@ async fn memory_harvest_failures(
         }
     });
 
-    let sp = super::super::ui::spinner("Loading LLM for failures harvest…");
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .context("loading LLM")?;
-    sp.finish_and_clear();
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
+    let server = ServerInferenceClient::from_config(cfg)
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -638,24 +606,13 @@ async fn memory_harvest_failures(
             println!("\nBatch {} ({} commits)…", batch_num, batch.len());
         }
 
-        let messages = vec![
-            crate::llm::Message::system(system),
-            crate::llm::Message::user(user),
-        ];
+        let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::llm::Token>(256);
-        let generate = llm.generate(&messages, max_tokens, tx, Some(schema.clone()));
-        let collect = async move {
-            let mut buf = String::new();
-            while let Some(t) = rx.recv().await {
-                buf.push_str(&t);
-            }
-            buf
-        };
-        let llm_result =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
-        let raw_json = match llm_result {
-            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+        let raw_json = match server
+            .llm_complete(&messages, max_tokens, Some(schema.clone()))
+            .await
+        {
+            Ok(raw) => crate::utils::strip_ansi(&raw),
             Err(e) => {
                 eprintln!(
                     "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
@@ -716,7 +673,7 @@ async fn memory_harvest_failures(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = match embedder.embed(&[&embed_text]).await {
+            let vec = match server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
@@ -724,9 +681,6 @@ async fn memory_harvest_failures(
                     );
                     continue;
                 }
-            };
-            let Some(vec) = vecs.into_iter().next() else {
-                continue;
             };
             let blob = vec_to_blob(&vec);
 

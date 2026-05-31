@@ -12,8 +12,9 @@ use anyhow::{Context, Result};
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
+    embeddings::vec_to_blob,
     indexer::secrets::contains_secret,
+    server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -44,7 +45,9 @@ pub(super) async fn harvest_claude_code(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    use crate::llm::LlmBackend;
+    // Tier-0 gate: harvest requires server inference.
+    let server = ServerInferenceClient::from_config(cfg)
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     // 1. Require explicit confirmation.
     if !args.confirm {
@@ -234,16 +237,6 @@ pub(super) async fn harvest_claude_code(
         }
     });
 
-    let sp = super::super::ui::spinner("Loading LLM for harvest…");
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .context("loading LLM")?;
-    sp.finish_and_clear();
-
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
-
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
     const DEDUP_THRESHOLD: f64 = 0.15;
@@ -311,24 +304,13 @@ pub(super) async fn harvest_claude_code(
             println!("\nBatch {} ({} sessions)…", batch_num, batch.len());
         }
 
-        let messages = vec![
-            crate::llm::Message::system(system),
-            crate::llm::Message::user(user),
-        ];
+        let messages = vec![LlmMessage::system(system), LlmMessage::user(user.clone())];
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::llm::Token>(256);
-        let generate = llm.generate(&messages, max_tokens, tx, Some(schema.clone()));
-        let collect = async move {
-            let mut buf = String::new();
-            while let Some(t) = rx.recv().await {
-                buf.push_str(&t);
-            }
-            buf
-        };
-        let llm_result =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) });
-        let raw_json = match llm_result {
-            Ok((_, raw)) => crate::utils::strip_ansi(&raw),
+        let raw_json = match server
+            .llm_complete(&messages, max_tokens, Some(schema.clone()))
+            .await
+        {
+            Ok(raw) => crate::utils::strip_ansi(&raw),
             Err(e) => {
                 eprintln!(
                     "  warning: LLM call failed for batch {batch_num} ({} session(s)), skipping: {e:#}",
@@ -398,7 +380,7 @@ pub(super) async fn harvest_claude_code(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = match embedder.embed(&[&embed_text]).await {
+            let vec = match server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
@@ -406,9 +388,6 @@ pub(super) async fn harvest_claude_code(
                     );
                     continue;
                 }
-            };
-            let Some(vec) = vecs.into_iter().next() else {
-                continue;
             };
             let blob = vec_to_blob(&vec);
 

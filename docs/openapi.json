@@ -205,6 +205,97 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/llm/complete": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Run a single LLM completion over caller-supplied messages. Streaming SSE.",
+        "description": "The server performs no orchestration, adds no system prompt, and stores nothing.\nClient-supplied `max_tokens` is clamped server-side to the configured ceiling.\n\n**Auth:** `Authorization: Bearer` required (Tier 1).\n\n**SSE event shapes:**\n- `{\"kind\":\"token\",\"content\":\"...\"}` — one streamed fragment\n- `{\"kind\":\"done\"}` — terminal success\n- `{\"kind\":\"error\",\"code\":\"...\",\"message\":\"...\"}` — terminal failure mid-stream\n\nReturns 503 if no LLM is configured on this server.",
+        "operationId": "llm_complete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream: token/done/error events"
+          },
+          "400": {
+            "description": "messages empty or max_tokens ≤ 0",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No LLM configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/memory": {
       "get": {
         "tags": [
@@ -1317,6 +1408,48 @@
           }
         }
       },
+      "LlmCompleteMessage": {
+        "type": "object",
+        "description": "A single chat message for `/llm/complete`.",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role: `system`, `user`, or `assistant`."
+          }
+        }
+      },
+      "LlmCompleteRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/llm/complete`.",
+        "required": [
+          "messages",
+          "max_tokens"
+        ],
+        "properties": {
+          "json_schema": {
+            "description": "Optional OpenAI-style `response_format.json_schema` for structured output."
+          },
+          "max_tokens": {
+            "type": "integer",
+            "description": "Desired max completion tokens. The server clamps this to its configured ceiling.",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LlmCompleteMessage"
+            },
+            "description": "Non-empty list of chat messages."
+          }
+        }
+      },
       "Project": {
         "type": "object",
         "required": [
@@ -1528,7 +1661,7 @@
     },
     {
       "name": "inference",
-      "description": "LLM-powered code exploration"
+      "description": "LLM-powered code exploration and raw completion"
     }
   ]
 }

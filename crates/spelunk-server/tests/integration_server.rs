@@ -12,6 +12,7 @@ use axum::{
 };
 use serial_test::serial;
 use spelunk_server::auth::ApiKeyAuth;
+use spelunk_server::rate_limiter::RateLimiter;
 use spelunk_server::{AppState, router};
 use std::sync::Arc;
 use tower::ServiceExt; // for `.oneshot()`
@@ -26,6 +27,8 @@ fn make_state() -> AppState {
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
         llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
     }
 }
 
@@ -263,6 +266,8 @@ async fn protected_endpoint_rejects_missing_token() {
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
         llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
     };
     let resp = send(state, "GET", "/v1/projects", Body::empty(), false).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -278,6 +283,8 @@ async fn protected_endpoint_accepts_correct_token() {
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
         llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
     };
     let req = Request::builder()
         .method("GET")
@@ -378,6 +385,8 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: None,
         llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
     };
 
     // Query with t=1500 — should return only the note at t=2000.

@@ -1,0 +1,264 @@
+//! Thin HTTP clients for spelunk-server inference endpoints.
+//!
+//! `ServerLlmClient`  — calls `POST /v1/projects/{id}/llm/complete` (SSE).
+//! `ServerEmbedClient`— calls `POST /v1/projects/{id}/index/embed`  (JSON).
+//!
+//! These are the ONLY places in spelunk-cli that call AI inference routes.
+//! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::config::Config;
+
+// ── Wire types ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct LlmMsg<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct LlmCompleteReq<'a> {
+    messages: Vec<LlmMsg<'a>>,
+    max_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_schema: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct EmbedChunkIn<'a> {
+    chunk_id: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct EmbedReq<'a> {
+    chunks: Vec<EmbedChunkIn<'a>>,
+}
+
+#[derive(Deserialize)]
+struct EmbedChunkOut {
+    chunk_id: String,
+    vector: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct EmbedResp {
+    chunks: Vec<EmbedChunkOut>,
+}
+
+// ── Public message type (mirrors spelunk_core::llm::Message) ─────────────────
+
+pub struct LlmMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl LlmMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
+    }
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
+    }
+}
+
+// ── ServerInferenceClient ─────────────────────────────────────────────────────
+
+/// HTTP client for spelunk-server's inference endpoints.
+///
+/// Constructed from config when `server_url` is set (Tier 1). Returns `None`
+/// in Tier-0 mode so callers can emit the standard locked-feature error.
+pub struct ServerInferenceClient {
+    client: reqwest::Client,
+    base_url: String,
+    project_id: String,
+    api_key: Option<String>,
+}
+
+impl ServerInferenceClient {
+    /// Build from config. Returns `None` when `server_url` is not configured.
+    pub fn from_config(cfg: &Config) -> Option<Self> {
+        let base_url = cfg.server_url.as_deref()?.trim_end_matches('/').to_string();
+        let project_id = cfg.project_id.clone().unwrap_or_default();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .expect("building HTTP client for server inference");
+        Some(Self {
+            client,
+            base_url,
+            project_id,
+            api_key: cfg.server_key.clone(),
+        })
+    }
+
+    fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(key) = &self.api_key {
+            req.header("Authorization", format!("Bearer {key}"))
+        } else {
+            req
+        }
+    }
+
+    fn llm_url(&self) -> String {
+        format!(
+            "{}/v1/projects/{}/llm/complete",
+            self.base_url, self.project_id
+        )
+    }
+
+    fn embed_url(&self) -> String {
+        format!(
+            "{}/v1/projects/{}/index/embed",
+            self.base_url, self.project_id
+        )
+    }
+
+    /// Call `/llm/complete` and collect the full SSE token stream into a `String`.
+    ///
+    /// Returns the concatenated completion text (all `token` events joined).
+    /// Returns an error if the server returns a non-2xx status or the stream
+    /// contains a terminal `error` event.
+    pub async fn llm_complete(
+        &self,
+        messages: &[LlmMessage],
+        max_tokens: usize,
+        json_schema: Option<serde_json::Value>,
+    ) -> Result<String> {
+        use futures_util::StreamExt;
+
+        let body = LlmCompleteReq {
+            messages: messages
+                .iter()
+                .map(|m| LlmMsg {
+                    role: &m.role,
+                    content: &m.content,
+                })
+                .collect(),
+            max_tokens,
+            json_schema,
+        };
+
+        let resp = self
+            .authed(self.client.post(self.llm_url()))
+            .json(&body)
+            .send()
+            .await
+            .context("POST /llm/complete")?
+            .error_for_status()
+            .context("spelunk-server returned an error for /llm/complete")?;
+
+        let mut stream = resp.bytes_stream();
+        let mut sse_buf = String::new();
+        let mut output = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.context("reading /llm/complete SSE stream")?;
+            sse_buf.push_str(&String::from_utf8_lossy(&bytes));
+
+            // Consume complete SSE events (terminated by "\n\n").
+            while let Some(pos) = sse_buf.find("\n\n") {
+                let event = sse_buf[..pos].to_string();
+                sse_buf.drain(..pos + 2);
+
+                for line in event.lines() {
+                    let data = match line.strip_prefix("data: ") {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let Ok(val) = serde_json::from_str::<serde_json::Value>(data) else {
+                        continue;
+                    };
+                    match val.get("kind").and_then(|k| k.as_str()) {
+                        Some("token") => {
+                            if let Some(content) = val.get("content").and_then(|c| c.as_str()) {
+                                output.push_str(content);
+                            }
+                        }
+                        Some("done") => return Ok(output),
+                        Some("error") => {
+                            let msg = val
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("unknown error");
+                            anyhow::bail!("llm/complete stream error: {msg}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Call `/index/embed` with a synthetic `chunk_id` and return the vector.
+    ///
+    /// The `chunk_id` is prefixed `query:` per ADR-002 so it is trivially
+    /// distinguishable from real chunk ids in server logs.
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        let chunk_id = format!("query:{}", uuid_v4_hex());
+        let body = EmbedReq {
+            chunks: vec![EmbedChunkIn {
+                chunk_id: &chunk_id,
+                content: text,
+            }],
+        };
+
+        let resp: EmbedResp = self
+            .authed(self.client.post(self.embed_url()))
+            .json(&body)
+            .send()
+            .await
+            .context("POST /index/embed (query vector)")?
+            .error_for_status()
+            .context("spelunk-server returned an error for /index/embed")?
+            .json()
+            .await
+            .context("parsing /index/embed response")?;
+
+        resp.chunks
+            .into_iter()
+            .find(|c| c.chunk_id == chunk_id)
+            .map(|c| c.vector)
+            .ok_or_else(|| anyhow::anyhow!("embed response missing chunk_id {chunk_id}"))
+    }
+}
+
+// ── UUID helper (no dep needed) ───────────────────────────────────────────────
+
+fn uuid_v4_hex() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Cheap pseudo-unique id using time + process id; good enough for a chunk_id prefix.
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!("{t:x}{pid:x}")
+}
+
+// ── Tier-0 error helper ───────────────────────────────────────────────────────
+
+/// Return the standard locked-feature error when harvest is attempted without a server.
+pub fn harvest_requires_server(server_url: Option<&str>) -> anyhow::Error {
+    let tried = server_url
+        .map(|u| format!("\n       (Tried: {u} — unreachable)"))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "'spelunk memory harvest' requires spelunk-server.\n\
+         Set server_url in ~/.config/spelunk/config.toml to enable this feature.{tried}"
+    )
+}
