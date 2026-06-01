@@ -9,7 +9,7 @@ Developer-only scripts for measuring whether spelunk improves agent task complet
 | Tier | Benchmark | Model | Cadence |
 |------|-----------|-------|---------|
 | **Primary** | CrossCodeEval | gemma-4-e2b-it (local) | Pre-release |
-| **Primary** | SWE-bench (local) | gemma-4-e2b-it (local) | Pre-release |
+| **Primary** | SWE-bench | any OpenAI-compatible | Pre-release |
 | Secondary | SWE-bench (Claude) | claude-sonnet-4-6 | Major releases only |
 | Retrieval | CodeSearchNet | model-agnostic | On indexer/chunker changes |
 | Retrieval | Code-graph | model-agnostic | On graph/indexer changes |
@@ -71,14 +71,28 @@ bash bench/gemma/crosscodeeval/run.sh --condition baseline --samples 400
 Measures whether `spelunk_search` helps fix real GitHub issues. Uses the same 50-task slice as the Claude variant so results are directly comparable.
 
 ```bash
-# Spelunk condition — compares against committed baseline automatically
-bash bench/gemma/swebench_local/run.sh --condition spelunk
+# Run agent + Docker harness in one step (recommended)
+bash bench/agents/swebench_run.sh \
+    --condition spelunk_search \
+    --model gemma-4-e2b-it \
+    --api-base-url http://127.0.0.1:1234/v1 \
+    --eval
 
-# Regenerate baseline
-bash bench/gemma/swebench_local/run.sh --condition baseline --tasks 50
+# Agent run only (then eval separately)
+bash bench/agents/swebench_run.sh \
+    --condition spelunk_search \
+    --model gemma-4-e2b-it \
+    --api-base-url http://127.0.0.1:1234/v1
+
+# Evaluate a prior agent run
+bash bench/agents/swebench_eval.sh \
+    --results bench/results/swebench-spelunk_search-<timestamp>.json \
+    --patches-dir bench/patches/spelunk_search-<timestamp>
 ```
 
-Repo checkouts are expected at `bench/repos/<task_id>/` or `$REPOS_DIR/<task_id>/`. Each directory should contain an `ISSUE.txt`. The `resolved` field in results is always `0` — run the [SWE-bench Docker harness](https://github.com/princeton-nlp/SWE-bench) on the patches to determine real resolution rates.
+Repo checkouts are expected at `bench/repos/<task_id>/` (via `bench/setup_repos.sh`). Each directory must contain an `ISSUE.txt`. Patches are saved to `bench/patches/<condition>-<timestamp>/` during the agent run. Pass `--eval` to automatically invoke the Docker harness after all tasks complete.
+
+> **Note:** `bench/gemma/swebench_local/run.sh` is retired — it always outputs `resolved=0` because it never ran the Docker harness. Use `bench/agents/swebench_run.sh` instead.
 
 **Metrics:** `resolve_rate` (via harness), `median_tokens_per_task`, `median_wall_seconds`
 

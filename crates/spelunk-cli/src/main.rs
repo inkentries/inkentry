@@ -2,11 +2,12 @@ use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod cli;
+mod server_client;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use spelunk_core::{
-    backends, capability, config, conventions, embeddings, error, indexer, llm, registry, search,
+    backends, capability, config, conventions, embeddings, error, indexer, registry, search,
     storage, utils,
 };
 

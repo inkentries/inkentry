@@ -17,10 +17,17 @@ python bench/agents/agent.py \
     --issue bench/repos/django__django-11099/ISSUE.txt \
     --api-key "$DEEPSEEK_API_KEY"
 
-# 3. Run the full 50-task benchmark
+# 3. Run the full 50-task benchmark + Docker evaluation in one step
+bash bench/agents/swebench_run.sh \
+    --condition spelunk_full \
+    --api-key "$DEEPSEEK_API_KEY" \
+    --eval
+
+# 3b. Agent run only (evaluate later)
 bash bench/agents/swebench_run.sh \
     --condition spelunk_full \
     --api-key "$DEEPSEEK_API_KEY"
+# The script prints the swebench_eval.sh command to run next.
 ```
 
 ## Conditions
@@ -60,7 +67,7 @@ bash bench/agents/swebench_run.sh \
     --condition spelunk_full \
     --model deepseek-v4-flash \
     --api-key "$DEEPSEEK_API_KEY" \
-    [--tasks 50] [--max-turns 20] [--seed 42] [--skip-index]
+    [--tasks 50] [--max-turns 20] [--seed 42] [--skip-index] [--eval]
 ```
 
 Reads `bench/agents/tasks_50.json`, expects repos checked out at
@@ -69,7 +76,14 @@ Reads `bench/agents/tasks_50.json`, expects repos checked out at
 For `spelunk_search` and `spelunk_full` conditions, runs `spelunk index` on
 each repo before the agent (unless `--skip-index` is set).
 
+Each task's git diff is saved to `bench/patches/<condition>-<timestamp>/<task_id>.patch`
+(override with `--patches-dir`). These patches are required for the Docker harness.
+
 Results are written to `bench/results/swebench-<condition>-<timestamp>.json`.
+
+Pass `--eval` to automatically invoke `swebench_eval.sh` after the agent run
+completes, computing real `resolve_rate` via the SWE-bench Docker harness.
+Without `--eval`, the script prints the exact command to run next.
 
 ## Reproducibility
 
@@ -103,8 +117,9 @@ bash bench/agents/swebench_run.sh --condition spelunk_full --seed 42
 
 ## Notes
 
-- `resolved` is always `false` in agent output — resolution comes from the
-  SWE-bench Docker harness, run separately.
+- `resolved` is always `false` in agent output from `agent.py` — resolution
+  comes from the SWE-bench Docker harness. Use `--eval` on `swebench_run.sh`
+  or run `swebench_eval.sh` separately to populate real resolve rates.
 - The spelunk CLI must be in PATH. The agent handles exit code 1 (no results)
   gracefully.
 - DeepSeek API may have rate limits — the orchestrator pauses 1 s between tasks.

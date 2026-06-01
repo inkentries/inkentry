@@ -1,19 +1,17 @@
-//! Integration tests for the `spelunk memory harvest` up-front config check
-//! (issue #287).
+//! Integration tests for the `spelunk memory harvest` Tier-0 server gate
+//! (ADR-002 / issue #260).
 //!
-//! The check fires before any LLM or git I/O, so these tests don't need a
-//! running server or a real git repo.  They only exercise three branches:
-//!   (a) neither server_url nor llm_model  → immediate error with the exact message
-//!   (b) server_url set, llm_model absent  → check passes (fails later for another reason)
-//!   (c) llm_model set, server_url absent  → check passes (fails later for another reason)
+//! Harvest now requires `server_url` in config — there is no local-model path.
+//! These tests don't need a running server or a real git repo; they only
+//! exercise the early server-gate check.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-const UPFRONT_ERROR: &str = "Harvest requires a remote server (--remote-url) or a local model (SPELUNK_LLM_URL). \
-     Run 'spelunk sync' to push entries to the server, or configure a model.";
+// Substring that appears in the Tier-0 error from `harvest_requires_server()`.
+const SERVER_REQUIRED: &str = "'spelunk memory harvest' requires spelunk-server";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -45,21 +43,21 @@ fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command 
     cmd
 }
 
-// ── (a) neither server_url nor llm_model → up-front error ────────────────────
+// ── (a) no server_url → server-required error ─────────────────────────────────
 
 #[test]
 fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
     let temp = tempdir().unwrap();
-    // Config has no server_url and no llm_model.
+    // Config has no server_url.
     let config_path = write_harvest_config(temp.path(), "");
 
     harvest_cmd(&config_path, temp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(UPFRONT_ERROR));
+        .stderr(predicate::str::contains(SERVER_REQUIRED));
 }
 
-// ── (b) server_url set, llm_model absent → check passes ──────────────────────
+// ── (b) server_url set → gate passes (fails later for another reason) ─────────
 
 #[test]
 fn harvest_check_passes_when_server_url_is_set() {
@@ -71,24 +69,23 @@ fn harvest_check_passes_when_server_url_is_set() {
     );
 
     // The command will fail (no live server, no git repo) but NOT with the
-    // up-front "Harvest requires" message.
+    // Tier-0 "requires spelunk-server" message.
     harvest_cmd(&config_path, temp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(UPFRONT_ERROR).not());
+        .stderr(predicate::str::contains(SERVER_REQUIRED).not());
 }
 
-// ── (c) llm_model set, server_url absent → check passes ──────────────────────
+// ── (c) llm_model set without server_url → still fails (no local-model path) ──
 
 #[test]
-fn harvest_check_passes_when_llm_model_is_set() {
+fn harvest_fails_when_llm_model_set_but_no_server_url() {
     let temp = tempdir().unwrap();
-    // llm_model is set; no server_url.
+    // llm_model is set but no server_url — local LLM no longer supported for harvest.
     let config_path = write_harvest_config(temp.path(), "llm_model = \"local-chat-model\"\n");
 
-    // Same reasoning: fails later, but NOT with the up-front message.
     harvest_cmd(&config_path, temp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(UPFRONT_ERROR).not());
+        .stderr(predicate::str::contains(SERVER_REQUIRED));
 }

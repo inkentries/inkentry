@@ -6,6 +6,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use spelunk_server::auth::ApiKeyAuth;
 use spelunk_server::db::ServerDb;
+use spelunk_server::rate_limiter::RateLimiter;
 use spelunk_server::{ApiDoc, AppState, default_conflict_threshold, router};
 use utoipa::OpenApi;
 
@@ -144,12 +145,23 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Server-side max_tokens ceiling: env var or 8192 default.
+    let max_tokens_ceiling: usize = std::env::var("SPELUNK_MAX_TOKENS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8192);
+
+    // Per-principal rate limiter: 60 requests per minute by default.
+    let rate_limiter = Arc::new(RateLimiter::new(60, 60));
+
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth,
         conflict_threshold: args.conflict_threshold,
         embedder,
         llm,
+        max_tokens_ceiling,
+        rate_limiter,
     };
 
     let app = router(state);

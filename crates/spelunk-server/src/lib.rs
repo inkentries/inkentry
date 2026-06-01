@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod db;
 pub mod handlers;
+pub mod rate_limiter;
 pub mod security;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use utoipa::{OpenApi, ToSchema};
 
 use auth::{AuthError, AuthProvider};
 use db::ServerDb;
+use rate_limiter::RateLimiter;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -31,8 +33,13 @@ pub struct AppState {
     /// a pre-computed vector. If absent, entries without a vector are stored without one
     /// (text search only).
     pub embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>>,
-    /// Optional LLM backend for `/explore`.
+    /// Optional LLM backend for `/explore` and `/llm/complete`.
     pub llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>>,
+    /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
+    /// Client-supplied values are clamped down to this. Default: 8192.
+    pub max_tokens_ceiling: usize,
+    /// Per-principal rate limiter for `/llm/complete`.
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 pub fn default_conflict_threshold() -> f32 {
@@ -67,6 +74,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::memory_stream,
         handlers::index_embed,
         handlers::explore,
+        handlers::llm_complete,
     ),
     components(schemas(
         handlers::AddNoteRequest,
@@ -86,6 +94,8 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::EmbedChunkOut,
         handlers::ExploreRequest,
         handlers::ExploreContextChunk,
+        handlers::LlmCompleteRequest,
+        handlers::LlmCompleteMessage,
         ErrorBody,
         ErrorDetail,
         db::Project,
@@ -97,7 +107,7 @@ pub fn default_conflict_threshold() -> f32 {
         (name = "projects", description = "Project management"),
         (name = "memory", description = "Memory CRUD and semantic search"),
         (name = "index", description = "Code index / embedding"),
-        (name = "inference", description = "LLM-powered code exploration"),
+        (name = "inference", description = "LLM-powered code exploration and raw completion"),
     ),
     security(
         ("bearer_auth" = [])
@@ -179,6 +189,10 @@ pub fn router(state: AppState) -> Router {
             post(handlers::index_embed),
         )
         .route("/v1/projects/{project_id}/explore", post(handlers::explore))
+        .route(
+            "/v1/projects/{project_id}/llm/complete",
+            post(handlers::llm_complete),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

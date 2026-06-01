@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# DEPRECATED — use bench/agents/swebench_run.sh instead.
+#
+# This script was the original Gemma-local SWE-bench runner. It always outputs
+# "resolved": 0 because it never wires up the Docker harness. Use the unified
+# pipeline instead:
+#
+#   bash bench/agents/swebench_run.sh \
+#       --condition baseline|spelunk_search|spelunk_full \
+#       --model gemma-4-e2b-it \
+#       --api-base-url http://127.0.0.1:1234/v1 \
+#       [--eval]   # add --eval to run Docker harness automatically
+#
+# See bench/agents/README.md for full pipeline documentation.
+# ---------------------------------------------------------------------------
+# Original script preserved below for reference. Do not use for benchmarking.
+# ---------------------------------------------------------------------------
+#
 # Run SWE-bench with the local Gemma model.
 #
 # Uses the same tasks_50.json as the Claude variant so results are directly
@@ -18,6 +35,11 @@
 #   --model        MODEL                     (default: gemma-4-e2b-it)
 #   --api-base-url URL                       (default: http://127.0.0.1:1234/v1)
 #   --out          DIR                       output directory (default: bench/results)
+
+echo "DEPRECATED: bench/gemma/swebench_local/run.sh always outputs resolved=0." >&2
+echo "Use bench/agents/swebench_run.sh --condition <cond> [--eval] instead." >&2
+echo "See bench/agents/README.md for the full pipeline." >&2
+exit 1
 
 set -euo pipefail
 
