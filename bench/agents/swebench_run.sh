@@ -10,7 +10,7 @@
 #       --model deepseek-v4-flash \\
 #       --api-base-url https://api.deepseek.com/v1 \\
 #       --api-key "$DEEPSEEK_API_KEY" \\
-#       [--tasks 50] [--max-turns 20] [--seed 42]
+#       [--tasks 50] [--max-turns 20] [--seed 42] [--eval]
 #
 # Options:
 #   --condition     baseline|spelunk_search|spelunk_full   (required)
@@ -22,6 +22,10 @@
 #   --seed          N       random seed (default: 42)
 #   --skip-index            skip spelunk index (if repos are pre-indexed)
 #   --repos-dir     DIR     checkout root (default: bench/repos)
+#   --patches-dir   DIR     where per-task .patch files are saved
+#                           (default: bench/patches/<condition>-<timestamp>)
+#   --eval                  automatically run swebench_eval.sh after agent run
+#                           (requires Docker and swebench pip package)
 #   -h|--help
 
 set -euo pipefail
@@ -48,6 +52,8 @@ TASKS=50
 MAX_TURNS=20
 SEED=42
 SKIP_INDEX=false
+RUN_EVAL=false
+PATCHES_DIR_OVERRIDE=""
 
 # Default to the shared spelunk-bench checkout if it exists
 if [[ -d "${HOME}/opensource/spelunk-bench/repos" ]]; then
@@ -63,15 +69,17 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --condition)    CONDITION="$2";    shift 2 ;;
-        --model)        MODEL="$2";        shift 2 ;;
-        --api-base-url) API_BASE_URL="$2"; shift 2 ;;
-        --api-key)      API_KEY="$2";      shift 2 ;;
-        --tasks)        TASKS="$2";        shift 2 ;;
-        --max-turns)    MAX_TURNS="$2";    shift 2 ;;
-        --seed)         SEED="$2";         shift 2 ;;
-        --skip-index)   SKIP_INDEX=true;   shift ;;
-        --repos-dir)    REPOS_DIR="$2";    shift 2 ;;
+        --condition)    CONDITION="$2";              shift 2 ;;
+        --model)        MODEL="$2";                  shift 2 ;;
+        --api-base-url) API_BASE_URL="$2";           shift 2 ;;
+        --api-key)      API_KEY="$2";                shift 2 ;;
+        --tasks)        TASKS="$2";                  shift 2 ;;
+        --max-turns)    MAX_TURNS="$2";              shift 2 ;;
+        --seed)         SEED="$2";                   shift 2 ;;
+        --skip-index)   SKIP_INDEX=true;             shift ;;
+        --repos-dir)    REPOS_DIR="$2";              shift 2 ;;
+        --patches-dir)  PATCHES_DIR_OVERRIDE="$2";  shift 2 ;;
+        --eval)         RUN_EVAL=true;               shift ;;
         -h|--help)      usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
@@ -111,12 +119,20 @@ echo "Repos dir:    ${REPOS_DIR}"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Timestamped output
+# Timestamped output + patches directory
 # ---------------------------------------------------------------------------
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 RESULTS_DIR="${SCRIPT_DIR}/../results"
 mkdir -p "$RESULTS_DIR"
 RESULTS_FILE="${RESULTS_DIR}/swebench-${CONDITION}-${TS}.json"
+
+if [[ -n "$PATCHES_DIR_OVERRIDE" ]]; then
+    PATCHES_DIR="$PATCHES_DIR_OVERRIDE"
+else
+    PATCHES_DIR="${SCRIPT_DIR}/../patches/${CONDITION}-${TS}"
+fi
+mkdir -p "$PATCHES_DIR"
+
 ALL_RESULTS=()
 
 # ---------------------------------------------------------------------------
@@ -167,6 +183,7 @@ for TASK_ID in $ALL_TASK_IDS; do
         --api-key "$API_KEY"
         --max-turns "$MAX_TURNS"
         --seed "$SEED"
+        --save-patch "${PATCHES_DIR}/${TASK_ID}.patch"
     )
 
     echo "  Running agent..."
@@ -194,8 +211,28 @@ print(json.dumps(results, indent=2))
 
 echo ""
 echo "=== Done ==="
-echo "Results: ${RESULTS_FILE}"
+echo "Results:  ${RESULTS_FILE}"
+echo "Patches:  ${PATCHES_DIR}/"
 echo "Total tasks: ${TOTAL}"
 echo "Skipped: $(grep -c '"skipped"' "$RESULTS_FILE" || echo 0)"
 echo "Errors:  $(grep -c '"error"' "$RESULTS_FILE" || echo 0)"
 echo "Ran:     $(grep -c '"turns"' "$RESULTS_FILE" || echo 0)"
+
+# ---------------------------------------------------------------------------
+# Optionally run the Docker harness to compute real resolve_rate
+# ---------------------------------------------------------------------------
+if [[ "$RUN_EVAL" == "true" ]]; then
+    echo ""
+    echo "=== Running Docker evaluation (--eval) ==="
+    bash "${SCRIPT_DIR}/swebench_eval.sh" \
+        --results "$RESULTS_FILE" \
+        --patches-dir "$PATCHES_DIR"
+else
+    echo ""
+    echo "To compute resolve_rate, run the Docker harness:"
+    echo "  bash bench/agents/swebench_eval.sh \\"
+    echo "      --results ${RESULTS_FILE} \\"
+    echo "      --patches-dir ${PATCHES_DIR}"
+    echo ""
+    echo "(Or rerun with --eval to do this automatically.)"
+fi
