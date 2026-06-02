@@ -6,7 +6,10 @@
 //! These are the ONLY places in spelunk-cli that call AI inference routes.
 //! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
@@ -248,6 +251,61 @@ fn uuid_v4_hex() -> String {
         .unwrap_or(0);
     let pid = std::process::id();
     format!("{t:x}{pid:x}")
+}
+
+// ── EmbeddingBackend adapter ──────────────────────────────────────────────────
+
+/// Wraps `ServerInferenceClient` and implements the spelunk-core `EmbeddingBackend`
+/// trait so that explorer / memory code can embed via spelunk-server without
+/// touching `ActiveEmbedder` / reqwest directly.
+pub struct ServerEmbedAdapter(pub Arc<ServerInferenceClient>);
+
+#[async_trait]
+impl spelunk_core::embeddings::EmbeddingBackend for ServerEmbedAdapter {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            results.push(self.0.embed_text(text).await?);
+        }
+        Ok(results)
+    }
+
+    fn dimension(&self) -> usize {
+        spelunk_core::embeddings::EMBEDDING_DIM
+    }
+}
+
+// ── LlmBackend adapter ────────────────────────────────────────────────────────
+
+/// Wraps `ServerInferenceClient` and implements the spelunk-core `LlmBackend`
+/// trait so that explorer / summariser code can call the LLM via spelunk-server.
+pub struct ServerLlmAdapter(pub Arc<ServerInferenceClient>);
+
+#[async_trait]
+impl spelunk_core::llm::LlmBackend for ServerLlmAdapter {
+    async fn generate(
+        &self,
+        messages: &[spelunk_core::llm::Message],
+        max_tokens: usize,
+        tx: tokio::sync::mpsc::Sender<spelunk_core::llm::Token>,
+        json_schema: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let server_msgs: Vec<LlmMessage> = messages
+            .iter()
+            .map(|m| LlmMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            })
+            .collect();
+        let text = self
+            .0
+            .llm_complete(&server_msgs, max_tokens, json_schema)
+            .await?;
+        // Send the entire response as a single token (server already collected
+        // the SSE stream and returned the completed string).
+        let _ = tx.send(text).await;
+        Ok(())
+    }
 }
 
 // ── Tier-0 error helper ───────────────────────────────────────────────────────

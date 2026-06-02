@@ -5311,6 +5311,7 @@ version = "0.7.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "blake3",
  "chrono",
  "clap",
@@ -5351,7 +5352,6 @@ dependencies = [
  "chrono",
  "dirs",
  "docx-rs",
- "futures-util",
  "git-meta-lib",
  "gix 0.84.0",
  "gix-fs 0.21.2",

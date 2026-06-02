@@ -7,8 +7,7 @@ license     = "MIT"
 repository  = "https://github.com/spelunk-cloud/spelunk"
 
 [features]
-default      = ["backend-lmstudio"]
-backend-lmstudio = ["dep:futures-util"]
+default      = []
 rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 
 [dependencies]
@@ -50,7 +49,6 @@ tree-sitter-hcl      = "1.1"
 tree-sitter-proto    = "0.4"
 tree-sitter-sequel   = "0.3"
 
-futures-util = { version = "0.3", optional = true }
 regex        = { version = "1", default-features = false, features = ["std"] }
 blake3       = "1"
 ignore       = "0.4"

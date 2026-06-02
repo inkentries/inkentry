@@ -58,6 +58,7 @@ impl Capabilities {
     }
 
     /// Full set for a fully-featured server.
+    #[allow(dead_code)]
     pub fn all() -> Self {
         Self {
             search_semantic: true,
@@ -86,6 +87,7 @@ impl Tier {
         matches!(self, Tier::Server { .. })
     }
 
+    #[allow(dead_code)]
     pub fn server_url(&self) -> Option<&str> {
         match self {
             Tier::Server { url, .. } => Some(url),
@@ -93,6 +95,7 @@ impl Tier {
         }
     }
 
+    #[allow(dead_code)]
     pub fn caps(&self) -> Option<&Capabilities> {
         match self {
             Tier::Server { caps, .. } => Some(caps),

@@ -7,6 +7,71 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — 0.8.0-dev
+
+### Breaking changes — migration required
+
+**All AI inference commands now route through `spelunk-server`.**
+
+The following commands previously called LM Studio (or another
+OpenAI-compatible endpoint) directly via `api_base_url`. They now require a
+running `spelunk-server` reachable at `server_url` in your config:
+
+| Command | Previously needed | Now needs |
+|---|---|---|
+| `spelunk explore` | `api_base_url` + `llm_model` | `server_url` |
+| `spelunk search` (semantic/hybrid) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory search` (semantic) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory timeline` | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory add` (auto-embed) | `api_base_url` + `embedding_model` | `server_url` (optional, degrades gracefully) |
+| `spelunk index` (embed phase) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk index` (summaries) | `api_base_url` + `llm_model` | `server_url` |
+| `spelunk plumbing embed` | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory harvest` | `api_base_url` + `llm_model` | `server_url` (unchanged since #310) |
+
+**Migrating from `lm_studio_url` / `api_base_url`:**
+
+If you previously ran a local LM Studio and set `api_base_url` in your config,
+you now need to run `spelunk-server` in front of it:
+
+```toml
+# ~/.config/spelunk/config.toml
+
+# Old config (no longer used for inference):
+# api_base_url = "http://127.0.0.1:1234"
+
+# New config:
+server_url = "http://127.0.0.1:7777"   # spelunk-server address
+project_id = "your-org/your-project"   # required when server_url is set
+```
+
+Start `spelunk-server` and point it at your LM Studio instance:
+
+```sh
+spelunk-server \
+  --embedding-url http://127.0.0.1:1234 \
+  --embedding-model text-embedding-embeddinggemma-300m-qat \
+  --llm-url http://127.0.0.1:1234 \
+  --llm-model google/gemma-3n-e4b \
+  --port 7777
+```
+
+Commands that do **not** need inference (parse, graph, FTS search, status,
+memory list/show/archive) continue to work offline without `server_url`.
+
+### Changed
+
+- **`spelunk-core` no longer contains embedding or LLM implementations.**
+  `OpenAiCompatEmbedder`, `OpenAiCompatLlm`, and `backends.rs` have been
+  removed from `spelunk-core`. The `EmbeddingBackend` and `LlmBackend` traits
+  remain in `spelunk-core` for use by `spelunk-server`'s `AppState`. (#260, #312)
+
+- **Capability module moved from `spelunk-core` to `spelunk-cli`.** The tier
+  detection logic (`get_tier`, `require_tier1`) is now internal to the CLI
+  binary. Nothing outside spelunk-cli should depend on it. (#312)
+
+---
+
 ## [0.7.1] — 2026-05-27
 
 ### Added

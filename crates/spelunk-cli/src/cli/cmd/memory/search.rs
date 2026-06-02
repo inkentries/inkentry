@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use super::super::helpers::embed_query;
+use super::super::helpers::{embed_query, require_server_client};
 use super::MemorySearchArgs;
 use super::{backend_err, parse_as_of, print_note_summary};
 use crate::{config::Config, storage::open_memory_backend};
@@ -28,10 +28,8 @@ pub(super) async fn memory_search(
         result
     } else {
         let sp = super::super::ui::spinner("Embedding query…");
-        let embedder = crate::backends::ActiveEmbedder::load(cfg)
-            .await
-            .context("loading embedding model")?;
-        let blob = embed_query(&embedder, "question answering", &args.query).await?;
+        let client = require_server_client(cfg, "memory search")?;
+        let blob = embed_query(&client, "question answering", &args.query).await?;
         sp.finish_and_clear();
 
         if mode == "semantic" {

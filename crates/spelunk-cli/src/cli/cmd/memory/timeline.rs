@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use super::super::helpers::embed_query;
+use super::super::helpers::{embed_query, require_server_client};
 use super::super::status::format_age;
 use super::{MemoryTimelineArgs, backend_err};
 use crate::{config::Config, storage::open_memory_backend};
@@ -12,10 +12,8 @@ pub(super) async fn memory_timeline(
     backend_override: Option<&str>,
 ) -> Result<()> {
     let sp = super::super::ui::spinner("Embedding query…");
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
-    let blob = embed_query(&embedder, "question answering", &args.query).await?;
+    let client = require_server_client(cfg, "memory timeline")?;
+    let blob = embed_query(&client, "question answering", &args.query).await?;
     sp.finish_and_clear();
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;

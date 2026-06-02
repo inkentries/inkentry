@@ -1,14 +1,14 @@
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+mod capability;
 mod cli;
 mod server_client;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use spelunk_core::{
-    backends, capability, config, conventions, embeddings, error, indexer, registry, search,
-    storage, utils,
+    config, conventions, embeddings, error, indexer, registry, search, storage, utils,
 };
 
 #[tokio::main]
