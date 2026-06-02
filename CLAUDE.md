@@ -47,7 +47,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Core (no server required):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking.
 
-**With inference server** (any OpenAI-compatible endpoint, default `http://127.0.0.1:1234`): semantic search via embeddings (EmbeddingGemma 300M by default), `spelunk explore`, `spelunk memory harvest`, LLM summaries, `spelunk plan create`. Chat model is also optional and enables harvest/plan.
+**With spelunk-server** (`server_url` in config): semantic search via embeddings, `spelunk explore`, `spelunk memory harvest`, LLM summaries. The server exposes OpenAI-compatible inference endpoints; the CLI talks to it via `server_client.rs`.
 
 **With remote server** (`memory_server_url`): team-shared memory, `spelunk memory watch`, conflict detection.
 
@@ -76,19 +76,25 @@ crates/
 lib.rs           — crate root; re-exports public modules
 error.rs         — SpelunkError enum
 config.rs        — Config struct; load from ~/.config/spelunk/config.toml
-backends.rs      — re-exports ActiveEmbedder / ActiveLlm (LM Studio)
 utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
 registry.rs      — global project registry (~/.config/spelunk/registry.db)
 
+conventions/
+  mod.rs         — ConventionRecord type; re-exports ConventionExtractor
+  extractor.rs   — ConventionExtractor: heuristic AST pass over stored chunks
+  rules/
+    mod.rs       — per-language rule dispatch
+    generic.rs   — language-agnostic convention rules
+    rust.rs      — Rust-specific convention rules
+    typescript.rs — TypeScript-specific convention rules
+
 embeddings/
   mod.rs         — EmbeddingBackend trait, vec_to_blob/blob_to_vec helpers
-  openai_compat.rs — OpenAiCompatEmbedder: calls /v1/embeddings
 
 llm/
   mod.rs         — LlmBackend trait, Message struct, Token type
-  openai_compat.rs — OpenAiCompatLlm: calls /v1/chat/completions (SSE streaming)
 
 indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
@@ -112,6 +118,7 @@ storage/
   db.rs          — Database struct; open/migrate; connection setup
   files.rs       — file record CRUD (insert, lookup, delete)
   chunks.rs      — chunk CRUD (insert, fetch, delete by file)
+  conventions.rs — conventions table CRUD (no dependency on conventions/)
   search.rs      — KNN search queries against sqlite-vec
   graph.rs       — graph_edges CRUD
   snapshots.rs   — snapshot save/restore
@@ -125,6 +132,7 @@ storage/
     edges.rs     — memory relationship edges CRUD
     notes.rs     — note insert/fetch/delete
     search.rs    — memory FTS + semantic search
+    tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
   remote.rs      — remote storage backend (HTTP)
 
@@ -143,6 +151,8 @@ migrations/  (crates/spelunk-core/migrations/)
 
 ```
 main.rs          — entry point: parse CLI, dispatch to commands
+capability.rs    — Tier 0/1 capability detection (server reachable probe, cached per-process)
+server_client.rs — ServerLlmClient + ServerEmbedClient: HTTP clients for spelunk-server inference endpoints
 
 cli/
   mod.rs         — clap structs (Cli, Command, *Args)
@@ -164,31 +174,38 @@ cli/
     index/
       mod.rs         — `spelunk index` entry point
       embed_phase.rs — embedding phase of indexing
+      mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
       summaries.rs   — AI summary generation during index
       worktree.rs    — git worktree handling for index
     memory/
-      mod.rs         — `spelunk memory` dispatch
-      add.rs         — memory add subcommand
-      archive.rs     — memory archive subcommand
-      graph_cmd.rs   — memory graph subcommand
-      harvest.rs     — memory harvest (LLM extraction)
-      list.rs        — memory list subcommand
-      push.rs        — memory push subcommand
-      search.rs      — memory search subcommand
-      show.rs        — memory show subcommand
-      supersede.rs   — memory supersede subcommand
-      timeline.rs    — memory timeline subcommand
+      mod.rs          — `spelunk memory` dispatch
+      add.rs          — memory add subcommand
+      archive.rs      — memory archive subcommand
+      failures.rs     — `spelunk memory failures` handler
+      graph_cmd.rs    — memory graph subcommand
+      harvest.rs      — memory harvest (LLM extraction) entry point
+      harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
+      harvest_entire.rs — harvest from refs/entire/checkpoints/v1
+      list.rs         — memory list subcommand
+      push.rs         — memory push subcommand
+      search.rs       — memory search subcommand
+      show.rs         — memory show subcommand
+      since.rs        — `spelunk memory since` handler
+      supersede.rs    — memory supersede subcommand
+      timeline.rs     — memory timeline subcommand
+      watch.rs        — `spelunk memory watch`: SSE stream from spelunk-server
     plumbing/
-      mod.rs         — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
-      cat_chunks.rs  — emit indexed chunks for a file as NDJSON
-      embed_cmd.rs   — read stdin lines, emit embedding vectors as NDJSON
-      graph_edges.rs — emit code graph edges as NDJSON
-      hash_file.rs   — blake3 hash a file; check index currency
-      knn.rs         — KNN vector search, NDJSON output
-      ls_files.rs    — list indexed files as NDJSON; exit 1 if no results
-      parse_file.rs  — parse a file and emit chunks as NDJSON (no DB write)
-      read_memory.rs — emit memory entries as NDJSON
+      mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
+      cat_chunks.rs        — emit indexed chunks for a file as NDJSON
+      embed_cmd.rs         — read stdin lines, emit embedding vectors as NDJSON
+      graph_edges.rs       — emit code graph edges as NDJSON
+      hash_file.rs         — blake3 hash a file; check index currency
+      knn.rs               — KNN vector search, NDJSON output
+      ls_files.rs          — list indexed files as NDJSON; exit 1 if no results
+      parse_file.rs        — parse a file and emit chunks as NDJSON (no DB write)
+      read_conventions.rs  — emit stored convention records as NDJSON
+      read_memory.rs       — emit memory entries as NDJSON
 ```
 
 ### spelunk-server (`crates/spelunk-server/src/`)
@@ -208,17 +225,16 @@ migrations/  (crates/spelunk-server/migrations/)
 
 ## Inference Backend
 
-The only backend is the **OpenAI-compatible API** client (`backend-lmstudio`
-feature flag, always enabled). Both `ActiveEmbedder` and `ActiveLlm` are
-unconditional re-exports in `crates/spelunk-core/src/backends.rs`.
+All AI inference goes through **spelunk-server**. The CLI calls the server via
+`ServerLlmClient` and `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`
+— these are the only places in spelunk-cli that issue AI inference requests.
 
-To add a new backend:
-1. Add a feature flag in `crates/spelunk-core/Cargo.toml`
-2. Implement `EmbeddingBackend` and `LlmBackend` in new submodule files under `spelunk-core`
-3. Gate the re-exports in `crates/spelunk-core/src/backends.rs` behind the feature flag
+`spelunk-core` defines the `EmbeddingBackend` and `LlmBackend` traits
+(`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
+Concrete backends live in spelunk-server (not in this repo).
 
-Nothing outside `spelunk-core/src/embeddings/`, `spelunk-core/src/llm/`, and
-`spelunk-core/src/backends.rs` should import a concrete backend type.
+`capability.rs` probes server availability at startup and exposes a `Tier`
+enum so commands degrade gracefully when no server is configured.
 
 ---
 
