@@ -1,61 +1,54 @@
 //! Component tests for `spelunk plumbing embed`.
 //!
-//! Tests use a `wiremock::MockServer` that responds to `POST /v1/embeddings`
-//! with a fixed 768-dimensional zero vector, so no real embedding server is needed.
+//! Tests use a `wiremock::MockServer` that responds to
+//! `POST /v1/projects/{id}/index/embed` (the spelunk-server endpoint) with
+//! a fixed 768-dimensional vector, so no real server is needed.
 
 mod plumbing_helpers;
-use plumbing_helpers::parse_ndjson;
+use plumbing_helpers::{FIXTURE_PROJECT_ID, IndexEmbedResponder};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use serde_json::json;
 use tempfile::TempDir;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Build a config.toml that points `api_base_url` at the given mock server URI.
-fn write_config(dir: &TempDir, mock_uri: &str) -> std::path::PathBuf {
+/// Build a config.toml that points `server_url` at the given mock server URI.
+fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     let config = dir.path().join("config.toml");
     std::fs::write(
         &config,
         format!(
-            "api_base_url = \"{mock_uri}\"\n\
-             embedding_model = \"test-model\"\n"
+            concat!(
+                "server_url = \"{server_uri}\"\n",
+                "project_id = \"{project_id}\"\n",
+                "embedding_model = \"test-model\"\n",
+            ),
+            server_uri = server_uri,
+            project_id = FIXTURE_PROJECT_ID,
         ),
     )
     .unwrap();
     config
 }
 
-/// Build a valid OpenAI-compatible embeddings response JSON with one embedding
-/// of `dims` dimensions (all zeros).
-fn embedding_response(dims: usize) -> serde_json::Value {
-    json!({
-        "object": "list",
-        "data": [
-            {
-                "object": "embedding",
-                "index": 0,
-                "embedding": vec![0.0f32; dims]
-            }
-        ],
-        "model": "test-model",
-        "usage": { "prompt_tokens": 5, "total_tokens": 5 }
-    })
-}
-
 // ── exit 0: no stdin piped (empty pipe) ──────────────────────────────────────
 
-#[test]
-fn embed_exits_0_with_empty_piped_stdin() {
+#[tokio::test]
+async fn embed_exits_0_with_empty_piped_stdin() {
+    let mock = MockServer::start().await;
+    // Health probe for tier detection.
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["index.embed", "search.semantic"],
+        })))
+        .mount(&mock)
+        .await;
+
     let tmp = TempDir::new().unwrap();
-    // Config pointing at a port that won't be called (no input lines).
-    let config = tmp.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "api_base_url = \"http://127.0.0.1:19998\"\nembedding_model = \"test-model\"\n",
-    )
-    .unwrap();
+    let config = write_server_config(&tmp, &mock.uri());
 
     // Pipe empty stdin — command should succeed (no lines to embed).
     Command::cargo_bin("spelunk")
@@ -74,16 +67,27 @@ fn embed_exits_0_with_empty_piped_stdin() {
 
 #[tokio::test]
 async fn embed_document_mode_produces_ndjson_vector() {
-    const DIMS: usize = 768;
     let mock = MockServer::start().await;
+
+    // Health probe.
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["index.embed", "search.semantic"],
+        })))
+        .mount(&mock)
+        .await;
+
+    // index/embed endpoint — echoes chunk_ids with constant 768-d vectors.
     Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(DIMS)))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
         .mount(&mock)
         .await;
 
     let tmp = TempDir::new().unwrap();
-    let config = write_config(&tmp, &mock.uri());
+    let config = write_server_config(&tmp, &mock.uri());
 
     let output = Command::cargo_bin("spelunk")
         .unwrap()
@@ -98,7 +102,7 @@ async fn embed_document_mode_produces_ndjson_vector() {
         .stdout
         .clone();
 
-    let rows = parse_ndjson(&output);
+    let rows = plumbing_helpers::parse_ndjson(&output);
     assert_eq!(rows.len(), 1, "one stdin line → one embedding");
 
     let row = &rows[0];
@@ -118,16 +122,25 @@ async fn embed_document_mode_produces_ndjson_vector() {
 
 #[tokio::test]
 async fn embed_query_mode_produces_ndjson_vector() {
-    const DIMS: usize = 768;
     let mock = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["index.embed", "search.semantic"],
+        })))
+        .mount(&mock)
+        .await;
+
     Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(DIMS)))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
         .mount(&mock)
         .await;
 
     let tmp = TempDir::new().unwrap();
-    let config = write_config(&tmp, &mock.uri());
+    let config = write_server_config(&tmp, &mock.uri());
 
     let output = Command::cargo_bin("spelunk")
         .unwrap()
@@ -143,24 +156,32 @@ async fn embed_query_mode_produces_ndjson_vector() {
         .stdout
         .clone();
 
-    let rows = parse_ndjson(&output);
+    let rows = plumbing_helpers::parse_ndjson(&output);
     assert_eq!(rows.len(), 1);
     assert!(rows[0].get("vector").is_some(), "missing 'vector'");
 }
 
 #[tokio::test]
 async fn embed_multiple_lines_produce_multiple_vectors() {
-    const DIMS: usize = 768;
     let mock = MockServer::start().await;
-    // The embed command embeds one line at a time, so we expect 3 POST calls.
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["index.embed", "search.semantic"],
+        })))
+        .mount(&mock)
+        .await;
+
     Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(embedding_response(DIMS)))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
         .mount(&mock)
         .await;
 
     let tmp = TempDir::new().unwrap();
-    let config = write_config(&tmp, &mock.uri());
+    let config = write_server_config(&tmp, &mock.uri());
 
     let output = Command::cargo_bin("spelunk")
         .unwrap()
@@ -175,21 +196,17 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
         .stdout
         .clone();
 
-    let rows = parse_ndjson(&output);
+    let rows = plumbing_helpers::parse_ndjson(&output);
     assert_eq!(rows.len(), 3, "three stdin lines → three embeddings");
 }
 
-// ── error path: bad API URL ───────────────────────────────────────────────────
+// ── error path: no server configured ─────────────────────────────────────────
 
 #[test]
-fn embed_exits_nonzero_when_server_unreachable() {
+fn embed_exits_nonzero_when_no_server_configured() {
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "api_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test-model\"\n",
-    )
-    .unwrap();
+    std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
     Command::cargo_bin("spelunk")
         .unwrap()

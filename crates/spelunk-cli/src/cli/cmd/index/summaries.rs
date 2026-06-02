@@ -1,11 +1,17 @@
 use anyhow::{Context, Result};
+use std::sync::Arc;
 
-use crate::{config::Config, storage::Database};
+use crate::{
+    config::Config,
+    server_client::{ServerInferenceClient, ServerLlmAdapter},
+    storage::Database,
+};
 
 /// Run the optional LLM summary generation pass.
 ///
-/// Fetches chunks without summaries in batches, calls the LLM, and stores results.
-/// If no `llm_model` is configured or `no_summaries` is true, returns early.
+/// Fetches chunks without summaries in batches, calls the LLM via
+/// spelunk-server, and stores results.
+/// If `server_url` is not configured or `no_summaries` is true, returns early.
 pub(super) async fn generate_summaries(
     no_summaries: bool,
     summary_batch_size: usize,
@@ -16,8 +22,8 @@ pub(super) async fn generate_summaries(
         return Ok(());
     }
 
-    if cfg.llm_model.is_none() {
-        eprintln!("  Skipping summaries (no llm_model configured)");
+    if cfg.server_url.is_none() {
+        eprintln!("  Skipping summaries (no server_url configured)");
         return Ok(());
     }
 
@@ -28,15 +34,11 @@ pub(super) async fn generate_summaries(
         return Ok(());
     }
 
-    // Load the LLM backend.
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .with_context(|| {
-            format!(
-                "loading LLM model '{}'",
-                cfg.llm_model.as_deref().unwrap_or("unknown")
-            )
-        })?;
+    // Build the LLM adapter via spelunk-server.
+    let client = ServerInferenceClient::from_config(cfg).with_context(
+        || "server_url is set but could not build ServerInferenceClient for summaries",
+    )?;
+    let llm = ServerLlmAdapter(Arc::new(client));
 
     // Count pending chunks for progress display.
     let pending = db.chunks_without_summaries(usize::MAX)?;

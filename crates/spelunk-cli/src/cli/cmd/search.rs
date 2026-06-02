@@ -48,7 +48,7 @@ pub struct SearchArgs {
     pub as_of: Option<String>,
 }
 
-use super::helpers::{embed_query_vec, load_embedder, project_display_name};
+use super::helpers::{embed_query_vec, project_display_name, require_server_client};
 use super::ui::{print_results_text, spinner};
 use crate::{
     config::Config,
@@ -131,13 +131,14 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             args.limit,
         );
     } else {
-        // semantic, hybrid, auto, or snapshot search: need an embedding.
-        // Note: load_embedder only constructs an HTTP client and always succeeds.
-        // The actual network call (and potential failure) happens in embed_query_vec.
-        let embedder = load_embedder(&cfg).await?;
+        // semantic, hybrid, auto, or snapshot search: need an embedding via server.
+        let client_result = require_server_client(&cfg, "search");
 
         let sp = spinner("Embedding query…");
-        let query_vec_result = embed_query_vec(&embedder, "code retrieval", &args.query).await;
+        let query_vec_result = match client_result {
+            Ok(client) => embed_query_vec(&client, "code retrieval", &args.query).await,
+            Err(e) => Err(e),
+        };
 
         // In auto mode, if the embedding call fails (e.g. embedder unreachable),
         // fall back to ast-grep silently.

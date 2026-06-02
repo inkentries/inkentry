@@ -74,16 +74,22 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn test_index_and_status() {
     let mock_server = MockServer::start().await;
+    let project_id = FIXTURE_PROJECT_ID;
 
-    // Mock for index (1 file -> 1 chunk -> 1 request)
-    Mock::given(method("POST"))
-        .and(path("/v1/embeddings"))
+    // Health probe — Tier 1 capability set.
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": [{ "embedding": vec![0.1; 768], "index": 0 }],
-            "model": "test-model",
-            "object": "list",
-            "usage": { "prompt_tokens": 10, "total_tokens": 10 }
+            "status": "ok",
+            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"],
         })))
+        .mount(&mock_server)
+        .await;
+
+    // Embedding endpoint — handles both index phase and search query embedding.
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
         .mount(&mock_server)
         .await;
 
@@ -99,10 +105,22 @@ async fn test_index_and_status() {
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("test_index.db");
 
-    fs::write(&config_path, format!(
-        "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test-model\"\nllm_model = \"test-chat-model\"\n",
-        db_path, mock_server.uri()
-    )).unwrap();
+    fs::write(
+        &config_path,
+        format!(
+            concat!(
+                "db_path = {:?}\n",
+                "embedding_model = \"test-model\"\n",
+                "llm_model = \"test-chat-model\"\n",
+                "server_url = {:?}\n",
+                "project_id = {:?}\n",
+            ),
+            db_path,
+            mock_server.uri(),
+            project_id,
+        ),
+    )
+    .unwrap();
 
     // 1. Index the project
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
@@ -126,7 +144,7 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("Files:      1"))
         .stdout(predicate::str::contains("Chunks:     1"));
 
-    // 3. Search for the function
+    // 3. Search for the function (semantic search via server embedding)
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
     cmd.current_dir(&project_dir)
         .arg("--config")
