@@ -30,6 +30,9 @@ dirs        = "6"
 
 git-meta-lib = "0.1.10"
 gix          = { version = "0.84.0", default-features = false, features = ["sha1", "status"] }
+gix-pack     = ">=0.69.0"
+gix-fs       = ">=0.21.1"
+gix-transport = ">=0.56.0"
 
 tree-sitter          = "0.26"
 tree-sitter-rust     = "0.24"
