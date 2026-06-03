@@ -1,3 +1,93 @@
+   Compiling regex-syntax v0.8.10
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.32
+   Compiling tokio-util v0.7.18
+   Compiling utoipa v5.5.0
+   Compiling futures-util v0.3.32
+   Compiling hyper v1.10.1
+   Compiling regex-automata v0.4.14
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling tower-http v0.6.11
+   Compiling hyper-rustls v0.27.9
+   Compiling axum v0.8.9
+   Compiling reqwest v0.12.28
+   Compiling bstr v1.12.1
+   Compiling regex v1.12.3
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling tree-sitter v0.26.9
+   Compiling gix-validate v0.11.2
+   Compiling gix-utils v0.3.3
+   Compiling gix-error v0.2.4
+   Compiling gix-path v0.12.1
+   Compiling gix-date v0.15.4
+   Compiling gix-chunk v0.7.2
+   Compiling gix-quote v0.7.2
+   Compiling gix-bitmap v0.3.2
+   Compiling gix-features v0.48.1
+   Compiling gix-actor v0.41.1
+   Compiling gix-command v0.9.1
+   Compiling gix-packetline v0.21.4
+   Compiling gix-config-value v0.18.1
+   Compiling gix-imara-diff v0.2.2
+   Compiling gix-hash v0.25.1
+   Compiling gix-fs v0.21.2
+   Compiling gix-glob v0.26.1
+   Compiling gix-url v0.36.1
+   Compiling gix-hashtable v0.15.1
+   Compiling gix-tempfile v23.0.1
+   Compiling gix-commitgraph v0.37.1
+   Compiling gix-attributes v0.33.1
+   Compiling gix-object v0.60.0
+   Compiling gix-lock v23.0.1
+   Compiling gix-object v0.61.0
+   Compiling gix-ignore v0.21.1
+   Compiling gix-pathspec v0.18.1
+   Compiling gix-shallow v0.12.1
+   Compiling gix-transport v0.57.1
+   Compiling globset v0.4.18
+   Compiling gix-revwalk v0.31.0
+   Compiling gix-ref v0.63.0
+   Compiling gix-filter v0.30.0
+   Compiling gix-traverse v0.57.0
+   Compiling gix-revwalk v0.32.0
+   Compiling gix-ref v0.64.0
+   Compiling gix-traverse v0.58.0
+   Compiling gix-filter v0.31.0
+   Compiling gix-index v0.51.0
+   Compiling gix-revision v0.45.0
+   Compiling gix-revision v0.46.0
+   Compiling gix-pack v0.70.0
+   Compiling ignore v0.4.25
+   Compiling gix-index v0.52.0
+   Compiling gix-config v0.56.0
+   Compiling gix-refspec v0.41.0
+   Compiling gix-worktree v0.52.0
+   Compiling gix-discover v0.52.0
+   Compiling gix-diff v0.63.0
+   Compiling gix-odb v0.80.0
+   Compiling gix-config v0.57.0
+   Compiling gix-worktree v0.53.0
+   Compiling gix-submodule v0.30.0
+   Compiling gix-diff v0.64.0
+   Compiling gix-dir v0.26.0
+   Compiling gix-merge v0.16.0
+   Compiling gix-protocol v0.61.0
+   Compiling gix-discover v0.51.0
+   Compiling gix-refspec v0.42.0
+   Compiling gix-protocol v0.62.0
+   Compiling gix v0.83.0
+   Compiling gix-pack v0.71.0
+   Compiling gix-status v0.31.0
+   Compiling gix-submodule v0.31.0
+   Compiling gix-odb v0.81.0
+   Compiling gix v0.84.0
+   Compiling git-meta-lib v0.1.10
+   Compiling spelunk-core v0.7.1 (/Users/johan/Spelunk/code/worktrees/implementer-20260603-1000/crates/spelunk-core)
+   Compiling spelunk-server v0.7.1 (/Users/johan/Spelunk/code/worktrees/implementer-20260603-1000/crates/spelunk-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.37s
+     Running `target/debug/spelunk-server --print-openapi`
 {
   "openapi": "3.1.0",
   "info": {
@@ -1037,6 +1127,74 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Embed a search query server-side and return the vector for the CLI to use\nin its local KNN search.",
+        "description": "The server applies the code-retrieval query prefix\n(`task: code retrieval | query: {q}`) so the CLI does not need to know the\nembedding format.  The server does **not** perform the KNN step — the local\nSQLite index lives on the CLI side.\n\n- `\"semantic\"` / `\"hybrid\"`: embeds the query and returns `query_vector`.\n  Returns **400** if no embedder is configured on this server.\n- `\"text\"`: returns `query_vector: null`; the CLI falls back to FTS.",
+        "operationId": "project_search",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Query vector (CLI runs KNN locally)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeSearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No embedder configured or invalid mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/stats": {
       "get": {
         "tags": [
@@ -1175,6 +1333,52 @@
           "changed": {
             "type": "boolean",
             "description": "Whether the operation modified a record."
+          }
+        }
+      },
+      "CodeSearchRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results the caller intends to fetch.\nPassed back in the response for informational purposes only — the server\ndoes not perform the KNN step; the CLI does that against its local index.",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "Search mode: `\"hybrid\"` (default), `\"semantic\"`, or `\"text\"`.\n\n`\"hybrid\"` and `\"semantic\"` require an embedder; the server will return\n`query_vector` so the CLI can run KNN against its local SQLite index.\n`\"text\"` skips embedding and signals the CLI to use FTS."
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query."
+          }
+        }
+      },
+      "CodeSearchResponse": {
+        "type": "object",
+        "description": "Response body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "Mode actually used (`\"semantic\"`, `\"hybrid\"`, or `\"text\"`).\nMay differ from the requested mode if the embedder is unavailable."
+          },
+          "query_vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Query embedding vector — present for semantic/hybrid modes.\nThe CLI uses this to run KNN against its local index.\n`null` when mode is `\"text\"` (no embedding needed)."
           }
         }
       },
@@ -1658,6 +1862,10 @@
     {
       "name": "index",
       "description": "Code index / embedding"
+    },
+    {
+      "name": "search",
+      "description": "Server-side code search (query embedding proxy)"
     },
     {
       "name": "inference",
