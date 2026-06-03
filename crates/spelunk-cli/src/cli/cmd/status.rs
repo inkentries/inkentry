@@ -315,8 +315,17 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             println!("  explore         unavailable  [set server_url to enable]");
             println!("  plan            unavailable  [set server_url to enable]");
         }
-        Tier::Server { url, caps, .. } => {
-            println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url})\x1b[0m");
+        Tier::Server {
+            url,
+            caps,
+            auto_discovered,
+        } => {
+            let url_label = if *auto_discovered {
+                format!("{url}  \x1b[2m(local, auto)\x1b[0m")
+            } else {
+                url.clone()
+            };
+            println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url_label})\x1b[0m");
             let search_label = if caps.search_semantic {
                 "ast-grep + text + semantic"
             } else {
