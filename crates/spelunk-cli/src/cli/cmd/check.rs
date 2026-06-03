@@ -117,7 +117,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     if (effective == "text" || effective == "porcelain") && cfg.server_url.is_some() {
         let tier = capability::get_tier(&cfg).await;
         match tier {
-            capability::Tier::Server { url, caps } => {
+            capability::Tier::Server { url, caps, .. } => {
                 let features: Vec<&str> = [
                     caps.search_semantic.then_some("semantic search"),
                     caps.explore.then_some("explore"),
