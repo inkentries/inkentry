@@ -26,9 +26,24 @@ use tokio::sync::OnceCell;
 
 use crate::config::Config;
 
-/// State file directory: `~/.local/state/spelunk/`
+/// State file directory: `~/.local/state/spelunk/`.
+///
+/// On all platforms we use `~/.local/state` rather than the OS-native state dir.
+/// This mirrors the deliberate choice made for the config dir
+/// (`spelunk_config_dir` in spelunk-core's `config.rs`, which uses `~/.config`
+/// on every platform): it keeps the path identical across Linux and macOS, and
+/// matches what the CLI documentation and error messages say.
+///
+/// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
+/// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
+/// silently disabled loopback auto-discovery on the primary dev platform
+/// (spelunk#316). Returns `None` only when the home directory can't be resolved.
+///
+/// NOTE for spelunk#317 (writer side, `spelunk server start`): the writer MUST
+/// write `server.port` into this exact directory so reader and writer agree.
+/// Use the same `~/.local/state/spelunk/` path on every platform.
 fn spelunk_state_dir() -> Option<std::path::PathBuf> {
-    dirs::state_dir().map(|d| d.join("spelunk"))
+    dirs::home_dir().map(|home| home.join(".local").join("state").join("spelunk"))
 }
 
 /// Read the port written by `spelunk server start` into
@@ -567,5 +582,28 @@ mod tests {
     #[test]
     fn default_loopback_port_is_7777() {
         assert_eq!(DEFAULT_LOOPBACK_PORT, 7777);
+    }
+
+    // ── SPELUNK_NO_SERVER short-circuit behaviour ─────────────────────────────
+    //
+    // These tests mutate the process-global `SPELUNK_NO_SERVER` env var, so they
+    // are serialised against each other to avoid cross-test interference.
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    async fn spelunk_no_server_forces_offline() {
+        // SAFETY: serialised via #[serial] so no other test reads/writes this
+        // env var concurrently; restored before the guard scope ends.
+        for val in ["1", "true", "yes"] {
+            unsafe { std::env::set_var("SPELUNK_NO_SERVER", val) };
+            // server_url = None so that, absent the short-circuit, the probe would
+            // attempt loopback auto-discovery; the short-circuit must win.
+            let tier = probe(None, None).await;
+            assert!(
+                matches!(tier, Tier::Offline),
+                "SPELUNK_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
+            );
+        }
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
     }
 }
