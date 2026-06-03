@@ -32,20 +32,19 @@ If you ever need to manage it explicitly:
 spelunk server start     # start the local server (no-op if already running)
 spelunk server stop      # stop the local server
 spelunk server status    # show whether a local server is running and its PID
+spelunk server logs      # tail the local server's logs
 ```
-
-<!-- TODO: confirm with Implementer — exact `spelunk server` subcommand names,
-     output, and whether `status` exists. Written against the issue #303 /
-     loopback-auto-discovery spec; verify once the server-default change lands. -->
 
 To opt out entirely and keep spelunk fully offline, set `SPELUNK_NO_SERVER=1`
 (see [Server mode vs no-server mode](getting-started.md#server-mode-vs-no-server-mode)).
 With it set, spelunk never autostarts a server and inference-only features exit
 with a clear message instead.
 
-How discovery actually decides whether to reuse or start a server (the
-`instance_id` and `started_by` UID checks) is documented in
+How discovery decides whether to reuse or start a server is documented in
 [CLI capability tiers → Loopback auto-discovery](architecture/capability-tiers.md#loopback-auto-discovery).
+The planned `instance_id` and `started_by` UID checks described there are
+specced in #321 and not yet implemented.
+<!-- planned in #321, not yet implemented -->
 
 ---
 

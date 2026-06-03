@@ -109,7 +109,7 @@ fn discover_local_server() -> Option<ServerHandle> {
     if env::var("SPELUNK_NO_SERVER").is_ok() { return None; }   // hard opt-out
 
     // 1. Probe the well-known loopback endpoint.
-    match GET http://127.0.0.1:7777/v1/health within 500ms {
+    match GET http://127.0.0.1:7777/v1/health within 250ms {
         Ok(200, body) => {
             // 2. Only reuse a server this user owns.
             if body["started_by"] == current_uid() {
@@ -132,15 +132,17 @@ Key points:
 - **Address.** Discovery is fixed to `127.0.0.1:7777` — loopback only, never a
   routable interface. A team/remote server is reached through explicit
   `server_url` config, not discovery.
-- **`instance_id`.** Each running server reports a unique `instance_id` in its
-  `/v1/health` body. The CLI uses it to confirm it's talking to the same
-  instance across probes within a session (detects a server that was restarted
-  underneath it).
-- **`started_by` (UID check).** The health body includes the UID that started
-  the server. The CLI reuses a discovered loopback server **only if
-  `started_by` equals the current user's UID.** A server owned by another user
-  on the same host is ignored — a security boundary so one user can't be
-  silently bound to another user's inference process on a shared machine.
+- **`instance_id` (planned, #321).** Each running server will report a unique
+  `instance_id` in its `/v1/health` body, which the CLI will use to confirm it's
+  talking to the same instance across probes within a session (detecting a
+  server that was restarted underneath it). This field is **not yet implemented**
+  — it is specced in #321 and the pseudocode above reflects the intended design.
+- **`started_by` (UID check — planned, #321).** The health body will include the
+  UID that started the server, and the CLI will reuse a discovered loopback
+  server **only if `started_by` equals the current user's UID** — a security
+  boundary so one user can't be silently bound to another user's inference
+  process on a shared machine. This field is **not yet implemented**; it is
+  specced in #321. Until it ships, the UID-ownership check is not enforced.
 - **Autostart.** If nothing is reachable, the CLI spawns the bundled
   `spelunk-server` as a background child owned by the current user, then waits
   for its health endpoint before proceeding.
@@ -148,10 +150,10 @@ Key points:
   autostart. The CLI runs in Tier 0 and inference-only commands exit 2 with the
   locked-feature message.
 
-<!-- TODO: confirm with Implementer — exact health-body field names
-     (`instance_id`, `started_by`), the discovery timeout (500ms vs 2s), and
-     the autostart/handshake UX. Written against issue #303; verify when the
-     server-default change lands. -->
+<!-- planned in #321, not yet implemented — the health-body field names
+     (`instance_id`, `started_by`) are specced in #303 / sub-issue #321 but not
+     yet coded; the discovery timeout (250 ms) and autostart/handshake UX are
+     confirmed against capability.rs commit 8a2e3a5. -->
 
 User-facing behaviour for these tiers is documented in
 [getting-started.md → Server mode vs no-server mode](../getting-started.md#server-mode-vs-no-server-mode)
