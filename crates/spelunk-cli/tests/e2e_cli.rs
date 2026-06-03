@@ -712,10 +712,10 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
 }
 
-/// Explicit `--mode hybrid` with an unreachable embedder must fail with a
-/// helpful message telling the user what to do, not the old opaque message.
+/// Explicit `--mode hybrid` with no reachable server must fall through to FTS
+/// text search with a notice on stderr — not fail (#303-F2 / spelunk#323).
 #[test]
-fn test_search_explicit_hybrid_no_embedder_shows_helpful_error() {
+fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -741,7 +741,7 @@ fn test_search_explicit_hybrid_no_embedder_shows_helpful_error() {
         .assert()
         .success();
 
-    // Explicit --mode hybrid must fail with a helpful error message.
+    // Explicit --mode hybrid with no server → succeeds with text search + notice.
     Command::cargo_bin("spelunk")
         .unwrap()
         .current_dir(&project_dir)
@@ -752,8 +752,45 @@ fn test_search_explicit_hybrid_no_embedder_shows_helpful_error() {
         .arg("hybrid")
         .arg("foo")
         .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("--mode text").or(predicate::str::contains("--mode ast-grep")),
-        );
+        .success()
+        .stderr(predicate::str::contains(
+            "[server unreachable — using text search]",
+        ));
+}
+
+/// Explicit `--mode semantic` with no reachable server must also fall through.
+#[test]
+fn test_search_explicit_semantic_no_server_falls_back_to_text() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("lib.rs"), "pub fn foo() {}").unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(&config_path, format!("db_path = {:?}\n", db_path)).unwrap();
+
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("search")
+        .arg("--mode")
+        .arg("semantic")
+        .arg("foo")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "[server unreachable — using text search]",
+        ));
 }

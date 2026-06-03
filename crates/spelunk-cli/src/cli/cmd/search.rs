@@ -51,6 +51,7 @@ pub struct SearchArgs {
 use super::helpers::{embed_query_vec, project_display_name, require_server_client};
 use super::ui::{print_results_text, spinner};
 use crate::{
+    capability,
     config::Config,
     embeddings::vec_to_blob,
     registry::{Project, resolve_project_context},
@@ -112,6 +113,43 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     } else {
         None
     };
+
+    // ── Tier-0 fall-through for explicit semantic/hybrid modes (#303-F2 / #323) ──
+    //
+    // When the user explicitly requests `--mode semantic` or `--mode hybrid`
+    // but no server is reachable (Tier 0), automatically switch to FTS text
+    // search and print a notice to stderr.  stdout stays clean so NDJSON
+    // consumers are unaffected.
+    //
+    // The `auto` mode already degrades gracefully via the embed_query_vec error
+    // path below — this guard handles the explicit-mode case only.
+    // Snapshot searches are skipped: they require embeddings by definition.
+    if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() {
+        let tier = capability::get_tier(&cfg).await;
+        if !tier.is_server() {
+            eprintln!("[server unreachable — using text search]");
+            let sp = spinner("Searching (text)…");
+            let db = Database::open(&db_path)?;
+            let results = db
+                .search_text(&args.query, args.limit.min(100))
+                .unwrap_or_default();
+            sp.finish_and_clear();
+            if results.is_empty() {
+                println!("No results found.");
+                return Ok(());
+            }
+            match crate::utils::effective_format(&args.format) {
+                "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+                "ndjson" => {
+                    for item in &results {
+                        println!("{}", serde_json::to_string(item)?);
+                    }
+                }
+                _ => print_results_text(&results),
+            }
+            return Ok(());
+        }
+    }
 
     let mut results = if mode == "text" && snapshot_id.is_none() {
         // Text mode: FTS5 only, no embedding model required.
