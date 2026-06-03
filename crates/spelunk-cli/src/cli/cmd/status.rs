@@ -96,7 +96,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
         let (tier_str, tier_url, caps_json) = match tier {
             Tier::Offline => ("offline", serde_json::Value::Null, serde_json::Value::Null),
-            Tier::Server { url, caps } => (
+            Tier::Server { url, caps, .. } => (
                 "server",
                 serde_json::Value::String(url.clone()),
                 serde_json::to_value(caps).unwrap_or(serde_json::Value::Null),
@@ -315,7 +315,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             println!("  explore         unavailable  [set server_url to enable]");
             println!("  plan            unavailable  [set server_url to enable]");
         }
-        Tier::Server { url, caps } => {
+        Tier::Server { url, caps, .. } => {
             println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url})\x1b[0m");
             let search_label = if caps.search_semantic {
                 "ast-grep + text + semantic"

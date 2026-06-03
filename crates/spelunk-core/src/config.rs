@@ -266,8 +266,15 @@ impl Config {
     }
 
     /// Validate cross-field constraints. Call after `load()`.
+    ///
+    /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
+    /// `project_id` is allowed to be absent — it will be derived at runtime by
+    /// `Config::resolve_project_id()` (see spelunk#307 / section D of #303).
     pub fn validate(&self) -> Result<()> {
-        if self.server_url.is_some() && self.project_id.is_none() {
+        if let Some(url) = &self.server_url
+            && self.project_id.is_none()
+            && !is_loopback_url(url)
+        {
             anyhow::bail!(
                 "server_url is set but project_id is missing.\n\
                  Add `project_id = \"my-project\"` to .spelunk/config.toml \
@@ -276,6 +283,35 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Return `true` if `url` targets a loopback address (`127.x.x.x`, `localhost`, `::1`).
+///
+/// This is a lightweight string check — no DNS resolution.
+pub fn is_loopback_url(url: &str) -> bool {
+    // Strip scheme and authority prefix up to the host.
+    let host_part = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+
+    // Extract the host (before any path or port).
+    let host = if let Some(idx) = host_part.find('/') {
+        &host_part[..idx]
+    } else {
+        host_part
+    };
+    // Drop port if present (handle IPv6 bracketed form too).
+    let host = if host.starts_with('[') {
+        // IPv6: [::1]:port or [::1]
+        host.trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(host)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+
+    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
 }
 
 #[cfg(test)]
@@ -388,6 +424,77 @@ project_id = "my-proj"
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── validate() loopback exemption (spelunk#316) ──────────────────────────
+
+    #[test]
+    fn validate_passes_for_loopback_url_without_project_id() {
+        for url in &[
+            "http://127.0.0.1:7777",
+            "http://localhost:7777",
+            "http://127.0.0.1:7778/",
+        ] {
+            let cfg = Config {
+                server_url: Some(url.to_string()),
+                project_id: None,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_ok(),
+                "expected validate() to pass for loopback URL {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_fails_for_non_loopback_url_without_project_id() {
+        let cfg = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    // ── is_loopback_url ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_loopback_url_recognises_127_0_0_1() {
+        assert!(is_loopback_url("http://127.0.0.1:7777"));
+        assert!(is_loopback_url("http://127.0.0.1:7777/"));
+        assert!(is_loopback_url("http://127.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_localhost() {
+        assert!(is_loopback_url("http://localhost:7777"));
+        assert!(is_loopback_url("http://localhost"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_ipv6_loopback() {
+        assert!(is_loopback_url("http://[::1]:7777"));
+        assert!(is_loopback_url("http://[::1]"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_127_subnet() {
+        assert!(is_loopback_url("http://127.1.2.3:7777"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_non_loopback() {
+        assert!(!is_loopback_url("http://spelunk.internal:7777"));
+        assert!(!is_loopback_url("http://192.168.1.100:7777"));
+        assert!(!is_loopback_url("https://example.com"));
+        assert!(!is_loopback_url("http://10.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_address_with_127_in_path() {
+        // Should NOT match just because "127" appears somewhere
+        assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
     }
 
     // ── env var overrides ────────────────────────────────────────────────────
