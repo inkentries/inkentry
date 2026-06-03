@@ -12,7 +12,7 @@ pub struct InitArgs {
     pub no_index: bool,
 }
 
-use crate::{config::Config, registry::Registry, storage::Database};
+use crate::{capability, config::Config, registry::Registry, storage::Database};
 
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 1. Detect project root ────────────────────────────────────────────────
@@ -103,7 +103,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             background_phases: false,
             detach: false,
         };
-        super::index::index(index_args, cfg).await?;
+        super::index::index(index_args, cfg.clone()).await?;
 
         // Read fresh stats from the just-created DB.
         match Database::open(&db_path) {
@@ -162,13 +162,31 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    // ── 7. Print success summary ──────────────────────────────────────────────
+    // ── 7. Probe for a local server (non-blocking; uses the cached tier result).
+    //      The probe runs with a 250 ms timeout so init stays fast.
+    let server_line = {
+        let tier = capability::get_tier(&cfg).await;
+        match tier {
+            capability::Tier::Server {
+                url,
+                auto_discovered: true,
+                ..
+            } => Some(format!("{}  \x1b[32m✓\x1b[0m  (auto-started)", url)),
+            capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
+            capability::Tier::Offline => None,
+        }
+    };
+
+    // ── 8. Print success summary ──────────────────────────────────────────────
     println!();
     println!("spelunk initialised for {}", project_name);
     println!();
     println!("  Index:   {} files, {} chunks", file_count, chunk_count);
     println!("  DB:      {}", db_path.display());
     println!("  Hook:    {}", hook_status);
+    if let Some(line) = server_line {
+        println!("  Server:  {line}");
+    }
     println!();
     println!("Next steps:");
     println!("  spelunk search \"your query\"");
