@@ -91,6 +91,13 @@ async fn main() -> Result<()> {
     let db = ServerDb::open(&args.db, args.embedding_dim)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
 
+    let instance_id = db
+        .get_or_create_instance_id()
+        .context("initialising instance_id")?;
+    tracing::debug!("instance_id: {instance_id}");
+
+    let started_by = effective_uid();
+
     if args.key.is_none() {
         tracing::warn!(
             "No API key configured — server is running without authentication. \
@@ -162,6 +169,8 @@ async fn main() -> Result<()> {
         llm,
         max_tokens_ceiling,
         rate_limiter,
+        instance_id,
+        started_by,
     };
 
     let app = router(state);
@@ -174,6 +183,23 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// ── Effective UID helper ──────────────────────────────────────────────────────
+
+/// Return the effective user ID of the current process (Unix), or `None` on Windows.
+fn effective_uid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        Some(unsafe { geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 // ── Inline embedder for the server binary ─────────────────────────────────────

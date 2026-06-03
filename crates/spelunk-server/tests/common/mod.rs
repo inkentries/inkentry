@@ -43,3 +43,20 @@ pub fn open_test_server_db(dim: usize) -> spelunk_server::db::ServerDb {
     spelunk_server::db::ServerDb::open(std::path::Path::new(":memory:"), dim)
         .expect("failed to open in-memory server database")
 }
+
+/// Build a minimal `AppState` backed by an in-memory DB for integration tests.
+pub fn make_test_state(dim: usize, auth_key: Option<String>) -> spelunk_server::AppState {
+    let db = open_test_server_db(dim);
+    let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
+    spelunk_server::AppState {
+        db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+        auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(auth_key)),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
+        embedder: None,
+        llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(1000, 60)),
+        instance_id,
+        started_by: None,
+    }
+}

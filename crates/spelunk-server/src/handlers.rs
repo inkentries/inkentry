@@ -112,10 +112,14 @@ pub struct HealthResponse {
     pub version: &'static str,
     /// List of feature capabilities supported by this server instance.
     pub capabilities: Vec<String>,
+    /// Persistent UUID v4 identifying this server instance across restarts.
+    pub instance_id: String,
+    /// Effective UID of the process that started the server (Unix); `null` on Windows.
+    pub started_by: Option<u32>,
 }
 
 /// Server liveness check. No authentication required.
-/// Returns server version and capabilities list.
+/// Returns server version, capabilities, and identity fields.
 #[utoipa::path(
     get,
     path = "/v1/health",
@@ -138,6 +142,8 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         capabilities,
+        instance_id: state.instance_id.clone(),
+        started_by: state.started_by,
     })
 }
 
@@ -1085,6 +1091,7 @@ mod tests {
         let dim: usize = 4;
         let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
             .expect("failed to open in-memory server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         let state = AppState {
             db: Arc::new(tokio::sync::Mutex::new(db)),
             auth: Arc::new(ApiKeyAuth::new(None)),
@@ -1093,6 +1100,8 @@ mod tests {
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
+            instance_id,
+            started_by: None,
         };
         (router(state), dim as i32)
     }
@@ -1254,6 +1263,19 @@ mod tests {
         assert!(
             caps.iter().any(|c| c == "memory"),
             "capabilities must include 'memory'"
+        );
+        // New fields from #321.
+        let id = json["instance_id"]
+            .as_str()
+            .expect("instance_id must be a string");
+        assert_eq!(
+            id.len(),
+            36,
+            "instance_id must be a UUID v4 (36 chars): {id}"
+        );
+        assert!(
+            json["started_by"].is_null(),
+            "started_by must be null in test (None)"
         );
     }
 
