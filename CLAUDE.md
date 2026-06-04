@@ -169,6 +169,7 @@ cli/
     links.rs     — `spelunk links` handler
     misc.rs      — `spelunk chunks` / `spelunk languages` handlers
     search.rs    — `spelunk search` handler
+    server.rs    — `spelunk server start/stop/status/logs` daemon management
     status.rs    — `spelunk status` handler
     ui.rs        — TUI helpers (private)
     index/

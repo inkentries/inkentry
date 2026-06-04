@@ -12,6 +12,7 @@ pub mod memory;
 pub mod misc;
 pub mod plumbing;
 pub mod search;
+pub mod server;
 pub mod status;
 mod ui;
 
@@ -29,4 +30,5 @@ pub use memory::push::memory_push;
 pub use misc::{chunks, languages};
 pub use plumbing::plumbing;
 pub use search::search;
+pub use server::server;
 pub use status::status;

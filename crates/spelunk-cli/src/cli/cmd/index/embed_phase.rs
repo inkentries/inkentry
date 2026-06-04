@@ -41,6 +41,7 @@ pub(super) async fn run_embed_phase(
     db: &Database,
     cfg: &Config,
     tier: &Tier,
+    project_root: &std::path::Path,
     mp: &MultiProgress,
 ) -> Result<u64> {
     let (server_url, server_key) = match tier {
@@ -48,10 +49,11 @@ pub(super) async fn run_embed_phase(
         Tier::Offline => return Ok(0),
     };
 
-    let project_id = cfg
-        .project_id
-        .as_deref()
-        .context("project_id is required when server_url is set")?;
+    // Use `resolve_project_id` so that loopback auto-discovered servers (where
+    // `cfg.project_id` may be absent) derive the id from the project root path,
+    // matching `Config::resolve_project_id` behaviour (see spelunk#307).
+    let project_id_owned = cfg.resolve_project_id(project_root);
+    let project_id = project_id_owned.as_str();
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))

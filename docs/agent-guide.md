@@ -33,6 +33,43 @@ spelunk memory search "auth decisions"   # → JSON array of notes with distance
 
 You can also use `--format json` on individual commands.
 
+## Managing the local server daemon
+
+If your config does not have a `server_url`, `spelunk` auto-discovers a local
+`spelunk-server` running on loopback by reading
+`~/.local/state/spelunk/server.port`.  You can start, stop, and inspect that
+daemon with the `spelunk server` subcommand.
+
+```bash
+# Start spelunk-server on port 7777 (idempotent — no-op if already running)
+spelunk server start
+
+# Check whether the daemon is running and get its PID/port/version
+spelunk server status
+
+# Tail the last 50 lines of the server log
+spelunk server logs
+
+# Stop the daemon gracefully (SIGTERM; waits up to 10 s)
+spelunk server stop
+```
+
+**State directory:** all runtime files (`server.pid`, `server.port`,
+`server.log`) live under `~/.local/state/spelunk/`.
+
+**Idempotency:** `spelunk server start` is safe to call at the beginning of
+every session.  If the daemon is already running and healthy it exits 0
+immediately.  If the PID is stale (process dead), it starts a fresh instance.
+
+**When to use `status` vs probing `/v1/health` directly:** use
+`spelunk server status` for human-readable output during debugging.  For
+programmatic checks inside an agent loop, `spelunk check` already probes the
+server as part of its index-freshness check — you rarely need to poll
+`/v1/health` directly.
+
+**Port walk:** `start` tries ports 7777–7787 in order.  If all are taken it
+exits with a clear error.  Use `--port <n>` to override the starting port.
+
 ## Starting a session
 
 At the start of a session, orient yourself:
