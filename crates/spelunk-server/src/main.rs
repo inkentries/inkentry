@@ -10,6 +10,9 @@ use spelunk_server::rate_limiter::RateLimiter;
 use spelunk_server::{ApiDoc, AppState, default_conflict_threshold, router};
 use utoipa::OpenApi;
 
+#[cfg(feature = "embed-native")]
+mod embedder_native;
+
 #[derive(Parser, Debug)]
 #[command(name = "spelunk-server", about = "Shared memory server for spelunk")]
 struct Args {
@@ -110,26 +113,52 @@ async fn main() -> Result<()> {
         Arc::new(ApiKeyAuth::new(args.key.clone()));
 
     // Build the optional server-side embedder.
-    let embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> =
-        if let Some(base_url) = args.embedding_url {
-            let model = if args.embedding_model.is_empty() {
-                "default".to_string()
-            } else {
-                args.embedding_model.clone()
-            };
-            tracing::info!("server-side embedding enabled: {base_url} model={model}");
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()
-                .context("building HTTP client for server-side embedder")?;
-            Some(Arc::new(ServerEmbedder {
-                client,
-                base_url,
-                model,
-            }))
+    let embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> = if let Some(
+        base_url,
+    ) =
+        args.embedding_url
+    {
+        let model = if args.embedding_model.is_empty() {
+            "default".to_string()
         } else {
-            None
+            args.embedding_model.clone()
         };
+        tracing::info!("server-side embedding enabled: {base_url} model={model}");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .context("building HTTP client for server-side embedder")?;
+        Some(Arc::new(ServerEmbedder {
+            client,
+            base_url,
+            model,
+        }))
+    } else {
+        // No --embedding-url: try the bundled native embedder (embed-native feature).
+        #[cfg(feature = "embed-native")]
+        {
+            match embedder_native::NativeEmbedder::load() {
+                Ok(native) => {
+                    tracing::info!(
+                        "native embedding model loaded (dim={})",
+                        embedder_native::DIM
+                    );
+                    Some(Arc::new(native) as Arc<dyn spelunk_core::embeddings::EmbeddingBackend>)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "native embedding model failed to load: {e}; \
+                             running without embedder (set --embedding-url to override)"
+                    );
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "embed-native"))]
+        {
+            None
+        }
+    };
 
     // Build the optional LLM backend.
     let llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url {

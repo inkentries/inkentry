@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "spelunk_server"
 path = "src/lib.rs"
 
+[features]
+default       = ["embed-native"]
+embed-native  = ["dep:fastembed"]
+
 [dependencies]
 spelunk-core = { path = "../spelunk-core" }
 anyhow       = { workspace = true }
@@ -34,6 +38,8 @@ futures-util  = "0.3"
 utoipa       = { version = "5", features = ["axum_extras"] }
 clap         = { version = "4", features = ["derive", "env"] }
 regex        = { version = "1", default-features = false, features = ["std"] }
+dirs         = "6"
+fastembed    = { version = "5", optional = true }
 
 [dev-dependencies]
 tempfile          = { workspace = true }
