@@ -270,7 +270,7 @@ async fn probe_url(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let caps = parse_capabilities(resp).await;
+            let caps = parse_capabilities(url, resp).await;
             Tier::Server {
                 url: url.to_string(),
                 caps,
@@ -297,15 +297,33 @@ async fn probe_url(
     }
 }
 
-async fn parse_capabilities(resp: reqwest::Response) -> Capabilities {
+async fn parse_capabilities(url: &str, resp: reqwest::Response) -> Capabilities {
     #[derive(serde::Deserialize)]
     struct HealthBody {
         #[serde(default)]
         capabilities: Vec<String>,
+        instance_id: Option<String>,
+        started_by: Option<u32>,
     }
 
     match resp.json::<HealthBody>().await {
         Ok(body) => {
+            // Warn if the server was started by a different user on this host.
+            if let Some(server_uid) = body.started_by {
+                let my_uid = current_uid();
+                if let Some(my_uid) = my_uid
+                    && my_uid != server_uid
+                {
+                    tracing::warn!(
+                        "spelunk-server at {url} was started by UID {server_uid} \
+                         but you are UID {my_uid}; on a multi-user host this may \
+                         expose another user's memory — consider running your own server"
+                    );
+                }
+            }
+            if let Some(ref id) = body.instance_id {
+                tracing::debug!("server instance_id: {id}");
+            }
             let cap_strs: Vec<&str> = body.capabilities.iter().map(String::as_str).collect();
             Capabilities::from_server_caps(&cap_strs)
         }
@@ -313,6 +331,21 @@ async fn parse_capabilities(resp: reqwest::Response) -> Capabilities {
             // Legacy server returns plain-text "ok" — conservative fallback.
             Capabilities::legacy_memory_only()
         }
+    }
+}
+
+/// Return the effective UID of this process (Unix), or `None` on Windows.
+fn current_uid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        Some(unsafe { geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 

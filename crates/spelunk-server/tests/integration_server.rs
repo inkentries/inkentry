@@ -20,16 +20,7 @@ use tower::ServiceExt; // for `.oneshot()`
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn make_state() -> AppState {
-    let db = common::open_test_server_db(4);
-    AppState {
-        db: Arc::new(tokio::sync::Mutex::new(db)),
-        auth: Arc::new(ApiKeyAuth::new(None)),
-        conflict_threshold: spelunk_server::default_conflict_threshold(),
-        embedder: None,
-        llm: None,
-        max_tokens_ceiling: 8192,
-        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
-    }
+    common::make_test_state(4, None)
 }
 
 fn json_body(body: impl serde::Serialize) -> Body {
@@ -259,16 +250,7 @@ async fn delete_note_removes_it() {
 #[tokio::test]
 #[serial]
 async fn protected_endpoint_rejects_missing_token() {
-    let db = common::open_test_server_db(4);
-    let state = AppState {
-        db: Arc::new(tokio::sync::Mutex::new(db)),
-        auth: Arc::new(ApiKeyAuth::new(Some("secret".into()))),
-        conflict_threshold: spelunk_server::default_conflict_threshold(),
-        embedder: None,
-        llm: None,
-        max_tokens_ceiling: 8192,
-        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
-    };
+    let state = common::make_test_state(4, Some("secret".into()));
     let resp = send(state, "GET", "/v1/projects", Body::empty(), false).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
@@ -276,16 +258,7 @@ async fn protected_endpoint_rejects_missing_token() {
 #[tokio::test]
 #[serial]
 async fn protected_endpoint_accepts_correct_token() {
-    let db = common::open_test_server_db(4);
-    let state = AppState {
-        db: Arc::new(tokio::sync::Mutex::new(db)),
-        auth: Arc::new(ApiKeyAuth::new(Some("secret".into()))),
-        conflict_threshold: spelunk_server::default_conflict_threshold(),
-        embedder: None,
-        llm: None,
-        max_tokens_ceiling: 8192,
-        rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
-    };
+    let state = common::make_test_state(4, Some("secret".into()));
     let req = Request::builder()
         .method("GET")
         .uri("/v1/projects")
@@ -379,6 +352,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         )
         .unwrap();
 
+    let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth: Arc::new(ApiKeyAuth::new(None)),
@@ -387,6 +361,8 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
+        instance_id,
+        started_by: None,
     };
 
     // Query with t=1500 — should return only the note at t=2000.

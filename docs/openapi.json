@@ -18,7 +18,7 @@
         "tags": [
           "health"
         ],
-        "summary": "Server liveness check. No authentication required.\nReturns server version and capabilities list.",
+        "summary": "Server liveness check. No authentication required.\nReturns server version, capabilities, and identity fields.",
         "operationId": "health",
         "responses": {
           "200": {
@@ -1367,7 +1367,8 @@
         "required": [
           "status",
           "version",
-          "capabilities"
+          "capabilities",
+          "instance_id"
         ],
         "properties": {
           "capabilities": {
@@ -1376,6 +1377,19 @@
               "type": "string"
             },
             "description": "List of feature capabilities supported by this server instance."
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Persistent UUID v4 identifying this server instance across restarts."
+          },
+          "started_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Effective UID of the process that started the server (Unix); `null` on Windows.",
+            "minimum": 0
           },
           "status": {
             "type": "string",
