@@ -132,6 +132,56 @@ pub async fn server(args: ServerArgs) -> Result<()> {
     }
 }
 
+// ── Public bootstrap API ──────────────────────────────────────────────────────
+
+/// Ensure a local spelunk-server is running.
+///
+/// Returns `(port, freshly_started)`. Idempotent: if the server is already
+/// healthy, returns immediately with `freshly_started = false`.
+///
+/// Called by `spelunk init` to auto-spawn the server when running interactively.
+pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
+    let state_dir = spelunk_state_dir()?;
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("creating state dir {}", state_dir.display()))?;
+
+    // Already running and healthy?
+    if let Some(pid) = read_pid(&state_dir)
+        && pid_is_alive(pid)
+        && let Some(port) = read_port(&state_dir)
+        && probe_health(port).await.is_some()
+    {
+        return Ok((port, false));
+    }
+
+    let bin = which_spelunk_server()?;
+    let db = state_dir.join("server.db");
+    const PORT_RANGE: u16 = 11;
+    let port = find_available_port(start_port, PORT_RANGE)?;
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path(&state_dir))
+        .with_context(|| format!("opening {}", log_path(&state_dir).display()))?;
+
+    #[cfg(unix)]
+    let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
+    #[cfg(not(unix))]
+    let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
+
+    let pid = child.id();
+    std::fs::write(pid_path(&state_dir), format!("{pid}\n")).context("writing server.pid")?;
+    std::fs::write(port_path(&state_dir), format!("{port}\n")).context("writing server.port")?;
+
+    let ready = wait_for_health(port, Duration::from_secs(5)).await;
+    if !ready {
+        tracing::warn!("spelunk-server started (pid={pid}) but did not respond within 5 s");
+    }
+
+    Ok((port, true))
+}
+
 // ── start ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_start(args: ServerStartArgs) -> Result<()> {
