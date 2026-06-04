@@ -804,3 +804,63 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
             "[server unreachable — using text search]",
         ));
 }
+
+// ── spelunk server error-path tests ──────────────────────────────────────────
+
+/// `spelunk server status` prints "not started" when no pid file exists.
+#[test]
+fn test_server_status_not_running() {
+    let tmp = tempdir().unwrap();
+    // Point HOME to an empty tmpdir so no real state files interfere.
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .arg("server")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not started"));
+}
+
+/// `spelunk server logs` exits with an error when no log file exists.
+#[test]
+fn test_server_logs_missing_file() {
+    let tmp = tempdir().unwrap();
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .arg("server")
+        .arg("logs")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No log file"));
+}
+
+/// `spelunk server stop` exits with an error when there is no pid file.
+#[test]
+fn test_server_stop_not_running() {
+    let tmp = tempdir().unwrap();
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .arg("server")
+        .arg("stop")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("server.pid"));
+}
+
+/// `spelunk server start` exits with a clear error when the binary is missing.
+#[test]
+fn test_server_start_binary_not_found() {
+    let tmp = tempdir().unwrap();
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("PATH", "") // empty PATH so binary lookup fails
+        .arg("server")
+        .arg("start")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("spelunk-server binary not found"));
+}

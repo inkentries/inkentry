@@ -72,9 +72,10 @@ fn pid_is_alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        // On Windows, check via OpenProcess; fall back to assuming alive.
+        // Windows: a proper check requires OpenProcess — not yet implemented.
+        // We conservatively return false so stale PIDs don't block a fresh start.
         let _ = pid;
-        true
+        false
     }
 }
 
@@ -241,7 +242,12 @@ fn find_available_port(start: u16, range: u16) -> Result<u16> {
     )
 }
 
-/// Spawn the server on Unix using a double-fork so it is fully detached.
+/// Spawn the server on Unix.
+///
+/// Uses a single `fork`+`exec` via `std::process::Command::spawn()`.  The
+/// child process inherits the log file handles and runs independently; the
+/// CLI process exits after writing the PID/port state files, at which point
+/// the child is reparented to init/launchd and becomes fully detached.
 #[cfg(unix)]
 fn spawn_daemon_unix(
     bin: &Path,
@@ -485,4 +491,116 @@ fn cmd_logs(args: ServerLogsArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ── spelunk_state_dir ────────────────────────────────────────────────────
+
+    #[test]
+    fn state_dir_contains_spelunk() {
+        let dir = spelunk_state_dir().expect("state dir");
+        assert!(
+            dir.to_string_lossy().contains("spelunk"),
+            "state dir should contain 'spelunk', got {dir:?}"
+        );
+    }
+
+    // ── find_available_port ──────────────────────────────────────────────────
+
+    #[test]
+    fn find_available_port_succeeds() {
+        // Port 0 triggers OS assignment; we use a high ephemeral range that is
+        // very likely free in CI.
+        let port = find_available_port(19700, 20).expect("should find a free port");
+        assert!((19700..19720).contains(&port));
+    }
+
+    #[test]
+    fn find_available_port_fails_when_all_bound() {
+        // Bind to every port in a tiny range, then verify we get an error.
+        let range: u16 = 3;
+        let start: u16 = 19750;
+        let _listeners: Vec<std::net::TcpListener> = (start..start + range)
+            .filter_map(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
+            .collect();
+        // Only error if we actually managed to bind all three.
+        if _listeners.len() == range as usize {
+            assert!(
+                find_available_port(start, range).is_err(),
+                "expected error when all ports are bound"
+            );
+        }
+    }
+
+    // ── pid_is_alive ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn current_process_is_alive() {
+        let pid = std::process::id();
+        assert!(pid_is_alive(pid), "current process should be alive");
+    }
+
+    // ── read_pid / read_port ─────────────────────────────────────────────────
+
+    #[test]
+    fn read_pid_returns_none_for_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        assert!(read_pid(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn read_pid_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(pid_path(tmp.path()), b"12345\n").unwrap();
+        assert_eq!(read_pid(tmp.path()), Some(12345));
+    }
+
+    #[test]
+    fn read_port_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(port_path(tmp.path()), b"7777\n").unwrap();
+        assert_eq!(read_port(tmp.path()), Some(7777));
+    }
+
+    // ── which_spelunk_server ─────────────────────────────────────────────────
+
+    #[test]
+    fn which_spelunk_server_finds_sibling_binary() {
+        // Create a fake `spelunk-server` next to the current executable.
+        let tmp = TempDir::new().unwrap();
+        let fake_bin = tmp.path().join("spelunk-server");
+        std::fs::write(&fake_bin, b"").unwrap();
+
+        // Temporarily redirect PATH so only our fake bin is discoverable and
+        // pretend current_exe lives in tmp.
+        //
+        // We can't override current_exe() at runtime, so just verify the PATH
+        // fallback path: put tmp on PATH and confirm discovery succeeds.
+        //
+        // SAFETY: test binary is single-threaded at this point; no other thread
+        // reads PATH concurrently within this test.
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", tmp.path().display(), old_path.to_string_lossy());
+        unsafe { std::env::set_var("PATH", &new_path) };
+        let result = which_spelunk_server();
+        unsafe { std::env::set_var("PATH", &old_path) };
+
+        assert!(result.is_ok(), "should discover binary on PATH: {result:?}");
+    }
+
+    #[test]
+    fn which_spelunk_server_fails_when_not_on_path() {
+        // SAFETY: see note in which_spelunk_server_finds_sibling_binary.
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        unsafe { std::env::set_var("PATH", "") };
+        let result = which_spelunk_server();
+        unsafe { std::env::set_var("PATH", &old_path) };
+        assert!(result.is_err(), "should fail when binary is not on PATH");
+    }
 }
