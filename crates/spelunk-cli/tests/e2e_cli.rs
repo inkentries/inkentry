@@ -86,10 +86,20 @@ async fn test_index_and_status() {
         .mount(&mock_server)
         .await;
 
-    // Embedding endpoint — handles both index phase and search query embedding.
+    // Embedding endpoint — handles the index phase.
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/index/embed$"))
         .respond_with(IndexEmbedResponder)
+        .mount(&mock_server)
+        .await;
+
+    // Search endpoint (#322) — returns a fake query vector for CLI-side KNN.
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/search$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "mode": "hybrid",
+            "query_vector": vec![0.1f32; 768],
+        })))
         .mount(&mock_server)
         .await;
 

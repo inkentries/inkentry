@@ -126,6 +126,10 @@ impl ServerInferenceClient {
         )
     }
 
+    fn search_url(&self) -> String {
+        format!("{}/v1/projects/{}/search", self.base_url, self.project_id)
+    }
+
     /// Call `/llm/complete` and collect the full SSE token stream into a `String`.
     ///
     /// Returns the concatenated completion text (all `token` events joined).
@@ -237,6 +241,48 @@ impl ServerInferenceClient {
             .find(|c| c.chunk_id == chunk_id)
             .map(|c| c.vector)
             .ok_or_else(|| anyhow::anyhow!("embed response missing chunk_id {chunk_id}"))
+    }
+
+    /// Call `POST /v1/projects/{id}/search` to embed a query server-side and
+    /// return the query vector for CLI-side KNN.
+    ///
+    /// The server applies the code-retrieval prefix (`task: code retrieval | query: …`)
+    /// before embedding, so the caller does not need to know the format.
+    ///
+    /// Returns `None` when the server responds with `mode: "text"` (no embedding
+    /// needed; caller should use FTS instead).
+    pub async fn search_query(
+        &self,
+        query: &str,
+        mode: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<f32>>> {
+        #[derive(serde::Serialize)]
+        struct Req<'a> {
+            query: &'a str,
+            limit: usize,
+            mode: &'a str,
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            query_vector: Option<Vec<f32>>,
+            #[allow(dead_code)]
+            mode: String,
+        }
+
+        let resp: Resp = self
+            .authed(self.client.post(self.search_url()))
+            .json(&Req { query, limit, mode })
+            .send()
+            .await
+            .context("POST /search (query vector)")?
+            .error_for_status()
+            .context("spelunk-server returned an error for /search")?
+            .json()
+            .await
+            .context("parsing /search response")?;
+
+        Ok(resp.query_vector)
     }
 }
 

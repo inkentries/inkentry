@@ -79,6 +79,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::memory_since,
         handlers::memory_stream,
         handlers::index_embed,
+        handlers::project_search,
         handlers::explore,
         handlers::llm_complete,
     ),
@@ -98,6 +99,8 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::EmbedChunkIn,
         handlers::EmbedResponse,
         handlers::EmbedChunkOut,
+        handlers::CodeSearchRequest,
+        handlers::CodeSearchResponse,
         handlers::ExploreRequest,
         handlers::ExploreContextChunk,
         handlers::LlmCompleteRequest,
@@ -113,6 +116,7 @@ pub fn default_conflict_threshold() -> f32 {
         (name = "projects", description = "Project management"),
         (name = "memory", description = "Memory CRUD and semantic search"),
         (name = "index", description = "Code index / embedding"),
+        (name = "search", description = "Server-side code search (query embedding proxy)"),
         (name = "inference", description = "LLM-powered code exploration and raw completion"),
     ),
     security(
@@ -193,6 +197,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/projects/{project_id}/index/embed",
             post(handlers::index_embed),
+        )
+        .route(
+            "/v1/projects/{project_id}/search",
+            post(handlers::project_search),
         )
         .route("/v1/projects/{project_id}/explore", post(handlers::explore))
         .route(

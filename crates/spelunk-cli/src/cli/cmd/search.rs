@@ -48,7 +48,7 @@ pub struct SearchArgs {
     pub as_of: Option<String>,
 }
 
-use super::helpers::{embed_query_vec, project_display_name, require_server_client};
+use super::helpers::{project_display_name, require_server_client};
 use super::ui::{print_results_text, spinner};
 use crate::{
     capability,
@@ -170,11 +170,29 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         );
     } else {
         // semantic, hybrid, auto, or snapshot search: need an embedding via server.
+        //
+        // Use the dedicated POST /v1/projects/{id}/search endpoint (#322) when a
+        // server is reachable — it applies the code-retrieval prefix server-side
+        // and returns the query vector for CLI-side KNN.  This eliminates the
+        // need for a local api_base_url / embedder in Tier-1 mode.
         let client_result = require_server_client(&cfg, "search");
+
+        // Map auto/hybrid/semantic → server-side mode string.
+        let server_mode = if auto_mode { "hybrid" } else { mode };
 
         let sp = spinner("Embedding query…");
         let query_vec_result = match client_result {
-            Ok(client) => embed_query_vec(&client, "code retrieval", &args.query).await,
+            Ok(client) => client
+                .search_query(&args.query, server_mode, args.limit.min(100))
+                .await
+                .and_then(|opt_vec| {
+                    opt_vec.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "server returned text mode for a semantic/hybrid request; \
+                             use --mode text explicitly"
+                        )
+                    })
+                }),
             Err(e) => Err(e),
         };
 

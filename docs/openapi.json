@@ -1037,6 +1037,74 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Embed a search query server-side and return the vector for the CLI to use\nin its local KNN search.",
+        "description": "The server applies the code-retrieval query prefix\n(`task: code retrieval | query: {q}`) so the CLI does not need to know the\nembedding format.  The server does **not** perform the KNN step — the local\nSQLite index lives on the CLI side.\n\n- `\"semantic\"` / `\"hybrid\"`: embeds the query and returns `query_vector`.\n  Returns **400** if no embedder is configured on this server.\n- `\"text\"`: returns `query_vector: null`; the CLI falls back to FTS.",
+        "operationId": "project_search",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Query vector (CLI runs KNN locally)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeSearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No embedder configured or invalid mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/stats": {
       "get": {
         "tags": [
@@ -1175,6 +1243,52 @@
           "changed": {
             "type": "boolean",
             "description": "Whether the operation modified a record."
+          }
+        }
+      },
+      "CodeSearchRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results the caller intends to fetch.\nPassed back in the response for informational purposes only — the server\ndoes not perform the KNN step; the CLI does that against its local index.",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "Search mode: `\"hybrid\"` (default), `\"semantic\"`, or `\"text\"`.\n\n`\"hybrid\"` and `\"semantic\"` require an embedder; the server will return\n`query_vector` so the CLI can run KNN against its local SQLite index.\n`\"text\"` skips embedding and signals the CLI to use FTS."
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query."
+          }
+        }
+      },
+      "CodeSearchResponse": {
+        "type": "object",
+        "description": "Response body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "Mode actually used (`\"semantic\"`, `\"hybrid\"`, or `\"text\"`).\nMay differ from the requested mode if the embedder is unavailable."
+          },
+          "query_vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Query embedding vector — present for semantic/hybrid modes.\nThe CLI uses this to run KNN against its local index.\n`null` when mode is `\"text\"` (no embedding needed)."
           }
         }
       },
@@ -1672,6 +1786,10 @@
     {
       "name": "index",
       "description": "Code index / embedding"
+    },
+    {
+      "name": "search",
+      "description": "Server-side code search (query embedding proxy)"
     },
     {
       "name": "inference",
