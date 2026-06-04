@@ -148,7 +148,15 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     if tier.is_server() {
-        embed_phase::run_embed_phase(result.chunk_ids_and_texts, &db, &cfg, tier, &mp).await?;
+        embed_phase::run_embed_phase(
+            result.chunk_ids_and_texts,
+            &db,
+            &cfg,
+            tier,
+            &project_root,
+            &mp,
+        )
+        .await?;
     } else if cfg.server_url.is_some() {
         eprintln!(
             "Warning: spelunk-server at {} is unreachable — skipping embedding phase.",

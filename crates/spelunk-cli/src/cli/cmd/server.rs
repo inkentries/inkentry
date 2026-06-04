@@ -155,7 +155,12 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
 
     // ── Find the binary ──────────────────────────────────────────────────────
     let bin = match &args.bin {
-        Some(p) => p.clone(),
+        Some(p) => {
+            if !p.exists() {
+                anyhow::bail!("spelunk-server binary not found at {}", p.display());
+            }
+            p.clone()
+        }
         None => which_spelunk_server()?,
     };
 

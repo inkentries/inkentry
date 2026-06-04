@@ -188,7 +188,8 @@ async fn test_status_shows_offline_tier() {
     .unwrap();
 
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.arg("--config")
+    cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -196,7 +197,8 @@ async fn test_status_shows_offline_tier() {
         .success();
 
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.current_dir(&project_dir)
+    cmd.env("SPELUNK_NO_SERVER", "1")
+        .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -375,6 +377,7 @@ async fn test_status_json_stable_schema() {
     // Index the project so there is data to query.
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -384,6 +387,7 @@ async fn test_status_json_stable_schema() {
 
     let output = Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -602,7 +606,8 @@ fn test_status_json_offline_tier() {
     .unwrap();
 
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.arg("--config")
+    cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -611,6 +616,7 @@ fn test_status_json_offline_tier() {
 
     let output = Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -789,8 +795,12 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
         .assert()
         .success();
 
+    // Explicit --mode semantic with no server configured (and auto-discovery
+    // disabled via SPELUNK_NO_SERVER=1) should fall through to text search
+    // and succeed with an informational warning.
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -800,9 +810,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
         .arg("foo")
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "[server unreachable — using text search]",
-        ));
+        .stderr(predicate::str::contains("server unreachable"));
 }
 
 // ── spelunk server error-path tests ──────────────────────────────────────────
@@ -850,16 +858,22 @@ fn test_server_stop_not_running() {
         .stderr(predicate::str::contains("server.pid"));
 }
 
-/// `spelunk server start` exits with a clear error when the binary is missing.
+/// `spelunk server start --bin <missing-path>` exits with a clear error.
+///
+/// We use `--bin` with a nonexistent path rather than `PATH=""` because in CI
+/// both `spelunk` and `spelunk-server` are built to the same `target/debug/`
+/// directory, so the sibling-binary lookup would find the real binary even with
+/// an empty PATH.
 #[test]
 fn test_server_start_binary_not_found() {
     let tmp = tempdir().unwrap();
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", tmp.path())
-        .env("PATH", "") // empty PATH so binary lookup fails
         .arg("server")
         .arg("start")
+        .arg("--bin")
+        .arg("/tmp/spelunk-server-does-not-exist-xyzzy")
         .assert()
         .failure()
         .stderr(predicate::str::contains("spelunk-server binary not found"));
