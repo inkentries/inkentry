@@ -5,7 +5,6 @@
 set -e
 
 REPO="spelunk-cloud/spelunk"
-BASE_URL="https://github.com/${REPO}/releases/latest/download"
 DRY_RUN=0
 
 for arg in "$@"; do
@@ -51,8 +50,18 @@ case "${OS_NAME}-${ARCH_NAME}" in
   macos-aarch64)  TARGET="aarch64-apple-darwin" ;;
 esac
 
-TARBALL="spelunk-${TARGET}.tar.gz"
-DOWNLOAD_URL="${BASE_URL}/${TARBALL}"
+# ── Resolve latest version tag ───────────────────────────────────────────────
+VERSION=$(curl -sf "https://api.github.com/repos/${REPO}/releases/latest" \
+  | grep '"tag_name"' \
+  | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
+
+if [ -z "$VERSION" ]; then
+  printf 'Error: could not determine latest spelunk version\n' >&2
+  exit 1
+fi
+
+TARBALL="spelunk-${VERSION}-${TARGET}.tar.gz"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
 
 # ── Install directory ─────────────────────────────────────────────────────────
 if [ -w /usr/local/bin ]; then
@@ -71,6 +80,7 @@ printf '\n'
 printf '  spelunk installer\n'
 printf '  ─────────────────────────────────────────\n'
 printf '  OS/arch  : %s / %s\n' "$OS" "$ARCH"
+printf '  Version  : %s\n' "$VERSION"
 printf '  Target   : %s\n' "$TARGET"
 printf '  Download : %s\n' "$DOWNLOAD_URL"
 printf '  Install  : %s/spelunk\n' "$INSTALL_DIR"
