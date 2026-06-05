@@ -233,6 +233,18 @@ pub struct Config {
     /// Default: 8192
     #[serde(default = "Config::default_llm_context_length")]
     pub llm_context_length: usize,
+
+    /// When true (the default), `spelunk memory add` also appends the new entry
+    /// as a line of JSON in `refs/notes/spelunk` on HEAD.
+    ///
+    /// This keeps memory close to commits and is consistent with the product's
+    /// "memory travels with code" messaging.  Set `store_in_git_notes = false`
+    /// in your config to opt out.
+    ///
+    /// Failure to write the git note is non-fatal: a warning is logged and the
+    /// primary SQLite write is unaffected.
+    #[serde(default = "Config::default_store_in_git_notes")]
+    pub store_in_git_notes: bool,
 }
 
 impl Config {
@@ -260,6 +272,9 @@ impl Config {
     fn default_llm_context_length() -> usize {
         8192
     }
+    fn default_store_in_git_notes() -> bool {
+        true
+    }
 }
 
 impl Default for Config {
@@ -277,6 +292,7 @@ impl Default for Config {
             plans_dir: Self::default_plans_dir(),
             specs_dir: Self::default_specs_dir(),
             llm_context_length: Self::default_llm_context_length(),
+            store_in_git_notes: Self::default_store_in_git_notes(),
         }
     }
 }

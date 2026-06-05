@@ -4,7 +4,7 @@ use super::MemoryAddArgs;
 use crate::{
     config::Config,
     server_client::ServerInferenceClient,
-    storage::{NoteInput, open_memory_backend},
+    storage::{NoteInput, NoteRecord, append_to_git_notes, now_secs, open_memory_backend},
 };
 
 pub(super) async fn memory_add(
@@ -53,6 +53,10 @@ pub(super) async fn memory_add(
     let embed_text = format!("title: {title} | text: {body}");
     let embedding = try_embed_via_server(cfg, &embed_text).await;
 
+    let valid_at = args
+        .valid_at
+        .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
+
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let id = backend
         .add(NoteInput {
@@ -63,12 +67,33 @@ pub(super) async fn memory_add(
             linked_files: files.clone(),
             embedding,
             source_ref: None,
-            valid_at: args
-                .valid_at
-                .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten()),
+            valid_at,
             supersedes: args.supersedes,
         })
         .await?;
+
+    // ── Git-notes write-through (best-effort, non-fatal) ─────────────────────
+    if cfg.store_in_git_notes {
+        let record = NoteRecord {
+            schema_version: 1,
+            id,
+            kind: args.kind.clone(),
+            title: title.clone(),
+            body: body.clone(),
+            tags: tags.clone(),
+            linked_files: files.clone(),
+            created_at: now_secs(),
+            status: "active".to_string(),
+            source_ref: None,
+            valid_at,
+            invalid_at: None,
+            superseded_by: None,
+        };
+        // Use process CWD (None) — the CLI is always run from the project root.
+        if let Err(e) = append_to_git_notes(None, &record).await {
+            tracing::warn!("git-notes write-through failed (non-fatal): {e}");
+        }
+    }
 
     println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
     Ok(())
