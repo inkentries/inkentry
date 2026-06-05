@@ -106,7 +106,6 @@ docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
   to share project identity. Alternatively set `SPELUNK_PROJECT_ID` explicitly
   in the container's environment.
 
-<!-- TODO: confirm with Implementer — confirm the exact env var name for project
-     pinning (SPELUNK_PROJECT_ID vs project_id in config) and whether `spelunk
-     check` already suggests `host.docker.internal` in its unreachable-server
-     error (scope doc §3.2 calls for this hint). -->
+<!-- TODO: confirm with Implementer — confirm whether `spelunk check` already
+     suggests `host.docker.internal` in its unreachable-server error message
+     (scope doc §3.2 calls for this hint). -->

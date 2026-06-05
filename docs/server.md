@@ -42,9 +42,8 @@ with a clear message instead.
 
 How discovery decides whether to reuse or start a server is documented in
 [CLI capability tiers → Loopback auto-discovery](architecture/capability-tiers.md#loopback-auto-discovery).
-The planned `instance_id` and `started_by` UID checks described there are
-specced in #321 and not yet implemented.
-<!-- planned in #321, not yet implemented -->
+The `instance_id` and `started_by` UID checks described there are implemented
+as of v0.8.0 (PRs #329/#333).
 
 ---
 
@@ -66,7 +65,7 @@ docker compose up -d
 
 # Verify
 curl http://localhost:7777/v1/health
-# → ok
+# → {"status":"ok","version":"0.8.0","capabilities":["memory"],...}
 ```
 
 ## With an API key (recommended)
@@ -197,7 +196,12 @@ POST   /v1/projects/{project_id}/memory/{id}/archive
 POST   /v1/projects/{project_id}/memory/{id}/supersede
 GET    /v1/projects/{project_id}/memory/since     ?t=<epoch>&limit=
 GET    /v1/projects/{project_id}/memory/stream    (Server-Sent Events)
+GET    /v1/projects/{project_id}/memory/harvested-shas
 GET    /v1/projects/{project_id}/stats
+POST   /v1/projects/{project_id}/index/embed      (embedding proxy — vectors not stored)
+POST   /v1/projects/{project_id}/search           (query embedding proxy for CLI KNN)
+POST   /v1/projects/{project_id}/explore          (SSE — LLM reasoning loop)
+POST   /v1/projects/{project_id}/llm/complete     (SSE — raw LLM completion)
 ```
 
 ### Conflict detection
@@ -206,11 +210,11 @@ When `POST /v1/projects/{project_id}/memory`, the server checks if a semanticall
 
 ```json
 {
-  "status": "created_with_conflict",
-  "entry_id": 42,
-  "conflict_id": 37,
-  "conflict_title": "Previous similar entry",
-  "message": "Entry created but conflicts with existing memory"
+  "stored": true,
+  "id": 42,
+  "conflicts": [
+    { "id": 37, "title": "Previous similar entry", "similarity": 0.97 }
+  ]
 }
 ```
 

@@ -19,25 +19,14 @@ of it and keep the server itself bound to loopback.
 Keep the server bound to `127.0.0.1` so the only way in is through the proxy:
 
 ```bash
-spelunk-server --port 7777 --bind 127.0.0.1
+spelunk-server --port 7777 --host 127.0.0.1
 ```
-
-<!-- TODO: confirm with Implementer — confirm the exact bind flag/name
-     (`--bind` vs `--host` vs `SPELUNK_SERVER_BIND`) and the default. Scope doc
-     §3.4 also proposes a "trust mode" warn-on-bind when the server binds to a
-     non-loopback interface without TLS (fast-follow FF-4) — document that flag
-     here once it lands. -->
 
 Always start the server with an API key so the exposed endpoint requires auth:
 
 ```bash
-spelunk-server keygen        # prints a key; distribute it to clients out-of-band
-SPELUNK_SERVER_KEY=... spelunk-server --port 7777 --bind 127.0.0.1
+SPELUNK_SERVER_KEY=$(openssl rand -hex 32) spelunk-server --port 7777 --host 127.0.0.1
 ```
-
-<!-- TODO: confirm with Implementer — confirm the keygen subcommand name and how
-     the server is told to require the key (env var vs flag); align with the
-     "With an API key" section of server.md. -->
 
 ## 2a. Reverse proxy — Caddy (automatic TLS)
 
@@ -104,7 +93,7 @@ Wants=network-online.target
 Type=simple
 User=spelunk
 Environment=SPELUNK_SERVER_KEY=your-shared-api-key
-ExecStart=/usr/local/bin/spelunk-server --port 7777 --bind 127.0.0.1
+ExecStart=/usr/local/bin/spelunk-server --port 7777 --host 127.0.0.1 --db /var/lib/spelunk/spelunk.db
 Restart=on-failure
 RestartSec=5
 
@@ -124,11 +113,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now spelunk-server
 sudo systemctl status spelunk-server
 ```
-
-<!-- TODO: confirm with Implementer — confirm the server's data directory
-     (the path that needs ReadWritePaths) and whether the API key is read from
-     SPELUNK_SERVER_KEY or a flag. Prefer EnvironmentFile=/etc/spelunk/server.env
-     over an inline Environment= so the key isn't world-readable in the unit. -->
 
 ## 4. Point a remote agent at it
 
