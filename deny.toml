@@ -73,6 +73,10 @@ ignore = [
     # RUSTSEC-2026-0097: affects rand 0.10.0 via lopdf 0.40.0 (optional rich-formats feature).
     # lopdf is at the latest release with no patched version available.
     { id = "RUSTSEC-2026-0097", reason = "no fix available; lopdf 0.40.0 is the latest release" },
+    # RUSTSEC-2024-0436: paste 1.0.15 is unmaintained; pulled in transitively via
+    # fastembed → tokenizers → macro_rules_attribute. No patched version available
+    # and the crate is only used in proc-macro context (compile-time only, no runtime risk).
+    { id = "RUSTSEC-2024-0436", reason = "compile-time only transitive dep via fastembed; no runtime risk, no fix available" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -95,6 +99,7 @@ allow = [
     "ISC",
     "MIT",
     "MPL-2.0",
+    "NCSA",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
