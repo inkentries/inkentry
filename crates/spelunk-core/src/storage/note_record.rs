@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::memory::Note;
 
-/// Serialised form stored as JSON in a memory backend (git-notes blob or git-meta list entry).
+/// Serialised form stored as JSON in a memory backend (git-notes blob or SQLite).
 ///
 /// `schema_version` 0 = legacy (field absent in old blobs), 1 = current.
 #[derive(Debug, Serialize, Deserialize)]
