@@ -878,3 +878,45 @@ fn test_server_start_binary_not_found() {
         .failure()
         .stderr(predicate::str::contains("spelunk-server binary not found"));
 }
+
+/// `spelunk init` in non-TTY mode (piped stdin) prints the server skip notice
+/// when no server is reachable. This covers the CI/hook path from issue #318.
+#[test]
+fn test_init_non_tty_prints_skip_notice() {
+    let tmp = tempdir().unwrap();
+    // Initialise a git repo so spelunk init finds a project root.
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(tmp.path())
+        .status()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(tmp.path())
+        .status()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(tmp.path())
+        .status()
+        .expect("git config name");
+
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+
+    // stdin is piped (not a TTY) when launched via assert_cmd, so
+    // is_terminal() returns false — the non-interactive branch runs.
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "server not running — semantic search skipped",
+        ));
+}

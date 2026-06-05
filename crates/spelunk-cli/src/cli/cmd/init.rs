@@ -162,18 +162,32 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    // ── 7. Probe for a local server (non-blocking; uses the cached tier result).
-    //      The probe runs with a 250 ms timeout so init stays fast.
-    let server_line = {
-        let tier = capability::get_tier(&cfg).await;
-        match tier {
-            capability::Tier::Server {
-                url,
-                auto_discovered: true,
-                ..
-            } => Some(format!("{}  \x1b[32m✓\x1b[0m  (auto-started)", url)),
-            capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
-            capability::Tier::Offline => None,
+    // ── 7. Auto-spawn server (TTY only) or probe for a running server ─────────
+    //
+    // Interactive (stdin is a TTY): attempt to start the server so semantic
+    // search works immediately. Non-interactive (CI / hook): probe only —
+    // never auto-spawn; print a skip notice if offline.
+    let server_line: Option<String> = {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            match super::server::ensure_server_running(7777).await {
+                Ok((port, true)) => Some(format!(
+                    "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
+                )),
+                Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
+                Err(e) => {
+                    tracing::debug!("server auto-start skipped: {e}");
+                    None
+                }
+            }
+        } else {
+            let tier = capability::get_tier(&cfg).await;
+            match tier {
+                capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
+                capability::Tier::Offline => {
+                    Some("[server not running — semantic search skipped]".to_string())
+                }
+            }
         }
     };
 
