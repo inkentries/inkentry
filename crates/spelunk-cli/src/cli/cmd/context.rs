@@ -23,7 +23,7 @@ pub struct ContextArgs {
     #[arg(long, value_name = "INDEX_DB")]
     pub index_db: Option<PathBuf>,
 
-    /// Storage backend: sqlite (default), git-meta, or git-notes
+    /// Storage backend: sqlite (default) or git-notes
     #[arg(long, default_value = "sqlite", value_name = "BACKEND")]
     pub backend: String,
 
@@ -79,7 +79,6 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         crate::config::resolve_db(None, &cfg.db_path).with_file_name("memory.db")
     });
     let be = match args.backend.as_str() {
-        "git-meta" => Some("git-meta"),
         "git-notes" => Some("git-notes"),
         _ => None,
     };

@@ -29,14 +29,9 @@ pub(super) async fn memory_harvest(
         "claude-code" => {
             super::harvest_claude::harvest_claude_code(args, mem_path, cfg, backend_override).await
         }
-        "entire" => {
-            super::harvest_entire::harvest_entire(args, mem_path, cfg, backend_override).await
-        }
         "failures" => memory_harvest_failures(args, mem_path, cfg, backend_override).await,
         other => {
-            anyhow::bail!(
-                "Unknown --source '{other}'. Valid values: git, claude-code, entire, failures"
-            )
+            anyhow::bail!("Unknown --source '{other}'. Valid values: git, claude-code, failures")
         }
     }
 }

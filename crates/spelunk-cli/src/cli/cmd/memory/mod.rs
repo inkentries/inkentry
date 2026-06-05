@@ -11,7 +11,7 @@ pub struct MemoryArgs {
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
 
-    /// Storage backend: sqlite (default), git-meta, or git-notes
+    /// Storage backend: sqlite (default) or git-notes
     #[arg(long, global = true, default_value = "sqlite", value_name = "BACKEND")]
     pub backend: String,
 }
@@ -205,19 +205,9 @@ pub struct MemoryHarvestArgs {
     #[arg(long)]
     pub since: Option<String>,
 
-    /// Confirm reading git objects or history files (required for --source claude-code and --source entire)
+    /// Confirm reading git objects or history files (required for --source claude-code)
     #[arg(long)]
     pub confirm: bool,
-
-    /// Path to the repo containing refs/entire/checkpoints/v1 (default: current repo).
-    /// Only used with --source entire.
-    #[arg(long)]
-    pub entire_repo: Option<std::path::PathBuf>,
-
-    /// List checkpoints that would be harvested without writing anything.
-    /// Only used with --source entire.
-    #[arg(long)]
-    pub dry_run: bool,
 
     /// Detach immediately: re-exec spelunk in the background and return.
     /// Useful in git hooks so the hook does not block the git process.
@@ -310,7 +300,6 @@ mod failures;
 mod graph_cmd;
 mod harvest;
 mod harvest_claude;
-mod harvest_entire;
 mod list;
 pub mod push;
 mod search;
@@ -347,7 +336,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
 /// Returns `None` for the default "sqlite" to fall through to config-based dispatch.
 fn backend_override(s: &str) -> Option<&'static str> {
     match s {
-        "git-meta" => Some("git-meta"),
         "git-notes" => Some("git-notes"),
         _ => None,
     }
@@ -464,7 +452,7 @@ pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
     {
         anyhow::anyhow!(
             "This operation requires the sqlite backend. \
-             Re-run without --backend git-meta or --backend git-notes."
+             Re-run without --backend git-notes."
         )
     } else {
         e
