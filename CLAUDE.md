@@ -125,8 +125,7 @@ storage/
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
-  git_notes.rs   — git-notes read/write backend
-  git_meta.rs    — git metadata helpers
+  git_notes.rs   — git-notes read/write backend (write-through on memory add)
   memory/
     mod.rs       — NoteStore: memory entries CRUD + list_filtered
     edges.rs     — memory relationship edges CRUD
@@ -187,7 +186,6 @@ cli/
       graph_cmd.rs    — memory graph subcommand
       harvest.rs      — memory harvest (LLM extraction) entry point
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
-      harvest_entire.rs — harvest from refs/entire/checkpoints/v1
       list.rs         — memory list subcommand
       push.rs         — memory push subcommand
       search.rs       — memory search subcommand
@@ -212,10 +210,11 @@ cli/
 ### spelunk-server (`crates/spelunk-server/src/`)
 
 ```
-main.rs      — entry point: parse args, register sqlite-vec, start Axum server
-lib.rs       — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
-db.rs        — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
-handlers.rs  — Axum route handlers for all /v1/ endpoints
+main.rs            — entry point: parse args, register sqlite-vec, start Axum server
+lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
+db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
+handlers.rs        — Axum route handlers for all /v1/ endpoints
+embedder_native.rs — native embedder (fastembed-rs; Nomic Embed Text v1.5, 768-dim; `embed-native` feature)
 
 migrations/  (crates/spelunk-server/migrations/)
   server_001.sql — projects + server memory schema

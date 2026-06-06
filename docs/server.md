@@ -87,16 +87,19 @@ Each developer adds a `.spelunk/config.toml` at the project root (commit it):
 
 ```toml
 # .spelunk/config.toml — commit this, it's not a secret
-memory_server_url = "http://spelunk.internal:7777"
-project_id        = "my-awesome-app"
+server_url = "http://spelunk.internal:7777"
+project_id = "my-awesome-app"
 ```
 
 Personal config (`~/.config/spelunk/config.toml` — never commit):
 
 ```toml
 # ~/.config/spelunk/config.toml
-memory_server_key = "your-shared-api-key"
+server_key = "your-shared-api-key"
 ```
+
+> The legacy `memory_server_url` / `memory_server_key` keys remain accepted as
+> deprecated aliases for `server_url` / `server_key`.
 
 Or use the environment variable:
 

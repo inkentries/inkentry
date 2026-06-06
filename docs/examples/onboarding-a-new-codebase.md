@@ -74,13 +74,13 @@ spelunk graph TestSuite --kind calls
 
 ## Step 8: Semantic deep-dive (requires server)
 
-If you have an embedding server and a built index, these commands give richer results:
+With a server running and a built index, these commands give richer results:
 
 ```bash
 spelunk search "core interfaces abstractions domain objects" --graph
-spelunk ask "Give me a high-level overview of this codebase. What does it do and how is it structured?"
-spelunk ask "What is the error handling strategy? How are errors propagated and surfaced to users?"
-spelunk ask "How is this project built and deployed?"
+spelunk explore "Give me a high-level overview of this codebase. What does it do and how is it structured?"
+spelunk explore "What is the error handling strategy? How are errors propagated and surfaced to users?"
+spelunk explore "How is this project built and deployed?"
 ```
 
 After this session you'll have a solid mental model and a set of memory entries that make every future session faster.

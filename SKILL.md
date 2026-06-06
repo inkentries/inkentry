@@ -7,11 +7,11 @@ code and prior decisions, then reason over the results yourself.
 
 ## Setup
 
-- `spelunk` in PATH
+- `spelunk` (and `spelunk-server`) in PATH
 
-Core features (memory, full-text search, code graph) work without any inference server.
+Core features (memory, full-text and ast-grep search, code graph, conventions) work without any inference server.
 
-**Optional — for semantic search and AI features:** an OpenAI-compatible server with an embedding model loaded (default: `http://127.0.0.1:1234`; override with `api_base_url` in `~/.config/spelunk/config.toml`). Commands that require this are marked **(requires server)** below.
+**Semantic search and AI features** go through `spelunk-server`, which is autostarted locally on demand from v0.8.0. It bundles a native embedder (Nomic Embed Text v1.5) — no external embedding server is required by default. Manage it with `spelunk server start|stop|status|logs`. Commands that need the server are marked **(requires server)** below; with `SPELUNK_NO_SERVER=1` they fall back to text/ast-grep search or error clearly. To use your own OpenAI-compatible endpoint instead of the native embedder, set `api_base_url` in `~/.config/spelunk/config.toml`.
 
 ---
 
@@ -32,10 +32,10 @@ spelunk search "<query>" --limit 20
 spelunk search "<query>" --graph          # include call-graph neighbours
 spelunk search "<query>" --format text|json|ndjson
 
-# Deep search — iterative, uses LLM (requires server + llm_model in config)
+# Deep search — iterative, uses LLM (requires server with an LLM backend)
 spelunk explore "<question>"
 spelunk explore "<question>" --max-steps 5
-spelunk explore "<question>" --json       # {answer, sources, steps}
+spelunk explore "<question>" --format json   # {answer, sources, steps}
 
 # Status and checks
 spelunk status --format text|json|ndjson
@@ -50,17 +50,32 @@ Use `search --mode text` for targeted lookups without a server. Use semantic `se
 
 ---
 
-## Indexing (requires server)
+## Indexing
 
-Indexing embeds chunks for semantic search. Skip this if you only need full-text search, memory, or code graph.
+Indexing parses and chunks the source tree (no server needed) and embeds chunks
+for semantic search (the embed phase uses the server). Skip embeddings if you
+only need full-text/ast-grep search, memory, or the code graph.
 
 ```bash
-spelunk index <path>           # index (subsequent runs are incremental)
+spelunk index <path>           # index (subsequent runs are incremental, blake3-gated)
 spelunk index <path> --force   # full re-index (after changing embedding model)
 spelunk check                  # verify the index is fresh before starting work
 ```
 
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`.
+
+---
+
+## Server daemon
+
+```bash
+spelunk server start           # start the local daemon (idempotent; auto-binds 127.0.0.1:7777)
+spelunk server status          # PID, port, instance id, uptime
+spelunk server logs            # last 50 lines of the server log
+spelunk server stop            # stop the daemon (SIGTERM)
+```
+
+State lives under `~/.local/state/spelunk/` (`server.pid`, `server.port`, `server.log`).
 
 ---
 
@@ -120,6 +135,10 @@ spelunk memory add --kind note --title "Follow-up observation" --body "..." \
 
 **Kinds:** `decision` · `context` · `requirement` · `note` · `intent` · `answer` · `handoff` · `question` · `antipattern`
 
+By default (`store_in_git_notes = true`) `memory add` also writes the entry to
+`refs/notes/spelunk` on `HEAD`, so memory travels with the code. Graceful no-op
+outside a git repo.
+
 ### Query
 
 ```bash
@@ -133,7 +152,7 @@ spelunk memory show <id>                  # full entry + relationships
 spelunk memory graph <id>                 # relationship graph for an entry
 spelunk memory timeline "<topic>"         # topic evolution across all entries (ASC time)
 spelunk memory since <epoch>              # poll for entries newer than Unix timestamp
-spelunk memory watch                      # stream new entries as they arrive (SSE; requires memory_server_url)
+spelunk memory watch                      # stream new entries as they arrive (SSE; requires a configured server_url)
 spelunk memory search "<q>" --format json
 spelunk memory failures                   # list all antipatterns (shortcut for list --kind antipattern)
 spelunk memory failures --limit 30
@@ -250,6 +269,6 @@ spelunk index .   # only if project is indexed
 
 - Memory and code graph commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
-- `spelunk search --mode text` is always available. Semantic `spelunk search` requires an embedding server and a built index.
-- `spelunk explore`, `spelunk memory harvest`, and LLM summaries also require `llm_model` in config.
+- `spelunk search --mode text` and `--mode ast-grep` are always available. Semantic `spelunk search` (the `auto` default when an index + server exist) requires the server and a built index.
+- `spelunk explore`, `spelunk memory harvest`, and LLM summaries require a server with an LLM backend configured.
 - After changing the embedding model, run `spelunk index <path> --force` to rebuild the index.

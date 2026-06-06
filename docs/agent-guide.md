@@ -4,19 +4,19 @@
 
 **The key mental model**: spelunk retrieves context; you reason over it. Use `spelunk graph` and `spelunk search` to find the right code, read the results, then synthesise the answer yourself. spelunk is a persistent memory store and code navigation tool, not an oracle.
 
-**What's built-in:** memory, code graph, and full-text search work with just the CLI binary — no server needed.
+**What's built-in:** memory (git-notes + local SQLite), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed.
 
-**What's optional:** semantic search (`spelunk search` without `--mode text`), `spelunk explore`, and `spelunk memory harvest` require an OpenAI-compatible embedding server. If no server is configured, these commands error clearly.
+**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` go through `spelunk-server`. From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (Nomic Embed Text v1.5, via fastembed-rs) — there is no external embedding server to run by default. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly.
 
 ## The core loop
 
 A productive agentic session with `spelunk` looks like this:
 
-1. **Orient** — read memory and check index health
-2. **Plan** — generate a checklist for the current task
+1. **Orient** — read memory and check index health (`spelunk context`, `spelunk check`)
+2. **Search** — find the relevant code before reading or editing it
 3. **Execute** — make code changes, delegating sub-tasks as needed
-4. **Verify** — check semantic coherence after changes
-5. **Codify** — store decisions and context in memory
+4. **Verify** — re-check the call graph and re-index after changes
+5. **Codify** — store decisions, handoffs, and context in memory
 
 This loop compounds: each session leaves better context for the next, whether that's the same agent resuming or a different one picking up.
 
@@ -90,7 +90,12 @@ Flags:
 - `--format json` — machine-readable output
 - `--kind decision` — narrow to one section
 - `--path src/auth` — filter by file path tag
-- `--limit N` — fetch more or fewer entries (default: 10 per section)
+- `--limit N` — entries per section (defaults: handoff=3, decision=10, question/requirement=500)
+- `--no-conventions` — skip the extracted-conventions section
+
+`spelunk context` also surfaces a **conventions** section: coding conventions
+inferred by a heuristic AST pass over the index (no LLM). It needs an index but
+no server.
 
 ## Searching before writing
 
@@ -134,29 +139,13 @@ AGENT=true spelunk explore "where is the embedding model loaded?" --max-steps 3
 
 `explore` is slower than `search` (multiple LLM calls) — use it only when `search` alone isn't enough.
 
-## Creating plans
-
-Write a markdown checklist in `docs/plans/` manually, or generate one with `spelunk plan create` if `llm_model` is configured:
-
-```bash
-# Requires llm_model in config
-spelunk plan create "add rate limiting to the API layer"
-# → writes docs/plans/add-rate-limiting.md with a - [ ] checklist
-
-# Check progress
-spelunk plan status
-```
-
-Check off items by editing the markdown file directly (`- [ ]` → `- [x]`). `spelunk plan status` reads the file and shows completion percentages.
-
 ## After making changes
 
 ```bash
 # Confirm call sites still match using the code graph (always works)
 spelunk graph validate_token --kind calls
 
-# If the project is indexed: verify semantic retrievability
-spelunk verify src/auth/middleware.rs
+# If the project is indexed: re-index changed files (incremental, blake3-gated)
 spelunk index .
 ```
 
@@ -181,6 +170,11 @@ Doing this consistently means future agents (and future you) can retrieve the ra
 ```bash
 spelunk memory search "why did we choose sqlite-vec"
 ```
+
+**git-notes write-through:** with `store_in_git_notes` enabled (the default),
+`spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
+so decisions travel with the code through clone/fetch. It is a graceful no-op
+outside a git repository. Set `store_in_git_notes = false` to disable.
 
 ## Storing questions for async resolution
 
@@ -246,13 +240,13 @@ spelunk context
 
 ## Multi-agent coordination
 
-When using a shared memory server (`memory_server_url` in config), agents can coordinate without stepping on each other's toes:
+When using a shared memory server (`server_url` in config), agents can coordinate without stepping on each other's toes:
 
 ```bash
 # Poll for new entries since a given timestamp
 spelunk memory since <epoch>
 
-# Stream entries as they arrive (requires memory_server_url)
+# Stream entries as they arrive (requires a configured server)
 spelunk memory watch
 ```
 
@@ -452,8 +446,11 @@ echo "authentication" | spelunk plumbing embed --query | spelunk plumbing knn --
 Example output:
 
 ```json
-{"model":"text-embedding-gemma-3","dimensions":1024,"vector":[0.021,-0.043,...]}
+{"model":"nomic-embed-text-v1.5","dimensions":768,"vector":[0.021,-0.043,...]}
 ```
+
+(The model name and dimensionality reflect whichever embedder the server is
+using — the bundled native embedder is Nomic Embed Text v1.5 at 768 dimensions.)
 
 ---
 
