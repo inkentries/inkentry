@@ -15,14 +15,18 @@ Metrics: precision@k, recall@k, F1. No LLM, no API costs.
 Usage:
     python bench/graph/evaluate.py \\
         --tasks bench/graph/tasks.json \\
+        --repos-dir ~/spelunk-bench/repos \\
         --k 10 \\
         --out bench/results/graph.json
+
+    # or via environment variable:
+    SPELUNK_BENCH_REPOS=~/spelunk-bench/repos python bench/graph/evaluate.py ...
 
 Task format (JSON):
     [
         {
             "symbol": "parse_args",
-            "repo_path": "/path/to/indexed/repo",
+            "repo": "ripgrep",
             "ground_truth_files": ["src/cli.rs", "src/parser.rs"]
         }
     ]
@@ -30,7 +34,7 @@ Task format (JSON):
 
 import argparse
 import json
-import re
+import os
 import statistics
 import subprocess
 import sys
@@ -43,7 +47,7 @@ def run_grep(repo_path: Path, symbol: str, limit: int = 10) -> set[str]:
     """Return set of file paths containing the symbol via git grep, capped at limit."""
     try:
         result = subprocess.run(
-            ["git", "grep", "-l", "-E", f"\\b{re.escape(symbol)}\\b"],
+            ["git", "grep", "-wl", symbol, "--", ":!.spelunk"],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -69,7 +73,7 @@ def run_spelunk_search(repo_path: Path, symbol: str, limit: int = 10) -> set[str
         )
         if result.returncode == 0 and result.stdout.strip():
             results = json.loads(result.stdout)
-            return {r.get("file", "") for r in results if r.get("file")}
+            return {r.get("file_path", "") for r in results if r.get("file_path")}
         return set()
     except Exception:
         return set()
@@ -86,21 +90,17 @@ def run_spelunk_graph(repo_path: Path, symbol: str, limit: int = 10) -> set[str]
             timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
-            results = json.loads(result.stdout)
-            files_ordered = []
-            seen = set()
-            for r in results if isinstance(results, list) else [results]:
-                if "edges" not in r and not isinstance(r, dict):
-                    print(
-                        f"  graph: unexpected shape for {symbol}: {str(r)[:120]}",
-                        file=sys.stderr,
-                    )
-                    continue
-                for edge in r.get("edges", []):
-                    f = edge.get("file") or edge.get("target_file")
-                    if f and f not in seen:
-                        seen.add(f)
-                        files_ordered.append(f)
+            # Output is a flat list of edge objects: {source_file, source_name,
+            # target_name, kind, line}. Collect unique source_file values in
+            # order of first appearance.
+            edges = json.loads(result.stdout)
+            seen: set[str] = set()
+            files_ordered: list[str] = []
+            for edge in edges if isinstance(edges, list) else []:
+                f = edge.get("source_file", "")
+                if f and f not in seen:
+                    seen.add(f)
+                    files_ordered.append(f)
             return set(files_ordered[:limit])
         return set()
     except Exception as e:
@@ -139,9 +139,21 @@ def get_spelunk_version() -> str:
 def main():
     parser = argparse.ArgumentParser(description="Code-graph benchmark.")
     parser.add_argument("--tasks", required=True, help="Tasks JSON file.")
+    parser.add_argument(
+        "--repos-dir",
+        default=os.environ.get("SPELUNK_BENCH_REPOS"),
+        help="Directory containing benchmark repos (overrides $SPELUNK_BENCH_REPOS).",
+    )
     parser.add_argument("--k", type=int, default=10, help="Result limit (default: 10).")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+
+    if not args.repos_dir:
+        parser.error(
+            "Provide --repos-dir or set $SPELUNK_BENCH_REPOS to the directory "
+            "containing the benchmark repos."
+        )
+    repos_dir = Path(args.repos_dir).expanduser().resolve()
 
     with open(args.tasks) as f:
         tasks = json.load(f)
@@ -157,7 +169,7 @@ def main():
 
     for i, task in enumerate(tasks):
         symbol = task["symbol"]
-        repo_path = Path(task["repo_path"]).expanduser().resolve()
+        repo_path = (repos_dir / task["repo"]).resolve()
         relevant = set(task["ground_truth_files"])
 
         print(f"[{i + 1}/{len(tasks)}] {symbol} ({len(relevant)} ground-truth files)")

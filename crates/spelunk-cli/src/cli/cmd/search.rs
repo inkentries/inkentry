@@ -27,8 +27,8 @@ pub struct SearchArgs {
     #[arg(long, default_value = "10")]
     pub graph_limit: usize,
 
-    /// Search mode: text (FTS only) or semantic/hybrid (default, uses LinearRAG)
-    #[arg(long, default_value = "hybrid")]
+    /// Search mode: auto (default), text (FTS only), semantic/hybrid (LinearRAG), or ast-grep
+    #[arg(long, default_value = "auto")]
     pub mode: String,
 
     /// Path to the SQLite database (overrides config)
@@ -48,17 +48,40 @@ pub struct SearchArgs {
     pub as_of: Option<String>,
 }
 
-use super::helpers::{embed_query_vec, load_embedder, project_display_name};
+use super::helpers::{project_display_name, require_server_client};
 use super::ui::{print_results_text, spinner};
 use crate::{
-    config::{Config, resolve_db},
+    capability,
+    config::Config,
     embeddings::vec_to_blob,
-    registry::{Project, Registry},
+    registry::{Project, resolve_project_context},
     search::{SearchResult, rag},
     storage::Database,
 };
 
 pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
+    let mode = args.mode.as_str();
+    let auto_mode = mode == "auto";
+
+    // ── No-index / no-embedder fast path ─────────────────────────────────────
+    // When the user hasn't asked for a specific mode (auto) and either the
+    // index is missing or the embedder is unavailable, silently fall back to
+    // ast-grep — mirroring the `graph --live` pattern.
+    if auto_mode {
+        let db_result = resolve_project_and_deps(args.db.as_ref(), &cfg);
+        if db_result.is_err() {
+            // No index found — fall back to ast-grep silently.
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
+        }
+        // Index exists but embedder may not be available. We'll check below
+        // after attempting to load it; for now, fall through to normal path.
+    }
+
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
 
@@ -91,7 +114,42 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         None
     };
 
-    let mode = args.mode.as_str();
+    // ── Tier-0 fall-through for explicit semantic/hybrid modes (#303-F2 / #323) ──
+    //
+    // When the user explicitly requests `--mode semantic` or `--mode hybrid`
+    // but no server is reachable (Tier 0), automatically switch to FTS text
+    // search and print a notice to stderr.  stdout stays clean so NDJSON
+    // consumers are unaffected.
+    //
+    // The `auto` mode already degrades gracefully via the embed_query_vec error
+    // path below — this guard handles the explicit-mode case only.
+    // Snapshot searches are skipped: they require embeddings by definition.
+    if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() {
+        let tier = capability::get_tier(&cfg).await;
+        if !tier.is_server() {
+            eprintln!("[server unreachable — using text search]");
+            let sp = spinner("Searching (text)…");
+            let db = Database::open(&db_path)?;
+            let results = db
+                .search_text(&args.query, args.limit.min(100))
+                .unwrap_or_default();
+            sp.finish_and_clear();
+            if results.is_empty() {
+                println!("No results found.");
+                return Ok(());
+            }
+            match crate::utils::effective_format(&args.format) {
+                "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+                "ndjson" => {
+                    for item in &results {
+                        println!("{}", serde_json::to_string(item)?);
+                    }
+                }
+                _ => print_results_text(&results),
+            }
+            return Ok(());
+        }
+    }
 
     let mut results = if mode == "text" && snapshot_id.is_none() {
         // Text mode: FTS5 only, no embedding model required.
@@ -102,13 +160,61 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .unwrap_or_default();
         sp.finish_and_clear();
         res
+    } else if mode == "ast-grep" && snapshot_id.is_none() {
+        // Explicit ast-grep mode: skip index entirely.
+        return search_live(
+            &args.query,
+            &args.format,
+            std::path::Path::new("."),
+            args.limit,
+        );
     } else {
-        // semantic, hybrid, or snapshot search: need an embedding.
-        let sp = spinner("Loading model…");
-        let embedder = load_embedder(&cfg).await?;
+        // semantic, hybrid, auto, or snapshot search: need an embedding via server.
+        //
+        // Use the dedicated POST /v1/projects/{id}/search endpoint (#322) when a
+        // server is reachable — it applies the code-retrieval prefix server-side
+        // and returns the query vector for CLI-side KNN.  This eliminates the
+        // need for a local api_base_url / embedder in Tier-1 mode.
+        let client_result = require_server_client(&cfg, "search");
 
-        sp.set_message("Embedding query…");
-        let query_vec = embed_query_vec(&embedder, "code retrieval", &args.query).await?;
+        // Map auto/hybrid/semantic → server-side mode string.
+        let server_mode = if auto_mode { "hybrid" } else { mode };
+
+        let sp = spinner("Embedding query…");
+        let query_vec_result = match client_result {
+            Ok(client) => client
+                .search_query(&args.query, server_mode, args.limit.min(100))
+                .await
+                .and_then(|opt_vec| {
+                    opt_vec.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "server returned text mode for a semantic/hybrid request; \
+                             use --mode text explicitly"
+                        )
+                    })
+                }),
+            Err(e) => Err(e),
+        };
+
+        // In auto mode, if the embedding call fails (e.g. embedder unreachable),
+        // fall back to ast-grep silently.
+        if auto_mode && query_vec_result.is_err() && snapshot_id.is_none() {
+            sp.finish_and_clear();
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
+        }
+
+        let query_vec = query_vec_result.map_err(|e| {
+            anyhow::anyhow!(
+                "{e}\n\
+                 No embedder configured. Run `spelunk index` with a server_url to enable \
+                 semantic search, or use `--mode text` or `--mode ast-grep`."
+            )
+        })?;
         let query_blob = vec_to_blob(&query_vec);
 
         // Budget mode overfetches a candidate pool; limit is applied after packing.
@@ -132,11 +238,22 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             )?
         };
         sp.finish_and_clear();
+
+        // Auto mode: stale index + empty results → fall back to ast-grep silently.
+        if auto_mode && res.is_empty() && !args.no_stale_check && index_is_stale(&db_path) {
+            return search_live(
+                &args.query,
+                &args.format,
+                std::path::Path::new("."),
+                args.limit,
+            );
+        }
+
         res
     };
 
     if results.is_empty() {
-        println!("No results found. Make sure the index has embeddings (`spelunk index <path>`).");
+        println!("No results found.");
         return Ok(());
     }
 
@@ -261,46 +378,29 @@ pub(crate) fn index_is_stale(db_path: &std::path::Path) -> bool {
 }
 
 /// Resolve the primary DB path and any dep projects via the registry.
-/// Falls back to `resolve_db` if the registry can't find a project.
+/// Errors if the resolved DB does not exist on disk.
 pub(crate) fn resolve_project_and_deps(
     explicit_db: Option<&std::path::PathBuf>,
     cfg: &Config,
 ) -> Result<(std::path::PathBuf, Vec<Project>)> {
-    // Explicit --db skips registry entirely.
-    if let Some(p) = explicit_db {
-        if !p.exists() {
+    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+
+    if !resolved.db_path.exists() {
+        if explicit_db.is_some() {
             anyhow::bail!(
                 "Database not found at '{}'. Run `spelunk index <path>` first.",
-                p.display()
+                resolved.db_path.display()
             );
         }
-        return Ok((p.clone(), vec![]));
-    }
-
-    // Try registry first.
-    if let Ok(reg) = Registry::open()
-        && let Ok(cwd) = std::env::current_dir()
-        && let Ok(Some(project)) = reg.find_project_for_path(&cwd)
-        && project.db_path.exists()
-    {
-        let deps = reg
-            .get_deps(project.id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|d| d.db_path.exists())
-            .collect();
-        return Ok((project.db_path, deps));
-    }
-
-    // Fallback: filesystem walk-up.
-    let db_path = resolve_db(None, &cfg.db_path);
-    if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
              Run `spelunk index <path>` inside your project first."
         );
     }
-    Ok((db_path, vec![]))
+
+    // If the registry returned a project whose DB no longer exists, the
+    // existence check above would have caught it via resolved.db_path.
+    Ok((resolved.db_path, resolved.deps))
 }
 
 /// Annotate results with governing specs from the primary DB, and set
@@ -380,4 +480,104 @@ pub(crate) fn search_all_dbs_linearrag(
     annotate_specs(&mut all, primary_db_path);
 
     Ok(all)
+}
+
+/// Run an ast-grep pattern search for `query` over the working tree rooted at `root`.
+///
+/// This is the zero-infra fallback: no index and no embedder required.
+/// It mirrors the `graph_live` pattern in `graph.rs`, but maps ast-grep matches
+/// into `SearchResult` structs so the output shape is **identical** to the
+/// regular/semantic search paths.
+///
+/// Field mapping from ast-grep JSON to `SearchResult`:
+/// - `path`                → `file_path`
+/// - `range.start.line`    → `start_line` (ast-grep 0-indexed → spelunk 1-indexed)
+/// - `range.end.line`      → `end_line`   (same conversion)
+/// - `text`                → `content`
+/// - `language`            → `language`   (defaults to "unknown")
+/// - `chunk_id`            → `-1` sentinel (not indexed)
+/// - `node_type`           → `"live"`
+/// - `distance`            → `0.0` (not meaningful for pattern search)
+pub(crate) fn search_live(
+    query: &str,
+    format: &str,
+    root: &std::path::Path,
+    limit: usize,
+) -> Result<()> {
+    if std::process::Command::new("ast-grep")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        anyhow::bail!(
+            "ast-grep not found. Install with: brew install ast-grep\n\
+             (or: cargo install ast-grep --locked)\n\
+             Run `spelunk index .` to enable index-backed search."
+        );
+    }
+
+    let out = std::process::Command::new("ast-grep")
+        .args(["run", "--pattern", query, "--json"])
+        .arg(root)
+        .output()?;
+
+    if !out.status.success() && out.stdout.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    let raw: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+
+    // Map ast-grep matches to the canonical SearchResult shape so downstream
+    // consumers (agents, benchmarks) see a consistent structure regardless of
+    // which backend produced the results.
+    let results: Vec<SearchResult> = raw
+        .into_iter()
+        .filter_map(|m| {
+            let file_path = m["path"].as_str()?.to_string();
+            let start_raw = m["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
+            let end_raw = m["range"]["end"]["line"]
+                .as_u64()
+                .unwrap_or(start_raw as u64) as usize;
+            let start_line = start_raw + 1;
+            let end_line = end_raw + 1;
+            let content = m["text"].as_str().unwrap_or("").to_string();
+            let language = m["language"].as_str().unwrap_or("unknown").to_string();
+            Some(SearchResult {
+                chunk_id: -1,
+                file_path,
+                language,
+                node_type: "live".to_string(),
+                name: None,
+                start_line,
+                end_line,
+                content,
+                distance: 0.0,
+                from_graph: false,
+                governing_specs: vec![],
+                token_count: 0,
+                project_name: None,
+                project_path: None,
+                summary: None,
+            })
+        })
+        .take(limit)
+        .collect();
+
+    if results.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    match crate::utils::effective_format(format) {
+        "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+        "ndjson" => {
+            for item in &results {
+                println!("{}", serde_json::to_string(item)?);
+            }
+        }
+        _ => print_results_text(&results),
+    }
+
+    Ok(())
 }

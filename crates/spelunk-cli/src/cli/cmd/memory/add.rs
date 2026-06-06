@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use super::MemoryAddArgs;
 use crate::{
     config::Config,
-    storage::{NoteInput, open_memory_backend},
+    server_client::ServerInferenceClient,
+    storage::{NoteInput, NoteRecord, append_to_git_notes, now_secs, open_memory_backend},
 };
 
 pub(super) async fn memory_add(
@@ -50,7 +51,11 @@ pub(super) async fn memory_add(
         .unwrap_or_default();
 
     let embed_text = format!("title: {title} | text: {body}");
-    let embedding = try_embed(cfg, &embed_text).await;
+    let embedding = try_embed_via_server(cfg, &embed_text).await;
+
+    let valid_at = args
+        .valid_at
+        .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let id = backend
@@ -62,12 +67,33 @@ pub(super) async fn memory_add(
             linked_files: files.clone(),
             embedding,
             source_ref: None,
-            valid_at: args
-                .valid_at
-                .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten()),
+            valid_at,
             supersedes: args.supersedes,
         })
         .await?;
+
+    // ── Git-notes write-through (best-effort, non-fatal) ─────────────────────
+    if cfg.store_in_git_notes {
+        let record = NoteRecord {
+            schema_version: 1,
+            id,
+            kind: args.kind.clone(),
+            title: title.clone(),
+            body: body.clone(),
+            tags: tags.clone(),
+            linked_files: files.clone(),
+            created_at: now_secs(),
+            status: "active".to_string(),
+            source_ref: None,
+            valid_at,
+            invalid_at: None,
+            superseded_by: None,
+        };
+        // Use process CWD (None) — the CLI is always run from the project root.
+        if let Err(e) = append_to_git_notes(None, &record).await {
+            tracing::warn!("git-notes write-through failed (non-fatal): {e}");
+        }
+    }
 
     println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
     Ok(())
@@ -115,10 +141,13 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
         }
     }
 
-    let client = reqwest::Client::builder()
+    // Fall back to a basic HTTP fetch using the reqwest client from
+    // ServerInferenceClient's underlying connection (we build a fresh one here
+    // since we have no server config at this call site).
+    let http = reqwest::Client::builder()
         .user_agent(concat!("spelunk/", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let html = client.get(url).send().await?.text().await?;
+    let html = http.get(url).send().await?.text().await?;
 
     let title_re = regex::Regex::new(r"(?i)<title[^>]*>([\s\S]*?)</title>").unwrap();
     let title = title_re
@@ -162,26 +191,27 @@ fn html_unescape(s: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-/// Try to embed `text` using the configured model.
+/// Try to embed `text` via spelunk-server.
 ///
-/// Returns `None` (with a log warning) if no model is reachable, so that
-/// callers can store entries without embeddings rather than failing outright.
-/// Semantic search will not surface unembedded entries.
-async fn try_embed(cfg: &Config, text: &str) -> Option<Vec<u8>> {
-    use crate::embeddings::{EmbeddingBackend as _, vec_to_blob};
+/// Returns `None` (with a log warning) if the server is not configured or
+/// unreachable, so that callers can store entries without embeddings rather
+/// than failing outright. Semantic search will not surface unembedded entries.
+async fn try_embed_via_server(cfg: &Config, text: &str) -> Option<Vec<u8>> {
+    use crate::embeddings::vec_to_blob;
+    let Some(client) = ServerInferenceClient::from_config(cfg) else {
+        tracing::warn!(
+            "No server_url configured — memory entry stored without embedding vector; \
+             semantic search will not surface it."
+        );
+        return None;
+    };
     let sp = super::super::ui::spinner("Embedding…");
     let result: anyhow::Result<Vec<u8>> = async {
-        let embedder = crate::backends::ActiveEmbedder::load(cfg)
-            .await
-            .context("loading embedding model")?;
-        let vecs = embedder
-            .embed(&[text])
+        let vec = client
+            .embed_text(text)
             .await
             .context("embedding memory entry")?;
-        vecs.into_iter()
-            .next()
-            .map(|v| vec_to_blob(&v))
-            .context("embedding returned empty")
+        Ok(vec_to_blob(&vec))
     }
     .await;
     sp.finish_and_clear();
@@ -189,7 +219,7 @@ async fn try_embed(cfg: &Config, text: &str) -> Option<Vec<u8>> {
         Ok(blob) => Some(blob),
         Err(e) => {
             tracing::warn!(
-                "No embedding model configured — entry stored without vector; \
+                "Server embedding failed — entry stored without vector; \
                  semantic search will not surface it. ({e})"
             );
             None

@@ -1,7 +1,5 @@
 use anyhow::Result;
 
-pub mod openai_compat;
-
 /// The embedding vector dimension.
 /// `google/embeddinggemma-300m` and `BAAI/bge-base-en-v1.5` both output 768 dims.
 #[allow(dead_code)]

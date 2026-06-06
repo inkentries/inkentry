@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 
-use super::ui::spinner;
 use crate::{
     config::{Config, resolve_db},
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
+    embeddings::vec_to_blob,
+    server_client::ServerInferenceClient,
     storage::Database,
 };
 
@@ -24,36 +24,35 @@ pub(crate) fn open_project_db(
     Ok((db_path, database))
 }
 
-/// Show a "Loading embedding model…" spinner, load `ActiveEmbedder`, clear
-/// the spinner, and return the embedder.
-pub(crate) async fn load_embedder(cfg: &Config) -> Result<crate::backends::ActiveEmbedder> {
-    let sp = spinner("Loading embedding model…");
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .with_context(|| format!("loading embedding model '{}'", cfg.embedding_model))?;
-    sp.finish_and_clear();
-    Ok(embedder)
+/// Build a `ServerInferenceClient` from config, returning an error if
+/// `server_url` is not configured.
+pub(crate) fn require_server_client(cfg: &Config, feature: &str) -> Result<ServerInferenceClient> {
+    ServerInferenceClient::from_config(cfg).ok_or_else(|| {
+        anyhow::anyhow!(
+            "'spelunk {feature}' requires spelunk-server.\n\
+             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
+        )
+    })
 }
 
 /// Embed a query with the given task prefix and return the raw float vector.
 pub(crate) async fn embed_query_vec(
-    embedder: &crate::backends::ActiveEmbedder,
+    client: &ServerInferenceClient,
     task: &str,
     query: &str,
 ) -> Result<Vec<f32>> {
     let query_text = format!("task: {task} | query: {query}");
-    let vecs = embedder.embed(&[&query_text]).await?;
-    vecs.into_iter().next().context("no embedding returned")
+    client.embed_text(&query_text).await
 }
 
 /// Embed a query with the given task prefix and return the blob bytes suitable
 /// for KNN search.
 pub(crate) async fn embed_query(
-    embedder: &crate::backends::ActiveEmbedder,
+    client: &ServerInferenceClient,
     task: &str,
     query: &str,
 ) -> Result<Vec<u8>> {
-    let vec = embed_query_vec(embedder, task, query).await?;
+    let vec = embed_query_vec(client, task, query).await?;
     Ok(vec_to_blob(&vec))
 }
 
@@ -63,4 +62,23 @@ pub(crate) fn project_display_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Detach: re-exec this binary with the same CLI arguments but without
+/// `--detach`, with all stdio closed, so the caller (e.g. a git hook) regains
+/// its prompt immediately while spelunk continues in the background.
+pub(crate) fn spawn_detached() -> Result<()> {
+    let exe = std::env::current_exe().context("resolving current executable")?;
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--detach")
+        .collect();
+    std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("spawning detached background process")?;
+    Ok(())
 }

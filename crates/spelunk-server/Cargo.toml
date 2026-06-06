@@ -1,6 +1,6 @@
 [package]
 name        = "spelunk-server"
-version     = "0.7.0"
+version     = "0.7.1"
 edition     = "2024"
 description = "spelunk shared memory server"
 license     = "MIT"
@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lib]
 name = "spelunk_server"
 path = "src/lib.rs"
+
+[features]
+default       = ["embed-native"]
+embed-native  = ["dep:fastembed"]
 
 [dependencies]
 spelunk-core = { path = "../spelunk-core" }
@@ -28,11 +32,14 @@ sqlite-vec   = { workspace = true }
 reqwest      = { workspace = true }
 axum         = { version = "0.8", features = ["macros"] }
 tower-http   = { version = "0.6", features = ["auth"] }
-async-stream = "0.3"
-tokio-stream = "0.1"
+async-stream  = "0.3"
+tokio-stream  = "0.1"
+futures-util  = "0.3"
 utoipa       = { version = "5", features = ["axum_extras"] }
 clap         = { version = "4", features = ["derive", "env"] }
 regex        = { version = "1", default-features = false, features = ["std"] }
+dirs         = "6"
+fastembed    = { version = "5", optional = true }
 
 [dev-dependencies]
 tempfile          = { workspace = true }

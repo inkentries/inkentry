@@ -7,6 +7,134 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — 0.8.0-dev
+
+### Breaking changes — migration required
+
+**All AI inference commands now route through `spelunk-server`.**
+
+The following commands previously called LM Studio (or another
+OpenAI-compatible endpoint) directly via `api_base_url`. They now require a
+running `spelunk-server` reachable at `server_url` in your config:
+
+| Command | Previously needed | Now needs |
+|---|---|---|
+| `spelunk explore` | `api_base_url` + `llm_model` | `server_url` |
+| `spelunk search` (semantic/hybrid) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory search` (semantic) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory timeline` | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory add` (auto-embed) | `api_base_url` + `embedding_model` | `server_url` (optional, degrades gracefully) |
+| `spelunk index` (embed phase) | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk index` (summaries) | `api_base_url` + `llm_model` | `server_url` |
+| `spelunk plumbing embed` | `api_base_url` + `embedding_model` | `server_url` |
+| `spelunk memory harvest` | `api_base_url` + `llm_model` | `server_url` (unchanged since #310) |
+
+**Migrating from `lm_studio_url` / `api_base_url`:**
+
+If you previously ran a local LM Studio and set `api_base_url` in your config,
+you now need to run `spelunk-server` in front of it:
+
+```toml
+# ~/.config/spelunk/config.toml
+
+# Old config (no longer used for inference):
+# api_base_url = "http://127.0.0.1:1234"
+
+# New config:
+server_url = "http://127.0.0.1:7777"   # spelunk-server address
+project_id = "your-org/your-project"   # required when server_url is set
+```
+
+Start `spelunk-server` and point it at your LM Studio instance:
+
+```sh
+spelunk-server \
+  --embedding-url http://127.0.0.1:1234 \
+  --embedding-model text-embedding-embeddinggemma-300m-qat \
+  --llm-url http://127.0.0.1:1234 \
+  --llm-model google/gemma-3n-e4b \
+  --port 7777
+```
+
+Commands that do **not** need inference (parse, graph, FTS search, status,
+memory list/show/archive) continue to work offline without `server_url`.
+
+### Changed
+
+- **`spelunk-core` no longer contains embedding or LLM implementations.**
+  `OpenAiCompatEmbedder`, `OpenAiCompatLlm`, and `backends.rs` have been
+  removed from `spelunk-core`. The `EmbeddingBackend` and `LlmBackend` traits
+  remain in `spelunk-core` for use by `spelunk-server`'s `AppState`. (#260, #312)
+
+- **Capability module moved from `spelunk-core` to `spelunk-cli`.** The tier
+  detection logic (`get_tier`, `require_tier1`) is now internal to the CLI
+  binary. Nothing outside spelunk-cli should depend on it. (#312)
+
+---
+
+## [0.7.1] — 2026-05-27
+
+### Added
+
+- **`spelunk-server` HTTP API** — Axum-based REST server with AuthProvider
+  trait, `/v1/embed`, `/v1/explore`, `/v1/plan` endpoints, and an OpenAPI spec
+  committed alongside the binary. Server-side embedding is optional; pass
+  `SPELUNK_EMBEDDING_URL` to enable it. Prompt-injection patterns are rejected
+  server-side before storage. (#261, #221, #222)
+
+- **`spelunk status --format json`** — stable machine-readable schema for
+  status output, suitable for CI dashboards and agent health checks. (#269)
+
+- **Heuristic convention extraction** — `spelunk index` now detects and stores
+  project conventions (naming patterns, async style, test coverage, doc
+  coverage) derived from the AST. Results are surfaced in `spelunk context`
+  output. (#268)
+
+- **Compatibility tier model** — `spelunk check` reports a capability tier
+  (Local / Embedded / Full) so agents can adapt their strategy to the available
+  inference backend at runtime. (#259)
+
+- **`spelunk graph --live`** — passes the query to ast-grep as a fallback when
+  the indexed call graph has no results, giving live symbol resolution for
+  unindexed or recently changed code. (#216)
+
+### Changed
+
+- **3-crate Cargo workspace** — the codebase is now split into `spelunk-core`
+  (library), `spelunk-cli` (binary), and `spelunk-server` (binary + lib) under
+  a shared workspace root. `CLAUDE.md` and `README.md` updated accordingly.
+  (#220)
+
+- **`gix` status API** — subprocess calls to `git status` replaced with
+  `gix::status` API, removing a shell dependency and improving reliability
+  inside IDE integrations. (#215)
+
+- **`spelunk explore` now requires a configured server** — the command is gated
+  behind the Tier 2/3 capability check (`server_url` must be set and reachable).
+  The previous check for `llm_model` has been removed in line with decision #47
+  (no LLM inference in the CLI without a server). Run `spelunk status` for
+  guidance if the command is unavailable.
+
+### Fixed
+
+- `spelunk-server` OpenAPI spec gaps: `SearchRequest` missing `text` field,
+  JSON error shapes aligned to `application/json` responses, CI step added to
+  gate spec drift. (#288)
+
+- `.spelunk` symlink replaced with runtime worktree-root resolution, fixing an
+  infinite-symlink issue when indexing inside a git worktree. (#266)
+
+- `spelunk memory harvest` now swallows per-entry errors and continues rather
+  than aborting the entire run on a single bad entry. (#270)
+
+### Dependencies
+
+- `serde_json` 1.0.149 → 1.0.150
+- `tree-sitter` 0.26.8 → 0.26.9
+- `tower-http` 0.6.10 → 0.6.11
+
+---
+
 ## [0.7.0] — 2026-05-17
 
 ### Added

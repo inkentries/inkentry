@@ -36,6 +36,11 @@ pub struct IndexArgs {
     /// Used by the background process spawned after a large foreground index.
     #[arg(long = "_background-phases", hide = true, default_value_t = false)]
     pub background_phases: bool,
+
+    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Useful in git hooks so the hook does not block the git process.
+    #[arg(long, default_value_t = false)]
+    pub detach: bool,
 }
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
@@ -47,6 +52,11 @@ mod summaries;
 mod worktree;
 
 pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
+    if args.detach {
+        super::helpers::spawn_detached()?;
+        return Ok(());
+    }
+
     // Validate config: server_url requires project_id.
     cfg.validate()?;
 
@@ -138,7 +148,15 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     if tier.is_server() {
-        embed_phase::run_embed_phase(result.chunk_ids_and_texts, &db, &cfg, tier, &mp).await?;
+        embed_phase::run_embed_phase(
+            result.chunk_ids_and_texts,
+            &db,
+            &cfg,
+            tier,
+            &project_root,
+            &mp,
+        )
+        .await?;
     } else if cfg.server_url.is_some() {
         eprintln!(
             "Warning: spelunk-server at {} is unreachable — skipping embedding phase.",
@@ -241,6 +259,17 @@ async fn run_phases_3_to_5(
             Err(e) => eprintln!("summary error: could not build runtime: {e}"),
         }
     });
+
+    // Phase 5: convention extraction (heuristic, no LLM).
+    eprintln!("Extracting conventions\u{2026}");
+    match crate::conventions::run_extraction(db) {
+        Ok(records) => {
+            if !records.is_empty() {
+                eprintln!("Conventions: {} record(s) detected.", records.len());
+            }
+        }
+        Err(e) => tracing::warn!("convention extraction failed (non-fatal): {e}"),
+    }
 
     // Register / update this project in the global registry.
     if let Ok(reg) = Registry::open() {

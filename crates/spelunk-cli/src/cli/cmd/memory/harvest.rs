@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
-    embeddings::{EmbeddingBackend as _, vec_to_blob},
+    embeddings::vec_to_blob,
+    server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -13,19 +14,24 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Tier-0: harvest requires server (#259 locked-feature error).
+    if cfg.server_url.is_none() {
+        return Err(harvest_requires_server(None));
+    }
+
+    if args.detach {
+        super::super::helpers::spawn_detached()?;
+        return Ok(());
+    }
+
     match args.source.as_str() {
         "git" => memory_harvest_git(args, mem_path, cfg, backend_override).await,
         "claude-code" => {
             super::harvest_claude::harvest_claude_code(args, mem_path, cfg, backend_override).await
         }
-        "entire" => {
-            super::harvest_entire::harvest_entire(args, mem_path, cfg, backend_override).await
-        }
         "failures" => memory_harvest_failures(args, mem_path, cfg, backend_override).await,
         other => {
-            anyhow::bail!(
-                "Unknown --source '{other}'. Valid values: git, claude-code, entire, failures"
-            )
+            anyhow::bail!("Unknown --source '{other}'. Valid values: git, claude-code, failures")
         }
     }
 }
@@ -36,8 +42,6 @@ async fn memory_harvest_git(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    use crate::llm::LlmBackend;
-
     let (git_ref, range_label) = match &args.branch {
         Some(branch) => (branch.clone(), format!("full history of '{branch}'")),
         None => (args.git_range.clone(), format!("'{}'", args.git_range)),
@@ -141,15 +145,8 @@ async fn memory_harvest_git(
         }
     });
 
-    let sp = super::super::ui::spinner("Loading LLM for harvest…");
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .context("loading LLM")?;
-    sp.finish_and_clear();
-
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
+    let server = ServerInferenceClient::from_config(cfg)
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -240,27 +237,33 @@ async fn memory_harvest_git(
             println!("\nBatch {} ({} commits)…", batch_num, batch.len());
         }
 
-        let messages = vec![
-            crate::llm::Message::system(system),
-            crate::llm::Message::user(user),
-        ];
+        let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::llm::Token>(256);
-        let generate = llm.generate(&messages, max_tokens, tx, Some(schema.clone()));
-        let collect = async move {
-            let mut buf = String::new();
-            while let Some(t) = rx.recv().await {
-                buf.push_str(&t);
+        let raw_json = match server
+            .llm_complete(&messages, max_tokens, Some(schema.clone()))
+            .await
+        {
+            Ok(raw) => crate::utils::strip_ansi(&raw),
+            Err(e) => {
+                eprintln!(
+                    "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
+                    batch.len()
+                );
+                continue;
             }
-            buf
         };
-        let (_, raw_json) =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) })?;
-        let raw_json = crate::utils::strip_ansi(&raw_json);
 
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json).with_context(|| {
-            format!("parsing LLM harvest response (batch {batch_num}):\n{raw_json}")
-        })?;
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not parse LLM response for batch {batch_num} ({} commit(s)), skipping: {e}\n  Raw: {}",
+                    batch.len(),
+                    &raw_json[..raw_json.len().min(200)]
+                );
+                continue;
+            }
+        };
 
         let entries = parsed["entries"].as_array().cloned().unwrap_or_default();
 
@@ -290,23 +293,37 @@ async fn memory_harvest_git(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend
-                .has_source_ref(&full_sha)
-                .await
-                .map_err(backend_err)?
-            {
-                println!("  [skip] already harvested {full_sha}");
-                continue;
+            match backend.has_source_ref(&full_sha).await.map_err(backend_err) {
+                Ok(true) => {
+                    println!("  [skip] already harvested {full_sha}");
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("  warning: could not check source_ref for {full_sha}: {e:#}");
+                    continue;
+                }
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = embedder.embed(&[&embed_text]).await?;
-            let Some(vec) = vecs.into_iter().next() else {
-                continue;
+            let vec = match server.embed_text(&embed_text).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: embedding failed for entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = backend.search(&blob, 1, None).await?;
+            let neighbors = match backend.search(&blob, 1, None).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
+                    continue;
+                }
+            };
             if let Some(top) = neighbors.first()
                 && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
             {
@@ -321,7 +338,7 @@ async fn memory_harvest_git(
                 continue;
             }
 
-            let note_id = backend
+            let note_id = match backend
                 .add(NoteInput {
                     kind: kind.to_string(),
                     title: title.clone(),
@@ -333,7 +350,16 @@ async fn memory_harvest_git(
                     valid_at: None,
                     supersedes: None,
                 })
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to store entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
             println!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
@@ -405,8 +431,6 @@ async fn memory_harvest_failures(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    use crate::llm::LlmBackend;
-
     let git_ref = match &args.branch {
         Some(branch) => branch.clone(),
         None => args.git_range.clone(),
@@ -505,14 +529,8 @@ async fn memory_harvest_failures(
         }
     });
 
-    let sp = super::super::ui::spinner("Loading LLM for failures harvest…");
-    let llm = crate::backends::ActiveLlm::load(cfg)
-        .await
-        .context("loading LLM")?;
-    sp.finish_and_clear();
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
+    let server = ServerInferenceClient::from_config(cfg)
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -583,27 +601,33 @@ async fn memory_harvest_failures(
             println!("\nBatch {} ({} commits)…", batch_num, batch.len());
         }
 
-        let messages = vec![
-            crate::llm::Message::system(system),
-            crate::llm::Message::user(user),
-        ];
+        let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::llm::Token>(256);
-        let generate = llm.generate(&messages, max_tokens, tx, Some(schema.clone()));
-        let collect = async move {
-            let mut buf = String::new();
-            while let Some(t) = rx.recv().await {
-                buf.push_str(&t);
+        let raw_json = match server
+            .llm_complete(&messages, max_tokens, Some(schema.clone()))
+            .await
+        {
+            Ok(raw) => crate::utils::strip_ansi(&raw),
+            Err(e) => {
+                eprintln!(
+                    "  warning: LLM call failed for batch {batch_num} ({} commit(s)), skipping: {e:#}",
+                    batch.len()
+                );
+                continue;
             }
-            buf
         };
-        let (_, raw_json) =
-            tokio::try_join!(generate, async { Ok::<_, anyhow::Error>(collect.await) })?;
-        let raw_json = crate::utils::strip_ansi(&raw_json);
 
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json).with_context(|| {
-            format!("parsing LLM failures response (batch {batch_num}):\n{raw_json}")
-        })?;
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not parse LLM response for batch {batch_num} ({} commit(s)), skipping: {e}\n  Raw: {}",
+                    batch.len(),
+                    &raw_json[..raw_json.len().min(200)]
+                );
+                continue;
+            }
+        };
 
         let entries = parsed["entries"].as_array().cloned().unwrap_or_default();
         if entries.is_empty() {
@@ -631,23 +655,37 @@ async fn memory_harvest_failures(
                 .map(|(s, _, _)| s.clone())
                 .unwrap_or(sha_short.clone());
 
-            if backend
-                .has_source_ref(&full_sha)
-                .await
-                .map_err(backend_err)?
-            {
-                println!("  [skip] already harvested {full_sha}");
-                continue;
+            match backend.has_source_ref(&full_sha).await.map_err(backend_err) {
+                Ok(true) => {
+                    println!("  [skip] already harvested {full_sha}");
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("  warning: could not check source_ref for {full_sha}: {e:#}");
+                    continue;
+                }
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vecs = embedder.embed(&[&embed_text]).await?;
-            let Some(vec) = vecs.into_iter().next() else {
-                continue;
+            let vec = match server.embed_text(&embed_text).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: embedding failed for entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = backend.search(&blob, 1, None).await?;
+            let neighbors = match backend.search(&blob, 1, None).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
+                    continue;
+                }
+            };
             if let Some(top) = neighbors.first()
                 && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
             {
@@ -662,7 +700,7 @@ async fn memory_harvest_failures(
                 continue;
             }
 
-            let note_id = backend
+            let note_id = match backend
                 .add(NoteInput {
                     kind: "antipattern".to_string(),
                     title: title.clone(),
@@ -674,7 +712,16 @@ async fn memory_harvest_failures(
                     valid_at: None,
                     supersedes: None,
                 })
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: failed to store entry '{title}' ({full_sha}), skipping: {e:#}"
+                    );
+                    continue;
+                }
+            };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
             println!("  + [antipattern] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
@@ -682,10 +729,7 @@ async fn memory_harvest_failures(
         }
     }
 
-    println!(
-        "\nStored {stored} antipattern(s). Skipped {} near-duplicate.",
-        dedup_skipped
-    );
+    println!("\nStored {stored} antipattern(s). Skipped {dedup_skipped} near-duplicate.");
     Ok(())
 }
 

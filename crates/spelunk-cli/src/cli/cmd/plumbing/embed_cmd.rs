@@ -3,7 +3,8 @@ use serde::Serialize;
 use std::io::{BufRead as _, IsTerminal as _};
 
 use crate::{
-    cli::cmd::helpers::embed_query_vec, config::Config, embeddings::EmbeddingBackend as _,
+    cli::cmd::helpers::{embed_query_vec, require_server_client},
+    config::Config,
 };
 
 #[derive(Serialize)]
@@ -21,10 +22,7 @@ pub(super) async fn embed_cmd(cfg: &Config, query_mode: bool) -> Result<()> {
         std::process::exit(2);
     }
 
-    let embedder = crate::backends::ActiveEmbedder::load(cfg)
-        .await
-        .context("loading embedding model")?;
-
+    let client = require_server_client(cfg, "plumbing embed")?;
     let model = cfg.embedding_model.clone();
 
     let stdin = std::io::stdin();
@@ -34,16 +32,15 @@ pub(super) async fn embed_cmd(cfg: &Config, query_mode: bool) -> Result<()> {
             continue;
         }
         let vector = if query_mode {
-            embed_query_vec(&embedder, "code retrieval", &text)
+            embed_query_vec(&client, "code retrieval", &text)
                 .await
                 .with_context(|| format!("embedding line {idx}"))?
         } else {
             let input = format!("title: none | text: {text}");
-            let mut vecs = embedder
-                .embed(&[input.as_str()])
+            client
+                .embed_text(&input)
                 .await
-                .with_context(|| format!("embedding line {idx}"))?;
-            vecs.remove(0)
+                .with_context(|| format!("embedding line {idx}"))?
         };
         let dimensions = vector.len();
         println!(

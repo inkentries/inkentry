@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** April 2026  
+**Last reviewed:** May 2026 (ADR-002: generic `llm/complete` inference endpoint)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -149,6 +149,41 @@ reachable beyond localhost (e.g. on a LAN or cloud VM), all memory is unauthenti
 | Memory note stored via server contains injection payload, later retrieved in `spelunk ask` context | A+B | Low | Medium | No sanitisation of server-stored note bodies before inclusion in LLM context. Same XML delimiter isolation applies, but angle-bracket escaping must cover memory context too (issue #137). |
 
 **Residual risk:** Pre-flight only blocks known string patterns. Novel injection payloads in indexed content or server-stored memory could influence the LLM response.
+
+---
+
+## Generic inference endpoint — `POST /v1/projects/{id}/llm/complete` (Mode B, ADR-002)
+
+ADR-002 adds a generic LLM completion primitive to `spelunk-server` so the CLI
+can route `spelunk memory harvest` (and future inference-needing commands)
+through one stable route instead of a bespoke endpoint per command. This
+introduces a **new trust boundary**: a network-facing, free-form inference
+endpoint that runs arbitrary caller-supplied prompts against the server's
+configured (possibly BYOK, possibly metered) LLM.
+
+This is a deliberately broader surface than a scoped `/harvest` endpoint would
+be. The trade-off is accepted **only** with the controls below; they are
+binding requirements, not recommendations.
+
+| Threat | STRIDE | Likelihood | Impact | Mitigation (binding) |
+|--------|--------|-----------|--------|----------------------|
+| Authenticated caller runs arbitrary prompts to burn the operator's LLM budget | D / EoP | Medium | Medium | Tier-1 + Bearer auth required; **per-principal rate limit + token budget**; client `max_tokens` **clamped** to a server-side ceiling (never trusted upward) |
+| Caller exfiltrates or abuses a BYOK upstream key | I | Low | High | BYOK key **never leaves the server** — client sends prompts, server holds the upstream key; stored as HMAC-SHA256 hash, resolved via Secret Manager in cloud, never logged (decisions #25/#26) |
+| Prompt injection via caller-supplied `messages` | T | Medium | Medium | `llm/complete` is a **raw** primitive: the server adds **no** system prompt and makes **no** trust assumptions. Delimiter isolation / angle-bracket escaping of untrusted context is the **caller's** responsibility (issue #137). The server must NOT wrap or re-prompt content. |
+| Completion content or prompts persisted/leaked server-side | I | Low | Medium | No persistence: messages are request-scoped, never written to the memory DB, never logged in plaintext (same data-promise as `/explore`) |
+| Unconfigured server invoked | — | Low | Low | `503 llm_unavailable` when no LLM backend configured; endpoint absent from `/v1/health` `capabilities` so the CLI gates it |
+
+**Why generic over per-command (security framing):** a bespoke `/harvest` would
+narrow the input shape but would force harvest's ~2300 LoC of prompt
+orchestration across the trust boundary into the server, expanding the
+server's attack surface and duplicating CLI logic. Keeping orchestration in the
+CLI and exposing only a raw, auth-gated, rate-limited, non-persisting primitive
+is the smaller *server-side* trust surface, at the cost of a broader *input*
+surface — which the controls above contain. See ADR-002 for the full rationale.
+
+**Cost attribution** is per-principal via `AuthContext` (#261 auth trait) — the
+same granularity a bespoke endpoint would provide. No attribution granularity is
+lost by going generic.
 
 ---
 

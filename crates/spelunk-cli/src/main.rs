@@ -1,12 +1,14 @@
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+mod capability;
 mod cli;
+mod server_client;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use spelunk_core::{
-    backends, capability, config, embeddings, error, indexer, llm, registry, search, storage, utils,
+    config, conventions, embeddings, error, indexer, registry, search, storage, utils,
 };
 
 #[tokio::main]
@@ -71,5 +73,10 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Sync(args) => {
+            let mem_path = config::resolve_db(None, &cfg.db_path).with_file_name("memory.db");
+            cli::cmd::memory_push(args, &mem_path, &cfg, None).await
+        }
+        Command::Server(args) => cli::cmd::server(args).await,
     }
 }

@@ -137,6 +137,12 @@ Smoke tests catch them; code review often misses them.
 - `bench/gemma/crosscodeeval/` — RepoBench cross-file completion
 - `bench/perf_*.sh` — performance benchmarks
 
+### Graph benchmark repo references
+`bench/graph/tasks.json` stores a `"repo"` slug (e.g. `"ripgrep"`) rather than
+a path. The evaluator resolves it against `--repos-dir` / `$SPELUNK_BENCH_REPOS`
+at runtime. Repos must live **outside** this repository — cloning them under the
+repo root would pollute the spelunk index. See `bench/README.md` for setup.
+
 ### Output paths
 - Scratch results: `bench/results/` (gitignored except `.gitignore`)
 - Committed baselines: `baselines/` (outside `bench/` so scaffold hash is stable)

@@ -7,6 +7,83 @@ use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note};
 use super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
 
+// ── Write-through helper (free function) ─────────────────────────────────────
+
+/// Append a `NoteRecord` as a JSON line to `refs/notes/spelunk` on HEAD.
+///
+/// Implements read-modify-write with append semantics:
+/// 1. Read the existing note blob for HEAD (may be absent).
+/// 2. Parse each line as a JSON `NoteRecord` — ignore malformed lines.
+/// 3. Append the new record as a new JSON line.
+/// 4. Write the combined text back with `git notes add -f`.
+///
+/// Errors are intentionally non-fatal: the caller should log `tracing::warn!`
+/// and continue.  This function returns `Ok(())` on success or propagates
+/// an error for the caller to handle gracefully.
+///
+/// # Arguments
+/// * `git_root` — directory passed to `git -C`; `None` uses the process CWD.
+/// * `record` — the entry to append.
+pub async fn append_to_git_notes(
+    git_root: Option<&std::path::Path>,
+    record: &NoteRecord,
+) -> Result<()> {
+    // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
+    let head = run_git(git_root, &["rev-parse", "HEAD"])
+        .await
+        .map(|s| s.trim().to_string())?;
+
+    // ── 2. Read existing note (may not exist) ─────────────────────────────────
+    let existing = run_git(git_root, &["notes", "--ref=spelunk", "show", &head])
+        .await
+        .unwrap_or_default();
+
+    // ── 3. Append new entry ───────────────────────────────────────────────────
+    let new_line = serde_json::to_string(record)?;
+
+    let combined = if existing.trim().is_empty() {
+        new_line
+    } else {
+        format!("{}\n{}", existing.trim_end_matches('\n'), new_line)
+    };
+
+    // ── 4. Write back ─────────────────────────────────────────────────────────
+    run_git(
+        git_root,
+        &[
+            "notes",
+            "--ref=spelunk",
+            "add",
+            "-f",
+            "-m",
+            &combined,
+            &head,
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Run a git subprocess, optionally in `dir`, and return stdout as a `String`.
+/// Returns `Err` if the process fails.
+async fn run_git(dir: Option<&std::path::Path>, args: &[&str]) -> Result<String> {
+    let mut cmd = Command::new("git");
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let out = cmd.args(args).output().await?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(anyhow!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// Hard cap on entries returned by `list()`.
 ///
 /// Each entry requires one `git notes show` subprocess call (~13 ms).

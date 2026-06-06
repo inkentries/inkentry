@@ -11,7 +11,7 @@ pub struct MemoryArgs {
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,
 
-    /// Storage backend: sqlite (default), git-meta, or git-notes
+    /// Storage backend: sqlite (default) or git-notes
     #[arg(long, global = true, default_value = "sqlite", value_name = "BACKEND")]
     pub backend: String,
 }
@@ -205,19 +205,14 @@ pub struct MemoryHarvestArgs {
     #[arg(long)]
     pub since: Option<String>,
 
-    /// Confirm reading git objects or history files (required for --source claude-code and --source entire)
+    /// Confirm reading git objects or history files (required for --source claude-code)
     #[arg(long)]
     pub confirm: bool,
 
-    /// Path to the repo containing refs/entire/checkpoints/v1 (default: current repo).
-    /// Only used with --source entire.
-    #[arg(long)]
-    pub entire_repo: Option<std::path::PathBuf>,
-
-    /// List checkpoints that would be harvested without writing anything.
-    /// Only used with --source entire.
-    #[arg(long)]
-    pub dry_run: bool,
+    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Useful in git hooks so the hook does not block the git process.
+    #[arg(long, default_value_t = false)]
+    pub detach: bool,
 }
 
 #[derive(Args, Debug)]
@@ -263,6 +258,23 @@ pub struct MemoryWatchArgs {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Comma-separated kind filter, e.g. `intent,decision`.
+    /// When absent all event kinds are streamed.
+    #[arg(long)]
+    pub kind: Option<String>,
+
+    /// Resume from a specific sequence ID (seq-NNNNNNN or plain integer).
+    /// When set, the server replays missed events before switching to live.
+    /// In the default mode the CLI tracks the last-seen ID automatically and
+    /// reconnects on transient errors.
+    #[arg(long, value_name = "SEQ")]
+    pub since_seq: Option<String>,
+
+    /// Maximum number of automatic reconnect attempts on connection error.
+    /// Set to 0 to disable reconnection (one-shot mode).
+    #[arg(long, default_value_t = 10)]
+    pub reconnect_limit: u32,
 }
 
 #[derive(Args, Debug)]
@@ -288,9 +300,8 @@ mod failures;
 mod graph_cmd;
 mod harvest;
 mod harvest_claude;
-mod harvest_entire;
 mod list;
-mod push;
+pub mod push;
 mod search;
 mod show;
 mod since;
@@ -325,7 +336,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
 /// Returns `None` for the default "sqlite" to fall through to config-based dispatch.
 fn backend_override(s: &str) -> Option<&'static str> {
     match s {
-        "git-meta" => Some("git-meta"),
         "git-notes" => Some("git-notes"),
         _ => None,
     }
@@ -442,7 +452,7 @@ pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
     {
         anyhow::anyhow!(
             "This operation requires the sqlite backend. \
-             Re-run without --backend git-meta or --backend git-notes."
+             Re-run without --backend git-notes."
         )
     } else {
         e

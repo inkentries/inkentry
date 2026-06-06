@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "spelunk-server",
-    "description": "Shared memory server for spelunk. Stores decisions, requirements, and context for a team and serves them over HTTP. Clients embed locally and send pre-computed vectors; the server stores and searches them.",
+    "description": "Shared memory server for spelunk. Stores decisions, requirements, and context for a team and serves them over HTTP.",
     "contact": {
       "name": "spelunk",
       "url": "https://github.com/spelunk-cloud/spelunk"
@@ -18,17 +18,16 @@
         "tags": [
           "health"
         ],
-        "summary": "Server liveness check. No authentication required.",
+        "summary": "Server liveness check. No authentication required.\nReturns server version, capabilities, and identity fields.",
         "operationId": "health",
         "responses": {
           "200": {
             "description": "Server is up",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
-                },
-                "example": "ok"
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -67,6 +66,236 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/explore": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Run an LLM reasoning loop over caller-supplied context chunks.\nThe CLI retrieves relevant chunks from its local index and sends them alongside\nthe question. **The server does not store context chunks.**",
+        "description": "Returns an SSE stream with events: `thought`, `answer`, `done`, `error`.\nReturns 503 if no LLM is configured.",
+        "operationId": "explore",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExploreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream: thought/answer/done/error events"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No LLM configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/index/embed": {
+      "post": {
+        "tags": [
+          "index"
+        ],
+        "summary": "Generate embeddings for code chunks. The server encodes each chunk and returns the\nvectors. **The server does not store the vectors** — the CLI is the only persistent\nstore for index data.",
+        "description": "Returns 400 if no embedder is configured.\nReturns 413 if the batch exceeds 256 chunks.",
+        "operationId": "index_embed",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Embedding vectors (not stored server-side)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No embedder configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Batch exceeds 256 chunks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/llm/complete": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Run a single LLM completion over caller-supplied messages. Streaming SSE.",
+        "description": "The server performs no orchestration, adds no system prompt, and stores nothing.\nClient-supplied `max_tokens` is clamped server-side to the configured ceiling.\n\n**Auth:** `Authorization: Bearer` required (Tier 1).\n\n**SSE event shapes:**\n- `{\"kind\":\"token\",\"content\":\"...\"}` — one streamed fragment\n- `{\"kind\":\"done\"}` — terminal success\n- `{\"kind\":\"error\",\"code\":\"...\",\"message\":\"...\"}` — terminal failure mid-stream\n\nReturns 503 if no LLM is configured on this server.",
+        "operationId": "llm_complete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream: token/done/error events"
+          },
+          "400": {
+            "description": "messages empty or max_tokens ≤ 0",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No LLM configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/memory": {
       "get": {
         "tags": [
@@ -87,7 +316,7 @@
           {
             "name": "kind",
             "in": "query",
-            "description": "Filter by kind (`decision`, `requirement`, `note`, `question`, `handoff`).",
+            "description": "Filter by kind (`decision`, `requirement`, `note`, `question`, `handoff`, `intent`).",
             "required": false,
             "schema": {
               "type": [
@@ -131,10 +360,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Project not found"
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -148,7 +391,7 @@
           "memory"
         ],
         "summary": "Add a memory entry to a project. The project is auto-created on first write.",
-        "description": "The client must supply a pre-computed `embedding` vector. All entries in\na project must use the same embedding dimension — the first write fixes it.",
+        "description": "The `embedding` field is optional. If omitted and the server has `SPELUNK_EMBEDDING_URL`\nconfigured, the server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN).\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.",
         "operationId": "add_note",
         "parameters": [
           {
@@ -183,10 +426,37 @@
             }
           },
           "400": {
-            "description": "Embedding dimension mismatch"
+            "description": "Embedding dimension mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Note stored but conflicts with existing entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddNoteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entry rejected — prompt injection detected"
           }
         },
         "security": [
@@ -230,10 +500,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Project not found"
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -248,7 +532,7 @@
         "tags": [
           "memory"
         ],
-        "summary": "Semantic search over memory entries using a pre-computed query embedding.",
+        "summary": "Semantic search over memory entries. The server encodes the text query using its\nconfigured embedder. Returns 400 if no embedder is configured.",
         "operationId": "search_notes",
         "parameters": [
           {
@@ -285,11 +569,189 @@
               }
             }
           },
+          "400": {
+            "description": "No embedder configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Project not found"
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/memory/since": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Return notes created after a given Unix timestamp. Archived entries are\nexcluded. Results are ordered `created_at ASC`.",
+        "operationId": "memory_since",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t",
+            "in": "query",
+            "description": "Unix epoch seconds (exclusive lower bound).",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results (default: 100, max: 500).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notes newer than `t`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServerNote"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid `t` parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/memory/stream": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Stream new memory entries as Server-Sent Events. Each event carries a\nsingle `ServerNote` serialised as JSON. The stream polls the database once\nper second and stays open indefinitely — close the connection to stop it.",
+        "description": "Pass `?t=<unix_secs>` to replay entries written after a known timestamp.\nOmit it to receive only entries written after the connection opens.",
+        "operationId": "memory_stream",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t",
+            "in": "query",
+            "description": "Unix epoch seconds to start from (inclusive). Defaults to now.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream of new memory entries"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -339,10 +801,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Note not found"
+            "description": "Note not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -390,10 +866,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Note not found"
+            "description": "Note not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -443,10 +933,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Note not found"
+            "description": "Note not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -506,10 +1010,92 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Note not found"
+            "description": "Note not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{project_id}/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Embed a search query server-side and return the vector for the CLI to use\nin its local KNN search.",
+        "description": "The server applies the code-retrieval query prefix\n(`task: code retrieval | query: {q}`) so the CLI does not need to know the\nembedding format.  The server does **not** perform the KNN step — the local\nSQLite index lives on the CLI side.\n\n- `\"semantic\"` / `\"hybrid\"`: embeds the query and returns `query_vector`.\n  Returns **400** if no embedder is configured on this server.\n- `\"text\"`: returns `query_vector: null`; the CLI falls back to FTS.",
+        "operationId": "project_search",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Query vector (CLI runs KNN locally)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeSearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No embedder configured or invalid mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -549,10 +1135,24 @@
             }
           },
           "401": {
-            "description": "Unauthorized"
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Project not found"
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -584,11 +1184,11 @@
               "type": "number",
               "format": "float"
             },
-            "description": "Pre-computed embedding vector from the client (required for semantic search)."
+            "description": "Pre-computed embedding vector from the client. Optional — if omitted and the server has an\nembedding backend configured (`SPELUNK_EMBEDDING_URL`), the server embeds the entry.\nIf neither is available, the entry is stored without a vector (text search only)."
           },
           "kind": {
             "type": "string",
-            "description": "Kind of memory entry: `decision`, `requirement`, `note`, `question`, `handoff`."
+            "description": "Kind of memory entry: `decision`, `requirement`, `note`, `question`, `handoff`, `intent`."
           },
           "linked_files": {
             "type": "array",
@@ -612,13 +1212,25 @@
       "AddNoteResponse": {
         "type": "object",
         "required": [
+          "stored",
           "id"
         ],
         "properties": {
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConflictEntry"
+            },
+            "description": "Conflicting entries (only present on 409)."
+          },
           "id": {
             "type": "integer",
             "format": "int64",
             "description": "ID of the created note."
+          },
+          "stored": {
+            "type": "boolean",
+            "description": "Whether the note was stored (always true for 201/409)."
           }
         }
       },
@@ -634,6 +1246,75 @@
           }
         }
       },
+      "CodeSearchRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results the caller intends to fetch.\nPassed back in the response for informational purposes only — the server\ndoes not perform the KNN step; the CLI does that against its local index.",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "Search mode: `\"hybrid\"` (default), `\"semantic\"`, or `\"text\"`.\n\n`\"hybrid\"` and `\"semantic\"` require an embedder; the server will return\n`query_vector` so the CLI can run KNN against its local SQLite index.\n`\"text\"` skips embedding and signals the CLI to use FTS."
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query."
+          }
+        }
+      },
+      "CodeSearchResponse": {
+        "type": "object",
+        "description": "Response body for `POST /v1/projects/{project_id}/search`.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "Mode actually used (`\"semantic\"`, `\"hybrid\"`, or `\"text\"`).\nMay differ from the requested mode if the embedder is unavailable."
+          },
+          "query_vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Query embedding vector — present for semantic/hybrid modes.\nThe CLI uses this to run KNN against its local index.\n`null` when mode is `\"text\"` (no embedding needed)."
+          }
+        }
+      },
+      "ConflictEntry": {
+        "type": "object",
+        "description": "A single conflicting memory entry returned in a 409 response.",
+        "required": [
+          "id",
+          "title",
+          "similarity"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "similarity": {
+            "type": "number",
+            "format": "float",
+            "description": "Cosine similarity to the new entry (0.0–1.0)."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "CountResponse": {
         "type": "object",
         "required": [
@@ -643,6 +1324,194 @@
           "count": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "EmbedChunkIn": {
+        "type": "object",
+        "description": "A single chunk to embed.",
+        "required": [
+          "chunk_id",
+          "content"
+        ],
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "description": "Opaque CLI-assigned identifier (e.g. blake3 hash of file + offset). Echoed back verbatim."
+          },
+          "content": {
+            "type": "string",
+            "description": "Raw text content to embed."
+          }
+        }
+      },
+      "EmbedChunkOut": {
+        "type": "object",
+        "description": "Embedding result for a single chunk.",
+        "required": [
+          "chunk_id",
+          "vector"
+        ],
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "description": "The same `chunk_id` that was sent in the request."
+          },
+          "vector": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Embedding vector produced by the server."
+          }
+        }
+      },
+      "EmbedRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/index/embed`.",
+        "required": [
+          "chunks"
+        ],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmbedChunkIn"
+            },
+            "description": "Chunks to embed. Maximum 256 per request."
+          }
+        }
+      },
+      "EmbedResponse": {
+        "type": "object",
+        "description": "Response body for `POST /v1/projects/{project_id}/index/embed`.",
+        "required": [
+          "chunks"
+        ],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmbedChunkOut"
+            }
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "Consistent JSON error body: `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ExploreContextChunk": {
+        "type": "object",
+        "description": "A single context chunk supplied by the CLI for `/explore`.",
+        "required": [
+          "file",
+          "start_line",
+          "end_line",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "end_line": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "file": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ExploreRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/explore`.",
+        "required": [
+          "question"
+        ],
+        "properties": {
+          "context_chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExploreContextChunk"
+            }
+          },
+          "max_turns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "question": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "description": "Server capabilities reported in the health response.",
+        "required": [
+          "status",
+          "version",
+          "capabilities",
+          "instance_id"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of feature capabilities supported by this server instance."
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Persistent UUID v4 identifying this server instance across restarts."
+          },
+          "started_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Effective UID of the process that started the server (Unix); `null` on Windows.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `\"ok\"`."
+          },
+          "version": {
+            "type": "string",
+            "description": "Server version string."
           }
         }
       },
@@ -658,12 +1527,54 @@
               "string",
               "null"
             ],
-            "description": "Filter by kind (`decision`, `requirement`, `note`, `question`, `handoff`)."
+            "description": "Filter by kind (`decision`, `requirement`, `note`, `question`, `handoff`, `intent`)."
           },
           "limit": {
             "type": "integer",
             "description": "Maximum number of results to return (default: 20).",
             "minimum": 0
+          }
+        }
+      },
+      "LlmCompleteMessage": {
+        "type": "object",
+        "description": "A single chat message for `/llm/complete`.",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role: `system`, `user`, or `assistant`."
+          }
+        }
+      },
+      "LlmCompleteRequest": {
+        "type": "object",
+        "description": "Request body for `POST /v1/projects/{project_id}/llm/complete`.",
+        "required": [
+          "messages",
+          "max_tokens"
+        ],
+        "properties": {
+          "json_schema": {
+            "description": "Optional OpenAI-style `response_format.json_schema` for structured output."
+          },
+          "max_tokens": {
+            "type": "integer",
+            "description": "Desired max completion tokens. The server clamps this to its configured ceiling.",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LlmCompleteMessage"
+            },
+            "description": "Non-empty list of chat messages."
           }
         }
       },
@@ -721,21 +1632,17 @@
       "SearchRequest": {
         "type": "object",
         "required": [
-          "embedding"
+          "query"
         ],
         "properties": {
-          "embedding": {
-            "type": "array",
-            "items": {
-              "type": "number",
-              "format": "float"
-            },
-            "description": "Query embedding vector (must match project's embedding dimension)."
-          },
           "limit": {
             "type": "integer",
             "description": "Maximum number of results to return (default: 20).",
             "minimum": 0
+          },
+          "query": {
+            "type": "string",
+            "description": "Text query — the server encodes this using its configured embedder."
           }
         }
       },
@@ -774,7 +1681,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "Kind: `decision`, `requirement`, `note`, `question`, or `handoff`."
+            "description": "Kind: `decision`, `requirement`, `note`, `question`, `handoff`, or `intent`."
           },
           "linked_files": {
             "type": "array",
@@ -801,6 +1708,37 @@
           },
           "title": {
             "type": "string"
+          }
+        }
+      },
+      "SinceQuery": {
+        "type": "object",
+        "required": [
+          "t"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum number of results (default: 100, max: 500)."
+          },
+          "t": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix epoch seconds (exclusive lower bound)."
+          }
+        }
+      },
+      "StreamQuery": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix epoch seconds to start from (inclusive). Defaults to now."
           }
         }
       },
@@ -844,6 +1782,18 @@
     {
       "name": "memory",
       "description": "Memory CRUD and semantic search"
+    },
+    {
+      "name": "index",
+      "description": "Code index / embedding"
+    },
+    {
+      "name": "search",
+      "description": "Server-side code search (query embedding proxy)"
+    },
+    {
+      "name": "inference",
+      "description": "LLM-powered code exploration and raw completion"
     }
   ]
 }

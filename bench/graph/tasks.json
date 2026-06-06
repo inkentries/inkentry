@@ -1,17 +1,420 @@
 [
-    {
-        "symbol": "run_agent",
-        "repo_path": "~/Projects/deepseek-spelunk",
-        "ground_truth_files": [
-            "bench/agents/agent.py",
-            "bench/memory/cross_session_handoff.py"
-        ]
-    },
-    {
-        "symbol": "check_hit",
-        "repo_path": "~/Projects/deepseek-spelunk",
-        "ground_truth_files": [
-            "bench/memory/decision_archaeology.py"
-        ]
-    }
+  {
+    "symbol": "is_readable_stdin",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/core/flags/hiargs.rs"
+    ]
+  },
+  {
+    "symbol": "unescape_os",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/escape.rs",
+      "crates/cli/src/lib.rs"
+    ]
+  },
+  {
+    "symbol": "escape_os",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/escape.rs",
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/pattern.rs"
+    ]
+  },
+  {
+    "symbol": "stdout_buffered_line",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/wtr.rs",
+      "crates/core/flags/hiargs.rs"
+    ]
+  },
+  {
+    "symbol": "stdout_buffered_block",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/wtr.rs",
+      "crates/core/flags/hiargs.rs"
+    ]
+  },
+  {
+    "symbol": "parse_human_readable_size",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/human.rs",
+      "crates/cli/src/lib.rs",
+      "crates/core/flags/defs.rs"
+    ]
+  },
+  {
+    "symbol": "hyperlink_aliases",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/core/flags/complete/zsh.rs",
+      "crates/core/flags/defs.rs",
+      "crates/printer/src/hyperlink/mod.rs",
+      "crates/printer/src/lib.rs"
+    ]
+  },
+  {
+    "symbol": "default_color_specs",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/core/flags/hiargs.rs",
+      "crates/printer/src/color.rs",
+      "crates/printer/src/lib.rs"
+    ]
+  },
+  {
+    "symbol": "pattern_from_bytes",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/pattern.rs"
+    ]
+  },
+  {
+    "symbol": "patterns_from_path",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/pattern.rs",
+      "crates/core/flags/hiargs.rs"
+    ]
+  },
+  {
+    "symbol": "patterns_from_reader",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/cli/src/lib.rs",
+      "crates/cli/src/pattern.rs"
+    ]
+  },
+  {
+    "symbol": "SinkMatch",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/printer/src/json.rs",
+      "crates/printer/src/standard.rs",
+      "crates/printer/src/summary.rs",
+      "crates/printer/src/util.rs",
+      "crates/searcher/src/lib.rs",
+      "crates/searcher/src/searcher/core.rs",
+      "crates/searcher/src/sink.rs",
+      "crates/searcher/src/testutil.rs"
+    ]
+  },
+  {
+    "symbol": "SinkContext",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/printer/src/json.rs",
+      "crates/printer/src/standard.rs",
+      "crates/printer/src/util.rs",
+      "crates/searcher/src/lib.rs",
+      "crates/searcher/src/searcher/core.rs",
+      "crates/searcher/src/sink.rs",
+      "crates/searcher/src/testutil.rs"
+    ]
+  },
+  {
+    "symbol": "PrinterPath",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/printer/src/path.rs",
+      "crates/printer/src/standard.rs",
+      "crates/printer/src/summary.rs",
+      "crates/printer/src/util.rs"
+    ]
+  },
+  {
+    "symbol": "sink_matched",
+    "repo": "ripgrep",
+    "ground_truth_files": [
+      "crates/searcher/src/searcher/core.rs",
+      "crates/searcher/src/searcher/glue.rs"
+    ]
+  },
+  {
+    "symbol": "get_dated_items",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/views/generic/dates.py",
+      "tests/generic_views/test_dates.py"
+    ]
+  },
+  {
+    "symbol": "references_model",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/db/migrations/operations/base.py",
+      "django/db/migrations/operations/fields.py",
+      "django/db/migrations/operations/models.py",
+      "tests/migrations/test_operations.py"
+    ]
+  },
+  {
+    "symbol": "make_msgid",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/core/mail/__init__.py",
+      "django/core/mail/message.py"
+    ]
+  },
+  {
+    "symbol": "send_robust",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/dispatch/dispatcher.py",
+      "django/test/utils.py",
+      "tests/dispatch/tests.py"
+    ]
+  },
+  {
+    "symbol": "get_storage_class",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/contrib/staticfiles/storage.py",
+      "django/core/files/storage.py",
+      "tests/file_storage/tests.py"
+    ]
+  },
+  {
+    "symbol": "get_language_info",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/templatetags/i18n.py",
+      "django/utils/translation/__init__.py",
+      "tests/i18n/tests.py",
+      "tests/template_tests/syntax_tests/i18n/test_get_language_info.py"
+    ]
+  },
+  {
+    "symbol": "get_format_modules",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/utils/formats.py",
+      "tests/i18n/tests.py"
+    ]
+  },
+  {
+    "symbol": "get_object_or_404",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/contrib/flatpages/views.py",
+      "django/shortcuts.py",
+      "tests/get_object_or_404/models.py",
+      "tests/get_object_or_404/tests.py",
+      "tests/test_utils/views.py"
+    ]
+  },
+  {
+    "symbol": "get_list_or_404",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/shortcuts.py",
+      "tests/get_object_or_404/models.py",
+      "tests/get_object_or_404/tests.py"
+    ]
+  },
+  {
+    "symbol": "get_paginator",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/contrib/admin/options.py",
+      "django/contrib/admin/views/autocomplete.py",
+      "django/contrib/admin/views/main.py",
+      "django/views/generic/list.py",
+      "tests/generic_views/views.py"
+    ]
+  },
+  {
+    "symbol": "get_cache_key",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/middleware/cache.py",
+      "django/utils/cache.py",
+      "tests/cache/tests.py"
+    ]
+  },
+  {
+    "symbol": "generate_filename",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/core/files/storage.py",
+      "django/db/models/fields/files.py",
+      "tests/file_storage/test_generate_filename.py"
+    ]
+  },
+  {
+    "symbol": "from_db_value",
+    "repo": "django__django-12125",
+    "ground_truth_files": [
+      "django/contrib/gis/db/models/fields.py",
+      "django/contrib/gis/db/models/sql/conversion.py",
+      "django/contrib/postgres/fields/array.py",
+      "django/db/models/fields/__init__.py",
+      "tests/custom_pk/fields.py",
+      "tests/from_db_value/models.py",
+      "tests/postgres_tests/models.py",
+      "tests/serializers/models/base.py"
+    ]
+  },
+  {
+    "symbol": "rcollect",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/core/tests/test_noncommutative.py",
+      "sympy/simplify/__init__.py",
+      "sympy/simplify/radsimp.py",
+      "sympy/simplify/tests/test_radsimp.py",
+      "sympy/solvers/polysys.py"
+    ]
+  },
+  {
+    "symbol": "primefactors",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/combinatorics/perm_groups.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/factor_.py",
+      "sympy/ntheory/generate.py",
+      "sympy/ntheory/tests/test_factor_.py"
+    ]
+  },
+  {
+    "symbol": "primitive_root",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/crypto/crypto.py",
+      "sympy/discrete/transforms.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/residue_ntheory.py",
+      "sympy/ntheory/tests/test_residue.py"
+    ]
+  },
+  {
+    "symbol": "jacobi_symbol",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/partitions_.py",
+      "sympy/ntheory/primetest.py",
+      "sympy/ntheory/residue_ntheory.py",
+      "sympy/ntheory/tests/test_residue.py"
+    ]
+  },
+  {
+    "symbol": "legendre_symbol",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/partitions_.py",
+      "sympy/ntheory/qs.py",
+      "sympy/ntheory/residue_ntheory.py",
+      "sympy/ntheory/tests/test_residue.py"
+    ]
+  },
+  {
+    "symbol": "divisor_count",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/factor_.py",
+      "sympy/ntheory/tests/test_factor_.py"
+    ]
+  },
+  {
+    "symbol": "continued_fraction_iterator",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/continued_fraction.py",
+      "sympy/ntheory/tests/test_continued_fraction.py",
+      "sympy/utilities/tests/test_wester.py"
+    ]
+  },
+  {
+    "symbol": "continued_fraction_reduce",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/continued_fraction.py",
+      "sympy/ntheory/tests/test_continued_fraction.py",
+      "sympy/utilities/tests/test_wester.py"
+    ]
+  },
+  {
+    "symbol": "nT",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/functions/combinatorial/numbers.py",
+      "sympy/functions/combinatorial/tests/test_comb_numbers.py",
+      "sympy/utilities/iterables.py",
+      "sympy/utilities/tests/test_iterables.py"
+    ]
+  },
+  {
+    "symbol": "multiset_permutations",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/functions/combinatorial/numbers.py",
+      "sympy/functions/combinatorial/tests/test_comb_numbers.py",
+      "sympy/utilities/iterables.py",
+      "sympy/utilities/tests/test_iterables.py"
+    ]
+  },
+  {
+    "symbol": "multiset_combinations",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/functions/combinatorial/numbers.py",
+      "sympy/functions/combinatorial/tests/test_comb_numbers.py",
+      "sympy/utilities/iterables.py",
+      "sympy/utilities/tests/test_iterables.py"
+    ]
+  },
+  {
+    "symbol": "strongly_connected_components",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/solvers/ode/systems.py",
+      "sympy/stats/stochastic_process_types.py",
+      "sympy/utilities/iterables.py",
+      "sympy/utilities/tests/test_iterables.py"
+    ]
+  },
+  {
+    "symbol": "necklaces",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/utilities/iterables.py",
+      "sympy/utilities/tests/test_iterables.py"
+    ]
+  },
+  {
+    "symbol": "is_primitive_root",
+    "repo": "sympy__sympy-20590",
+    "ground_truth_files": [
+      "sympy/__init__.py",
+      "sympy/crypto/crypto.py",
+      "sympy/crypto/tests/test_crypto.py",
+      "sympy/ntheory/__init__.py",
+      "sympy/ntheory/residue_ntheory.py",
+      "sympy/ntheory/tests/test_residue.py"
+    ]
+  }
 ]

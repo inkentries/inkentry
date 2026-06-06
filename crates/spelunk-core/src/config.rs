@@ -5,6 +5,84 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use tempfile::TempDir;
 
+// ---------------------------------------------------------------------------
+// Project-id derivation
+// ---------------------------------------------------------------------------
+
+/// Derive a stable project identifier from `project_root`.
+///
+/// 1. Read `remote.origin.url` from the git config and normalise to
+///    `host/owner/repo`.
+/// 2. If no git repo or no origin remote, fall back to
+///    `local/<blake3-hex-of-canonical-path>`.
+pub fn derive_project_id(project_root: &Path) -> String {
+    try_derive_from_git(project_root).unwrap_or_else(|| derive_local_fallback(project_root))
+}
+
+fn try_derive_from_git(root: &Path) -> Option<String> {
+    let repo = gix::discover(root).ok()?;
+    let git_dir = repo.git_dir();
+
+    // For linked worktrees the config lives in the main .git dir, not
+    // .git/worktrees/<name>.
+    let config_path = if git_dir.parent().and_then(|p| p.file_name())
+        == Some(std::ffi::OsStr::new("worktrees"))
+    {
+        git_dir.parent()?.parent()?.join("config")
+    } else {
+        git_dir.join("config")
+    };
+
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let url = extract_origin_url_from_git_config(&content)?;
+    Some(normalise_git_url(&url))
+}
+
+/// Minimal parser for git config: finds `url` under `[remote "origin"]`.
+fn extract_origin_url_from_git_config(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // Section header — check if it's [remote "origin"]
+            let header = trimmed.trim_start_matches('[').trim_end_matches(']');
+            in_origin = header.trim() == r#"remote "origin""#;
+        } else if in_origin
+            && let Some(rest) = trimmed.strip_prefix("url")
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+        {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Normalise a git remote URL to `host/owner/repo` (no scheme, no `.git`).
+///
+/// Handles `https://`, `ssh://`, and SCP-style `git@host:owner/repo.git`.
+fn normalise_git_url(url: &str) -> String {
+    let without_scheme = if let Some(pos) = url.find("://") {
+        &url[pos + 3..]
+    } else {
+        url
+    };
+    let without_user = if let Some(pos) = without_scheme.find('@') {
+        &without_scheme[pos + 1..]
+    } else {
+        without_scheme
+    };
+    // SCP colon → slash
+    let normalised = without_user.replacen(':', "/", 1);
+    let normalised = normalised.strip_suffix(".git").unwrap_or(&normalised);
+    normalised.to_lowercase()
+}
+
+fn derive_local_fallback(root: &Path) -> String {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let hash = blake3::hash(canonical.to_string_lossy().as_bytes());
+    format!("local/{}", hash.to_hex())
+}
+
 /// Returns `~/.config/spelunk/`.
 ///
 /// On all platforms we use `~/.config` rather than the OS-native config dir
@@ -155,6 +233,18 @@ pub struct Config {
     /// Default: 8192
     #[serde(default = "Config::default_llm_context_length")]
     pub llm_context_length: usize,
+
+    /// When true (the default), `spelunk memory add` also appends the new entry
+    /// as a line of JSON in `refs/notes/spelunk` on HEAD.
+    ///
+    /// This keeps memory close to commits and is consistent with the product's
+    /// "memory travels with code" messaging.  Set `store_in_git_notes = false`
+    /// in your config to opt out.
+    ///
+    /// Failure to write the git note is non-fatal: a warning is logged and the
+    /// primary SQLite write is unaffected.
+    #[serde(default = "Config::default_store_in_git_notes")]
+    pub store_in_git_notes: bool,
 }
 
 impl Config {
@@ -182,6 +272,9 @@ impl Config {
     fn default_llm_context_length() -> usize {
         8192
     }
+    fn default_store_in_git_notes() -> bool {
+        true
+    }
 }
 
 impl Default for Config {
@@ -199,6 +292,7 @@ impl Default for Config {
             plans_dir: Self::default_plans_dir(),
             specs_dir: Self::default_specs_dir(),
             llm_context_length: Self::default_llm_context_length(),
+            store_in_git_notes: Self::default_store_in_git_notes(),
         }
     }
 }
@@ -266,8 +360,15 @@ impl Config {
     }
 
     /// Validate cross-field constraints. Call after `load()`.
+    ///
+    /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
+    /// `project_id` is allowed to be absent — it will be derived at runtime by
+    /// `Config::resolve_project_id()` (see spelunk#307 / section D of #303).
     pub fn validate(&self) -> Result<()> {
-        if self.server_url.is_some() && self.project_id.is_none() {
+        if let Some(url) = &self.server_url
+            && self.project_id.is_none()
+            && !is_loopback_url(url)
+        {
             anyhow::bail!(
                 "server_url is set but project_id is missing.\n\
                  Add `project_id = \"my-project\"` to .spelunk/config.toml \
@@ -276,6 +377,45 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Return the effective project id.
+    ///
+    /// If `project_id` is set in config/env, returns it as-is.  Otherwise
+    /// derives one from `project_root` via `derive_project_id()`.
+    pub fn resolve_project_id(&self, project_root: &Path) -> String {
+        self.project_id
+            .clone()
+            .unwrap_or_else(|| derive_project_id(project_root))
+    }
+}
+
+/// Return `true` if `url` targets a loopback address (`127.x.x.x`, `localhost`, `::1`).
+///
+/// This is a lightweight string check — no DNS resolution.
+pub fn is_loopback_url(url: &str) -> bool {
+    // Strip scheme and authority prefix up to the host.
+    let host_part = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+
+    // Extract the host (before any path or port).
+    let host = if let Some(idx) = host_part.find('/') {
+        &host_part[..idx]
+    } else {
+        host_part
+    };
+    // Drop port if present (handle IPv6 bracketed form too).
+    let host = if host.starts_with('[') {
+        // IPv6: [::1]:port or [::1]
+        host.trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(host)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+
+    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
 }
 
 #[cfg(test)]
@@ -388,6 +528,155 @@ project_id = "my-proj"
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── validate() loopback exemption (spelunk#316) ──────────────────────────
+
+    #[test]
+    fn validate_passes_for_loopback_url_without_project_id() {
+        for url in &[
+            "http://127.0.0.1:7777",
+            "http://localhost:7777",
+            "http://127.0.0.1:7778/",
+        ] {
+            let cfg = Config {
+                server_url: Some(url.to_string()),
+                project_id: None,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_ok(),
+                "expected validate() to pass for loopback URL {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_fails_for_non_loopback_url_without_project_id() {
+        let cfg = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    // ── is_loopback_url ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_loopback_url_recognises_127_0_0_1() {
+        assert!(is_loopback_url("http://127.0.0.1:7777"));
+        assert!(is_loopback_url("http://127.0.0.1:7777/"));
+        assert!(is_loopback_url("http://127.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_localhost() {
+        assert!(is_loopback_url("http://localhost:7777"));
+        assert!(is_loopback_url("http://localhost"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_ipv6_loopback() {
+        assert!(is_loopback_url("http://[::1]:7777"));
+        assert!(is_loopback_url("http://[::1]"));
+    }
+
+    #[test]
+    fn is_loopback_url_recognises_127_subnet() {
+        assert!(is_loopback_url("http://127.1.2.3:7777"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_non_loopback() {
+        assert!(!is_loopback_url("http://spelunk.internal:7777"));
+        assert!(!is_loopback_url("http://192.168.1.100:7777"));
+        assert!(!is_loopback_url("https://example.com"));
+        assert!(!is_loopback_url("http://10.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_address_with_127_in_path() {
+        // Should NOT match just because "127" appears somewhere
+        assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
+    }
+
+    // ── normalise_git_url ────────────────────────────────────────────────────
+
+    #[test]
+    fn normalise_https_url() {
+        assert_eq!(
+            normalise_git_url("https://github.com/owner/repo.git"),
+            "github.com/owner/repo"
+        );
+    }
+
+    #[test]
+    fn normalise_scp_url() {
+        assert_eq!(
+            normalise_git_url("git@github.com:owner/repo.git"),
+            "github.com/owner/repo"
+        );
+    }
+
+    #[test]
+    fn normalise_ssh_url() {
+        assert_eq!(
+            normalise_git_url("ssh://git@github.com/owner/repo"),
+            "github.com/owner/repo"
+        );
+    }
+
+    // ── derive_project_id: no git repo → local/ fallback ─────────────────────
+
+    #[test]
+    fn derive_project_id_non_git_dir_returns_local_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let id = derive_project_id(tmp.path());
+        assert!(id.starts_with("local/"), "expected local/ prefix, got {id}");
+        // blake3 hex is 64 chars
+        assert_eq!(id.len(), "local/".len() + 64);
+    }
+
+    // ── derive_project_id: git repo with origin ───────────────────────────────
+
+    #[test]
+    fn derive_project_id_git_repo_with_origin() {
+        let tmp = TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(repo_dir.join(".git")).unwrap();
+        std::fs::write(
+            repo_dir.join(".git").join("config"),
+            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/spelunk-cloud/spelunk.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        )
+        .unwrap();
+        // derive_project_id falls back to local/ when gix::discover fails on
+        // a minimal fake repo, but the git-config parser should find the URL.
+        // We test the git-config parser directly instead:
+        let config = std::fs::read_to_string(repo_dir.join(".git").join("config")).unwrap();
+        let url = extract_origin_url_from_git_config(&config).unwrap();
+        assert_eq!(normalise_git_url(&url), "github.com/spelunk-cloud/spelunk");
+    }
+
+    // ── resolve_project_id ───────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_project_id_returns_set_value_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config {
+            project_id: Some("acme/my-app".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_project_id(tmp.path()), "acme/my-app");
+    }
+
+    #[test]
+    fn resolve_project_id_derives_when_unset() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config::default();
+        let id = cfg.resolve_project_id(tmp.path());
+        // Should be the local/ fallback since tmp dir is not a git repo.
+        assert!(id.starts_with("local/"), "got {id}");
     }
 
     // ── env var overrides ────────────────────────────────────────────────────

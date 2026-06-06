@@ -28,6 +28,16 @@ pub struct StalenessReport {
     pub last_indexed_at: Option<i64>,
 }
 
+/// Language breakdown: how many files are indexed for each detected language.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LanguageStat {
+    /// The detected language name (e.g. `"rust"`, `"python"`), or `"unknown"` when
+    /// the language column is NULL.
+    pub name: String,
+    /// Number of indexed files in this language.
+    pub file_count: i64,
+}
+
 /// A file that appears to have drifted behind the rest of the project.
 #[derive(Debug, serde::Serialize)]
 pub struct DriftCandidate {
@@ -65,6 +75,26 @@ impl Database {
             last_indexed,
             snapshot_count,
         })
+    }
+
+    /// Return per-language file counts, ordered by count descending.
+    ///
+    /// Files with a NULL language column are grouped under `"unknown"`.
+    pub fn language_stats(&self) -> Result<Vec<LanguageStat>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT COALESCE(language, 'unknown') AS lang, COUNT(*) AS cnt \
+             FROM files \
+             GROUP BY lang \
+             ORDER BY cnt DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LanguageStat {
+                name: row.get(0)?,
+                file_count: row.get(1)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("querying language stats")
     }
 
     /// Sample up to `n` random files and compare on-disk blake3 hashes to stored hashes.

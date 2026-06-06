@@ -1,19 +1,19 @@
 [package]
 name        = "spelunk-core"
-version     = "0.7.0"
+version     = "0.7.1"
 edition     = "2024"
 description = "Core library for spelunk — storage, indexer, search, embeddings"
 license     = "MIT"
 repository  = "https://github.com/spelunk-cloud/spelunk"
 
 [features]
-default      = ["backend-lmstudio"]
-backend-lmstudio = ["dep:futures-util"]
+default      = []
 rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 
 [dependencies]
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
@@ -27,8 +27,10 @@ thiserror   = "2"
 toml        = "1.1"
 dirs        = "6"
 
-git-meta-lib = "0.1.10"
-gix          = { version = "0.83.0", default-features = false, features = ["sha1", "status"] }
+gix          = { version = "0.84.0", default-features = false, features = ["sha1", "status"] }
+gix-pack     = ">=0.69.0"
+gix-fs       = ">=0.21.1"
+gix-transport = ">=0.56.0"
 
 tree-sitter          = "0.26"
 tree-sitter-rust     = "0.24"
@@ -46,7 +48,6 @@ tree-sitter-hcl      = "1.1"
 tree-sitter-proto    = "0.4"
 tree-sitter-sequel   = "0.3"
 
-futures-util = { version = "0.3", optional = true }
 regex        = { version = "1", default-features = false, features = ["std"] }
 blake3       = "1"
 ignore       = "0.4"
@@ -62,4 +63,3 @@ tempfile          = { workspace = true }
 wiremock          = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test       = { workspace = true }
-cargo-audit       = { version = "0.22", features = ["fix"] }

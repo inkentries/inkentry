@@ -14,6 +14,7 @@
 #   --search-iters N              iterations per search query (default: 10)
 #   --memory-commits N            commits for git_meta_perf.sh (default: 5000)
 #   --skip-memory                 skip the memory benchmark
+#   --cold                        remove .spelunk/ before indexing (cold-start timing)
 
 set -euo pipefail
 
@@ -25,6 +26,7 @@ OUT_FILE=""
 SEARCH_ITERS=10
 MEMORY_COMMITS=5000
 SKIP_MEMORY=false
+COLD=false
 
 usage() {
     grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --search-iters) SEARCH_ITERS="$2";  shift 2 ;;
         --memory-commits) MEMORY_COMMITS="$2"; shift 2 ;;
         --skip-memory)  SKIP_MEMORY=true;   shift ;;
+        --cold)         COLD=true;          shift ;;
         -h|--help)      usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
@@ -81,8 +84,18 @@ for entry in "${REPO_ENTRIES[@]}"; do
 
     echo "=== Repo: ${NAME} (${REPO_DIR}) ==="
 
+    # Cold-start: remove existing index so we time a full re-index
+    INDEX_MODE="warm"
+    if [[ "$COLD" == "true" ]]; then
+        if [[ -d "${REPO_DIR}/.spelunk" ]]; then
+            echo "  Removing existing .spelunk for cold-start..."
+            rm -rf "${REPO_DIR}/.spelunk"
+        fi
+        INDEX_MODE="cold"
+    fi
+
     # Index it — timed
-    echo "  Indexing..."
+    echo "  Indexing (${INDEX_MODE})..."
     INDEX_START=$(python3 -c "import time; print(time.monotonic())")
     if ! "$SPELUNK" index "$REPO_DIR" >/dev/null 2>&1; then
         echo "    FAILED — skipping repo" >&2
@@ -131,6 +144,7 @@ import json
 r = json.loads('''$RESULTS''')
 r['repos']['${NAME}'] = {
     'path': '${REPO_DIR}',
+    'index_mode': '${INDEX_MODE}',
     'files': ${FILES},
     'chunks': ${CHUNKS},
     'index_seconds': ${INDEX_ELAPSED},

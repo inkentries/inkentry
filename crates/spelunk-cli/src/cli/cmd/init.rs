@@ -12,7 +12,7 @@ pub struct InitArgs {
     pub no_index: bool,
 }
 
-use crate::{config::Config, registry::Registry, storage::Database};
+use crate::{capability, config::Config, registry::Registry, storage::Database};
 
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 1. Detect project root ────────────────────────────────────────────────
@@ -101,8 +101,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             no_summaries: true,
             summary_batch_size: 10,
             background_phases: false,
+            detach: false,
         };
-        super::index::index(index_args, cfg).await?;
+        super::index::index(index_args, cfg.clone()).await?;
 
         // Read fresh stats from the just-created DB.
         match Database::open(&db_path) {
@@ -161,13 +162,45 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    // ── 7. Print success summary ──────────────────────────────────────────────
+    // ── 7. Auto-spawn server (TTY only) or probe for a running server ─────────
+    //
+    // Interactive (stdin is a TTY): attempt to start the server so semantic
+    // search works immediately. Non-interactive (CI / hook): probe only —
+    // never auto-spawn; print a skip notice if offline.
+    let server_line: Option<String> = {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            match super::server::ensure_server_running(7777).await {
+                Ok((port, true)) => Some(format!(
+                    "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
+                )),
+                Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
+                Err(e) => {
+                    tracing::debug!("server auto-start skipped: {e}");
+                    None
+                }
+            }
+        } else {
+            let tier = capability::get_tier(&cfg).await;
+            match tier {
+                capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
+                capability::Tier::Offline => {
+                    Some("[server not running — semantic search skipped]".to_string())
+                }
+            }
+        }
+    };
+
+    // ── 8. Print success summary ──────────────────────────────────────────────
     println!();
     println!("spelunk initialised for {}", project_name);
     println!();
     println!("  Index:   {} files, {} chunks", file_count, chunk_count);
     println!("  DB:      {}", db_path.display());
     println!("  Hook:    {}", hook_status);
+    if let Some(line) = server_line {
+        println!("  Server:  {line}");
+    }
     println!();
     println!("Next steps:");
     println!("  spelunk search \"your query\"");

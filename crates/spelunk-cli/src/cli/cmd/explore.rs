@@ -28,29 +28,37 @@ pub struct ExploreArgs {
     pub json: bool,
 }
 
+use std::sync::Arc;
+
 use super::helpers::open_project_db;
 use super::search::maybe_warn_stale;
 use super::ui::spinner;
 use crate::{
+    capability,
     config::Config,
     search::explore::{ExploreResult, Explorer},
+    server_client::{ServerEmbedAdapter, ServerInferenceClient, ServerLlmAdapter},
 };
 
 pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
-    if cfg.llm_model.is_none() {
-        anyhow::bail!(
-            "spelunk explore requires a chat model. \
-             Set `llm_model` in ~/.config/spelunk/config.toml."
-        );
-    }
+    let tier = capability::get_tier(&cfg).await;
+    capability::require_tier1("explore", tier, cfg.server_url.as_deref())?;
 
     let (db_path, _db) = open_project_db(args.db.as_deref(), &cfg.db_path)?;
     maybe_warn_stale(&db_path);
     crate::storage::record_usage_at(&db_path, "explore");
 
-    let sp = spinner("Loading models…");
-    let embedder = crate::backends::ActiveEmbedder::load(&cfg).await?;
-    let llm = crate::backends::ActiveLlm::load(&cfg).await?;
+    let client = ServerInferenceClient::from_config(&cfg).ok_or_else(|| {
+        anyhow::anyhow!(
+            "'spelunk explore' requires spelunk-server.\n\
+             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
+        )
+    })?;
+    let client = Arc::new(client);
+
+    let sp = spinner("Connecting to inference server…");
+    let embedder = ServerEmbedAdapter(Arc::clone(&client));
+    let llm = ServerLlmAdapter(Arc::clone(&client));
     sp.finish_and_clear();
 
     let verbose = args.verbose || crate::utils::is_agent_mode();

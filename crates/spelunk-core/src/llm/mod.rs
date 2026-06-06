@@ -1,8 +1,6 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-pub mod openai_compat;
-
 /// A streamed token from the LLM.
 pub type Token = String;
 

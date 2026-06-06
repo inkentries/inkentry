@@ -176,9 +176,72 @@ jobs:
           name: spelunk-${{ github.ref_name }}-universal-apple-darwin${{ matrix.suffix }}
           path: ${{ env.ARCHIVE }}
 
+  deb:
+    name: Build Debian package (amd64)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download x86_64 Linux artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: spelunk-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+          path: linux-amd64
+
+      - name: Extract tarball
+        run: |
+          tar -xzf linux-amd64/spelunk-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz \
+            -C linux-amd64
+
+      - name: Assemble deb layout
+        run: |
+          VERSION="${{ github.ref_name }}"
+          # Strip leading 'v' for deb version field
+          DEB_VERSION="${VERSION#v}"
+
+          mkdir -p BUILD/DEBIAN
+          mkdir -p BUILD/usr/bin
+          mkdir -p BUILD/usr/lib/systemd/user
+
+          # Binaries
+          install -m 755 linux-amd64/spelunk        BUILD/usr/bin/spelunk
+          install -m 755 linux-amd64/spelunk-server BUILD/usr/bin/spelunk-server
+
+          # systemd user unit
+          install -m 644 packaging/spelunk-server.service \
+            BUILD/usr/lib/systemd/user/spelunk-server.service
+
+          # DEBIAN/control (no leading whitespace — dpkg is strict)
+          cat > BUILD/DEBIAN/control <<EOF
+Package: spelunk
+Version: ${DEB_VERSION}
+Architecture: amd64
+Maintainer: spelunk-cloud <hello@spelunk.cloud>
+Depends: libc6 (>= 2.17)
+Description: Code intelligence for AI agents
+ spelunk provides persistent memory, a code graph, and semantic search
+ for AI coding agents. Includes the spelunk CLI and spelunk-server.
+Homepage: https://spelunk.cloud
+EOF
+
+          echo "DEB_VERSION=${DEB_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build .deb
+        run: |
+          dpkg-deb --build BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: spelunk-${{ github.ref_name }}-amd64-deb
+          path: spelunk_${{ env.DEB_VERSION }}_amd64.deb
+
   release:
     name: Create GitHub Release
-    needs: [build, universal-macos]
+    needs: [build, universal-macos, deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -203,4 +266,5 @@ jobs:
             --title "${{ github.ref_name }}" \
             --generate-notes \
             $PRERELEASE \
-            artifacts/*.tar.gz
+            artifacts/*.tar.gz \
+            artifacts/*.deb

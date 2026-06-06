@@ -13,10 +13,14 @@
 # Options:
 #   --results FILE     batch result JSON from agent run
 #   --patches-dir DIR  directory with per-task .patch files
-#   --dataset NAME     HuggingFace dataset (default: princeton-nlp/SWE-bench_Verified)
+#   --dataset NAME     HuggingFace dataset (default: princeton-nlp/SWE-bench)
 #   --split NAME       dataset split (default: test)
 #   --max-workers N    parallel eval workers (default: 4)
 #   --timeout SEC      per-instance timeout (default: 900)
+#
+# NOTE: We default to the full SWE-bench split (not SWE-bench_Verified) because all
+# 50 tasks in tasks_50.json exist in the full split, whereas only 24/50 are in
+# SWE-bench_Verified — causing a 26-task denominator gap. See issue #252.
 
 set -euo pipefail
 
@@ -24,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RESULTS=""
 PATCHES_DIR=""
-DATASET="princeton-nlp/SWE-bench_Verified"
+DATASET="princeton-nlp/SWE-bench"
 SPLIT="test"
 MAX_WORKERS=4
 TIMEOUT=900

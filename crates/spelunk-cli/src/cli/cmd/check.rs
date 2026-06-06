@@ -113,29 +113,39 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
         println!("\nRun `spelunk index .` to update.");
     }
 
-    // Show server status line (text mode only, when server_url is configured).
-    if (effective == "text" || effective == "porcelain") && cfg.server_url.is_some() {
+    // Show server status line (text mode only).
+    //
+    // We probe the tier and key off `tier.is_server()` rather than
+    // `cfg.server_url.is_some()`: with loopback auto-discovery (spelunk#316) a
+    // server can be reachable even when no `server_url` is configured, and the
+    // old guard silently omitted that auto-discovered server from the output.
+    // When offline we still want a status line iff a URL was explicitly set
+    // (so the user sees the "unreachable" hint); we don't nag when nothing was
+    // configured and no local server was found.
+    if effective == "text" || effective == "porcelain" {
         let tier = capability::get_tier(&cfg).await;
-        match tier {
-            capability::Tier::Server { url, caps } => {
-                let features: Vec<&str> = [
-                    caps.search_semantic.then_some("semantic search"),
-                    caps.explore.then_some("explore"),
-                    caps.plan.then_some("plan"),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let feature_str = if features.is_empty() {
-                    "memory sync".to_string()
-                } else {
-                    features.join(", ")
-                };
-                println!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
-            }
-            capability::Tier::Offline => {
-                let url = cfg.server_url.as_deref().unwrap_or("?");
-                println!("Server:  {url}  \x1b[31m✗\x1b[0m  unreachable — offline mode");
+        if tier.is_server() || cfg.server_url.is_some() {
+            match tier {
+                capability::Tier::Server { url, caps, .. } => {
+                    let features: Vec<&str> = [
+                        caps.search_semantic.then_some("semantic search"),
+                        caps.explore.then_some("explore"),
+                        caps.plan.then_some("plan"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    let feature_str = if features.is_empty() {
+                        "memory sync".to_string()
+                    } else {
+                        features.join(", ")
+                    };
+                    println!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
+                }
+                capability::Tier::Offline => {
+                    let url = cfg.server_url.as_deref().unwrap_or("?");
+                    println!("Server:  {url}  \x1b[31m✗\x1b[0m  unreachable — offline mode");
+                }
             }
         }
     }

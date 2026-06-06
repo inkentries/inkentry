@@ -7,7 +7,7 @@ use crate::{
     storage::{NoteInput, open_memory_backend},
 };
 
-pub(super) async fn memory_push(
+pub async fn memory_push(
     args: MemoryPushArgs,
     mem_path: &std::path::Path,
     cfg: &Config,

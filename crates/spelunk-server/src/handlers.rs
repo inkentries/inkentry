@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use async_stream::stream;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{
@@ -13,9 +13,11 @@ use axum::{
     },
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use utoipa::ToSchema;
 
-use super::{AppError, AppState};
+use super::auth::AuthContext;
+use super::{AppError, AppState, ErrorBody};
 
 // ── Request / Response types ──────────────────────────────────────────────────
 
@@ -75,8 +77,8 @@ fn default_limit() -> usize {
 
 #[derive(Deserialize, ToSchema)]
 pub struct SearchRequest {
-    /// Query embedding vector (must match project's embedding dimension).
-    pub embedding: Vec<f32>,
+    /// Text query — the server encodes this using its configured embedder.
+    pub query: String,
     /// Maximum number of results to return (default: 20).
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -101,17 +103,48 @@ pub struct SupersedeRequest {
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
+/// Server capabilities reported in the health response.
+#[derive(Serialize, ToSchema)]
+pub struct HealthResponse {
+    /// Always `"ok"`.
+    pub status: &'static str,
+    /// Server version string.
+    pub version: &'static str,
+    /// List of feature capabilities supported by this server instance.
+    pub capabilities: Vec<String>,
+    /// Persistent UUID v4 identifying this server instance across restarts.
+    pub instance_id: String,
+    /// Effective UID of the process that started the server (Unix); `null` on Windows.
+    pub started_by: Option<u32>,
+}
+
 /// Server liveness check. No authentication required.
+/// Returns server version, capabilities, and identity fields.
 #[utoipa::path(
     get,
     path = "/v1/health",
     responses(
-        (status = 200, description = "Server is up", body = str, example = "ok")
+        (status = 200, description = "Server is up", body = HealthResponse)
     ),
     tag = "health"
 )]
-pub async fn health() -> &'static str {
-    "ok"
+pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let mut capabilities = vec!["memory".to_string()];
+    if state.embedder.is_some() {
+        capabilities.push("index.embed".to_string());
+        capabilities.push("search.semantic".to_string());
+    }
+    if state.llm.is_some() {
+        capabilities.push("explore".to_string());
+        capabilities.push("llm.complete".to_string());
+    }
+    Json(HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        capabilities,
+        instance_id: state.instance_id.clone(),
+        started_by: state.started_by,
+    })
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -154,8 +187,8 @@ pub async fn list_projects(State(state): State<AppState>) -> Result<impl IntoRes
     request_body = AddNoteRequest,
     responses(
         (status = 201, description = "Note created", body = AddNoteResponse),
-        (status = 400, description = "Embedding dimension mismatch"),
-        (status = 401, description = "Unauthorized"),
+        (status = 400, description = "Embedding dimension mismatch", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
         (status = 422, description = "Entry rejected — prompt injection detected"),
     ),
@@ -280,8 +313,8 @@ pub async fn add_note(
     ),
     responses(
         (status = 200, description = "List of notes", body = Vec<super::db::ServerNote>),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -312,8 +345,8 @@ pub async fn list_notes(
     ),
     responses(
         (status = 200, description = "Note found", body = super::db::ServerNote),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Note not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Note not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -330,7 +363,8 @@ pub async fn get_note(
     }
 }
 
-/// Semantic search over memory entries using a pre-computed query embedding.
+/// Semantic search over memory entries. The server encodes the text query using its
+/// configured embedder. Returns 400 if no embedder is configured.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory/search",
@@ -340,8 +374,9 @@ pub async fn get_note(
     request_body = SearchRequest,
     responses(
         (status = 200, description = "Nearest neighbours", body = Vec<super::db::ServerNote>),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 400, description = "No embedder configured", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -351,9 +386,25 @@ pub async fn search_notes(
     Path(project_id): Path<String>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let embedder = state.embedder.as_ref().ok_or_else(|| {
+        AppError::BadRequest(
+            "This server has no embedder configured. Semantic memory search is unavailable."
+                .to_string(),
+        )
+    })?;
+
+    let query_vecs = embedder
+        .embed(&[body.query.as_str()])
+        .await
+        .map_err(AppError::Internal)?;
+    let query_vec = query_vecs
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::BadRequest("Embedder returned no vectors".to_string()))?;
+
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    let notes = db.search_notes(project.id, &body.embedding, body.limit)?;
+    let notes = db.search_notes(project.id, &query_vec, body.limit)?;
     Ok(Json(notes))
 }
 
@@ -367,8 +418,8 @@ pub async fn search_notes(
     ),
     responses(
         (status = 200, description = "Deletion result", body = BoolResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Note not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Note not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -394,8 +445,8 @@ pub async fn delete_note(
     ),
     responses(
         (status = 200, description = "Archive result", body = BoolResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Note not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Note not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -422,8 +473,8 @@ pub async fn archive_note(
     request_body = SupersedeRequest,
     responses(
         (status = 200, description = "Supersede result", body = BoolResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Note not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Note not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -448,8 +499,8 @@ pub async fn supersede_note(
     ),
     responses(
         (status = 200, description = "Project stats", body = super::db::ProjectStats),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -476,8 +527,8 @@ pub async fn project_stats(
     ),
     responses(
         (status = 200, description = "List of harvested git SHAs", body = Vec<String>),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -523,9 +574,9 @@ pub struct StreamQuery {
     ),
     responses(
         (status = 200, description = "Notes newer than `t`", body = Vec<super::db::ServerNote>),
-        (status = 400, description = "Missing or invalid `t` parameter"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 400, description = "Missing or invalid `t` parameter", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -556,8 +607,8 @@ pub async fn memory_since(
     ),
     responses(
         (status = 200, description = "SSE stream of new memory entries"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Project not found"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Project not found", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -615,6 +666,503 @@ pub async fn memory_stream(
     Ok(Sse::new(s).keep_alive(KeepAlive::default()))
 }
 
+// ── Index / embed ─────────────────────────────────────────────────────────────
+
+/// A single chunk to embed.
+#[derive(Deserialize, ToSchema)]
+pub struct EmbedChunkIn {
+    /// Opaque CLI-assigned identifier (e.g. blake3 hash of file + offset). Echoed back verbatim.
+    pub chunk_id: String,
+    /// Raw text content to embed.
+    pub content: String,
+}
+
+/// Embedding result for a single chunk.
+#[derive(Serialize, ToSchema)]
+pub struct EmbedChunkOut {
+    /// The same `chunk_id` that was sent in the request.
+    pub chunk_id: String,
+    /// Embedding vector produced by the server.
+    pub vector: Vec<f32>,
+}
+
+/// Request body for `POST /v1/projects/{project_id}/index/embed`.
+#[derive(Deserialize, ToSchema)]
+pub struct EmbedRequest {
+    /// Chunks to embed. Maximum 256 per request.
+    pub chunks: Vec<EmbedChunkIn>,
+}
+
+/// Response body for `POST /v1/projects/{project_id}/index/embed`.
+#[derive(Serialize, ToSchema)]
+pub struct EmbedResponse {
+    pub chunks: Vec<EmbedChunkOut>,
+}
+
+/// Generate embeddings for code chunks. The server encodes each chunk and returns the
+/// vectors. **The server does not store the vectors** — the CLI is the only persistent
+/// store for index data.
+///
+/// Returns 400 if no embedder is configured.
+/// Returns 413 if the batch exceeds 256 chunks.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/index/embed",
+    params(
+        ("project_id" = String, Path, description = "Project slug"),
+    ),
+    request_body = EmbedRequest,
+    responses(
+        (status = 200, description = "Embedding vectors (not stored server-side)", body = EmbedResponse),
+        (status = 400, description = "No embedder configured", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 413, description = "Batch exceeds 256 chunks", body = ErrorBody),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "index"
+)]
+pub async fn index_embed(
+    State(state): State<AppState>,
+    Path(_project_id): Path<String>,
+    Json(body): Json<EmbedRequest>,
+) -> Result<Response, AppError> {
+    const MAX_BATCH: usize = 256;
+
+    // Check batch size first so clients get a 413 even when no embedder is configured.
+    if body.chunks.len() > MAX_BATCH {
+        return Ok((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorBody::new(
+                "bad_request",
+                &format!(
+                    "Batch size {} exceeds maximum of {MAX_BATCH} chunks per request.",
+                    body.chunks.len()
+                ),
+            )),
+        )
+            .into_response());
+    }
+
+    let embedder = state.embedder.as_ref().ok_or_else(|| {
+        AppError::BadRequest(
+            "index.embed requires an embedder. Configure SPELUNK_EMBEDDING_URL on the server."
+                .to_string(),
+        )
+    })?;
+
+    if body.chunks.is_empty() {
+        return Ok(Json(EmbedResponse { chunks: vec![] }).into_response());
+    }
+
+    // Collect texts, preserving order for reassembly.
+    let texts: Vec<&str> = body.chunks.iter().map(|c| c.content.as_str()).collect();
+    let vectors = embedder.embed(&texts).await.map_err(AppError::Internal)?;
+
+    if vectors.len() != body.chunks.len() {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Embedder returned {} vectors for {} chunks",
+            vectors.len(),
+            body.chunks.len()
+        )));
+    }
+
+    let out_chunks: Vec<EmbedChunkOut> = body
+        .chunks
+        .into_iter()
+        .zip(vectors)
+        .map(|(c, v)| EmbedChunkOut {
+            chunk_id: c.chunk_id,
+            vector: v,
+        })
+        .collect();
+
+    // Data promise: vectors are NOT stored on the server. We return them directly.
+    Ok(Json(EmbedResponse { chunks: out_chunks }).into_response())
+}
+
+// ── Code search (query embedding proxy, spelunk#322) ─────────────────────────
+
+/// Request body for `POST /v1/projects/{project_id}/search`.
+#[derive(Deserialize, ToSchema)]
+pub struct CodeSearchRequest {
+    /// Natural-language search query.
+    pub query: String,
+    /// Maximum number of results the caller intends to fetch.
+    /// Passed back in the response for informational purposes only — the server
+    /// does not perform the KNN step; the CLI does that against its local index.
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+    /// Search mode: `"hybrid"` (default), `"semantic"`, or `"text"`.
+    ///
+    /// `"hybrid"` and `"semantic"` require an embedder; the server will return
+    /// `query_vector` so the CLI can run KNN against its local SQLite index.
+    /// `"text"` skips embedding and signals the CLI to use FTS.
+    #[serde(default = "default_search_mode")]
+    pub mode: String,
+}
+fn default_search_limit() -> usize {
+    10
+}
+fn default_search_mode() -> String {
+    "hybrid".to_string()
+}
+
+/// Response body for `POST /v1/projects/{project_id}/search`.
+#[derive(Serialize, ToSchema)]
+pub struct CodeSearchResponse {
+    /// Mode actually used (`"semantic"`, `"hybrid"`, or `"text"`).
+    /// May differ from the requested mode if the embedder is unavailable.
+    pub mode: String,
+    /// Query embedding vector — present for semantic/hybrid modes.
+    /// The CLI uses this to run KNN against its local index.
+    /// `null` when mode is `"text"` (no embedding needed).
+    pub query_vector: Option<Vec<f32>>,
+}
+
+/// Embed a search query server-side and return the vector for the CLI to use
+/// in its local KNN search.
+///
+/// The server applies the code-retrieval query prefix
+/// (`task: code retrieval | query: {q}`) so the CLI does not need to know the
+/// embedding format.  The server does **not** perform the KNN step — the local
+/// SQLite index lives on the CLI side.
+///
+/// - `"semantic"` / `"hybrid"`: embeds the query and returns `query_vector`.
+///   Returns **400** if no embedder is configured on this server.
+/// - `"text"`: returns `query_vector: null`; the CLI falls back to FTS.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/search",
+    params(
+        ("project_id" = String, Path, description = "Project slug"),
+    ),
+    request_body = CodeSearchRequest,
+    responses(
+        (status = 200, description = "Query vector (CLI runs KNN locally)", body = CodeSearchResponse),
+        (status = 400, description = "No embedder configured or invalid mode", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "search"
+)]
+pub async fn project_search(
+    State(state): State<AppState>,
+    Path(_project_id): Path<String>,
+    Json(body): Json<CodeSearchRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let mode = body.mode.as_str();
+
+    // Validate mode.
+    if !matches!(mode, "hybrid" | "semantic" | "text") {
+        return Err(AppError::BadRequest(format!(
+            "invalid mode '{mode}'; must be one of: hybrid, semantic, text"
+        )));
+    }
+
+    // Text mode: no embedding needed.
+    if mode == "text" {
+        return Ok(Json(CodeSearchResponse {
+            mode: "text".to_string(),
+            query_vector: None,
+        }));
+    }
+
+    // Semantic / hybrid: require an embedder.
+    let embedder = state.embedder.as_ref().ok_or_else(|| {
+        AppError::BadRequest(
+            "semantic/hybrid search requires an embedder. \
+             Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text."
+                .to_string(),
+        )
+    })?;
+
+    // Apply the code-retrieval query prefix so the vector space matches
+    // the indexed chunk vectors (Chunk::embedding_text format).
+    let query_text = format!("task: code retrieval | query: {}", body.query);
+    let vecs = embedder
+        .embed(&[query_text.as_str()])
+        .await
+        .map_err(AppError::Internal)?;
+    let query_vector = vecs
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("embedder returned no vectors")))?;
+
+    Ok(Json(CodeSearchResponse {
+        mode: mode.to_string(),
+        query_vector: Some(query_vector),
+    }))
+}
+
+// ── Explore (SSE) ─────────────────────────────────────────────────────────────
+
+/// A single context chunk supplied by the CLI for `/explore`.
+#[derive(Deserialize, ToSchema)]
+pub struct ExploreContextChunk {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content: String,
+}
+
+/// Request body for `POST /v1/projects/{project_id}/explore`.
+#[derive(Deserialize, ToSchema)]
+pub struct ExploreRequest {
+    pub question: String,
+    #[serde(default)]
+    pub context_chunks: Vec<ExploreContextChunk>,
+    #[serde(default = "default_max_turns")]
+    pub max_turns: usize,
+}
+fn default_max_turns() -> usize {
+    5
+}
+
+/// Run an LLM reasoning loop over caller-supplied context chunks.
+/// The CLI retrieves relevant chunks from its local index and sends them alongside
+/// the question. **The server does not store context chunks.**
+///
+/// Returns an SSE stream with events: `thought`, `answer`, `done`, `error`.
+/// Returns 503 if no LLM is configured.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/explore",
+    params(
+        ("project_id" = String, Path, description = "Project slug"),
+    ),
+    request_body = ExploreRequest,
+    responses(
+        (status = 200, description = "SSE stream: thought/answer/done/error events"),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 503, description = "No LLM configured", body = ErrorBody),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "inference"
+)]
+pub async fn explore(
+    State(state): State<AppState>,
+    Path(_project_id): Path<String>,
+    Json(body): Json<ExploreRequest>,
+) -> Result<Response, AppError> {
+    let llm = state.llm.clone().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."
+                .to_string(),
+        )
+    })?;
+
+    // Build context block from provided chunks.
+    let context_text = if body.context_chunks.is_empty() {
+        "(no context provided)".to_string()
+    } else {
+        body.context_chunks
+            .iter()
+            .map(|c| {
+                format!(
+                    "// {}:{}-{}\n{}",
+                    c.file, c.start_line, c.end_line, c.content
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n")
+    };
+
+    let system_prompt = "You are a code-exploration assistant. \
+        Analyse the supplied code context and answer the user's question step by step. \
+        Emit your intermediate reasoning as thoughts, then a final answer. \
+        Format: emit lines like JSON objects with 'kind' and 'content' fields.";
+
+    let user_prompt = format!(
+        "<code_context>\n{context_text}\n</code_context>\n\n\
+         <question>\n{question}\n</question>\n\n\
+         Respond with a series of JSON objects (one per line), each with \
+         {{\"kind\": \"thought\", \"content\": \"...\"}} or \
+         {{\"kind\": \"answer\", \"content\": \"...\"}}. \
+         End with {{\"kind\": \"done\"}}.",
+        question = body.question
+    );
+
+    let messages = vec![
+        spelunk_core::llm::Message::system(system_prompt),
+        spelunk_core::llm::Message::user(user_prompt),
+    ];
+
+    let (tx, mut rx) = mpsc::channel::<String>(64);
+    let max_tokens = 2048 * body.max_turns.min(10);
+
+    // Spawn LLM generation into a background task.
+    tokio::spawn(async move {
+        if let Err(e) = llm.generate(&messages, max_tokens, tx, None).await {
+            tracing::warn!("explore LLM generate error: {e}");
+        }
+    });
+
+    // Stream tokens as SSE events. We buffer tokens into lines and emit each
+    // complete JSON object as a separate SSE event.
+    let s = stream! {
+        let mut buffer = String::new();
+        while let Some(token) = rx.recv().await {
+            buffer.push_str(&token);
+            // Emit complete lines as SSE events.
+            while let Some(newline_pos) = buffer.find('\n') {
+                let line = buffer[..newline_pos].trim().to_string();
+                buffer.drain(..newline_pos + 1);
+                if line.is_empty() {
+                    continue;
+                }
+                yield Ok::<Event, Infallible>(Event::default().data(line));
+            }
+        }
+        // Flush remaining buffer content.
+        let remaining = buffer.trim().to_string();
+        if !remaining.is_empty() {
+            yield Ok::<Event, Infallible>(Event::default().data(remaining));
+        }
+        // Terminal event.
+        yield Ok::<Event, Infallible>(
+            Event::default().data(r#"{"kind":"done"}"#)
+        );
+    };
+
+    Ok(Sse::new(s).keep_alive(KeepAlive::default()).into_response())
+}
+
+// ── LLM complete (generic primitive) ─────────────────────────────────────────
+
+/// A single chat message for `/llm/complete`.
+#[derive(Deserialize, ToSchema)]
+pub struct LlmCompleteMessage {
+    /// Role: `system`, `user`, or `assistant`.
+    pub role: String,
+    pub content: String,
+}
+
+/// Request body for `POST /v1/projects/{project_id}/llm/complete`.
+#[derive(Deserialize, ToSchema)]
+pub struct LlmCompleteRequest {
+    /// Non-empty list of chat messages.
+    pub messages: Vec<LlmCompleteMessage>,
+    /// Desired max completion tokens. The server clamps this to its configured ceiling.
+    pub max_tokens: usize,
+    /// Optional OpenAI-style `response_format.json_schema` for structured output.
+    pub json_schema: Option<serde_json::Value>,
+}
+
+/// Run a single LLM completion over caller-supplied messages. Streaming SSE.
+///
+/// The server performs no orchestration, adds no system prompt, and stores nothing.
+/// Client-supplied `max_tokens` is clamped server-side to the configured ceiling.
+///
+/// **Auth:** `Authorization: Bearer` required (Tier 1).
+///
+/// **SSE event shapes:**
+/// - `{"kind":"token","content":"..."}` — one streamed fragment
+/// - `{"kind":"done"}` — terminal success
+/// - `{"kind":"error","code":"...","message":"..."}` — terminal failure mid-stream
+///
+/// Returns 503 if no LLM is configured on this server.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/llm/complete",
+    params(
+        ("project_id" = String, Path, description = "Project slug")
+    ),
+    request_body = LlmCompleteRequest,
+    responses(
+        (status = 200, description = "SSE stream: token/done/error events"),
+        (status = 400, description = "messages empty or max_tokens ≤ 0", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 413, description = "Request body too large", body = ErrorBody),
+        (status = 429, description = "Rate limit exceeded", body = ErrorBody),
+        (status = 503, description = "No LLM configured", body = ErrorBody),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "inference"
+)]
+pub async fn llm_complete(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(_project_id): Path<String>,
+    Json(body): Json<LlmCompleteRequest>,
+) -> Result<Response, AppError> {
+    // ── Validate request ──────────────────────────────────────────────────────
+    if body.messages.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody::new("bad_request", "messages must not be empty")),
+        )
+            .into_response());
+    }
+    if body.max_tokens == 0 {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody::new("bad_request", "max_tokens must be > 0")),
+        )
+            .into_response());
+    }
+
+    // ── Rate limit ────────────────────────────────────────────────────────────
+    let principal_key = match &auth_ctx.principal {
+        super::auth::Principal::ApiKey(k) => k.clone(),
+        super::auth::Principal::User { id } => id.clone(),
+    };
+    if state.rate_limiter.check(&principal_key).is_err() {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorBody::new(
+                "rate_limited",
+                "Per-principal rate limit exceeded. Slow down and retry.",
+            )),
+        )
+            .into_response());
+    }
+
+    // ── Clamp max_tokens server-side (never trust client upward) ─────────────
+    let max_tokens = body.max_tokens.min(state.max_tokens_ceiling);
+
+    // ── LLM availability ──────────────────────────────────────────────────────
+    let llm = state.llm.clone().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "llm.complete requires an LLM backend. \
+             Configure the chat model on the server (--llm-url / SPELUNK_LLM_URL)."
+                .to_string(),
+        )
+    })?;
+
+    // ── Convert messages ──────────────────────────────────────────────────────
+    let messages: Vec<spelunk_core::llm::Message> = body
+        .messages
+        .iter()
+        .map(|m| spelunk_core::llm::Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+        })
+        .collect();
+
+    let json_schema = body.json_schema;
+
+    // ── Spawn LLM generation ──────────────────────────────────────────────────
+    let (tx, mut rx) = mpsc::channel::<String>(64);
+    tokio::spawn(async move {
+        if let Err(e) = llm.generate(&messages, max_tokens, tx, json_schema).await {
+            tracing::warn!("llm_complete generate error: {e}");
+        }
+    });
+
+    // ── Stream tokens as SSE ─────────────────────────────────────────────────
+    let s = stream! {
+        while let Some(token) = rx.recv().await {
+            let data = serde_json::json!({"kind": "token", "content": token}).to_string();
+            yield Ok::<Event, Infallible>(Event::default().data(data));
+        }
+        yield Ok::<Event, Infallible>(
+            Event::default().data(r#"{"kind":"done"}"#)
+        );
+    };
+
+    Ok(Sse::new(s).keep_alive(KeepAlive::default()).into_response())
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn require_project(db: &super::db::ServerDb, slug: &str) -> Result<super::db::Project, AppError> {
@@ -634,6 +1182,7 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt; // for `oneshot`
 
+    use super::super::auth::ApiKeyAuth;
     use super::super::db::ServerDb;
     use super::super::{AppState, router};
 
@@ -656,11 +1205,17 @@ mod tests {
         let dim: usize = 4;
         let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
             .expect("failed to open in-memory server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         let state = AppState {
             db: Arc::new(tokio::sync::Mutex::new(db)),
-            api_key: None,
+            auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold,
             embedder: None,
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
+            instance_id,
+            started_by: None,
         };
         (router(state), dim as i32)
     }
@@ -794,6 +1349,144 @@ mod tests {
             status2,
             http::StatusCode::CREATED,
             "threshold=1.0 must disable conflict detection; body: {body2}"
+        );
+    }
+
+    /// GET /v1/health should return JSON with `status`, `version`, and `capabilities`.
+    #[tokio::test]
+    async fn health_returns_json_with_capabilities() {
+        let (app, _) = make_app(0.92);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).expect("health must return JSON");
+        assert_eq!(json["status"], json!("ok"), "status must be 'ok'");
+        assert!(json["version"].is_string(), "version must be a string");
+        assert!(
+            json["capabilities"].is_array(),
+            "capabilities must be an array"
+        );
+        let caps = json["capabilities"].as_array().unwrap();
+        assert!(
+            caps.iter().any(|c| c == "memory"),
+            "capabilities must include 'memory'"
+        );
+        // New fields from #321.
+        let id = json["instance_id"]
+            .as_str()
+            .expect("instance_id must be a string");
+        assert_eq!(
+            id.len(),
+            36,
+            "instance_id must be a UUID v4 (36 chars): {id}"
+        );
+        assert!(
+            json["started_by"].is_null(),
+            "started_by must be null in test (None)"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/memory/search with no embedder should return 400.
+    #[tokio::test]
+    async fn search_without_embedder_returns_400() {
+        let (app, _) = make_app(0.92);
+        // First create the project.
+        let _ = post_note(
+            app.clone(),
+            "search-proj",
+            "seed note",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let body = json!({"query": "test query", "limit": 5});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/search-proj/memory/search")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::BAD_REQUEST,
+            "search without embedder must return 400"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        assert_eq!(
+            json["error"]["code"],
+            json!("bad_request"),
+            "error code must be bad_request"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/index/embed with no embedder should return 400.
+    #[tokio::test]
+    async fn embed_without_embedder_returns_400() {
+        let (app, _) = make_app(0.92);
+        let body = json!({"chunks": [{"chunk_id": "abc", "content": "fn foo() {}"}]});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/proj/index/embed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::BAD_REQUEST,
+            "embed without embedder must return 400"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/explore with no LLM should return 503.
+    #[tokio::test]
+    async fn explore_without_llm_returns_503() {
+        let (app, _) = make_app(0.92);
+        let body = json!({"question": "what does foo do?", "context_chunks": []});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/proj/explore")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "explore without LLM must return 503"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/index/embed with >256 chunks should return 413.
+    #[tokio::test]
+    async fn embed_batch_too_large_returns_413() {
+        let (app, _) = make_app(0.92);
+        let chunks: Vec<Value> = (0..=256)
+            .map(|i| json!({"chunk_id": format!("c{i}"), "content": "fn foo() {}"}))
+            .collect();
+        let body = json!({"chunks": chunks});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/proj/index/embed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::PAYLOAD_TOO_LARGE,
+            "batch >256 must return 413"
         );
     }
 }

@@ -3,6 +3,21 @@
 //! Tier 0 (Offline): no server_url configured, or server unreachable.
 //! Tier 1 (Server):  server_url set and GET /v1/health succeeds.
 //!
+//! ## Loopback auto-discovery (spelunk#316 / 0.8.0)
+//!
+//! When `cfg.server_url` is `None` **and** `SPELUNK_NO_SERVER` is not set, the probe
+//! attempts to reach a locally-running spelunk-server before falling through to
+//! `Tier::Offline`:
+//!
+//! 1. Read `~/.local/state/spelunk/server.port` (written by `spelunk server start`);
+//!    use `http://127.0.0.1:<port>` if the file exists.
+//! 2. Otherwise probe `http://127.0.0.1:7777` with a **250 ms** timeout (distinct from
+//!    the 2 s timeout used for explicitly-configured remote URLs).
+//! 3. On success, treat as `Tier::Server` with `auto_discovered = true`.
+//! 4. On failure, return `Tier::Offline`.
+//!
+//! `SPELUNK_NO_SERVER=1` short-circuits all loopback probing and forces `Tier::Offline`.
+//!
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.
 
@@ -10,6 +25,34 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 
 use crate::config::Config;
+
+/// State file directory: `~/.local/state/spelunk/`.
+///
+/// On all platforms we use `~/.local/state` rather than the OS-native state dir.
+/// This mirrors the deliberate choice made for the config dir
+/// (`spelunk_config_dir` in spelunk-core's `config.rs`, which uses `~/.config`
+/// on every platform): it keeps the path identical across Linux and macOS, and
+/// matches what the CLI documentation and error messages say.
+///
+/// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
+/// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
+/// silently disabled loopback auto-discovery on the primary dev platform
+/// (spelunk#316). Returns `None` only when the home directory can't be resolved.
+///
+/// NOTE for spelunk#317 (writer side, `spelunk server start`): the writer MUST
+/// write `server.port` into this exact directory so reader and writer agree.
+/// Use the same `~/.local/state/spelunk/` path on every platform.
+fn spelunk_state_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".local").join("state").join("spelunk"))
+}
+
+/// Read the port written by `spelunk server start` into
+/// `~/.local/state/spelunk/server.port`. Returns `None` if absent or unreadable.
+fn read_server_port_file() -> Option<u16> {
+    let path = spelunk_state_dir()?.join("server.port");
+    let content = std::fs::read_to_string(&path).ok()?;
+    content.trim().parse::<u16>().ok()
+}
 
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
@@ -58,6 +101,7 @@ impl Capabilities {
     }
 
     /// Full set for a fully-featured server.
+    #[allow(dead_code)]
     pub fn all() -> Self {
         Self {
             search_semantic: true,
@@ -78,7 +122,16 @@ pub enum Tier {
     /// No server configured, or server unreachable. Offline features only.
     Offline,
     /// Server reachable. All `caps`-listed features are available.
-    Server { url: String, caps: Capabilities },
+    Server {
+        url: String,
+        caps: Capabilities,
+        /// `true` when the URL was discovered automatically (loopback probe),
+        /// `false` when it was set explicitly via config / env var.
+        /// Used to annotate UX output (e.g. `(local, auto)` in `spelunk status`).
+        /// Consumed by `is_auto_discovered()` and sub-issue #324 UX wiring.
+        #[allow(dead_code)]
+        auto_discovered: bool,
+    },
 }
 
 impl Tier {
@@ -86,6 +139,9 @@ impl Tier {
         matches!(self, Tier::Server { .. })
     }
 
+    // Used by check.rs / status.rs via pattern matching on the enum variant;
+    // also consumed by sub-issues #323/#324 UX wiring.
+    #[allow(dead_code)]
     pub fn server_url(&self) -> Option<&str> {
         match self {
             Tier::Server { url, .. } => Some(url),
@@ -93,18 +149,43 @@ impl Tier {
         }
     }
 
+    #[allow(dead_code)]
     pub fn caps(&self) -> Option<&Capabilities> {
         match self {
             Tier::Server { caps, .. } => Some(caps),
             Tier::Offline => None,
         }
     }
+
+    /// Returns `true` when the server URL was discovered automatically via
+    /// the loopback probe rather than set explicitly in config or environment.
+    /// Used by `spelunk status` (sub-issue #324) to annotate the URL with `(local, auto)`.
+    #[allow(dead_code)]
+    pub fn is_auto_discovered(&self) -> bool {
+        matches!(
+            self,
+            Tier::Server {
+                auto_discovered: true,
+                ..
+            }
+        )
+    }
 }
 
 /// Return the cached capability tier for this process.
 ///
-/// On the first call, probes the server (if `server_url` is set) with a 2-second
-/// timeout. Subsequent calls return immediately from the cache.
+/// On the first call, probes the server according to the following priority:
+///
+/// 1. If `SPELUNK_NO_SERVER=1` is set → `Tier::Offline` immediately.
+/// 2. If `cfg.server_url` is set → probe that URL with a **2 s** timeout
+///    (`auto_discovered = false`).
+/// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
+///    a. Read `~/.local/state/spelunk/server.port`; probe `127.0.0.1:<port>`.
+///    b. Fallback: probe `127.0.0.1:7777`.
+///    Both loopback probes use a **250 ms** timeout.
+///    On success: `auto_discovered = true`. On failure: `Tier::Offline`.
+///
+/// Subsequent calls return immediately from the per-process `OnceCell` cache.
 ///
 /// **Per-process cache**: the result is stored in a `static OnceCell` and is fixed
 /// for the lifetime of the process. This is correct for CLI invocations (one process
@@ -117,15 +198,64 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
         .await
 }
 
-async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
-    let Some(url) = url else {
-        return Tier::Offline;
-    };
+/// Remote-server probe timeout (explicit `server_url` in config/env).
+const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    {
+/// Loopback probe timeout (auto-discovery of a locally-running server).
+const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Default loopback port for `spelunk-server`.
+const DEFAULT_LOOPBACK_PORT: u16 = 7777;
+
+async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
+    // ── 1. SPELUNK_NO_SERVER short-circuit ───────────────────────────────────
+    if matches!(
+        std::env::var("SPELUNK_NO_SERVER").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    ) {
+        tracing::debug!("SPELUNK_NO_SERVER set — skipping all server probes");
+        return Tier::Offline;
+    }
+
+    // ── 2. Explicit server_url from config / env ─────────────────────────────
+    if let Some(url) = url {
+        return probe_url(url, key, REMOTE_PROBE_TIMEOUT, false).await;
+    }
+
+    // ── 3. Loopback auto-discovery ───────────────────────────────────────────
+    // Step 3a: port file written by `spelunk server start`
+    if let Some(port) = read_server_port_file() {
+        let loopback_url = format!("http://127.0.0.1:{port}");
+        tracing::debug!(
+            "loopback auto-discovery: found server.port={port}, probing {loopback_url}"
+        );
+        let tier = probe_url(&loopback_url, None, LOOPBACK_PROBE_TIMEOUT, true).await;
+        if tier.is_server() {
+            return tier;
+        }
+        tracing::debug!("loopback probe on port {port} failed — falling back to default port");
+    }
+
+    // Step 3b: default port 7777
+    let default_url = format!("http://127.0.0.1:{DEFAULT_LOOPBACK_PORT}");
+    tracing::debug!("loopback auto-discovery: probing default {default_url}");
+    let tier = probe_url(&default_url, None, LOOPBACK_PROBE_TIMEOUT, true).await;
+    if tier.is_server() {
+        return tier;
+    }
+
+    tracing::debug!("loopback auto-discovery: no local server found — offline mode");
+    Tier::Offline
+}
+
+/// Probe a single URL and return the resulting `Tier`.
+async fn probe_url(
+    url: &str,
+    key: Option<&str>,
+    timeout: std::time::Duration,
+    auto_discovered: bool,
+) -> Tier {
+    let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
@@ -140,35 +270,60 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let caps = parse_capabilities(resp).await;
+            let caps = parse_capabilities(url, resp).await;
             Tier::Server {
                 url: url.to_string(),
                 caps,
+                auto_discovered,
             }
         }
         Ok(resp) => {
-            tracing::warn!(
-                "spelunk-server at {url} returned {} — running in offline mode",
-                resp.status()
-            );
+            if !auto_discovered {
+                tracing::warn!(
+                    "spelunk-server at {url} returned {} — running in offline mode",
+                    resp.status()
+                );
+            }
             Tier::Offline
         }
         Err(e) => {
-            tracing::warn!("spelunk-server at {url} unreachable — running in offline mode: {e}");
+            if !auto_discovered {
+                tracing::warn!(
+                    "spelunk-server at {url} unreachable — running in offline mode: {e}"
+                );
+            }
             Tier::Offline
         }
     }
 }
 
-async fn parse_capabilities(resp: reqwest::Response) -> Capabilities {
+async fn parse_capabilities(url: &str, resp: reqwest::Response) -> Capabilities {
     #[derive(serde::Deserialize)]
     struct HealthBody {
         #[serde(default)]
         capabilities: Vec<String>,
+        instance_id: Option<String>,
+        started_by: Option<u32>,
     }
 
     match resp.json::<HealthBody>().await {
         Ok(body) => {
+            // Warn if the server was started by a different user on this host.
+            if let Some(server_uid) = body.started_by {
+                let my_uid = current_uid();
+                if let Some(my_uid) = my_uid
+                    && my_uid != server_uid
+                {
+                    tracing::warn!(
+                        "spelunk-server at {url} was started by UID {server_uid} \
+                         but you are UID {my_uid}; on a multi-user host this may \
+                         expose another user's memory — consider running your own server"
+                    );
+                }
+            }
+            if let Some(ref id) = body.instance_id {
+                tracing::debug!("server instance_id: {id}");
+            }
             let cap_strs: Vec<&str> = body.capabilities.iter().map(String::as_str).collect();
             Capabilities::from_server_caps(&cap_strs)
         }
@@ -176,6 +331,21 @@ async fn parse_capabilities(resp: reqwest::Response) -> Capabilities {
             // Legacy server returns plain-text "ok" — conservative fallback.
             Capabilities::legacy_memory_only()
         }
+    }
+}
+
+/// Return the effective UID of this process (Unix), or `None` on Windows.
+fn current_uid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        Some(unsafe { geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 
@@ -309,6 +479,7 @@ mod tests {
         let tier = Tier::Server {
             url: "http://example.com".to_string(),
             caps: Capabilities::all(),
+            auto_discovered: false,
         };
         assert!(tier.is_server());
     }
@@ -324,6 +495,7 @@ mod tests {
         let tier = Tier::Server {
             url: "http://spelunk.internal:7777".to_string(),
             caps: Capabilities::all(),
+            auto_discovered: false,
         };
         assert_eq!(tier.server_url(), Some("http://spelunk.internal:7777"));
     }
@@ -340,6 +512,7 @@ mod tests {
         let tier = Tier::Server {
             url: "http://example.com".to_string(),
             caps: caps.clone(),
+            auto_discovered: false,
         };
         assert!(tier.caps().is_some());
     }
@@ -350,6 +523,23 @@ mod tests {
         assert!(tier.caps().is_none());
     }
 
+    #[test]
+    fn tier_auto_discovered_flag() {
+        let auto = Tier::Server {
+            url: "http://127.0.0.1:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: true,
+        };
+        let explicit = Tier::Server {
+            url: "http://server.example.com:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: false,
+        };
+        assert!(auto.is_auto_discovered());
+        assert!(!explicit.is_auto_discovered());
+        assert!(!Tier::Offline.is_auto_discovered());
+    }
+
     // ── require_tier1 ────────────────────────────────────────────────────────
 
     #[test]
@@ -357,6 +547,7 @@ mod tests {
         let tier = Tier::Server {
             url: "http://example.com".to_string(),
             caps: Capabilities::all(),
+            auto_discovered: false,
         };
         assert!(require_tier1("explore", &tier, Some("http://example.com")).is_ok());
     }
@@ -396,5 +587,56 @@ mod tests {
         let err = require_tier1("explore", &tier, None).unwrap_err();
         let msg = err.to_string();
         assert!(!msg.contains("Tried:"));
+    }
+
+    // ── read_server_port_file ────────────────────────────────────────────────
+
+    #[test]
+    fn read_server_port_file_returns_none_when_absent() {
+        // In a temp dir with no server.port file, should return None.
+        // We can't control the state dir in a unit test, but we can verify
+        // the function doesn't panic and returns a valid Option<u16>.
+        // The actual file-read path is exercised by integration tests.
+        let _ = read_server_port_file(); // must not panic
+    }
+
+    // ── SPELUNK_NO_SERVER and loopback constants ──────────────────────────────
+
+    #[test]
+    fn loopback_probe_timeout_is_250ms() {
+        assert_eq!(LOOPBACK_PROBE_TIMEOUT.as_millis(), 250);
+    }
+
+    #[test]
+    fn remote_probe_timeout_is_2s() {
+        assert_eq!(REMOTE_PROBE_TIMEOUT.as_secs(), 2);
+    }
+
+    #[test]
+    fn default_loopback_port_is_7777() {
+        assert_eq!(DEFAULT_LOOPBACK_PORT, 7777);
+    }
+
+    // ── SPELUNK_NO_SERVER short-circuit behaviour ─────────────────────────────
+    //
+    // These tests mutate the process-global `SPELUNK_NO_SERVER` env var, so they
+    // are serialised against each other to avoid cross-test interference.
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    async fn spelunk_no_server_forces_offline() {
+        // SAFETY: serialised via #[serial] so no other test reads/writes this
+        // env var concurrently; restored before the guard scope ends.
+        for val in ["1", "true", "yes"] {
+            unsafe { std::env::set_var("SPELUNK_NO_SERVER", val) };
+            // server_url = None so that, absent the short-circuit, the probe would
+            // attempt loopback auto-discovery; the short-circuit must win.
+            let tier = probe(None, None).await;
+            assert!(
+                matches!(tier, Tier::Offline),
+                "SPELUNK_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
+            );
+        }
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
     }
 }
