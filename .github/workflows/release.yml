@@ -268,3 +268,94 @@ EOF
             $PRERELEASE \
             artifacts/*.tar.gz \
             artifacts/*.deb
+
+  update-homebrew-formula:
+    name: Update HomebrewFormula/spelunk.rb
+    needs: release
+    # Skip pre-release tags (rc/beta/alpha) — formula only tracks stable releases.
+    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Compute sha256 for each platform tarball
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          # Strip leading 'v' for formula version field
+          VER="${VERSION#v}"
+
+          download_sha256() {
+            local target="$1"
+            local url="https://github.com/spelunk-cloud/spelunk/releases/download/${VERSION}/spelunk-${VERSION}-${target}.tar.gz"
+            curl -fsSL "$url" | sha256sum | awk '{print $1}'
+          }
+
+          SHA_AARCH64_DARWIN="$(download_sha256 aarch64-apple-darwin)"
+          SHA_X86_64_DARWIN="$(download_sha256 x86_64-apple-darwin)"
+          SHA_AARCH64_LINUX="$(download_sha256 aarch64-unknown-linux-gnu)"
+          SHA_X86_64_LINUX="$(download_sha256 x86_64-unknown-linux-gnu)"
+
+          echo "SHA_AARCH64_DARWIN=${SHA_AARCH64_DARWIN}" >> "$GITHUB_ENV"
+          echo "SHA_X86_64_DARWIN=${SHA_X86_64_DARWIN}"   >> "$GITHUB_ENV"
+          echo "SHA_AARCH64_LINUX=${SHA_AARCH64_LINUX}"   >> "$GITHUB_ENV"
+          echo "SHA_X86_64_LINUX=${SHA_X86_64_LINUX}"     >> "$GITHUB_ENV"
+          echo "VER=${VER}"                                >> "$GITHUB_ENV"
+
+      - name: Patch HomebrewFormula/spelunk.rb
+        run: |
+          FORMULA="HomebrewFormula/spelunk.rb"
+
+          # Update version
+          sed -i "s/^  version \".*\"/  version \"${VER}\"/" "$FORMULA"
+
+          # Update sha256 values (match the TODO_* placeholders and real hashes)
+          sed -i "s/sha256 \"TODO_aarch64_apple_darwin\"/sha256 \"${SHA_AARCH64_DARWIN}\"/" "$FORMULA"
+          sed -i "s/sha256 \"TODO_x86_64_apple_darwin\"/sha256 \"${SHA_X86_64_DARWIN}\"/"   "$FORMULA"
+          sed -i "s/sha256 \"TODO_aarch64_linux\"/sha256 \"${SHA_AARCH64_LINUX}\"/"         "$FORMULA"
+          sed -i "s/sha256 \"TODO_x86_64_linux\"/sha256 \"${SHA_X86_64_LINUX}\"/"           "$FORMULA"
+
+          # On subsequent runs the placeholders are gone — update real hashes directly.
+          # Pattern: sha256 "..." inside the on_arm/on_intel blocks (order in file matches
+          # aarch64-apple-darwin, x86_64-apple-darwin, aarch64-linux, x86_64-linux).
+          python3 - <<'PYEOF'
+          import re, os, sys
+
+          formula_path = "HomebrewFormula/spelunk.rb"
+          with open(formula_path) as f:
+              content = f.read()
+
+          replacements = [
+              ("aarch64-apple-darwin", os.environ["SHA_AARCH64_DARWIN"]),
+              ("x86_64-apple-darwin",  os.environ["SHA_X86_64_DARWIN"]),
+              ("aarch64-unknown-linux-gnu", os.environ["SHA_AARCH64_LINUX"]),
+              ("x86_64-unknown-linux-gnu",  os.environ["SHA_X86_64_LINUX"]),
+          ]
+
+          for target, sha in replacements:
+              # Replace the sha256 line that follows the url line for this target
+              pattern = (
+                  r'(url "https://github\.com/spelunk-cloud/spelunk/releases/download/v[^/]+/'
+                  + re.escape(f'spelunk-v') + r'[^"]*-' + re.escape(target) + r'\.tar\.gz"'
+                  + r'\s+sha256 ")[0-9a-f]+(")'
+              )
+              content = re.sub(pattern, r'\g<1>' + sha + r'\g<2>', content)
+
+          with open(formula_path, "w") as f:
+              f.write(content)
+          PYEOF
+
+          cat "$FORMULA"
+
+      - name: Commit and push updated formula
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add HomebrewFormula/spelunk.rb
+          git commit -m "chore: update Homebrew formula to v${VER}" || echo "No changes to commit"
+          git push origin main
