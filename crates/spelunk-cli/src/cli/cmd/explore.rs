@@ -48,7 +48,12 @@ pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
     maybe_warn_stale(&db_path);
     crate::storage::record_usage_at(&db_path, "explore");
 
-    let client = ServerInferenceClient::from_config(&cfg).ok_or_else(|| {
+    // Honor the capability tier: when the server was auto-discovered via the
+    // loopback probe, `cfg.server_url` is unset; fill it in from the tier so the
+    // inference client can be built (IMP-3 / spelunk#316).
+    let project_root = db_path.parent().unwrap_or(&db_path);
+    let eff_cfg = tier.effective_config(&cfg, project_root);
+    let client = ServerInferenceClient::from_config(&eff_cfg).ok_or_else(|| {
         anyhow::anyhow!(
             "'spelunk explore' requires spelunk-server.\n\
              Set server_url in ~/.config/spelunk/config.toml to enable this feature."

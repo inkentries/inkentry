@@ -3,7 +3,7 @@ use anyhow::Result;
 use super::super::helpers::{embed_query, require_server_client};
 use super::super::status::format_age;
 use super::{MemoryTimelineArgs, backend_err};
-use crate::{config::Config, storage::open_memory_backend};
+use crate::{capability, config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_timeline(
     args: MemoryTimelineArgs,
@@ -11,6 +11,14 @@ pub(super) async fn memory_timeline(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Honor the auto-discovered server tier (IMP-3 / spelunk#316): see
+    // `memory_search` for rationale — loopback auto-discovery sets the
+    // capability tier without populating `cfg.server_url`.
+    let project_root = mem_path.parent().unwrap_or(mem_path);
+    let tier = capability::get_tier(cfg).await;
+    let eff_cfg = tier.effective_config(cfg, project_root);
+    let cfg = &eff_cfg;
+
     let sp = super::super::ui::spinner("Embedding query…");
     let client = require_server_client(cfg, "memory timeline")?;
     let blob = embed_query(&client, "question answering", &args.query).await?;

@@ -1,11 +1,44 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note};
 use crate::embeddings::blob_to_vec;
+
+/// Characters that must be percent-encoded inside a single URL **path segment**.
+///
+/// `derive_project_id` produces slugs that contain `/` (`local/<blake3-hex>`,
+/// `github.com/owner/repo`). Inserted raw into `/v1/projects/{project_id}/…`
+/// the slashes split the segment and break axum routing (→ 404). We percent-encode
+/// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
+/// axum percent-decodes it back to the original slug server-side, so the
+/// persistence key (`projects.slug`, UNIQUE) is unchanged. See spelunk decision #106.
+///
+/// Mirrors `PROJECT_ID_SEGMENT` / `encode_project_id` in
+/// `spelunk-cli/src/server_client.rs` — duplicated here because spelunk-core
+/// cannot depend on spelunk-cli.
+const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'/')
+    .add(b'%');
+
+/// Percent-encode a `project_id` slug for safe use as a single URL path segment.
+///
+/// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
+fn encode_project_id(project_id: &str) -> String {
+    utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
+}
 
 /// HTTP client for the spelunk-server REST API.
 ///
@@ -19,10 +52,13 @@ pub struct RemoteMemoryBackend {
 
 impl RemoteMemoryBackend {
     fn url(&self, path: &str) -> String {
+        // Percent-encode the project_id path segment: slugs contain `/`
+        // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split
+        // the segment and break axum routing → 404. See spelunk decision #106.
         format!(
             "{}/v1/projects/{}/{}",
             self.base_url.trim_end_matches('/'),
-            self.project_id,
+            encode_project_id(&self.project_id),
             path
         )
     }
@@ -384,5 +420,65 @@ impl MemoryBackend for RemoteMemoryBackend {
     /// Remote backend: edge queries are not supported — returns empty lists.
     async fn get_edges(&self, _id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
         Ok((vec![], vec![]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backend(project_id: &str) -> RemoteMemoryBackend {
+        RemoteMemoryBackend {
+            client: reqwest::Client::new(),
+            base_url: "http://127.0.0.1:7777".to_string(),
+            project_id: project_id.to_string(),
+            api_key: None,
+        }
+    }
+
+    /// `derive_local_fallback` / `normalise_git_url` slugs contain `/`; the
+    /// segment must be percent-encoded so axum routes the whole slug into
+    /// `{project_id}` instead of splitting on `/` (→ 404). See spelunk
+    /// decision #106 (mirrors IMP-1's fix in spelunk-cli/server_client.rs).
+    #[test]
+    fn url_percent_encodes_local_fallback_slug() {
+        let b = backend("local/9f2a8b3c4d5e6f70");
+        assert_eq!(
+            b.url("memory/search"),
+            "http://127.0.0.1:7777/v1/projects/local%2F9f2a8b3c4d5e6f70/memory/search"
+        );
+    }
+
+    #[test]
+    fn url_percent_encodes_github_remote_slug() {
+        let b = backend("github.com/spelunk-cloud/spelunk");
+        assert_eq!(
+            b.url("memory"),
+            "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
+        );
+    }
+
+    /// Round-trip: percent-decoding the encoded segment must yield the
+    /// original slug, since the slug is the persistence key
+    /// (`projects.slug` UNIQUE) and must reach `require_project`/
+    /// `upsert_project` exactly as `derive_project_id` produced it.
+    #[test]
+    fn encode_project_id_round_trips_through_percent_decode() {
+        for slug in ["local/9f2a8b3c4d5e6f70", "github.com/spelunk-cloud/spelunk"] {
+            let encoded = encode_project_id(slug);
+            let decoded = percent_encoding::percent_decode_str(&encoded)
+                .decode_utf8()
+                .expect("valid UTF-8 after percent-decoding");
+            assert_eq!(decoded, slug, "round-trip mismatch for slug {slug:?}");
+        }
+    }
+
+    #[test]
+    fn url_leaves_simple_slug_unchanged() {
+        let b = backend("my-project");
+        assert_eq!(
+            b.url("memory"),
+            "http://127.0.0.1:7777/v1/projects/my-project/memory"
+        );
     }
 }
