@@ -920,3 +920,237 @@ fn test_init_non_tty_prints_skip_notice() {
             "server not running — semantic search skipped",
         ));
 }
+
+// ── memory commands against an auto-discovered (loopback) server ─────────────
+//
+// IMP-3 / spelunk#316 / PR #349 (qa-v080-test-plan.md §Fix 3): `memory search`,
+// `memory timeline`, `memory harvest`, and `explore` used to gate directly on
+// `cfg.server_url`, so they reported "requires spelunk-server" even when a
+// server was reachable via loopback auto-discovery (no `server_url` in config).
+// The fix routes these commands through `Tier::effective_config`, which fills
+// in `server_url`/`project_id` from the discovered tier.
+//
+// These tests reproduce the auto-discovery path end-to-end: NO `server_url` in
+// config, `SPELUNK_NO_SERVER` unset, and a mock server reachable on loopback —
+// discovered via `~/.local/state/spelunk/server.port` (the same file
+// `spelunk server start` writes; see `capability.rs` step 3a). We redirect
+// `HOME` to an isolated temp dir and pre-write that port file so the probe
+// finds our `wiremock` instance deterministically, without depending on the
+// real default port 7777 (which may be occupied — or unoccupied — on the test
+// host) and without touching the developer's real `~/.local/state`.
+//
+// Coverage note: `memory search` and `memory timeline` share the exact
+// `effective_config` bridging path exercised here (see `memory_search` /
+// `memory_timeline` doc comments referencing IMP-3) and both are covered
+// below. `memory harvest` and `explore` route through the *same* bridging
+// code, but harvesting requires mocking `git log` plus a streaming
+// `/llm/complete` SSE extraction round-trip, and `explore` requires mocking a
+// multi-step tool-calling `Explorer` loop over `/llm/complete` SSE — both
+// disproportionately heavy relative to what's actually under test (the
+// auto-discovery → `effective_config` wiring, not the LLM pipelines
+// themselves, which have their own coverage elsewhere). Left uncovered here;
+// flagged honestly rather than thrashing on heavyweight SSE mocks.
+
+/// Write `<home>/.local/state/spelunk/server.port` so `capability::get_tier`'s
+/// loopback auto-discovery (step 3a) finds our mock server deterministically.
+/// Mirrors the file `spelunk server start` writes (see `cli/cmd/server.rs`).
+fn write_server_port_file(home: &std::path::Path, port: u16) {
+    let state_dir = home.join(".local").join("state").join("spelunk");
+    fs::create_dir_all(&state_dir).expect("create state dir");
+    fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+}
+
+/// Extract the TCP port `wiremock` bound to from its `uri()` (`http://127.0.0.1:<port>`).
+fn port_from_uri(uri: &str) -> u16 {
+    uri.rsplit(':')
+        .next()
+        .expect("uri has a port")
+        .trim_end_matches('/')
+        .parse()
+        .expect("uri port is numeric")
+}
+
+/// Mount the three endpoints the auto-discovery path needs on `server`:
+/// - `GET /v1/health` — capability probe (must report `memory` + `search.semantic`
+///   so `effective_config` and `require_server_client` both succeed)
+/// - `POST /v1/projects/{id}/index/embed` — query embedding (`embed_query`)
+/// - `POST /v1/projects/{id}/memory/search` — `RemoteMemoryBackend::search`
+///   (backs both `memory search` hybrid/semantic mode and `memory timeline`)
+async fn mount_auto_discovery_memory_endpoints(server: &wiremock::MockServer) {
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, ResponseTemplate};
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "version": "test",
+            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"]
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/memory/search$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "id": 1,
+                "kind": "decision",
+                "title": "Use loopback auto-discovery for local servers",
+                "body": "Probe 127.0.0.1:7777 (or the server.port file) when no server_url is configured.",
+                "tags": ["capability", "auto-discovery"],
+                "linked_files": [],
+                "created_at": 1_770_000_000_i64,
+                "status": "active",
+                "superseded_by": null,
+                "source_ref": null,
+                "valid_at": null,
+                "invalid_at": null,
+                "distance": 0.12
+            }
+        ])))
+        .mount(server)
+        .await;
+}
+
+/// `memory search` (default hybrid mode) succeeds against a server that was
+/// discovered via the loopback probe — no `server_url` in config.
+///
+/// Exercises: `capability::get_tier` → loopback auto-discovery →
+/// `Tier::effective_config` (fills in `server_url`/`project_id`) →
+/// `require_server_client` + `embed_query` → `RemoteMemoryBackend::search`
+/// → `POST /v1/projects/{id}/memory/search`.
+///
+/// Before PR #349 this errored "'spelunk memory search' requires
+/// spelunk-server" despite the server being reachable (qa-v080-test-plan.md
+/// §Fix 3a).
+#[tokio::test]
+async fn test_memory_search_with_auto_discovered_server() {
+    let mock_server = MockServer::start().await;
+    mount_auto_discovery_memory_endpoints(&mock_server).await;
+
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    // No `server_url` (and no `project_id`) in config — the defining trait of
+    // the auto-discovered path. `api_base_url` is unrelated to capability tier
+    // probing; it only configures the (offline) embedding/LLM endpoints.
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    // Build a local index so `memory search` has a DB to resolve `mem_path`
+    // from (offline embedding — SPELUNK_NO_SERVER keeps `index` from probing).
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", &home)
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // No SPELUNK_NO_SERVER here: this is the auto-discovery path under test.
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", &home)
+        .env_remove("SPELUNK_NO_SERVER")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("search")
+        .arg("loopback auto-discovery")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Use loopback auto-discovery for local servers",
+        ))
+        .stdout(predicate::str::contains("#1"))
+        .stdout(predicate::str::contains("[decision]"));
+}
+
+/// `memory timeline` succeeds against a server that was discovered via the
+/// loopback probe — no `server_url` in config.
+///
+/// Same bridging path as `memory search` (see above): `get_tier` →
+/// `effective_config` → `embed_query` → `RemoteMemoryBackend::search_timeline`
+/// → `POST /v1/projects/{id}/memory/search`. Before PR #349 this errored
+/// "'spelunk memory timeline' requires spelunk-server" (qa-v080-test-plan.md
+/// §Fix 3b).
+#[tokio::test]
+async fn test_memory_timeline_with_auto_discovered_server() {
+    let mock_server = MockServer::start().await;
+    mount_auto_discovery_memory_endpoints(&mock_server).await;
+
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", &home)
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    Command::cargo_bin("spelunk")
+        .unwrap()
+        .env("HOME", &home)
+        .env_remove("SPELUNK_NO_SERVER")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("timeline")
+        .arg("loopback auto-discovery")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Timeline: loopback auto-discovery",
+        ))
+        .stdout(predicate::str::contains(
+            "Use loopback auto-discovery for local servers",
+        ));
+}
