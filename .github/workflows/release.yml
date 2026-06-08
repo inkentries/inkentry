@@ -66,6 +66,8 @@ jobs:
 
       - name: Build release binaries (cross)
         if: matrix.cross
+        env:
+          OPENSSL_NO_VENDOR: "0"
         run: |
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then

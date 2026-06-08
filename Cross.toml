@@ -4,5 +4,5 @@
 # the vendored feature, which isn't reliably activating during cross builds.
 pre-build = [
     "dpkg --add-architecture arm64",
-    "apt-get update && apt-get install --no-install-recommends -y libssl-dev:arm64",
+    "apt-get update && apt-get install --no-install-recommends -y libssl-dev:arm64 libssl-dev",
 ]

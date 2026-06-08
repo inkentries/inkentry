@@ -6,10 +6,10 @@ name: Test Build (temporary — remove before merge)
 on:
   push:
     branches:
-      - 'release/0.8.0-arm-build-fix'
+      - "release/0.8.0-arm-build-fix"
   pull_request:
     branches:
-      - 'release/0.8.0-arm-build-fix'
+      - "release/0.8.0-arm-build-fix"
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,6 +70,8 @@ jobs:
 
       - name: Build release binaries (cross)
         if: matrix.cross
+        env:
+          OPENSSL_NO_VENDOR: "0"
         run: |
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then
