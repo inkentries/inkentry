@@ -46,7 +46,14 @@ esac
 case "${OS_NAME}-${ARCH_NAME}" in
   linux-x86_64)   TARGET="x86_64-unknown-linux-gnu" ;;
   linux-aarch64)  TARGET="aarch64-unknown-linux-gnu" ;;
-  macos-x86_64)   TARGET="x86_64-apple-darwin" ;;
+  macos-x86_64)
+    # Apple deprecated this architecture (Apple Silicon replaced it on new
+    # hardware six years ago) — we no longer publish a prebuilt binary for it.
+    printf 'spelunk no longer ships a prebuilt binary for Intel Macs (x86_64-apple-darwin).\n' >&2
+    printf 'Please build from source instead — see:\n' >&2
+    printf '  https://github.com/%s/blob/main/docs/getting-started.md\n' "$REPO" >&2
+    exit 1
+    ;;
   macos-aarch64)  TARGET="aarch64-apple-darwin" ;;
 esac
 

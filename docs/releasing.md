@@ -10,20 +10,17 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 1. Builds `spelunk` and `spelunk-server` release binaries for all supported platforms.
 2. Strips binaries where possible to reduce download size.
 3. Packages each platform's binaries into a `.tar.gz` archive.
-4. Creates a macOS universal binary by combining x86_64 and aarch64 slices with `lipo`.
-5. Builds an `amd64` Debian package (`spelunk_<version>_amd64.deb`).
-6. Creates a GitHub Release and attaches all `.tar.gz` archives and the `.deb` as downloadable assets.
-7. Auto-generates release notes from merged pull requests and commits.
+4. Builds an `amd64` Debian package (`spelunk_<version>_amd64.deb`).
+5. Creates a GitHub Release and attaches all `.tar.gz` archives and the `.deb` as downloadable assets.
+6. Auto-generates release notes from merged pull requests and commits.
 
 Two install paths live outside this workflow:
 
 - **`install.sh`** is hosted at `https://spelunk.cloud/install.sh`. It resolves
   the latest release tag via the GitHub API and downloads the matching tarball —
   it does not need updating per release.
-- **Homebrew tap** (`spelunk-cloud/homebrew-spelunk`, source under
-  `homebrew-tap/`): the formula's `url`/`sha256`/`version` are updated per
-  release by `homebrew-tap/.github/workflows/update-formula.yml` /
-  `scripts/push-homebrew-tap.sh`.
+- **Homebrew tap** the formula's `url`/`sha256`/`version` are updated per
+  release by `.github/workflows/release.yml` .
 
 ## Supported platforms
 
@@ -31,9 +28,12 @@ Two install paths live outside this workflow:
 |--------|--------|-------|
 | `x86_64-unknown-linux-gnu` | ubuntu-latest | Native build |
 | `aarch64-unknown-linux-gnu` | ubuntu-latest | Cross-compiled via `cross` |
-| `x86_64-apple-darwin` | macos-latest | Native build |
 | `aarch64-apple-darwin` | macos-latest | Native build (Apple Silicon) |
-| `universal-apple-darwin` | macos-latest | Fat binary: x86_64 + aarch64 merged with `lipo` |
+
+> **Note:** `x86_64-apple-darwin` (Intel Mac) prebuilt binaries were dropped —
+> Apple deprecated the architecture and Apple Silicon replaced it on new
+> hardware six years ago. Intel Mac users build from source (see
+> `docs/getting-started.md`).
 
 ## Cutting a release
 
@@ -113,9 +113,6 @@ Examples for `v0.8.0`:
 ```bash
 # macOS Apple Silicon
 https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-aarch64-apple-darwin.tar.gz
-
-# macOS universal (x86_64 + Apple Silicon)
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-universal-apple-darwin.tar.gz
 
 # Linux x86_64
 https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-x86_64-unknown-linux-gnu.tar.gz

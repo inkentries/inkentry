@@ -29,11 +29,6 @@ jobs:
             features: ""
             suffix: ""
           - os: macos-latest
-            target: x86_64-apple-darwin
-            cross: false
-            features: ""
-            suffix: ""
-          - os: macos-latest
             target: aarch64-apple-darwin
             cross: false
             features: ""
@@ -46,11 +41,6 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross: true
-            features: rich-formats
-            suffix: -rich-formats
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            cross: false
             features: rich-formats
             suffix: -rich-formats
           - os: macos-latest
@@ -125,57 +115,6 @@ jobs:
           name: spelunk-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.suffix }}
           path: ${{ env.ARCHIVE }}
 
-  universal-macos:
-    name: Build (universal-apple-darwin${{ matrix.suffix }})
-    needs: build
-    runs-on: macos-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        suffix: ["", "-rich-formats"]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download x86_64 artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: spelunk-${{ github.ref_name }}-x86_64-apple-darwin${{ matrix.suffix }}
-          path: x86_64
-
-      - name: Download aarch64 artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: spelunk-${{ github.ref_name }}-aarch64-apple-darwin${{ matrix.suffix }}
-          path: aarch64
-
-      - name: Extract both tarballs
-        run: |
-          tar -xzf x86_64/spelunk-${{ github.ref_name }}-x86_64-apple-darwin${{ matrix.suffix }}.tar.gz -C x86_64
-          tar -xzf aarch64/spelunk-${{ github.ref_name }}-aarch64-apple-darwin${{ matrix.suffix }}.tar.gz -C aarch64
-
-      - name: Create universal binaries with lipo
-        run: |
-          mkdir -p universal
-          lipo -create -output universal/spelunk \
-            x86_64/spelunk aarch64/spelunk
-          lipo -create -output universal/spelunk-server \
-            x86_64/spelunk-server aarch64/spelunk-server
-
-      - name: Package universal tarball
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ARCHIVE="spelunk-${VERSION}-universal-apple-darwin${{ matrix.suffix }}.tar.gz"
-          tar -czf "${ARCHIVE}" -C universal spelunk spelunk-server
-          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
-
-      - name: Upload universal artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: spelunk-${{ github.ref_name }}-universal-apple-darwin${{ matrix.suffix }}
-          path: ${{ env.ARCHIVE }}
-
   deb:
     name: Build Debian package (amd64)
     needs: build
@@ -241,7 +180,7 @@ EOF
 
   release:
     name: Create GitHub Release
-    needs: [build, universal-macos, deb]
+    needs: [build, deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -268,3 +207,84 @@ EOF
             $PRERELEASE \
             artifacts/*.tar.gz \
             artifacts/*.deb
+
+  update-homebrew-formula:
+    name: Update HomebrewFormula/spelunk.rb
+    needs: release
+    # Skip pre-release tags (rc/beta/alpha) — formula only tracks stable releases.
+    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Read sha256 digests from the GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          # Strip leading 'v' for formula version field
+          VER="${VERSION#v}"
+
+          release_digest() {
+            local target="$1"
+            local asset="spelunk-${VERSION}-${target}.tar.gz"
+            # Each release asset carries a `digest` field shaped "sha256:<hex>" —
+            # no need to download the tarball and hash it ourselves.
+            gh release view "${VERSION}" --json assets \
+              --jq ".assets[] | select(.name == \"${asset}\") | .digest" \
+              | sed 's/^sha256://'
+          }
+
+          SHA_AARCH64_DARWIN="$(release_digest aarch64-apple-darwin)"
+          SHA_AARCH64_LINUX="$(release_digest aarch64-unknown-linux-gnu)"
+          SHA_X86_64_LINUX="$(release_digest x86_64-unknown-linux-gnu)"
+
+          echo "SHA_AARCH64_DARWIN=${SHA_AARCH64_DARWIN}" >> "$GITHUB_ENV"
+          echo "SHA_AARCH64_LINUX=${SHA_AARCH64_LINUX}"   >> "$GITHUB_ENV"
+          echo "SHA_X86_64_LINUX=${SHA_X86_64_LINUX}"     >> "$GITHUB_ENV"
+          echo "VER=${VER}"                                >> "$GITHUB_ENV"
+
+      - name: Regenerate HomebrewFormula/spelunk.rb
+        run: |
+          node .github/scripts/update-homebrew-formula.js \
+            --version "$VER" \
+            --sha-aarch64-darwin "$SHA_AARCH64_DARWIN" \
+            --sha-aarch64-linux "$SHA_AARCH64_LINUX" \
+            --sha-x86_64-linux "$SHA_X86_64_LINUX" \
+            --out HomebrewFormula/spelunk.rb
+
+          cat HomebrewFormula/spelunk.rb
+
+      - name: Open PR with the updated formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- HomebrewFormula/spelunk.rb; then
+            echo "No changes to HomebrewFormula/spelunk.rb — skipping PR."
+            exit 0
+          fi
+
+          BRANCH="chore/homebrew-formula-v${VER}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add HomebrewFormula/spelunk.rb
+          git commit -m "chore: update Homebrew formula to v${VER}"
+          # `main` is branch-protected — push the change on its own branch and
+          # open a PR rather than pushing directly.
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: update Homebrew formula to v${VER}" \
+            --body "Automated update of \`HomebrewFormula/spelunk.rb\` for release \`${{ github.ref_name }}\`, generated by \`.github/scripts/update-homebrew-formula.js\` from the release asset sha256 digests."

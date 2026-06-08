@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** May 2026 (ADR-002: generic `llm/complete` inference endpoint)  
+**Last reviewed:** June 2026 (PR #339: git-notes memory write-through)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -17,6 +17,7 @@ spelunk has two distinct operational modes with different attack surfaces:
 3. Runs KNN search over stored embeddings via sqlite-vec
 4. Optionally sends context + a user question to an LLM endpoint (`llm_model` / same base URL)
 5. Maintains a `memory.db` of structured notes with semantic search
+6. **When `store_in_git_notes = true` (the default):** each `spelunk memory add` also appends the note as a JSON line to `refs/notes/spelunk` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-notespelunk) below.
 
 ### Mode B — spelunk-server
 An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
@@ -41,10 +42,13 @@ the data-egress threat profile significantly.
 | Source code chunks in index | Medium | High | Medium |
 | Credentials accidentally present in source | High | — | — |
 | Memory notes (decisions, handoffs) | Medium | High | Medium |
+| **git-notes memory (`refs/notes/spelunk`)** | **Medium–High** | Medium | Low |
 | Embedding vectors | Low | Medium | Low |
 | spelunk config (`~/.config/spelunk/config.toml`) | Medium | High | Medium |
 | Server-side memory DB (all projects) | High | High | High |
 | Bearer token / API key (server mode) | High | — | — |
+
+**Note on git-notes confidentiality:** Notes may contain architectural decisions, credentials accidentally typed into `--body`, handoff text referencing internal systems, or other context a developer would not ordinarily commit to the repo. If the repo is pushed to a shared or public remote the notes are readable by anyone with clone access.
 
 ---
 
@@ -66,8 +70,20 @@ User filesystem
   │     └─► LLM prompt ─► api_base_url
   │           └─ context: code chunks + spec files + memory notes
   │
-  └─ spelunk memory ─► memory.db (SQLite, local)
+  └─ spelunk memory add ─► memory.db (SQLite, local)
+                        └─► [git notes append] ─► refs/notes/spelunk on HEAD
+                                                        │
+                                                        └─► git push ─► remote (any clone)
+                                                             ┌──────────────────────────────────────┐
+                                                             │ TRUST BOUNDARY: local repo → remote  │
+                                                             │ Notes travel with the repo;           │
+                                                             │ no secret scan on this path (*)       │
+                                                             └──────────────────────────────────────┘
 ```
+(*) `spelunk memory harvest` (harvest_claude.rs) does run `contains_secret` on
+harvested text before storing. Direct `spelunk memory add` does **not** — the
+note body comes from the user's own command line or `$EDITOR` and is written to
+git notes verbatim.
 
 ### Mode B — spelunk-server
 
@@ -108,6 +124,7 @@ reachable beyond localhost (e.g. on a LAN or cloud VM), all memory is unauthenti
 | `memory.db` edited directly to corrupt supersession state | A | Low | Medium | Atomic transactions in `insert_with_supersession()` and `supersede()` (issue #136) |
 | Unauthenticated HTTP client corrupts server memory DB | B | Medium | High | Bearer token auth — but optional. Unauthenticated by default. |
 | Embedding server returns malformed vectors | A/B | Low | Low | Dimension validation on KNN input; errors surface as HTTP 400 (server) or exit 2 (CLI) |
+| **git notes rewritten by another tool or git command, corrupting stored memory** | A | Low | Medium | `spelunk memory add` uses `git notes add -f` (force-replace) per-commit. A concurrent `git notes add` or `git notes prune` from another process could silently drop entries. The git-notes backend is documented as unsuitable for concurrent multi-agent use (#185); the SQLite backend is the recommended default for such workflows. |
 
 ### R — Repudiation
 
@@ -125,6 +142,8 @@ reachable beyond localhost (e.g. on a LAN or cloud VM), all memory is unauthenti
 | Server memory accessible without auth | B | Medium | High | No `--api-key` by default; any process that can reach the port reads all notes |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | Bind address is configurable; default and documentation should recommend `127.0.0.1` unless team use is intended |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
+| **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-notespelunk) section. Track: issue to add secret-scan gate on write-through path. |
+| **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/spelunk` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
 
 ### E — Elevation of Privilege
 
@@ -187,6 +206,69 @@ lost by going generic.
 
 ---
 
+## git-notes memory (`refs/notes/spelunk`)
+
+PR #339 introduced a write-through that persists every `spelunk memory add` entry
+as a JSON line appended to `refs/notes/spelunk` on HEAD when `store_in_git_notes = true`
+(the default). This section models the associated data flows and trust boundaries.
+
+### What is stored
+
+Each note is a single-line JSON object (`NoteRecord`) containing: `id`,
+`kind`, `title`, `body`, `tags`, `linked_files`, `created_at`, `status`,
+`source_ref`, and schema metadata. The `body` field is the raw user-supplied
+text from `--body` or `$EDITOR`.
+
+### How notes propagate
+
+```
+spelunk memory add
+  └─► append_to_git_notes() in storage/git_notes.rs
+        ├─► git notes --ref=spelunk show HEAD   (read existing)
+        ├─► combine old + new JSON line
+        └─► git notes --ref=spelunk add -f HEAD (write back)
+
+git push [with refs/notes/spelunk in refspec or push.followTags / notes config]
+  └─► remote repository — readable by anyone with clone access
+```
+
+Git does not push notes by default unless the user explicitly configures
+`remote.<name>.push = refs/notes/*` or passes `refs/notes/spelunk` on the
+command line. However, spelunk's documentation uses `git push --tags` and
+`git push` patterns that do not push notes unless configured — but many CI
+systems and IDE integrations push all refs. Users should be aware of their
+push configuration.
+
+### Trust boundary
+
+| Boundary | Direction | What crosses it |
+|----------|-----------|-----------------|
+| Local git repo → git remote | On `git push` (when notes refspec is included) | All `NoteRecord` JSON attached to pushed commits |
+| git remote → any clone | On `git clone` / `git fetch` with notes refspec | Same NoteRecord JSON |
+
+### Secret-scanning status on this path
+
+| Code path | Scanner called? | Notes |
+|-----------|:-:|-------|
+| `spelunk index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
+| `spelunk memory harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
+| `spelunk memory add` → git-notes write-through | **No** | Body is user-supplied text written verbatim to `refs/notes/spelunk`. No call to `contains_secret()` exists in `add.rs` before `append_to_git_notes()`. |
+
+**Risk:** A user who types `spelunk memory add --title "DB creds" --body "password=s3cr3t"` will
+have that credential stored verbatim in `refs/notes/spelunk` and, if the repo is
+pushed with notes, the credential is exfiltrated.
+
+### Controls and recommendations
+
+| Control | Status |
+|---------|--------|
+| Secret scanning on `memory add` write-through path | **Gap — not implemented.** Binding requirement #8 below tracks this. |
+| `store_in_git_notes = false` opt-out | Available in `~/.config/spelunk/config.toml`; not the default. |
+| Documentation warning that notes travel with the repo | Added in `docs/memory.md` and `SKILL.md` (PR #276). |
+| `git push` does not push notes by default | True — but not a reliable control; depends on user's git config. |
+
+---
+
 ## Third-Party Backend Risk (all modes)
 
 This section is elevated because the original model assumed local-only backends.
@@ -227,3 +309,4 @@ From this threat model, the following requirements are binding:
 5. **CI must gate on `cargo audit` and `cargo deny`.**
 6. **spelunk-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--api-key` is set.
 7. **Config documentation must warn** that setting `api_base_url` to a non-local address transmits source code and memory content to that endpoint.
+8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-notespelunk) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**

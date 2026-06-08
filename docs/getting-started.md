@@ -37,8 +37,6 @@ brew install spelunk-cloud/spelunk/spelunk
 spelunk --version
 ```
 
-The tap lives at [`spelunk-cloud/homebrew-spelunk`](https://github.com/spelunk-cloud/homebrew-spelunk).
-
 ### Debian / Ubuntu (`.deb`)
 
 The release pipeline publishes an `amd64` `.deb`. Substitute the release version
@@ -78,6 +76,12 @@ a launchd plist (`packaging/spelunk-server.plist`) for macOS and a systemd unit
 (`packaging/spelunk-server.service`) for Linux. Most users don't need these —
 `spelunk` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
+> **Intel Macs (`x86_64-apple-darwin`):** we no longer publish a prebuilt binary for
+> this target — Apple deprecated the architecture, and Apple Silicon replaced it on
+> new hardware six years ago. Intel Mac users should build from source instead; see
+> [Building](building.md) (`cargo build --release` works unmodified on `x86_64-apple-darwin`).
+
+> Building from source? See [Building](building.md).
 
 ## 2. Cold start: working search in under a minute
 
