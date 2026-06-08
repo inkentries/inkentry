@@ -451,10 +451,10 @@ mod tests {
 
     #[test]
     fn url_percent_encodes_github_remote_slug() {
-        let b = backend("github.com/BurntSushi/jiff");
+        let b = backend("github.com/spelunk-cloud/spelunk");
         assert_eq!(
             b.url("memory"),
-            "http://127.0.0.1:7777/v1/projects/github.com%2FBurntSushi%2Fjiff/memory"
+            "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
         );
     }
 
@@ -464,7 +464,7 @@ mod tests {
     /// `upsert_project` exactly as `derive_project_id` produced it.
     #[test]
     fn encode_project_id_round_trips_through_percent_decode() {
-        for slug in ["local/9f2a8b3c4d5e6f70", "github.com/BurntSushi/jiff"] {
+        for slug in ["local/9f2a8b3c4d5e6f70", "github.com/spelunk-cloud/spelunk"] {
             let encoded = encode_project_id(slug);
             let decoded = percent_encoding::percent_decode_str(&encoded)
                 .decode_utf8()
