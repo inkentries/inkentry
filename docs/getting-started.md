@@ -5,16 +5,8 @@
 Download the latest binary for your platform from the [releases page](https://github.com/spelunk-cloud/spelunk/releases) and put it somewhere on your `$PATH`:
 
 ```bash
-# macOS (Apple Silicon) — universal binary also available
+# macOS (Apple Silicon)
 curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz \
-  | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
-
-# macOS (Intel)
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-apple-darwin.tar.gz \
-  | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
-
-# macOS (universal — works on both Intel and Apple Silicon)
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Linux x86_64
@@ -31,6 +23,11 @@ spelunk --version
 
 > Replace `v0.1.0` with the version you want. The URL pattern is:
 > `https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz`
+
+> **Intel Macs (`x86_64-apple-darwin`):** we no longer publish a prebuilt binary for
+> this target — Apple deprecated the architecture, and Apple Silicon replaced it on
+> new hardware six years ago. Intel Mac users should build from source instead; see
+> [Building](building.md) (`cargo build --release` works unmodified on `x86_64-apple-darwin`).
 
 > Building from source? See [Building](building.md).
 
