@@ -94,7 +94,7 @@ fn hooks_install(args: HooksInstallArgs) -> Result<()> {
     }
 
     println!("Installed post-commit hook at {}", hook_path.display());
-    println!("After each commit, ca will:");
+    println!("After each commit, spelunk will:");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
     println!("Teammates without spelunk installed are unaffected.");
