@@ -29,11 +29,6 @@ jobs:
             features: ""
             suffix: ""
           - os: macos-latest
-            target: x86_64-apple-darwin
-            cross: false
-            features: ""
-            suffix: ""
-          - os: macos-latest
             target: aarch64-apple-darwin
             cross: false
             features: ""
@@ -46,11 +41,6 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             cross: true
-            features: rich-formats
-            suffix: -rich-formats
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            cross: false
             features: rich-formats
             suffix: -rich-formats
           - os: macos-latest
@@ -125,57 +115,6 @@ jobs:
           name: spelunk-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.suffix }}
           path: ${{ env.ARCHIVE }}
 
-  universal-macos:
-    name: Build (universal-apple-darwin${{ matrix.suffix }})
-    needs: build
-    runs-on: macos-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        suffix: ["", "-rich-formats"]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download x86_64 artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: spelunk-${{ github.ref_name }}-x86_64-apple-darwin${{ matrix.suffix }}
-          path: x86_64
-
-      - name: Download aarch64 artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: spelunk-${{ github.ref_name }}-aarch64-apple-darwin${{ matrix.suffix }}
-          path: aarch64
-
-      - name: Extract both tarballs
-        run: |
-          tar -xzf x86_64/spelunk-${{ github.ref_name }}-x86_64-apple-darwin${{ matrix.suffix }}.tar.gz -C x86_64
-          tar -xzf aarch64/spelunk-${{ github.ref_name }}-aarch64-apple-darwin${{ matrix.suffix }}.tar.gz -C aarch64
-
-      - name: Create universal binaries with lipo
-        run: |
-          mkdir -p universal
-          lipo -create -output universal/spelunk \
-            x86_64/spelunk aarch64/spelunk
-          lipo -create -output universal/spelunk-server \
-            x86_64/spelunk-server aarch64/spelunk-server
-
-      - name: Package universal tarball
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ARCHIVE="spelunk-${VERSION}-universal-apple-darwin${{ matrix.suffix }}.tar.gz"
-          tar -czf "${ARCHIVE}" -C universal spelunk spelunk-server
-          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
-
-      - name: Upload universal artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: spelunk-${{ github.ref_name }}-universal-apple-darwin${{ matrix.suffix }}
-          path: ${{ env.ARCHIVE }}
-
   deb:
     name: Build Debian package (amd64)
     needs: build
@@ -241,7 +180,7 @@ EOF
 
   release:
     name: Create GitHub Release
-    needs: [build, universal-macos, deb]
+    needs: [build, deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -277,85 +216,75 @@ EOF
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: main
 
-      - name: Compute sha256 for each platform tarball
+      - name: Read sha256 digests from the GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION="${{ github.ref_name }}"
           # Strip leading 'v' for formula version field
           VER="${VERSION#v}"
 
-          download_sha256() {
+          release_digest() {
             local target="$1"
-            local url="https://github.com/spelunk-cloud/spelunk/releases/download/${VERSION}/spelunk-${VERSION}-${target}.tar.gz"
-            curl -fsSL "$url" | sha256sum | awk '{print $1}'
+            local asset="spelunk-${VERSION}-${target}.tar.gz"
+            # Each release asset carries a `digest` field shaped "sha256:<hex>" —
+            # no need to download the tarball and hash it ourselves.
+            gh release view "${VERSION}" --json assets \
+              --jq ".assets[] | select(.name == \"${asset}\") | .digest" \
+              | sed 's/^sha256://'
           }
 
-          SHA_AARCH64_DARWIN="$(download_sha256 aarch64-apple-darwin)"
-          SHA_X86_64_DARWIN="$(download_sha256 x86_64-apple-darwin)"
-          SHA_AARCH64_LINUX="$(download_sha256 aarch64-unknown-linux-gnu)"
-          SHA_X86_64_LINUX="$(download_sha256 x86_64-unknown-linux-gnu)"
+          SHA_AARCH64_DARWIN="$(release_digest aarch64-apple-darwin)"
+          SHA_AARCH64_LINUX="$(release_digest aarch64-unknown-linux-gnu)"
+          SHA_X86_64_LINUX="$(release_digest x86_64-unknown-linux-gnu)"
 
           echo "SHA_AARCH64_DARWIN=${SHA_AARCH64_DARWIN}" >> "$GITHUB_ENV"
-          echo "SHA_X86_64_DARWIN=${SHA_X86_64_DARWIN}"   >> "$GITHUB_ENV"
           echo "SHA_AARCH64_LINUX=${SHA_AARCH64_LINUX}"   >> "$GITHUB_ENV"
           echo "SHA_X86_64_LINUX=${SHA_X86_64_LINUX}"     >> "$GITHUB_ENV"
           echo "VER=${VER}"                                >> "$GITHUB_ENV"
 
-      - name: Patch HomebrewFormula/spelunk.rb
+      - name: Regenerate HomebrewFormula/spelunk.rb
         run: |
-          FORMULA="HomebrewFormula/spelunk.rb"
+          node .github/scripts/update-homebrew-formula.js \
+            --version "$VER" \
+            --sha-aarch64-darwin "$SHA_AARCH64_DARWIN" \
+            --sha-aarch64-linux "$SHA_AARCH64_LINUX" \
+            --sha-x86_64-linux "$SHA_X86_64_LINUX" \
+            --out HomebrewFormula/spelunk.rb
 
-          # Update version
-          sed -i "s/^  version \".*\"/  version \"${VER}\"/" "$FORMULA"
+          cat HomebrewFormula/spelunk.rb
 
-          # Update sha256 values (match the TODO_* placeholders and real hashes)
-          sed -i "s/sha256 \"TODO_aarch64_apple_darwin\"/sha256 \"${SHA_AARCH64_DARWIN}\"/" "$FORMULA"
-          sed -i "s/sha256 \"TODO_x86_64_apple_darwin\"/sha256 \"${SHA_X86_64_DARWIN}\"/"   "$FORMULA"
-          sed -i "s/sha256 \"TODO_aarch64_linux\"/sha256 \"${SHA_AARCH64_LINUX}\"/"         "$FORMULA"
-          sed -i "s/sha256 \"TODO_x86_64_linux\"/sha256 \"${SHA_X86_64_LINUX}\"/"           "$FORMULA"
-
-          # On subsequent runs the placeholders are gone — update real hashes directly.
-          # Pattern: sha256 "..." inside the on_arm/on_intel blocks (order in file matches
-          # aarch64-apple-darwin, x86_64-apple-darwin, aarch64-linux, x86_64-linux).
-          python3 - <<'PYEOF'
-          import re, os, sys
-
-          formula_path = "HomebrewFormula/spelunk.rb"
-          with open(formula_path) as f:
-              content = f.read()
-
-          replacements = [
-              ("aarch64-apple-darwin", os.environ["SHA_AARCH64_DARWIN"]),
-              ("x86_64-apple-darwin",  os.environ["SHA_X86_64_DARWIN"]),
-              ("aarch64-unknown-linux-gnu", os.environ["SHA_AARCH64_LINUX"]),
-              ("x86_64-unknown-linux-gnu",  os.environ["SHA_X86_64_LINUX"]),
-          ]
-
-          for target, sha in replacements:
-              # Replace the sha256 line that follows the url line for this target
-              pattern = (
-                  r'(url "https://github\.com/spelunk-cloud/spelunk/releases/download/v[^/]+/'
-                  + re.escape(f'spelunk-v') + r'[^"]*-' + re.escape(target) + r'\.tar\.gz"'
-                  + r'\s+sha256 ")[0-9a-f]+(")'
-              )
-              content = re.sub(pattern, r'\g<1>' + sha + r'\g<2>', content)
-
-          with open(formula_path, "w") as f:
-              f.write(content)
-          PYEOF
-
-          cat "$FORMULA"
-
-      - name: Commit and push updated formula
+      - name: Open PR with the updated formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
+          if git diff --quiet -- HomebrewFormula/spelunk.rb; then
+            echo "No changes to HomebrewFormula/spelunk.rb — skipping PR."
+            exit 0
+          fi
+
+          BRANCH="chore/homebrew-formula-v${VER}"
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add HomebrewFormula/spelunk.rb
-          git commit -m "chore: update Homebrew formula to v${VER}" || echo "No changes to commit"
-          git push origin main
+          git commit -m "chore: update Homebrew formula to v${VER}"
+          # `main` is branch-protected — push the change on its own branch and
+          # open a PR rather than pushing directly.
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: update Homebrew formula to v${VER}" \
+            --body "Automated update of \`HomebrewFormula/spelunk.rb\` for release \`${{ github.ref_name }}\`, generated by \`.github/scripts/update-homebrew-formula.js\` from the release asset sha256 digests."

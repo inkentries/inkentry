@@ -10,9 +10,8 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 1. Builds `spelunk` and `spelunk-server` release binaries for all supported platforms.
 2. Strips binaries where possible to reduce download size.
 3. Packages each platform's binaries into a `.tar.gz` archive.
-4. Creates a macOS universal binary by combining x86_64 and aarch64 slices with `lipo`.
-5. Creates a GitHub Release and attaches all archives as downloadable assets.
-6. Auto-generates release notes from merged pull requests and commits.
+4. Creates a GitHub Release and attaches all archives as downloadable assets.
+5. Auto-generates release notes from merged pull requests and commits.
 
 ## Supported platforms
 
@@ -20,9 +19,12 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 |--------|--------|-------|
 | `x86_64-unknown-linux-gnu` | ubuntu-latest | Native build |
 | `aarch64-unknown-linux-gnu` | ubuntu-latest | Cross-compiled via `cross` |
-| `x86_64-apple-darwin` | macos-latest | Native build |
 | `aarch64-apple-darwin` | macos-latest | Native build (Apple Silicon) |
-| `universal-apple-darwin` | macos-latest | Fat binary: x86_64 + aarch64 merged with `lipo` |
+
+> **Note:** `x86_64-apple-darwin` (Intel Mac) prebuilt binaries were dropped —
+> Apple deprecated the architecture and Apple Silicon replaced it on new
+> hardware six years ago. Intel Mac users build from source (see
+> `docs/getting-started.md`).
 
 ## Cutting a release
 
@@ -97,9 +99,6 @@ Examples:
 ```bash
 # macOS Apple Silicon
 https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz
-
-# macOS universal (x86_64 + Apple Silicon)
-https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-universal-apple-darwin.tar.gz
 
 # Linux x86_64
 https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz
