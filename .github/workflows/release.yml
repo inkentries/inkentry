@@ -20,15 +20,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            cross: false
             features: rich-formats
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            cross: true
             features: rich-formats
           - os: macos-latest
             target: aarch64-apple-darwin
-            cross: false
             features: rich-formats
 
     steps:
@@ -50,12 +47,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.target }}-
 
-      - name: Install cross (Linux aarch64 only)
-        if: matrix.cross
-        run: cargo install cross --locked
+      - name: Install aarch64 cross-compilation toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
 
-      - name: Build release binaries (native)
-        if: "!matrix.cross"
+      - name: Build release binaries
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then
@@ -64,18 +67,8 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
-      - name: Build release binaries (cross)
-        if: matrix.cross
-        run: |
-          FEATURES="${{ matrix.features }}"
-          if [ -n "$FEATURES" ]; then
-            cross build --release --target ${{ matrix.target }} --features "$FEATURES"
-          else
-            cross build --release --target ${{ matrix.target }}
-          fi
-
-      - name: Strip binaries (native Linux/macOS x86_64)
-        if: "!matrix.cross && matrix.target != 'aarch64-apple-darwin'"
+      - name: Strip binaries (native Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           strip target/${{ matrix.target }}/release/spelunk
           strip target/${{ matrix.target }}/release/spelunk-server
