@@ -1,0 +1,8 @@
+[target.aarch64-unknown-linux-gnu]
+# Install aarch64 OpenSSL dev headers so openssl-sys can find them via
+# pkg-config inside the cross Docker container.  This avoids relying on
+# the vendored feature, which isn't reliably activating during cross builds.
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update && apt-get install --no-install-recommends -y libssl-dev:arm64",
+]
