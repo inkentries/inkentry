@@ -44,7 +44,7 @@ pub(super) async fn memory_search(
 
         if mode == "semantic" {
             backend
-                .search(&blob, args.limit, as_of)
+                .search(&blob, &args.query, args.limit, as_of)
                 .await
                 .map_err(backend_err)?
         } else {

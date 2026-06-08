@@ -213,10 +213,10 @@ async fn git_notes_unsupported_methods_return_errors() {
     let dir = make_temp_git_repo();
     let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
 
-    assert!(backend.search(&[], 5, None).await.is_err());
+    assert!(backend.search(&[], "q", 5, None).await.is_err());
     assert!(backend.search_hybrid(&[], "q", 5, None).await.is_err());
     assert!(backend.search_text("q", 5, None).await.is_err());
-    assert!(backend.search_timeline(&[], 5).await.is_err());
+    assert!(backend.search_timeline(&[], "q", 5).await.is_err());
     assert!(backend.harvested_shas().await.is_err());
     assert!(backend.has_source_ref("abc123").await.is_err());
     assert!(backend.add_edge(1, 2, "relates_to").await.is_err());

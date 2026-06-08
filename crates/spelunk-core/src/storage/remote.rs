@@ -146,9 +146,12 @@ impl From<NoteResponse> for Note {
     }
 }
 
+/// Matches `spelunk-server::handlers::SearchRequest` — the server embeds
+/// `query` server-side (it has no way to accept a pre-computed client-side
+/// embedding), so the remote backend must always send the raw query text.
 #[derive(Serialize)]
 struct SearchRequest {
-    embedding: Vec<f32>,
+    query: String,
     limit: usize,
 }
 
@@ -220,18 +223,32 @@ impl MemoryBackend for RemoteMemoryBackend {
     }
 
     /// Remote backend: timeline search falls back to regular semantic search.
-    async fn search_timeline(&self, query_blob: &[u8], limit: usize) -> Result<Vec<Note>> {
-        self.search(query_blob, limit, None).await
-    }
-
-    async fn search(
+    async fn search_timeline(
         &self,
         query_blob: &[u8],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Note>> {
+        self.search(query_blob, query, limit, None).await
+    }
+
+    /// The server has no native embedder client-side hook — it embeds `query`
+    /// server-side (see `spelunk-server::handlers::search_notes`). The
+    /// pre-computed `query_blob` is what local backends use for KNN; the
+    /// remote backend ignores it and sends the raw query text instead, or the
+    /// server's required `query: String` field is missing and axum rejects
+    /// the request with 422 before the handler ever runs (spelunk#359).
+    async fn search(
+        &self,
+        _query_blob: &[u8],
+        query: &str,
         limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        let embedding = blob_to_vec(query_blob);
-        let body = SearchRequest { embedding, limit };
+        let body = SearchRequest {
+            query: query.to_string(),
+            limit,
+        };
         let resp = self
             .authed(self.client.post(self.url("memory/search")))
             .json(&body)
@@ -264,11 +281,11 @@ impl MemoryBackend for RemoteMemoryBackend {
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
-        _query: &str,
+        query: &str,
         limit: usize,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        self.search(query_blob, limit, as_of).await
+        self.search(query_blob, query, limit, as_of).await
     }
 
     async fn list(
@@ -479,6 +496,87 @@ mod tests {
         assert_eq!(
             b.url("memory"),
             "http://127.0.0.1:7777/v1/projects/my-project/memory"
+        );
+    }
+
+    /// Regression test for the v0.8.0 IMP-3 retest sweep (spelunk-cloud/spelunk
+    /// agent-comms/handoffs/qa-v080-test-plan.md, Fix 3).
+    ///
+    /// `POST /v1/projects/{id}/memory/search` on the real server expects
+    /// `{"query": <text>, "limit": <n>}` — the server embeds the query itself
+    /// (see `spelunk_server::handlers::SearchRequest` /
+    /// `spelunk-server/src/handlers.rs::search_notes`, which calls
+    /// `body.query` through its embedder).
+    ///
+    /// `RemoteMemoryBackend::search` instead serialises a pre-computed
+    /// `{"embedding": [f32...], "limit": <n>}` body (see `SearchRequest` in
+    /// this file). Because the server's `query` field is a required `String`
+    /// (no `#[serde(default)]`), axum's `Json<SearchRequest>` extractor
+    /// rejects the mismatched body with `422 Unprocessable Entity` *before*
+    /// `search_notes` ever runs — so `memory search` / `memory timeline`
+    /// (which both funnel through `RemoteMemoryBackend::search`) always fail
+    /// with a 422 against a real spelunk-server, never returning results.
+    ///
+    /// This was masked pre-IMP-3 because `memory search`/`timeline` short-
+    /// circuited on `cfg.server_url.is_none()` with a "requires
+    /// spelunk-server" error before ever issuing the HTTP request — IMP-3
+    /// fixed that gating (so loopback auto-discovered servers are honoured),
+    /// which is what newly exposes this pre-existing client/server payload
+    /// mismatch end-to-end.
+    ///
+    /// This test asserts the wire body sent by the client is shaped the way
+    /// the real server's `SearchRequest` requires (`query` + `limit`, no
+    /// `embedding` field). It currently FAILS — the client sends `embedding`
+    /// instead of `query` — capturing the bug for the implementer to fix
+    /// (either by changing `RemoteMemoryBackend::SearchRequest` to send
+    /// `{query, limit}` and dropping the local KNN step, or by adding an
+    /// `embedding`-accepting variant server-side; that decision belongs to
+    /// the implementer / architect, not this test).
+    #[tokio::test]
+    async fn search_sends_query_text_not_precomputed_embedding() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Mirrors the real server's contract: a body containing a `query`
+        // string field (and NOT requiring `embedding`) is what
+        // `spelunk-server::handlers::search_notes` actually accepts.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/local%2Fabc123/memory/search"))
+            .and(body_partial_json(
+                serde_json::json!({ "query": "timezone" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let backend = RemoteMemoryBackend {
+            client: reqwest::Client::new(),
+            base_url: server.uri(),
+            project_id: "local/abc123".to_string(),
+            api_key: None,
+        };
+
+        // `MemoryBackend::search` takes both a pre-computed query embedding
+        // blob (used by local backends for KNN) *and* the raw query text
+        // (used by the remote backend, which has no local embedder and must
+        // let the server embed server-side — see spelunk#359). The remote
+        // backend ignores `query_blob` and sends `query` on the wire.
+        let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
+        let result = backend.search(&query_blob, "timezone", 3, None).await;
+
+        assert!(
+            result.is_ok(),
+            "expected the server to accept the request body and return results, \
+             got: {:?}\n\n\
+             If this failed with a 422-shaped error, the client is still \
+             sending `{{\"embedding\": [...], \"limit\": N}}` instead of the \
+             `{{\"query\": \"<text>\", \"limit\": N}}` shape the real \
+             spelunk-server requires — see spelunk-cloud/spelunk issue for \
+             'memory search returns 422 against a real server (query/embedding \
+             payload mismatch)'.",
+            result.err().map(|e| e.to_string())
         );
     }
 }
