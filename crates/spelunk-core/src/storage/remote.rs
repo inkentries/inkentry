@@ -146,9 +146,12 @@ impl From<NoteResponse> for Note {
     }
 }
 
+/// Matches `spelunk-server::handlers::SearchRequest` — the server embeds
+/// `query` server-side (it has no way to accept a pre-computed client-side
+/// embedding), so the remote backend must always send the raw query text.
 #[derive(Serialize)]
 struct SearchRequest {
-    embedding: Vec<f32>,
+    query: String,
     limit: usize,
 }
 
@@ -220,18 +223,32 @@ impl MemoryBackend for RemoteMemoryBackend {
     }
 
     /// Remote backend: timeline search falls back to regular semantic search.
-    async fn search_timeline(&self, query_blob: &[u8], limit: usize) -> Result<Vec<Note>> {
-        self.search(query_blob, limit, None).await
-    }
-
-    async fn search(
+    async fn search_timeline(
         &self,
         query_blob: &[u8],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Note>> {
+        self.search(query_blob, query, limit, None).await
+    }
+
+    /// The server has no native embedder client-side hook — it embeds `query`
+    /// server-side (see `spelunk-server::handlers::search_notes`). The
+    /// pre-computed `query_blob` is what local backends use for KNN; the
+    /// remote backend ignores it and sends the raw query text instead, or the
+    /// server's required `query: String` field is missing and axum rejects
+    /// the request with 422 before the handler ever runs (spelunk#359).
+    async fn search(
+        &self,
+        _query_blob: &[u8],
+        query: &str,
         limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        let embedding = blob_to_vec(query_blob);
-        let body = SearchRequest { embedding, limit };
+        let body = SearchRequest {
+            query: query.to_string(),
+            limit,
+        };
         let resp = self
             .authed(self.client.post(self.url("memory/search")))
             .json(&body)
@@ -264,11 +281,11 @@ impl MemoryBackend for RemoteMemoryBackend {
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
-        _query: &str,
+        query: &str,
         limit: usize,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        self.search(query_blob, limit, as_of).await
+        self.search(query_blob, query, limit, as_of).await
     }
 
     async fn list(
@@ -541,14 +558,13 @@ mod tests {
             api_key: None,
         };
 
-        // `search` only receives a pre-computed query embedding blob — by the
-        // time it's called, the original query text has already been thrown
-        // away by `memory_search` / `memory_timeline` (see
-        // `crates/spelunk-cli/src/cli/cmd/memory/search.rs::memory_search`,
-        // which calls `embed_query` and discards `args.query` before invoking
-        // `backend.search_hybrid(&blob, ...)`).
+        // `MemoryBackend::search` takes both a pre-computed query embedding
+        // blob (used by local backends for KNN) *and* the raw query text
+        // (used by the remote backend, which has no local embedder and must
+        // let the server embed server-side — see spelunk#359). The remote
+        // backend ignores `query_blob` and sends `query` on the wire.
         let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
-        let result = backend.search(&query_blob, 3, None).await;
+        let result = backend.search(&query_blob, "timezone", 3, None).await;
 
         assert!(
             result.is_ok(),

@@ -331,7 +331,7 @@ async fn memory_harvest_git(
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = match backend.search(&blob, 1, None).await {
+            let neighbors = match backend.search(&blob, &embed_text, 1, None).await {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");
@@ -693,7 +693,7 @@ async fn memory_harvest_failures(
             };
             let blob = vec_to_blob(&vec);
 
-            let neighbors = match backend.search(&blob, 1, None).await {
+            let neighbors = match backend.search(&blob, &embed_text, 1, None).await {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!("  warning: dedup search failed for '{title}', skipping: {e:#}");

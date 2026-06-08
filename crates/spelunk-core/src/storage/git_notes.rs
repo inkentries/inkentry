@@ -361,13 +361,19 @@ impl MemoryBackend for GitNotesBackend {
 
     // ── Unsupported ──────────────────────────────────────────────────────────
 
-    async fn search_timeline(&self, _query_blob: &[u8], _limit: usize) -> Result<Vec<Note>> {
+    async fn search_timeline(
+        &self,
+        _query_blob: &[u8],
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<Note>> {
         Err(crate::error::SpelunkError::BackendUnsupported("search_timeline".into()).into())
     }
 
     async fn search(
         &self,
         _query_blob: &[u8],
+        _query: &str,
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {

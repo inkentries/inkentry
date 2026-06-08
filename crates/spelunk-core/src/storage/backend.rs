@@ -28,12 +28,25 @@ pub struct NoteInput {
 pub trait MemoryBackend: Send {
     async fn add(&self, input: NoteInput) -> Result<i64>;
     /// Semantic search over ALL notes (incl. archived), ordered by valid_at/created_at ASC.
-    async fn search_timeline(&self, query_blob: &[u8], limit: usize) -> Result<Vec<Note>>;
+    ///
+    /// `query`: the raw query text. Local backends search by `query_blob` (a
+    /// pre-computed embedding) and ignore it; the remote backend has no local
+    /// embedder and sends `query` to the server, which embeds it server-side.
+    async fn search_timeline(
+        &self,
+        query_blob: &[u8],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Note>>;
     /// Semantic (vector KNN) search.
+    ///
+    /// `query`: the raw query text — see `search_timeline` for why both
+    /// `query_blob` and `query` are passed to every backend.
     /// `as_of`: if set, only entries valid at that Unix timestamp are returned.
     async fn search(
         &self,
         query_blob: &[u8],
+        query: &str,
         limit: usize,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>>;
@@ -130,13 +143,19 @@ impl MemoryBackend for LocalMemoryBackend {
         Ok(id)
     }
 
-    async fn search_timeline(&self, query_blob: &[u8], limit: usize) -> Result<Vec<Note>> {
+    async fn search_timeline(
+        &self,
+        query_blob: &[u8],
+        _query: &str,
+        limit: usize,
+    ) -> Result<Vec<Note>> {
         self.store.lock().await.search_timeline(query_blob, limit)
     }
 
     async fn search(
         &self,
         query_blob: &[u8],
+        _query: &str,
         limit: usize,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {

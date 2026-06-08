@@ -26,7 +26,7 @@ pub(super) async fn memory_timeline(
 
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let notes = backend
-        .search_timeline(&blob, args.limit)
+        .search_timeline(&blob, &args.query, args.limit)
         .await
         .map_err(backend_err)?;
 
