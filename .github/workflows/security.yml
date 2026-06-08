@@ -45,7 +45,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install Rust stable
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Cache cargo registry and binaries
+        uses: actions/cache@v5
         with:
-          command: check advisories licenses bans
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-deny-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-deny-
+
+      - name: Install cargo-deny
+        run: cargo-deny --version || cargo install cargo-deny --locked
+
+      - name: Run cargo deny
+        run: cargo deny check advisories licenses bans
