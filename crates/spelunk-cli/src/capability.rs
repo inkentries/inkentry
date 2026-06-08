@@ -170,6 +170,33 @@ impl Tier {
             }
         )
     }
+
+    /// Return a `Config` whose server fields reflect this tier, so that
+    /// server-backed helpers (`ServerInferenceClient::from_config`,
+    /// `open_memory_backend`) work the same whether the server was configured
+    /// explicitly or discovered via the loopback probe.
+    ///
+    /// Loopback auto-discovery sets the capability `Tier` WITHOUT populating
+    /// `cfg.server_url`. Commands that route through `from_config` /
+    /// `open_memory_backend` gate on `server_url`, so they wrongly report
+    /// "requires spelunk-server" even though `spelunk status` shows `Server`.
+    /// This bridges that gap: when the tier is `Server` but `cfg.server_url`
+    /// is unset (the auto-discovered case), fill in the discovered URL and
+    /// derive the `project_id` from `project_root` (mirroring `embed_phase`,
+    /// see spelunk#307). When `cfg.server_url` is already set, the config is
+    /// returned unchanged.
+    pub fn effective_config(&self, cfg: &Config, project_root: &std::path::Path) -> Config {
+        let mut out = cfg.clone();
+        if let Tier::Server { url, .. } = self
+            && out.server_url.is_none()
+        {
+            out.server_url = Some(url.clone());
+            if out.project_id.is_none() {
+                out.project_id = Some(cfg.resolve_project_id(project_root));
+            }
+        }
+        out
+    }
 }
 
 /// Return the cached capability tier for this process.

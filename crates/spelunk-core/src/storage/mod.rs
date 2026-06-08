@@ -46,10 +46,14 @@ pub fn open_memory_backend(
         return Ok(Box::new(GitNotesBackend::new()));
     }
     if let Some(url) = &cfg.server_url {
-        let project_id = cfg.project_id.clone().expect(
-            "project_id must be set when server_url is configured; \
-             call Config::validate() before open_memory_backend()",
-        );
+        let project_id = cfg.project_id.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "server_url is set ({url}) but project_id is missing.\n\
+                 Set `project_id` in your spelunk config (e.g. ~/.config/spelunk/config.toml \
+                 or .spelunk/config.toml), or set the SPELUNK_PROJECT_ID environment variable, \
+                 so memory operations can be keyed to a project on the server."
+            )
+        })?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;

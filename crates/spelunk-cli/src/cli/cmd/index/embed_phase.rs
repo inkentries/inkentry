@@ -80,10 +80,13 @@ pub(super) async fn run_embed_phase(
             })
             .collect();
 
+        // Percent-encode the project_id path segment: slugs contain `/`
+        // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split
+        // the segment and break axum routing → 404. See spelunk decision #106.
         let url = format!(
             "{}/v1/projects/{}/index/embed",
             server_url.trim_end_matches('/'),
-            project_id,
+            crate::server_client::encode_project_id(project_id),
         );
 
         let mut req = client.post(&url).json(&EmbedRequest { chunks: req_chunks });

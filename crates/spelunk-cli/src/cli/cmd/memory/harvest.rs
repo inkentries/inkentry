@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
+    capability,
     config::Config,
     embeddings::vec_to_blob,
     server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
@@ -14,6 +15,19 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Honor the auto-discovered server tier (IMP-3 / spelunk#316): loopback
+    // auto-discovery sets the capability tier without populating
+    // `cfg.server_url`, so the plain `cfg.server_url.is_none()` gate below
+    // wrongly reports "requires spelunk-server" even when `spelunk status`
+    // shows the `Server` tier. Build an effective config that fills in
+    // `server_url`/`project_id` from the tier (mirrors `explore`) and use it
+    // for the remainder of this call tree, including the git/failures/
+    // claude-code sub-harvesters and `ServerInferenceClient::from_config`.
+    let project_root = mem_path.parent().unwrap_or(mem_path);
+    let tier = capability::get_tier(cfg).await;
+    let eff_cfg = tier.effective_config(cfg, project_root);
+    let cfg = &eff_cfg;
+
     // Tier-0: harvest requires server (#259 locked-feature error).
     if cfg.server_url.is_none() {
         return Err(harvest_requires_server(None));

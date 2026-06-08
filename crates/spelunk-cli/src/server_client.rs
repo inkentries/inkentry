@@ -10,9 +10,41 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+
+/// Characters that must be percent-encoded inside a single URL **path segment**.
+///
+/// `derive_project_id` produces slugs that contain `/` (`local/<blake3-hex>`,
+/// `github.com/owner/repo`). Inserted raw into `/v1/projects/{project_id}/…`
+/// the slashes split the segment and break axum routing (→ 404). We percent-encode
+/// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
+/// axum percent-decodes it back to the original slug server-side, so the
+/// persistence key (`projects.slug`, UNIQUE) is unchanged. See spelunk decision #106.
+///
+/// Set mirrors the WHATWG URL "path" percent-encode set plus the sub-delimiters
+/// that would otherwise be interpreted by a router; crucially it includes `/`.
+const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'/')
+    .add(b'%');
+
+/// Percent-encode a `project_id` slug for safe use as a single URL path segment.
+///
+/// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
+pub(crate) fn encode_project_id(project_id: &str) -> String {
+    utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
+}
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -115,19 +147,25 @@ impl ServerInferenceClient {
     fn llm_url(&self) -> String {
         format!(
             "{}/v1/projects/{}/llm/complete",
-            self.base_url, self.project_id
+            self.base_url,
+            encode_project_id(&self.project_id)
         )
     }
 
     fn embed_url(&self) -> String {
         format!(
             "{}/v1/projects/{}/index/embed",
-            self.base_url, self.project_id
+            self.base_url,
+            encode_project_id(&self.project_id)
         )
     }
 
     fn search_url(&self) -> String {
-        format!("{}/v1/projects/{}/search", self.base_url, self.project_id)
+        format!(
+            "{}/v1/projects/{}/search",
+            self.base_url,
+            encode_project_id(&self.project_id)
+        )
     }
 
     /// Call `/llm/complete` and collect the full SSE token stream into a `String`.
@@ -365,4 +403,50 @@ pub fn harvest_requires_server(server_url: Option<&str>) -> anyhow::Error {
         "'spelunk memory harvest' requires spelunk-server.\n\
          Set server_url in ~/.config/spelunk/config.toml to enable this feature.{tried}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`
+    /// must become `%2F` so the whole slug occupies one URL path segment
+    /// (IMP-1 / spelunk decision #106).
+    #[test]
+    fn encode_project_id_escapes_local_fallback_slug() {
+        let slug = "local/9f2a8b3c4d5e6f70";
+        let encoded = encode_project_id(slug);
+        assert_eq!(encoded, "local%2F9f2a8b3c4d5e6f70");
+    }
+
+    /// `normalise_git_url` produces `github.com/owner/repo` slugs — both `/`
+    /// must be escaped so axum routes the whole slug into `{project_id}`.
+    #[test]
+    fn encode_project_id_escapes_github_remote_slug() {
+        let slug = "github.com/BurntSushi/jiff";
+        let encoded = encode_project_id(slug);
+        assert_eq!(encoded, "github.com%2FBurntSushi%2Fjiff");
+    }
+
+    /// Round-trip: percent-decoding the encoded segment must yield the
+    /// original slug unchanged, since the slug is the persistence key
+    /// (`projects.slug` UNIQUE) and must reach `require_project`/
+    /// `upsert_project` exactly as `derive_project_id` produced it.
+    #[test]
+    fn encode_project_id_round_trips_through_percent_decode() {
+        for slug in ["local/9f2a8b3c4d5e6f70", "github.com/BurntSushi/jiff"] {
+            let encoded = encode_project_id(slug);
+            let decoded = percent_encoding::percent_decode_str(&encoded)
+                .decode_utf8()
+                .expect("valid UTF-8 after percent-decoding");
+            assert_eq!(decoded, slug, "round-trip mismatch for slug {slug:?}");
+        }
+    }
+
+    /// A slug with no special characters should be left byte-for-byte
+    /// identical (no spurious encoding of ordinary path-safe characters).
+    #[test]
+    fn encode_project_id_leaves_simple_slug_unchanged() {
+        assert_eq!(encode_project_id("my-project"), "my-project");
+    }
 }

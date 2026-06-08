@@ -3,7 +3,7 @@ use anyhow::Result;
 use super::super::helpers::{embed_query, require_server_client};
 use super::MemorySearchArgs;
 use super::{backend_err, parse_as_of, print_note_summary};
-use crate::{config::Config, storage::open_memory_backend};
+use crate::{capability, config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_search(
     args: MemorySearchArgs,
@@ -13,6 +13,16 @@ pub(super) async fn memory_search(
 ) -> Result<()> {
     let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
     crate::storage::record_usage_at(&index_db_path, "memory search");
+
+    // Honor the auto-discovered server tier: loopback auto-discovery sets the
+    // capability tier without populating `cfg.server_url`, so build an
+    // effective config that fills in `server_url`/`project_id` from the tier
+    // (mirrors `explore` — IMP-3 / spelunk#316). Falls back to `cfg` unchanged
+    // when the tier isn't `Server` or `server_url` is already configured.
+    let project_root = mem_path.parent().unwrap_or(mem_path);
+    let tier = capability::get_tier(cfg).await;
+    let eff_cfg = tier.effective_config(cfg, project_root);
+    let cfg = &eff_cfg;
 
     let mode = args.mode.as_str();
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
