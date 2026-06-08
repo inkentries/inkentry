@@ -31,6 +31,7 @@ rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 reqwest = { workspace = true }
 openssl = { workspace = true }
+openssl-sys = { workspace = true }
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["auth"] }
 async-stream = "0.3"
