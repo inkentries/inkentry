@@ -167,6 +167,147 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("fn main()"));
 }
 
+/// Regression test for #349 / qa-v080-test-plan.md §Fix 1 (decision #106).
+///
+/// `derive_project_id` produces slugs containing `/`:
+///   - `local/<blake3-hex>`        — repo with no git remote
+///   - `github.com/owner/repo`     — repo with a GitHub remote
+///
+/// Inserted raw into `/v1/projects/{project_id}/index/embed`, the slashes
+/// split the path into extra segments and axum's router 404s. PR #349 added
+/// `encode_project_id` to percent-encode the whole slug as a single path
+/// segment (`/` → `%2F`) before building the URL. This test locks that fix in
+/// for both shapes of project_id by asserting on the *raw* request path the
+/// mock server actually received — not just that the CLI exits 0 — so a
+/// future change that silently reverts to naive `format!` interpolation would
+/// fail here even though the mock still matches via `path_regex`.
+#[tokio::test]
+async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
+    for project_id in [
+        // No-remote repo: derive_local_fallback() shape.
+        "local/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+        // Remote repo: normalise_git_url() shape.
+        "github.com/owner/repo",
+    ] {
+        let mock_server = MockServer::start().await;
+
+        // Health probe — Tier 1 capability set.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok",
+                "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"],
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Embedding endpoint — match on ANY `/v1/projects/.../index/embed`
+        // shape (including one that's been split into extra segments by an
+        // unencoded slash) so a regression produces a clear path-shape
+        // assertion failure below rather than an opaque 404 from the CLI.
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.*/index/embed$"))
+            .respond_with(IndexEmbedResponder)
+            .mount(&mock_server)
+            .await;
+
+        let temp = tempdir().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("main.rs"),
+            "fn main() { println!(\"hello\"); }",
+        )
+        .unwrap();
+
+        let config_path = temp.path().join("config.toml");
+        let db_path = temp.path().join("test_index.db");
+
+        fs::write(
+            &config_path,
+            format!(
+                concat!(
+                    "db_path = {:?}\n",
+                    "embedding_model = \"test-model\"\n",
+                    "llm_model = \"test-chat-model\"\n",
+                    "server_url = {:?}\n",
+                    "project_id = {:?}\n",
+                ),
+                db_path,
+                mock_server.uri(),
+                project_id,
+            ),
+        )
+        .unwrap();
+
+        // Index the project — must reach the embedding phase without a 404.
+        Command::cargo_bin("spelunk")
+            .unwrap()
+            .arg("--config")
+            .arg(&config_path)
+            .arg("index")
+            .arg(&project_dir)
+            .assert()
+            .success();
+
+        // Inspect the *raw* request the mock server received: the project_id
+        // must occupy exactly one path segment, percent-encoded, with no bare
+        // `/` from the slug splitting it into extra segments.
+        let received = mock_server.received_requests().await.unwrap();
+        let embed_reqs: Vec<_> = received
+            .iter()
+            .filter(|r| r.url.path().ends_with("/index/embed"))
+            .collect();
+        assert!(
+            !embed_reqs.is_empty(),
+            "expected at least one /index/embed request for project_id {project_id:?}, got: {:?}",
+            received.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+        );
+
+        for req in &embed_reqs {
+            let raw_path = req.url.path();
+            let segments: Vec<&str> = raw_path.trim_start_matches('/').split('/').collect();
+
+            // `v1`, `projects`, `<encoded project_id>`, `index`, `embed` — five
+            // segments. If the slug's `/` were left raw, `local/<hex>` would
+            // add one extra segment (six total) and `github.com/owner/repo`
+            // would add two (seven total).
+            assert_eq!(
+                segments.len(),
+                5,
+                "project_id {project_id:?} produced a path with the wrong \
+                 number of segments (slug `/` not percent-encoded?): {raw_path:?}"
+            );
+            assert_eq!(segments[0], "v1");
+            assert_eq!(segments[1], "projects");
+            assert_eq!(segments[3], "index");
+            assert_eq!(segments[4], "embed");
+
+            let encoded_segment = segments[2];
+            assert!(
+                !encoded_segment.contains('/'),
+                "project_id segment must not contain a raw `/`: {encoded_segment:?}"
+            );
+            assert!(
+                encoded_segment.contains("%2F") || encoded_segment.contains("%2f"),
+                "project_id {project_id:?} contains `/` and must be percent-encoded \
+                 as a single segment (expected `%2F` in {encoded_segment:?})"
+            );
+
+            // Round-trip: percent-decoding the segment must recover the
+            // original slug exactly (this is what axum does server-side, and
+            // what `projects.slug` persistence relies on — decision #106).
+            let decoded = percent_encoding::percent_decode_str(encoded_segment)
+                .decode_utf8()
+                .expect("encoded project_id segment must decode as utf-8");
+            assert_eq!(
+                decoded, project_id,
+                "decoded project_id segment must round-trip to the original slug"
+            );
+        }
+    }
+}
+
 // ── Capability tier E2E tests ────────────────────────────────────────────────
 
 #[tokio::test]
