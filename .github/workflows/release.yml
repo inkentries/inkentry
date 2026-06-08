@@ -153,18 +153,10 @@ jobs:
           install -m 644 packaging/spelunk-server.service \
             BUILD/usr/lib/systemd/user/spelunk-server.service
 
-          # DEBIAN/control (no leading whitespace — dpkg is strict)
-          cat > BUILD/DEBIAN/control <<EOF
-Package: spelunk
-Version: ${DEB_VERSION}
-Architecture: amd64
-Maintainer: spelunk-cloud <hello@spelunk.cloud>
-Depends: libc6 (>= 2.17)
-Description: Code intelligence for AI agents
- spelunk provides persistent memory, a code graph, and semantic search
- for AI coding agents. Includes the spelunk CLI and spelunk-server.
-Homepage: https://spelunk.cloud
-EOF
+          # DEBIAN/control — written via JS to avoid YAML heredoc issues
+          node .github/scripts/write-deb-control.js \
+            --deb-version "${DEB_VERSION}" \
+            --out BUILD/DEBIAN/control
 
           echo "DEB_VERSION=${DEB_VERSION}" >> "$GITHUB_ENV"
 
