@@ -2,7 +2,7 @@ class Spelunk < Formula
   desc "Code intelligence for AI agents — persistent memory, code graph, search"
   homepage "https://github.com/spelunk-cloud/spelunk"
   license "MIT"
-  version "0.7.1"
+  version "0.8.0"
 
   # Tap this repo directly:
   #   brew tap spelunk-cloud/spelunk https://github.com/spelunk-cloud/spelunk
@@ -21,18 +21,18 @@ class Spelunk < Formula
   on_macos do
     on_arm do
       url "https://github.com/spelunk-cloud/spelunk/releases/download/v#{version}/spelunk-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "5bee62a2820b1de394b7c14385d097b23ec11fdafe26180c61f8d79b21b903a1"
+      sha256 "e66c94ca649799bf19f07482925a737bfdc9a05a07ab1f7a2d6a75f6433c2c06"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/spelunk-cloud/spelunk/releases/download/v#{version}/spelunk-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "3e3b897d129089cb1615882d23c9ef2c4b0f3af3482cbda24bf714e1641bcd60"
+      sha256 "caab7742a06985f51ecb3b8634fc4edaec3d650a1dc801be86cbb087d4ffc364"
     end
     on_intel do
       url "https://github.com/spelunk-cloud/spelunk/releases/download/v#{version}/spelunk-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "369c1983639f1d5a68783941b297c833bb27a39eec786b2ea111a72313ad7d77"
+      sha256 "d6e76283c019bc4b175ecae879a0124b360c0fbc327404f4819c4a83debfbec3"
     end
   end
 
