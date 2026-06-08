@@ -2,7 +2,13 @@
 
 `spelunk memory` is a per-project knowledge store. Use it to capture decisions, context, requirements, questions, and handoff notes that would otherwise live only in chat history or someone's head.
 
-Memory entries are stored in git notes by default — they travel with the repository and require no database or server. An optional SQLite backend is available for projects that use semantic search. Entries are searchable by full text at all times; semantic search (by meaning) is available when an embedding server is configured.
+Memory entries are stored in a local SQLite database by default, and — with
+`store_in_git_notes` enabled (the default) — also written through to
+`refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
+database or server is required. (You can make git-notes the primary backend with
+`--backend git-notes`, or point at a shared server with `server_url`.) Entries
+are searchable by full text at all times; semantic search (by meaning) is
+available when a server is running — the local one is autostarted on demand.
 
 ## Why memory?
 
@@ -12,7 +18,7 @@ Examples of things worth storing:
 
 - "We chose sqlite-vec over pgvector because the project must run without a Postgres server."
 - "The embedding format is `title: {name} | text: {content}` — changing this invalidates all stored embeddings."
-- "Current question: should `spelunk verify` re-embed from disk or from the stored chunk content?"
+- "Current question: should the harvester dedupe by commit SHA or by entry content hash?"
 - "Handoff to next session: the graph migration is done, secrets scanner is next."
 
 ## Memory kinds
@@ -26,6 +32,8 @@ Examples of things worth storing:
 | `question` | Open questions that need an answer |
 | `answer` | Answers to previously stored questions |
 | `handoff` | State transfer between work sessions or agents |
+| `intent` | Active work signal; surfaced by `spelunk check` with file-overlap warnings |
+| `antipattern` | Things to avoid; list with `spelunk memory failures` |
 
 ## Storing a note
 

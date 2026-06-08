@@ -1,7 +1,7 @@
 # CLI Capability Tiers
 
 **Issue:** #259  
-**Status:** Accepted — pending implementation
+**Status:** Implemented (v0.8.0)
 
 ---
 
@@ -90,6 +90,70 @@ fn probe_server(cfg: &Config) -> Tier {
 The `capabilities` field in the health response (see server-api.md) allows the
 CLI to degrade gracefully if an older server version is deployed that lacks
 newer endpoints.
+
+---
+
+## Loopback auto-discovery
+
+**Issue:** #303
+
+In v0.8.0 the common case is no `server_url` at all: the CLI discovers (or
+starts) a **local** server on the loopback address. This is what makes Tier 1
+the default for a fresh single-user install — semantic search, `explore`, and
+`plan` work out of the box without the user configuring or managing a server.
+
+Discovery runs before the configured-`server_url` probe and only on loopback:
+
+```
+fn discover_local_server() -> Option<ServerHandle> {
+    if env::var("SPELUNK_NO_SERVER").is_ok() { return None; }   // hard opt-out
+
+    // 1. Probe the well-known loopback endpoint.
+    match GET http://127.0.0.1:7777/v1/health within 250ms {
+        Ok(200, body) => {
+            // 2. Only reuse a server this user owns.
+            if body["started_by"] == current_uid() {
+                return Some(ServerHandle::existing(body["instance_id"]));
+            }
+            // Owned by another UID — do not reuse; fall through to no-server.
+            warn!("server on 127.0.0.1:7777 started by another user — not reusing");
+            return None;
+        }
+        _ => {}
+    }
+
+    // 3. Nothing reachable — autostart the bundled server in the background.
+    Some(ServerHandle::spawn_bundled())
+}
+```
+
+Key points:
+
+- **Address.** Discovery is fixed to `127.0.0.1:7777` — loopback only, never a
+  routable interface. A team/remote server is reached through explicit
+  `server_url` config, not discovery.
+- **`instance_id`.** Each running server reports a unique UUID v4 in its
+  `/v1/health` body. The CLI logs it at debug level and uses it to detect
+  a server that was restarted underneath a session. Implemented in both server
+  and CLI (shipped with PRs #329/#333).
+- **`started_by` (UID check).** The health body includes the effective UID of
+  the process that started the server. The CLI warns (but does not block) when
+  the server was started by a different user — a security hint on shared
+  machines. Implemented in both server and CLI (shipped with PRs #329/#333).
+- **Autostart.** If nothing is reachable, the CLI spawns the bundled
+  `spelunk-server` as a background child owned by the current user, then waits
+  for its health endpoint before proceeding.
+- **`SPELUNK_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
+  autostart. The CLI runs in Tier 0 and inference-only commands exit 2 with the
+  locked-feature message.
+
+<!-- The discovery timeout (250 ms) and autostart/handshake UX are confirmed
+     against capability.rs. `instance_id` and `started_by` are implemented
+     (PRs #329/#333). -->
+
+User-facing behaviour for these tiers is documented in
+[getting-started.md → Server mode vs no-server mode](../getting-started.md#server-mode-vs-no-server-mode)
+and [server.md → Local server](../server.md#local-server-automatic--no-setup).
 
 ---
 

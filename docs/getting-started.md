@@ -1,29 +1,81 @@
 # Getting Started
 
+`spelunk` is a single binary. Install it, run `spelunk init` inside a git
+repository, and you have working semantic search — no server to stand up, no
+database to provision. A local `spelunk-server` is started for you in the
+background on first use; you only think about servers when you want to *share*
+memory with a team (see [Team setup](#team-setup-shared-memory-with-spelunk-server)
+at the end).
+
 ## 1. Install spelunk
 
-Download the latest binary for your platform from the [releases page](https://github.com/spelunk-cloud/spelunk/releases) and put it somewhere on your `$PATH`:
+The recommended install paths are Homebrew (macOS/Linux), the install script,
+and the Debian package (Linux). All three drop both `spelunk` and
+`spelunk-server` onto your `$PATH`.
+
+### Install script (macOS and Linux) — recommended
+
+Detects your OS/arch, resolves the latest release tag via the GitHub API,
+downloads the matching tarball, and installs both binaries to `/usr/local/bin`
+(or `~/.local/bin` when not run as root):
 
 ```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz \
-  | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
+curl -fsSL https://spelunk.cloud/install.sh | sh
+spelunk --version
+```
 
-# Linux x86_64
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz \
-  | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
+Preview what it would do without writing anything:
 
-# Linux ARM64
-curl -L https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz \
+```bash
+curl -fsSL https://spelunk.cloud/install.sh | sh -s -- --dry-run
+```
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew install spelunk-cloud/spelunk/spelunk
+spelunk --version
+```
+
+### Debian / Ubuntu (`.deb`)
+
+The release pipeline publishes an `amd64` `.deb`. Substitute the release version
+for `<version>` (e.g. `0.8.0`):
+
+```bash
+curl -fsSLO https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk_<version>_amd64.deb
+sudo dpkg -i spelunk_<version>_amd64.deb
+spelunk --version
+```
+
+### Manual tarball (any platform)
+
+Download the tarball for your platform from the
+[releases page](https://github.com/spelunk-cloud/spelunk/releases) and put both
+binaries on your `$PATH`. Release tarballs are named
+`spelunk-<version>-<target>.tar.gz`:
+
+```bash
+# Example: macOS (universal). Replace <version> with the release tag, e.g. v0.8.0
+curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-universal-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Verify
 spelunk --version
 ```
 
-> Replace `v0.1.0` with the version you want. The URL pattern is:
-> `https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz`
+Per-arch targets (`x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) follow the same
+pattern — swap the target in the filename. Building from source? See
+[Building](building.md).
 
+### Running spelunk-server as a service (optional)
+
+The release artifacts include service units for keeping a local server running:
+a launchd plist (`packaging/spelunk-server.plist`) for macOS and a systemd unit
+(`packaging/spelunk-server.service`) for Linux. Most users don't need these —
+`spelunk` autostarts the server on demand (see section 2) — but they're useful
+on a shared or always-on host.
 > **Intel Macs (`x86_64-apple-darwin`):** we no longer publish a prebuilt binary for
 > this target — Apple deprecated the architecture, and Apple Silicon replaced it on
 > new hardware six years ago. Intel Mac users should build from source instead; see
@@ -31,9 +83,46 @@ spelunk --version
 
 > Building from source? See [Building](building.md).
 
-## 2. Start using it
+## 2. Cold start: working search in under a minute
 
-No configuration needed. From inside any git repository:
+```bash
+cd /path/to/your/project
+spelunk init
+```
+
+That's the whole setup. `spelunk init` registers the project, parses and chunks
+every source file, starts the bundled `spelunk-server` in the background when run
+interactively (if one isn't already running), and embeds your code so semantic
+search works out of the box:
+
+```bash
+# Search by meaning, not just text
+spelunk search "where do we validate auth tokens"
+```
+
+No config file, no Docker, no external embedder. The server bundles a native
+embedding model (Nomic Embed Text v1.5, via fastembed-rs); the weights are
+downloaded once on first use and cached under
+`~/.local/share/spelunk/models/`. There is no LM Studio or other external
+inference server to run by default. The next section covers the
+always-available commands that work even before you index.
+
+You can manage the background server explicitly if you want:
+
+```bash
+spelunk server start     # start the local daemon (idempotent; auto-binds 127.0.0.1)
+spelunk server status    # PID, port, instance id, uptime
+spelunk server logs      # last 50 lines of the server log
+spelunk server stop      # stop the daemon
+```
+
+In non-interactive contexts (CI, agent harnesses) `spelunk init` does **not**
+auto-spawn the server — run `spelunk server start` first if you want semantic
+search there, or set `SPELUNK_NO_SERVER=1` to stay fully offline.
+
+## 3. Start using it immediately — no setup required
+
+No configuration needed. From inside any git repository, you can immediately:
 
 ```bash
 # Trace callers and callees for any symbol
@@ -42,44 +131,41 @@ spelunk graph validate_token
 # Full-text search
 spelunk search "error handling" --mode text
 
-# Store a decision
+# Store a decision for your team
 spelunk memory add --kind decision \
   --title "Chose token bucket for rate limiting" \
   --body "Simpler than sliding window; sufficient for <1k RPS"
 
-# Read it back
+# List your decisions
 spelunk memory list --kind decision
 ```
 
-Memory is stored in git notes — no server, no database, no setup.
+Memory is stored in git notes — no server, no database, no configuration.
 
-## 3. Try search and memory together
+## 4. Start an agent session
+
+When your agent or team is starting a new coding session, pull all relevant context in one command:
 
 ```bash
-# Search memory for context on a topic
-spelunk memory search "why did we choose this"
+# Agent entry point — pulls decisions, requirements, questions, handoffs
+spelunk context
 
-# Full-text code search
-spelunk search "handleRequest" --mode text
+# Filter by kind
+spelunk context --kind decision
 
-# Trace a symbol's call graph
-spelunk graph Database --kind calls
-
-# Get JSON output (for agents)
-AGENT=true spelunk memory list --kind decision
+# Get JSON for machine processing
+AGENT=true spelunk context
 ```
 
-## 4. Set up automatic memory harvesting
+## 5. Set up automatic memory harvesting (optional)
 
-Install a git post-commit hook so `spelunk` harvests memory on every commit:
+Install a git post-commit hook so `spelunk` automatically extracts memories from commit messages:
 
 ```bash
 spelunk hooks install
 ```
 
-Other developers without `spelunk` installed are unaffected — the hook checks for the binary first.
-
-To remove:
+Other developers without `spelunk` installed are unaffected. To remove:
 
 ```bash
 spelunk hooks uninstall
@@ -87,116 +173,120 @@ spelunk hooks uninstall
 
 ---
 
-## Optional: semantic search
+## Server mode vs no-server mode
 
-For concept-level search (finding code by meaning rather than text), you need:
-1. An OpenAI-compatible embedding server
-2. A built index
+Everything spelunk does falls into one of two tiers, decided at runtime by
+whether a `spelunk-server` is reachable. You don't choose a tier — spelunk picks
+the best one available.
 
-### Set up an inference server
+| | **No-server mode** | **Server mode** |
+|---|---|---|
+| When | No server reachable (or `SPELUNK_NO_SERVER=1`) | A server is running — usually the local one started for you |
+| Search | text + AST (`--mode text`, `--mode ast-grep`) | + semantic / hybrid search by meaning (`--mode auto`/`semantic`) |
+| Memory add/list/show | git-notes + local SQLite | same (or a shared server, if configured) |
+| `spelunk explore` | unavailable | available (server runs the LLM loop) |
+| Team memory sync | — | `spelunk memory push` / `spelunk sync` to a shared server |
 
-The easiest options:
+In v0.8.0 the local server is **autostarted in the background** the first time
+you run a command that needs it (e.g. `spelunk init` or a semantic
+`spelunk search`), so most users are in server mode without doing anything. The
+always-available commands in section 4 work in either mode.
 
-- **[LM Studio](https://lmstudio.ai/)** — desktop app for macOS/Windows/Linux; enable the local server (default port `1234`)
-- **[Ollama](https://ollama.com/)** — `ollama serve` (default port `11434`)
-- **vLLM / any OpenAI proxy** — point `api_base_url` at your endpoint
+To stay fully offline (CI, air-gapped, or you just don't want a background
+process), set `SPELUNK_NO_SERVER=1` — spelunk then runs in no-server mode and
+locked features exit with a clear message instead of starting anything.
 
-Recommended models:
-- **Embedding** — `google/embeddinggemma-300m-qat` (300M params, low VRAM, fast)
-- **Chat (optional)** — any instruction-tuned model; needed only for `memory harvest` and `plan create`
+For how discovery works and how to point the CLI at a remote server, see
+**[Server setup](server.md)** and
+[CLI capability tiers](architecture/capability-tiers.md).
 
-### Configure spelunk
+### Using your own inference server (advanced)
 
-`spelunk` looks for a config file at `~/.config/spelunk/config.toml`:
+By default the bundled `spelunk-server` provides embeddings (native, via
+fastembed-rs) and — when a chat model is configured — LLM inference. If you'd
+rather have spelunk talk directly to your own OpenAI-compatible endpoint (e.g.
+LM Studio on port `1234`, Ollama on `11434`, or a vLLM proxy) instead of the
+native embedder, point it there in `~/.config/spelunk/config.toml`:
 
 ```toml
 # ~/.config/spelunk/config.toml
 
-# LM Studio default:  http://127.0.0.1:1234
-# Ollama default:     http://127.0.0.1:11434
+# OpenAI-compatible endpoint (default: http://127.0.0.1:1234)
 api_base_url = "http://127.0.0.1:1234"
 
-# Must match the model's API identifier on your server
+# Must match your endpoint's model identifier
 embedding_model = "text-embedding-embeddinggemma-300m-qat"
 
-# Optional: enables `memory harvest` and `plan create`
-# llm_model = "google/gemma-3n-e4b"
-
-# Embedding batch size — lower if you run out of memory
+# Embedding batch size (tune if you run out of memory)
 batch_size = 32
-
-# Default database location (default: ~/.local/share/spelunk/<project-slug>.db)
-# db_path = "/custom/path/myproject.db"
 ```
 
-You can also override the database path per-command with `--db <path>`.
+This is an advanced override; most users never set it — the native embedder in
+`spelunk-server` handles embeddings with no extra configuration.
 
-### Index your project
+### Index your project for semantic search
+
+`spelunk init` (section 2) already indexes and embeds your project against the
+local server. If you've pointed spelunk at your own inference server above, run
+it again so embeddings are generated through that endpoint:
 
 ```bash
 cd /path/to/your/project
 spelunk init
 ```
 
-`spelunk init`:
-1. Registers the project in the global spelunk registry
-2. Parses every source file, embeds each chunk, and stores everything in SQLite
-3. Prints a summary with file/chunk counts and suggested next commands
+This:
+1. Registers your project in the global registry
+2. Parses every source file and indexes chunks
+3. Embeds chunks using your configured server
+4. Stores everything in `~/.local/share/spelunk/<project-slug>.db`
 
+Output:
 ```
 spelunk initialised for my-project
 
   Index:   142 files, 1 840 chunks
   DB:      ~/.local/share/spelunk/my-project.db
-  Hook:    not installed — run `spelunk hooks install` to add
+  Embeddings: 1 840 vectors
 ```
 
-```bash
-# Also install the post-commit git hook in one step
-spelunk init --hook
-
-# Register without indexing (index later with `spelunk index .`)
-spelunk init --no-index
-```
-
-Running `spelunk init` again is safe — it won't re-register an existing project.
-
-### Manual indexing
+**Subsequent runs** only re-index changed files (via blake3 hash):
 
 ```bash
 spelunk index /path/to/your/project
+```
 
-# Force a full re-index (after changing embedding model)
+Force a full re-index after changing the embedding model:
+
+```bash
 spelunk index /path/to/your/project --force
 ```
 
-On subsequent runs, only changed files are re-processed (blake3 hash comparison).
-
-### Semantic search
+### Use semantic search
 
 ```bash
-# Finds code by meaning, not just text
+# Finds code by concept, not just text
 spelunk search "error handling in the HTTP layer"
 
 # Hybrid search (semantic + full-text)
 spelunk search "authentication" --mode hybrid
 
-# With call-graph enrichment
+# Expand with 1-hop call graph
 spelunk search "authentication" --graph
 
-# Fit results within a token budget
+# Fit results within a token budget for agents
 spelunk search "database layer" --budget 4000
 
-# JSON output
+# Machine-readable output
 spelunk search "database migrations" --format json
 ```
 
 ### Check index health
 
 ```bash
-spelunk status          # index statistics
-spelunk check           # verify index is up to date (exits 1 if stale)
-spelunk check --porcelain --files   # list stale files
+spelunk status                              # index statistics
+spelunk check                               # verify index is up to date
+spelunk check --format porcelain --files    # list files that need re-indexing
 ```
 
 ---
@@ -206,29 +296,42 @@ spelunk check --porcelain --files   # list stale files
 - [Commands reference](commands.md) — every flag and option
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
+- [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
+- [Self-hosting](self-hosting.md) — exposing spelunk-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders
 
-## Team setup (shared memory)
+---
 
-Working with teammates? Run `spelunk-server` so the whole team shares memory
-instead of each person siloing their own decisions and context.
+## Team setup: Shared memory with spelunk-server
 
-Add a `.spelunk/config.toml` at your repo root and commit it:
+Working with a team? Point everyone at a shared `spelunk-server` so they share decisions, requirements, and context instead of siloing them locally. This is a *different* server from the local one spelunk autostarts for inference — it's a long-lived, deployed instance with an API key.
+
+Each team member's code stays local — only memory travels to the server.
+
+### Quick setup
+
+Add `.spelunk/config.toml` at your repo root (commit it):
 
 ```toml
-# .spelunk/config.toml — commit this, it contains no secrets
-memory_server_url = "http://spelunk.internal:7777"
-project_id        = "my-awesome-app"
+# .spelunk/config.toml — commit this, no secrets
+server_url = "http://spelunk.internal:7777"
+project_id = "my-awesome-app"
 ```
 
 Each developer adds the API key to their personal config:
 
 ```toml
-# ~/.config/spelunk/config.toml — never commit
-memory_server_key = "shared-team-key"
+# ~/.config/spelunk/config.toml — never commit this
+server_key = "your-shared-api-key"
 ```
 
-After that, all `spelunk memory` commands transparently use the server. Push
-any existing local entries with `spelunk memory push`.
+> The older `memory_server_url` / `memory_server_key` keys are still accepted as
+> deprecated aliases for `server_url` / `server_key`.
 
-→ **[Server setup guide](server.md)** — Docker, API reference, production tips
+After setup, all `spelunk memory` commands transparently use the server. To migrate existing local memories:
+
+```bash
+spelunk memory push
+```
+
+For full setup and deployment guide: **[Server setup](server.md)** — Docker, configuration, API reference.

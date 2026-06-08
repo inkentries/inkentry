@@ -35,10 +35,10 @@ spelunk search "validate_token" --mode text --limit 20
 spelunk memory search "validate_token authentication"
 ```
 
-If you have a chat model configured, you can also ask for a synthesis:
+With a server that has an LLM backend, you can also ask for a synthesis:
 
 ```bash
-# spelunk ask "If I add a required 'scope' parameter to validate_token, what would I need to update across the codebase?" --context-chunks 30
+spelunk explore "If I add a required 'scope' parameter to validate_token, what would I need to update across the codebase?"
 ```
 
 ## Step 4: Find the tests
@@ -56,14 +56,8 @@ spelunk memory search "validate_token authentication"
 
 ## Step 6: Write a plan
 
-Create a checklist in `docs/plans/` manually, or generate one with `spelunk plan create` if you have a chat model configured:
+Create a checklist as a plain markdown file in `docs/plans/`. It should cover:
 
-```bash
-# spelunk plan create "add scope parameter to validate_token"
-# → writes docs/plans/add-scope-parameter-to-validate-token.md
-```
-
-Either way, the checklist should cover:
 - `- [ ] Update validate_token signature in src/auth/token.rs`
 - `- [ ] Update call sites in middleware, routes, and interceptor`
 - `- [ ] Update test fixtures and mocks`
@@ -74,7 +68,6 @@ Either way, the checklist should cover:
 # Confirm all call sites are updated
 spelunk graph validate_token --kind calls
 
-# If the project is indexed, verify semantic connectivity
+# If the project is indexed, re-index changed files
 spelunk index .
-spelunk verify src/auth/token.rs
 ```

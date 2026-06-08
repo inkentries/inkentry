@@ -208,11 +208,14 @@ emit this format (currently some return plain text):
 {
   "status": "ok",
   "version": "0.8.0",
+  "instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "started_by": 501,
   "capabilities": [
     "memory",
     "index.embed",
     "search.semantic",
-    "explore"
+    "explore",
+    "llm.complete"
   ]
 }
 ```
@@ -446,9 +449,10 @@ A CI check diffs the committed file against a freshly generated one.
 | `GET` | `/v1/projects/{id}/memory/stream` | Bearer | 1 | No change |
 | `GET` | `/v1/projects/{id}/memory/harvested-shas` | Bearer | 1 | No change |
 | `GET` | `/v1/projects/{id}/stats` | Bearer | 1 | No change |
-| `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | **New** (also serves memory query-embed via synthetic chunk) |
-| `POST` | `/v1/projects/{id}/explore` | Bearer | 1 | **New** (SSE) |
-| `POST` | `/v1/projects/{id}/llm/complete` | Bearer | 1 | **New** (SSE) — generic inference primitive (ADR-002) |
+| `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | Embedding proxy; also serves memory query-embed via synthetic chunk |
+| `POST` | `/v1/projects/{id}/search` | Bearer | 1 | Query-embedding proxy for CLI KNN |
+| `POST` | `/v1/projects/{id}/explore` | Bearer | 1 | SSE — LLM reasoning loop |
+| `POST` | `/v1/projects/{id}/llm/complete` | Bearer | 1 | SSE — generic inference primitive (ADR-002) |
 
 ---
 

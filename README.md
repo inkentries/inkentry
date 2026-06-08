@@ -4,25 +4,25 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition 2024](https://img.shields.io/badge/rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
-**Code intelligence for AI agents — no setup required.** Persistent memory, code graph, and search that work straight from the CLI.
+**Code intelligence for AI agents — zero infrastructure required.** Persistent memory, code graph, and search that work straight from the CLI.
 
 ```bash
-spelunk memory add --kind decision --title "Chose sqlite-vec" --body "no external process needed"
-spelunk graph validate_token                       # callers, callees, imports
-spelunk search "error handling" --mode text        # full-text search
+spelunk graph validate_token                       # trace callers, callees, imports
+spelunk search "error handling" --mode text        # full-text search, no server needed
+spelunk memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
 ```
 
-Add an embedding server for semantic search. Run `spelunk-server` to share memory across a team.
+Semantic search works out of the box: `spelunk` autostarts a local `spelunk-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `spelunk-server` to share memory across a team.
 
 ## Why spelunk?
 
-AI coding agents lose context between sessions and can't trace how code connects across files. spelunk solves both.
+AI coding agents lose context between sessions and can't trace how code connects across files. spelunk solves both with zero infrastructure.
 
-- **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them semantically next session, or share them via a server with your team.
+- **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
 - **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
-- **Works without an LLM** — memory, code graph, and full-text search need nothing but the binary. No API keys, no local model server, no indexing step.
-- **Semantic search when you want it** — point spelunk at any OpenAI-compatible embedding endpoint (LM Studio, Ollama, vLLM) and get concept-level search across your codebase.
-- **100% local** — your code never leaves your machine. The optional server is self-hosted.
+- **Works without any server** — memory, code graph, and full-text/ast-grep search work with just the binary. No API keys, no configuration.
+- **Semantic search built in** — a local `spelunk-server` is autostarted on demand with a bundled native embedder (Nomic Embed Text v1.5); no external inference server required. You can still point spelunk at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
+- **100% local** — your code never leaves your machine. The server is self-hosted (local by default).
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
 
 ### When to use spelunk vs grep
@@ -34,21 +34,24 @@ AI coding agents lose context between sessions and can't trace how code connects
 | See what calls a function | `spelunk graph validate_token` |
 | Remember why a decision was made | `spelunk memory search "why sqlite-vec"` |
 | Store a design decision for future sessions | `spelunk memory add --kind decision ...` |
-| Share context across a team | `spelunk-server` + `memory_server_url` |
+| Share context across a team | `spelunk-server` + `server_url` |
 
 ## Quick start
 
 **1. Install**
 
 ```bash
-cargo install spelunk
+curl -fsSL https://spelunk.cloud/install.sh | sh
 ```
 
-> Or download a binary from the [releases page](https://github.com/spelunk-cloud/spelunk/releases). See [Getting Started](docs/getting-started.md) for full instructions.
+> Also available via Homebrew (`brew install spelunk-cloud/spelunk/spelunk`), a
+> Debian `.deb`, or a tarball from the
+> [releases page](https://github.com/spelunk-cloud/spelunk/releases). See
+> [Getting Started](docs/getting-started.md) for all install paths.
 
-**2. Use it**
+**2. Use it immediately — no setup required**
 
-No configuration needed. From inside any git repository:
+From inside any git repository:
 
 ```bash
 spelunk graph validate_token                       # trace callers and callees
@@ -57,17 +60,18 @@ spelunk memory add --kind decision \
   --title "Chose token bucket for rate limiting" \
   --body "Simpler than sliding window; sufficient for <1k RPS"
 spelunk memory list --kind decision
+spelunk context                                    # agent session entry point
 ```
 
-**3. Add semantic search (optional)**
+**3. Add semantic search**
 
-For concept-level search, start any OpenAI-compatible embedding server — [LM Studio](https://lmstudio.ai/) is the easiest option — then index your project:
+`spelunk init` indexes your project and starts the bundled server, so semantic
+search works with no extra setup:
 
 ```bash
-# Load google/embeddinggemma-300m-qat in LM Studio (port 1234), then:
-spelunk init                                   # register + index in one step
-spelunk search "error handling in the HTTP layer"
-spelunk search "database migrations" --graph   # include callers/callees
+spelunk init                                       # index + autostart server in one step
+spelunk search "error handling in the HTTP layer"  # semantic search
+spelunk search "database migrations" --graph       # with callers/callees
 ```
 
 ## Core features
@@ -81,11 +85,13 @@ spelunk memory add --kind decision --title "Chose sqlite-vec over pgvector" \
   --body "Must run without a Postgres server. Revisit if we need filtering + ANN."
 spelunk memory list --kind decision --limit 10
 spelunk memory search "why did we choose this database"
-spelunk memory harvest   # auto-extract decisions from recent commits (requires llm_model)
+spelunk memory harvest   # auto-extract decisions from recent commits (server with LLM backend)
 spelunk sync             # push local memory entries to the configured server (alias for `memory push`)
 ```
 
-Memory is stored in git notes by default — it travels with the repo. Point at `memory_server_url` to share across a team.
+Memory is stored in local SQLite and written through to git notes by default
+(`store_in_git_notes`), so it travels with the repo. Set `server_url` to share
+across a team.
 
 ### Code graph
 
@@ -112,7 +118,7 @@ spelunk explore "how does incremental indexing work?"   # LLM iterates search + 
 spelunk explore "what guards the context window?" --verbose
 ```
 
-`explore` requires `llm_model` in config.
+`explore` requires a server with an LLM backend configured.
 
 ### Multi-project search
 

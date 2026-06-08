@@ -4,17 +4,19 @@
 
 **The key mental model**: spelunk retrieves context; you reason over it. Use `spelunk graph` and `spelunk search` to find the right code, read the results, then synthesise the answer yourself. spelunk is a persistent memory store and code navigation tool, not an oracle.
 
-**What needs a server:** semantic `spelunk search`, `spelunk explore`, `spelunk ask`, `spelunk plan create`, and `spelunk memory harvest` all require an inference server. Everything else — memory, code graph, full-text search — works with just the binary.
+**What's built-in:** memory (git-notes + local SQLite), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed.
+
+**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` go through `spelunk-server`. From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (Nomic Embed Text v1.5, via fastembed-rs) — there is no external embedding server to run by default. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly.
 
 ## The core loop
 
 A productive agentic session with `spelunk` looks like this:
 
-1. **Orient** — read memory and check index health
-2. **Plan** — generate a checklist for the current task
+1. **Orient** — read memory and check index health (`spelunk context`, `spelunk check`)
+2. **Search** — find the relevant code before reading or editing it
 3. **Execute** — make code changes, delegating sub-tasks as needed
-4. **Verify** — check semantic coherence after changes
-5. **Codify** — store decisions and context in memory
+4. **Verify** — re-check the call graph and re-index after changes
+5. **Codify** — store decisions, handoffs, and context in memory
 
 This loop compounds: each session leaves better context for the next, whether that's the same agent resuming or a different one picking up.
 
@@ -75,21 +77,25 @@ exits with a clear error.  Use `--port <n>` to override the starting port.
 At the start of a session, orient yourself:
 
 ```bash
-# Check the index is fresh
-spelunk check
-
-# Pull handoffs, open questions, decisions, and requirements in one shot
+# Agent session entry point — pulls context from previous sessions
 spelunk context
 
-# Check antipatterns — things to avoid repeating
-AGENT=true spelunk memory failures
+# If you've indexed: verify the index is up to date
+spelunk check
 ```
 
-`spelunk context` replaces the old multi-command sequence. It prints the four
-most agent-relevant memory sections (handoffs, open questions, decisions,
-requirements) sorted newest-first with per-section defaults. Add `--format json`
-for machine-readable output, `--kind decision` to narrow to one section, or
-`--path src/auth` to filter to entries tagged with a specific path.
+`spelunk context` is designed as the single agent entry point. It retrieves the four most agent-relevant memory sections (handoffs, open questions, decisions, requirements) sorted newest-first, giving the agent a full picture of prior work.
+
+Flags:
+- `--format json` — machine-readable output
+- `--kind decision` — narrow to one section
+- `--path src/auth` — filter by file path tag
+- `--limit N` — entries per section (defaults: handoff=3, decision=10, question/requirement=500)
+- `--no-conventions` — skip the extracted-conventions section
+
+`spelunk context` also surfaces a **conventions** section: coding conventions
+inferred by a heuristic AST pass over the index (no LLM). It needs an index but
+no server.
 
 ## Searching before writing
 
@@ -116,50 +122,36 @@ The `--graph` flag adds 1-hop callers and callees to the result set — the righ
 Use `spelunk graph` and `spelunk search` to find relevant code, then read and reason over the results yourself:
 
 ```bash
-# Trace call chains
+# Trace call chains (no server needed)
 AGENT=true spelunk graph handle_request
 AGENT=true spelunk search "request lifecycle middleware" --mode text --limit 20 --format json
 
-# Semantic search (requires server + index)
+# Semantic search (requires embedding server + index)
 AGENT=true spelunk search "embedding format storage" --graph --format json
 ```
 
-For open-ended questions that require tracing through several files, use `spelunk explore` (requires server + `llm_model`). It runs an LLM-driven search loop and returns a synthesised answer:
+For open-ended questions that require synthesis across multiple code paths, use `spelunk explore` (requires embedding server and optionally a chat model). It runs an iterative search-and-reason loop:
 
 ```bash
 AGENT=true spelunk explore "how does incremental indexing decide which files to skip?"
 AGENT=true spelunk explore "where is the embedding model loaded?" --max-steps 3
 ```
 
-`explore` is slower than `search` (multiple LLM calls) — use it only for questions that genuinely need synthesis across many code paths.
-
-## Creating plans
-
-Write a markdown checklist in `docs/plans/` manually, or generate one with `spelunk plan create` if `llm_model` is configured:
-
-```bash
-# Requires llm_model in config
-spelunk plan create "add rate limiting to the API layer"
-# → writes docs/plans/add-rate-limiting.md with a - [ ] checklist
-
-# Check progress
-spelunk plan status
-```
-
-Check off items by editing the markdown file directly (`- [ ]` → `- [x]`). `spelunk plan status` reads the file and shows completion percentages.
+`explore` is slower than `search` (multiple LLM calls) — use it only when `search` alone isn't enough.
 
 ## After making changes
 
 ```bash
-# Confirm call sites still match using the code graph (no server needed)
+# Confirm call sites still match using the code graph (always works)
 spelunk graph validate_token --kind calls
 
-# If the project is indexed: verify semantic retrievability and re-index
-spelunk verify src/auth/middleware.rs
+# If the project is indexed: re-index changed files (incremental, blake3-gated)
 spelunk index .
 ```
 
-To exclude files or directories from indexing, add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory. It takes higher precedence than `.gitignore`.
+To exclude files or directories from indexing, add a `.spelunkignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`.
+
+**Note:** Indexing is optional and only needed if you use semantic search. If you only use `spelunk graph` and full-text search, there's nothing to rebuild after changes.
 
 ## Storing decisions
 
@@ -178,6 +170,11 @@ Doing this consistently means future agents (and future you) can retrieve the ra
 ```bash
 spelunk memory search "why did we choose sqlite-vec"
 ```
+
+**git-notes write-through:** with `store_in_git_notes` enabled (the default),
+`spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
+so decisions travel with the code through clone/fetch. It is a graceful no-op
+outside a git repository. Set `store_in_git_notes = false` to disable.
 
 ## Storing questions for async resolution
 
@@ -243,13 +240,13 @@ spelunk context
 
 ## Multi-agent coordination
 
-When using a shared memory server (`memory_server_url` in config), agents can coordinate without stepping on each other's toes:
+When using a shared memory server (`server_url` in config), agents can coordinate without stepping on each other's toes:
 
 ```bash
 # Poll for new entries since a given timestamp
 spelunk memory since <epoch>
 
-# Stream entries as they arrive (requires memory_server_url)
+# Stream entries as they arrive (requires a configured server)
 spelunk memory watch
 ```
 
@@ -449,8 +446,11 @@ echo "authentication" | spelunk plumbing embed --query | spelunk plumbing knn --
 Example output:
 
 ```json
-{"model":"text-embedding-gemma-3","dimensions":1024,"vector":[0.021,-0.043,...]}
+{"model":"nomic-embed-text-v1.5","dimensions":768,"vector":[0.021,-0.043,...]}
 ```
+
+(The model name and dimensionality reflect whichever embedder the server is
+using — the bundled native embedder is Nomic Embed Text v1.5 at 768 dimensions.)
 
 ---
 
@@ -513,26 +513,26 @@ spelunk plumbing read-memory --kind decision --limit 5 | jq '{id, title}'
 ## Summary: agent workflow at a glance
 
 ```bash
-# Session start (no server needed)
-AGENT=true spelunk memory list --kind handoff --limit 3
-AGENT=true spelunk memory list --kind question
-AGENT=true spelunk memory failures
+# Session start — all work out of the box
+spelunk context                                              # pull all prior context
+AGENT=true spelunk context --format json                    # machine-readable
 
-# Before writing code — retrieve context, then reason yourself
-AGENT=true spelunk graph <symbol>                             # call graph, no server
-AGENT=true spelunk search "<topic>" --mode text --format json # full-text, no server
-AGENT=true spelunk search "<topic>" --graph --format json     # semantic (requires server)
-AGENT=true spelunk memory search "<topic>" --format json
+# Before writing code — retrieve context, reason yourself
+AGENT=true spelunk graph <symbol>                             # call graph
+AGENT=true spelunk search "<topic>" --mode text              # full-text search
+AGENT=true spelunk search "<topic>"                          # semantic (requires server)
+AGENT=true spelunk search "<topic>" --graph                  # semantic + call graph
+AGENT=true spelunk memory search "<topic>"                   # search prior decisions
 
-# Planning
-# spelunk plan create "<description>"  ← requires llm_model
+# Optional: If your project is indexed
+spelunk search "<topic>" --budget 4000                        # fit within token limit
+spelunk explore "question about code"                        # LLM-powered synthesis
 
-# After changes
-spelunk graph <symbol> --kind calls    # confirm call sites, no server
-spelunk index .                         # only if project is indexed
-spelunk verify <changed-file>           # only if project is indexed
+# After changes — verify call graph integrity
+spelunk graph <symbol> --kind calls
+spelunk index .                                              # only if using semantic search
 
-# Session end
+# Session end — store decisions for next session
+spelunk memory add --title "Decision: ..." --kind decision
 spelunk memory add --title "Handoff: ..." --kind handoff
-spelunk memory add --title "Decision: ..." --kind decision   # for each key choice
 ```

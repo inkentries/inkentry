@@ -10,16 +10,15 @@ This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.
 
 **At the start of every session:**
 ```bash
-spelunk check                                    # verify index is fresh
-spelunk memory list --kind decision --limit 10   # review prior decisions
-spelunk memory list --kind handoff --limit 3     # pick up where last session left off
-spelunk memory list --kind question              # check open questions
+spelunk context                                   # pull prior decisions, handoffs, questions, requirements
+spelunk check                                     # verify index is fresh (only if indexed)
 ```
 
 **Before reading any file, search first:**
 ```bash
-spelunk search "<topic>"          # find relevant chunks by meaning
-spelunk graph <symbol>            # trace callers/callees when needed
+spelunk graph <symbol>                            # trace callers/callees (always works)
+spelunk search "<topic>" --mode text              # full-text search (always works)
+spelunk search "<topic>"                          # semantic search (if indexed + server running)
 ```
 
 spelunk retrieves context — you synthesise the answer.
@@ -34,7 +33,8 @@ spelunk memory add --kind note --title "..."                       # surprising/
 **At the end of every session:**
 ```bash
 spelunk memory add --kind handoff --title "Handoff: <summary>" --body "what's done, what's next, open questions"
-spelunk index .                   # re-index if project uses semantic search (hook does this on commit)
+# Optional: re-index if you've indexed the project
+spelunk index .
 ```
 
 Full reference: `SKILL.md` and `docs/agent-guide.md`.
@@ -45,11 +45,11 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 `spelunk` is a Rust CLI and context retrieval engine for AI agents.
 
-**Core (no server required):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking.
+**Built-in (zero infrastructure):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Works immediately with no setup.
 
-**With spelunk-server** (`server_url` in config): semantic search via embeddings, `spelunk explore`, `spelunk memory harvest`, LLM summaries. The server exposes OpenAI-compatible inference endpoints; the CLI talks to it via `server_client.rs`.
+**Semantic search via spelunk-server:** from v0.8.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (fastembed-rs, NomicEmbedTextV15) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`.
 
-**With remote server** (`memory_server_url`): team-shared memory, `spelunk memory watch`, conflict detection.
+**Optional: team memory server** (`server_url` pointing at a shared instance): share memory (decisions, requirements) across a team. Each developer's code stays local.
 
 You search with spelunk, then reason over the results yourself.
 
@@ -125,8 +125,7 @@ storage/
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
-  git_notes.rs   — git-notes read/write backend
-  git_meta.rs    — git metadata helpers
+  git_notes.rs   — git-notes read/write backend (write-through on memory add)
   memory/
     mod.rs       — NoteStore: memory entries CRUD + list_filtered
     edges.rs     — memory relationship edges CRUD
@@ -187,7 +186,6 @@ cli/
       graph_cmd.rs    — memory graph subcommand
       harvest.rs      — memory harvest (LLM extraction) entry point
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
-      harvest_entire.rs — harvest from refs/entire/checkpoints/v1
       list.rs         — memory list subcommand
       push.rs         — memory push subcommand
       search.rs       — memory search subcommand
@@ -212,10 +210,11 @@ cli/
 ### spelunk-server (`crates/spelunk-server/src/`)
 
 ```
-main.rs      — entry point: parse args, register sqlite-vec, start Axum server
-lib.rs       — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
-db.rs        — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
-handlers.rs  — Axum route handlers for all /v1/ endpoints
+main.rs            — entry point: parse args, register sqlite-vec, start Axum server
+lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
+db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
+handlers.rs        — Axum route handlers for all /v1/ endpoints
+embedder_native.rs — native embedder (fastembed-rs; Nomic Embed Text v1.5, 768-dim; `embed-native` feature)
 
 migrations/  (crates/spelunk-server/migrations/)
   server_001.sql — projects + server memory schema

@@ -32,18 +32,27 @@ We will credit reporters in the release notes unless you prefer to remain anonym
 
 ## Scope
 
-spelunk is a **local single-user CLI tool**. It has no network listeners, no
-authentication system, and no multi-user access model. The most relevant
-security concerns are:
+spelunk is primarily a **local single-user CLI tool**. By default it runs a
+local `spelunk-server` bound to `127.0.0.1` for embeddings and inference; team
+deployments may run a shared, authenticated `spelunk-server` reachable over the
+network. The most relevant security concerns are:
 
 - **Credential leakage** — secrets present in indexed source files being stored
-  in the vector index or sent to the local LLM
+  in the vector index, written through to git notes, or sent to an inference
+  backend
+- **Memory persistence** — memory entries are written through to
+  `refs/notes/spelunk` by default (`store_in_git_notes`), so they travel with
+  the repository on push/clone
+- **Server exposure** — a `spelunk-server` bound beyond loopback, or run without
+  an API key, exposes stored memory to anyone who can reach the port
 - **Dependency vulnerabilities** — transitive Rust crate advisories
 - **Data integrity** — corruption of the local SQLite index or memory database
 
-Network-based attacks and authentication bypass are out of scope as spelunk
-makes no outbound connections except to `127.0.0.1` (a local server the user
-controls).
+For the default local configuration spelunk makes no outbound connections except
+to `127.0.0.1` (a local server the user controls). When `server_url` points at a
+remote instance, treat the network path and the server's authentication as
+in-scope — see [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md)
+(Mode B) and [`docs/self-hosting.md`](docs/self-hosting.md) for TLS guidance.
 
 ## Security Controls
 

@@ -10,8 +10,17 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 1. Builds `spelunk` and `spelunk-server` release binaries for all supported platforms.
 2. Strips binaries where possible to reduce download size.
 3. Packages each platform's binaries into a `.tar.gz` archive.
-4. Creates a GitHub Release and attaches all archives as downloadable assets.
-5. Auto-generates release notes from merged pull requests and commits.
+4. Builds an `amd64` Debian package (`spelunk_<version>_amd64.deb`).
+5. Creates a GitHub Release and attaches all `.tar.gz` archives and the `.deb` as downloadable assets.
+6. Auto-generates release notes from merged pull requests and commits.
+
+Two install paths live outside this workflow:
+
+- **`install.sh`** is hosted at `https://spelunk.cloud/install.sh`. It resolves
+  the latest release tag via the GitHub API and downloads the matching tarball —
+  it does not need updating per release.
+- **Homebrew tap** the formula's `url`/`sha256`/`version` are updated per
+  release by `.github/workflows/release.yml` .
 
 ## Supported platforms
 
@@ -35,34 +44,34 @@ Edit the `version` field in `Cargo.toml`:
 ```toml
 [package]
 name = "spelunk"
-version = "0.5.0"   # <-- update this
+version = "0.8.0"   # <-- update this
 ```
 
-### 1a. Update version references in docs
+### 1a. Check for hardcoded version references in docs
 
-After bumping `Cargo.toml`, update the hardcoded version strings in any docs that reference download URLs. Currently that includes:
-
-- **`docs/getting-started.md`** — five `curl` commands in the Install section each contain `spelunk-v<old>-<target>.tar.gz`; replace the version segment in all of them.
-
-Search for the old version to catch any others:
+The install docs were rewritten to avoid hardcoding the version: `docs/getting-started.md`
+points at `install.sh` / Homebrew and uses a `<version>` placeholder for manual
+tarball and `.deb` downloads, so it normally needs no per-release edit. Still,
+sweep for stray hardcoded versions before tagging:
 
 ```bash
-grep -r "spelunk-v" docs/
+grep -rn "spelunk-v[0-9]\|spelunk_[0-9]" docs/ README.md
 ```
 
-Commit everything together:
+Fix anything that pins a specific old version (use `<version>` or point at
+`install.sh`). Commit everything together:
 
 ```bash
-git add Cargo.toml Cargo.lock docs/getting-started.md
-git commit -m "chore: bump version to 0.5.0"
+git add Cargo.toml Cargo.lock docs/
+git commit -m "chore: bump version to 0.8.0"
 git push origin main
 ```
 
 ### 2. Tag and push
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 That's it. The release workflow triggers automatically on the pushed tag.
@@ -73,7 +82,7 @@ Watch progress at:
 `https://github.com/spelunk-cloud/spelunk/actions/workflows/release.yml`
 
 Once all jobs pass, the release appears at:
-`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.7.0`
+`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.8.0`
 
 ## Pre-releases
 
@@ -82,30 +91,42 @@ GitHub Release as a pre-release when the tag contains `-rc`, `-beta`, or
 `-alpha`:
 
 ```bash
-git tag v0.7.0-rc.1
-git push origin v0.7.0-rc.1
+git tag v0.8.0-rc.1
+git push origin v0.8.0-rc.1
 ```
 
 ## Download URLs
 
-After a release is published, assets follow this URL pattern:
+After a release is published, assets follow these patterns (the `<version>`
+segment is the full tag, e.g. `v0.8.0`):
 
 ```
-https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-<version>-<target>.tar.gz
+# Tarballs
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-<target>.tar.gz
+
+# Debian package (amd64)
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk_<version-no-v>_amd64.deb
 ```
 
-Examples:
+Examples for `v0.8.0`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk-v0.7.0-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-aarch64-unknown-linux-gnu.tar.gz
+
+# Debian (amd64)
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk_0.8.0_amd64.deb
 ```
+
+> `releases/latest/download/<asset>` also works when the asset name is exact,
+> but the tag-pinned `releases/download/<version>/<asset>` form is unambiguous
+> and avoids the stale-filename 404s tracked in #340.
 
 ## Deleting a bad release
 
@@ -113,11 +134,11 @@ If a release needs to be pulled:
 
 ```bash
 # Delete the tag locally and on remote
-git tag -d v0.7.0
-git push origin :refs/tags/v0.7.0
+git tag -d v0.8.0
+git push origin :refs/tags/v0.8.0
 
 # Delete the GitHub Release (requires gh CLI)
-gh release delete v0.7.0 --yes
+gh release delete v0.8.0 --yes
 ```
 
 Then fix the issue, re-commit, and re-tag.

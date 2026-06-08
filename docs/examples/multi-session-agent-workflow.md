@@ -15,13 +15,12 @@ AGENT=true spelunk memory list --kind handoff --limit 3  # no handoffs yet
 AGENT=true spelunk graph Router --kind calls    # trace middleware wiring
 AGENT=true spelunk search "HTTP middleware handler" --mode text --format json
 
-# With server: richer search + AI-generated plan
+# With server: richer search + agentic exploration
 # AGENT=true spelunk search "HTTP middleware handler" --graph --format json
-# AGENT=true spelunk ask "How is the HTTP layer structured? Where would middleware be added?" --json
-# spelunk plan create "add rate limiting to the HTTP API layer"
+# AGENT=true spelunk explore "How is the HTTP layer structured? Where would middleware be added?" --format json
 ```
 
-The agent writes a plan manually (or generates one via `spelunk plan create` if a chat model is configured):
+The agent writes a plan as a plain markdown checklist (e.g. in `docs/plans/`):
 
 ```
 - [ ] Research token bucket vs sliding window for this use case
@@ -107,15 +106,14 @@ AGENT=true spelunk search "unit test tokio test mock" --mode text --format json
 AGENT=true spelunk graph RateLimiter --kind calls   # find what already calls into it
 
 # With server: ask for a synthesis
-# AGENT=true spelunk ask "What testing patterns are used in this codebase? How are middleware components tested?"
+# AGENT=true spelunk explore "What testing patterns are used in this codebase? How are middleware components tested?"
 ```
 
 The agent writes tests, updates docs, marks remaining checklist items complete.
 
 ```bash
 spelunk index .   # only if project is indexed
-spelunk plan status add-rate-limiting-to-the-http-api-layer
-# → [##########] 6/6 (100%)
+# Mark the remaining checklist items complete in the plan markdown file
 ```
 
 ---

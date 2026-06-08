@@ -1,8 +1,57 @@
-# spelunk-server — Shared Memory Server
+# spelunk-server
 
-`spelunk-server` lets your team share project memory (decisions, context,
-requirements) without sharing code. Each developer's code index stays local;
-only memory entries travel to the server.
+`spelunk-server` does two jobs. Most users only ever meet the first one:
+
+1. **Local inference server (automatic).** It provides embeddings and LLM
+   inference for `spelunk` on your own machine. As of v0.8.0 the CLI starts a
+   local instance for you in the background — there is nothing to set up.
+2. **Team memory server (optional, deployed).** The same binary, run as a
+   long-lived service, lets a team share project memory (decisions, context,
+   requirements) without sharing code. Each developer's code index stays local;
+   only memory entries travel to the server.
+
+If you just installed spelunk and want it to work, you want the local-auto
+section below and nothing else. The team-server material starts at
+[Team server](#team-server).
+
+---
+
+## Local server (automatic — no setup)
+
+When you run a command that needs inference — `spelunk init`, a semantic
+`spelunk search`, `spelunk explore` — the CLI looks for a server on the loopback
+address `127.0.0.1:7777`. If none is running, it starts the bundled
+`spelunk-server` in the background, owned by your user, and reuses it for the
+rest of the session and future runs. You don't configure anything, and you don't
+manage a process. Memory still lives in local git-notes; the local server only
+provides inference.
+
+If you ever need to manage it explicitly:
+
+```bash
+spelunk server start     # start the local server (no-op if already running)
+spelunk server stop      # stop the local server
+spelunk server status    # show whether a local server is running and its PID
+spelunk server logs      # tail the local server's logs
+```
+
+To opt out entirely and keep spelunk fully offline, set `SPELUNK_NO_SERVER=1`
+(see [Server mode vs no-server mode](getting-started.md#server-mode-vs-no-server-mode)).
+With it set, spelunk never autostarts a server and inference-only features exit
+with a clear message instead.
+
+How discovery decides whether to reuse or start a server is documented in
+[CLI capability tiers → Loopback auto-discovery](architecture/capability-tiers.md#loopback-auto-discovery).
+The `instance_id` and `started_by` UID checks described there are implemented
+as of v0.8.0 (PRs #329/#333).
+
+---
+
+## Team server
+
+The rest of this page covers running `spelunk-server` as a **deployed, shared**
+service so a team can sync memory. This is distinct from the local-auto server
+above: it's long-lived, reachable over the network, and protected by an API key.
 
 ## Quick start (Docker)
 
@@ -16,7 +65,7 @@ docker compose up -d
 
 # Verify
 curl http://localhost:7777/v1/health
-# → ok
+# → {"status":"ok","version":"0.8.0","capabilities":["memory"],...}
 ```
 
 ## With an API key (recommended)
@@ -38,16 +87,19 @@ Each developer adds a `.spelunk/config.toml` at the project root (commit it):
 
 ```toml
 # .spelunk/config.toml — commit this, it's not a secret
-memory_server_url = "http://spelunk.internal:7777"
-project_id        = "my-awesome-app"
+server_url = "http://spelunk.internal:7777"
+project_id = "my-awesome-app"
 ```
 
 Personal config (`~/.config/spelunk/config.toml` — never commit):
 
 ```toml
 # ~/.config/spelunk/config.toml
-memory_server_key = "your-shared-api-key"
+server_key = "your-shared-api-key"
 ```
+
+> The legacy `memory_server_url` / `memory_server_key` keys remain accepted as
+> deprecated aliases for `server_url` / `server_key`.
 
 Or use the environment variable:
 
@@ -147,7 +199,12 @@ POST   /v1/projects/{project_id}/memory/{id}/archive
 POST   /v1/projects/{project_id}/memory/{id}/supersede
 GET    /v1/projects/{project_id}/memory/since     ?t=<epoch>&limit=
 GET    /v1/projects/{project_id}/memory/stream    (Server-Sent Events)
+GET    /v1/projects/{project_id}/memory/harvested-shas
 GET    /v1/projects/{project_id}/stats
+POST   /v1/projects/{project_id}/index/embed      (embedding proxy — vectors not stored)
+POST   /v1/projects/{project_id}/search           (query embedding proxy for CLI KNN)
+POST   /v1/projects/{project_id}/explore          (SSE — LLM reasoning loop)
+POST   /v1/projects/{project_id}/llm/complete     (SSE — raw LLM completion)
 ```
 
 ### Conflict detection
@@ -156,11 +213,11 @@ When `POST /v1/projects/{project_id}/memory`, the server checks if a semanticall
 
 ```json
 {
-  "status": "created_with_conflict",
-  "entry_id": 42,
-  "conflict_id": 37,
-  "conflict_title": "Previous similar entry",
-  "message": "Entry created but conflicts with existing memory"
+  "stored": true,
+  "id": 42,
+  "conflicts": [
+    { "id": 37, "title": "Previous similar entry", "similarity": 0.97 }
+  ]
 }
 ```
 
