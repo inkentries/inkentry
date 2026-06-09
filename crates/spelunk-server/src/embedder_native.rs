@@ -21,10 +21,26 @@ const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::NomicEmbedTextV15;
 /// Nomic Embed Text v1.5 (12 layers, 12 heads, seq_len=512) allocates
 /// roughly batch × heads × seq² × 4 bytes of attention matrices per layer.
 /// At fastembed's default of 256, a full MAX_BATCH request produces ~3 GB of
-/// attention tensors per layer — enough to push the process over 20 GB when
-/// combined with model weights and other allocations. 32 keeps peak ONNX
-/// memory under ~500 MB while keeping throughput reasonable.
-const ONNX_BATCH_SIZE: usize = 32;
+/// attention tensors per layer.
+///
+/// Hardware EPs (CoreML, XNNPACK, DirectML) pre-allocate activation buffers
+/// sized to the first inference's batch dimension and hold them for the session
+/// lifetime — ORT's `disable_memory_pattern` does not reach these EP-private
+/// buffers.  A smaller batch keeps the persistent EP footprint manageable;
+/// throughput impact is negligible because hardware EPs are much faster per
+/// call than the CPU path.
+///
+/// CPU path: batch=32 (~500 MB peak, good CPU throughput)
+/// Hardware EP path: batch=8 (~125 MB peak activation footprint per call)
+const ONNX_BATCH_SIZE: usize = if cfg!(any(
+    all(target_vendor = "apple", feature = "embed-coreml"),
+    all(target_os = "linux", feature = "embed-xnnpack"),
+    all(windows, feature = "embed-directml"),
+)) {
+    8
+} else {
+    32
+};
 
 pub struct NativeEmbedder {
     // Mutex because embed() takes &mut self.
@@ -46,17 +62,18 @@ impl NativeEmbedder {
 
         let ep_name = active_ep_name();
         tracing::info!(
-            "loading native embedding model (cache: {}, threads: {threads}, ep: {ep_name})",
+            "loading native embedding model (cache: {}, threads: {threads}, ep: {ep_name}, \
+             onnx_batch: {ONNX_BATCH_SIZE})",
             cache_dir.display()
         );
 
         let model = TextEmbedding::try_new(
             InitOptions::new(DEFAULT_MODEL)
-                .with_cache_dir(cache_dir)
+                .with_cache_dir(cache_dir.clone())
                 .with_show_download_progress(true)
                 .with_intra_threads(threads)
                 .with_disable_memory_pattern(true)
-                .with_execution_providers(platform_execution_providers()),
+                .with_execution_providers(platform_execution_providers(&cache_dir)),
         )
         .context("initialising native embedding model")?;
 
@@ -69,9 +86,21 @@ impl NativeEmbedder {
 /// Returns the hardware-accelerated EP for this platform, if the matching
 /// feature flag was enabled at compile time. Falls back to the ORT CPU EP
 /// (the ort default) when no feature is active.
-fn platform_execution_providers() -> Vec<ExecutionProviderDispatch> {
+///
+/// `cache_dir` is used as the CoreML compiled-model cache so that the model is
+/// not recompiled (holding both ONNX and CoreML representations in RAM
+/// simultaneously) on every server restart.
+fn platform_execution_providers(cache_dir: &std::path::Path) -> Vec<ExecutionProviderDispatch> {
     if cfg!(all(target_vendor = "apple", feature = "embed-coreml")) {
-        vec![ort::ep::CoreML::default().build()]
+        // Cache the compiled CoreML model alongside the ONNX weights.
+        // Without this CoreML recompiles the model in-memory on every server
+        // start, temporarily holding the ONNX graph AND the compiled form.
+        let coreml_cache = cache_dir.join("coreml");
+        vec![
+            ort::ep::CoreML::default()
+                .with_model_cache_dir(coreml_cache.to_string_lossy())
+                .build(),
+        ]
     } else if cfg!(all(target_os = "linux", feature = "embed-xnnpack")) {
         vec![ort::ep::XNNPACK::default().build()]
     } else if cfg!(all(windows, feature = "embed-directml")) {
