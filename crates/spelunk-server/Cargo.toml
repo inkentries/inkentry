@@ -16,7 +16,13 @@ path = "src/lib.rs"
 
 [features]
 default = ["embed-native"]
-embed-native = ["dep:fastembed"]
+embed-native = ["dep:fastembed", "dep:ort"]
+# Hardware-accelerated execution providers — enable the one that matches the
+# build target. Without any of these the native embedder falls back to the
+# default ORT CPU EP (functional, just slower).
+embed-coreml   = ["embed-native", "fastembed/coreml",   "ort/coreml"]   # macOS
+embed-xnnpack  = ["embed-native", "fastembed/xnnpack",  "ort/xnnpack"]  # Linux
+embed-directml = ["embed-native", "fastembed/directml", "ort/directml"] # Windows
 
 [dependencies]
 spelunk-core = { path = "../spelunk-core" }
@@ -42,6 +48,7 @@ clap = { version = "4", features = ["derive", "env"] }
 regex = { version = "1", default-features = false, features = ["std"] }
 dirs = "6"
 fastembed = { version = "5", optional = true }
+ort = { version = "=2.0.0-rc.12", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
