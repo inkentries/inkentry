@@ -201,15 +201,15 @@ cli/
       watch.rs        — `spelunk memory watch`: SSE stream from spelunk-server
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
-      cat_chunks.rs        — emit indexed chunks for a file as NDJSON
-      embed_cmd.rs         — read stdin lines, emit embedding vectors as NDJSON
-      graph_edges.rs       — emit code graph edges as NDJSON
+      cat_chunks.rs        — emit indexed chunks for a file as JSONL
+      embed_cmd.rs         — read stdin lines, emit embedding vectors as JSONL
+      graph_edges.rs       — emit code graph edges as JSONL
       hash_file.rs         — blake3 hash a file; check index currency
-      knn.rs               — KNN vector search, NDJSON output
-      ls_files.rs          — list indexed files as NDJSON; exit 1 if no results
-      parse_file.rs        — parse a file and emit chunks as NDJSON (no DB write)
-      read_conventions.rs  — emit stored convention records as NDJSON
-      read_memory.rs       — emit memory entries as NDJSON
+      knn.rs               — KNN vector search, JSONL output
+      ls_files.rs          — list indexed files as JSONL; exit 1 if no results
+      parse_file.rs        — parse a file and emit chunks as JSONL (no DB write)
+      read_conventions.rs  — emit stored convention records as JSONL
+      read_memory.rs       — emit memory entries as JSONL
 ```
 
 ### spelunk-server (`crates/spelunk-server/src/`)

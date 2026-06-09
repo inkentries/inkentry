@@ -275,7 +275,7 @@ spelunk hooks install --ci
 
 ## Plumbing Commands
 
-Plumbing commands emit NDJSON to stdout and follow a strict exit-code convention, making them safe to use in scripts and pipelines. See [Plumbing and Porcelain](plumbing-and-porcelain.md) for a full explanation of the design philosophy.
+Plumbing commands emit JSONL to stdout and follow a strict exit-code convention, making them safe to use in scripts and pipelines. See [Plumbing and Porcelain](plumbing-and-porcelain.md) for a full explanation of the design philosophy.
 
 Exit codes across all plumbing commands:
 - **0** — success, results emitted
@@ -290,7 +290,7 @@ Commands marked **(requires server)** need an embedding model running on the con
 spelunk plumbing cat-chunks <file>
 ```
 
-Emit all indexed chunks for a given file as NDJSON.
+Emit all indexed chunks for a given file as JSONL.
 
 | Flag | Description |
 |------|-------------|
@@ -318,7 +318,7 @@ spelunk plumbing cat-chunks src/indexer/chunker.rs \
 spelunk plumbing ls-files [--prefix <prefix>] [--stale] [--root <dir>]
 ```
 
-List every indexed file as NDJSON. With `--stale`, only files whose on-disk blake3 hash differs from the stored hash are emitted.
+List every indexed file as JSONL. With `--stale`, only files whose on-disk blake3 hash differs from the stored hash are emitted.
 
 | Flag | Description |
 |------|-------------|
@@ -346,7 +346,7 @@ spelunk plumbing ls-files --stale --root .
 spelunk plumbing parse-file <file>
 ```
 
-Parse a file with tree-sitter and emit chunks as NDJSON without writing anything to the index. Useful for previewing how spelunk will chunk a file.
+Parse a file with tree-sitter and emit chunks as JSONL without writing anything to the index. Useful for previewing how spelunk will chunk a file.
 
 | Flag | Description |
 |------|-------------|
@@ -429,7 +429,7 @@ Example output:
 spelunk plumbing embed [--query]
 ```
 
-Read lines from stdin and emit one NDJSON embedding vector per line. Each output object contains the model name, vector dimensionality, and the float vector.
+Read lines from stdin and emit one JSONL embedding vector per line. Each output object contains the model name, vector dimensionality, and the float vector.
 
 | Flag | Description |
 |------|-------------|
@@ -487,7 +487,7 @@ spelunk plumbing graph-edges --symbol validate_token
 spelunk plumbing read-memory [--kind <kind>] [--id <n>] [--limit N]
 ```
 
-Emit memory entries as NDJSON. Use `--kind` to filter by entry type or `--id` to fetch a single entry.
+Emit memory entries as JSONL. Use `--kind` to filter by entry type or `--id` to fetch a single entry.
 
 | Flag | Description |
 |------|-------------|

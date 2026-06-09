@@ -15,7 +15,7 @@ pub struct SearchArgs {
     #[arg(long, conflicts_with = "limit")]
     pub budget: Option<usize>,
 
-    /// Output format: text, json, or ndjson
+    /// Output format: text, json, or jsonl
     #[arg(long, default_value = "text")]
     pub format: String,
 
@@ -126,7 +126,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     //
     // When the user explicitly requests `--mode semantic` or `--mode hybrid`
     // but no server is reachable (Tier 0), automatically switch to FTS text
-    // search and print a notice to stderr.  stdout stays clean so NDJSON
+    // search and print a notice to stderr.  stdout stays clean so JSONL
     // consumers are unaffected.
     //
     // The `auto` mode already degrades gracefully via the embed_query_vec error
@@ -146,7 +146,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         }
         match crate::utils::effective_format(&args.format) {
             "json" => println!("{}", serde_json::to_string_pretty(&results)?),
-            "ndjson" => {
+            "jsonl" => {
                 for item in &results {
                     println!("{}", serde_json::to_string(item)?);
                 }
@@ -327,7 +327,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
                 };
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
-            "ndjson" => {
+            "jsonl" => {
                 for item in &packed {
                     println!("{}", serde_json::to_string(item)?);
                 }
@@ -342,7 +342,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
 
     match crate::utils::effective_format(&args.format) {
         "json" => println!("{}", serde_json::to_string_pretty(&results)?),
-        "ndjson" => {
+        "jsonl" => {
             for item in &results {
                 println!("{}", serde_json::to_string(item)?);
             }
@@ -576,7 +576,7 @@ pub(crate) fn search_live(
 
     match crate::utils::effective_format(format) {
         "json" => println!("{}", serde_json::to_string_pretty(&results)?),
-        "ndjson" => {
+        "jsonl" => {
             for item in &results {
                 println!("{}", serde_json::to_string(item)?);
             }

@@ -248,7 +248,7 @@ pub struct MemorySinceArgs {
     #[arg(short, long, default_value_t = 100)]
     pub limit: usize,
 
-    /// Output format: text, json, or ndjson
+    /// Output format: text, json, or jsonl
     #[arg(long, default_value = "text")]
     pub format: String,
 }

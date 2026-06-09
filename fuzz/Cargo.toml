@@ -45,8 +45,8 @@ test = false
 doc = false
 
 [[bin]]
-name = "fuzz_ndjson_parse"
-path = "fuzz_targets/fuzz_ndjson_parse.rs"
+name = "fuzz_jsonl_parse"
+path = "fuzz_targets/fuzz_jsonl_parse.rs"
 test = false
 doc = false
 
