@@ -297,6 +297,24 @@ fn find_available_port(start: u16, range: u16) -> Result<u16> {
     )
 }
 
+/// Build the argument list passed to `spelunk-server` when auto-spawning the daemon.
+///
+/// Extracted from the spawn helpers so that unit tests can verify the args
+/// without actually launching a process (THREAT-MODEL req #9 / decision #88).
+///
+/// The returned `Vec` contains every argument **after** the binary path, in
+/// order, as it would be appended to `std::process::Command`.
+pub(super) fn build_daemon_args(db: &Path, port: u16) -> Vec<std::ffi::OsString> {
+    vec![
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string().into(),
+        "--db".into(),
+        db.as_os_str().into(),
+    ]
+}
+
 /// Spawn the server on Unix.
 ///
 /// Uses a single `fork`+`exec` via `std::process::Command::spawn()`.  The
@@ -317,13 +335,11 @@ fn spawn_daemon_unix(
 ) -> Result<std::process::Child> {
     let log_file_err = log_file.try_clone().context("cloning log file handle")?;
 
-    let child = std::process::Command::new(bin)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--db")
-        .arg(db)
+    let mut cmd = std::process::Command::new(bin);
+    for arg in build_daemon_args(db, port) {
+        cmd.arg(arg);
+    }
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_file_err)
@@ -349,13 +365,11 @@ fn spawn_daemon_windows(
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
-    let child = std::process::Command::new(bin)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--db")
-        .arg(db)
+    let mut cmd = std::process::Command::new(bin);
+    for arg in build_daemon_args(db, port) {
+        cmd.arg(arg);
+    }
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
         .stderr(log_file)
@@ -671,5 +685,118 @@ mod tests {
         let result = which_spelunk_server();
         unsafe { std::env::set_var("PATH", &old_path) };
         assert!(result.is_err(), "should fail when binary is not on PATH");
+    }
+
+    // ── spawn_daemon arg list (THREAT-MODEL req #9) ──────────────────────────
+    //
+    // Security invariant: the auto-spawned spelunk-server daemon MUST bind
+    // only the loopback interface.  Without `--host 127.0.0.1` the server
+    // defaults to 0.0.0.0 and becomes LAN-reachable while unauthenticated.
+    //
+    // These tests verify the arg list produced by `build_daemon_args` — the
+    // single source of truth for both the Unix and Windows spawn helpers —
+    // so that a future refactor cannot silently drop the flag.
+    //
+    // refs: https://github.com/spelunk-cloud/spelunk/pull/365
+
+    /// `--host 127.0.0.1` must appear in the daemon arg list (THREAT-MODEL req #9).
+    #[test]
+    fn spawn_daemon_args_bind_loopback() {
+        let db = std::path::Path::new("/tmp/test.db");
+        let args = build_daemon_args(db, 7777);
+
+        // Collect as strings for readable assertions.
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        // `--host` flag must be present.
+        assert!(
+            args_str.contains(&"--host".to_string()),
+            "THREAT-MODEL req #9: --host flag missing from daemon args: {args_str:?}"
+        );
+
+        // The value immediately following `--host` must be `127.0.0.1`.
+        let host_idx = args_str
+            .iter()
+            .position(|a| a == "--host")
+            .expect("--host must be present");
+        let host_value = args_str
+            .get(host_idx + 1)
+            .expect("--host must be followed by a value");
+        assert_eq!(
+            host_value, "127.0.0.1",
+            "THREAT-MODEL req #9: daemon must bind 127.0.0.1 only, got {host_value:?}"
+        );
+    }
+
+    /// `0.0.0.0` must NOT appear in the daemon arg list (THREAT-MODEL req #9).
+    #[test]
+    fn spawn_daemon_args_do_not_bind_wildcard() {
+        let db = std::path::Path::new("/tmp/test.db");
+        let args = build_daemon_args(db, 7777);
+
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !args_str.contains(&"0.0.0.0".to_string()),
+            "THREAT-MODEL req #9: daemon args must not contain 0.0.0.0 (wildcard bind): {args_str:?}"
+        );
+    }
+
+    /// `--port` and the supplied port value must appear in the daemon arg list.
+    #[test]
+    fn spawn_daemon_args_include_port() {
+        let db = std::path::Path::new("/tmp/test.db");
+        let port: u16 = 7780;
+        let args = build_daemon_args(db, port);
+
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let port_idx = args_str
+            .iter()
+            .position(|a| a == "--port")
+            .expect("--port must be present in daemon args");
+        let port_value = args_str
+            .get(port_idx + 1)
+            .expect("--port must be followed by a value");
+        assert_eq!(
+            port_value,
+            &port.to_string(),
+            "daemon arg --port value should match requested port"
+        );
+    }
+
+    /// `--db` and the supplied path must appear in the daemon arg list.
+    #[test]
+    fn spawn_daemon_args_include_db_path() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("server.db");
+        let args = build_daemon_args(&db, 7777);
+
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let db_idx = args_str
+            .iter()
+            .position(|a| a == "--db")
+            .expect("--db must be present in daemon args");
+        let db_value = args_str
+            .get(db_idx + 1)
+            .expect("--db must be followed by a value");
+        assert_eq!(
+            db_value,
+            &db.to_string_lossy().into_owned(),
+            "daemon arg --db value should match supplied db path"
+        );
     }
 }
