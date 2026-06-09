@@ -125,7 +125,9 @@ storage/
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
-  git_notes.rs   — git-notes read/write backend (write-through on memory add)
+  git_notes/
+    mod.rs         — GitNotesBackend struct + helpers; append_to_git_notes free function
+    backend_impl.rs — MemoryBackend trait impl for GitNotesBackend
   memory/
     mod.rs       — NoteStore: memory entries CRUD + list_filtered
     edges.rs     — memory relationship edges CRUD
@@ -133,7 +135,10 @@ storage/
     search.rs    — memory FTS + semantic search
     tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
-  remote.rs      — remote storage backend (HTTP)
+  remote/
+    mod.rs         — RemoteMemoryBackend struct + URL helpers + MemoryBackend impl
+    wire_types.rs  — HTTP request/response structs (AddNoteRequest, NoteResponse, etc.)
+    tests.rs       — #[cfg(test)] tests for URL encoding and search wire format
 
 search/
   mod.rs         — SearchResult struct
