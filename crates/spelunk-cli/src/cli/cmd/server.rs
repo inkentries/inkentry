@@ -303,6 +303,11 @@ fn find_available_port(start: u16, range: u16) -> Result<u16> {
 /// child process inherits the log file handles and runs independently; the
 /// CLI process exits after writing the PID/port state files, at which point
 /// the child is reparented to init/launchd and becomes fully detached.
+///
+/// `--host 127.0.0.1` is always passed so the auto-spawned daemon only binds
+/// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
+/// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
+/// unauthenticated.
 #[cfg(unix)]
 fn spawn_daemon_unix(
     bin: &Path,
@@ -313,6 +318,8 @@ fn spawn_daemon_unix(
     let log_file_err = log_file.try_clone().context("cloning log file handle")?;
 
     let child = std::process::Command::new(bin)
+        .arg("--host")
+        .arg("127.0.0.1")
         .arg("--port")
         .arg(port.to_string())
         .arg("--db")
@@ -327,6 +334,11 @@ fn spawn_daemon_unix(
 }
 
 /// Spawn the server on Windows with `CREATE_NEW_PROCESS_GROUP`.
+///
+/// `--host 127.0.0.1` is always passed so the auto-spawned daemon only binds
+/// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
+/// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
+/// unauthenticated.
 #[cfg(not(unix))]
 fn spawn_daemon_windows(
     bin: &Path,
@@ -338,6 +350,8 @@ fn spawn_daemon_windows(
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
     let child = std::process::Command::new(bin)
+        .arg("--host")
+        .arg("127.0.0.1")
         .arg("--port")
         .arg(port.to_string())
         .arg("--db")
