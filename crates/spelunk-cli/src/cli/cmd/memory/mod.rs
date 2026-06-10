@@ -40,7 +40,7 @@ pub enum MemoryCommand {
     Graph(MemoryGraphArgs),
     /// List memory entries created after a given Unix timestamp
     Since(MemorySinceArgs),
-    /// Stream new memory entries from the server in real time (requires memory_server_url)
+    /// Stream new memory entries from the server in real time (requires server_url)
     Watch(MemoryWatchArgs),
     /// List all stored antipatterns (shortcut for `list --kind antipattern`)
     Failures(MemoryFailuresArgs),
