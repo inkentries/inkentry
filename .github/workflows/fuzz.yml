@@ -10,6 +10,7 @@ jobs:
   fuzz-parser:
     name: cargo-fuzz fuzz_parser
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
