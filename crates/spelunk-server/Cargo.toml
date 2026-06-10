@@ -19,7 +19,18 @@ default = ["embed-native"]
 embed-native = ["dep:fastembed", "dep:ort"]
 # Hardware-accelerated execution providers — enable the one that matches the
 # build target. Without any of these the native embedder falls back to the
-# default ORT CPU EP (functional, just slower).
+# default ORT CPU EP (functional, recommended).
+#
+# EXPERIMENTAL / NOT RECOMMENDED: fastembed tokenizes with
+# `PaddingStrategy::BatchLongest` (vendor/fastembed/src/common.rs), so every
+# batch has a different (batch_size, seq_len) shape. Hardware EPs compile a
+# specialized graph per shape they see, so a constantly-varying shape causes
+# the EP to recompile on (almost) every batch instead of running inference.
+# Observed with embed-coreml: 9-12 GB oscillating memory, <25% CPU / <1% GPU
+# utilization (stuck compiling, not computing), and request timeouts on the
+# very first batch. Fixing this properly requires patching fastembed to use
+# fixed-length padding, which is out of scope here. Until that lands, leave
+# these features disabled.
 embed-coreml   = ["embed-native", "fastembed/coreml",   "ort/coreml"]   # macOS
 embed-xnnpack  = ["embed-native", "fastembed/xnnpack",  "ort/xnnpack"]  # Linux
 embed-directml = ["embed-native", "fastembed/directml", "ort/directml"] # Windows
