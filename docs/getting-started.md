@@ -40,10 +40,12 @@ spelunk --version
 ### Debian / Ubuntu (`.deb`)
 
 The release pipeline publishes an `amd64` `.deb`. Substitute the release version
-for `<version>` (e.g. `0.8.0`):
+for `<version>` (e.g. `0.8.0`). The download path is pinned to the release tag
+(`v<version>`) so the versioned filename always resolves — the version-free
+`releases/latest/download/…` form 404s on a versioned asset name (see #340):
 
 ```bash
-curl -fsSLO https://github.com/spelunk-cloud/spelunk/releases/latest/download/spelunk_<version>_amd64.deb
+curl -fsSLO https://github.com/spelunk-cloud/spelunk/releases/download/v<version>/spelunk_<version>_amd64.deb
 sudo dpkg -i spelunk_<version>_amd64.deb
 spelunk --version
 ```
