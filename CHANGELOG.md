@@ -218,7 +218,7 @@ memory list/show/archive) continue to work offline without `server_url`.
   history.
 
 - **Expanded fuzzer coverage** — fuzzer targets now cover secrets, chunker,
-  `escape_xml`, NDJSON, and history entry parsing.
+  `escape_xml`, JSONL, and history entry parsing.
 
 ### Fixed
 
@@ -238,9 +238,9 @@ memory list/show/archive) continue to work offline without `server_url`.
 ### Added
 
 - **Unix plumbing/porcelain architecture** — 8 new `spelunk spelunk` plumbing
-  subcommands emit machine-readable NDJSON to stdout and use conventional exit
+  subcommands emit machine-readable JSONL to stdout and use conventional exit
   codes (0 = ok, 1 = no results, 2 = error). All porcelain commands now accept
-  `--format text|json|ndjson` for structured output in scripts and agents.
+  `--format text|json|jsonl` for structured output in scripts and agents.
   Plumbing commands: `cat-chunks`, `embed`, `graph-edges`, `hash-file`, `knn`,
   `ls-files`, `parse-file`, `read-memory`.
 

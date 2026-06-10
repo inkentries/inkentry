@@ -68,7 +68,7 @@ pub enum Command {
     Explore(ExploreArgs),
     /// Manage and inspect cross-project links
     Links(LinksArgs),
-    /// Low-level plumbing commands for agents and scripts (NDJSON output)
+    /// Low-level plumbing commands for agents and scripts (JSONL output)
     Plumbing(PlumbingArgs),
     /// Sync local memory entries to the configured server (alias for `memory push`)
     Sync(SyncArgs),
