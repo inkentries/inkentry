@@ -85,6 +85,14 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
 
+    // Honor the capability tier: when the server was auto-discovered via the
+    // loopback probe, `cfg.server_url` is unset; fill it in from the tier so
+    // the inference client can be built (mirrors explore.rs / memory/search.rs,
+    // see spelunk#316).
+    let project_root = db_path.parent().unwrap_or(&db_path);
+    let tier = capability::get_tier(&cfg).await;
+    let cfg = tier.effective_config(&cfg, project_root);
+
     // Apply --local-only: discard linked deps.
     let dep_projects = if args.local_only || args.as_of.is_some() {
         vec![]
@@ -124,31 +132,28 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // The `auto` mode already degrades gracefully via the embed_query_vec error
     // path below — this guard handles the explicit-mode case only.
     // Snapshot searches are skipped: they require embeddings by definition.
-    if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() {
-        let tier = capability::get_tier(&cfg).await;
-        if !tier.is_server() {
-            eprintln!("[server unreachable — using text search]");
-            let sp = spinner("Searching (text)…");
-            let db = Database::open(&db_path)?;
-            let results = db
-                .search_text(&args.query, args.limit.min(100))
-                .unwrap_or_default();
-            sp.finish_and_clear();
-            if results.is_empty() {
-                println!("No results found.");
-                return Ok(());
-            }
-            match crate::utils::effective_format(&args.format) {
-                "json" => println!("{}", serde_json::to_string_pretty(&results)?),
-                "ndjson" => {
-                    for item in &results {
-                        println!("{}", serde_json::to_string(item)?);
-                    }
-                }
-                _ => print_results_text(&results),
-            }
+    if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() && !tier.is_server() {
+        eprintln!("[server unreachable — using text search]");
+        let sp = spinner("Searching (text)…");
+        let db = Database::open(&db_path)?;
+        let results = db
+            .search_text(&args.query, args.limit.min(100))
+            .unwrap_or_default();
+        sp.finish_and_clear();
+        if results.is_empty() {
+            println!("No results found.");
             return Ok(());
         }
+        match crate::utils::effective_format(&args.format) {
+            "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+            "ndjson" => {
+                for item in &results {
+                    println!("{}", serde_json::to_string(item)?);
+                }
+            }
+            _ => print_results_text(&results),
+        }
+        return Ok(());
     }
 
     let mut results = if mode == "text" && snapshot_id.is_none() {
