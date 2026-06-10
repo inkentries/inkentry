@@ -7,7 +7,59 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — 0.8.0-dev
+## [0.8.1] — 2026-06-10
+
+### Fixed
+
+- **`spelunk search` honors auto-discovered loopback server.** Explicit
+  `--mode semantic`/`--mode hybrid` no longer error with "requires
+  spelunk-server", and `--mode auto` no longer silently falls back to
+  ast-grep, when no `server_url` is configured but a local `spelunk-server`
+  was auto-discovered via the loopback probe (the default v0.8.0 UX).
+
+- **Native embedder: fixed memory spike, CPU saturation, and index timeout.**
+  Indexing large projects no longer triggers a ~20 GB memory spike, ~750%
+  CPU usage across 31 threads, or HTTP timeouts during the embed phase.
+  Adds a new `--embed-threads` CLI arg (default 4, env
+  `SPELUNK_EMBED_THREADS`). Verified: 124-file / 1330-chunk index completes
+  in 7m30s with stable ~3.5 GB memory and ~350-400% CPU.
+
+- **Native embedder: reduced CoreML activation footprint and added compiled-model
+  cache** for hardware EP builds (`embed-coreml` / `embed-xnnpack` /
+  `embed-directml`), cutting peak memory from ~4 GB to ~1 GB and avoiding
+  CoreML recompilation on every server start. These hardware EP features
+  remain experimental and are not recommended over the default CPU EP — see
+  `docs/server.md`.
+
+### Security
+
+- **Auto-spawned `spelunk-server` now binds to `127.0.0.1` only.** Previously
+  the server started by `spelunk init` / `ensure_server_running` defaulted to
+  `0.0.0.0`, making the unauthenticated local server LAN-reachable.
+  (THREAT-MODEL req #9, decision #88)
+
+### Added
+
+- **`spelunk status`/`check --format json`** now include a `memory_backend`
+  field (`"sqlite"`, `"remote"`, or `"git-notes"`); `spelunk status` text mode
+  shows a "Memory backend: <kind>" line. (#308)
+
+### Changed
+
+- **NDJSON terminology renamed to JSONL** throughout the CLI, docs, and tests.
+  The `--format` flag value `ndjson` is now `jsonl` for `search`, `graph`, and
+  `memory` commands. (#348)
+
+- **Internal refactor:** `storage::remote` and `storage::git_notes` split into
+  module directories to stay under the 400-line file limit. No public API
+  changes.
+
+- **Homebrew tap moved to a separate repo** (`spelunk-cloud/homebrew-spelunk`);
+  the release workflow now publishes the formula there directly.
+
+---
+
+## [0.8.0] — 2026-06-08
 
 ### Breaking changes — migration required
 
