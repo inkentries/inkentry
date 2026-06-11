@@ -1,6 +1,6 @@
 # ADR-003: Cross-Project Memory Visibility for `spelunk context` / `spelunk memory search|list`
 
-**Status:** Proposed
+**Status:** Approved
 **Date:** 2026-06-11
 **Context:** 2026-06-11 SSE/local-server incident (spelunk-oss issue #375, PRs #379/#384, all closed invalid). Root cause analysis in memory `[[project_pr32_chain_verifier_retention]]`-adjacent decisions and `[[project_adr_approval_gate]]`.
 
@@ -318,7 +318,7 @@ of `spelunk link` edges. Output for any cross-project result carries
 badge) so the consuming agent always knows which project a surfaced
 decision/requirement originated from.
 
-## Implementation checklist (for implementer, pending Johan approval of this ADR)
+## Implementation checklist (for implementer)
 
 - [ ] `Note` struct: add `source_project: Option<String>`,
       `source_project_path: Option<String>` (`crates/spelunk-core/src/storage/memory/mod.rs`,
