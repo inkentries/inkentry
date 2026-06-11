@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use super::MemoryAddArgs;
 use crate::{
     config::Config,
+    indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{NoteInput, NoteRecord, append_to_git_notes, now_secs, open_memory_backend},
 };
@@ -50,6 +51,17 @@ pub(super) async fn memory_add(
         .map(|s| s.split(',').map(|f| f.trim().to_string()).collect())
         .unwrap_or_default();
 
+    // ── Secret-scan gate (binding requirement #8) ────────────────────────────
+    // Checked before ANY persistence (SQLite or git-notes) so no credential
+    // can reach either store.  Error message deliberately does not echo the
+    // matched text.
+    if contains_secret(&title) || contains_secret(&body) {
+        anyhow::bail!(
+            "memory add: refusing to store entry — title or body matches a secret pattern. \
+             Remove the credential and try again. (No data was written to SQLite or git notes.)"
+        );
+    }
+
     let embed_text = format!("title: {title} | text: {body}");
     let embedding = try_embed_via_server(cfg, &embed_text).await;
 
@@ -90,6 +102,7 @@ pub(super) async fn memory_add(
             superseded_by: None,
         };
         // Use process CWD (None) — the CLI is always run from the project root.
+        // Secret scan already ran above; no second check needed here.
         if let Err(e) = append_to_git_notes(None, &record).await {
             tracing::warn!("git-notes write-through failed (non-fatal): {e}");
         }
