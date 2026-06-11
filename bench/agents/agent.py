@@ -516,10 +516,21 @@ def main() -> None:
     patch_path = None
     if args.save_patch:
         try:
-            # Stage all changes (including untracked files from write_file)
-            # then diff against HEAD to capture everything.
+            # Stage all changes (including untracked files from write_file),
+            # but exclude tooling/runtime artifacts that aren't part of the
+            # agent's actual fix. Without these excludes, `.spelunk/index.db`
+            # (binary, written by `spelunk index`), `ISSUE.txt` (written by
+            # setup_repos.sh), `uv.lock` (created by `uv run`), and similar
+            # junk files end up in the saved patch and either fail to apply
+            # in the SWE-bench Docker container or pollute the diff,
+            # causing otherwise-correct fixes to be marked unresolved.
+            EXCLUDE_PATHSPECS = [
+                ":!.spelunk",
+                ":!ISSUE.txt",
+                ":!uv.lock",
+            ]
             subprocess.run(
-                ["git", "add", "-A"],
+                ["git", "add", "-A", "--", ".", *EXCLUDE_PATHSPECS],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -527,7 +538,7 @@ def main() -> None:
                 check=True,
             )
             diff = subprocess.run(
-                ["git", "diff", "--cached", "HEAD"],
+                ["git", "diff", "--cached", "HEAD", "--", ".", *EXCLUDE_PATHSPECS],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
