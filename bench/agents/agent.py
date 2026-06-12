@@ -516,21 +516,40 @@ def main() -> None:
     patch_path = None
     if args.save_patch:
         try:
-            # Stage all changes (including untracked files from write_file),
-            # but exclude tooling/runtime artifacts that aren't part of the
-            # agent's actual fix. Without these excludes, `.spelunk/index.db`
-            # (binary, written by `spelunk index`), `ISSUE.txt` (written by
-            # setup_repos.sh), `uv.lock` (created by `uv run`), and similar
-            # junk files end up in the saved patch and either fail to apply
-            # in the SWE-bench Docker container or pollute the diff,
-            # causing otherwise-correct fixes to be marked unresolved.
-            EXCLUDE_PATHSPECS = [
-                ":!.spelunk",
-                ":!ISSUE.txt",
-                ":!uv.lock",
+            # Stage only known source file extensions so that tooling/runtime
+            # artifacts never end up in the saved patch. Without this, junk
+            # like `.spelunk/index.db` (binary, written by `spelunk index`),
+            # `ISSUE.txt` (written by setup_repos.sh), `uv.lock` (created by
+            # `uv run`), and similar files end up in the saved patch and
+            # either fail to apply in the SWE-bench Docker container or
+            # pollute the diff, causing otherwise-correct fixes to be marked
+            # unresolved. A denylist approach (:!.spelunk :!ISSUE.txt
+            # :!uv.lock ...) is fragile: shell-mangled filenames such as
+            # "=2.6.0," (from a botched `pip install` output redirected into
+            # a file) slip through. An allowlist is strictly safer; anything
+            # that isn't a recognised source file is ignored.
+            SOURCE_PATHSPECS = [
+                "*.py",
+                "*.rs",
+                "*.ts",
+                "*.tsx",
+                "*.js",
+                "*.jsx",
+                "*.go",
+                "*.java",
+                "*.c",
+                "*.cpp",
+                "*.h",
+                "*.rb",
+                "*.sh",
+                "*.toml",
+                "*.json",
+                "*.yaml",
+                "*.yml",
+                "*.md",
             ]
             subprocess.run(
-                ["git", "add", "-A", "--", ".", *EXCLUDE_PATHSPECS],
+                ["git", "add", "--", *SOURCE_PATHSPECS],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -538,7 +557,7 @@ def main() -> None:
                 check=True,
             )
             diff = subprocess.run(
-                ["git", "diff", "--cached", "HEAD", "--", ".", *EXCLUDE_PATHSPECS],
+                ["git", "diff", "--cached", "HEAD", "--", *SOURCE_PATHSPECS],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
