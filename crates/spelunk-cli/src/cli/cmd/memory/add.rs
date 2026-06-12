@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 
 use super::MemoryAddArgs;
 use crate::{
+    capability,
     config::Config,
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
@@ -14,6 +15,17 @@ pub(super) async fn memory_add(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Honor the auto-discovered server tier (ADR-004): loopback auto-discovery
+    // sets the capability tier without populating `cfg.server_url`, so without
+    // this bridge `try_embed_via_server` cannot reach the local embedder and the
+    // note is stored without a vector (invisible to semantic `memory search`).
+    // Build an effective config that routes inference to the discovered server
+    // while leaving `server_url` unset, so `open_memory_backend` still writes the
+    // note to the project's local `memory.db` (the single canonical store).
+    let project_root = mem_path.parent().unwrap_or(mem_path);
+    let tier = capability::get_tier(cfg).await;
+    let eff_cfg = tier.effective_config(cfg, project_root);
+    let cfg = &eff_cfg;
     let (title, body) = if let Some(url) = &args.from_url {
         let (fetched_title, fetched_body) = fetch_url_content(url)
             .await

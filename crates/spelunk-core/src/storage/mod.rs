@@ -33,10 +33,17 @@ use std::path::Path;
 
 /// Open the appropriate memory backend.
 ///
-/// Priority:
+/// Selection rule (ADR-004 — one canonical store per project):
 /// 1. `backend_override = Some("git-notes")` → `GitNotesBackend`
-/// 2. `server_url` set in config → `RemoteMemoryBackend`
-/// 3. Otherwise → local SQLite at `mem_path`
+/// 2. **Explicit** `server_url` in config (team/remote server) →
+///    `RemoteMemoryBackend` (the team-memory tier: memory lives on the shared
+///    server by the user's deliberate configuration).
+/// 3. Otherwise → local SQLite `memory.db` at `mem_path`.
+///
+/// This function intentionally keys only on `cfg.server_url`. An auto-discovered
+/// loopback server is inference-only and routes through `cfg.inference_url`
+/// instead (see `Tier::effective_config`), so it never diverts memory CRUD away
+/// from the project's local `memory.db`.
 pub fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,

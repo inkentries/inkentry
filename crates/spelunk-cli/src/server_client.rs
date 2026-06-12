@@ -120,9 +120,17 @@ pub struct ServerInferenceClient {
 }
 
 impl ServerInferenceClient {
-    /// Build from config. Returns `None` when `server_url` is not configured.
+    /// Build from config. Returns `None` when no inference URL is available.
+    ///
+    /// Uses `Config::resolve_inference_url()` (ADR-004): an auto-discovered
+    /// loopback server sets `inference_url` while leaving `server_url` unset, so
+    /// inference reaches the server even though memory stays local. An explicit
+    /// team `server_url` is used for both.
     pub fn from_config(cfg: &Config) -> Option<Self> {
-        let base_url = cfg.server_url.as_deref()?.trim_end_matches('/').to_string();
+        let base_url = cfg
+            .resolve_inference_url()?
+            .trim_end_matches('/')
+            .to_string();
         let project_id = cfg.project_id.clone().unwrap_or_default();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
