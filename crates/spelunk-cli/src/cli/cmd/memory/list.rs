@@ -29,6 +29,11 @@ pub(super) async fn memory_list(
 
     match crate::utils::effective_format(&args.format) {
         "json" => println!("{}", serde_json::to_string_pretty(&notes)?),
+        "jsonl" => {
+            for n in &notes {
+                println!("{}", serde_json::to_string(n)?);
+            }
+        }
         _ => {
             for n in &notes {
                 print_note_summary(n);
