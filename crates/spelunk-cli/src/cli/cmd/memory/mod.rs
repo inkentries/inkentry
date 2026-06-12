@@ -151,7 +151,7 @@ pub struct MemoryListArgs {
     #[arg(short, long, default_value = "20")]
     pub limit: usize,
 
-    /// Output format: text or json
+    /// Output format: text, json, or jsonl
     #[arg(long, default_value = "text")]
     pub format: String,
 
