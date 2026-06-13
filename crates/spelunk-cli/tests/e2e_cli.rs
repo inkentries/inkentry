@@ -725,7 +725,7 @@ async fn test_index_prints_note_when_no_server_configured() {
         .arg(&project_dir)
         .assert()
         .success()
-        .stderr(predicate::str::contains("configure server_url"));
+        .stderr(predicate::str::contains("no server_url configured"));
 }
 
 #[test]
@@ -898,7 +898,9 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
         .assert()
         .success();
 
-    // Explicit --mode hybrid with no server → succeeds with text search + notice.
+    // Explicit --mode hybrid with no server → succeeds with text search silently
+    // (ADR-004: inference-only routing; fallback is resolved at capability detection,
+    // no per-query notice is emitted).
     Command::cargo_bin("spelunk")
         .unwrap()
         .current_dir(&project_dir)
@@ -910,9 +912,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
         .arg("foo")
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "[server unreachable — using text search]",
-        ));
+        .stderr(predicate::str::is_empty());
 }
 
 /// Explicit `--mode semantic` with no reachable server must also fall through.
@@ -936,9 +936,9 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
         .assert()
         .success();
 
-    // Explicit --mode semantic with no server configured (and auto-discovery
-    // disabled via SPELUNK_NO_SERVER=1) should fall through to text search
-    // and succeed with an informational warning.
+    // Explicit --mode semantic with no server configured → silent fallback to
+    // text search (ADR-004: no explicit server_url = inference-only routing,
+    // fallback notice is suppressed; same as the hybrid test above).
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
@@ -951,7 +951,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
         .arg("foo")
         .assert()
         .success()
-        .stderr(predicate::str::contains("server unreachable"));
+        .stderr(predicate::str::is_empty());
 }
 
 // ── spelunk server error-path tests ──────────────────────────────────────────
