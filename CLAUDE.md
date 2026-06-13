@@ -193,6 +193,7 @@ cli/
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
       list.rs         — memory list subcommand
       push.rs         — memory push subcommand
+      reconcile.rs    — memory reconcile subcommand (import from server.db)
       search.rs       — memory search subcommand
       show.rs         — memory show subcommand
       since.rs        — `spelunk memory since` handler

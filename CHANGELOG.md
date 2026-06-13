@@ -7,6 +7,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`spelunk memory reconcile`** — import memory entries from a `spelunk-server` SQLite
+  database into the local project database without running the server. Flags:
+  `--source-db <path>`, `--dry-run` (preview without writing), `--all-projects`
+  (import across all server projects), `--format json` (machine-readable output).
+
+---
+
 ## [0.8.1] — 2026-06-10
 
 ### Fixed

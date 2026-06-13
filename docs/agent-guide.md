@@ -254,6 +254,26 @@ spelunk memory watch
 
 Conflict detection: If you write an entry semantically similar to an existing one (cosine ≥ 0.92), the server returns HTTP 409 (advisory). The entry is stored with a `contradicts` edge linking to the conflicting entry. Check `spelunk memory show <id>` to review related entries before proceeding.
 
+## Reconciling memory from a server database
+
+If you have access to a `spelunk-server` SQLite database (e.g. a team server snapshot or a local server DB at `~/.local/state/spelunk/server.db`), you can import its memory entries into your project's local database without running the server:
+
+```bash
+# Preview what would be imported (no writes)
+spelunk memory reconcile --source-db ~/.local/state/spelunk/server.db --dry-run
+
+# Import memory from the server DB for the current project
+spelunk memory reconcile --source-db ~/.local/state/spelunk/server.db
+
+# Import across all projects in the server DB
+spelunk memory reconcile --source-db ~/.local/state/spelunk/server.db --all-projects
+
+# Machine-readable output (one JSON object per imported entry)
+spelunk memory reconcile --source-db ~/.local/state/spelunk/server.db --format json
+```
+
+Reconcile is additive and idempotent — entries already present in the local DB are skipped (matched by content hash). Useful for seeding a fresh checkout with team decisions, or for offline work after a period connected to a shared server.
+
 ## Cross-project search
 
 If your project depends on shared libraries you've indexed separately:
