@@ -299,6 +299,9 @@ fn setup_linked_projects() -> (
 fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Path) -> Command {
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
     cmd.env("HOME", home)
+        // Unset XDG_CONFIG_HOME so dirs::config_dir() uses $HOME/.config on Linux,
+        // matching what TestRegistry::new() writes to home_dir.join(".config").
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(primary_root)
         .arg("--config")
@@ -319,6 +322,7 @@ fn context_cmd(
 ) -> Command {
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
     cmd.env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(primary_root)
         .arg("--config")
@@ -525,6 +529,7 @@ fn untagged_dep_decision_is_not_surfaced() {
     let raw = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
@@ -569,6 +574,7 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
     let raw = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
@@ -658,6 +664,7 @@ fn single_project_no_deps_works_unchanged() {
     let output = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_root)
         .arg("--config")
@@ -966,6 +973,7 @@ fn archived_dep_decision_is_not_surfaced() {
     let raw = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
@@ -1048,6 +1056,7 @@ fn dep_question_is_never_surfaced_cross_project() {
     let raw = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
@@ -1137,6 +1146,7 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     let output = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
@@ -1220,6 +1230,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
     let output = Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
