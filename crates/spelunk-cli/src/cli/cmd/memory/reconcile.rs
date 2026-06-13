@@ -119,7 +119,10 @@ pub(super) async fn memory_reconcile(
     let json = crate::utils::effective_format(&args.format) == "json";
 
     // Resolve source server.db path.
-    let server_db_path = args.db.clone().unwrap_or_else(default_server_db_path);
+    let server_db_path = args
+        .source_db
+        .clone()
+        .unwrap_or_else(default_server_db_path);
 
     // If server.db doesn't exist — no-op success.
     if !server_db_path.exists() {

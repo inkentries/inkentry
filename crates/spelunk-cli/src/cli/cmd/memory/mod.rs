@@ -296,9 +296,10 @@ pub struct MemoryFailuresArgs {
 
 #[derive(Args, Debug)]
 pub struct MemoryReconcileArgs {
-    /// Path to the source server.db (default: ~/.local/state/spelunk/server.db)
-    #[arg(long)]
-    pub db: Option<std::path::PathBuf>,
+    /// Path to the source server.db (default: ~/.local/state/spelunk/server.db).
+    /// Named --source-db to avoid conflicting with the global --db (memory.db path).
+    #[arg(long = "source-db")]
+    pub source_db: Option<std::path::PathBuf>,
 
     /// Detect and report candidates without importing anything
     #[arg(long)]
