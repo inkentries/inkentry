@@ -7,6 +7,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`spelunk memory reconcile`** — imports notes from a local `spelunk-server`
+  database (`server.db`) into the project's `memory.db` by content-hash dedup.
+  Reads `server.db` in read-only mode; never writes to it. Supports `--dry-run`
+  (report candidates without importing), `--json` (NDJSON summary), and
+  `--all-projects` (reconcile every project slug found in `server.db`). Exits
+  with code 0 when there is nothing to import. Key flag: `--source-db <path>`
+  overrides the default source path (`~/.local/state/spelunk/server.db`).
+  (#391, ADR-004 follow-up)
+
+---
+
 ## [0.8.1] — 2026-06-10
 
 ### Fixed

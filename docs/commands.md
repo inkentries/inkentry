@@ -359,6 +359,7 @@ spelunk memory graph <id>
 spelunk memory since <unix-ts>
 spelunk memory push                         # push local entries to the configured server
 spelunk memory watch                        # stream new entries from the server (SSE)
+spelunk memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
 ```
 
 All `memory` subcommands accept `--backend sqlite|git-notes` (default `sqlite`)
