@@ -14,6 +14,9 @@ pub(super) async fn memory_search(
     let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
     crate::storage::record_usage_at(&index_db_path, "memory search");
 
+    // Discovery nudge: warn once when unimported server.db notes exist.
+    super::reconcile::maybe_emit_nudge(mem_path, cfg);
+
     // Honor the auto-discovered server tier: loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`, so build an
     // effective config that fills in `server_url`/`project_id` from the tier

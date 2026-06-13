@@ -44,6 +44,8 @@ pub enum MemoryCommand {
     Watch(MemoryWatchArgs),
     /// List all stored antipatterns (shortcut for `list --kind antipattern`)
     Failures(MemoryFailuresArgs),
+    /// Import unique notes from server.db into memory.db (one-time recovery after ADR-004 migration)
+    Reconcile(MemoryReconcileArgs),
 }
 
 #[derive(Args, Debug)]
@@ -292,6 +294,25 @@ pub struct MemoryFailuresArgs {
     pub as_of: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct MemoryReconcileArgs {
+    /// Path to the source server.db (default: ~/.local/state/spelunk/server.db)
+    #[arg(long)]
+    pub db: Option<std::path::PathBuf>,
+
+    /// Detect and report candidates without importing anything
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Reconcile every project slug found in server.db (default: active project only)
+    #[arg(long)]
+    pub all_projects: bool,
+
+    /// Output format: text or json (NDJSON summary object)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
 use super::status::format_age;
 
 mod add;
@@ -302,6 +323,7 @@ mod harvest;
 mod harvest_claude;
 mod list;
 pub mod push;
+pub(crate) mod reconcile;
 mod search;
 mod show;
 mod since;
@@ -329,6 +351,7 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         MemoryCommand::Since(a) => since::memory_since(a, &mem_path, &cfg, be).await,
         MemoryCommand::Watch(a) => watch::memory_watch(a, &cfg).await,
         MemoryCommand::Failures(a) => failures::memory_failures(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Reconcile(a) => reconcile::memory_reconcile(a, &mem_path, &cfg).await,
     }
 }
 

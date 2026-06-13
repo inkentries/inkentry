@@ -52,6 +52,14 @@ pub struct Note {
 }
 
 impl MemoryStore {
+    /// Execute a raw SQL batch statement on the connection.
+    ///
+    /// Exposed for transaction management in callers that need BEGIN/COMMIT/ROLLBACK
+    /// without access to the private `conn` field (e.g. `memory reconcile`).
+    pub fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        self.conn.execute_batch(sql)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

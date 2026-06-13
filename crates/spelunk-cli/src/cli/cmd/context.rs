@@ -78,6 +78,10 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     let mem_path = args.db.clone().unwrap_or_else(|| {
         crate::config::resolve_db(None, &cfg.db_path).with_file_name("memory.db")
     });
+
+    // Discovery nudge: warn once when unimported server.db notes exist.
+    crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
+
     let be = match args.backend.as_str() {
         "git-notes" => Some("git-notes"),
         _ => None,

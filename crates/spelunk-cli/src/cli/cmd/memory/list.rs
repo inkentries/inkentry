@@ -10,6 +10,9 @@ pub(super) async fn memory_list(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Discovery nudge: warn once when unimported server.db notes exist.
+    super::reconcile::maybe_emit_nudge(mem_path, cfg);
+
     let backend = open_memory_backend(cfg, mem_path, backend_override)?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let notes = if let Some(ref sha_prefix) = args.source_ref {
