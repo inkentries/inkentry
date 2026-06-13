@@ -725,7 +725,9 @@ async fn test_index_prints_note_when_no_server_configured() {
         .arg(&project_dir)
         .assert()
         .success()
-        .stderr(predicate::str::contains("no server_url configured"));
+        .stderr(predicate::str::contains(
+            "Skipping summaries (no server_url configured)",
+        ));
 }
 
 #[test]
