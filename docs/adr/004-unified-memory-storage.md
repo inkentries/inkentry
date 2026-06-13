@@ -1,6 +1,6 @@
 # ADR-004: One Way to Store Memory — Resolving the Local Storage Split-Brain
 
-**Status:** Proposed
+**Status:** Approved
 **Date:** 2026-06-11
 **Context:** Escalated by Johan on PR #386 (ADR-003) line 88: *"We've said that memory lives in the server, but it seems we've not made that the case when we have the auto-discovery server running locally. There should be one way of storing memory."* This is out of scope for ADR-003 (cross-project visibility) and is captured here as its own decision. Builds on the three-tier product architecture (decision #75), the CLI backend-selection order (decision #76), and the progressive-enhancement principle (decision #77).
 

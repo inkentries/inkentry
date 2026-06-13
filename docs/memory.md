@@ -6,7 +6,7 @@ Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
 `refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) Entries
+`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search) — it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url`. Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
