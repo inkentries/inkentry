@@ -4,9 +4,11 @@
 
 **The key mental model**: spelunk retrieves context; you reason over it. Use `spelunk graph` and `spelunk search` to find the right code, read the results, then synthesise the answer yourself. spelunk is a persistent memory store and code navigation tool, not an oracle.
 
-**What's built-in:** memory (git-notes + local SQLite), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed.
+**What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` go through `spelunk-server`. From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (Nomic Embed Text v1.5, via fastembed-rs) — there is no external embedding server to run by default. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly.
+**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` use `spelunk-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (Nomic Embed Text v1.5, via fastembed-rs) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+
+**Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
 ## The core loop
 
@@ -40,7 +42,7 @@ You can also use `--format json` on individual commands.
 If your config does not have a `server_url`, `spelunk` auto-discovers a local
 `spelunk-server` running on loopback by reading
 `~/.local/state/spelunk/server.port`.  You can start, stop, and inspect that
-daemon with the `spelunk server` subcommand.
+daemon with the `spelunk server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance in your config.)
 
 ```bash
 # Start spelunk-server on port 7777 (idempotent — no-op if already running)
