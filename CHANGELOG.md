@@ -9,6 +9,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **gix/gitoxide Dependabot alerts verified resolved (P1-2).** All 7 open Dependabot
+  security alerts (6 high, 1 medium) for gix-related crates were already cleared by
+  previous bumps (PRs #307, #327, #334). Cargo.lock contains patched versions:
+  gix 0.84.0 (>=0.83.0), gix-fs 0.21.2 (>=0.21.1), gix-pack 0.71.0 (>=0.69.0),
+  gix-transport 0.57.1 (>=0.56.0). `cargo audit` returns zero vulnerabilities;
+  one allowed warning (RUSTSEC-2024-0436 paste unmaintained, in audit.toml).
+  Affected advisories: GHSA-fr8x-3vfx-f45h, GHSA-pg4w-g64p-qwhj, GHSA-f26g-jm89-4g65,
+  GHSA-p3hw-mv63-rf9w, GHSA-f89h-2fjh-2r9q, GHSA-x494-mj8g-cj27, GHSA-9857-6mw7-fq2m.
+
 ### Added
 
 - **`spelunk memory reconcile`** — import memory entries from a `spelunk-server` SQLite
