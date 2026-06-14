@@ -183,6 +183,51 @@ Install the git hook and harvesting happens on every commit:
 spelunk hooks install
 ```
 
+## Importing from a local server
+
+`spelunk memory reconcile` imports notes that were recorded by a running
+`spelunk-server` daemon into the project's local `memory.db`. This is useful
+after a session where entries were written through `server_url` and need to be
+pulled into the project's local store, or when migrating from server-backed to
+local storage.
+
+Dedup is by content hash: notes already present in `memory.db` (same kind,
+title, body, tags, files, and creation time) are skipped. The source `server.db`
+is opened read-only; it is never modified.
+
+```bash
+# Import notes for the active project (default source: ~/.local/state/spelunk/server.db)
+spelunk memory reconcile
+
+# Preview what would be imported without writing anything
+spelunk memory reconcile --dry-run
+
+# Import notes for all projects found in server.db
+spelunk memory reconcile --all-projects
+
+# Override the source path
+spelunk memory reconcile --source-db /var/run/spelunk/server.db
+
+# Machine-readable summary
+spelunk memory reconcile --format json
+```
+
+Exit codes: `0` on success or when there is nothing to import, non-zero on
+hard errors (unreadable source DB, write failure). When `server.db` does not
+exist the command is a no-op and exits 0.
+
+If reconcilable notes are detected at startup, spelunk prints a one-time nudge
+to stderr. Set `SPELUNK_NO_RECONCILE_NUDGE=1` to suppress it in CI or scripts.
+
+### Security notes
+
+`reconcile` opens `server.db` with `SQLITE_OPEN_READONLY` and `PRAGMA
+journal_mode=WAL` to avoid blocking the daemon's writers. No content from
+`server.db` is executed or passed to an LLM; the only write target is the
+project's own `memory.db`. Embeddings are re-generated from the imported text
+via the configured server (best-effort; notes import successfully even when the
+server is unreachable).
+
 ## Using memory as context
 
 `spelunk memory search` results are best consumed alongside `spelunk search` results — they answer the *why* while the code search answers the *how*. Pass both to your reasoning model for a complete picture.
