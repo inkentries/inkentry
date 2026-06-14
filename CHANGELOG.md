@@ -20,6 +20,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   Affected advisories: GHSA-fr8x-3vfx-f45h, GHSA-pg4w-g64p-qwhj, GHSA-f26g-jm89-4g65,
   GHSA-p3hw-mv63-rf9w, GHSA-f89h-2fjh-2r9q, GHSA-x494-mj8g-cj27, GHSA-9857-6mw7-fq2m.
 
+- **`spelunk memory add` blocks the entire write on secret detection.** When a
+  secret is detected at input time, both the SQLite backend write and the
+  git-notes write are now aborted — no partial write occurs. Previously only
+  the git-notes path was guarded; the SQLite path could still persist a
+  credential-containing entry. (#344)
+
 ### Added
 
 - **`spelunk memory reconcile`** — imports notes from a local `spelunk-server`
