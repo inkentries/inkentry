@@ -215,6 +215,17 @@ pub struct Config {
     #[serde(default)]
     pub project_id: Option<String>,
 
+    /// URL of a server used **only** for inference (embeddings + LLM), never for
+    /// memory storage. Populated at runtime (not from config files) by
+    /// `Tier::effective_config()` when a loopback server is auto-discovered: the
+    /// auto-discovered server is an inference cache over the local `memory.db`,
+    /// not a second memory store (ADR-004). Inference clients prefer this field
+    /// and fall back to `server_url`; the memory backend selector
+    /// (`open_memory_backend`) ignores it entirely, so an auto-discovered server
+    /// never diverts memory CRUD away from the project's local `memory.db`.
+    #[serde(skip)]
+    pub inference_url: Option<String>,
+
     // ── Directory conventions ─────────────────────────────────────────────────
     /// Directory (relative to project root) where `spelunk plan create` writes plan files.
     /// Default: `docs/plans`
@@ -289,6 +300,7 @@ impl Default for Config {
             server_url: None,
             server_key: None,
             project_id: None,
+            inference_url: None,
             plans_dir: Self::default_plans_dir(),
             specs_dir: Self::default_specs_dir(),
             llm_context_length: Self::default_llm_context_length(),
@@ -386,6 +398,16 @@ impl Config {
         self.project_id
             .clone()
             .unwrap_or_else(|| derive_project_id(project_root))
+    }
+
+    /// Return the URL to use for inference (embeddings + LLM), if any.
+    ///
+    /// Prefers `inference_url` (set for an auto-discovered loopback server,
+    /// ADR-004) and falls back to `server_url` (an explicitly-configured
+    /// team/remote server, which serves both inference and memory). Memory
+    /// storage selection does **not** use this — see `open_memory_backend`.
+    pub fn resolve_inference_url(&self) -> Option<&str> {
+        self.inference_url.as_deref().or(self.server_url.as_deref())
     }
 }
 
@@ -677,6 +699,51 @@ project_id = "my-proj"
         let id = cfg.resolve_project_id(tmp.path());
         // Should be the local/ fallback since tmp dir is not a git repo.
         assert!(id.starts_with("local/"), "got {id}");
+    }
+
+    // ── resolve_inference_url (ADR-004) ──────────────────────────────────────
+
+    #[test]
+    fn resolve_inference_url_prefers_inference_url() {
+        // Auto-discovered case: inference_url set, server_url unset.
+        let cfg = Config {
+            inference_url: Some("http://127.0.0.1:7777".to_string()),
+            server_url: None,
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:7777"));
+    }
+
+    #[test]
+    fn resolve_inference_url_falls_back_to_server_url() {
+        // Explicit team server: only server_url set; it serves inference too.
+        let cfg = Config {
+            inference_url: None,
+            server_url: Some("http://team.example.com:7777".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_inference_url(),
+            Some("http://team.example.com:7777")
+        );
+    }
+
+    #[test]
+    fn resolve_inference_url_none_when_neither_set() {
+        let cfg = Config::default();
+        assert_eq!(cfg.resolve_inference_url(), None);
+    }
+
+    #[test]
+    fn resolve_inference_url_inference_url_wins_over_server_url() {
+        // Defensive: if both are somehow set, inference must use the dedicated
+        // inference_url (memory backend selection still uses server_url).
+        let cfg = Config {
+            inference_url: Some("http://127.0.0.1:7777".to_string()),
+            server_url: Some("http://team.example.com:7777".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:7777"));
     }
 
     // ── env var overrides ────────────────────────────────────────────────────

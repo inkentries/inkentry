@@ -126,14 +126,18 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     //
     // When the user explicitly requests `--mode semantic` or `--mode hybrid`
     // but no server is reachable (Tier 0), automatically switch to FTS text
-    // search and print a notice to stderr.  stdout stays clean so JSONL
-    // consumers are unaffected.
+    // search. Under ADR-004 inference-only routing (no explicit `server_url`),
+    // the fallback is silent — the user never configured a server, so there is
+    // nothing to warn about. The notice is only printed when `server_url` was
+    // explicitly set (the user expected a server and it is unreachable).
     //
     // The `auto` mode already degrades gracefully via the embed_query_vec error
     // path below — this guard handles the explicit-mode case only.
     // Snapshot searches are skipped: they require embeddings by definition.
     if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() && !tier.is_server() {
-        eprintln!("[server unreachable — using text search]");
+        if cfg.server_url.is_some() {
+            eprintln!("[server unreachable — using text search]");
+        }
         let sp = spinner("Searching (text)…");
         let db = Database::open(&db_path)?;
         let results = db
