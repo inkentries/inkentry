@@ -112,10 +112,6 @@ Agentic search: the server's LLM iteratively calls spelunk's own tools (search,
 graph, read) to answer an open-ended question. Requires a server with an LLM
 backend configured.
 
-> `explore` is hidden from `spelunk --help` until an LLM backend is
-> configured (it would error if run without one). The command itself works
-> as documented here once a backend is set up — see [Agent Guide](agent-guide.md).
-
 ```
 spelunk explore "<question>" [options]
 ```
