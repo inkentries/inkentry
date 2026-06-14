@@ -36,6 +36,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `--source-db <path>`, `--dry-run` (preview without writing), `--all-projects`
   (import across all server projects), `--format json` (machine-readable output).
 
+### Fixed
+
+- **`spelunk memory watch --help` now references `server_url` correctly.** The
+  subcommand doc-comment previously said `requires memory_server_url` (the
+  deprecated alias); corrected to `requires server_url`.
+  ([#400](https://github.com/spelunk-cloud/spelunk/issues/400))
+
+- **`explore` now appears in `spelunk --help`.** The `explore` subcommand was
+  inadvertently hidden from the top-level help output; the hide attribute has
+  been removed so users can discover it alongside the other subcommands.
+  ([#400](https://github.com/spelunk-cloud/spelunk/issues/400))
+
 ---
 
 ## [0.8.1] — 2026-06-10

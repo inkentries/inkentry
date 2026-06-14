@@ -141,8 +141,6 @@ AGENT=true spelunk explore "where is the embedding model loaded?" --max-steps 3
 
 `explore` is slower than `search` (multiple LLM calls) — use it only when `search` alone isn't enough.
 
-Note: `spelunk explore` is hidden from `spelunk --help` until a chat model is configured on the server, since it would otherwise error on every invocation. The command works as shown above once a backend is configured — it isn't missing.
-
 ## After making changes
 
 ```bash
