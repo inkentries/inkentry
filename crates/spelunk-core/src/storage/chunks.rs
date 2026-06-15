@@ -111,16 +111,21 @@ impl Database {
     /// Return all chunks for a file path (exact match or LIKE suffix).
     /// Used by the `chunks` subcommand and `cat-chunks` plumbing command.
     pub fn chunks_for_file(&self, path: &str) -> Result<Vec<crate::search::SearchResult>> {
+        // Escape LIKE metacharacters in the user-supplied path so that '%' and '_'
+        // in real file names are treated as literals. ESCAPE '\\' activates the
+        // backslash escape character in the SQLite LIKE expression.
+        let escaped = super::escape_like(path);
+        let suffix_pattern = format!("%{escaped}");
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.node_type, c.name,
                     CAST(c.start_line AS INTEGER), CAST(c.end_line AS INTEGER),
                     c.content, f.path, f.language, c.token_count
              FROM chunks c
              JOIN files f ON f.id = c.file_id
-             WHERE f.path = ?1 OR f.path LIKE '%' || ?1
+             WHERE f.path = ?1 OR f.path LIKE ?2 ESCAPE '\\'
              ORDER BY c.start_line",
         )?;
-        let rows = stmt.query_map(rusqlite::params![path], |row| {
+        let rows = stmt.query_map(rusqlite::params![path, suffix_pattern], |row| {
             Ok(crate::search::SearchResult {
                 chunk_id: row.get(0)?,
                 distance: 0.0,
