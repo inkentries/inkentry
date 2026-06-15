@@ -31,6 +31,37 @@ pub use stats::{DriftCandidate, IndexStats, LanguageStat, StalenessReport, recor
 use anyhow::Result;
 use std::path::Path;
 
+/// Escape a user-supplied string for use in a SQLite LIKE pattern.
+///
+/// SQLite's LIKE operator treats `%`, `_`, and the chosen escape character as
+/// special. If the caller appends or prepends wildcards around an
+/// otherwise-literal value (e.g. `'%' || ?1` for suffix matching), any `%` or
+/// `_` that appears inside the user's string would be misinterpreted as
+/// additional wildcards, causing over-matching.
+///
+/// This function escapes `\`, `%`, and `_` with a backslash so that
+/// `LIKE … ESCAPE '\'` treats them as literal characters.
+///
+/// # Example
+/// ```ignore
+/// let pat = format!("%{}", escape_like(user_path));
+/// stmt.query(rusqlite::params![pat])?;
+/// // SQL: WHERE path LIKE ?1 ESCAPE '\'
+/// ```
+pub(super) fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Open the appropriate memory backend.
 ///
 /// Selection rule (ADR-004 — one canonical store per project):
@@ -74,5 +105,46 @@ pub fn open_memory_backend(
         Ok(Box::new(LocalMemoryBackend::new(MemoryStore::open(
             mem_path,
         )?)))
+    }
+}
+
+// ── Tests for escape_like ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::escape_like;
+
+    // Bug #406 — unit tests for the LIKE-metacharacter escape helper.
+
+    #[test]
+    fn percent_is_escaped() {
+        assert_eq!(escape_like("foo%bar"), "foo\\%bar");
+    }
+
+    #[test]
+    fn underscore_is_escaped() {
+        assert_eq!(escape_like("foo_bar"), "foo\\_bar");
+    }
+
+    #[test]
+    fn backslash_is_escaped_first() {
+        // The backslash escape character itself must be doubled.
+        assert_eq!(escape_like("foo\\bar"), "foo\\\\bar");
+    }
+
+    #[test]
+    fn plain_path_is_unchanged() {
+        assert_eq!(escape_like("normal/path/file.rs"), "normal/path/file.rs");
+    }
+
+    #[test]
+    fn all_three_metacharacters_combined() {
+        // "a%b_c\d" → "a\%b\_c\\d"
+        assert_eq!(escape_like("a%b_c\\d"), "a\\%b\\_c\\\\d");
+    }
+
+    #[test]
+    fn empty_string_stays_empty() {
+        assert_eq!(escape_like(""), "");
     }
 }

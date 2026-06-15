@@ -58,6 +58,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **SQLite LIKE queries now escape metacharacters in file paths and symbol names.** File
+  paths and symbol names containing `%` or `_` were causing over-matching in
+  `file_paths_under`, `chunks_for_file`, `symbol_history`, and `stale_specs` queries.
+  An `escape_like()` helper now escapes these characters before binding, with
+  `ESCAPE '\\'` on the SQL clause. ([#406](https://github.com/spelunk-cloud/spelunk/issues/406))
 - **Batch summariser: use per-batch UUID delimiter to prevent chunk-content
   spoofing.** The batch summariser was using a static `===CHUNK {id}===` delimiter
   between chunks in the LLM prompt. Source code chunks whose content contained
