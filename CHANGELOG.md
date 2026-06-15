@@ -58,6 +58,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Batch summariser: use per-batch UUID delimiter to prevent chunk-content
+  spoofing.** The batch summariser was using a static `===CHUNK {id}===` delimiter
+  between chunks in the LLM prompt. Source code chunks whose content contained
+  that string could spoof chunk boundaries and confuse the model. Now uses a
+  per-batch UUID: `===CHUNK-{uuid}={id}===`. (#404)
+
 - **`spelunk memory watch --help` now references `server_url` correctly.** The
   subcommand doc-comment previously said `requires memory_server_url` (the
   deprecated alias); corrected to `requires server_url`.
