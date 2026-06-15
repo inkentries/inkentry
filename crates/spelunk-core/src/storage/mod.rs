@@ -107,3 +107,44 @@ pub fn open_memory_backend(
         )?)))
     }
 }
+
+// ── Tests for escape_like ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::escape_like;
+
+    // Bug #406 — unit tests for the LIKE-metacharacter escape helper.
+
+    #[test]
+    fn percent_is_escaped() {
+        assert_eq!(escape_like("foo%bar"), "foo\\%bar");
+    }
+
+    #[test]
+    fn underscore_is_escaped() {
+        assert_eq!(escape_like("foo_bar"), "foo\\_bar");
+    }
+
+    #[test]
+    fn backslash_is_escaped_first() {
+        // The backslash escape character itself must be doubled.
+        assert_eq!(escape_like("foo\\bar"), "foo\\\\bar");
+    }
+
+    #[test]
+    fn plain_path_is_unchanged() {
+        assert_eq!(escape_like("normal/path/file.rs"), "normal/path/file.rs");
+    }
+
+    #[test]
+    fn all_three_metacharacters_combined() {
+        // "a%b_c\d" → "a\%b\_c\\d"
+        assert_eq!(escape_like("a%b_c\\d"), "a\\%b\\_c\\\\d");
+    }
+
+    #[test]
+    fn empty_string_stays_empty() {
+        assert_eq!(escape_like(""), "");
+    }
+}
