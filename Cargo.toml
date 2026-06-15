@@ -18,6 +18,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite    = { version = "0.40", features = ["bundled"] }
 sqlite-vec  = "0.1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+uuid        = { version = "1", features = ["v4"] }
 openssl     = { version = "0.10", features = ["vendored"] }
 openssl-sys = { version = "0.9", features = ["vendored"] }
 tempfile    = "3"
