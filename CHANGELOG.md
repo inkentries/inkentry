@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-06-15
+
 ### Security
 
 - **gix/gitoxide Dependabot alerts verified resolved (P1-2).** All 7 open Dependabot
@@ -44,18 +46,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   (ADR-003)
 
 - **`spelunk memory reconcile`** — imports notes from a local `spelunk-server`
-  database (`server.db`) into the project's `memory.db` by content-hash dedup.
-  Reads `server.db` in read-only mode; never writes to it. Supports `--dry-run`
-  (report candidates without importing), `--json` (NDJSON summary), and
-  `--all-projects` (reconcile every project slug found in `server.db`). Exits
-  with code 0 when there is nothing to import. Key flag: `--source-db <path>`
-  overrides the default source path (`~/.local/state/spelunk/server.db`).
-  (#391, ADR-004 follow-up)
-
-- **`spelunk memory reconcile`** — import memory entries from a `spelunk-server` SQLite
-  database into the local project database without running the server. Flags:
-  `--source-db <path>`, `--dry-run` (preview without writing), `--all-projects`
-  (import across all server projects), `--format json` (machine-readable output).
+  database (`server.db`) into the project's `memory.db` by content-hash dedup,
+  without running the server. Reads `server.db` in read-only mode; never writes
+  to it. Flags: `--source-db <path>` (override the default source path
+  `~/.local/state/spelunk/server.db`), `--dry-run` (report candidates without
+  importing), `--all-projects` (reconcile every project slug found in
+  `server.db`), and `--format json` (machine-readable summary). Exits with code
+  0 when there is nothing to import. (#391, ADR-004 follow-up)
 
 ### Fixed
 
@@ -68,6 +65,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   inadvertently hidden from the top-level help output; the hide attribute has
   been removed so users can discover it alongside the other subcommands.
   ([#400](https://github.com/spelunk-cloud/spelunk/issues/400))
+
+### Dependencies
+
+- `openssl` 0.10.80 → 0.10.81 (#408)
+- `openssl-sys` 0.9.116 → 0.9.117 (#410)
+- `regex` 1.12.3 → 1.12.4 (#409)
 
 ---
 
