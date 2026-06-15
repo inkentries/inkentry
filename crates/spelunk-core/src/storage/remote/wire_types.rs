@@ -72,6 +72,8 @@ impl From<NoteResponse> for Note {
             invalid_at: r.invalid_at,
             distance: r.distance,
             score: None,
+            source_project: None,
+            source_project_path: None,
         }
     }
 }

@@ -49,6 +49,14 @@ pub struct Note {
     /// Fused relevance score — only populated by hybrid search, None otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
+    /// Set only for notes returned via cross-project dep pass. None for local notes.
+    /// Contains the dep project's display name (final path component of root_path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_project: Option<String>,
+    /// Set alongside source_project: the dep project's root path, for disambiguation
+    /// when two linked projects share a display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_project_path: Option<String>,
 }
 
 impl MemoryStore {

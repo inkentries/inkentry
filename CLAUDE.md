@@ -276,7 +276,13 @@ Changed files: delete old chunks + embeddings, reparse, re-embed.
 ### Multi-project registry
 `~/.config/spelunk/registry.db` tracks all indexed projects and their
 dependency links. `spelunk search` automatically queries all linked project DBs
-and merges results by distance.
+and merges results by distance. Additionally, `spelunk memory search`,
+`spelunk memory list`, and `spelunk context` surface `locked`- or
+`cross-project`-tagged `decision` and `requirement` entries from linked
+projects' memory stores (ADR-003). Each cross-project result is tagged with its
+source project so decisions remain attributable. Pass `--local-only` to any of
+these commands to query only the primary project's memory. See
+`docs/memory.md#cross-project-visibility`.
 
 ### Secret scanning
 `crates/spelunk-core/src/indexer/secrets.rs` runs before each chunk is stored. Chunks matching

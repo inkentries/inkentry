@@ -58,12 +58,7 @@ pub(super) async fn memory_search(
         }
     };
 
-    if notes.is_empty() {
-        println!("No memory entries found.");
-        return Ok(());
-    }
-
-    let notes = if args.expand_graph {
+    let mut notes = if args.expand_graph {
         let mut seen: std::collections::HashSet<i64> = notes.iter().map(|n| n.id).collect();
         let mut expanded = notes;
         let mut neighbours = vec![];
@@ -90,6 +85,26 @@ pub(super) async fn memory_search(
     } else {
         notes
     };
+
+    // Cross-project dep pass (ADR-003): append locked/cross-project decisions
+    // and requirements from linked projects unless --local-only is set.
+    // Dep stores are queried via text search (they have no embedder available
+    // in the CLI path), filtered post-query to the `locked`/`cross-project`
+    // tag set. Results are appended after local results per ADR-003 §6.
+    if !args.local_only {
+        let mut seen: std::collections::HashSet<(String, i64)> = Default::default();
+        for n in &notes {
+            seen.insert((String::new(), n.id));
+        }
+        let dep_notes =
+            super::cross_project::collect_dep_cross_cutting(&index_db_path, &mut seen).await;
+        notes.extend(dep_notes);
+    }
+
+    if notes.is_empty() {
+        println!("No memory entries found.");
+        return Ok(());
+    }
 
     match crate::utils::effective_format(&args.format) {
         "json" => println!("{}", serde_json::to_string_pretty(&notes)?),

@@ -137,6 +137,10 @@ pub struct MemorySearchArgs {
     /// Expand results by 1 hop along relates_to edges
     #[arg(long)]
     pub expand_graph: bool,
+
+    /// Search only the local project's memory, skipping linked project stores
+    #[arg(long)]
+    pub local_only: bool,
 }
 
 #[derive(Args, Debug)]
@@ -164,6 +168,10 @@ pub struct MemoryListArgs {
     /// Return only entries valid at this point in time (ISO 8601, e.g. 2026-03-15 or 2026-03-15T10:00:00)
     #[arg(long, value_name = "DATE")]
     pub as_of: Option<String>,
+
+    /// List only local project's memory, skipping linked project stores
+    #[arg(long)]
+    pub local_only: bool,
 }
 
 #[derive(Args, Debug)]
@@ -318,6 +326,7 @@ use super::status::format_age;
 
 mod add;
 mod archive;
+pub(crate) mod cross_project;
 mod failures;
 mod graph_cmd;
 mod harvest;
@@ -380,8 +389,13 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
     } else {
         ""
     };
+    let source_badge = n
+        .source_project
+        .as_deref()
+        .map(|p| format!("  \x1b[36m[from: {p}]\x1b[0m"))
+        .unwrap_or_default();
     println!(
-        "\x1b[1m#{id}\x1b[0m  \x1b[33m[{kind}]\x1b[0m  {title}{archived}{dist_fmt}",
+        "\x1b[1m#{id}\x1b[0m  \x1b[33m[{kind}]\x1b[0m  {title}{archived}{dist_fmt}{source}",
         id = n.id,
         kind = n.kind,
         title = n.title,
@@ -391,6 +405,7 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         } else {
             format!("\x1b[2m{dist}\x1b[0m")
         },
+        source = source_badge,
     );
     println!("     \x1b[2m{}\x1b[0m", format_age(n.created_at));
     if let Some(valid_at) = n.valid_at {

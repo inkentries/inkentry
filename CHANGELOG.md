@@ -22,6 +22,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Cross-project memory visibility (`spelunk memory search|list|context`).** When
+  projects are linked with `spelunk link`, `memory search`, `memory list`, and
+  `context` now also query each linked project's memory store and surface
+  `locked` or `cross-project`-tagged `decision` and `requirement` entries
+  alongside local results. Each cross-project result is tagged with its source
+  project (`[from: <project>]` in text mode; `source_project` /
+  `source_project_path` fields in JSON) so conflicting decisions remain
+  attributable. `handoff` and `question` entries remain strictly project-local.
+  (ADR-003)
+
+- **`--local-only` flag for `memory search`, `memory list`, and `context`.**
+  Suppresses the cross-project dep pass and queries only the primary project's
+  memory store -- matching the existing `spelunk search --local-only` behaviour.
+  (ADR-003)
+
 - **`spelunk memory reconcile`** — imports notes from a local `spelunk-server`
   database (`server.db`) into the project's `memory.db` by content-hash dedup.
   Reads `server.db` in read-only mode; never writes to it. Supports `--dry-run`

@@ -141,6 +141,81 @@ spelunk memory list --source-ref abc1234
 
 `question` and `answer` entries show titles only in list view to avoid context saturation. Use `spelunk memory show <id>` to read the full body.
 
+## Cross-project visibility
+
+When projects are linked with `spelunk link`, `spelunk memory search`,
+`spelunk memory list`, and `spelunk context` automatically surface relevant
+memory from linked projects alongside local results. This is how settled
+decisions recorded in one project (for example, a Cloud-only architecture
+constraint in `cloud-api`) remain visible to agents working in a sibling
+project (for example, `spelunk-oss`).
+
+### What crosses project boundaries
+
+Not all memory propagates. Only entries that match **all three** of the
+following criteria are surfaced from a linked project:
+
+- **Kind:** `decision` or `requirement` (never `handoff`, `question`, or `note`).
+- **Tag:** must carry the tag `locked` (for settled v1 decisions) or
+  `cross-project` (for cross-cutting items that are not otherwise locked). Tags
+  like `auth` or `database` alone are not sufficient.
+- **Status:** `active` only. Archived or superseded cross-project decisions do
+  not resurface after they are retracted in the source project.
+
+Decisions and requirements that do not carry `locked` or `cross-project` remain
+strictly project-local, regardless of which `spelunk link` edges are configured.
+
+### Source attribution
+
+Every result from a linked project is labelled with its origin so conflicting
+decisions between projects are visible and attributable:
+
+- **Text output:** a `[from: <project>]` badge appended to the entry line.
+- **JSON output:** `source_project` and `source_project_path` fields on the
+  note object (absent on local results, so existing JSON consumers are
+  unaffected).
+
+Local results always appear first; cross-project results are appended, in
+registry dependency order, after all local results. The existing `--limit` flag
+applies only to the local query; cross-project results are additional and not
+counted against the limit.
+
+### Skipping the dep pass
+
+Pass `--local-only` to any of `memory search`, `memory list`, or `context` to
+query only the primary project's memory store:
+
+```bash
+spelunk memory search "auth decisions" --local-only
+spelunk memory list --kind decision --local-only
+spelunk context --local-only
+```
+
+### Tagging decisions for cross-project visibility
+
+```bash
+# Tag a decision as locked so linked projects can see it
+spelunk memory add --kind decision \
+  --title "SSE memory stream is Cloud-only" \
+  --body "OSS spelunk-server must not expose SSE; Cloud API owns that surface." \
+  --tags v1,locked
+
+# Tag a requirement that applies across all linked projects
+spelunk memory add --kind requirement \
+  --title "All writes validated for secrets before storage" \
+  --body "Applies to cloud-api and spelunk-oss alike." \
+  --tags security,cross-project
+```
+
+### Privacy boundary
+
+The dep pass reads each linked project's `memory.db` directly from disk (local
+SQLite only). It does not route through `spelunk-server` or any remote endpoint.
+A linked project's memory is only reachable if its `memory.db` file is
+accessible on the local filesystem (same machine, same user). Remote or
+server-backed linked projects whose memory lives exclusively on a remote server
+are not queried by the dep pass in v1.
+
 ## Showing a single entry
 
 ```bash

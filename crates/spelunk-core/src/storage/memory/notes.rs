@@ -21,6 +21,8 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         invalid_at: row.get(11)?,
         distance: None,
         score: None,
+        source_project: None,
+        source_project_path: None,
     })
 }
 
@@ -40,6 +42,8 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         invalid_at: row.get(11)?,
         distance: Some(row.get(12)?),
         score: None,
+        source_project: None,
+        source_project_path: None,
     })
 }
 
