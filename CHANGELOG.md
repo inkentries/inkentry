@@ -59,6 +59,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **SQLite LIKE queries now escape metacharacters in file paths and symbol names.** File
+  paths and symbol names containing `%` or `_` were causing over-matching in
+  `file_paths_under`, `chunks_for_file`, `symbol_history`, and `stale_specs` queries.
+  An `escape_like()` helper now escapes these characters before binding, with
+  `ESCAPE '\\'` on the SQL clause. ([#406](https://github.com/spelunk-cloud/spelunk/issues/406))
+
 - **`spelunk memory watch --help` now references `server_url` correctly.** The
   subcommand doc-comment previously said `requires memory_server_url` (the
   deprecated alias); corrected to `requires server_url`.
