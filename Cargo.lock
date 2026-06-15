@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-cli"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4395,7 +4395,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4442,12 +4442,13 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-sequel",
  "tree-sitter-typescript",
+ "uuid",
  "wiremock",
 ]
 
 [[package]]
 name = "spelunk-server"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5334,6 +5335,17 @@ dependencies = [
  "quote",
  "regex",
  "syn",
+]
+
+[[package]]
+name = "uuid"
+version = "1.23.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
+dependencies = [
+ "getrandom 0.4.2",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
