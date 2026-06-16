@@ -568,14 +568,13 @@ fn format_uuid_v7(hex: &str, unix_ts_ms: u64) -> String {
 
     // Version = 7 at nibble index 12 (byte 6, upper nibble).
     let version_nibble = b'7';
-    // Variant = 10xx at nibble index 16 (byte 8, upper nibble): map random
-    // 0-f into the 8-b range so the top two bits are `10`.
-    let variant_nibble = match b[16] {
-        c @ b'0'..=b'3' => c - b'0' + b'8', // 0-3 → 8-b
-        c @ b'4'..=b'7' => c - b'4' + b'8',
-        c @ b'8'..=b'b' => c, // already 8-b, valid
-        _ => b'a',
-    };
+    // Variant = 10xx at nibble index 16 (byte 8, upper nibble). The two high
+    // bits must be `10`, so the nibble is one of {8, 9, a, b}. Derive it from
+    // the low two bits of the supplied entropy nibble via a direct lookup into
+    // the lowercase-hex set, avoiding any ASCII-adjacency arithmetic (`'9'` and
+    // `'a'` are *not* contiguous in ASCII).
+    let entropy_val = (b[16] as char).to_digit(16).unwrap_or(0) as usize;
+    let variant_nibble = b"89ab"[entropy_val & 0b11];
 
     let mut out = Vec::with_capacity(36);
     out.extend_from_slice(&ts_nibbles[0..8]);
@@ -595,6 +594,23 @@ fn format_uuid_v7(hex: &str, unix_ts_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Register the sqlite-vec extension once per test process. `ServerDb::open`
+    /// creates a `vec0` virtual table, so the extension must be auto-registered
+    /// before any in-memory DB is opened. `sqlite3_auto_extension` is
+    /// process-global, hence the `OnceLock` guard.
+    fn register_sqlite_vec() {
+        use std::sync::OnceLock;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
 
     #[test]
     fn format_uuid_v7_has_version_and_variant() {
@@ -744,6 +760,7 @@ mod tests {
         // End-to-end through the public method against a real (in-memory) DB:
         // the returned id parses as a canonical UUID, and the persisted entropy
         // is stable across calls (only the embedded timestamp may advance).
+        register_sqlite_vec();
         let db = ServerDb::open(std::path::Path::new(":memory:"), 768)
             .expect("open in-memory server db");
         let id1 = db.get_or_create_instance_id().expect("first instance_id");
