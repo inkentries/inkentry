@@ -630,4 +630,139 @@ mod tests {
         let hex_ts: String = id.chars().take(13).filter(|&c| c != '-').collect();
         assert_eq!(hex_ts, format!("{:012x}", ts & 0x0000_FFFF_FFFF_FFFF));
     }
+
+    // Strip dashes and return the 32 hex nibbles of a canonical UUID.
+    fn nibbles(id: &str) -> Vec<u8> {
+        id.bytes().filter(|&c| c != b'-').collect()
+    }
+
+    // Assert that a UUID string is in canonical 8-4-4-4-12 form and every
+    // non-dash character is a lowercase hex digit. This mirrors what the rest
+    // of the codebase expects of instance_id (a 36-char UUID, see the health
+    // handler in handlers.rs).
+    fn assert_canonical_uuid(id: &str) {
+        assert_eq!(id.len(), 36, "instance_id must be 36 chars: {id}");
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12],
+            "must be 8-4-4-4-12 grouped: {id}"
+        );
+        for n in nibbles(id) {
+            assert!(
+                n.is_ascii_hexdigit() && !n.is_ascii_uppercase(),
+                "all chars must be lowercase hex: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_uuid_v7_is_canonical_all_lowercase_hex() {
+        // Mixed-entropy input including the full nibble range.
+        let raw = "0123456789abcdef0123456789abcdef";
+        let id = format_uuid_v7(raw, 0x0190_1234_5678);
+        assert_canonical_uuid(&id);
+    }
+
+    #[test]
+    fn format_uuid_v7_version_and_variant_for_all_variant_inputs() {
+        // The variant nibble is derived from b[16]; exercise every possible
+        // hex value there to prove version stays 7 and variant stays 10xx
+        // regardless of the random entropy supplied.
+        for v in 0u8..16 {
+            let vc = std::char::from_digit(v as u32, 16).unwrap();
+            // The variant nibble is derived from the input hex char at byte
+            // index 16 (the 17th nibble of the raw 32-char entropy string).
+            // Sweep that position; fill the rest with deterministic entropy.
+            let mut raw = String::from("00000000000000000000000000000000");
+            raw.replace_range(16..17, &vc.to_string());
+            let id = format_uuid_v7(&raw, 0);
+            // The whole id must remain a canonical, all-lowercase-hex UUID for
+            // every possible entropy value at the variant position.
+            assert_canonical_uuid(&id);
+            let n = nibbles(&id);
+            assert_eq!(n[12], b'7', "version nibble must be 7 for input {vc}");
+            // The variant nibble must be exactly one of 8, 9, a, b (top two
+            // bits = 10). NOTE: do not write this as `b'8'..=b'b'` — that range
+            // is 0x38..=0x62 and silently admits ':'/';' (0x3A/0x3B), the very
+            // characters a buggy mapping emits.
+            assert!(
+                matches!(n[16], b'8' | b'9' | b'a' | b'b'),
+                "variant nibble must be 10xx (one of 8,9,a,b) for input {vc}, got {}",
+                n[16] as char
+            );
+        }
+    }
+
+    #[test]
+    fn format_uuid_v7_orders_lexicographically_by_timestamp() {
+        // Core v7 property: with identical entropy, a later timestamp must sort
+        // strictly after an earlier one. The first 48 bits (timestamp) dominate
+        // the comparison, so byte-wise lexicographic order tracks time order.
+        let raw = "deadbeefdeadbeefdeadbeefdeadbeef";
+        let earlier = format_uuid_v7(raw, 0x0000_0000_1000);
+        let later = format_uuid_v7(raw, 0x0000_0000_2000);
+        assert!(
+            earlier < later,
+            "later timestamp must sort after earlier: {earlier} !< {later}"
+        );
+
+        // Compare only the high-48-bit (timestamp) prefix explicitly: the first
+        // two groups (8 + 4 hex nibbles) carry the timestamp.
+        let ts_prefix = |id: &str| -> String {
+            nibbles(id)
+                .into_iter()
+                .take(12)
+                .map(|b| b as char)
+                .collect()
+        };
+        assert!(
+            ts_prefix(&earlier) < ts_prefix(&later),
+            "high 48 bits must be ordered by timestamp"
+        );
+
+        // And a far-future timestamp must still sort after both.
+        let future = format_uuid_v7(raw, 0x0000_FFFF_FFFF);
+        assert!(earlier < future && later < future);
+    }
+
+    #[test]
+    fn format_uuid_v7_distinct_entropy_same_timestamp_differ() {
+        // Two ids minted at the same instant but with different random entropy
+        // must not collide.
+        let ts: u64 = 0x0190_1234_5678;
+        let a = format_uuid_v7("00000000000000000000000000000000", ts);
+        let b = format_uuid_v7("ffffffffffffffffffffffffffffffff", ts);
+        assert_ne!(a, b, "distinct entropy must yield distinct ids");
+        // Timestamp prefixes match (same ms), so the difference lives in the
+        // random tail.
+        assert_eq!(&a[..13], &b[..13], "timestamp prefix should match");
+    }
+
+    #[test]
+    fn get_or_create_instance_id_is_stable_and_canonical() {
+        // End-to-end through the public method against a real (in-memory) DB:
+        // the returned id parses as a canonical UUID, and the persisted entropy
+        // is stable across calls (only the embedded timestamp may advance).
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 768)
+            .expect("open in-memory server db");
+        let id1 = db.get_or_create_instance_id().expect("first instance_id");
+        assert_canonical_uuid(&id1);
+        assert_eq!(nibbles(&id1)[12], b'7', "version nibble must be 7");
+        assert!(
+            matches!(nibbles(&id1)[16], b'8' | b'9' | b'a' | b'b'),
+            "variant must be 10xx (one of 8,9,a,b)"
+        );
+
+        let id2 = db.get_or_create_instance_id().expect("second instance_id");
+        assert_canonical_uuid(&id2);
+        // The random tail is seeded once (INSERT OR IGNORE) and persisted, so
+        // the entropy nibbles are identical across calls.
+        let tail = |id: &str| -> String { id.chars().skip(14).collect() };
+        assert_eq!(
+            tail(&id1),
+            tail(&id2),
+            "persisted random tail must be stable"
+        );
+    }
 }

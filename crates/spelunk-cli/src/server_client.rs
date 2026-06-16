@@ -460,4 +460,23 @@ mod tests {
     fn encode_project_id_leaves_simple_slug_unchanged() {
         assert_eq!(encode_project_id("my-project"), "my-project");
     }
+
+    /// `query_nonce_hex` (renamed from the misnamed `uuid_v4_hex`) must still
+    /// produce a non-empty, all-lowercase-hex token. It is concatenated into a
+    /// synthetic `query:<nonce>` chunk_id, so non-hex bytes would corrupt that
+    /// id; the rename must not change this contract.
+    #[test]
+    fn query_nonce_hex_is_nonempty_lowercase_hex() {
+        let nonce = query_nonce_hex();
+        assert!(!nonce.is_empty(), "nonce must be non-empty");
+        assert!(
+            nonce
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "nonce must be all lowercase hex: {nonce}"
+        );
+        // Mirror the call site: the nonce is used to build a query chunk_id.
+        let chunk_id = format!("query:{nonce}");
+        assert!(chunk_id.starts_with("query:"));
+    }
 }
