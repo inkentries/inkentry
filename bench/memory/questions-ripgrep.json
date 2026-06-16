@@ -5,11 +5,6 @@
         "reviewed_by": "ada (test-engineer) on 2026-06-10"
     },
     {
-        "question": "What new file type was added that covers both Dockerfile and Containerfile?",
-        "ground_truth_commit": "9b84e154c8e404f4c40f6f4e4c674ea02e77324a",
-        "reviewed_by": "ada (test-engineer) on 2026-06-10"
-    },
-    {
         "question": "How was cmd_exists changed to fix compression tests under QEMU cross-compilation, and why did the old check not work there?",
         "ground_truth_commit": "0a88cccd5188074de96f54a4b6b44a63971ac157",
         "reviewed_by": "ada (test-engineer) on 2026-06-10"

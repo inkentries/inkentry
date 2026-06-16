@@ -45,11 +45,11 @@ bench/memory/decision_archaeology.py — runs four-condition comparison
 
 Per #237, three blind-authored question sets are committed:
 
-- `bench/memory/questions-ripgrep.json` (12 questions)
+- `bench/memory/questions-ripgrep.json` (11 questions)
 - `bench/memory/questions-ruff.json` (11 questions)
-- `bench/memory/questions-tokio.json` (12 questions)
+- `bench/memory/questions-tokio.json` (11 questions)
 
-35 questions total, each with `question`, `ground_truth_commit` (full 40-char
+33 questions total, each with `question`, `ground_truth_commit` (full 40-char
 SHA), and `reviewed_by`. All three repos were cloned fresh into a scratch
 directory outside this worktree; `bench/memory/raw-commits-<repo>.json` was
 generated via `author_questions.py --num-commits 500` and used as the only

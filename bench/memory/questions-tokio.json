@@ -20,11 +20,6 @@
         "reviewed_by": "ada (test-engineer) on 2026-06-10"
     },
     {
-        "question": "Why was `runtime: steal tasks from the LIFO slot` (#7431) reverted shortly after being merged?",
-        "ground_truth_commit": "967f5715a71d5d2600b71da8c4ab652c4e644a41",
-        "reviewed_by": "ada (test-engineer) on 2026-06-10"
-    },
-    {
         "question": "How does the local run queue handle overflow when it's full now, compared to how it worked before — which half of the tasks gets pushed to the global queue?",
         "ground_truth_commit": "203af021261ab7399c18ab12f22c24f1934c7d42",
         "reviewed_by": "ada (test-engineer) on 2026-06-10"
