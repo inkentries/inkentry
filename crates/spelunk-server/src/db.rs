@@ -699,7 +699,7 @@ mod tests {
             let n = nibbles(&id);
             assert_eq!(n[12], b'7', "version nibble must be 7 for input {vc}");
             // The variant nibble must be exactly one of 8, 9, a, b (top two
-            // bits = 10). NOTE: do not write this as `b'8'..=b'b'` — that range
+            // bits = 10). NOTE: do not write this as `b'8'..=b'b'`; that range
             // is 0x38..=0x62 and silently admits ':'/';' (0x3A/0x3B), the very
             // characters a buggy mapping emits.
             assert!(
