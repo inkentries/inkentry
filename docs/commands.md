@@ -131,6 +131,13 @@ spelunk explore "what guards the context window in the LLM pipeline?" --verbose
 AGENT=true spelunk explore "where is authentication enforced?" --format json
 ```
 
+**Security note:** the loop's `read_file` tool can only return content from
+files that are part of the index, resolved relative to the project root.
+Absolute paths, `..` traversals, and any path outside the indexed project are
+denied, so adversarial instructions hidden in indexed source cannot steer the
+LLM into reading files such as `~/.ssh/id_rsa`. A denied read is reported back
+to the loop without exposing a resolved path or file contents.
+
 ---
 
 ## spelunk status

@@ -9,6 +9,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **`explore` `read_file` confined to indexed files within the project root.**
+  The `explore` tool loop previously read whatever path the LLM supplied, so
+  adversarial instructions embedded in indexed source content could steer it
+  into reading an arbitrary file the process could access (for example
+  `~/.ssh/id_rsa` or a `../../etc/passwd` traversal) and returning the contents
+  in the answer or step log. `read_file` now resolves every requested path
+  against an allow-list: absolute, drive, UNC, and NUL inputs are rejected, `..`
+  escapes are rejected lexically, the path must match an indexed file in the
+  `files` table, and the canonicalized target must stay under the canonical
+  project root (symlink backstop). A denied read is a recoverable tool result
+  that echoes only the caller-supplied path, never a resolved path or file
+  contents, and no longer aborts the session. (#403)
+
 ## [0.8.2] — 2026-06-15
 
 ### Security
