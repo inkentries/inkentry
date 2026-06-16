@@ -9,6 +9,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Storage SQL `IN (...)` queries are now fully parameterised and bind-limit
+  chunked.** The four list-based query methods (`chunks_by_ids`,
+  `graph_neighbor_chunks`, `mention_edges_for_chunks`, `chunks_mentioning_symbols`)
+  previously assembled their `IN (...)` placeholder list at runtime with `format!`.
+  No caller value was ever interpolated into the SQL text, so there was no active
+  injection vector, but the hand-built placeholder construction was a latent
+  hazard. A shared `placeholders(n)` helper now emits the placeholder list and all
+  values are bound positionally via rusqlite params, so no caller-supplied id,
+  name, or symbol can reach the SQL string. Each method also chunks its input at
+  the SQLite bind-parameter limit (halved for the two-clause `graph_neighbor_chunks`)
+  and merges results with unchanged semantics, removing the prior cap on input
+  list size. Internal change only; no user-facing behaviour change.
+  ([#405](https://github.com/spelunk-cloud/spelunk/issues/405))
+
 ## [0.8.2] — 2026-06-15
 
 ### Security
