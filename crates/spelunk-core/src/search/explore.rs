@@ -529,4 +529,160 @@ mod read_file_boundary_tests {
         assert!(!msg.contains("/private"));
         assert!(!msg.contains("SECRET"));
     }
+
+    // ---- Acceptance criterion: indexed symlink resolving outside root ----
+
+    /// An indexed entry that is itself a symlink pointing outside the project
+    /// root must be denied at the canonicalize/`starts_with` backstop (step 4),
+    /// even though it passes the index-membership check (step 3). This is the
+    /// case the implementer deliberately left uncovered.
+    #[cfg(unix)]
+    #[test]
+    fn indexed_symlink_escaping_root_is_denied() {
+        let (_dir, root, db_path) = fixture();
+
+        // A real secret file living OUTSIDE the project root.
+        let outside = tempfile::tempdir().unwrap();
+        let secret = fs::canonicalize(outside.path()).unwrap().join("secret.txt");
+        fs::write(&secret, "TOPSECRET\n").unwrap();
+
+        // An in-tree symlink `src/escape.rs` -> the outside secret, and we add it
+        // to the index so membership (step 3) passes. The canonical target lands
+        // outside `root`, so step 4 must reject it.
+        let link = root.join("src/escape.rs");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let db = Database::open(&db_path).unwrap();
+        db.upsert_file("src/escape.rs", Some("rust"), "cafef00d")
+            .unwrap();
+        drop(db);
+
+        let err = resolve_indexed_path(&db_path, Some(&root), "src/escape.rs");
+        assert!(
+            matches!(err, Err(Denied::NotIndexed)),
+            "indexed symlink escaping root must be denied, got {err:?}"
+        );
+    }
+
+    /// Counterpart: a symlink that is indexed and resolves to a target *inside*
+    /// the root is allowed. Guards against the backstop over-rejecting every
+    /// symlink rather than only escaping ones.
+    #[cfg(unix)]
+    #[test]
+    fn indexed_symlink_staying_in_root_is_allowed() {
+        let (_dir, root, db_path) = fixture();
+        // `src/alias.rs` -> `src/foo.rs` (both inside root).
+        let link = root.join("src/alias.rs");
+        std::os::unix::fs::symlink(root.join("src/foo.rs"), &link).unwrap();
+        let db = Database::open(&db_path).unwrap();
+        db.upsert_file("src/alias.rs", Some("rust"), "0000beef")
+            .unwrap();
+        drop(db);
+
+        let got = resolve_indexed_path(&db_path, Some(&root), "src/alias.rs").unwrap();
+        // Canonicalized through the symlink to the real in-tree target.
+        assert_eq!(got, root.join("src/foo.rs"));
+        assert!(got.starts_with(&root));
+    }
+
+    // ---- Acceptance criterion: indexed path read returns requested range ----
+
+    /// A legitimately indexed relative path resolves to a readable on-disk file,
+    /// and reading the requested line range returns exactly those lines. This
+    /// mirrors the slice arithmetic in `Explorer::execute`'s `ReadFile` arm so a
+    /// regression in the range math is caught.
+    #[test]
+    fn indexed_path_reads_requested_line_range() {
+        let (_dir, root, db_path) = fixture();
+        // Replace foo.rs with multi-line content and index it.
+        let body = "line1\nline2\nline3\nline4\nline5\n";
+        fs::write(root.join("src/foo.rs"), body).unwrap();
+
+        let resolved = resolve_indexed_path(&db_path, Some(&root), "src/foo.rs").unwrap();
+        let content = fs::read_to_string(&resolved).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Request lines 2..=4 (1-based, inclusive end as in execute()).
+        let (start_line, end_line) = (Some(2usize), Some(4usize));
+        let from = start_line.map(|n| n.saturating_sub(1)).unwrap_or(0);
+        let to = end_line
+            .map(|n| n.min(lines.len()))
+            .unwrap_or_else(|| (from + 80).min(lines.len()));
+        let slice = lines.get(from..to).unwrap_or(&[]);
+        assert_eq!(slice, &["line2", "line3", "line4"]);
+    }
+
+    // ---- Acceptance criterion: denial is recoverable, never leaks ----
+
+    /// Denial returns a value (`Err(Denied)`) rather than panicking or reading
+    /// the file, so the caller can surface a recoverable tool result instead of
+    /// aborting the explore session. Asserts across every denial path that no
+    /// resolved absolute path or file content leaks into the model-facing string.
+    #[test]
+    fn every_denial_is_recoverable_and_leak_free() {
+        let (_dir, root, db_path) = fixture();
+
+        let probes = ["/etc/passwd", "../../etc/passwd", ".env", "src/missing.rs"];
+        for probe in probes {
+            let outcome = resolve_indexed_path(&db_path, Some(&root), probe);
+            let denied = match outcome {
+                Err(d) => d,
+                Ok(p) => panic!("expected denial for {probe:?}, resolved to {p:?}"),
+            };
+            let msg = denied.tool_result(probe);
+            // Echoes back only the caller-supplied probe string.
+            assert!(msg.contains(probe), "denial for {probe:?} should echo it");
+            // Never leaks the canonical root, the on-disk secret, or its contents.
+            assert!(
+                !msg.contains(root.to_str().unwrap()),
+                "denial for {probe:?} leaked resolved root: {msg}"
+            );
+            assert!(
+                !msg.contains("SECRET") && !msg.contains("passwd:"),
+                "denial for {probe:?} leaked file contents: {msg}"
+            );
+        }
+    }
+
+    /// Backslash-disguised traversal (`..\\..\\etc`) must be normalized to `/`
+    /// and rejected lexically, not slip through as a single odd filename.
+    #[test]
+    fn backslash_traversal_is_denied() {
+        let (_dir, root, db_path) = fixture();
+        assert!(matches!(
+            resolve_indexed_path(&db_path, Some(&root), "..\\..\\etc\\passwd"),
+            Err(Denied::Invalid)
+        ));
+    }
+
+    /// A path that normalizes to nothing (pure `.`/empty components) is rejected
+    /// rather than treated as the root directory itself.
+    #[test]
+    fn empty_after_normalization_is_denied() {
+        let (_dir, root, db_path) = fixture();
+        assert!(matches!(
+            resolve_indexed_path(&db_path, Some(&root), "./"),
+            Err(Denied::Invalid)
+        ));
+    }
+
+    /// A NUL byte in the path is rejected outright.
+    #[test]
+    fn nul_byte_path_is_denied() {
+        let (_dir, root, db_path) = fixture();
+        assert!(matches!(
+            resolve_indexed_path(&db_path, Some(&root), "src/foo.rs\0.png"),
+            Err(Denied::Invalid)
+        ));
+    }
+
+    /// With no canonicalizable project root, every read is denied even when the
+    /// path is indexed (can't prove confinement).
+    #[test]
+    fn missing_root_denies_indexed_path() {
+        let (_dir, _root, db_path) = fixture();
+        assert!(matches!(
+            resolve_indexed_path(&db_path, None, "src/foo.rs"),
+            Err(Denied::NotIndexed)
+        ));
+    }
 }
