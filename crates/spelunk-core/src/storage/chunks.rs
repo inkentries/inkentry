@@ -218,3 +218,86 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+    use std::sync::OnceLock;
+
+    /// Register the sqlite-vec extension exactly once per test process.
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn open_db() -> Database {
+        register_sqlite_vec();
+        Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
+    }
+
+    /// Insert two chunks and return their ids.
+    fn seed_two_chunks(db: &Database) -> (i64, i64) {
+        let file_id = db
+            .upsert_file("src/lib.rs", Some("rust"), "deadbeef")
+            .expect("upsert file");
+        let a = db
+            .insert_chunk(file_id, "function", Some("a"), 1, 5, "fn a() {}", None, 4)
+            .expect("insert a");
+        let b = db
+            .insert_chunk(file_id, "function", Some("b"), 6, 9, "fn b() {}", None, 4)
+            .expect("insert b");
+        (a, b)
+    }
+
+    #[test]
+    fn chunks_by_ids_empty_input_early_return() {
+        let db = open_db();
+        seed_two_chunks(&db);
+        assert!(
+            db.chunks_by_ids(&[]).expect("empty ok").is_empty(),
+            "chunks_by_ids must early-return [] on empty input"
+        );
+    }
+
+    /// Chunking across SQLITE_MAX_BIND (issue #405 §3): an input list longer
+    /// than the bind budget must run multiple statements without a prepare/bind
+    /// error and concatenate the result vecs, matching the single-statement
+    /// result for the real ids.
+    #[test]
+    fn chunks_by_ids_chunks_and_concatenates() {
+        use super::super::sql::SQLITE_MAX_BIND;
+
+        let db = open_db();
+        let (a, b) = seed_two_chunks(&db);
+
+        // Baseline: both real ids in one statement.
+        let single = db.chunks_by_ids(&[a, b]).expect("single-chunk query");
+        let mut single_ids: Vec<i64> = single.iter().map(|r| r.chunk_id).collect();
+        single_ids.sort();
+        assert_eq!(single_ids, vec![a, b], "baseline returns both chunks");
+
+        // Drive with > SQLITE_MAX_BIND ids: the two real ids plus filler that
+        // matches no row. This straddles the chunk boundary.
+        let mut ids: Vec<i64> = vec![a, b];
+        ids.extend((0..(SQLITE_MAX_BIND as i64 + 5)).map(|n| 1_000_000 + n));
+        assert!(ids.len() > SQLITE_MAX_BIND, "must exceed the bind budget");
+
+        let merged = db
+            .chunks_by_ids(&ids)
+            .expect("multi-chunk query must not hit a prepare/bind limit");
+
+        let mut merged_ids: Vec<i64> = merged.iter().map(|r| r.chunk_id).collect();
+        merged_ids.sort();
+        assert_eq!(
+            merged_ids, single_ids,
+            "concatenated chunked result must equal the single-statement result"
+        );
+    }
+}

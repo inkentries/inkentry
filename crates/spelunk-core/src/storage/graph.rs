@@ -255,6 +255,55 @@ mod tests {
         Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
     }
 
+    /// Insert one named chunk in `src/lib.rs` and return its chunk id.
+    fn insert_named_chunk(db: &Database, file_id: i64, name: &str) -> i64 {
+        db.insert_chunk(
+            file_id,
+            "function",
+            Some(name),
+            1,
+            5,
+            &format!("fn {name}() {{}}"),
+            None,
+            4,
+        )
+        .expect("insert chunk")
+    }
+
+    /// Build a small, fully-known graph dataset:
+    ///   chunks: caller (fn), callee (fn)
+    ///   edges:  caller --calls--> callee   (structural)
+    ///           caller --mentions--> mentioned_sym
+    ///           caller --calls--> real_target
+    /// Returns (file_id, caller_id, callee_id).
+    fn seed_graph(db: &Database) -> (i64, i64, i64) {
+        let file_id = db
+            .upsert_file("src/lib.rs", Some("rust"), "deadbeef")
+            .expect("upsert file");
+        let caller_id = insert_named_chunk(db, file_id, "caller");
+        let callee_id = insert_named_chunk(db, file_id, "callee");
+        db.replace_edges(
+            "src/lib.rs",
+            &[crate::indexer::graph::Edge {
+                source_file: "src/lib.rs".to_string(),
+                source_name: Some("caller".to_string()),
+                target_name: "callee".to_string(),
+                kind: crate::indexer::graph::EdgeKind::Calls,
+                line: 2,
+            }],
+        )
+        .expect("replace edges");
+        db.append_mention_edges(
+            "src/lib.rs",
+            &[
+                (Some("caller"), "mentioned_sym"),
+                (Some("caller"), "callee"),
+            ],
+        )
+        .expect("append mention edges");
+        (file_id, caller_id, callee_id)
+    }
+
     /// A symbol containing SQL metacharacters must be treated as a literal bind
     /// value: the query runs without error and returns no rows for it (there is
     /// no edge with that target_name), proving the bytes never reach the SQL
@@ -298,6 +347,213 @@ mod tests {
             map.get("real_target").map(|v| v.len()),
             Some(1),
             "legitimate symbol must still resolve to its chunk"
+        );
+    }
+
+    /// Strengthened literal-binding check: a battery of SQL-metacharacter
+    /// payloads must each be treated as an opaque value (issue #405 priority
+    /// variant). None may error, none may match an edge, and a structurally
+    /// dangerous payload (`UNION SELECT`, comment terminators, stacked
+    /// statements) must not leak extra rows or drop the legitimate result.
+    #[test]
+    fn chunks_mentioning_symbols_binds_injection_payloads_as_literals() {
+        let db = open_db();
+        seed_graph(&db);
+
+        let payloads = [
+            "') OR 1=1 --",
+            "'; DROP TABLE chunks; --",
+            "real_target') UNION SELECT id, id FROM chunks --",
+            "\" OR \"\"=\"",
+            "real_target' OR '1'='1",
+            "%_\\",           // LIKE metacharacters (irrelevant here, must stay literal)
+            "real_target\0x", // embedded NUL byte
+        ];
+
+        let mut query: Vec<&str> = payloads.to_vec();
+        query.push("mentioned_sym"); // a genuinely-present target
+
+        let map = db
+            .chunks_mentioning_symbols(&query)
+            .expect("injection payloads must bind as literals, never error");
+
+        // The one real symbol resolves to exactly the caller chunk.
+        assert_eq!(
+            map.get("mentioned_sym").map(|v| v.len()),
+            Some(1),
+            "legitimate symbol must resolve despite injection neighbours"
+        );
+        // No payload is interpreted as SQL: none matches an edge, so none keys
+        // the map. (A successful injection would either error above or surface
+        // unexpected keys / extra chunk ids.)
+        for p in payloads {
+            assert!(
+                !map.contains_key(p),
+                "payload {p:?} must be treated as a literal value, not SQL"
+            );
+        }
+        // The whole result set is exactly the single legitimate mapping.
+        assert_eq!(map.len(), 1, "no payload may widen the result set");
+    }
+
+    // -------------------------------------------------------------------------
+    // chunking across SQLITE_MAX_BIND (issue #405 §3)
+    //
+    // Chunking is keyed purely off input-slice length vs `SQLITE_MAX_BIND`, so
+    // driving each function with an input list longer than the boundary forces
+    // the multi-statement path. Only a few elements correspond to real DB rows;
+    // the rest are non-matching filler. We assert (a) no prepare/bind error,
+    // (b) the result equals the known single-statement result, and (c) that we
+    // genuinely crossed >1 chunk.
+    // -------------------------------------------------------------------------
+
+    use super::super::sql::SQLITE_MAX_BIND;
+
+    #[test]
+    fn graph_neighbor_chunks_chunks_and_merges_distinct() {
+        let db = open_db();
+        let (_file_id, _caller_id, callee_id) = seed_graph(&db);
+
+        // graph_neighbor_chunks binds its slice twice, so the per-chunk budget
+        // is SQLITE_MAX_BIND / 2. To force >1 chunk we need an input longer than
+        // that half-budget. "caller" is the real query name (caller --calls-->
+        // callee, so the neighbour chunk is `callee`).
+        let chunk_budget = SQLITE_MAX_BIND / 2;
+        let mut names: Vec<&str> = vec!["caller"]; // matches; pulls in `callee`
+        names.resize(chunk_budget + 5, "no_such_symbol_xyz"); // filler past the boundary
+        assert!(
+            names.len() > chunk_budget,
+            "input must exceed the halved per-chunk budget to exercise chunking"
+        );
+
+        let neighbours = db
+            .graph_neighbor_chunks(&names)
+            .expect("multi-chunk query must not hit a prepare/bind limit");
+
+        // Compare against the single-statement result for the same logical query.
+        let single = db
+            .graph_neighbor_chunks(&["caller"])
+            .expect("single-chunk query");
+        assert_eq!(
+            single,
+            vec![callee_id],
+            "single-statement baseline: caller's calls-neighbour is callee"
+        );
+        assert_eq!(
+            neighbours, single,
+            "chunked result must equal the single-statement result"
+        );
+
+        // DISTINCT across chunks: callee must appear exactly once even though the
+        // matching name `caller` could in principle recur across chunk boundaries.
+        assert_eq!(
+            neighbours.iter().filter(|&&id| id == callee_id).count(),
+            1,
+            "DISTINCT semantics must be preserved across chunk merges"
+        );
+    }
+
+    #[test]
+    fn mention_edges_for_chunks_chunks_and_merges_per_key() {
+        let db = open_db();
+        let (_file_id, caller_id, _callee_id) = seed_graph(&db);
+
+        // caller mentions: "mentioned_sym" and "callee" (mentions edges) plus the
+        // structural calls edge to "callee" — kind IN ('mentions','calls').
+        let single = db
+            .mention_edges_for_chunks(&[caller_id])
+            .expect("single-chunk query");
+        let mut expected: Vec<String> = single.get(&caller_id).cloned().unwrap_or_default();
+        expected.sort();
+        assert!(
+            !expected.is_empty(),
+            "baseline: caller must mention at least one symbol"
+        );
+
+        // Drive with > SQLITE_MAX_BIND ids: the real id plus non-existent filler.
+        let mut ids: Vec<i64> = vec![caller_id];
+        // Use clearly-non-existent ids well outside the real rowid range.
+        ids.extend((0..(SQLITE_MAX_BIND as i64 + 5)).map(|n| 1_000_000 + n));
+        assert!(ids.len() > SQLITE_MAX_BIND, "must exceed bind budget");
+
+        let merged = db
+            .mention_edges_for_chunks(&ids)
+            .expect("multi-chunk query must not hit a prepare/bind limit");
+
+        let mut got: Vec<String> = merged.get(&caller_id).cloned().unwrap_or_default();
+        got.sort();
+        assert_eq!(
+            got, expected,
+            "per-key Vec must match the single-statement result after merge"
+        );
+        // No phantom keys from the filler ids.
+        assert_eq!(
+            merged.keys().copied().collect::<Vec<_>>(),
+            vec![caller_id],
+            "filler ids must not introduce spurious map keys"
+        );
+    }
+
+    #[test]
+    fn chunks_mentioning_symbols_chunks_and_merges_per_key() {
+        let db = open_db();
+        let (_file_id, caller_id, _callee_id) = seed_graph(&db);
+
+        // Baseline single-statement result for the real symbol.
+        let single = db
+            .chunks_mentioning_symbols(&["mentioned_sym"])
+            .expect("single-chunk query");
+        assert_eq!(
+            single.get("mentioned_sym"),
+            Some(&vec![caller_id]),
+            "baseline: mentioned_sym is mentioned by the caller chunk"
+        );
+
+        // Drive with > SQLITE_MAX_BIND symbols: the real one plus filler.
+        let mut syms: Vec<&str> = vec!["mentioned_sym"];
+        syms.resize(SQLITE_MAX_BIND + 5, "no_such_symbol_xyz");
+        assert!(syms.len() > SQLITE_MAX_BIND, "must exceed bind budget");
+
+        let merged = db
+            .chunks_mentioning_symbols(&syms)
+            .expect("multi-chunk query must not hit a prepare/bind limit");
+
+        assert_eq!(
+            merged.get("mentioned_sym"),
+            Some(&vec![caller_id]),
+            "per-key Vec must match the single-statement result after merge"
+        );
+        assert_eq!(
+            merged.len(),
+            1,
+            "filler symbols must not introduce spurious map keys"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // empty-input early-return (issue #405 §2.2 step 1)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn graph_functions_empty_input_early_return() {
+        let db = open_db();
+        seed_graph(&db);
+
+        assert!(
+            db.graph_neighbor_chunks(&[]).expect("empty ok").is_empty(),
+            "graph_neighbor_chunks must early-return [] on empty input"
+        );
+        assert!(
+            db.mention_edges_for_chunks(&[])
+                .expect("empty ok")
+                .is_empty(),
+            "mention_edges_for_chunks must early-return empty map"
+        );
+        assert!(
+            db.chunks_mentioning_symbols(&[])
+                .expect("empty ok")
+                .is_empty(),
+            "chunks_mentioning_symbols must early-return empty map"
         );
     }
 }
