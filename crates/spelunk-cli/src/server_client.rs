@@ -262,7 +262,7 @@ impl ServerInferenceClient {
     /// The `chunk_id` is prefixed `query:` per ADR-002 so it is trivially
     /// distinguishable from real chunk ids in server logs.
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
-        let chunk_id = format!("query:{}", uuid_v4_hex());
+        let chunk_id = format!("query:{}", query_nonce_hex());
         let body = EmbedReq {
             chunks: vec![EmbedChunkIn {
                 chunk_id: &chunk_id,
@@ -332,11 +332,14 @@ impl ServerInferenceClient {
     }
 }
 
-// ── UUID helper (no dep needed) ───────────────────────────────────────────────
+// ── Query nonce helper (no dep needed) ────────────────────────────────────────
 
-fn uuid_v4_hex() -> String {
+/// Build a cheap pseudo-unique hex nonce from the current time and process id.
+///
+/// This is not a UUID of any version; it only needs to be unique enough to make
+/// a synthetic `chunk_id` distinguishable in server logs.
+fn query_nonce_hex() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    // Cheap pseudo-unique id using time + process id; good enough for a chunk_id prefix.
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
