@@ -82,29 +82,42 @@ impl Database {
         if names.is_empty() {
             return Ok(vec![]);
         }
-        let placeholders = names
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT DISTINCT c.id
-             FROM chunks c
-             WHERE c.name IN (
-                 SELECT target_name FROM graph_edges
-                 WHERE source_name IN ({placeholders}) AND kind = 'calls'
-                 UNION
-                 SELECT source_name FROM graph_edges
-                 WHERE target_name IN ({placeholders}) AND kind = 'calls'
-             )"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> =
-            names.iter().map(|n| n as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, i64>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        // The names slice is bound twice per statement (once per IN clause), so
+        // the effective per-chunk budget is half the bind limit.
+        let chunk_size = super::sql::SQLITE_MAX_BIND / 2;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for chunk in names.chunks(chunk_size) {
+            let ph = super::sql::placeholders(chunk.len());
+            let sql = format!(
+                "SELECT DISTINCT c.id
+                 FROM chunks c
+                 WHERE c.name IN (
+                     SELECT target_name FROM graph_edges
+                     WHERE source_name IN ({ph}) AND kind = 'calls'
+                     UNION
+                     SELECT source_name FROM graph_edges
+                     WHERE target_name IN ({ph}) AND kind = 'calls'
+                 )"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            // Bind the names slice twice: once for each IN clause.
+            let params: Vec<&dyn rusqlite::ToSql> = chunk
+                .iter()
+                .chain(chunk.iter())
+                .map(|n| n as &dyn rusqlite::ToSql)
+                .collect();
+            debug_assert_eq!(params.len(), chunk.len() * 2);
+            let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, i64>(0))?;
+            for row in rows {
+                let id = row?;
+                // Preserve the single-statement DISTINCT semantics across chunks.
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Return all (source_name, target_name) pairs from graph_edges where
@@ -146,38 +159,34 @@ impl Database {
         if chunk_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders = chunk_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // CTE + INDEXED BY forces SQLite to start from chunk IDs rather than
-        // scanning all 'mentions' edges — critical with 25k+ mention edges.
-        let sql = format!(
-            "WITH chunk_info AS MATERIALIZED (
-                 SELECT c.id, c.name, f.path
-                 FROM chunks c JOIN files f ON f.id = c.file_id
-                 WHERE c.id IN ({placeholders})
-             )
-             SELECT ci.id, ge.target_name
-             FROM chunk_info ci
-             JOIN graph_edges ge INDEXED BY graph_edges_source_name_kind
-                  ON ge.source_name = ci.name AND ge.source_file = ci.path
-                  AND ge.kind IN ('mentions', 'calls')"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = chunk_ids
-            .iter()
-            .map(|id| id as &dyn rusqlite::ToSql)
-            .collect();
-        let rows = stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?;
         let mut map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
-        for row in rows {
-            let (chunk_id, symbol) = row?;
-            map.entry(chunk_id).or_default().push(symbol);
+        for chunk in chunk_ids.chunks(super::sql::SQLITE_MAX_BIND) {
+            let ph = super::sql::placeholders(chunk.len());
+            // CTE + INDEXED BY forces SQLite to start from chunk IDs rather than
+            // scanning all 'mentions' edges — critical with 25k+ mention edges.
+            let sql = format!(
+                "WITH chunk_info AS MATERIALIZED (
+                     SELECT c.id, c.name, f.path
+                     FROM chunks c JOIN files f ON f.id = c.file_id
+                     WHERE c.id IN ({ph})
+                 )
+                 SELECT ci.id, ge.target_name
+                 FROM chunk_info ci
+                 JOIN graph_edges ge INDEXED BY graph_edges_source_name_kind
+                      ON ge.source_name = ci.name AND ge.source_file = ci.path
+                      AND ge.kind IN ('mentions', 'calls')"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            debug_assert_eq!(params.len(), chunk.len());
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (chunk_id, symbol) = row?;
+                map.entry(chunk_id).or_default().push(symbol);
+            }
         }
         Ok(map)
     }
@@ -190,31 +199,105 @@ impl Database {
         if symbols.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders = symbols
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT ge.target_name, c.id
-             FROM graph_edges ge INDEXED BY graph_edges_target_name_kind
-             JOIN chunks c ON c.name = ge.source_name
-             JOIN files f ON f.id = c.file_id AND f.path = ge.source_file
-             WHERE ge.target_name IN ({placeholders})
-               AND ge.kind IN ('mentions', 'calls')"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> =
-            symbols.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
         let mut map: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
-        for row in rows {
-            let (symbol, chunk_id) = row?;
-            map.entry(symbol).or_default().push(chunk_id);
+        for chunk in symbols.chunks(super::sql::SQLITE_MAX_BIND) {
+            let ph = super::sql::placeholders(chunk.len());
+            // Symbol values are user-file-derived (AST-extracted). They flow
+            // strictly through bind parameters — the only thing interpolated
+            // into the SQL text is the placeholder string `ph`, which contains
+            // no caller data.
+            let sql = format!(
+                "SELECT ge.target_name, c.id
+                 FROM graph_edges ge INDEXED BY graph_edges_target_name_kind
+                 JOIN chunks c ON c.name = ge.source_name
+                 JOIN files f ON f.id = c.file_id AND f.path = ge.source_file
+                 WHERE ge.target_name IN ({ph})
+                   AND ge.kind IN ('mentions', 'calls')"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            debug_assert_eq!(params.len(), chunk.len());
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (symbol, chunk_id) = row?;
+                map.entry(symbol).or_default().push(chunk_id);
+            }
         }
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Database;
+    use std::sync::OnceLock;
+
+    /// Register the sqlite-vec extension exactly once per test process.
+    /// `Database::open` creates a `vec0` virtual table, which requires the
+    /// extension to be loaded before any connection is opened.
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn open_db() -> Database {
+        register_sqlite_vec();
+        Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
+    }
+
+    /// A symbol containing SQL metacharacters must be treated as a literal bind
+    /// value: the query runs without error and returns no rows for it (there is
+    /// no edge with that target_name), proving the bytes never reach the SQL
+    /// text as code.
+    #[test]
+    fn chunks_mentioning_symbols_treats_metacharacters_as_literal() {
+        let db = open_db();
+
+        // Seed a real edge so the table is non-empty and a successful query
+        // could in principle return rows — the injection string still must not.
+        let file_id = db
+            .upsert_file("src/lib.rs", Some("rust"), "deadbeef")
+            .expect("upsert file");
+        db.insert_chunk(
+            file_id,
+            "function",
+            Some("caller"),
+            1,
+            5,
+            "fn caller() {}",
+            None,
+            4,
+        )
+        .expect("insert chunk");
+        db.append_mention_edges("src/lib.rs", &[(Some("caller"), "real_target")])
+            .expect("append edges");
+
+        let malicious = "') OR 1=1 --";
+        let map = db
+            .chunks_mentioning_symbols(&[malicious, "real_target"])
+            .expect("query must not error on a SQL-metacharacter symbol");
+
+        // The injection attempt is a literal value with no matching edge.
+        assert!(
+            !map.contains_key(malicious),
+            "metacharacter symbol must not match any edge (was treated as SQL?)"
+        );
+        // The legitimate symbol still resolves, proving the query is intact and
+        // the malicious value did not widen or break the result set.
+        assert_eq!(
+            map.get("real_target").map(|v| v.len()),
+            Some(1),
+            "legitimate symbol must still resolve to its chunk"
+        );
     }
 }

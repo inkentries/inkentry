@@ -68,44 +68,45 @@ impl Database {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let placeholders = ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT c.id, 0.0, c.node_type, c.name,
-                    CAST(c.start_line AS INTEGER), CAST(c.end_line AS INTEGER),
-                    c.content, f.path, f.language, c.token_count
-             FROM chunks c
-             JOIN files f ON f.id = c.file_id
-             WHERE c.id IN ({placeholders})"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params.as_slice(), |row| {
-            Ok(crate::search::SearchResult {
-                chunk_id: row.get(0)?,
-                distance: row.get(1)?,
-                node_type: row.get(2)?,
-                name: row.get(3)?,
-                start_line: row.get::<_, i64>(4)? as usize,
-                end_line: row.get::<_, i64>(5)? as usize,
-                content: row.get(6)?,
-                file_path: row.get(7)?,
-                language: row.get(8)?,
-                from_graph: false,
-                governing_specs: vec![],
-                token_count: row.get::<_, i64>(9)? as usize,
-                project_name: None,
-                project_path: None,
-                summary: None,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let mut out = Vec::new();
+        for chunk in ids.chunks(super::sql::SQLITE_MAX_BIND) {
+            let ph = super::sql::placeholders(chunk.len());
+            let sql = format!(
+                "SELECT c.id, 0.0, c.node_type, c.name,
+                        CAST(c.start_line AS INTEGER), CAST(c.end_line AS INTEGER),
+                        c.content, f.path, f.language, c.token_count
+                 FROM chunks c
+                 JOIN files f ON f.id = c.file_id
+                 WHERE c.id IN ({ph})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            debug_assert_eq!(params.len(), chunk.len());
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                Ok(crate::search::SearchResult {
+                    chunk_id: row.get(0)?,
+                    distance: row.get(1)?,
+                    node_type: row.get(2)?,
+                    name: row.get(3)?,
+                    start_line: row.get::<_, i64>(4)? as usize,
+                    end_line: row.get::<_, i64>(5)? as usize,
+                    content: row.get(6)?,
+                    file_path: row.get(7)?,
+                    language: row.get(8)?,
+                    from_graph: false,
+                    governing_specs: vec![],
+                    token_count: row.get::<_, i64>(9)? as usize,
+                    project_name: None,
+                    project_path: None,
+                    summary: None,
+                })
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
     }
 
     /// Return all chunks for a file path (exact match or LIKE suffix).

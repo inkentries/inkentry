@@ -13,6 +13,7 @@ mod graph;
 mod search;
 mod snapshots;
 mod specs;
+mod sql;
 mod stats;
 
 pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
