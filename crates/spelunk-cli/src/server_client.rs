@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::config::Config;
 
@@ -262,7 +263,7 @@ impl ServerInferenceClient {
     /// The `chunk_id` is prefixed `query:` per ADR-002 so it is trivially
     /// distinguishable from real chunk ids in server logs.
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
-        let chunk_id = format!("query:{}", query_nonce_hex());
+        let chunk_id = format!("query:{}", Uuid::now_v7());
         let body = EmbedReq {
             chunks: vec![EmbedChunkIn {
                 chunk_id: &chunk_id,
@@ -330,22 +331,6 @@ impl ServerInferenceClient {
 
         Ok(resp.query_vector)
     }
-}
-
-// ── Query nonce helper (no dep needed) ────────────────────────────────────────
-
-/// Build a cheap pseudo-unique hex nonce from the current time and process id.
-///
-/// This is not a UUID of any version; it only needs to be unique enough to make
-/// a synthetic `chunk_id` distinguishable in server logs.
-fn query_nonce_hex() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    format!("{t:x}{pid:x}")
 }
 
 // ── EmbeddingBackend adapter ──────────────────────────────────────────────────
@@ -461,22 +446,17 @@ mod tests {
         assert_eq!(encode_project_id("my-project"), "my-project");
     }
 
-    /// `query_nonce_hex` (renamed from the misnamed `uuid_v4_hex`) must still
-    /// produce a non-empty, all-lowercase-hex token. It is concatenated into a
-    /// synthetic `query:<nonce>` chunk_id, so non-hex bytes would corrupt that
-    /// id; the rename must not change this contract.
+    /// The synthetic query `chunk_id` is built from a fresh `uuid` crate v7
+    /// UUID. Two calls must differ (so concurrent queries never collide), and
+    /// the value must be a real version-7 UUID — the `query:` prefix is what
+    /// makes it distinguishable in server logs.
     #[test]
-    fn query_nonce_hex_is_nonempty_lowercase_hex() {
-        let nonce = query_nonce_hex();
-        assert!(!nonce.is_empty(), "nonce must be non-empty");
-        assert!(
-            nonce
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-            "nonce must be all lowercase hex: {nonce}"
-        );
-        // Mirror the call site: the nonce is used to build a query chunk_id.
-        let chunk_id = format!("query:{nonce}");
+    fn query_chunk_id_is_unique_uuid_v7() {
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        assert_ne!(a, b, "two query nonces must not collide");
+        assert_eq!(a.get_version(), Some(uuid::Version::SortRand));
+        let chunk_id = format!("query:{a}");
         assert!(chunk_id.starts_with("query:"));
     }
 }
