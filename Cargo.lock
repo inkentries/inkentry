@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-cli"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4449,7 +4449,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-server"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "async-stream",

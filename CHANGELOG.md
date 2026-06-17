@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-06-17
+
 ### Changed
 
 - **Server instance_id now uses UUID v7 instead of v4.** The persistent instance ID (returned by `/v1/health` and stored in the server database) is now a time-ordered UUID v7 minted by the `uuid` crate (`Uuid::now_v7`) and persisted verbatim, so the high 48 bits encode the millisecond Unix timestamp of creation and the value is stable for the life of the database. It remains a standard 36-char UUID string. (#416)
@@ -42,6 +44,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   and merges results with unchanged semantics, removing the prior cap on input
   list size. Internal change only; no user-facing behaviour change.
   ([#405](https://github.com/spelunk-cloud/spelunk/issues/405))
+
+### Internal
+
+- Repaired the fuzz crate after the three-crate workspace migration and suppressed an upstream tree-sitter-sequel LeakSanitizer false positive so the fuzz CI job runs clean. ([#417](https://github.com/spelunk-cloud/spelunk/pull/417), [#418](https://github.com/spelunk-cloud/spelunk/pull/418))
 
 ## [0.8.2] — 2026-06-15
 
