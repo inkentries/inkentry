@@ -11,7 +11,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Server instance_id now uses UUID v7 instead of v4.** The persistent instance ID (returned by `/health` and stored in the server database) is now a time-ordered UUID v7 minted by the `uuid` crate (`Uuid::now_v7`) and persisted verbatim, so the high 48 bits encode the millisecond Unix timestamp of creation and the value is stable for the life of the database. It remains a standard 36-char UUID string. (#416)
+- **Server instance_id now uses UUID v7 instead of v4.** The persistent instance ID (returned by `/v1/health` and stored in the server database) is now a time-ordered UUID v7 minted by the `uuid` crate (`Uuid::now_v7`) and persisted verbatim, so the high 48 bits encode the millisecond Unix timestamp of creation and the value is stable for the life of the database. It remains a standard 36-char UUID string. (#416)
 
 - **Generate UUIDs with the `uuid` crate instead of hand-rolled helpers.** The bespoke `format_uuid_v7()` byte-formatter in spelunk-server and the `query_nonce_hex()` helper in the spelunk-cli server client (the latter previously the misnamed `uuid_v4_hex()`) have both been removed; the server instance id and the synthetic `query:<id>` embed chunk id are now produced by `Uuid::now_v7()`. (#416)
 
