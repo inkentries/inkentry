@@ -102,7 +102,7 @@ pub(super) async fn harvest_claude_code(
     };
 
     // 5. Load known source_refs.
-    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let known_refs = backend.harvested_shas().await.map_err(backend_err)?;
 
     // 6. Stream-read history file; accumulate sessions relevant to this repo.

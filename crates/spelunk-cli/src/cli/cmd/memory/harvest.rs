@@ -97,7 +97,7 @@ async fn memory_harvest_git(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = commits
         .iter()
@@ -498,7 +498,7 @@ async fn memory_harvest_failures(
         return Ok(());
     }
 
-    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = failure_commits
         .into_iter()

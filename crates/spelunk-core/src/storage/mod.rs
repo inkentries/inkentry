@@ -84,7 +84,7 @@ pub(super) fn escape_like(s: &str) -> String {
 /// auto-discovered loopback server is inference-only and routes through
 /// `cfg.inference_url` instead (see `Tier::effective_config`), so it never
 /// diverts memory CRUD away from the project's local `memory.db`.
-pub fn open_memory_backend(
+pub async fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
     backend_override: Option<&str>,
@@ -106,6 +106,31 @@ pub fn open_memory_backend(
                  so memory operations can be keyed to a project on the server."
             )
         })?;
+        // ADR-005: cloud-api routes are scoped by `/v1/projects/{uuid}` (the
+        // `{project_id}` path param is a `Path<Uuid>`), so a human slug must be
+        // resolved to its UUID before it is used as the backend's project key.
+        //
+        // - D5: a `project_id` that is already a UUID is used directly (no lookup).
+        // - D6: an unset/loopback `server_url` is the OSS spelunk-server path,
+        //   which accepts arbitrary slugs as the project key — no resolution.
+        //   (This branch is only reached when `server_url` is set, but we still
+        //   guard on loopback so a loopback team server keeps using the slug.)
+        let project_id =
+            if crate::config::looks_like_uuid(&project_id) || crate::config::is_loopback_url(url) {
+                project_id
+            } else {
+                // The cache file lives next to `memory.db`/`config.toml`, i.e. the
+                // project's `.spelunk/` directory. `mem_path` is `<.spelunk>/memory.db`.
+                let spelunk_dir = mem_path.parent().unwrap_or(mem_path);
+                let uuid = remote::resolve_cloud_project_uuid(
+                    &project_id,
+                    url,
+                    cfg.server_key.as_deref(),
+                    spelunk_dir,
+                )
+                .await?;
+                uuid.to_string()
+            };
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
@@ -187,9 +212,9 @@ mod backend_selection_tests {
         unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn offline_mode_routes_local_even_with_server_url() {
+    async fn offline_mode_routes_local_even_with_server_url() {
         clear_env();
         register_sqlite_vec();
         let cfg = Config {
@@ -198,7 +223,9 @@ mod backend_selection_tests {
             mode: Some(SyncMode::Offline),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "sqlite",
@@ -206,9 +233,9 @@ mod backend_selection_tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn local_first_mode_routes_local() {
+    async fn local_first_mode_routes_local() {
         clear_env();
         register_sqlite_vec();
         let cfg = Config {
@@ -217,21 +244,28 @@ mod backend_selection_tests {
             mode: Some(SyncMode::LocalFirst),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(be.backend_kind(), "sqlite");
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn cloud_first_mode_routes_remote() {
+    async fn cloud_first_mode_routes_remote() {
         clear_env();
+        // ADR-005 D5: a `project_id` that is already a UUID is used directly,
+        // so the remote backend is constructed without any slug→UUID lookup
+        // (no network call against the unreachable team.example.com host).
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
-            project_id: Some("team/proj".to_string()),
+            project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "remote",
@@ -239,9 +273,9 @@ mod backend_selection_tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn no_server_kill_switch_forces_local() {
+    async fn no_server_kill_switch_forces_local() {
         register_sqlite_vec();
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -250,7 +284,9 @@ mod backend_selection_tests {
             ..Default::default()
         };
         unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "sqlite",

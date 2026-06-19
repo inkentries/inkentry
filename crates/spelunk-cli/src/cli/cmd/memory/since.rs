@@ -60,7 +60,7 @@ pub(super) async fn memory_since(
     }
 
     // ── Local path ────────────────────────────────────────────────────────────
-    let backend = crate::storage::open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = crate::storage::open_memory_backend(cfg, mem_path, backend_override).await?;
     let all = backend
         .list(None, args.limit, false, None)
         .await

@@ -28,7 +28,7 @@ pub(super) async fn memory_search(
     let cfg = &eff_cfg;
 
     let mode = args.mode.as_str();
-    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
 
     let notes = if mode == "text" {
