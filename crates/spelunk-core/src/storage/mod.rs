@@ -26,7 +26,7 @@ pub use memory::{MemoryEdge, MemoryStore, SyncRow};
 pub use note_record::{NoteRecord, now_millis, now_secs};
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry,
-    RemoteMemoryBackend,
+    RemoteMemoryBackend, resolve_cloud_project_uuid,
 };
 pub use snapshots::{Snapshot, SymbolVersion};
 pub use specs::{SpecRecord, StaleSpec};
