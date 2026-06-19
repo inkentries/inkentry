@@ -330,6 +330,11 @@ server_key = "your-shared-api-key"
 > The older `memory_server_url` / `memory_server_key` keys are still accepted as
 > deprecated aliases for `server_url` / `server_key`.
 
+`project_id` stays a human-readable slug. If the server routes projects by an
+internal UUID (as a team/cloud memory server does), the CLI resolves the slug
+for you on first use and caches the result locally, so no manual UUID lookup is
+needed. See [Server setup](server.md#client-configuration) for details.
+
 After setup, all `spelunk memory` commands transparently use the server. To migrate existing local memories:
 
 ```bash
