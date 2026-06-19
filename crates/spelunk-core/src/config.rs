@@ -6,6 +6,74 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
+// Sync mode (ADR-037 D1)
+// ---------------------------------------------------------------------------
+
+/// Persistent, per-project control over where memory reads/writes go and whether
+/// the CLI ever contacts the cloud (ADR-037 D1).
+///
+/// Replaces the implicit "is the server reachable" branch that previously drove
+/// backend selection. The mode is resolved once from config + environment (see
+/// [`Config::resolve_mode`]) and then gates both the capability tier probe and
+/// the memory backend selector.
+///
+/// | mode          | reads          | writes                    | cloud contact            |
+/// |---------------|----------------|---------------------------|--------------------------|
+/// | `offline`     | local          | local                     | never (even if `server_url` set) |
+/// | `local_first` | local          | local, then async sync    | best-effort              |
+/// | `cloud_first` | cloud, local fallback | cloud, queue locally | required-ish (debug/override only) |
+///
+/// `cloud_first` is an **explicit debug/override mode only** — a deliberate,
+/// per-invocation override of ADR-005's local-as-source-of-truth invariant. It
+/// is not intended for day-to-day use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncMode {
+    /// Local-only: never contacts the cloud, even when `server_url` is set.
+    /// The provable no-cloud guarantee for OSS testing and air-gapped use.
+    Offline,
+    /// Default when `server_url` is set: reads and writes are local; a best-effort
+    /// background sync converges the cloud replica. Offline-resilient.
+    LocalFirst,
+    /// Debug/override only: reads prefer the cloud (local fallback) and writes go
+    /// to the cloud (queued locally if unreachable). Not for day-to-day use.
+    CloudFirst,
+}
+
+impl SyncMode {
+    /// Parse a mode from its serialized string form (case-insensitive).
+    ///
+    /// Accepts `offline`, `local_first`, and `cloud_first`. Returns `None` for
+    /// any other value so callers can decide how to handle an invalid override.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "offline" => Some(Self::Offline),
+            "local_first" | "local-first" | "localfirst" => Some(Self::LocalFirst),
+            "cloud_first" | "cloud-first" | "cloudfirst" => Some(Self::CloudFirst),
+            _ => None,
+        }
+    }
+
+    /// String form used in config files and `SPELUNK_MODE`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::LocalFirst => "local_first",
+            Self::CloudFirst => "cloud_first",
+        }
+    }
+
+    /// Whether this mode permits any contact with the cloud server.
+    ///
+    /// `offline` never contacts the cloud; the other two may. Used by the
+    /// capability tier probe and the memory backend selector to honour the
+    /// kill-switch semantics of `offline`.
+    pub fn allows_cloud(&self) -> bool {
+        !matches!(self, Self::Offline)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Project-id derivation
 // ---------------------------------------------------------------------------
 
@@ -215,6 +283,17 @@ pub struct Config {
     #[serde(default)]
     pub project_id: Option<String>,
 
+    /// Sync mode (ADR-037 D1): `offline` / `local_first` / `cloud_first`.
+    ///
+    /// Stored as `Option` so the serde default can preserve today's behaviour:
+    /// when absent, [`Config::resolve_mode`] derives the effective mode from
+    /// `server_url` (no `server_url` ⇒ `offline`; `server_url` present ⇒
+    /// `local_first`). An explicit value here pins the mode; `SPELUNK_MODE`
+    /// overrides it, and `SPELUNK_NO_SERVER=1` forces `offline` regardless.
+    /// Always read it through [`Config::resolve_mode`], never directly.
+    #[serde(default)]
+    pub mode: Option<SyncMode>,
+
     /// URL of a server used **only** for inference (embeddings + LLM), never for
     /// memory storage. Populated at runtime (not from config files) by
     /// `Tier::effective_config()` when a loopback server is auto-discovered: the
@@ -300,6 +379,7 @@ impl Default for Config {
             server_url: None,
             server_key: None,
             project_id: None,
+            mode: None,
             inference_url: None,
             plans_dir: Self::default_plans_dir(),
             specs_dir: Self::default_specs_dir(),
@@ -367,6 +447,19 @@ impl Config {
         if let Ok(v) = std::env::var("SPELUNK_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
+        // ADR-037 D1: SPELUNK_MODE overrides the configured sync mode. An
+        // unrecognised value is a hard error — silently falling back to a
+        // default would defeat the deterministic-mode guarantee the Founder
+        // needs to separate OSS-local test runs from cloud dogfood runs.
+        if let Ok(v) = std::env::var("SPELUNK_MODE") {
+            let parsed = SyncMode::parse(&v).with_context(|| {
+                format!(
+                    "SPELUNK_MODE={v:?} is not a valid sync mode \
+                     (expected one of: offline, local_first, cloud_first)"
+                )
+            })?;
+            cfg.mode = Some(parsed);
+        }
 
         Ok(cfg)
     }
@@ -409,6 +502,45 @@ impl Config {
     pub fn resolve_inference_url(&self) -> Option<&str> {
         self.inference_url.as_deref().or(self.server_url.as_deref())
     }
+
+    /// Resolve the effective sync mode (ADR-037 D1).
+    ///
+    /// Precedence (highest first):
+    /// 1. `SPELUNK_NO_SERVER=1` (or `true`/`yes`) → [`SyncMode::Offline`] — a hard
+    ///    kill-switch that wins over everything else.
+    /// 2. An explicit `mode` in config / `SPELUNK_MODE` (already folded into
+    ///    `self.mode` by [`Config::load`]).
+    /// 3. Serde default: no `server_url` ⇒ [`SyncMode::Offline`]; `server_url`
+    ///    present ⇒ [`SyncMode::LocalFirst`]. This preserves today's behaviour
+    ///    for configs written before this field existed.
+    ///
+    /// This is the single source of truth for the mode — backend selection and
+    /// the tier probe both call it rather than reading `self.mode` directly.
+    pub fn resolve_mode(&self) -> SyncMode {
+        if no_server_env_set() {
+            return SyncMode::Offline;
+        }
+        if let Some(mode) = self.mode {
+            return mode;
+        }
+        // Default mirrors the pre-ADR-037 implicit behaviour.
+        if self.server_url.is_some() {
+            SyncMode::LocalFirst
+        } else {
+            SyncMode::Offline
+        }
+    }
+}
+
+/// Returns `true` when `SPELUNK_NO_SERVER` is set to a truthy value.
+///
+/// This is the hard offline kill-switch shared by [`Config::resolve_mode`] and
+/// the CLI capability probe; both must agree on what "no server" means.
+pub fn no_server_env_set() -> bool {
+    matches!(
+        std::env::var("SPELUNK_NO_SERVER").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
 }
 
 /// Return `true` if `url` targets a loopback address (`127.x.x.x`, `localhost`, `::1`).
@@ -451,7 +583,138 @@ mod tests {
             std::env::remove_var("SPELUNK_MEMORY_SERVER_URL");
             std::env::remove_var("SPELUNK_SERVER_KEY");
             std::env::remove_var("SPELUNK_PROJECT_ID");
+            std::env::remove_var("SPELUNK_MODE");
+            std::env::remove_var("SPELUNK_NO_SERVER");
         }
+    }
+
+    // ── SyncMode parse / as_str (ADR-037 D1) ─────────────────────────────────
+
+    #[test]
+    fn sync_mode_parse_accepts_canonical_and_variant_forms() {
+        assert_eq!(SyncMode::parse("offline"), Some(SyncMode::Offline));
+        assert_eq!(SyncMode::parse("LOCAL_FIRST"), Some(SyncMode::LocalFirst));
+        assert_eq!(SyncMode::parse("local-first"), Some(SyncMode::LocalFirst));
+        assert_eq!(SyncMode::parse("cloud_first"), Some(SyncMode::CloudFirst));
+        assert_eq!(SyncMode::parse(" cloudfirst "), Some(SyncMode::CloudFirst));
+        assert_eq!(SyncMode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn sync_mode_as_str_round_trips() {
+        for m in [
+            SyncMode::Offline,
+            SyncMode::LocalFirst,
+            SyncMode::CloudFirst,
+        ] {
+            assert_eq!(SyncMode::parse(m.as_str()), Some(m));
+        }
+    }
+
+    #[test]
+    fn sync_mode_allows_cloud() {
+        assert!(!SyncMode::Offline.allows_cloud());
+        assert!(SyncMode::LocalFirst.allows_cloud());
+        assert!(SyncMode::CloudFirst.allows_cloud());
+    }
+
+    #[test]
+    fn sync_mode_serde_snake_case() {
+        // Serialised form must be snake_case so config.toml / wire stay stable.
+        let json = serde_json::to_string(&SyncMode::LocalFirst).unwrap();
+        assert_eq!(json, "\"local_first\"");
+        let parsed: SyncMode = serde_json::from_str("\"cloud_first\"").unwrap();
+        assert_eq!(parsed, SyncMode::CloudFirst);
+    }
+
+    // ── resolve_mode defaults (ADR-037 D1) ───────────────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_mode_defaults_offline_without_server_url() {
+        clear_spelunk_env();
+        let cfg = Config::default();
+        assert_eq!(cfg.resolve_mode(), SyncMode::Offline);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_mode_defaults_local_first_with_server_url() {
+        clear_spelunk_env();
+        let cfg = Config {
+            server_url: Some("http://team.example.com:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_mode(), SyncMode::LocalFirst);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_mode_explicit_mode_wins_over_default() {
+        clear_spelunk_env();
+        let cfg = Config {
+            server_url: Some("http://team.example.com:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_mode_no_server_env_forces_offline() {
+        clear_spelunk_env();
+        // Even an explicit cloud_first mode is overridden by the kill-switch.
+        let cfg = Config {
+            server_url: Some("http://team.example.com:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
+        assert_eq!(cfg.resolve_mode(), SyncMode::Offline);
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_mode_overrides_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "mode = \"offline\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_MODE", "cloud_first") };
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.mode, Some(SyncMode::CloudFirst));
+        unsafe { std::env::remove_var("SPELUNK_MODE") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_mode_invalid_is_hard_error() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_MODE", "sideways") };
+        let err = Config::load(Some(&config_path)).unwrap_err();
+        assert!(err.to_string().contains("SPELUNK_MODE"));
+        unsafe { std::env::remove_var("SPELUNK_MODE") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn config_toml_mode_parses() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "mode = \"local_first\"\n").unwrap();
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
     }
 
     // ── serde alias: memory_server_url → server_url ─────────────────────────

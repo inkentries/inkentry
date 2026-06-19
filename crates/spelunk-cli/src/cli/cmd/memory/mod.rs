@@ -32,8 +32,12 @@ pub enum MemoryCommand {
     Archive(MemoryArchiveArgs),
     /// Archive an entry and mark it as superseded by a newer entry
     Supersede(MemorySupersededArgs),
-    /// Push all local memory entries to the configured memory server
+    /// Push all local memory entries to the configured memory server (one-way)
     Push(MemoryPushArgs),
+    /// Pull new memory entries from the configured server into local memory.db
+    Pull(MemoryPullArgs),
+    /// Two-way sync: push local changes and pull remote changes (ADR-037)
+    Sync(MemorySyncArgs),
     /// Show how the team's understanding of a topic evolved over time
     Timeline(MemoryTimelineArgs),
     /// Show the relationship graph for a memory entry
@@ -230,7 +234,25 @@ pub struct MemoryPushArgs {
     /// Local memory.db to push from (default: same as --db)
     #[arg(long)]
     pub source: Option<std::path::PathBuf>,
-    /// Push archived entries too
+    /// Push archived entries too (propagates tombstones)
+    #[arg(long)]
+    pub include_archived: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MemoryPullArgs {
+    /// Reserved for future filters; pull currently fetches all entries since the
+    /// stored per-project watermark.
+    #[arg(long, hide = true)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MemorySyncArgs {
+    /// Local memory.db to sync (default: auto-detected memory.db)
+    #[arg(long)]
+    pub source: Option<std::path::PathBuf>,
+    /// Include archived entries in the push (propagates tombstones)
     #[arg(long)]
     pub include_archived: bool,
 }
@@ -338,6 +360,7 @@ mod search;
 mod show;
 mod since;
 mod supersede;
+pub mod sync;
 mod timeline;
 mod watch;
 
@@ -356,6 +379,8 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg, be).await,
         MemoryCommand::Supersede(a) => supersede::memory_supersede(a, &mem_path, &cfg, be).await,
         MemoryCommand::Push(a) => push::memory_push(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Pull(a) => sync::memory_pull(a, &mem_path, &cfg).await,
+        MemoryCommand::Sync(a) => sync::memory_sync(a, &mem_path, &cfg).await,
         MemoryCommand::Timeline(a) => timeline::memory_timeline(a, &mem_path, &cfg, be).await,
         MemoryCommand::Graph(a) => graph_cmd::memory_graph(a, &mem_path, &cfg, be).await,
         MemoryCommand::Since(a) => since::memory_since(a, &mem_path, &cfg, be).await,

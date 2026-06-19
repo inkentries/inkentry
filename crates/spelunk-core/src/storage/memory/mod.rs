@@ -6,6 +6,9 @@ use std::path::Path;
 mod edges;
 mod notes;
 mod search;
+mod sync;
+
+pub use sync::SyncRow;
 
 #[cfg(test)]
 mod tests;
@@ -118,6 +121,32 @@ impl MemoryStore {
         self.conn
             .execute_batch(include_str!("../../../migrations/015_memory_edges.sql"))
             .context("running memory edges migration")?;
+        // Migration 020 (ADR-037): UUID identity columns (`uuid`, `remote_id`).
+        // ALTER TABLE can't be IF NOT EXISTS; guard the duplicate-column case so
+        // re-opening an already-migrated store is a no-op. The unique indexes are
+        // CREATE … IF NOT EXISTS and safe to run unconditionally.
+        for stmt in [
+            "ALTER TABLE notes ADD COLUMN uuid TEXT",
+            "ALTER TABLE notes ADD COLUMN remote_id TEXT",
+        ] {
+            match self.conn.execute_batch(stmt) {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("duplicate column name") => {}
+                Err(e) => return Err(e).context("running memory uuid migration"),
+            }
+        }
+        self.conn
+            .execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_uuid \
+                 ON notes(uuid) WHERE uuid IS NOT NULL; \
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_remote_id \
+                 ON notes(remote_id) WHERE remote_id IS NOT NULL;",
+            )
+            .context("creating memory uuid indexes")?;
+        // Migration 021 (ADR-037): per-project sync watermark.
+        self.conn
+            .execute_batch(include_str!("../../../migrations/021_sync_state.sql"))
+            .context("running sync_state migration")?;
         Ok(())
     }
 }

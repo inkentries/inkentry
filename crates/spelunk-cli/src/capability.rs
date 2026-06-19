@@ -233,10 +233,26 @@ impl Tier {
 /// = one config), but unsuitable for long-running daemons that may use multiple
 /// configs — they would always see the tier determined by the first call.
 pub async fn get_tier(cfg: &Config) -> &'static Tier {
+    // ADR-037 D1: an *explicit* offline mode (config `mode = "offline"`,
+    // `SPELUNK_MODE=offline`, or the `SPELUNK_NO_SERVER=1` kill-switch) skips all
+    // server probes — the user has asked for a provable no-cloud run.
+    //
+    // The *defaulted* offline (no `server_url` and no explicit `mode`) must NOT
+    // skip probing: loopback auto-discovery is inference-only (it never owns
+    // memory, ADR-004) and is what gives a local-only project semantic search.
+    // Conflating the two would silently disable the loopback embedder.
+    let explicit_offline = spelunk_core::config::no_server_env_set()
+        || cfg.mode == Some(spelunk_core::config::SyncMode::Offline);
     let url = cfg.server_url.clone();
     let key = cfg.server_key.clone();
-    TIER.get_or_init(|| async move { probe(url.as_deref(), key.as_deref()).await })
-        .await
+    TIER.get_or_init(|| async move {
+        if explicit_offline {
+            tracing::debug!("sync mode is explicitly offline — skipping all server probes");
+            return Tier::Offline;
+        }
+        probe(url.as_deref(), key.as_deref()).await
+    })
+    .await
 }
 
 /// Remote-server probe timeout (explicit `server_url` in config/env).

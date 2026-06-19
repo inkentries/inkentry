@@ -74,8 +74,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Sync(args) => {
+            cfg.validate()?;
             let mem_path = config::resolve_db(None, &cfg.db_path).with_file_name("memory.db");
-            cli::cmd::memory_push(args, &mem_path, &cfg, None).await
+            cli::cmd::memory_sync(args, &mem_path, &cfg).await
         }
         Command::Server(args) => cli::cmd::server(args).await,
     }
