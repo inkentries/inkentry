@@ -93,8 +93,14 @@ impl MemoryStore {
         Ok(n > 0)
     }
 
-    /// Collect local notes to push, backfilling a fresh UUIDv7 on any that lack
-    /// one. Returns text-only rows (no vectors) ordered oldest-first.
+    /// Collect local notes that are candidates to push, backfilling a fresh
+    /// UUIDv7 on any that lack one. Returns text-only rows (no vectors) ordered
+    /// oldest-first.
+    ///
+    /// Per decision #183 the caller pushes only the rows `WHERE remote_id IS
+    /// NULL` (live entries not yet on the cloud), and tombstones archived rows
+    /// that *do* carry a `remote_id`. Both subsets are returned here; the caller
+    /// (`push_local`) partitions on `remote_id`/`archived`.
     ///
     /// `include_archived` mirrors the caller's flag; archived rows are still
     /// returned (as tombstones) when requested so deletes propagate (ADR-037 D2).
@@ -219,41 +225,23 @@ impl MemoryStore {
         Ok(id)
     }
 
-    /// Read the per-project pull watermark (ISO 8601), if stored.
-    pub fn last_synced(&self, project_id: &str) -> Result<Option<String>> {
-        let ts: Option<String> = self
+    /// The pull cursor: the max cloud `remote_id` already synced locally
+    /// (ADR-037 D2, decision #183).
+    ///
+    /// `remote_id` holds the cloud-minted UUIDv7 `id`. Because UUIDv7 strings
+    /// sort lexically the same as their byte/time order, `MAX(remote_id)` is the
+    /// newest cloud id we have, and the cloud `/memory/since?since_id=<this>`
+    /// returns everything strictly after it. This replaces the old timestamp
+    /// watermark, which was frail under local↔remote clock drift — the cursor is
+    /// now derived from synced rows, not wall-clock time, and needs no separate
+    /// `sync_state` cache table. Returns `None` when nothing has been synced yet
+    /// (a full catch-up).
+    pub fn max_remote_id(&self) -> Result<Option<String>> {
+        let cursor: Option<String> = self
             .conn
-            .query_row(
-                "SELECT last_synced FROM sync_state WHERE project_id = ?1",
-                rusqlite::params![project_id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT MAX(remote_id) FROM notes", [], |r| r.get(0))
             .optional()?
             .flatten();
-        Ok(ts)
-    }
-
-    /// Persist the per-project pull watermark (ISO 8601).
-    pub fn set_last_synced(&self, project_id: &str, watermark: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO sync_state (project_id, last_synced, updated_at) \
-             VALUES (?1, ?2, unixepoch()) \
-             ON CONFLICT(project_id) DO UPDATE SET \
-                 last_synced = excluded.last_synced, updated_at = unixepoch()",
-            rusqlite::params![project_id, watermark],
-        )?;
-        Ok(())
-    }
-
-    /// Persist the per-project push watermark (ISO 8601).
-    pub fn set_last_pushed(&self, project_id: &str, watermark: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO sync_state (project_id, last_pushed, updated_at) \
-             VALUES (?1, ?2, unixepoch()) \
-             ON CONFLICT(project_id) DO UPDATE SET \
-                 last_pushed = excluded.last_pushed, updated_at = unixepoch()",
-            rusqlite::params![project_id, watermark],
-        )?;
-        Ok(())
+        Ok(cursor)
     }
 }

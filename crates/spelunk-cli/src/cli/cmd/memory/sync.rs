@@ -1,15 +1,20 @@
 //! `spelunk sync` and `spelunk memory pull` — two-way local↔cloud memory sync
 //! (ADR-037 D2/D3).
 //!
-//! - `pull`: delta-pull from `GET /memory/since?t=<watermark>` and apply locally,
-//!   persisting a per-project `last_synced` watermark.
-//! - `sync`: push local-since-watermark via `POST /memory/batch` (batched, not N
-//!   single POSTs), then pull remote-since-watermark and apply both.
+//! - `pull`: delta-pull from `GET /memory/since?since_id=<cursor>` and apply
+//!   locally. The cursor is the max cloud `remote_id` already synced
+//!   (`MAX(remote_id)` over local notes), a UUIDv7 — not a wall-clock watermark
+//!   (decision #183), so it is immune to local↔remote clock drift.
+//! - `sync`: push local rows `WHERE remote_id IS NULL` via `POST /memory/batch`
+//!   (batched, not N single POSTs), then pull everything after the cursor and
+//!   apply both.
 //!
 //! Properties (ADR-037 + ADR-005):
 //! - **Idempotent.** Identity is the stable UUID; pushes carry it as the cloud
-//!   `external_id` and pulls reuse the cloud UUID as the local `uuid`, so
-//!   re-running never duplicates.
+//!   `external_id` and pulls record the cloud UUID as the local `remote_id` and
+//!   dedupe on it, so re-running never duplicates. Same-millisecond boundary
+//!   entries are harmless: the cursor comparison is strict (`>`) and pull
+//!   dedupes by `remote_id`, so a re-applied boundary row is a no-op.
 //! - **Keep-both / Add-Wins.** Pulled entries are added, never overwriting local
 //!   ones; semantic-dup detection is the server's job (it flags `contradicts`).
 //! - **Lifecycle propagation.** `supersedes` and archive/tombstone state travel
@@ -61,7 +66,7 @@ pub async fn memory_pull(
         .with_context(|| format!("opening local memory at {}", mem_path.display()))?;
     let client = CloudSyncClient::new(&base_url, &project_id, key.as_deref())?;
 
-    let pulled = pull_and_apply(&local, &client, &project_id).await?;
+    let pulled = pull_and_apply(&local, &client).await?;
     println!("Pull complete. Applied {pulled} new remote entries.");
     Ok(())
 }
@@ -83,12 +88,9 @@ pub async fn memory_sync(
 
     // ── Push local → cloud (batched, text-only, idempotent on UUID) ─────────
     let pushed = push_local(&local, &client, args.include_archived).await?;
-    // Record the push watermark (best-effort provenance; the pull watermark is
-    // the one that gates delta fetches).
-    local.set_last_pushed(&project_id, &now_iso())?;
 
-    // ── Pull cloud → local (delta since watermark, keep-both) ───────────────
-    let pulled = pull_and_apply(&local, &client, &project_id).await?;
+    // ── Pull cloud → local (delta after the UUID cursor, keep-both) ─────────
+    let pulled = pull_and_apply(&local, &client).await?;
 
     println!(
         "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
@@ -135,7 +137,14 @@ async fn push_local(
     let mut created = 0u32;
     let mut skipped = 0u32;
 
-    let live: Vec<&_> = rows.iter().filter(|r| !r.archived).collect();
+    // Push set (decision #183): live entries not yet on the cloud — i.e.
+    // `WHERE remote_id IS NULL`. Already-synced rows carry a `remote_id` and are
+    // skipped here (the cloud already has them; re-pushing would only earn a 207
+    // `skipped`). Archived rows are handled by the tombstone pass below.
+    let live: Vec<&_> = rows
+        .iter()
+        .filter(|r| !r.archived && r.remote_id.is_none())
+        .collect();
     // Map external_id (local uuid) → local_id so we can record the cloud-minted
     // id returned in the 207 result back onto the local row.
     for chunk in live.chunks(200) {
@@ -192,19 +201,18 @@ async fn push_local(
     })
 }
 
-/// Pull remote entries since the stored watermark and apply them idempotently.
-/// Returns the number of newly-inserted local rows. Advances the watermark to
-/// the newest pulled `created_at` only after a successful apply.
-async fn pull_and_apply(
-    local: &MemoryStore,
-    client: &CloudSyncClient,
-    project_id: &str,
-) -> Result<usize> {
-    let watermark = local.last_synced(project_id)?;
-    let entries = client.pull_since(watermark.as_deref()).await?;
+/// Pull remote entries after the UUID cursor and apply them idempotently.
+/// Returns the number of newly-inserted local rows.
+///
+/// The cursor is derived from the store itself — `MAX(remote_id)` over local
+/// notes (decision #183) — so there is no persisted watermark to advance: the
+/// next run re-derives the cursor from the rows just applied. This is what makes
+/// the pull immune to clock drift and trivially resumable.
+async fn pull_and_apply(local: &MemoryStore, client: &CloudSyncClient) -> Result<usize> {
+    let cursor = local.max_remote_id()?;
+    let entries = client.pull_since(cursor.as_deref()).await?;
 
     let mut applied = 0usize;
-    let mut newest: Option<String> = watermark;
     for e in &entries {
         let created_secs = parse_iso_to_secs(&e.created_at);
         let inserted = local.apply_remote_note(
@@ -219,15 +227,6 @@ async fn pull_and_apply(
         if inserted {
             applied += 1;
         }
-        // Track the max created_at string we have seen (ISO 8601 sorts
-        // lexically when normalised to UTC `Z`, which cloud-api emits).
-        if newest.as_deref().map(|w| e.created_at.as_str() > w) != Some(false) {
-            newest = Some(e.created_at.clone());
-        }
-    }
-
-    if let Some(w) = newest {
-        local.set_last_synced(project_id, &w)?;
     }
     Ok(applied)
 }
@@ -240,12 +239,6 @@ fn parse_iso_to_secs(s: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| crate::storage::now_secs())
-}
-
-/// Current time as an RFC 3339 / ISO 8601 UTC string (matches cloud-api's
-/// timestamp wire format).
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]

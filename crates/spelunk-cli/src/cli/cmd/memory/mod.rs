@@ -241,8 +241,8 @@ pub struct MemoryPushArgs {
 
 #[derive(Args, Debug)]
 pub struct MemoryPullArgs {
-    /// Reserved for future filters; pull currently fetches all entries since the
-    /// stored per-project watermark.
+    /// Reserved for future filters; pull currently fetches all entries after the
+    /// UUID cursor (`MAX(remote_id)` of locally-synced rows; decision #183).
     #[arg(long, hide = true)]
     pub all: bool,
 }

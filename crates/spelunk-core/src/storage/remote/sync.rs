@@ -3,14 +3,18 @@
 //! Wires the CLI's `sync` / `memory pull` commands to cloud-api primitives that
 //! already exist server-side but were previously unreachable from the CLI:
 //!
-//! - `GET  /v1/projects/{id}/memory/since?t=<watermark>` — delta pull.
-//! - `POST /v1/projects/{id}/memory/batch`               — batched delta push.
+//! - `GET  /v1/projects/{id}/memory/since?since_id=<cursor>` — delta pull.
+//! - `POST /v1/projects/{id}/memory/batch`                   — batched delta push.
+//!
+//! Pull cursor (decision #183): the cursor is the max cloud `remote_id` already
+//! synced locally (a UUIDv7), not a wall-clock watermark — clock-drift-free.
+//! The server returns entries whose `id` sorts strictly after it.
 //!
 //! Identity & idempotency: each pushed entry carries its stable UUID as the
 //! cloud `external_id`, so the server's batch endpoint dedupes by identity
 //! (re-running a sync skips already-present entries — 207 `skipped`). Pulled
-//! entries carry the cloud `id` (a UUID), which we use as the local cross-store
-//! `uuid` so a subsequent push of the same entry is a no-op.
+//! entries carry the cloud `id` (a UUID), which we record as the local
+//! `remote_id` and dedupe on, so a subsequent push of the same entry is a no-op.
 //!
 //! Embedding conformance (ADR-010/ADR-020, ADR-037 D3): pushes are **text only**
 //! — the `vector` field is always omitted and the server backfills with its
@@ -188,13 +192,18 @@ impl CloudSyncClient {
         anyhow::bail!("DELETE /memory/{remote_id} failed ({status}): {text}")
     }
 
-    /// Pull entries created at/after `watermark` (ISO 8601). When `watermark`
-    /// is `None`, pulls from the Unix epoch (a full catch-up).
-    pub async fn pull_since(&self, watermark: Option<&str>) -> Result<Vec<RemoteEntry>> {
-        let t = watermark.unwrap_or("1970-01-01T00:00:00Z");
+    /// Pull entries after the UUIDv7 cursor `since_id` (the max cloud
+    /// `remote_id` already synced locally — decision #183). When `since_id` is
+    /// `None` (nothing synced yet) this is a full catch-up: the
+    /// nil UUID `00000000-…` sorts before every UUIDv7, so it returns all
+    /// entries.
+    pub async fn pull_since(&self, since_id: Option<&str>) -> Result<Vec<RemoteEntry>> {
+        // The all-zero UUID precedes every UUIDv7 in `id > $cursor` order, so it
+        // is the natural "from the beginning" cursor for a first sync.
+        let cursor = since_id.unwrap_or("00000000-0000-0000-0000-000000000000");
         let resp = self
             .authed(self.client.get(self.url("memory/since")))
-            .query(&[("t", t)])
+            .query(&[("since_id", cursor)])
             .send()
             .await
             .context("GET /memory/since")?
@@ -279,14 +288,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pull_since_passes_watermark_and_parses_entries() {
+    async fn pull_since_passes_uuid_cursor_and_parses_entries() {
         let server = MockServer::start().await;
+        // The cursor must travel as `since_id` (a UUIDv7), not a timestamp `t`.
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
-            .and(query_param("t", "2026-06-19T00:00:00Z"))
+            .and(query_param(
+                "since_id",
+                "01890000-0000-7000-8000-000000000000",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "entries": [{
-                    "id": "cloud-1", "kind": "decision", "title": "Remote",
+                    "id": "01890000-0000-7000-8000-000000000001",
+                    "kind": "decision", "title": "Remote",
                     "body": "body", "created_at": "2026-06-19T01:00:00Z"
                 }],
                 "count": 1
@@ -296,12 +310,34 @@ mod tests {
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
         let entries = client
-            .pull_since(Some("2026-06-19T00:00:00Z"))
+            .pull_since(Some("01890000-0000-7000-8000-000000000000"))
             .await
             .unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "cloud-1");
+        assert_eq!(entries[0].id, "01890000-0000-7000-8000-000000000001");
         assert!(!entries[0].is_archived());
+    }
+
+    #[tokio::test]
+    async fn pull_since_none_uses_nil_uuid_cursor() {
+        let server = MockServer::start().await;
+        // A first sync (no cursor yet) must send the all-zero UUID, which sorts
+        // before every UUIDv7 → full catch-up.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param(
+                "since_id",
+                "00000000-0000-0000-0000-000000000000",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let entries = client.pull_since(None).await.unwrap();
+        assert!(entries.is_empty());
     }
 
     #[tokio::test]

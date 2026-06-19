@@ -149,7 +149,7 @@ fn add_edge_duplicate_silently_ignored() {
     );
 }
 
-// ── ADR-037 D2: UUID identity + watermark + idempotent apply ─────────────────
+// ── ADR-037 D2: UUID identity + cursor + idempotent apply ────────────────────
 
 #[test]
 fn ensure_uuid_backfills_and_is_idempotent() {
@@ -258,32 +258,37 @@ fn apply_remote_note_tombstone_archives_existing() {
 }
 
 #[test]
-fn watermark_round_trips_per_project() {
+fn max_remote_id_is_the_pull_cursor() {
     let store = open_store();
-    assert_eq!(store.last_synced("proj-a").unwrap(), None);
 
-    store
-        .set_last_synced("proj-a", "2026-06-19T00:00:00Z")
-        .unwrap();
-    store
-        .set_last_synced("proj-b", "2026-06-18T00:00:00Z")
-        .unwrap();
-    assert_eq!(
-        store.last_synced("proj-a").unwrap().as_deref(),
-        Some("2026-06-19T00:00:00Z")
-    );
-    assert_eq!(
-        store.last_synced("proj-b").unwrap().as_deref(),
-        Some("2026-06-18T00:00:00Z")
-    );
+    // Nothing synced yet → no cursor (caller does a full catch-up).
+    assert_eq!(store.max_remote_id().unwrap(), None);
 
-    // Upsert overwrites in place.
-    store
-        .set_last_synced("proj-a", "2026-06-20T00:00:00Z")
+    // Record a few cloud ids. UUIDv7 strings sort lexically == time order, so
+    // MAX() returns the newest one regardless of insertion order.
+    let a = store
+        .add_note("note", "A", "b", &[], &[], None, None)
         .unwrap();
+    let b = store
+        .add_note("note", "B", "b", &[], &[], None, None)
+        .unwrap();
+    let c = store
+        .add_note("note", "C", "b", &[], &[], None, None)
+        .unwrap();
+    store
+        .set_remote_id(b, "01890000-0000-7000-8000-000000000002")
+        .unwrap();
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-000000000001")
+        .unwrap();
+    store
+        .set_remote_id(c, "01890000-0000-7000-8000-000000000003")
+        .unwrap();
+
     assert_eq!(
-        store.last_synced("proj-a").unwrap().as_deref(),
-        Some("2026-06-20T00:00:00Z")
+        store.max_remote_id().unwrap().as_deref(),
+        Some("01890000-0000-7000-8000-000000000003"),
+        "cursor must be the max (newest) remote_id"
     );
 }
 

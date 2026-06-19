@@ -143,10 +143,10 @@ impl MemoryStore {
                  ON notes(remote_id) WHERE remote_id IS NOT NULL;",
             )
             .context("creating memory uuid indexes")?;
-        // Migration 021 (ADR-037): per-project sync watermark.
-        self.conn
-            .execute_batch(include_str!("../../../migrations/021_sync_state.sql"))
-            .context("running sync_state migration")?;
+        // No sync-state watermark table (decision #183): the pull cursor is
+        // derived from `MAX(remote_id)` over `notes`, so there is no separate
+        // watermark to persist. The unique `idx_notes_remote_id` above is what
+        // makes that cursor lookup and the `remote_id` dedupe cheap.
         Ok(())
     }
 }
