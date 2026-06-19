@@ -15,7 +15,7 @@ pub use cmd::init::InitArgs;
 pub use cmd::link::{LinkArgs, UnlinkArgs};
 pub use cmd::links::LinksArgs;
 pub use cmd::memory::MemoryArgs;
-pub use cmd::memory::MemoryPushArgs as SyncArgs;
+pub use cmd::memory::MemorySyncArgs as SyncArgs;
 pub use cmd::misc::ChunksArgs;
 pub use cmd::plumbing::PlumbingArgs;
 pub use cmd::search::SearchArgs;
@@ -70,7 +70,7 @@ pub enum Command {
     Links(LinksArgs),
     /// Low-level plumbing commands for agents and scripts (JSONL output)
     Plumbing(PlumbingArgs),
-    /// Sync local memory entries to the configured server (alias for `memory push`)
+    /// Two-way sync of local memory with the configured server (alias for `memory sync`)
     Sync(SyncArgs),
     /// Manage the local spelunk-server daemon (start / stop / status / logs)
     Server(ServerArgs),

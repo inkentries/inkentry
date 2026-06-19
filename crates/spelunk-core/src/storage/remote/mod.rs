@@ -7,7 +7,9 @@ use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note};
 use crate::embeddings::blob_to_vec;
 
+mod sync;
 mod wire_types;
+pub use sync::{BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry};
 pub use wire_types::ConflictInfo;
 use wire_types::*;
 
@@ -39,7 +41,7 @@ const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
 /// Percent-encode a `project_id` slug for safe use as a single URL path segment.
 ///
 /// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
-fn encode_project_id(project_id: &str) -> String {
+pub(super) fn encode_project_id(project_id: &str) -> String {
     utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
 }
 
