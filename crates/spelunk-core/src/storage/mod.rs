@@ -273,6 +273,98 @@ mod backend_selection_tests {
         );
     }
 
+    /// ADR-005 wiring (D6 happy path): when `project_id` is a *slug* and the
+    /// resolved mode is CloudFirst against a non-loopback `server_url`,
+    /// `open_memory_backend` must resolve the slug→UUID via `GET /v1/projects`
+    /// and construct a `RemoteMemoryBackend` keyed by the **resolved UUID**, not
+    /// the slug. cloud-api routes are `Path<Uuid>`, so a slug-keyed backend would
+    /// 422 on every call.
+    ///
+    /// The boxed `MemoryBackend` exposes no downcast seam, so we prove the
+    /// resolved key indirectly: drive a backend call (`count()` → `GET
+    /// .../stats`) through a mock server and assert it arrived at the
+    /// resolved-UUID path. The slug never appears on the wire.
+    ///
+    /// Non-loopback seam: wiremock binds to `127.0.0.1`, which
+    /// `is_loopback_url` would (correctly) treat as loopback and short-circuit
+    /// resolution (D6). We address the same listener via `0.0.0.0:<port>`, which
+    /// the OS routes to the loopback listener but `is_loopback_url` classifies as
+    /// non-loopback — so the cloud-routing branch is exercised without a live
+    /// network or DNS.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn cloud_first_slug_resolves_to_uuid_in_backend() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        clear_env();
+        unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+        register_sqlite_vec();
+
+        const RESOLVED_UUID: &str = "018f4e2a-1234-7abc-8def-0000000000aa";
+
+        let server = MockServer::start().await;
+        // Slug → UUID resolution.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "projects": [ { "id": RESOLVED_UUID, "slug": "spelunk" } ]
+            })))
+            .mount(&server)
+            .await;
+        // The backend's `count()` must hit the *UUID*-scoped stats path. If the
+        // backend were (wrongly) keyed by the slug, this mock would never match
+        // and `count()` would 404 → error.
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/projects/{RESOLVED_UUID}/stats")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "count": 7 })),
+            )
+            .mount(&server)
+            .await;
+
+        // Rewrite the loopback `127.0.0.1` host to the non-loopback `0.0.0.0`
+        // alias so the cloud-routing (non-loopback) branch is taken.
+        let url = server.uri().replace("127.0.0.1", "0.0.0.0");
+        assert!(
+            !crate::config::is_loopback_url(&url),
+            "test seam precondition: {url} must be classified non-loopback"
+        );
+
+        // Cache lives in mem_path.parent(); use a temp dir as the .spelunk dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp.path().join("memory.db");
+
+        let cfg = Config {
+            server_url: Some(url),
+            project_id: Some("spelunk".to_string()),
+            server_key: Some("k".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            ..Default::default()
+        };
+
+        let be = open_memory_backend(&cfg, &mem_path, None).await.unwrap();
+        assert_eq!(be.backend_kind(), "remote");
+
+        // Drive a call: it succeeds only if the backend is keyed by the resolved
+        // UUID (the only stats path the mock serves).
+        let count = be.count().await.expect(
+            "count() must reach the UUID-scoped stats endpoint; a slug-keyed \
+             backend would miss the mock and fail",
+        );
+        assert_eq!(count, 7);
+
+        // The resolution result must also have been cached next to memory.db
+        // (the .spelunk dir is mem_path.parent()). Read the lock file directly
+        // rather than reaching into private resolver internals.
+        let lock = std::fs::read_to_string(tmp.path().join("cloud-project-id.lock"))
+            .expect("cloud-project-id.lock should have been written next to memory.db");
+        assert!(
+            lock.contains("spelunk") && lock.contains(RESOLVED_UUID),
+            "lock file must record slug→UUID; got: {lock}"
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn no_server_kill_switch_forces_local() {

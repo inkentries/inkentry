@@ -301,6 +301,105 @@ async fn resolve_slug_not_found_errors() {
     let msg = err.to_string();
     assert!(msg.contains("missing"), "got: {msg}");
     assert!(msg.contains("not found"), "got: {msg}");
+    // D2/D6: the error must be *actionable* — point the user at the recovery
+    // steps (list projects / inspect config), not just say "not found".
+    assert!(
+        msg.contains("spelunk projects list") && msg.contains("config.toml"),
+        "slug-not-found error must include the actionable recovery hint; got: {msg}"
+    );
+    // A "not found" must NOT have poisoned the cache with a bogus entry.
+    assert!(
+        !tmp.path().join(CLOUD_PROJECT_CACHE_FILE).exists(),
+        "no cache file should be written when the slug is not found"
+    );
+}
+
+/// D6: GET /v1/projects returning a 401 (auth) surfaces a fatal error mentioning
+/// the URL/status, and does not write a cache entry.
+#[tokio::test]
+#[serial_test::serial]
+async fn resolve_surfaces_401_error() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+    let tmp = TempDir::new().unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+
+    let err = resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("bad"), tmp.path())
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("/v1/projects"),
+        "error should name the endpoint; got: {msg}"
+    );
+    assert!(
+        msg.contains("401") || msg.to_lowercase().contains("unauthorized"),
+        "error should surface the 401 status; got: {msg}"
+    );
+    assert!(
+        !tmp.path().join(CLOUD_PROJECT_CACHE_FILE).exists(),
+        "no cache should be written on an error response"
+    );
+}
+
+/// D6: GET /v1/projects returning a 5xx surfaces a fatal error with the status.
+#[tokio::test]
+#[serial_test::serial]
+async fn resolve_surfaces_5xx_error() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+    let tmp = TempDir::new().unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    let err = resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("k"), tmp.path())
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("503") || msg.to_lowercase().contains("server error"),
+        "error should surface the 5xx status; got: {msg}"
+    );
+}
+
+/// D6: a connection failure (server unreachable) surfaces a fatal error that
+/// names the endpoint being resolved, rather than panicking or hanging.
+#[tokio::test]
+#[serial_test::serial]
+async fn resolve_surfaces_connection_error() {
+    unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+    let tmp = TempDir::new().unwrap();
+
+    // Bind then immediately drop a listener to obtain a port nothing listens on.
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let dead_url = format!("http://127.0.0.1:{port}");
+
+    let err = resolve_cloud_project_uuid_inner("spelunk", &dead_url, Some("k"), tmp.path())
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("/v1/projects") && msg.contains("spelunk"),
+        "connection error should name the endpoint and slug being resolved; got: {msg}"
+    );
 }
 
 /// SPELUNK_NO_SLUG_CACHE=1 forces a fresh lookup, ignoring an existing cache.
