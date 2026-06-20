@@ -335,6 +335,13 @@ pub struct Config {
     /// primary SQLite write is unaffected.
     #[serde(default = "Config::default_store_in_git_notes")]
     pub store_in_git_notes: bool,
+
+    /// API key for spelunk.cloud, written by `spelunk login`.
+    ///
+    /// Format: `sk-sp-…`.  Set in `~/.config/spelunk/config.toml`; never
+    /// committed to project-level `.spelunk/config.toml`.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 impl Config {
@@ -385,6 +392,7 @@ impl Default for Config {
             specs_dir: Self::default_specs_dir(),
             llm_context_length: Self::default_llm_context_length(),
             store_in_git_notes: Self::default_store_in_git_notes(),
+            api_key: None,
         }
     }
 }
@@ -530,6 +538,114 @@ impl Config {
             SyncMode::Offline
         }
     }
+}
+
+/// Write (or update) `api_key` in `~/.config/spelunk/config.toml`.
+///
+/// Uses a line-level read-modify-write so that other keys in the file are
+/// preserved.  The file is created (with the `api_key` line) if absent.
+///
+/// The value is **not** shell-quoted before writing — it is written as a bare
+/// TOML string with double quotes, e.g. `api_key = "sk-sp-…"`.
+pub fn save_api_key(key: &str) -> Result<()> {
+    save_api_key_to(key, &spelunk_config_dir().join("config.toml"))
+}
+
+/// Same as [`save_api_key`] but writes to an explicit path (useful in tests).
+pub fn save_api_key_to(key: &str, config_path: &Path) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating config dir {}", parent.display()))?;
+    }
+
+    let existing = if config_path.exists() {
+        std::fs::read_to_string(config_path)
+            .with_context(|| format!("reading {}", config_path.display()))?
+    } else {
+        String::new()
+    };
+
+    let new_line = format!("api_key = {}\n", toml_quote(key));
+    let updated = upsert_toml_line(&existing, "api_key", &new_line);
+
+    std::fs::write(config_path, updated)
+        .with_context(|| format!("writing {}", config_path.display()))?;
+    Ok(())
+}
+
+/// Remove `api_key` from `~/.config/spelunk/config.toml`.
+///
+/// No-op if the file does not exist or the key is absent.  Other keys are
+/// preserved.
+pub fn remove_api_key() -> Result<()> {
+    remove_api_key_from(&spelunk_config_dir().join("config.toml"))
+}
+
+/// Same as [`remove_api_key`] but operates on an explicit path (useful in tests).
+pub fn remove_api_key_from(config_path: &Path) -> Result<()> {
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let existing = std::fs::read_to_string(config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
+
+    let updated: String = existing
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Keep every line that is NOT an `api_key = …` assignment.
+            // strip_prefix avoids a raw byte-index slice and handles the
+            // "api_key" prefix unambiguously.
+            let after_key = trimmed.strip_prefix("api_key");
+            !matches!(after_key, Some(rest) if rest.trim_start().starts_with('='))
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    std::fs::write(config_path, updated)
+        .with_context(|| format!("writing {}", config_path.display()))?;
+    Ok(())
+}
+
+/// Wrap a string value in TOML double-quote syntax, escaping `\` and `"`.
+fn toml_quote(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// Insert or replace the line that sets `key` in a TOML file body.
+///
+/// Only handles top-level bare-key assignments (`key = …`).  Table sections
+/// are left untouched — the function scans for a line starting with `key`
+/// followed by optional whitespace and `=`.  If found, it is replaced; if not
+/// found, the new line is appended.
+fn upsert_toml_line(content: &str, key: &str, new_line: &str) -> String {
+    let mut found = false;
+    let mut result: String = content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            // Match `key = …` at the top level (no table-section header).
+            let is_match = trimmed
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='));
+            if is_match {
+                found = true;
+                new_line.to_string()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+
+    if !found {
+        // Ensure there is a trailing newline before appending.
+        if !result.ends_with('\n') && !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(new_line);
+    }
+    result
 }
 
 /// Returns `true` when `SPELUNK_NO_SERVER` is set to a truthy value.

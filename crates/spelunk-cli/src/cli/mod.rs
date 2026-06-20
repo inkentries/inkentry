@@ -14,6 +14,7 @@ pub use cmd::index::IndexArgs;
 pub use cmd::init::InitArgs;
 pub use cmd::link::{LinkArgs, UnlinkArgs};
 pub use cmd::links::LinksArgs;
+pub use cmd::login::LoginArgs;
 pub use cmd::memory::MemoryArgs;
 pub use cmd::memory::MemorySyncArgs as SyncArgs;
 pub use cmd::misc::ChunksArgs;
@@ -74,4 +75,8 @@ pub enum Command {
     Sync(SyncArgs),
     /// Manage the local spelunk-server daemon (start / stop / status / logs)
     Server(ServerArgs),
+    /// Authenticate with spelunk.cloud (OAuth 2.0 Device Authorization)
+    Login(LoginArgs),
+    /// Remove stored spelunk.cloud credentials
+    Logout,
 }
