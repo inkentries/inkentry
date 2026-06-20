@@ -81,7 +81,7 @@ pub(super) async fn memory_add(
         .valid_at
         .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
 
-    let backend = open_memory_backend(cfg, mem_path, backend_override)?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let id = backend
         .add(NoteInput {
             kind: args.kind.clone(),

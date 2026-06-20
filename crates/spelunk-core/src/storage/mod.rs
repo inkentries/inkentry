@@ -26,7 +26,7 @@ pub use memory::{MemoryEdge, MemoryStore, SyncRow};
 pub use note_record::{NoteRecord, now_millis, now_secs};
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry,
-    RemoteMemoryBackend,
+    RemoteMemoryBackend, resolve_cloud_project_uuid,
 };
 pub use snapshots::{Snapshot, SymbolVersion};
 pub use specs::{SpecRecord, StaleSpec};
@@ -84,7 +84,7 @@ pub(super) fn escape_like(s: &str) -> String {
 /// auto-discovered loopback server is inference-only and routes through
 /// `cfg.inference_url` instead (see `Tier::effective_config`), so it never
 /// diverts memory CRUD away from the project's local `memory.db`.
-pub fn open_memory_backend(
+pub async fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
     backend_override: Option<&str>,
@@ -106,6 +106,31 @@ pub fn open_memory_backend(
                  so memory operations can be keyed to a project on the server."
             )
         })?;
+        // ADR-005: cloud-api routes are scoped by `/v1/projects/{uuid}` (the
+        // `{project_id}` path param is a `Path<Uuid>`), so a human slug must be
+        // resolved to its UUID before it is used as the backend's project key.
+        //
+        // - D5: a `project_id` that is already a UUID is used directly (no lookup).
+        // - D6: an unset/loopback `server_url` is the OSS spelunk-server path,
+        //   which accepts arbitrary slugs as the project key — no resolution.
+        //   (This branch is only reached when `server_url` is set, but we still
+        //   guard on loopback so a loopback team server keeps using the slug.)
+        let project_id =
+            if crate::config::looks_like_uuid(&project_id) || crate::config::is_loopback_url(url) {
+                project_id
+            } else {
+                // The cache file lives next to `memory.db`/`config.toml`, i.e. the
+                // project's `.spelunk/` directory. `mem_path` is `<.spelunk>/memory.db`.
+                let spelunk_dir = mem_path.parent().unwrap_or(mem_path);
+                let uuid = remote::resolve_cloud_project_uuid(
+                    &project_id,
+                    url,
+                    cfg.server_key.as_deref(),
+                    spelunk_dir,
+                )
+                .await?;
+                uuid.to_string()
+            };
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
@@ -187,9 +212,9 @@ mod backend_selection_tests {
         unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn offline_mode_routes_local_even_with_server_url() {
+    async fn offline_mode_routes_local_even_with_server_url() {
         clear_env();
         register_sqlite_vec();
         let cfg = Config {
@@ -198,7 +223,9 @@ mod backend_selection_tests {
             mode: Some(SyncMode::Offline),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "sqlite",
@@ -206,9 +233,9 @@ mod backend_selection_tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn local_first_mode_routes_local() {
+    async fn local_first_mode_routes_local() {
         clear_env();
         register_sqlite_vec();
         let cfg = Config {
@@ -217,21 +244,28 @@ mod backend_selection_tests {
             mode: Some(SyncMode::LocalFirst),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(be.backend_kind(), "sqlite");
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial]
-    fn cloud_first_mode_routes_remote() {
+    async fn cloud_first_mode_routes_remote() {
         clear_env();
+        // ADR-005 D5: a `project_id` that is already a UUID is used directly,
+        // so the remote backend is constructed without any slug→UUID lookup
+        // (no network call against the unreachable team.example.com host).
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
-            project_id: Some("team/proj".to_string()),
+            project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "remote",
@@ -239,9 +273,101 @@ mod backend_selection_tests {
         );
     }
 
-    #[test]
+    /// ADR-005 wiring (D6 happy path): when `project_id` is a *slug* and the
+    /// resolved mode is CloudFirst against a non-loopback `server_url`,
+    /// `open_memory_backend` must resolve the slug→UUID via `GET /v1/projects`
+    /// and construct a `RemoteMemoryBackend` keyed by the **resolved UUID**, not
+    /// the slug. cloud-api routes are `Path<Uuid>`, so a slug-keyed backend would
+    /// 422 on every call.
+    ///
+    /// The boxed `MemoryBackend` exposes no downcast seam, so we prove the
+    /// resolved key indirectly: drive a backend call (`count()` → `GET
+    /// .../stats`) through a mock server and assert it arrived at the
+    /// resolved-UUID path. The slug never appears on the wire.
+    ///
+    /// Non-loopback seam: wiremock binds to `127.0.0.1`, which
+    /// `is_loopback_url` would (correctly) treat as loopback and short-circuit
+    /// resolution (D6). We address the same listener via `0.0.0.0:<port>`, which
+    /// the OS routes to the loopback listener but `is_loopback_url` classifies as
+    /// non-loopback — so the cloud-routing branch is exercised without a live
+    /// network or DNS.
+    #[tokio::test]
     #[serial_test::serial]
-    fn no_server_kill_switch_forces_local() {
+    async fn cloud_first_slug_resolves_to_uuid_in_backend() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        clear_env();
+        unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+        register_sqlite_vec();
+
+        const RESOLVED_UUID: &str = "018f4e2a-1234-7abc-8def-0000000000aa";
+
+        let server = MockServer::start().await;
+        // Slug → UUID resolution.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "projects": [ { "id": RESOLVED_UUID, "slug": "spelunk" } ]
+            })))
+            .mount(&server)
+            .await;
+        // The backend's `count()` must hit the *UUID*-scoped stats path. If the
+        // backend were (wrongly) keyed by the slug, this mock would never match
+        // and `count()` would 404 → error.
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/projects/{RESOLVED_UUID}/stats")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "count": 7 })),
+            )
+            .mount(&server)
+            .await;
+
+        // Rewrite the loopback `127.0.0.1` host to the non-loopback `0.0.0.0`
+        // alias so the cloud-routing (non-loopback) branch is taken.
+        let url = server.uri().replace("127.0.0.1", "0.0.0.0");
+        assert!(
+            !crate::config::is_loopback_url(&url),
+            "test seam precondition: {url} must be classified non-loopback"
+        );
+
+        // Cache lives in mem_path.parent(); use a temp dir as the .spelunk dir.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp.path().join("memory.db");
+
+        let cfg = Config {
+            server_url: Some(url),
+            project_id: Some("spelunk".to_string()),
+            server_key: Some("k".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            ..Default::default()
+        };
+
+        let be = open_memory_backend(&cfg, &mem_path, None).await.unwrap();
+        assert_eq!(be.backend_kind(), "remote");
+
+        // Drive a call: it succeeds only if the backend is keyed by the resolved
+        // UUID (the only stats path the mock serves).
+        let count = be.count().await.expect(
+            "count() must reach the UUID-scoped stats endpoint; a slug-keyed \
+             backend would miss the mock and fail",
+        );
+        assert_eq!(count, 7);
+
+        // The resolution result must also have been cached next to memory.db
+        // (the .spelunk dir is mem_path.parent()). Read the lock file directly
+        // rather than reaching into private resolver internals.
+        let lock = std::fs::read_to_string(tmp.path().join("cloud-project-id.lock"))
+            .expect("cloud-project-id.lock should have been written next to memory.db");
+        assert!(
+            lock.contains("spelunk") && lock.contains(RESOLVED_UUID),
+            "lock file must record slug→UUID; got: {lock}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn no_server_kill_switch_forces_local() {
         register_sqlite_vec();
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -250,7 +376,9 @@ mod backend_selection_tests {
             ..Default::default()
         };
         unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
-        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None).unwrap();
+        let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .unwrap();
         assert_eq!(
             be.backend_kind(),
             "sqlite",

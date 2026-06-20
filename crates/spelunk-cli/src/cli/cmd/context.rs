@@ -95,7 +95,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         "git-notes" => Some("git-notes"),
         _ => None,
     };
-    let backend = open_memory_backend(&cfg, &mem_path, be)?;
+    let backend = open_memory_backend(&cfg, &mem_path, be).await?;
 
     let mut sections = collect_sections(
         &*backend,
