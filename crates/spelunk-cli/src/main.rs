@@ -79,5 +79,7 @@ async fn main() -> Result<()> {
             cli::cmd::memory_sync(args, &mem_path, &cfg).await
         }
         Command::Server(args) => cli::cmd::server(args).await,
+        Command::Login(args) => cli::cmd::login(args).await,
+        Command::Logout => cli::cmd::logout().await,
     }
 }
