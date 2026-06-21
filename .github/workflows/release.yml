@@ -32,7 +32,7 @@ jobs:
             features: rich-formats
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         run: |
@@ -101,7 +101,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download x86_64 Linux artifact
         uses: actions/download-artifact@v8
@@ -157,7 +157,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -190,7 +190,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Read sha256 digests from the GitHub release
         env:
@@ -221,7 +221,7 @@ jobs:
           echo "VER=${VER}"                                >> "$GITHUB_ENV"
 
       - name: Checkout homebrew-spelunk tap
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: spelunk-cloud/homebrew-spelunk
           path: tap
