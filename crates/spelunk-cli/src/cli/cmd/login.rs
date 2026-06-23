@@ -6,7 +6,7 @@
 //!    verification_uri_complete?, expires_in, interval }`
 //! 2. Print the verification URL and user code for the operator.
 //! 3. Poll POST /v1/auth/device/token every `interval` seconds until:
-//!    - 200 OK  →  parse { api_key }  →  write to config  →  print "Login successful."
+//!    - 200 OK  →  parse { api_key }  →  save as `server_key`  →  print "Login successful."
 //!    - 400 authorization_pending  →  keep polling (show progress dot)
 //!    - 400 slow_down              →  increase interval by 5 s (RFC 8628 §3.5)
 //!    - 400 expired_token          →  exit 1 with timeout message
@@ -110,11 +110,11 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         let result = poll_token(&client, cloud_url, &device.device_code).await;
 
         match result {
-            PollOutcome::Success(api_key) => {
+            PollOutcome::Success(token) => {
                 // Write to config before printing the success message so that a
                 // write error surfaces before the user thinks they are logged in.
-                config::save_api_key(&api_key)
-                    .context("saving api_key to ~/.config/spelunk/config.toml")?;
+                config::save_server_key(&token)
+                    .context("saving server_key to ~/.config/spelunk/config.toml")?;
                 println!("\nLogin successful.");
                 return Ok(());
             }
@@ -341,27 +341,27 @@ mod tests {
         assert_eq!(device.user_code, "ABCD-EFGH");
     }
 
-    /// save_api_key_to creates the file and writes the key.
+    /// save_server_key_to creates the file and writes the key.
     #[test]
-    fn save_api_key_creates_file() {
+    fn save_server_key_creates_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        config::save_api_key_to("sk-sp-test", &path).unwrap();
+        config::save_server_key_to("sk-sp-test", &path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("api_key"), "should contain api_key");
+        assert!(contents.contains("server_key"), "should contain server_key");
         assert!(
             contents.contains("sk-sp-test"),
             "should contain the key value"
         );
     }
 
-    /// save_api_key_to preserves existing keys.
+    /// save_server_key_to preserves existing keys.
     #[test]
-    fn save_api_key_preserves_other_keys() {
+    fn save_server_key_preserves_other_keys() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_url = \"http://localhost:7777\"\n").unwrap();
-        config::save_api_key_to("sk-sp-test", &path).unwrap();
+        config::save_server_key_to("sk-sp-test", &path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(
             contents.contains("server_url"),
@@ -373,43 +373,46 @@ mod tests {
         );
     }
 
-    /// save_api_key_to replaces an existing api_key entry.
+    /// save_server_key_to replaces an existing server_key entry.
     #[test]
-    fn save_api_key_replaces_existing() {
+    fn save_server_key_replaces_existing() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "api_key = \"sk-sp-old\"\n").unwrap();
-        config::save_api_key_to("sk-sp-new", &path).unwrap();
+        std::fs::write(&path, "server_key = \"sk-sp-old\"\n").unwrap();
+        config::save_server_key_to("sk-sp-new", &path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(!contents.contains("sk-sp-old"), "old key should be gone");
         assert!(contents.contains("sk-sp-new"), "new key should be present");
     }
 
-    /// remove_api_key_from removes the api_key line.
+    /// remove_server_key_from removes the server_key line.
     #[test]
-    fn remove_api_key_removes_line() {
+    fn remove_server_key_removes_line() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "server_url = \"http://localhost:7777\"\napi_key = \"sk-sp-test\"\n",
+            "server_url = \"http://localhost:7777\"\nserver_key = \"sk-sp-test\"\n",
         )
         .unwrap();
-        config::remove_api_key_from(&path).unwrap();
+        config::remove_server_key_from(&path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(!contents.contains("api_key"), "api_key should be removed");
+        assert!(
+            !contents.contains("server_key"),
+            "server_key should be removed"
+        );
         assert!(
             contents.contains("server_url"),
             "server_url should still be present"
         );
     }
 
-    /// remove_api_key_from is a no-op when the file does not exist.
+    /// remove_server_key_from is a no-op when the file does not exist.
     #[test]
-    fn remove_api_key_no_op_when_file_missing() {
+    fn remove_server_key_no_op_when_file_missing() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         // Must not error even when file is absent.
-        config::remove_api_key_from(&path).unwrap();
+        config::remove_server_key_from(&path).unwrap();
     }
 }
