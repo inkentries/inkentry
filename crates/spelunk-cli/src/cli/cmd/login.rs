@@ -76,22 +76,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         .context("building HTTP client")?;
 
     // ── Step 1: initiate device authorization ─────────────────────────────────
-    let device_resp = client
-        .post(format!("{cloud_url}/v1/auth/device"))
-        .send()
-        .await
-        .context("POST /v1/auth/device failed")?;
-
-    if !device_resp.status().is_success() {
-        let status = device_resp.status();
-        let body = device_resp.text().await.unwrap_or_default();
-        anyhow::bail!("Device authorization request failed ({status}): {body}");
-    }
-
-    let device: DeviceCodeResponse = device_resp
-        .json()
-        .await
-        .context("parsing device authorization response")?;
+    let device = initiate_device(&client, cloud_url).await?;
 
     // ── Step 2: prompt the user ───────────────────────────────────────────────
     println!();
@@ -176,6 +161,48 @@ pub async fn login(args: LoginArgs) -> Result<()> {
     }
 }
 
+// ── Step 1: device authorization initiation ───────────────────────────────────
+
+/// `POST /v1/auth/device` to start the device-authorization grant.
+///
+/// The request **must** carry a JSON body so reqwest sets `Content-Length` +
+/// `Content-Type`: a bodyless POST is rejected with `411 Length Required` by
+/// Google Front End (Cloud Run's fronting proxy) before it ever reaches
+/// cloud-api. The server treats the body — and `client_hint` within it — as
+/// optional, but uses the hint to label the approval page and name the issued
+/// key, so we send the machine hostname when we can resolve it.
+async fn initiate_device(client: &reqwest::Client, cloud_url: &str) -> Result<DeviceCodeResponse> {
+    let resp = client
+        .post(format!("{cloud_url}/v1/auth/device"))
+        .json(&device_init_body())
+        .send()
+        .await
+        .context("POST /v1/auth/device failed")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Device authorization request failed ({status}): {body}");
+    }
+
+    resp.json()
+        .await
+        .context("parsing device authorization response")
+}
+
+/// Build the JSON body for `POST /v1/auth/device` (see [`initiate_device`]).
+///
+/// When the machine hostname resolves it is passed as `client_hint`; otherwise
+/// an empty object is sent, which the server accepts. Either way a non-empty
+/// body is produced so the fronting proxy does not reject the request with
+/// `411`.
+fn device_init_body() -> serde_json::Value {
+    match gethostname::gethostname().into_string() {
+        Ok(host) if !host.trim().is_empty() => serde_json::json!({ "client_hint": host }),
+        _ => serde_json::json!({}),
+    }
+}
+
 // ── Poll outcome ──────────────────────────────────────────────────────────────
 
 enum PollOutcome {
@@ -255,8 +282,64 @@ async fn poll_token(client: &reqwest::Client, cloud_url: &str, device_code: &str
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+    use wiremock::matchers::{header_exists, method, path};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
     use spelunk_core::config;
+
+    /// Matches a request whose body is non-empty (i.e. carries Content-Length).
+    struct NonEmptyBody;
+    impl Match for NonEmptyBody {
+        fn matches(&self, request: &Request) -> bool {
+            !request.body.is_empty()
+        }
+    }
+
+    /// The device-init body is always a JSON object, so the request carries a
+    /// Content-Length — guarding against the `411 Length Required` regression
+    /// (GH #434) where a bodyless POST was rejected by Google Front End.
+    #[test]
+    fn device_init_body_is_non_empty_object() {
+        let body = super::device_init_body();
+        assert!(body.is_object(), "body must be a JSON object");
+        let serialized = serde_json::to_string(&body).unwrap();
+        assert!(
+            serialized.len() >= 2,
+            "body must serialise to a non-empty payload, got {serialized:?}"
+        );
+    }
+
+    /// `initiate_device` sends a non-empty JSON body with a Content-Type so the
+    /// fronting proxy accepts the request. If the request were bodyless (the
+    /// #434 bug) the mock would not match and this call would fail.
+    #[tokio::test]
+    async fn initiate_device_sends_body() {
+        let server = MockServer::start().await;
+        let device_json = serde_json::json!({
+            "device_code": "dc-123",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://example.test/device",
+            "expires_in": 600,
+            "interval": 5,
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/device"))
+            .and(header_exists("content-type"))
+            .and(NonEmptyBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(&device_json))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let device = super::initiate_device(&client, &server.uri())
+            .await
+            .expect("device init should succeed when a body is sent");
+
+        assert_eq!(device.device_code, "dc-123");
+        assert_eq!(device.user_code, "ABCD-EFGH");
+    }
 
     /// save_api_key_to creates the file and writes the key.
     #[test]
