@@ -270,10 +270,17 @@ pub struct Config {
     #[serde(default, alias = "memory_server_url")]
     pub server_url: Option<String>,
 
-    /// Bearer token for spelunk-server auth.
+    /// Bearer token for cloud/spelunk-server auth — the **canonical, resolved**
+    /// token every auth path sends as `Authorization: Bearer …`.
     /// Set in `~/.config/spelunk/config.toml` (personal) or via `SPELUNK_SERVER_KEY`.
     /// Do NOT commit this to `.spelunk/config.toml`.
     /// The old `memory_server_key` TOML key is accepted as a backward-compat alias.
+    ///
+    /// After [`Config::load`] this holds the effective token resolved from, in
+    /// precedence order: `SPELUNK_API_KEY` (env) → `SPELUNK_SERVER_KEY` (env) →
+    /// [`Config::api_key`] (config.toml, written by `spelunk login`) →
+    /// `server_key`/`memory_server_key` (config.toml). Read this field for auth,
+    /// not `api_key` (spelunk#437).
     #[serde(default, alias = "memory_server_key")]
     pub server_key: Option<String>,
 
@@ -340,6 +347,13 @@ pub struct Config {
     ///
     /// Format: `sk-sp-…`.  Set in `~/.config/spelunk/config.toml`; never
     /// committed to project-level `.spelunk/config.toml`.
+    ///
+    /// At load time this is folded into the effective bearer token (see
+    /// [`Config::load`]): when no `SPELUNK_API_KEY`/`SPELUNK_SERVER_KEY` env
+    /// override is set, `api_key` takes precedence over a config-file
+    /// `server_key`. The override env var is `SPELUNK_API_KEY`. Every auth path
+    /// reads the resolved [`Config::server_key`], so do not read `api_key`
+    /// directly for auth.
     #[serde(default)]
     pub api_key: Option<String>,
 }
@@ -402,7 +416,8 @@ impl Config {
     ///   1. Defaults
     ///   2. `~/.config/spelunk/config.toml` (global personal)
     ///   3. `.spelunk/config.toml` discovered by walking up from CWD (project-level, team-wide)
-    ///   4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, `SPELUNK_PROJECT_ID`
+    ///   4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_API_KEY`,
+    ///      `SPELUNK_SERVER_KEY`, `SPELUNK_PROJECT_ID`
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
@@ -449,9 +464,24 @@ impl Config {
             );
             cfg.server_url = Some(v);
         }
-        if let Ok(v) = std::env::var("SPELUNK_SERVER_KEY") {
-            cfg.server_key = Some(v);
-        }
+        // ── Cloud/server bearer token resolution (spelunk#437) ───────────────
+        // A single effective bearer token feeds every cloud/server auth path,
+        // all of which read `cfg.server_key`. We keep `server_key` as the
+        // canonical field for backward compatibility with existing self-hosted
+        // configs, and fold in the cloud `api_key` (written by `spelunk login`)
+        // and the new `SPELUNK_API_KEY` env override. Precedence, highest first:
+        //   1. SPELUNK_API_KEY     (env, new)
+        //   2. SPELUNK_SERVER_KEY  (env, existing)
+        //   3. api_key             (config.toml, written by `spelunk login`)
+        //   4. server_key          (config.toml / project, incl. memory_server_key alias)
+        // Env beats config; within a source the cloud key wins over the legacy
+        // self-hosted key. The token value is never logged.
+        let env_token = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let toml_server_key = cfg.server_key.take();
+        cfg.server_key = env_token("SPELUNK_API_KEY")
+            .or_else(|| env_token("SPELUNK_SERVER_KEY"))
+            .or_else(|| cfg.api_key.clone())
+            .or(toml_server_key);
         if let Ok(v) = std::env::var("SPELUNK_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
@@ -708,6 +738,7 @@ mod tests {
             std::env::remove_var("SPELUNK_SERVER_URL");
             std::env::remove_var("SPELUNK_MEMORY_SERVER_URL");
             std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("SPELUNK_API_KEY");
             std::env::remove_var("SPELUNK_PROJECT_ID");
             std::env::remove_var("SPELUNK_MODE");
             std::env::remove_var("SPELUNK_NO_SERVER");
@@ -1200,6 +1231,117 @@ project_id = "my-proj"
         }
         let cfg = Config::load(Some(&config_path)).unwrap();
         assert_eq!(cfg.server_key, Some("env-token".to_string()));
+    }
+
+    // ── cloud token resolution (spelunk#437) ─────────────────────────────────
+
+    /// `SPELUNK_API_KEY` supplies the bearer with no config file present.
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_api_key_supplies_token_without_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml"); // intentionally absent
+
+        unsafe {
+            std::env::set_var("SPELUNK_API_KEY", "sk-sp-from-env");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-from-env".to_string()));
+    }
+
+    /// `SPELUNK_API_KEY` env overrides the config.toml `server_key`.
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_api_key_overrides_config_server_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "server_key = \"config-token\"\n").unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_API_KEY", "sk-sp-env");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-env".to_string()));
+    }
+
+    /// `SPELUNK_API_KEY` env wins over `SPELUNK_SERVER_KEY` env.
+    #[test]
+    #[serial_test::serial]
+    fn env_spelunk_api_key_overrides_env_server_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        unsafe {
+            std::env::set_var("SPELUNK_API_KEY", "sk-sp-api");
+            std::env::set_var("SPELUNK_SERVER_KEY", "server-env");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-api".to_string()));
+    }
+
+    /// The token `spelunk login` writes (config.toml `api_key`) is actually used
+    /// for auth — it resolves into `server_key` with no env override set.
+    #[test]
+    #[serial_test::serial]
+    fn config_api_key_resolves_into_server_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "api_key = \"sk-sp-login\"\n").unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-login".to_string()));
+    }
+
+    /// config.toml `api_key` takes precedence over config.toml `server_key`
+    /// when no env override is set (cloud key beats legacy self-hosted key).
+    #[test]
+    #[serial_test::serial]
+    fn config_api_key_beats_config_server_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "api_key = \"sk-sp-login\"\nserver_key = \"legacy-server\"\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-login".to_string()));
+    }
+
+    /// An existing self-hosted config with only `server_key` and no cloud
+    /// `api_key` is unchanged — back-compat for unknown OSS-server users.
+    #[test]
+    #[serial_test::serial]
+    fn config_server_key_only_is_unchanged() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "server_key = \"self-hosted\"\n").unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("self-hosted".to_string()));
+    }
+
+    /// An empty `SPELUNK_API_KEY` does not clobber a real config token.
+    #[test]
+    #[serial_test::serial]
+    fn empty_env_api_key_does_not_clobber_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "api_key = \"sk-sp-login\"\n").unwrap();
+
+        unsafe {
+            std::env::set_var("SPELUNK_API_KEY", "");
+        }
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.server_key, Some("sk-sp-login".to_string()));
     }
 
     #[test]
