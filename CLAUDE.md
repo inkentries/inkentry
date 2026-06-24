@@ -47,7 +47,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Built-in (zero infrastructure):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Works immediately with no setup.
 
-**Semantic search via spelunk-server:** from v0.8.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (fastembed-rs, NomicEmbedTextV15) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via spelunk-server:** from v0.9.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
 **Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db` — it relocates the store of record to the shared server. Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) When a team server routes projects by an internal UUID, a human `project_id` slug is auto-resolved to that UUID on first use and cached in `.spelunk/cloud-project-id.lock` (see ADR-005); a raw UUID `project_id` is used directly.
 
@@ -220,7 +220,7 @@ main.rs            — entry point: parse args, register sqlite-vec, start Axum 
 lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
 db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
 handlers.rs        — Axum route handlers for all /v1/ endpoints
-embedder_native.rs — native embedder (fastembed-rs; Nomic Embed Text v1.5, 768-dim; `embed-native` feature)
+embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal/GPU on macOS; `embed-native` feature)
 
 migrations/  (crates/spelunk-server/migrations/)
   server_001.sql — projects + server memory schema
@@ -255,13 +255,16 @@ the fallback for unsupported file types. Markdown uses ATX heading-based
 chunking (each `# Heading` + body = one `ChunkKind::Section`).
 
 ### Embedding input format
-EmbeddingGemma's recommended document retrieval format:
-```
-title: {name | "none"} | text: {content}
-```
-Query-side prefix: `task: code retrieval | query: {q}`
+F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:
+- **Documents:** raw text — `title: {name | "none"} | text: {content}` (no instruction prefix)
+- **Queries:** `Instruct: <instruction>\nQuery: {q}`
+  - Code search: `Instruct: Given a code search query, retrieve the relevant code snippets\nQuery: {q}`
+  - Memory/QA: `Instruct: Given a question, retrieve passages that answer the question\nQuery: {q}`
 
-See `Chunk::embedding_text()` in `crates/spelunk-core/src/indexer/chunker.rs`.
+Document format is produced by `Chunk::embedding_text()` in
+`crates/spelunk-core/src/indexer/chunker.rs`. Query prefixes are applied by
+`handlers.rs` (server-side code search), `embed_query_vec()` in `helpers.rs`
+(CLI-side memory search), and `embed_cmd.rs` (plumbing embed --query).
 
 ### SQLite + sqlite-vec
 No separate vector DB. The sqlite-vec extension adds a `vec0` virtual table
