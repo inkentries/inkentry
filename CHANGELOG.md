@@ -21,7 +21,7 @@ caches locally; there is no external embedding service to run. (#439)
 
 The weights are quantized to **Q8_0** and cached as a GGUF (`f2llm-v2-330m-q8_0.gguf`)
 in `~/.local/share/spelunk/models/`: the ~650 MB BF16 safetensors are downloaded once,
-quantized, and written to a ~355 MB GGUF, so subsequent loads read the GGUF directly
+quantized, and written to a ~339 MB GGUF, so subsequent loads read the GGUF directly
 with no network access and no safetensors load (roughly half the on-disk footprint).
 (#441)
 
