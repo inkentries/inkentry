@@ -188,7 +188,7 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
 
     let pid = child.id();
@@ -251,7 +251,7 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
 
     let pid = child.id();
@@ -382,7 +382,7 @@ fn spawn_daemon_unix(
 /// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
 /// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
 /// unauthenticated.
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn spawn_daemon_windows(
     bin: &Path,
     db: &Path,
@@ -738,8 +738,9 @@ mod tests {
     /// `--host 127.0.0.1` must appear in the daemon arg list (THREAT-MODEL req #9).
     #[test]
     fn spawn_daemon_args_bind_loopback() {
-        let db = std::path::Path::new("/tmp/test.db");
-        let args = build_daemon_args(db, 7777);
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let args = build_daemon_args(&db, 7777);
 
         // Collect as strings for readable assertions.
         let args_str: Vec<String> = args
@@ -770,8 +771,9 @@ mod tests {
     /// `0.0.0.0` must NOT appear in the daemon arg list (THREAT-MODEL req #9).
     #[test]
     fn spawn_daemon_args_do_not_bind_wildcard() {
-        let db = std::path::Path::new("/tmp/test.db");
-        let args = build_daemon_args(db, 7777);
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let args = build_daemon_args(&db, 7777);
 
         let args_str: Vec<String> = args
             .iter()
@@ -787,9 +789,10 @@ mod tests {
     /// `--port` and the supplied port value must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_include_port() {
-        let db = std::path::Path::new("/tmp/test.db");
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
         let port: u16 = 7780;
-        let args = build_daemon_args(db, port);
+        let args = build_daemon_args(&db, port);
 
         let args_str: Vec<String> = args
             .iter()
