@@ -6,7 +6,7 @@
 
 **What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` use `spelunk-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (Nomic Embed Text v1.5, via fastembed-rs) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` use `spelunk-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
 
 **Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
@@ -455,7 +455,7 @@ Read lines from stdin and emit one JSONL embedding vector per line. Each output 
 
 | Flag | Description |
 |------|-------------|
-| `--query` | Apply the query retrieval prefix (`task: code retrieval | query: …`). Use this flag when the output will be piped into `knn`. Omit it when embedding document text for storage. |
+| `--query` | Apply the F2LLM query instruction prefix (`Instruct: …\nQuery: …`). Use this flag when the output will be piped into `knn`. Omit it when embedding document text for storage. |
 
 Exit codes: `0` = at least one vector emitted, `2` = stdin is a terminal (not a pipe) or embedding backend unreachable.
 
@@ -468,11 +468,12 @@ echo "authentication" | spelunk plumbing embed --query | spelunk plumbing knn --
 Example output:
 
 ```json
-{"model":"nomic-embed-text-v1.5","dimensions":768,"vector":[0.021,-0.043,...]}
+{"model":"f2llm-v2-330m","dimensions":896,"vector":[0.021,-0.043,...]}
 ```
 
-(The model name and dimensionality reflect whichever embedder the server is
-using — the bundled native embedder is Nomic Embed Text v1.5 at 768 dimensions.)
+(The model name reflects the `embedding_model` config value and the
+dimensionality reflects whichever embedder the server is using — the bundled
+native embedder is codefuse-ai/F2LLM-v2-330M at 896 dimensions.)
 
 ---
 

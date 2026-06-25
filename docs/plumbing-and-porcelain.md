@@ -60,7 +60,7 @@ echo "auth flow" \
   | jq -r '"\(.score | . * 100 | round)%  \(.file_path):\(.start_line)  \(.name // "(anon)")"'
 ```
 
-`embed --query` prepends the retrieval prefix expected by EmbeddingGemma, producing a JSON object with a `vector` field. `knn` reads that object from stdin and emits one result object per line, sorted by similarity score descending.
+`embed --query` prepends the F2LLM instruction prefix expected for queries (`Instruct: …\nQuery: {q}`), producing a JSON object with a `vector` field. `knn` reads that object from stdin and emits one result object per line, sorted by similarity score descending.
 
 ### List stale files and re-index only those
 
