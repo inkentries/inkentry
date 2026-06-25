@@ -1010,13 +1010,17 @@ fn test_server_stop_not_running() {
 #[test]
 fn test_server_start_binary_not_found() {
     let tmp = tempdir().unwrap();
+    // Use a path that does not exist on any platform. On Windows, an absolute
+    // Unix-style path like /tmp/... is interpreted as a relative path and will
+    // also not exist, so any clearly non-existent path works here.
+    let nonexistent = tmp.path().join("spelunk-server-does-not-exist-xyzzy");
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("start")
         .arg("--bin")
-        .arg("/tmp/spelunk-server-does-not-exist-xyzzy")
+        .arg(&nonexistent)
         .assert()
         .failure()
         .stderr(predicate::str::contains("spelunk-server binary not found"));

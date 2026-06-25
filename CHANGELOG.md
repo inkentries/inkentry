@@ -93,6 +93,42 @@ startup. Subsequent starts use the cached weights with no network access.
 - Refreshed `Cargo.lock` to latest semver-compatible versions; no new advisories
   (#433)
 
+### Added
+
+- **Windows CI matrix (`x86_64-pc-windows-msvc`).** `windows-latest` is now
+  included in the `test` matrix, running `cargo build` + `cargo test`. The
+  `check`/lint and `openapi-snapshot` jobs remain Ubuntu-only as they use
+  POSIX tooling.
+
+## Windows CI notes
+
+Known risks and limitations for the `windows-latest` CI leg:
+
+- **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls` via
+  `fastembed`'s default feature set) compiles from C source. Strawberry Perl is
+  pre-installed on `windows-latest` runners, so the build succeeds, but it adds
+  several minutes. The `test` job timeout is set to 30 minutes.
+
+- **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
+  spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
+  full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
+  API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable. On
+  a clean CI runner (no pre-existing server state) these tests still pass, but
+  they may flake if parallel test workers race on the shared state directory.
+  A future fix is to add a `SPELUNK_STATE_DIR` override environment variable.
+
+- **`pid_is_alive` on Windows.** The Windows implementation uses
+  `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
+  PID is still running, replacing the stub that always returned `false`. This
+  restores the `spelunk server status/stop` live-PID check on Windows.
+
+- **ORT binary download.** The `embed-native` feature (default for
+  `spelunk-server`) requires the ONNX Runtime prebuilt binary. With
+  `fastembed`'s `ort-download-binaries` default feature enabled, ort downloads
+  the binary at build time. This requires internet access in CI and adds
+  download time, but succeeds on GitHub-hosted `windows-latest` runners. No
+  model is downloaded during `cargo test` (tests use `embedder: None`).
+
 ## [0.8.3] — 2026-06-17
 
 ### Changed

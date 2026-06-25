@@ -49,8 +49,9 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -64,6 +65,11 @@ jobs:
             # producing `ld: library 'clang_rt.osx' not found`. The embedder is
             # EXPERIMENTAL / NOT RECOMMENDED and is covered on the Linux leg.
             test-flags: "--no-default-features"
+          - os: windows-latest
+            # Windows keeps default features: the embed-native default uses the
+            # ORT CPU execution provider (no Metal/DirectML), which links cleanly.
+            # The spelunk-server tests use embedder: None and never load the model.
+            test-flags: ""
     steps:
       - uses: actions/checkout@v7
 
