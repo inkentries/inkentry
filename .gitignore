@@ -11,3 +11,7 @@
 .claude/settings.local.json
 .claude/worktrees/
 .env.local
+
+# Python (bench/ tooling)
+__pycache__/
+*.pyc
