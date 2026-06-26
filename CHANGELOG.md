@@ -7,7 +7,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — 0.9.0
+## [Unreleased]
+
+## [0.9.0] — 2026-06-26
 
 ### Breaking changes — migration required
 
