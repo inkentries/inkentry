@@ -5,7 +5,7 @@ Every command accepts `-c, --config <path>` to override the default config file
 v0.8.0 binary (`spelunk <command> --help`).
 
 From v0.8.0 a local `spelunk-server` is autostarted on demand and provides
-embeddings (native, via fastembed-rs) and — when a chat model is configured —
+embeddings (native, via the candle-served F2LLM-v2-330M model) and — when a chat model is configured —
 LLM inference. Commands that need semantic search or an LLM (`search` in
 semantic/auto mode, `explore`, `memory harvest`) use that server; the
 always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,

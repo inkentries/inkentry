@@ -141,7 +141,7 @@ All clients writing to the same project must use the same embedding model.
 The server records the embedding dimension on the first write and rejects
 subsequent writes with a different dimension.
 
-Default: 768 dimensions (EmbeddingGemma 300M).
+Default: 896 dimensions (codefuse-ai/F2LLM-v2-330M, the bundled native embedder).
 
 If your team uses a different model, configure the server at startup:
 
@@ -214,6 +214,13 @@ POST   /v1/projects/{project_id}/search           (query embedding proxy for CLI
 POST   /v1/projects/{project_id}/explore          (SSE — LLM reasoning loop)
 POST   /v1/projects/{project_id}/llm/complete     (SSE — raw LLM completion)
 ```
+
+`POST /index/embed` accepts a JSON batch of chunks (max 256) and returns the
+vectors as `application/octet-stream`: raw little-endian `f32` bytes, row-major
+`[n_chunks × dim]` (896 with the default embedder), in request order, with no
+per-row framing. The client maps response row `i` to request chunk `i` by
+position. The server does not store the vectors — the CLI is the only persistent
+store for index data. See `docs/openapi.json` for the full schema.
 
 ### Conflict detection
 

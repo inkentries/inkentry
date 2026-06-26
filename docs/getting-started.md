@@ -103,10 +103,10 @@ spelunk search "where do we validate auth tokens"
 ```
 
 No config file, no Docker, no external embedder. The server bundles a native
-embedding model (Nomic Embed Text v1.5, via fastembed-rs); the weights are
-downloaded once on first use and cached under
-`~/.local/share/spelunk/models/`. There is no LM Studio or other external
-inference server to run by default. The next section covers the
+embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
+via candle); the weights are downloaded once on first use, quantized to Q8_0,
+and cached as a GGUF under `~/.local/share/spelunk/models/`. There is no LM
+Studio or other external inference server to run by default. The next section covers the
 always-available commands that work even before you index.
 
 You can manage the background server explicitly if you want:
@@ -204,8 +204,9 @@ For how discovery works and how to point the CLI at a remote server, see
 
 ### Using your own inference server (advanced)
 
-By default the bundled `spelunk-server` provides embeddings (native, via
-fastembed-rs) and — when a chat model is configured — LLM inference. If you'd
+By default the bundled `spelunk-server` provides embeddings (native, via the
+candle-served F2LLM-v2-330M model) and — when a chat model is configured — LLM
+inference. If you'd
 rather have spelunk talk directly to your own OpenAI-compatible endpoint (e.g.
 LM Studio on port `1234`, Ollama on `11434`, or a vLLM proxy) instead of the
 native embedder, point it there in `~/.config/spelunk/config.toml`:

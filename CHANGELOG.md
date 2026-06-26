@@ -7,29 +7,35 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — 0.9.0-dev
+## [Unreleased] — 0.9.0
 
 ### Breaking changes — migration required
 
 **Default embedder is now F2LLM-v2-330M via candle, 896-dim, GPU-accelerated on macOS.**
 
 The bundled native embedder has switched from fastembed-rs / Nomic Embed Text v1.5
-(768-dim, ONNX) to **codefuse-ai/F2LLM-v2-330M** (896-dim, Qwen3 decoder, safetensors)
-served via the `candle` runtime. On macOS the prebuilt binary uses Metal GPU
-acceleration; Linux falls back to CPU.
+(768-dim, ONNX) to **codefuse-ai/F2LLM-v2-330M** (896-dim, Qwen3 decoder) served via
+the `candle` runtime. On macOS the prebuilt binary uses Metal GPU acceleration; Linux
+falls back to CPU. The model auto-downloads from Hugging Face Hub on first run and
+caches locally; there is no external embedding service to run. (#439)
 
-**Re-index required:** existing local indexes have 768-dim embeddings and will not
-produce correct results against the 896-dim model. Run `spelunk index <project>`
-after upgrading. The old embeddings table is automatically dropped and recreated
-on first open.
+The weights are quantized to **Q8_0** and cached as a GGUF (`f2llm-v2-330m-q8_0.gguf`)
+in `~/.local/share/spelunk/models/`: the ~650 MB BF16 safetensors are downloaded once,
+quantized, and written to a ~339 MB GGUF, so subsequent loads read the GGUF directly
+with no network access and no safetensors load (roughly half the on-disk footprint).
+(#441)
 
-**Model download on first run:** F2LLM-v2-330M weights (~650 MB) are downloaded
-from Hugging Face Hub into `~/.local/share/spelunk/models/` on first `spelunk-server`
-startup. Subsequent starts use the cached weights with no network access.
+**Re-index required.** Two changes make existing local indexes incompatible:
 
----
+- The embedding dimension changed 768 → 896, so vectors from the old model will not
+  produce correct results against F2LLM.
+- Chunk and snapshot embeddings are now stored as sqlite-vec **`INT8[896]`** instead of
+  `FLOAT[768]`, which makes the on-disk vector index roughly **4× smaller**. (Memory
+  entry embeddings stay `FLOAT[896]`.)
 
-## [Unreleased] — 0.8.4-dev
+On first open after upgrading, spelunk detects the old `FLOAT[768]` `vec0` tables and
+drops and recreates them as `INT8[896]` automatically. Run `spelunk index <project>`
+to re-embed. (#439, #441)
 
 ### Added
 
@@ -77,6 +83,14 @@ startup. Subsequent starts use the cached weights with no network access.
   users keep working with no flag-day and `SPELUNK_SERVER_KEY` still overrides
   for CI and headless use.
 
+- **`POST /v1/projects/{id}/index/embed` now returns raw bytes instead of JSON.**
+  The embedding response body is `application/octet-stream`: raw little-endian
+  `f32` bytes, row-major `[n_chunks × 896]`, in request order, with no per-row
+  `chunk_id` framing (the client maps response row `i` to request chunk `i` by
+  position). This drops per-element JSON serialize/parse on both server and CLI
+  and shrinks the payload roughly 3× (3584 bytes per vector vs ~11 KB of JSON).
+  `docs/openapi.json` is updated to match. (#441)
+
 - **Cloud project slug auto-resolves to its server UUID.** When a team
   `server_url` routes projects by an internal UUID, a human `project_id` slug is
   now resolved to that UUID on first use via `GET /v1/projects` and cached in
@@ -85,6 +99,15 @@ startup. Subsequent starts use the cached weights with no network access.
   automatically if the slug changes, and `SPELUNK_NO_SLUG_CACHE=1` forces a fresh
   lookup. This makes the human-readable `project_id` work transparently against
   cloud-api routing. (ADR-005, #428)
+
+### Fixed
+
+- **Retrieval quality: corrected grouped-query-attention (GQA) handling in the
+  F2LLM embedder.** The first v0.9 build mis-handled the model's 16 attention
+  heads / 8 KV heads (`n_rep = 2`), producing degraded embeddings. The fix
+  changes the vectors F2LLM produces, so search results differ from (and improve
+  on) that initial build. Re-indexing with the fixed embedder is required to get
+  the corrected vectors. (#19, #441)
 
 ### Dependencies
 

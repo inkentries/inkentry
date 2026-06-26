@@ -97,20 +97,27 @@ Each file is hashed with blake3. On re-index, unchanged files are skipped entire
 
 ### Embedding format
 
-Chunks are embedded using EmbeddingGemma's recommended format:
+Chunks are embedded with **codefuse-ai/F2LLM-v2-330M** (Qwen3 decoder, 896-dim),
+served by `spelunk-server` via the candle runtime (Metal/GPU on macOS, CPU on
+Linux). Documents use the format:
 ```
-title: {name} | text: {content}
+title: {name | "none"} | text: {content}
 ```
 
-Queries use: `task: code retrieval | query: {q}`
+Queries use an instruction prefix: `Instruct: {instruction}\nQuery: {q}`. For
+example, code search uses `Instruct: Given a code search query, retrieve the
+relevant code snippets\nQuery: {q}`.
 
 See `Chunk::embedding_text()` in `src/indexer/chunker.rs`.
 
+Vectors are L2-normalised and stored as sqlite-vec `INT8[896]` (chunk and
+snapshot embeddings); memory-entry embeddings stay `FLOAT[896]`.
+
 ### Backend abstraction
 
-The `EmbeddingBackend` and `LlmBackend` traits are the only interface between spelunk and inference. The concrete implementation (LM Studio) is gated behind a feature flag and re-exported in `src/backends.rs`.
+The `EmbeddingBackend` and `LlmBackend` traits (in spelunk-core's `embeddings/` and `llm/`) are the only interface between spelunk and inference. spelunk-core ships **no** concrete implementations; the concrete backends live in `spelunk-server` (the native F2LLM embedder in `embedder_native.rs`, plus OpenAI-compatible HTTP clients). The CLI reaches inference only through `ServerLlmClient` / `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`.
 
-To add a new backend: implement the trait, add a feature flag, gate the re-export. Nothing outside `src/embeddings/`, `src/llm/`, and `src/backends.rs` imports a concrete backend.
+To add a new backend: implement the trait in spelunk-server and wire it into the server's endpoint handlers. Nothing in spelunk-core imports a concrete backend.
 
 ### Secret scanning
 

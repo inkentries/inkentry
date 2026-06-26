@@ -272,6 +272,13 @@ for KNN queries. The extension is registered via `sqlite3_auto_extension`
 before any connection is opened (see `crates/spelunk-cli/src/main.rs` and
 `crates/spelunk-server/src/main.rs`).
 
+Chunk and snapshot embeddings are stored as `INT8[896]` (F2LLM vectors are
+L2-normalised, so int8 is lossless enough for ranking and ~4x smaller on disk);
+the int8 L2 distance is rescaled back to the f32 scale by `INT8_SCALE` on read
+(`storage/search.rs`, `storage/snapshots.rs`). Memory-entry embeddings stay
+`FLOAT[896]`. On first open, `db.rs` detects pre-0.9 `FLOAT[768]` `vec0` tables
+and drops and recreates them as `INT8[896]` (re-index required).
+
 ### Incremental indexing
 Each file is hashed with blake3. On re-index, unchanged files are skipped.
 Changed files: delete old chunks + embeddings, reparse, re-embed.
