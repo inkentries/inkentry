@@ -55,21 +55,28 @@ spelunk --version
 Download the tarball for your platform from the
 [releases page](https://github.com/spelunk-cloud/spelunk/releases) and put both
 binaries on your `$PATH`. Release tarballs are named
-`spelunk-<version>-<target>.tar.gz`:
+`spelunk-<version>-<target>.tar.gz`.
+
+Supported targets: `aarch64-apple-darwin` (Apple Silicon Mac),
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+
+> **Intel Macs (`x86_64-apple-darwin`):** prebuilt binaries are not published for
+> this target — Apple deprecated the architecture and Apple Silicon replaced it on
+> new hardware six years ago. Intel Mac users must build from source; see
+> [Building from source](building.md) (`cargo build --release` works unmodified on
+> `x86_64-apple-darwin`).
 
 ```bash
-# Example: macOS (universal). Replace <version> with the release tag, e.g. v0.8.0
-curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-universal-apple-darwin.tar.gz \
+# Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.8.0
+curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
 # Verify
 spelunk --version
 ```
 
-Per-arch targets (`x86_64-apple-darwin`, `aarch64-apple-darwin`,
-`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) follow the same
-pattern — swap the target in the filename. Building from source? See
-[Building](building.md).
+Swap the target in the filename for Linux. Building from source? See
+[Building from source](building.md).
 
 ### Running spelunk-server as a service (optional)
 
@@ -78,12 +85,6 @@ a launchd plist (`packaging/spelunk-server.plist`) for macOS and a systemd unit
 (`packaging/spelunk-server.service`) for Linux. Most users don't need these —
 `spelunk` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
-> **Intel Macs (`x86_64-apple-darwin`):** we no longer publish a prebuilt binary for
-> this target — Apple deprecated the architecture, and Apple Silicon replaced it on
-> new hardware six years ago. Intel Mac users should build from source instead; see
-> [Building](building.md) (`cargo build --release` works unmodified on `x86_64-apple-darwin`).
-
-> Building from source? See [Building](building.md).
 
 ## 2. Cold start: working search in under a minute
 
@@ -105,9 +106,9 @@ spelunk search "where do we validate auth tokens"
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
 via candle); the weights are downloaded once on first use, quantized to Q8_0,
-and cached as a GGUF under `~/.local/share/spelunk/models/`. There is no LM
-Studio or other external inference server to run by default. The next section covers the
-always-available commands that work even before you index.
+and cached as a GGUF under `~/.local/share/spelunk/models/`. No LM Studio or
+other external inference server is needed. The next section covers commands
+that work even before you index.
 
 You can manage the background server explicitly if you want:
 

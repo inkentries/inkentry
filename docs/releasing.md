@@ -37,7 +37,7 @@ Two install paths live outside this workflow:
 > **Note:** `x86_64-apple-darwin` (Intel Mac) prebuilt binaries were dropped —
 > Apple deprecated the architecture and Apple Silicon replaced it on new
 > hardware six years ago. Intel Mac users build from source (see
-> `docs/getting-started.md`).
+> `docs/building.md`).
 
 ## Cutting a release
 
