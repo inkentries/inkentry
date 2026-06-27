@@ -184,6 +184,10 @@ SPELUNK_SERVER_KEY=your-key docker compose -f docker-compose.full.yml up -d
 # Build
 cargo build --release --bin spelunk-server
 
+# Check version
+./target/release/spelunk-server --version
+# spelunk-server 0.9.0
+
 # Run
 ./target/release/spelunk-server \
   --db /var/lib/spelunk/spelunk.db \
