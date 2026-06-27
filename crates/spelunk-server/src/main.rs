@@ -14,7 +14,12 @@ use utoipa::OpenApi;
 mod embedder_native;
 
 #[derive(Parser, Debug)]
-#[command(name = "spelunk-server", about = "Shared memory server for spelunk")]
+#[command(
+    name = "spelunk-server",
+    version,
+    about = "Shared memory server for spelunk",
+    before_help = concat!("spelunk-server v", env!("CARGO_PKG_VERSION"))
+)]
 struct Args {
     /// Port to listen on
     #[arg(long, default_value = "7777")]

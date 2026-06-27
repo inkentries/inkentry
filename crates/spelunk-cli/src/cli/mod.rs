@@ -26,7 +26,13 @@ pub use cmd::status::StatusArgs;
 
 /// spelunk — local code intelligence
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about,
+    long_about = None,
+    before_help = concat!("spelunk v", env!("CARGO_PKG_VERSION"))
+)]
 pub struct Cli {
     /// Path to config file (default: ~/.config/spelunk/config.toml)
     #[arg(short, long, global = true)]
