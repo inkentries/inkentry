@@ -106,9 +106,9 @@ spelunk search "where do we validate auth tokens"
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
 via candle); the weights are downloaded once on first use, quantized to Q8_0,
-and cached as a GGUF under `~/.local/share/spelunk/models/`. There is no LM
-Studio or other external inference server to run by default. The next section covers the
-always-available commands that work even before you index.
+and cached as a GGUF under `~/.local/share/spelunk/models/`. No LM Studio or
+other external inference server is needed. The next section covers commands
+that work even before you index.
 
 You can manage the background server explicitly if you want:
 

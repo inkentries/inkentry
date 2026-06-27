@@ -2,9 +2,8 @@
 
 Most users should install from a prebuilt binary — see [Getting Started](getting-started.md).
 Build from source if you want to modify spelunk, run the latest unreleased code, or
-target a platform without a prebuilt release (including Intel Macs —
-`x86_64-apple-darwin` prebuilt binaries are no longer published; see
-[Getting Started](getting-started.md#1-install-spelunk) for context).
+target a platform without a prebuilt release (Intel Macs included — no
+`x86_64-apple-darwin` prebuilt is published).
 
 ## Prerequisites
 
