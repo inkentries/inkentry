@@ -291,8 +291,13 @@ mod backend_selection_tests {
     /// the OS routes to the loopback listener but `is_loopback_url` classifies as
     /// non-loopback — so the cloud-routing branch is exercised without a live
     /// network or DNS.
+    ///
+    /// Ignored on Windows: connecting to `0.0.0.0` raises `WSAEADDRNOTAVAIL`
+    /// (os error 10049). Slug-resolution unit coverage lives in
+    /// `storage::remote::tests`; the integration seam here is Linux/macOS-only.
     #[tokio::test]
     #[serial_test::serial]
+    #[cfg_attr(windows, ignore)]
     async fn cloud_first_slug_resolves_to_uuid_in_backend() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
