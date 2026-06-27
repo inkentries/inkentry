@@ -42,7 +42,15 @@ use crate::config::Config;
 /// NOTE for spelunk#317 (writer side, `spelunk server start`): the writer MUST
 /// write `server.port` into this exact directory so reader and writer agree.
 /// Use the same `~/.local/state/spelunk/` path on every platform.
+///
+/// `SPELUNK_STATE_DIR` overrides the entire path. Useful in tests and on
+/// Windows CI where `dirs::home_dir()` 6.x calls `SHGetKnownFolderPath` (a
+/// Windows Registry lookup) rather than reading `USERPROFILE`, making
+/// per-process environment overrides ineffective.
 fn spelunk_state_dir() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("SPELUNK_STATE_DIR") {
+        return Some(std::path::PathBuf::from(p));
+    }
     dirs::home_dir().map(|home| home.join(".local").join("state").join("spelunk"))
 }
 

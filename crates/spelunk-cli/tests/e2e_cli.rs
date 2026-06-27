@@ -1114,10 +1114,17 @@ fn test_init_non_tty_prints_skip_notice() {
 /// Write `<home>/.local/state/spelunk/server.port` so `capability::get_tier`'s
 /// loopback auto-discovery (step 3a) finds our mock server deterministically.
 /// Mirrors the file `spelunk server start` writes (see `cli/cmd/server.rs`).
-fn write_server_port_file(home: &std::path::Path, port: u16) {
+///
+/// Returns the state dir path so callers can pass it as `SPELUNK_STATE_DIR`
+/// to child processes. `dirs::home_dir()` 6.x on Windows calls the Win32
+/// `SHGetKnownFolderPath` API (a Registry lookup) instead of reading
+/// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
+/// enough — `SPELUNK_STATE_DIR` bypasses that entirely.
+fn write_server_port_file(home: &std::path::Path, port: u16) -> std::path::PathBuf {
     let state_dir = home.join(".local").join("state").join("spelunk");
     fs::create_dir_all(&state_dir).expect("create state dir");
     fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+    state_dir
 }
 
 /// Extract the TCP port `wiremock` bound to from its `uri()` (`http://127.0.0.1:<port>`).
@@ -1190,7 +1197,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1215,8 +1222,6 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -1231,8 +1236,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1258,8 +1262,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1277,8 +1280,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1303,7 +1305,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1323,8 +1325,6 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -1336,8 +1336,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1358,8 +1357,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
-        // Windows: dirs::home_dir() reads USERPROFILE, not HOME.
-        .env("USERPROFILE", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
