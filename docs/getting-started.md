@@ -363,12 +363,21 @@ server_url = "http://spelunk.internal:7777"
 project_id = "my-awesome-app"
 ```
 
-Each developer adds the API key to their personal config:
+Each developer provides their API key. Prefer the `SPELUNK_SERVER_KEY`
+environment variable, which works everywhere (including CI / headless):
 
-```toml
-# ~/.config/spelunk/config.toml — never commit this
-server_key = "your-shared-api-key"
+```bash
+export SPELUNK_SERVER_KEY="your-shared-api-key"
 ```
+
+The credential is otherwise stored in your OS keychain (macOS Keychain, Linux
+Secret Service, Windows Credential Manager) rather than in plaintext. If you
+have an old personal `~/.config/spelunk/config.toml` with a bare
+`server_key = "…"`, it is migrated into the keychain and stripped from the file
+automatically on the next run. On a host with no keychain, spelunk falls back to
+an owner-only `~/.config/spelunk/secrets.toml`. See
+[`spelunk login`](commands.md#spelunk-login) for the full storage rules and the
+`SPELUNK_SECRET_STORE` override.
 
 > The older `memory_server_url` / `memory_server_key` keys are still accepted as
 > deprecated aliases for `server_url` / `server_key`.

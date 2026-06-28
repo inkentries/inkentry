@@ -383,6 +383,39 @@ Tokens are written to the `[auth]` table of `~/.config/spelunk/config.toml`
 run `spelunk login`; `SPELUNK_SERVER_KEY` continues to take precedence, which is
 handy for CI.
 
+### Where the `server_key` credential is stored
+
+The static `server_key` bearer credential is **not** kept in plaintext in
+`config.toml`. It lives in your operating system's secret store:
+
+- **macOS** — Keychain
+- **Linux** — Secret Service (libsecret / `org.freedesktop.secrets`)
+- **Windows** — Credential Manager
+
+The first time you run any command after upgrading, a `server_key` previously
+written to `~/.config/spelunk/config.toml` is migrated into the OS keychain and
+removed from the file automatically — no action required. (A shared
+`server_key` set in a project's checked-in `.spelunk/config.toml` is left as-is;
+it is a team key by design, not a personal credential.)
+
+**Headless / CI / containers.** When no OS keychain backend is available, the
+credential never causes a hard failure:
+
+- `SPELUNK_SERVER_KEY` remains the non-interactive escape hatch and always takes
+  precedence — set it in CI and you never touch the keychain.
+- Otherwise spelunk falls back to an owner-only (`0600`) file at
+  `~/.config/spelunk/secrets.toml`.
+
+`SPELUNK_SECRET_STORE` pins the backend explicitly:
+
+| Value | Behaviour |
+|-------|-----------|
+| unset / `auto` | Prefer the OS keychain; fall back to the file store when none is available (default). |
+| `keychain` | Require the OS keychain; error if it is unavailable. |
+| `file` | Always use the `secrets.toml` file store (e.g. a container that mounts secrets from elsewhere). |
+
+The credential is never logged.
+
 ---
 
 ## spelunk org
@@ -405,9 +438,10 @@ spelunk org switch acme
 
 ## spelunk logout
 
-Remove stored spelunk.cloud credentials from
-`~/.config/spelunk/config.toml`. Clears both the `[auth]` tokens written by
-`spelunk login` and any static `server_key`.
+Remove stored spelunk.cloud credentials. Clears the `[auth]` tokens written by
+`spelunk login` from `~/.config/spelunk/config.toml`, the `server_key` from the
+OS keychain (or `secrets.toml` fallback), and any legacy plaintext `server_key`
+still left in `config.toml`.
 
 ```
 spelunk logout
@@ -495,6 +529,7 @@ spelunk plumbing read-memory           # memory entries as JSONL
 | `SPELUNK_NO_SERVER=1` | Never autostart or use a server (fully offline / no-server mode) |
 | `SPELUNK_SERVER_URL` | Point the CLI at a specific server URL |
 | `SPELUNK_CLOUD_URL` | Override the spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
-| `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over stored `login` tokens (useful in CI) |
+| `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
+| `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |
