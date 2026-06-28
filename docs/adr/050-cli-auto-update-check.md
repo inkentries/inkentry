@@ -1,6 +1,5 @@
 # ADR-050: CLI auto-update check
 
-**Status:** Proposed  
 **Date:** 2026-06-28  
 **Deciders:** Architect  
 **Trigger:** spelunk-oss^27 — users on the curl/PowerShell installer have no way to
