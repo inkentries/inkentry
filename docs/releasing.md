@@ -16,9 +16,12 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 
 Two install paths live outside this workflow:
 
-- **`install.sh`** is hosted at `https://spelunk.cloud/install.sh`. It resolves
-  the latest release tag via the GitHub API and downloads the matching tarball —
-  it does not need updating per release.
+- **`install.sh`** is fetched directly from the canonical copy on `main`
+  (`https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh`),
+  so the documented command always matches the committed script. It resolves the
+  latest release tag via the GitHub API and downloads the matching tarball — it
+  does not need updating per release. (The Windows `install.ps1` is fetched the
+  same way.)
 - **Homebrew tap** lives in the separate `spelunk-cloud/homebrew-spelunk`
   repo. The `update-homebrew-formula` job in `.github/workflows/release.yml`
   regenerates `Formula/spelunk.rb` with the new `url`/`sha256`/`version` and

@@ -21,14 +21,14 @@ Windows `.zip`, and installs `spelunk.exe` and `spelunk-server.exe` to
 Open PowerShell and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1 | iex
 spelunk --version
 ```
 
 Preview what it would do without writing anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1))) -DryRun
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1))) -DryRun
 ```
 
 #### Manual `.zip` download
@@ -60,14 +60,14 @@ downloads the matching tarball, and installs both binaries to `/usr/local/bin`
 (or `~/.local/bin` when not run as root):
 
 ```bash
-curl -fsSL https://spelunk.cloud/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh
 spelunk --version
 ```
 
 Preview what it would do without writing anything:
 
 ```bash
-curl -fsSL https://spelunk.cloud/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh -s -- --dry-run
 ```
 
 #### Homebrew (macOS and Linux)

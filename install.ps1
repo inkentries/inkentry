@@ -2,10 +2,10 @@
 # spelunk installer for Windows — https://spelunk.cloud
 #
 # Standard install:
-#   irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1 | iex
 #
 # Dry-run (preview without installing):
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1))) -DryRun
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1))) -DryRun
 [CmdletBinding()]
 param(
     [switch]$DryRun

@@ -19,7 +19,7 @@ Semantic search works out of the box: `spelunk` autostarts a local `spelunk-serv
 **1. Install**
 
 ```bash
-curl -fsSL https://spelunk.cloud/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh
 ```
 
 > Also available via Homebrew (`brew install spelunk-cloud/spelunk/spelunk`), a
