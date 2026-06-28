@@ -41,9 +41,13 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project");
 
-    // Index the fixture project.
+    // Index the fixture project. SPELUNK_NO_SERVER=1 forces offline so the embed
+    // phase is skipped — these plumbing tests only need parsed chunks + a memory
+    // note, not embeddings, and without it the index would auto-discover a
+    // loopback spelunk-server on 127.0.0.1:7777 and fail on a dim mismatch.
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")

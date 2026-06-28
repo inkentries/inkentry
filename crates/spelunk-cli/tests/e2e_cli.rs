@@ -721,7 +721,8 @@ async fn test_index_prints_note_when_no_server_configured() {
     .unwrap();
 
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.arg("--config")
+    cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -855,8 +856,11 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     .unwrap();
 
     // Build the index (offline — no embedder needed for parse phase).
+    // SPELUNK_NO_SERVER=1 keeps the embed phase from auto-discovering a
+    // loopback spelunk-server on 127.0.0.1:7777.
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -901,6 +905,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
 
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -939,6 +944,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
 
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .arg("--config")
         .arg(&config_path)
         .arg("index")
