@@ -96,13 +96,14 @@ jobs:
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          $VERSION = "${{ github.ref_name }}"
-          $TARGET  = "${{ matrix.target }}"
-          $ARCHIVE = "spelunk-${VERSION}-${TARGET}.zip"
-          Compress-Archive -Path `
-            "target\${TARGET}\release\spelunk.exe", `
-            "target\${TARGET}\release\spelunk-server.exe" `
-            -DestinationPath $ARCHIVE
+          $VERSION  = "${{ github.ref_name }}"
+          $TARGET   = "${{ matrix.target }}"
+          $ARCHIVE  = "spelunk-${VERSION}-${TARGET}.zip"
+          $binaries = @(
+            "target\${TARGET}\release\spelunk.exe",
+            "target\${TARGET}\release\spelunk-server.exe"
+          )
+          Compress-Archive -Path $binaries -DestinationPath $ARCHIVE
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact

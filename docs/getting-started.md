@@ -28,7 +28,7 @@ spelunk --version
 Preview what it would do without writing anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://spelunk.cloud/install.ps1))) --dry-run
+& ([scriptblock]::Create((irm https://spelunk.cloud/install.ps1))) -DryRun
 ```
 
 #### Manual `.zip` download

@@ -1,7 +1,11 @@
 #Requires -Version 5.1
 # spelunk installer for Windows — https://spelunk.cloud
-# Usage: irm https://spelunk.cloud/install.ps1 | iex
-#        irm https://spelunk.cloud/install.ps1 | iex -- --dry-run
+#
+# Standard install:
+#   irm https://spelunk.cloud/install.ps1 | iex
+#
+# Dry-run (preview without installing):
+#   & ([scriptblock]::Create((irm https://spelunk.cloud/install.ps1))) -DryRun
 [CmdletBinding()]
 param(
     [switch]$DryRun
@@ -17,7 +21,7 @@ $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
 switch ($arch) {
     'X64'   { $TARGET = 'x86_64-pc-windows-msvc' }
     'Arm64' {
-        Write-Error 'spelunk does not yet ship a prebuilt binary for Windows ARM64. Please build from source: https://github.com/{0}' -f $REPO
+        Write-Error "spelunk does not yet ship a prebuilt binary for Windows ARM64. Please build from source: https://github.com/$REPO"
         exit 1
     }
     default {
