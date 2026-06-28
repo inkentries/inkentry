@@ -1632,4 +1632,276 @@ project_id = "team/old"
             std::env::set_current_dir(d).unwrap();
         }
     }
+
+    // ── spelunk-oss^23: keychain secret store migration / precedence ─────────
+    //
+    // These exercise the credential paths through an injected `MemoryStore`, so
+    // no real keychain or Secret Service daemon is required (CI-safe).
+
+    /// Migration: a bare `server_key` in the personal global config is moved
+    /// into the secret store and stripped from the file on next load. It still
+    /// resolves as the bearer (transparent to the user).
+    #[test]
+    #[serial_test::serial]
+    fn migration_moves_bare_server_key_into_store_and_strips_file() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "server_url = \"http://team:7777\"\nserver_key = \"sk-sp-legacy\"\nproject_id = \"p\"\n",
+        )
+        .unwrap();
+
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+
+        // Still resolves transparently as the bearer.
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-sp-legacy"));
+        // Moved into the store.
+        assert_eq!(
+            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-sp-legacy")
+        );
+        // Stripped from the file, but other keys preserved.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains("server_key"),
+            "server_key must be stripped from config.toml after migration, got:\n{on_disk}"
+        );
+        assert!(on_disk.contains("server_url"), "other keys must survive");
+        assert!(on_disk.contains("project_id"), "other keys must survive");
+    }
+
+    /// Migration is idempotent: a second load (file already stripped, store
+    /// populated) keeps resolving the same bearer with no further changes.
+    #[test]
+    #[serial_test::serial]
+    fn migration_is_idempotent_across_two_loads() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "server_key = \"sk-sp-legacy\"\n").unwrap();
+
+        let store = MemoryStore::default();
+        let first = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(first.server_key.as_deref(), Some("sk-sp-legacy"));
+
+        let second = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(second.server_key.as_deref(), Some("sk-sp-legacy"));
+        assert_eq!(
+            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-sp-legacy")
+        );
+    }
+
+    /// Migration must NOT clobber a credential already in the store (e.g. a
+    /// freshly-saved key) with a stale value from the file — the store wins, the
+    /// stale file value is still stripped.
+    #[test]
+    #[serial_test::serial]
+    fn migration_does_not_clobber_existing_store_credential() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "server_key = \"sk-stale-file\"\n").unwrap();
+
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEY, "sk-fresh-store").unwrap();
+
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-fresh-store"));
+        assert_eq!(
+            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-fresh-store")
+        );
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("server_key"), "stale file key stripped");
+    }
+
+    /// A credential saved via `save_server_key_with` lands ONLY in the store and
+    /// never in `config.toml` — the core acceptance criterion.
+    #[test]
+    #[serial_test::serial]
+    fn saved_credential_is_in_store_not_in_config_file() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "server_url = \"http://team:7777\"\nproject_id = \"p\"\n",
+        )
+        .unwrap();
+
+        let store = MemoryStore::default();
+        save_server_key_with("sk-sp-new", &store).unwrap();
+
+        // Config file untouched (no secret written there).
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("sk-sp-new"));
+        assert!(!on_disk.contains("server_key"));
+
+        // Resolves from the store on load.
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-sp-new"));
+    }
+
+    /// `logout` (remove_server_key_with) clears the store entry AND any legacy
+    /// plaintext key still in config.toml.
+    #[test]
+    #[serial_test::serial]
+    fn logout_clears_store_and_legacy_file_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
+
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
+
+        remove_server_key_with(&store, &path).unwrap();
+
+        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None, "store cleared");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains("server_key"),
+            "legacy file key also cleared"
+        );
+
+        // After logout, nothing resolves as the bearer.
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key, None);
+    }
+
+    /// Env-var precedence: `SPELUNK_SERVER_KEY` wins over a stored credential.
+    #[test]
+    #[serial_test::serial]
+    fn env_server_key_wins_over_store() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "sk-from-env") };
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
+        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+    }
+
+    /// Precedence: `[auth]` access token wins over a stored `server_key`.
+    #[test]
+    #[serial_test::serial]
+    fn auth_token_wins_over_store() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
+
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
+    }
+
+    /// Precedence: a stored `server_key` wins over a project-level team key in
+    /// `.spelunk/config.toml`.
+    #[test]
+    #[serial_test::serial]
+    fn store_key_wins_over_project_team_key() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("project");
+        let spelunk_dir = proj_dir.join(".spelunk");
+        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        std::fs::write(
+            spelunk_dir.join("config.toml"),
+            "server_key = \"team-shared-key\"\n",
+        )
+        .unwrap();
+
+        let global_config = tmp.path().join("global.toml");
+        std::fs::write(&global_config, "").unwrap();
+
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEY, "personal-store-key").unwrap();
+
+        let original_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&proj_dir).unwrap();
+        let cfg = Config::load_with_store(Some(&global_config), &store).unwrap();
+        if let Some(d) = original_cwd {
+            std::env::set_current_dir(d).unwrap();
+        }
+        assert_eq!(cfg.server_key.as_deref(), Some("personal-store-key"));
+    }
+
+    /// A project-level team `server_key` is the lowest-precedence fallback and
+    /// is NOT migrated to the store (it lives in a checked-in file by design).
+    #[test]
+    #[serial_test::serial]
+    fn project_team_key_used_as_fallback_and_not_migrated() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("project");
+        let spelunk_dir = proj_dir.join(".spelunk");
+        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        let proj_cfg = spelunk_dir.join("config.toml");
+        std::fs::write(&proj_cfg, "server_key = \"team-shared-key\"\n").unwrap();
+
+        let global_config = tmp.path().join("global.toml");
+        std::fs::write(&global_config, "").unwrap();
+
+        let store = MemoryStore::default();
+        let original_cwd = std::env::current_dir().ok();
+        std::env::set_current_dir(&proj_dir).unwrap();
+        let cfg = Config::load_with_store(Some(&global_config), &store).unwrap();
+        if let Some(d) = original_cwd {
+            std::env::set_current_dir(d).unwrap();
+        }
+
+        assert_eq!(cfg.server_key.as_deref(), Some("team-shared-key"));
+        // The team key must NOT have been migrated into the personal store.
+        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
+        // …and the checked-in file is left untouched.
+        assert!(
+            std::fs::read_to_string(&proj_cfg)
+                .unwrap()
+                .contains("server_key")
+        );
+    }
+
+    /// No-keychain fallback contract: the file-backed store stands in for a
+    /// keychain when none exists, so `load_with_store` resolves the credential
+    /// identically. This mirrors what `default_store` does on a headless host.
+    #[test]
+    #[serial_test::serial]
+    fn file_store_fallback_resolves_credential_like_keychain() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+
+        let file_store = secret_store::FileStore::new(tmp.path().join("secrets.toml"));
+        save_server_key_with("sk-headless", &file_store).unwrap();
+
+        let cfg = Config::load_with_store(Some(&path), &file_store).unwrap();
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-headless"));
+    }
+
+    /// No credential anywhere (empty config, empty store, no env) ⇒ no bearer,
+    /// and no hard failure — the headless/unauthenticated path stays graceful.
+    #[test]
+    #[serial_test::serial]
+    fn no_credential_anywhere_yields_none_without_error() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key, None);
+    }
 }
