@@ -138,11 +138,13 @@ mod tests {
                 id: "11111111-1111-1111-1111-111111111111".into(),
                 name: "Acme".into(),
                 slug: "acme".into(),
+                workos_org_id: None,
             },
             MeOrg {
                 id: "22222222-2222-2222-2222-222222222222".into(),
                 name: "Beta".into(),
                 slug: "beta".into(),
+                workos_org_id: None,
             },
         ]
     }

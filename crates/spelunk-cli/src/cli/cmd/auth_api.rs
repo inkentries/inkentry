@@ -115,13 +115,17 @@ pub struct DeviceCodeResponse {
 
 /// One `orgs[]` entry from `GET /v1/me`.
 ///
-/// `id` is the **local org UUID**. Extra fields (e.g. `role`) are ignored.
+/// `id` is the **local org UUID**; `workos_org_id` is the provider-assigned id
+/// (e.g. `org_01KV…`) carried in the access-token JWT. Extra fields (e.g.
+/// `role`) are ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MeOrg {
     pub id: String,
-    #[allow(dead_code)]
     pub name: String,
     pub slug: String,
+    /// Provider-assigned org id — matches the `org_id` claim in the access-token JWT.
+    #[serde(default)]
+    pub workos_org_id: Option<String>,
 }
 
 /// `GET /v1/me` response (only the membership list is consumed by the CLI).
@@ -412,6 +416,30 @@ pub async fn fetch_me(
 
     let body = resp.text().await.unwrap_or_default();
     anyhow::bail!("GET /v1/me failed ({status}): {body}");
+}
+
+/// Best-effort display name for the org identified by `workos_org_id`.
+///
+/// Calls `GET /v1/me` with a short (5 s) timeout independent of the caller's
+/// client, finds the entry whose `workos_org_id` matches, and returns
+/// `"<name> (<slug>)"`. Returns `None` on any error (network, timeout, missing
+/// field, org not found) so the caller can fall back to the raw org id without
+/// failing.
+pub async fn lookup_org_display_name(
+    cloud_url: &str,
+    access_token: &str,
+    workos_org_id: &str,
+) -> Option<String> {
+    // Build a client with a tight timeout so a slow /v1/me never delays login.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let me = fetch_me(&client, cloud_url, access_token).await.ok()?;
+    me.orgs
+        .into_iter()
+        .find(|o| o.workos_org_id.as_deref() == Some(workos_org_id))
+        .map(|o| format!("{} ({})", o.name, o.slug))
 }
 
 /// Parse a `TokenSuccess` from a 2xx WorkOS response, mapping known error bodies
@@ -869,6 +897,137 @@ mod tests {
         assert!(
             err.to_string().contains("not a member"),
             "expected a clear membership error, got: {err}"
+        );
+    }
+
+    // ── lookup_org_display_name ───────────────────────────────────────────────
+
+    /// When `/v1/me` returns an org whose `workos_org_id` matches the token's
+    /// org id, `lookup_org_display_name` resolves it to `"<name> (<slug>)"`.
+    #[tokio::test]
+    async fn lookup_org_display_name_resolves_name_and_slug() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orgs": [
+                    {
+                        "id": "11111111-1111-1111-1111-111111111111",
+                        "name": "Acme Corp",
+                        "slug": "acme",
+                        "workos_org_id": "org_01KVGBR276C2PN9MCH6WZ5HJ1Y",
+                        "role": "admin"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let display =
+            lookup_org_display_name(&server.uri(), "at-test", "org_01KVGBR276C2PN9MCH6WZ5HJ1Y")
+                .await;
+        assert_eq!(
+            display.as_deref(),
+            Some("Acme Corp (acme)"),
+            "expected resolved name+slug, got: {display:?}"
+        );
+    }
+
+    /// When the `workos_org_id` field is absent from all `orgs[]` entries,
+    /// `lookup_org_display_name` returns `None` (best-effort fallback).
+    #[tokio::test]
+    async fn lookup_org_display_name_returns_none_when_workos_org_id_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orgs": [
+                    // No workos_org_id field — older server or different shape.
+                    { "id": "11111111-1111-1111-1111-111111111111",
+                      "name": "Acme Corp", "slug": "acme", "role": "admin" }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let display =
+            lookup_org_display_name(&server.uri(), "at-test", "org_01KVGBR276C2PN9MCH6WZ5HJ1Y")
+                .await;
+        assert!(
+            display.is_none(),
+            "expected None when workos_org_id not found, got: {display:?}"
+        );
+    }
+
+    /// When `/v1/me` returns a non-2xx, `lookup_org_display_name` returns `None`
+    /// instead of propagating an error (best-effort, never makes login fail).
+    #[tokio::test]
+    async fn lookup_org_display_name_returns_none_on_server_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let display =
+            lookup_org_display_name(&server.uri(), "at-test", "org_01KVGBR276C2PN9MCH6WZ5HJ1Y")
+                .await;
+        assert!(
+            display.is_none(),
+            "a /v1/me error must not propagate — expected None, got: {display:?}"
+        );
+    }
+
+    /// When there are multiple orgs, the correct one is matched by `workos_org_id`.
+    #[tokio::test]
+    async fn lookup_org_display_name_matches_correct_org() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orgs": [
+                    {
+                        "id": "11111111-1111-1111-1111-111111111111",
+                        "name": "Acme Corp",
+                        "slug": "acme",
+                        "workos_org_id": "org_AAAA",
+                        "role": "admin"
+                    },
+                    {
+                        "id": "22222222-2222-2222-2222-222222222222",
+                        "name": "Beta Inc",
+                        "slug": "beta",
+                        "workos_org_id": "org_BBBB",
+                        "role": "member"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Token is scoped to the second org.
+        let display = lookup_org_display_name(&server.uri(), "at-test", "org_BBBB").await;
+        assert_eq!(
+            display.as_deref(),
+            Some("Beta Inc (beta)"),
+            "should resolve the org matching the workos_org_id, got: {display:?}"
         );
     }
 }
