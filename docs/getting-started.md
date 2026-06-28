@@ -21,14 +21,14 @@ Windows `.zip`, and installs `spelunk.exe` and `spelunk-server.exe` to
 Open PowerShell and run:
 
 ```powershell
-irm https://spelunk.cloud/install.ps1 | iex
+irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1 | iex
 spelunk --version
 ```
 
 Preview what it would do without writing anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://spelunk.cloud/install.ps1))) -DryRun
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/main/install.ps1))) -DryRun
 ```
 
 #### Manual `.zip` download
