@@ -1478,7 +1478,8 @@
           "status",
           "version",
           "capabilities",
-          "instance_id"
+          "instance_id",
+          "embedding_dim"
         ],
         "properties": {
           "capabilities": {
@@ -1487,6 +1488,11 @@
               "type": "string"
             },
             "description": "List of feature capabilities supported by this server instance."
+          },
+          "embedding_dim": {
+            "type": "integer",
+            "description": "Embedding dimension produced by this server's embedder.\n`0` when no embedder is loaded (capability `index.embed` absent).",
+            "minimum": 0
           },
           "instance_id": {
             "type": "string",
