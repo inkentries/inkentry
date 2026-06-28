@@ -284,7 +284,13 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
 
     // ── 2. Explicit server_url from config / env ─────────────────────────────
     if let Some(url) = url {
-        return probe_url(url, key, REMOTE_PROBE_TIMEOUT, false).await;
+        return match probe_url(url, key, REMOTE_PROBE_TIMEOUT, false).await {
+            Ok(tier) => tier,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
+        };
     }
 
     // ── 3. Loopback auto-discovery ───────────────────────────────────────────
@@ -294,7 +300,10 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
         tracing::debug!(
             "loopback auto-discovery: found server.port={port}, probing {loopback_url}"
         );
-        let tier = probe_url(&loopback_url, None, LOOPBACK_PROBE_TIMEOUT, true).await;
+        // Loopback probes never produce hard errors (auto_discovered=true), so unwrap is safe.
+        let tier = probe_url(&loopback_url, None, LOOPBACK_PROBE_TIMEOUT, true)
+            .await
+            .unwrap_or(Tier::Offline);
         if tier.is_server() {
             return tier;
         }
@@ -304,7 +313,9 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
     // Step 3b: default port 7777
     let default_url = format!("http://127.0.0.1:{DEFAULT_LOOPBACK_PORT}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
-    let tier = probe_url(&default_url, None, LOOPBACK_PROBE_TIMEOUT, true).await;
+    let tier = probe_url(&default_url, None, LOOPBACK_PROBE_TIMEOUT, true)
+        .await
+        .unwrap_or(Tier::Offline);
     if tier.is_server() {
         return tier;
     }
@@ -313,18 +324,23 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
     Tier::Offline
 }
 
-/// Probe a single URL and return the resulting `Tier`.
+/// Probe a single URL and return the resulting `Tier`, or a hard error string
+/// for an explicit-URL dimension mismatch.
+///
+/// `auto_discovered = true` means the URL was found via the loopback probe rather
+/// than set explicitly in config or environment. The distinction controls whether a
+/// dimension mismatch is a soft downgrade (loopback) or a hard error (explicit URL).
 async fn probe_url(
     url: &str,
     key: Option<&str>,
     timeout: std::time::Duration,
     auto_discovered: bool,
-) -> Tier {
+) -> Result<Tier, String> {
     let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
-            return Tier::Offline;
+            return Ok(Tier::Offline);
         }
     };
 
@@ -335,12 +351,40 @@ async fn probe_url(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let caps = parse_capabilities(url, resp).await;
-            Tier::Server {
+            let (caps, server_dim) = parse_health(url, resp).await;
+
+            // If the server advertises index.embed, its embedding dimension must match ours.
+            if caps.index_embed && server_dim != 0 {
+                let expected = spelunk_core::embeddings::EMBEDDING_DIM;
+                if server_dim != expected {
+                    if auto_discovered {
+                        // Loopback auto-discovery: downgrade gracefully — the user did
+                        // not explicitly configure this server.
+                        tracing::warn!(
+                            "spelunk-server at {url} serves {server_dim}-dim embeddings; \
+                             this CLI expects {expected}-dim. Ignoring loopback server. \
+                             Restart the server (`spelunk server start`) or set \
+                             SPELUNK_NO_SERVER=1 to suppress this probe."
+                        );
+                        return Ok(Tier::Offline);
+                    } else {
+                        // Explicit server_url: surface as a hard error so the user
+                        // gets actionable guidance before any command runs.
+                        return Err(format!(
+                            "spelunk-server at {url} serves {server_dim}-dim embeddings; \
+                             this CLI expects {expected}-dim.\n\
+                             Upgrade or replace the server, or remove server_url from \
+                             ~/.config/spelunk/config.toml."
+                        ));
+                    }
+                }
+            }
+
+            Ok(Tier::Server {
                 url: url.to_string(),
                 caps,
                 auto_discovered,
-            }
+            })
         }
         Ok(resp) => {
             if !auto_discovered {
@@ -349,7 +393,7 @@ async fn probe_url(
                     resp.status()
                 );
             }
-            Tier::Offline
+            Ok(Tier::Offline)
         }
         Err(e) => {
             if !auto_discovered {
@@ -357,18 +401,27 @@ async fn probe_url(
                     "spelunk-server at {url} unreachable — running in offline mode: {e}"
                 );
             }
-            Tier::Offline
+            Ok(Tier::Offline)
         }
     }
 }
 
-async fn parse_capabilities(url: &str, resp: reqwest::Response) -> Capabilities {
+/// Parse the health response body and return `(Capabilities, embedding_dim)`.
+///
+/// `embedding_dim` is `0` when the field is absent (old server without the field)
+/// or when no embedder is loaded. A `0` dim skips the dimension check in `probe_url`
+/// for backward compatibility.
+async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usize) {
     #[derive(serde::Deserialize)]
     struct HealthBody {
         #[serde(default)]
         capabilities: Vec<String>,
         instance_id: Option<String>,
         started_by: Option<u32>,
+        /// Embedding dimension produced by this server's embedder.
+        /// Absent on old servers that pre-date this field; defaults to 0 (skip check).
+        #[serde(default)]
+        embedding_dim: usize,
     }
 
     match resp.json::<HealthBody>().await {
@@ -390,11 +443,15 @@ async fn parse_capabilities(url: &str, resp: reqwest::Response) -> Capabilities 
                 tracing::debug!("server instance_id: {id}");
             }
             let cap_strs: Vec<&str> = body.capabilities.iter().map(String::as_str).collect();
-            Capabilities::from_server_caps(&cap_strs)
+            (
+                Capabilities::from_server_caps(&cap_strs),
+                body.embedding_dim,
+            )
         }
         Err(_) => {
             // Legacy server returns plain-text "ok" — conservative fallback.
-            Capabilities::legacy_memory_only()
+            // embedding_dim = 0 skips the dimension check.
+            (Capabilities::legacy_memory_only(), 0)
         }
     }
 }
@@ -771,5 +828,126 @@ mod tests {
             );
         }
         unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    }
+
+    // ── Embedding-dim pre-flight checks ──────────────────────────────────────
+
+    /// Helper: build a health JSON body with the given capabilities and dim.
+    fn health_body(caps: &[&str], dim: usize) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "version": "0.9.0",
+            "capabilities": caps,
+            "instance_id": "00000000-0000-0000-0000-000000000001",
+            "started_by": null,
+            "embedding_dim": dim
+        })
+    }
+
+    /// Auto-discovered loopback server with wrong dim → `Tier::Offline` (soft downgrade).
+    #[tokio::test]
+    async fn probe_loopback_dim_mismatch_downgrades_to_offline() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Return a health body claiming 768-dim embeddings — wrong for the current CLI (896).
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory", "index.embed", "search.semantic"],
+                768,
+            )))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true).await;
+        assert!(
+            matches!(result, Ok(Tier::Offline)),
+            "auto-discovered loopback with wrong dim must downgrade to Offline; got {result:?}"
+        );
+    }
+
+    /// Auto-discovered loopback server with correct dim → `Tier::Server`.
+    #[tokio::test]
+    async fn probe_loopback_dim_match_returns_server() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory", "index.embed", "search.semantic"],
+                spelunk_core::embeddings::EMBEDDING_DIM,
+            )))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true).await;
+        assert!(
+            matches!(result, Ok(Tier::Server { .. })),
+            "auto-discovered loopback with correct dim must return Server; got {result:?}"
+        );
+    }
+
+    /// Auto-discovered loopback server with no embedder (dim 0) → `Tier::Server`
+    /// (dim 0 means no `index.embed` check is relevant).
+    #[tokio::test]
+    async fn probe_loopback_dim_zero_no_embedder_returns_server() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // No index.embed capability, dim 0.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(&["memory"], 0)))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true).await;
+        assert!(
+            matches!(result, Ok(Tier::Server { .. })),
+            "server with no embedder (dim 0) must still return Server; got {result:?}"
+        );
+    }
+
+    /// Explicit server_url with wrong dim → hard `Err` with an actionable message.
+    #[tokio::test]
+    async fn probe_explicit_url_dim_mismatch_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory", "index.embed", "search.semantic"],
+                768,
+            )))
+            .mount(&server)
+            .await;
+
+        // auto_discovered = false → explicit server_url path → must be a hard Err.
+        let result = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, false).await;
+        assert!(
+            result.is_err(),
+            "explicit server_url with wrong dim must return Err; got {result:?}"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("768"),
+            "error must mention the server's dim (768): {msg}"
+        );
+        let expected = spelunk_core::embeddings::EMBEDDING_DIM;
+        assert!(
+            msg.contains(&expected.to_string()),
+            "error must mention the expected dim ({expected}): {msg}"
+        );
+        assert!(
+            msg.contains("server_url"),
+            "error must mention 'server_url' for actionable guidance: {msg}"
+        );
     }
 }
