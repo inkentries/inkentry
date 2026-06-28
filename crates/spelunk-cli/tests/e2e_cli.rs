@@ -13,7 +13,9 @@ fn test_help_output() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage: spelunk [OPTIONS] <COMMAND>",
+            // On Windows clap includes the `.exe` extension: "spelunk.exe [OPTIONS]…"
+            // Match only the stable prefix so the assertion holds on all platforms.
+            "Usage: spelunk",
         ))
         .stdout(predicate::str::contains("Commands:"));
 }
@@ -781,7 +783,10 @@ fn test_status_json_offline_tier() {
 
 /// When there is no .spelunk/index.db, `spelunk search` in auto mode must
 /// succeed (via ast-grep fallback) rather than printing an opaque error.
+/// Skipped on Windows because `ast-grep` (`sg`) is not available on the
+/// `windows-latest` GitHub Actions runner, so the fallback can't be exercised.
 #[test]
+#[cfg_attr(windows, ignore)]
 fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
@@ -823,7 +828,10 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
 /// When the index exists but there is no embedder (api_base_url points
 /// nowhere), `spelunk search` in auto mode must fall back to ast-grep and
 /// succeed, not bail out with a hard error.
+/// Skipped on Windows because `ast-grep` (`sg`) is not available on the
+/// `windows-latest` GitHub Actions runner, so the fallback can't be exercised.
 #[test]
+#[cfg_attr(windows, ignore)]
 fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
@@ -1010,13 +1018,17 @@ fn test_server_stop_not_running() {
 #[test]
 fn test_server_start_binary_not_found() {
     let tmp = tempdir().unwrap();
+    // Use a path that does not exist on any platform. On Windows, an absolute
+    // Unix-style path like /tmp/... is interpreted as a relative path and will
+    // also not exist, so any clearly non-existent path works here.
+    let nonexistent = tmp.path().join("spelunk-server-does-not-exist-xyzzy");
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("start")
         .arg("--bin")
-        .arg("/tmp/spelunk-server-does-not-exist-xyzzy")
+        .arg(&nonexistent)
         .assert()
         .failure()
         .stderr(predicate::str::contains("spelunk-server binary not found"));
@@ -1102,10 +1114,17 @@ fn test_init_non_tty_prints_skip_notice() {
 /// Write `<home>/.local/state/spelunk/server.port` so `capability::get_tier`'s
 /// loopback auto-discovery (step 3a) finds our mock server deterministically.
 /// Mirrors the file `spelunk server start` writes (see `cli/cmd/server.rs`).
-fn write_server_port_file(home: &std::path::Path, port: u16) {
+///
+/// Returns the state dir path so callers can pass it as `SPELUNK_STATE_DIR`
+/// to child processes. `dirs::home_dir()` 6.x on Windows calls the Win32
+/// `SHGetKnownFolderPath` API (a Registry lookup) instead of reading
+/// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
+/// enough — `SPELUNK_STATE_DIR` bypasses that entirely.
+fn write_server_port_file(home: &std::path::Path, port: u16) -> std::path::PathBuf {
     let state_dir = home.join(".local").join("state").join("spelunk");
     fs::create_dir_all(&state_dir).expect("create state dir");
     fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+    state_dir
 }
 
 /// Extract the TCP port `wiremock` bound to from its `uri()` (`http://127.0.0.1:<port>`).
@@ -1178,7 +1197,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1217,6 +1236,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1242,6 +1262,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1259,6 +1280,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1283,7 +1305,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1314,6 +1336,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1334,6 +1357,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     Command::cargo_bin("spelunk")
         .unwrap()
         .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")

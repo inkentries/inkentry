@@ -70,10 +70,31 @@ fn pid_is_alive(pid: u32) -> bool {
         let rc = unsafe { kill(pid as i32, 0) };
         rc == 0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Windows: a proper check requires OpenProcess — not yet implemented.
-        // We conservatively return false so stale PIDs don't block a fresh start.
+        // OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION is sufficient to
+        // call GetExitCodeProcess.  A NULL handle means the process does not
+        // exist (or we have no access — treated as "not alive").
+        unsafe extern "system" {
+            fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> *mut ();
+            fn CloseHandle(handle: *mut ()) -> i32;
+            fn GetExitCodeProcess(handle: *mut (), exit_code: *mut u32) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code: u32 = 0;
+        let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+        unsafe { CloseHandle(handle) };
+        ok != 0 && exit_code == STILL_ACTIVE
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // Unknown platform: conservatively return false so stale PIDs do not
+        // block a fresh server start.
         let _ = pid;
         false
     }
@@ -167,7 +188,7 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
 
     let pid = child.id();
@@ -230,7 +251,7 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
 
     let pid = child.id();
@@ -259,12 +280,18 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
 ///
 /// Priority: next to the current executable → PATH.
 fn which_spelunk_server() -> Result<PathBuf> {
+    // On Windows executables carry a `.exe` suffix; on Unix there is no suffix.
+    #[cfg(windows)]
+    let bin_name = "spelunk-server.exe";
+    #[cfg(not(windows))]
+    let bin_name = "spelunk-server";
+
     // 1. Same directory as the running `spelunk` binary.
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
-            .join("spelunk-server");
+            .join(bin_name);
         if sibling.exists() {
             return Ok(sibling);
         }
@@ -272,7 +299,7 @@ fn which_spelunk_server() -> Result<PathBuf> {
 
     // 2. PATH lookup.
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join("spelunk-server"))
+        .map(|dir| dir.join(bin_name))
         .find(|p| p.is_file())
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -355,7 +382,7 @@ fn spawn_daemon_unix(
 /// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
 /// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
 /// unauthenticated.
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn spawn_daemon_windows(
     bin: &Path,
     db: &Path,
@@ -655,8 +682,13 @@ mod tests {
 
     #[test]
     fn which_spelunk_server_finds_sibling_binary() {
-        // Create a fake `spelunk-server` next to the current executable.
+        // Create a fake `spelunk-server[.exe]` next to the current executable.
         let tmp = TempDir::new().unwrap();
+        // On Windows the binary must have the .exe extension to be recognised
+        // as a file by the PATH search in `which_spelunk_server`.
+        #[cfg(windows)]
+        let fake_bin = tmp.path().join("spelunk-server.exe");
+        #[cfg(not(windows))]
         let fake_bin = tmp.path().join("spelunk-server");
         std::fs::write(&fake_bin, b"").unwrap();
 
@@ -669,6 +701,10 @@ mod tests {
         // SAFETY: test binary is single-threaded at this point; no other thread
         // reads PATH concurrently within this test.
         let old_path = std::env::var_os("PATH").unwrap_or_default();
+        // Use the platform PATH separator (`;` on Windows, `:` on Unix).
+        #[cfg(windows)]
+        let new_path = format!("{};{}", tmp.path().display(), old_path.to_string_lossy());
+        #[cfg(not(windows))]
         let new_path = format!("{}:{}", tmp.path().display(), old_path.to_string_lossy());
         unsafe { std::env::set_var("PATH", &new_path) };
         let result = which_spelunk_server();
@@ -702,8 +738,9 @@ mod tests {
     /// `--host 127.0.0.1` must appear in the daemon arg list (THREAT-MODEL req #9).
     #[test]
     fn spawn_daemon_args_bind_loopback() {
-        let db = std::path::Path::new("/tmp/test.db");
-        let args = build_daemon_args(db, 7777);
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let args = build_daemon_args(&db, 7777);
 
         // Collect as strings for readable assertions.
         let args_str: Vec<String> = args
@@ -734,8 +771,9 @@ mod tests {
     /// `0.0.0.0` must NOT appear in the daemon arg list (THREAT-MODEL req #9).
     #[test]
     fn spawn_daemon_args_do_not_bind_wildcard() {
-        let db = std::path::Path::new("/tmp/test.db");
-        let args = build_daemon_args(db, 7777);
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let args = build_daemon_args(&db, 7777);
 
         let args_str: Vec<String> = args
             .iter()
@@ -751,9 +789,10 @@ mod tests {
     /// `--port` and the supplied port value must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_include_port() {
-        let db = std::path::Path::new("/tmp/test.db");
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
         let port: u16 = 7780;
-        let args = build_daemon_args(db, port);
+        let args = build_daemon_args(&db, port);
 
         let args_str: Vec<String> = args
             .iter()

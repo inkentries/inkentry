@@ -122,6 +122,40 @@ cargo build && cargo test --test e2e_cli
 
 ---
 
+## CI matrix and platform notes
+
+CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
+`windows-latest` (`x86_64-pc-windows-msvc`). The `check`/lint and
+`openapi-snapshot` jobs run on Ubuntu only, as they rely on POSIX tooling.
+
+### Windows (`windows-latest`) caveats
+
+- **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls` via
+  `fastembed`'s default feature set) compiles from C source. Strawberry Perl is
+  pre-installed on `windows-latest` runners so the build succeeds, but it adds
+  several minutes. The `test` job timeout is set to 30 minutes.
+
+- **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
+  spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
+  full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
+  API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable. On
+  a clean CI runner (no pre-existing server state) these tests still pass, but
+  they may flake if parallel test workers race on the shared state directory.
+  A future improvement is a `SPELUNK_STATE_DIR` override environment variable.
+
+- **`pid_is_alive` on Windows.** The Windows implementation uses
+  `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
+  PID is still running. This restores the `spelunk server status/stop` live-PID
+  check on Windows (the previous stub always returned `false`).
+
+- **ORT binary download.** The `embed-native` feature (default for
+  `spelunk-server`) downloads the ONNX Runtime prebuilt binary at build time.
+  This requires internet access in CI and adds download time, but succeeds on
+  GitHub-hosted runners. No model is downloaded during `cargo test` (tests use
+  `embedder: None`).
+
+---
+
 ## Planned additions
 
 | Area | Issue |

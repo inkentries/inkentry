@@ -125,6 +125,34 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Canonicalize a path to its most compatible absolute form.
+///
+/// Wraps [`dunce::canonicalize`], which resolves symlinks like
+/// `std::fs::canonicalize` but returns the de-UNC'd path on Windows — without the
+/// `\\?\` verbatim prefix that `std::fs::canonicalize` adds (and correctly keeps
+/// the prefix for genuine UNC paths). Canonical project paths are stored in the
+/// registry; the lookup side derives the current project root via gix
+/// ([`resolve_main_worktree_root`]), which yields plain `C:\…` paths, so a
+/// `\\?\`-prefixed registry entry would never match on Windows. Falls back to the
+/// input path if canonicalization fails (e.g. the path does not exist yet). On
+/// macOS/Linux this behaves exactly like `std::fs::canonicalize`.
+pub fn canonicalize(path: &std::path::Path) -> std::path::PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Normalize a file path's separators to forward slashes for indexing + lookup.
+///
+/// The index stores root-relative paths so it is portable across machines. On
+/// Windows `Path::to_string_lossy()` yields backslash separators (`src\lib.rs`),
+/// which would not match the forward-slash paths used everywhere else — CLI
+/// arguments, `LIKE` lookups (where `\` is also the SQL escape char), and
+/// indexes built on other OSes. Canonicalizing to `/` keeps the on-disk index
+/// identical regardless of the indexing host and makes path lookups
+/// OS-independent. On Unix this is a no-op for ordinary paths.
+pub fn normalize_index_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// Format a Unix timestamp as a human-readable age string (e.g. "3 min ago").
 pub fn format_age(created_at: i64) -> String {
     let secs = (chrono::Utc::now().timestamp() - created_at).max(0);
@@ -201,6 +229,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let resolved = resolve_main_worktree_root(tmp.path());
         assert_eq!(resolved, tmp.path());
+    }
+
+    // ── normalize_index_path ──────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_index_path_converts_backslashes() {
+        assert_eq!(normalize_index_path("src\\lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_index_path("a\\b\\c.rs"), "a/b/c.rs");
+        // already-forward-slash and bare names are unchanged
+        assert_eq!(normalize_index_path("src/lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_index_path("lib.rs"), "lib.rs");
     }
 
     // ── strip_ansi ────────────────────────────────────────────────────────────
