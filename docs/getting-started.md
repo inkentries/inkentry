@@ -9,11 +9,51 @@ at the end).
 
 ## 1. Install spelunk
 
+### Windows
+
+#### Install script (PowerShell) — recommended
+
+The PowerShell install script resolves the latest release, downloads the
+Windows `.zip`, and installs `spelunk.exe` and `spelunk-server.exe` to
+`%LOCALAPPDATA%\Programs\spelunk\`. It also adds that directory to your user
+`PATH` automatically.
+
+Open PowerShell and run:
+
+```powershell
+irm https://spelunk.cloud/install.ps1 | iex
+spelunk --version
+```
+
+Preview what it would do without writing anything:
+
+```powershell
+& ([scriptblock]::Create((irm https://spelunk.cloud/install.ps1))) --dry-run
+```
+
+#### Manual `.zip` download
+
+Download the `.zip` for your platform from the
+[releases page](https://github.com/spelunk-cloud/spelunk/releases). The Windows
+archive is named `spelunk-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
+place `spelunk.exe` and `spelunk-server.exe` anywhere on your `PATH`
+(e.g. `C:\Users\<you>\bin\`).
+
+> **Windows package managers (winget, Scoop):** a winget manifest is planned as
+> the primary managed install path for Windows; submission is pending a decision
+> on which managed channel to support. Follow the
+> [releases page](https://github.com/spelunk-cloud/spelunk/releases) or the
+> repo for updates.
+
+---
+
+### macOS and Linux
+
 The recommended install paths are Homebrew (macOS/Linux), the install script,
 and the Debian package (Linux). All three drop both `spelunk` and
 `spelunk-server` onto your `$PATH`.
 
-### Install script (macOS and Linux) — recommended
+#### Install script (macOS and Linux) — recommended
 
 Detects your OS/arch, resolves the latest release tag via the GitHub API,
 downloads the matching tarball, and installs both binaries to `/usr/local/bin`
@@ -30,7 +70,7 @@ Preview what it would do without writing anything:
 curl -fsSL https://spelunk.cloud/install.sh | sh -s -- --dry-run
 ```
 
-### Homebrew (macOS and Linux)
+#### Homebrew (macOS and Linux)
 
 ```bash
 brew install spelunk-cloud/spelunk/spelunk
@@ -50,15 +90,16 @@ sudo dpkg -i spelunk_<version>_amd64.deb
 spelunk --version
 ```
 
-### Manual tarball (any platform)
+### Manual tarball / zip (any platform)
 
-Download the tarball for your platform from the
-[releases page](https://github.com/spelunk-cloud/spelunk/releases) and put both
-binaries on your `$PATH`. Release tarballs are named
-`spelunk-<version>-<target>.tar.gz`.
+binaries on your `$PATH`. Supported targets:
 
-Supported targets: `aarch64-apple-darwin` (Apple Silicon Mac),
-`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+| Platform | Archive name |
+|----------|-------------|
+| macOS (Apple Silicon) | `spelunk-<version>-aarch64-apple-darwin.tar.gz` |
+| Linux x86_64 | `spelunk-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `spelunk-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `spelunk-<version>-x86_64-pc-windows-msvc.zip` |
 
 > **Intel Macs (`x86_64-apple-darwin`):** prebuilt binaries are not published for
 > this target — Apple deprecated the architecture and Apple Silicon replaced it on
@@ -67,7 +108,7 @@ Supported targets: `aarch64-apple-darwin` (Apple Silicon Mac),
 > `x86_64-apple-darwin`).
 
 ```bash
-# Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.8.0
+# Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.9.0
 curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
 
@@ -75,7 +116,7 @@ curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spe
 spelunk --version
 ```
 
-Swap the target in the filename for Linux. Building from source? See
+Swap the target in the filename for another platform. Building from source? See
 [Building from source](building.md).
 
 ### Running spelunk-server as a service (optional)

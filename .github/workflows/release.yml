@@ -30,6 +30,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             features: rich-formats,metal
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: rich-formats
 
     steps:
       - uses: actions/checkout@v7
@@ -60,6 +63,7 @@ jobs:
             libc6-dev-arm64-cross
 
       - name: Build release binaries
+        shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
@@ -76,7 +80,8 @@ jobs:
           strip target/${{ matrix.target }}/release/spelunk
           strip target/${{ matrix.target }}/release/spelunk-server
 
-      - name: Package tarball
+      - name: Package tarball (unix)
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           VERSION="${{ github.ref_name }}"
@@ -86,6 +91,19 @@ jobs:
             -C "target/${TARGET}/release" \
             spelunk spelunk-server
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package zip (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ github.ref_name }}"
+          $TARGET  = "${{ matrix.target }}"
+          $ARCHIVE = "spelunk-${VERSION}-${TARGET}.zip"
+          Compress-Archive -Path `
+            "target\${TARGET}\release\spelunk.exe", `
+            "target\${TARGET}\release\spelunk-server.exe" `
+            -DestinationPath $ARCHIVE
+          "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -178,6 +196,7 @@ jobs:
             --generate-notes \
             $PRERELEASE \
             artifacts/*.tar.gz \
+            artifacts/*.zip \
             artifacts/*.deb
 
   update-homebrew-formula:
