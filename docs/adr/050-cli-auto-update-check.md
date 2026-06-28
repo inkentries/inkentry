@@ -1,4 +1,4 @@
-# ADR-049: CLI auto-update check
+# ADR-050: CLI auto-update check
 
 **Status:** Proposed  
 **Date:** 2026-06-28  
