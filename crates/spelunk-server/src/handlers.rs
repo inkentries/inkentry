@@ -116,6 +116,9 @@ pub struct HealthResponse {
     pub instance_id: String,
     /// Effective UID of the process that started the server (Unix); `null` on Windows.
     pub started_by: Option<u32>,
+    /// Embedding dimension produced by this server's embedder.
+    /// `0` when no embedder is loaded (capability `index.embed` absent).
+    pub embedding_dim: usize,
 }
 
 /// Server liveness check. No authentication required.
@@ -138,12 +141,14 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         capabilities.push("explore".to_string());
         capabilities.push("llm.complete".to_string());
     }
+    let embedding_dim = state.embedder.as_ref().map_or(0, |e| e.dimension());
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         capabilities,
         instance_id: state.instance_id.clone(),
         started_by: state.started_by,
+        embedding_dim,
     })
 }
 
@@ -1371,6 +1376,43 @@ mod tests {
         );
     }
 
+    /// A minimal mock embedder that always returns a single zero vector of `dim` dimensions.
+    /// Used to verify that `embedding_dim` is surfaced correctly in the health response.
+    struct MockEmbedder {
+        dim: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl spelunk_core::embeddings::EmbeddingBackend for MockEmbedder {
+        async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0_f32; self.dim]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+    }
+
+    /// Build an app with a mock embedder of the given dimension.
+    fn make_app_with_embedder(dim: usize) -> axum::Router {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
+            .expect("failed to open in-memory server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
+        let state = AppState {
+            db: Arc::new(tokio::sync::Mutex::new(db)),
+            auth: Arc::new(ApiKeyAuth::new(None)),
+            conflict_threshold: 0.92,
+            embedder: Some(Arc::new(MockEmbedder { dim })),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
+            instance_id,
+            started_by: None,
+        };
+        super::super::router(state)
+    }
+
     /// GET /v1/health should return JSON with `status`, `version`, and `capabilities`.
     #[tokio::test]
     async fn health_returns_json_with_capabilities() {
@@ -1506,6 +1548,56 @@ mod tests {
             resp.status(),
             http::StatusCode::PAYLOAD_TOO_LARGE,
             "batch >256 must return 413"
+        );
+    }
+
+    /// GET /v1/health with a mock embedder of dim 4 must report `embedding_dim: 4`.
+    #[tokio::test]
+    async fn health_embedding_dim_with_embedder() {
+        let app = make_app_with_embedder(4);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).expect("health must return JSON");
+        assert_eq!(
+            json["embedding_dim"],
+            json!(4),
+            "embedding_dim must match the mock embedder dimension (4)"
+        );
+        // Capabilities must include index.embed when embedder is present.
+        let caps = json["capabilities"].as_array().unwrap();
+        assert!(
+            caps.iter().any(|c| c == "index.embed"),
+            "capabilities must include index.embed when embedder is loaded"
+        );
+    }
+
+    /// GET /v1/health with no embedder (the default make_app) must report `embedding_dim: 0`.
+    #[tokio::test]
+    async fn health_embedding_dim_without_embedder() {
+        let (app, _) = make_app(0.92);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).expect("health must return JSON");
+        assert_eq!(
+            json["embedding_dim"],
+            json!(0),
+            "embedding_dim must be 0 when no embedder is configured"
         );
     }
 }
