@@ -31,9 +31,14 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     )
     .unwrap();
 
-    // Build index (parse-only; no embedding server needed).
+    // Build index. `SPELUNK_NO_SERVER=1` forces offline so the index skips the
+    // embed phase entirely (no embedding server needed); without it, loopback
+    // auto-discovery can pick up a `spelunk-server` running on 127.0.0.1:7777
+    // and route the embed call there, which fails the build with a dimension
+    // mismatch. We only care about the SQLite memory-backend path here.
     Command::cargo_bin("spelunk")
         .unwrap()
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -56,6 +61,7 @@ fn status_json_includes_memory_backend_field() {
         .unwrap()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -106,6 +112,7 @@ fn check_json_includes_memory_backend_field() {
         .unwrap()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("check")
@@ -151,6 +158,7 @@ fn status_text_mentions_memory_backend() {
         .unwrap()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
+        .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
