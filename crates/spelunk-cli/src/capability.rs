@@ -287,11 +287,8 @@ async fn probe(url: Option<&str>, key: Option<&str>) -> Tier {
         return match probe_url(url, key, REMOTE_PROBE_TIMEOUT, false).await {
             Ok(tier) => tier,
             Err(e) => {
-                // Dim mismatch on an explicitly-configured server: surface the error
-                // to the terminal and fall back to offline so the process exits cleanly
-                // rather than hanging on a deep-in-command failure.
-                tracing::error!("{e}");
-                Tier::Offline
+                eprintln!("error: {e}");
+                std::process::exit(2);
             }
         };
     }
