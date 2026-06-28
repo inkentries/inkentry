@@ -9,6 +9,9 @@ repository = "https://github.com/spelunk-cloud/spelunk"
 [features]
 default = []
 rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
+# Exposes in-memory test doubles (e.g. `config::secret_store::MemoryStore`) to
+# downstream crates' tests without pulling them into release builds.
+test-support = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -24,6 +27,7 @@ sqlite-vec = { workspace = true }
 reqwest = { workspace = true }
 thiserror = "2"
 percent-encoding = "2.3"
+keyring = { workspace = true }
 
 toml = "1.1"
 dirs = "6"

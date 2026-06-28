@@ -2,6 +2,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod secret_store;
+
+use secret_store::{KEY_SERVER_KEY, SecretStore};
+
 #[cfg(test)]
 use tempfile::TempDir;
 
@@ -448,6 +452,16 @@ impl Config {
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
+        let store = secret_store::default_store(&spelunk_config_dir())?;
+        Self::load_with_store(path, store.as_ref())
+    }
+
+    /// Same as [`Config::load`] but with an injected [`SecretStore`].
+    ///
+    /// Tests pass an in-memory store so the credential resolution + migration
+    /// paths can be exercised without a real keychain or daemon. Production code
+    /// calls [`Config::load`], which resolves the host's default store.
+    pub fn load_with_store(path: Option<&Path>, store: &dyn SecretStore) -> Result<Self> {
         // ── 1. Load global personal config ───────────────────────────────────
         let global_path = match path {
             Some(p) => p.to_path_buf(),
@@ -461,7 +475,17 @@ impl Config {
             Config::default()
         };
 
+        // A bare `server_key` in the *personal* global config is the legacy
+        // plaintext credential we migrate into the secret store (spelunk-oss^23).
+        // Captured before the project-level merge so we never migrate a shared
+        // team key from a checked-in `.spelunk/config.toml`.
+        let global_bare_server_key = cfg.server_key.clone();
+
         // ── 2. Merge project-level config (.spelunk/config.toml) ─────────────
+        // A `server_key` here is a *shared team* key (acceptable behind a VPN);
+        // it is intentionally NOT migrated to the keychain — it lives in a
+        // checked-in file by design and is not personal to this user.
+        let mut project_server_key: Option<String> = None;
         if let Ok(cwd) = std::env::current_dir()
             && let Some(proj_path) = find_project_config(&cwd)
         {
@@ -475,6 +499,7 @@ impl Config {
                 cfg.server_url = Some(v);
             }
             if let Some(v) = proj.server_key.or(proj.memory_server_key) {
+                project_server_key = Some(v.clone());
                 cfg.server_key = Some(v);
             }
             if let Some(v) = proj.project_id {
@@ -482,11 +507,33 @@ impl Config {
             }
         }
 
-        // Legacy bare `server_key` after the global + project-level merges but
-        // before env / `[auth]` resolution. Used as the lowest-precedence
-        // fallback so pre-WorkOS users (and team `.spelunk/config.toml` keys)
-        // keep working until they re-run `spelunk login`.
-        let legacy_server_key = cfg.server_key.clone();
+        // ── 2b. One-time migration of the legacy plaintext bare key ──────────
+        // If the personal config still carries a bare `server_key`, move it into
+        // the secret store and strip it from the file (transparent, one-time).
+        // Skip when the store already has one (already migrated / freshly logged
+        // in) to avoid clobbering a rotated credential with a stale file value.
+        if let Some(bare) = &global_bare_server_key {
+            let already_in_store = store.get(KEY_SERVER_KEY)?.is_some();
+            if !already_in_store {
+                store.set(KEY_SERVER_KEY, bare).with_context(|| {
+                    "migrating plaintext server_key into the secret store".to_string()
+                })?;
+            }
+            // Strip the plaintext key from the personal config regardless: it is
+            // now in the store (or was already there), so it must not linger in
+            // the file. `remove_server_key_from` preserves all other keys.
+            remove_server_key_from(&global_path)
+                .context("stripping migrated server_key from config.toml")?;
+            tracing::info!(
+                "migrated plaintext server_key out of {} into the {} secret store",
+                global_path.display(),
+                store.kind()
+            );
+        }
+
+        // The stored credential (post-migration) is the personal-tier fallback
+        // bearer, below env and `[auth]` but above the project-level team key.
+        let stored_server_key = store.get(KEY_SERVER_KEY)?;
 
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
@@ -498,9 +545,6 @@ impl Config {
             cfg.server_url = Some(v);
         }
         let env_server_key = std::env::var("SPELUNK_SERVER_KEY").ok();
-        if let Some(v) = &env_server_key {
-            cfg.server_key = Some(v.clone());
-        }
         if let Ok(v) = std::env::var("SPELUNK_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
@@ -518,22 +562,25 @@ impl Config {
             cfg.mode = Some(parsed);
         }
 
-        // ── 4. Resolve the effective Bearer token (ADR-045) ──────────────────
-        // Precedence for `Authorization: Bearer`:
-        //   1. `SPELUNK_SERVER_KEY` env var (CI / explicit override) — wins.
+        // ── 4. Resolve the effective Bearer token ────────────────────────────
+        // Precedence for `Authorization: Bearer` (highest first):
+        //   1. `SPELUNK_SERVER_KEY` env var (CI / headless escape hatch) — wins.
         //   2. `[auth].access_token` from `spelunk login` (WorkOS device flow).
-        //   3. Legacy bare `server_key` (pre-WorkOS users keep working until
-        //      they re-run `spelunk login`).
+        //   3. Secret-store `server_key` (the migrated home for the personal
+        //      bearer — keychain by default, file fallback when headless).
+        //   4. Project-level team `server_key` from `.spelunk/config.toml`.
         // The `[auth]` tokens are kept in `cfg.auth` so the refresh-on-expiry /
         // org-switch paths can reach the refresh token; every other call site
         // only ever reads the resolved `cfg.server_key`.
-        if env_server_key.is_none() {
-            if let Some(auth) = &cfg.auth {
-                cfg.server_key = Some(auth.access_token.clone());
-            } else {
-                cfg.server_key = legacy_server_key;
-            }
-        }
+        cfg.server_key = if let Some(v) = env_server_key {
+            Some(v)
+        } else if let Some(auth) = &cfg.auth {
+            Some(auth.access_token.clone())
+        } else if let Some(v) = stored_server_key {
+            Some(v)
+        } else {
+            project_server_key
+        };
 
         Ok(cfg)
     }
@@ -606,46 +653,46 @@ impl Config {
     }
 }
 
-/// Write (or update) `server_key` in `~/.config/spelunk/config.toml`.
+/// Persist the CLI bearer credential (`server_key`) into the OS secret store.
 ///
-/// This is the token `spelunk login` persists. Uses a line-level
-/// read-modify-write so that other keys in the file are preserved.  The file is
-/// created (with the `server_key` line) if absent.
+/// This is the token `spelunk login` persists. It is stored in the OS keychain
+/// (macOS Keychain / Linux Secret Service / Windows Credential Manager) by
+/// default, falling back to an owner-only file when no keychain backend is
+/// available (CI / headless). The credential is **never** written to
+/// `config.toml` (spelunk-oss^23).
 ///
-/// The value is **not** shell-quoted before writing — it is written as a bare
-/// TOML string with double quotes, e.g. `server_key = "sk-sp-…"`.
+/// The store is credential-format-agnostic, so the same call path serves a
+/// future WorkOS-token migration (spelunk-oss^22).
 pub fn save_server_key(key: &str) -> Result<()> {
-    save_server_key_to(key, &spelunk_config_dir().join("config.toml"))
+    let store = secret_store::default_store(&spelunk_config_dir())?;
+    save_server_key_with(key, store.as_ref())
 }
 
-/// Same as [`save_server_key`] but writes to an explicit path (useful in tests).
-pub fn save_server_key_to(key: &str, config_path: &Path) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating config dir {}", parent.display()))?;
-    }
-
-    let existing = if config_path.exists() {
-        std::fs::read_to_string(config_path)
-            .with_context(|| format!("reading {}", config_path.display()))?
-    } else {
-        String::new()
-    };
-
-    let new_line = format!("server_key = {}\n", toml_quote(key));
-    let updated = upsert_toml_line(&existing, "server_key", &new_line);
-
-    std::fs::write(config_path, updated)
-        .with_context(|| format!("writing {}", config_path.display()))?;
-    Ok(())
+/// Same as [`save_server_key`] but with an injected [`SecretStore`] (tests).
+pub fn save_server_key_with(key: &str, store: &dyn SecretStore) -> Result<()> {
+    store
+        .set(KEY_SERVER_KEY, key)
+        .context("persisting server_key to the secret store")
 }
 
-/// Remove `server_key` from `~/.config/spelunk/config.toml`.
+/// Remove the CLI bearer credential everywhere it might live.
 ///
-/// This is what `spelunk logout` clears. No-op if the file does not exist or the
-/// key is absent.  Other keys are preserved.
+/// What `spelunk logout` clears: the secret-store entry **and** any legacy
+/// plaintext `server_key` left in `~/.config/spelunk/config.toml`. No-op for any
+/// location where the credential is absent.
 pub fn remove_server_key() -> Result<()> {
-    remove_server_key_from(&spelunk_config_dir().join("config.toml"))
+    let store = secret_store::default_store(&spelunk_config_dir())?;
+    remove_server_key_with(store.as_ref(), &spelunk_config_dir().join("config.toml"))
+}
+
+/// Same as [`remove_server_key`] but with an injected [`SecretStore`] and an
+/// explicit legacy config path (tests).
+pub fn remove_server_key_with(store: &dyn SecretStore, config_path: &Path) -> Result<()> {
+    store
+        .delete(KEY_SERVER_KEY)
+        .context("removing server_key from the secret store")?;
+    // Belt-and-braces: also strip any legacy plaintext key still in the file.
+    remove_server_key_from(config_path)
 }
 
 /// Same as [`remove_server_key`] but operates on an explicit path (useful in tests).
@@ -759,47 +806,6 @@ fn set_owner_only_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Wrap a string value in TOML double-quote syntax, escaping `\` and `"`.
-fn toml_quote(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
-
-/// Insert or replace the line that sets `key` in a TOML file body.
-///
-/// Only handles top-level bare-key assignments (`key = …`).  Table sections
-/// are left untouched — the function scans for a line starting with `key`
-/// followed by optional whitespace and `=`.  If found, it is replaced; if not
-/// found, the new line is appended.
-fn upsert_toml_line(content: &str, key: &str, new_line: &str) -> String {
-    let mut found = false;
-    let mut result: String = content
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            // Match `key = …` at the top level (no table-section header).
-            let is_match = trimmed
-                .strip_prefix(key)
-                .is_some_and(|rest| rest.trim_start().starts_with('='));
-            if is_match {
-                found = true;
-                new_line.to_string()
-            } else {
-                format!("{line}\n")
-            }
-        })
-        .collect();
-
-    if !found {
-        // Ensure there is a trailing newline before appending.
-        if !result.ends_with('\n') && !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(new_line);
-    }
-    result
-}
-
 /// Returns `true` when `SPELUNK_NO_SERVER` is set to a truthy value.
 ///
 /// This is the hard offline kill-switch shared by [`Config::resolve_mode`] and
@@ -853,6 +859,13 @@ pub fn is_loopback_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secret_store::MemoryStore;
+
+    /// `Config::load` with a fresh in-memory secret store, so credential tests
+    /// never touch the host keychain or `~/.config/spelunk/secrets.toml`.
+    fn load_hermetic(path: &Path) -> Result<Config> {
+        Config::load_with_store(Some(path), &MemoryStore::default())
+    }
 
     /// Unset all spelunk-related env vars to prevent cross-test contamination.
     fn clear_spelunk_env() {
@@ -965,7 +978,7 @@ mod tests {
         std::fs::write(&config_path, "mode = \"offline\"\n").unwrap();
 
         unsafe { std::env::set_var("SPELUNK_MODE", "cloud_first") };
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.mode, Some(SyncMode::CloudFirst));
         unsafe { std::env::remove_var("SPELUNK_MODE") };
     }
@@ -979,7 +992,7 @@ mod tests {
         std::fs::write(&config_path, "").unwrap();
 
         unsafe { std::env::set_var("SPELUNK_MODE", "sideways") };
-        let err = Config::load(Some(&config_path)).unwrap_err();
+        let err = load_hermetic(&config_path).unwrap_err();
         assert!(err.to_string().contains("SPELUNK_MODE"));
         unsafe { std::env::remove_var("SPELUNK_MODE") };
     }
@@ -991,7 +1004,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "mode = \"local_first\"\n").unwrap();
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
     }
 
@@ -1012,7 +1025,7 @@ project_id = "my-proj"
         )
         .unwrap();
 
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://old.example.com:7777".to_string())
@@ -1035,7 +1048,7 @@ project_id = "my-proj"
         )
         .unwrap();
 
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.server_key, Some("secret-token".to_string()));
     }
 
@@ -1047,7 +1060,7 @@ project_id = "my-proj"
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
 
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.server_key, None);
         assert_eq!(cfg.project_id, None);
@@ -1327,7 +1340,7 @@ project_id = "my-proj"
         unsafe {
             std::env::set_var("SPELUNK_SERVER_URL", "http://env.example.com:7777");
         }
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://env.example.com:7777".to_string())
@@ -1350,7 +1363,7 @@ project_id = "my-proj"
         unsafe {
             std::env::set_var("SPELUNK_SERVER_KEY", "env-token");
         }
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.server_key, Some("env-token".to_string()));
     }
 
@@ -1370,7 +1383,7 @@ project_id = "my-proj"
         unsafe {
             std::env::set_var("SPELUNK_PROJECT_ID", "env-proj");
         }
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.project_id, Some("env-proj".to_string()));
     }
 
@@ -1386,7 +1399,7 @@ project_id = "my-proj"
         unsafe {
             std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
         }
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://old.example.com:7777".to_string())
@@ -1405,7 +1418,7 @@ project_id = "my-proj"
             std::env::set_var("SPELUNK_SERVER_URL", "http://new.example.com:7777");
             std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
         }
-        let cfg = Config::load(Some(&config_path)).unwrap();
+        let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://new.example.com:7777".to_string())
@@ -1436,7 +1449,7 @@ project_id = "team/proj"
         let original_cwd = std::env::current_dir().ok();
         std::env::set_current_dir(&proj_dir).unwrap();
 
-        let cfg = Config::load(Some(&global_config)).unwrap();
+        let cfg = load_hermetic(&global_config).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://proj.example.com:7777".to_string())
@@ -1469,7 +1482,7 @@ project_id = "team/proj"
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
         let auth = cfg.auth.expect("auth table should load");
         assert_eq!(auth.refresh_token, "rt-sample");
@@ -1486,7 +1499,7 @@ project_id = "team/proj"
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "ci-token") };
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("ci-token"));
         // The refresh token is still available for the refresh path.
         assert_eq!(cfg.auth.unwrap().refresh_token, "rt-sample");
@@ -1502,7 +1515,7 @@ project_id = "team/proj"
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
 
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("sk-legacy"));
         assert!(cfg.auth.is_none());
     }
@@ -1518,7 +1531,7 @@ project_id = "team/proj"
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
     }
 
@@ -1532,7 +1545,7 @@ project_id = "team/proj"
         std::fs::write(&path, "server_url = \"http://team.example:7777\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_url.as_deref(), Some("http://team.example:7777"));
         assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
     }
@@ -1549,7 +1562,7 @@ project_id = "team/proj"
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         remove_auth_tokens_from(&path).unwrap();
-        let cfg = Config::load(Some(&path)).unwrap();
+        let cfg = load_hermetic(&path).unwrap();
         assert!(cfg.auth.is_none());
         // Legacy key still present and now resolves as the bearer fallback.
         assert_eq!(cfg.server_key.as_deref(), Some("sk-legacy"));
@@ -1608,7 +1621,7 @@ project_id = "team/old"
         let original_cwd = std::env::current_dir().ok();
         std::env::set_current_dir(&proj_dir).unwrap();
 
-        let cfg = Config::load(Some(&global_config)).unwrap();
+        let cfg = load_hermetic(&global_config).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://old.example.com:7777".to_string())

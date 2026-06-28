@@ -25,6 +25,16 @@ tempfile    = "3"
 pretty_assertions = "1"
 serial_test = "3"
 wiremock    = "0.6"
+# OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
+# Service, Windows Credential Manager). `apple-native` / `windows-native` use
+# the platform store directly; `sync-secret-service` covers Linux. The `mock`
+# feature provides an in-memory backend used by tests so CI needs no daemon.
+keyring     = { version = "3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 
 [profile.release]
 lto           = true
