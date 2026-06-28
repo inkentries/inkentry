@@ -71,9 +71,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         if let Some(auth) = cfg.auth.as_ref() {
             let tokens =
                 switch_org(&client, &workos_url, &cloud_url, &client_id, auth, org_slug).await?;
-            persist_tokens(&tokens)?;
-            print_logged_in(org_slug);
-            return Ok(());
+            return finish_login(&cloud_url, tokens, Some(org_slug)).await;
         }
     }
 
@@ -178,19 +176,33 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         None => (tokens, None),
     };
 
-    finish_login(tokens, entered_org.as_deref())
+    finish_login(&cloud_url, tokens, entered_org.as_deref()).await
 }
 
 /// Persist tokens and print the success message naming the org entered.
-fn finish_login(tokens: AuthTokens, org: Option<&str>) -> Result<()> {
+///
+/// Attempts a best-effort `GET /v1/me` lookup to resolve the WorkOS org id to
+/// a human-readable `"<name> (<slug>)"` string. The lookup is never fatal: any
+/// error, timeout, or missing entry falls back to the `--org` slug hint (when
+/// provided) or the raw `org_id` from the token.
+async fn finish_login(
+    cloud_url: &str,
+    tokens: AuthTokens,
+    org_slug_hint: Option<&str>,
+) -> Result<()> {
     // Write before printing so a write error surfaces before the user believes
     // they are logged in.
     persist_tokens(&tokens)?;
     println!();
-    match org {
-        Some(o) => print_logged_in(o),
-        None => print_logged_in(&tokens.org_id),
-    }
+    // Best-effort: resolve the WorkOS org id to a display name.
+    let display =
+        auth_api::lookup_org_display_name(cloud_url, &tokens.access_token, &tokens.org_id).await;
+    // Fall back chain: resolved name → slug hint → raw org_id.
+    let label = display
+        .as_deref()
+        .or(org_slug_hint)
+        .unwrap_or(&tokens.org_id);
+    print_logged_in(label);
     Ok(())
 }
 
