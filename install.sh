@@ -1,7 +1,7 @@
 #!/bin/sh
 # spelunk installer — https://spelunk.cloud
-# Usage: curl -fsSL https://spelunk.cloud/install.sh | sh
-#        curl -fsSL https://spelunk.cloud/install.sh | sh -s -- --dry-run
+# Usage: curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh
+#        curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh -s -- --dry-run
 set -e
 
 REPO="spelunk-cloud/spelunk"

@@ -16,9 +16,12 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 
 Two install paths live outside this workflow:
 
-- **`install.sh`** is hosted at `https://spelunk.cloud/install.sh`. It resolves
-  the latest release tag via the GitHub API and downloads the matching tarball —
-  it does not need updating per release.
+- **`install.sh`** is fetched directly from the canonical copy on `main`
+  (`https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh`),
+  so the documented command always matches the committed script. It resolves the
+  latest release tag via the GitHub API and downloads the matching tarball — it
+  does not need updating per release. (The Windows `install.ps1` is fetched the
+  same way.)
 - **Homebrew tap** lives in the separate `spelunk-cloud/homebrew-spelunk`
   repo. The `update-homebrew-formula` job in `.github/workflows/release.yml`
   regenerates `Formula/spelunk.rb` with the new `url`/`sha256`/`version` and
@@ -28,11 +31,12 @@ Two install paths live outside this workflow:
 
 ## Supported platforms
 
-| Target | Runner | Notes |
-|--------|--------|-------|
-| `x86_64-unknown-linux-gnu` | ubuntu-latest | Native build |
-| `aarch64-unknown-linux-gnu` | ubuntu-latest | Cross-compiled via `cross` |
-| `aarch64-apple-darwin` | macos-latest | Native build (Apple Silicon) |
+| Target | Runner | Archive format | Notes |
+|--------|--------|---------------|-------|
+| `x86_64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Native build; binaries stripped |
+| `aarch64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Cross-compiled via gcc-aarch64 toolchain |
+| `aarch64-apple-darwin` | macos-latest | `.tar.gz` | Native build (Apple Silicon) |
+| `x86_64-pc-windows-msvc` | windows-latest | `.zip` | Native build; produces `.exe` binaries |
 
 > **Note:** `x86_64-apple-darwin` (Intel Mac) prebuilt binaries were dropped —
 > Apple deprecated the architecture and Apple Silicon replaced it on new
@@ -105,27 +109,33 @@ After a release is published, assets follow these patterns (the `<version>`
 segment is the full tag, e.g. `v0.8.0`):
 
 ```
-# Tarballs
+# Unix tarballs
 https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-<target>.tar.gz
+
+# Windows zip
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-x86_64-pc-windows-msvc.zip
 
 # Debian package (amd64)
 https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk_<version-no-v>_amd64.deb
 ```
 
-Examples for `v0.8.0`:
+Examples for `v0.9.0`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-aarch64-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk-v0.8.0-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-aarch64-unknown-linux-gnu.tar.gz
+
+# Windows x86_64
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-x86_64-pc-windows-msvc.zip
 
 # Debian (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.8.0/spelunk_0.8.0_amd64.deb
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk_0.9.0_amd64.deb
 ```
 
 > `releases/latest/download/<asset>` also works when the asset name is exact,
