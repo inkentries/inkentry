@@ -113,6 +113,37 @@ See `Chunk::embedding_text()` in `src/indexer/chunker.rs`.
 Vectors are L2-normalised and stored as sqlite-vec `INT8[896]` (chunk and
 snapshot embeddings); memory-entry embeddings stay `FLOAT[896]`.
 
+#### Why two vector-storage formats (int8 for chunks, float for memory)
+
+This split is **deliberate**, not an oversight. The two vector tables are sized
+for different jobs:
+
+| Table | Type | Rationale |
+| --- | --- | --- |
+| `embeddings` (chunks), `snapshot_embeddings` | `INT8[896]` | The code index scales with the corpus — thousands to millions of chunks. int8 scalar quantisation is 4× smaller on disk and, because F2LLM vectors are L2-normalised, lossless enough for ranking. The int8 L2 distance comes back ~127× the f32 distance, so the search path rescales by `embeddings::INT8_SCALE` on read. |
+| `note_embeddings` (memory) | `FLOAT[896]` | The memory-note table is tiny (tens to low-thousands of rows per project), so the int8 footprint win is negligible. Keeping full-precision f32 avoids the int8 quantise-on-write + distance-rescale-on-read nuance for a table that never grows large, and keeps the memory insert/search path (`MemoryStore::insert_embedding` / `search`, fed by `embeddings::vec_to_blob`) free of `vec_int8(...)` wrapping and `INT8_SCALE` division. |
+
+Concretely, the two paths never mix:
+- **int8 path** — `Database::{insert_embedding,search_similar}` and the snapshot
+  equivalents go through `embeddings::vec_to_int8_blob` + `vec_int8(?)` on write
+  and divide the raw distance by `embeddings::INT8_SCALE` on read
+  (`storage/db.rs`, `storage/snapshots.rs`, `storage/search.rs`).
+- **float path** — memory notes go through `embeddings::vec_to_blob` (raw
+  little-endian f32) into `MemoryStore::insert_embedding`, and `MemoryStore::search`
+  matches on the raw f32 query blob with no rescale
+  (`storage/memory/notes.rs`, `storage/memory/search.rs`). The server-side memory
+  store (`spelunk-server/src/db.rs`) mirrors this float layout.
+
+If memory ever grows to corpus scale, migrating `note_embeddings` to int8 would
+be the obvious follow-up — but until then the int8 cost (a second quantised path
+to maintain, plus a forced memory re-embed/re-harvest on migration) buys nothing.
+
+The dimension upgrade for pre-0.9 `FLOAT[768]` databases is handled **per store**:
+`Database::apply_dim_upgrade_migration` rebuilds the chunk/snapshot tables as
+`INT8[896]`, while `MemoryStore::migrate` rebuilds `note_embeddings` as
+`FLOAT[896]` (each guarded by its own marker table). There is no path that leaves
+memory stranded on the stale 768-dim layout.
+
 ### Backend abstraction
 
 The `EmbeddingBackend` and `LlmBackend` traits (in spelunk-core's `embeddings/` and `llm/`) are the only interface between spelunk and inference. spelunk-core ships **no** concrete implementations; the concrete backends live in `spelunk-server` (the native F2LLM embedder in `embedder_native.rs`, plus OpenAI-compatible HTTP clients). The CLI reaches inference only through `ServerLlmClient` / `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`.
