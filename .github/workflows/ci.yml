@@ -67,20 +67,18 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            # Linux links the native embedder (ort/fastembed) so the
+            # Linux builds the native embedder (candle F2LLM) so the
             # `embed-native` path stays under test on at least one platform.
             test-flags: ""
           - os: macos-latest
-            # macOS drops `embed-native`: ort's build script bakes absolute
-            # `-lclang_rt.osx` / ONNX-download-cache link paths that don't
-            # survive a restored `target/` cache or a runner-image rotation,
-            # producing `ld: library 'clang_rt.osx' not found`. The embedder is
-            # EXPERIMENTAL / NOT RECOMMENDED and is covered on the Linux leg.
+            # macOS drops `embed-native` to keep this leg fast: the candle
+            # native-embedder stack is heavy to compile and is already covered
+            # on the Linux leg. The embedder is EXPERIMENTAL / NOT RECOMMENDED.
             test-flags: "--no-default-features"
           - os: windows-latest
-            # Windows keeps default features: the embed-native default uses the
-            # ORT CPU execution provider (no Metal/DirectML), which links cleanly.
-            # The spelunk-server tests use embedder: None and never load the model.
+            # Windows keeps default features: the embed-native default builds
+            # the candle (CPU) embedder, which links cleanly. The spelunk-server
+            # tests use embedder: None and never load the model.
             test-flags: ""
     steps:
       - uses: actions/checkout@v7
@@ -102,8 +100,8 @@ jobs:
             ~/.cargo/git
             target
           # `-v2` bump abandons the poisoned pre-2026-06-24 macOS caches that
-          # held stale ort link directives. Keep restore-keys on the same
-          # `-v2-` prefix so we never fall back into a poisoned cache.
+          # held stale native-embedder link directives. Keep restore-keys on the
+          # same `-v2-` prefix so we never fall back into a poisoned cache.
           key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-v2-
