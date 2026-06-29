@@ -7,8 +7,9 @@ use crate::{capability::Tier, config::Config, storage::Database};
 
 /// Maximum chunks per request — server enforces 256 (returns 413 if exceeded).
 /// Keep well below that ceiling so each HTTP call completes within the client
-/// timeout: at ONNX_BATCH_SIZE=32 on the server, 64 chunks = 2 ONNX calls
-/// (~30-40 s on CPU), leaving plenty of headroom under the 120 s limit.
+/// timeout: the server's candle embedder (F2LLM-v2-330M) runs inference in
+/// padded sub-batches of EMBED_BATCH_SIZE=8, so 64 chunks = 8 forward passes,
+/// leaving plenty of headroom under the 120 s limit.
 const MAX_BATCH: usize = 64;
 
 #[derive(Serialize)]
