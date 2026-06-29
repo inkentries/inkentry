@@ -130,10 +130,11 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
 
 ### Windows (`windows-latest`) caveats
 
-- **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls` via
-  `fastembed`'s default feature set) compiles from C source. Strawberry Perl is
-  pre-installed on `windows-latest` runners so the build succeeds, but it adds
-  several minutes. The `test` job timeout is set to 30 minutes.
+- **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls`,
+  via `hf-hub`/`reqwest` in the `embed-native` stack) compiles from C source.
+  Strawberry Perl is pre-installed on `windows-latest` runners so the build
+  succeeds, but it adds several minutes. The `test` job timeout is set to 30
+  minutes.
 
 - **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
   spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
@@ -148,11 +149,10 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
   PID is still running. This restores the `spelunk server status/stop` live-PID
   check on Windows (the previous stub always returned `false`).
 
-- **ORT binary download.** The `embed-native` feature (default for
-  `spelunk-server`) downloads the ONNX Runtime prebuilt binary at build time.
-  This requires internet access in CI and adds download time, but succeeds on
-  GitHub-hosted runners. No model is downloaded during `cargo test` (tests use
-  `embedder: None`).
+- **Model download.** The `embed-native` feature (default for `spelunk-server`)
+  bundles the candle F2LLM embedder; the model weights are fetched via `hf-hub`
+  at runtime on first use, not at build time. No model is downloaded during
+  `cargo build` or `cargo test` (tests use `embedder: None`).
 
 ---
 
