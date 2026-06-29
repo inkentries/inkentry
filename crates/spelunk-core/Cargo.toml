@@ -35,7 +35,7 @@ dirs = "6"
 # adds it), so registry paths match the plain paths the lookup side derives via gix.
 dunce = "1"
 
-gix = { version = "0.84.0", default-features = false, features = [
+gix = { version = "0.85.0", default-features = false, features = [
     "sha1",
     "status",
 ] }
