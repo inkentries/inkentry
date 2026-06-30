@@ -1,14 +1,15 @@
-use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, IndexEmbedResponder, write_config_with_server};
+use plumbing_helpers::{
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, spelunk_bin, spelunk_bin_in, write_config_with_server,
+};
 
 #[test]
 fn test_help_output() {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--help")
         .assert()
         .success()
@@ -22,7 +23,7 @@ fn test_help_output() {
 
 #[test]
 fn test_invalid_command() {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("nonexistent-command")
         .assert()
         .failure()
@@ -33,7 +34,7 @@ fn test_invalid_command() {
 
 #[test]
 fn test_languages_output() {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("languages")
         .assert()
         .success()
@@ -58,7 +59,7 @@ fn test_status_empty_project() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -135,7 +136,7 @@ async fn test_index_and_status() {
     .unwrap();
 
     // 1. Index the project
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -144,7 +145,7 @@ async fn test_index_and_status() {
         .success();
 
     // 2. Check status
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -157,7 +158,7 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("Chunks:     1"));
 
     // 3. Search for the function (semantic search via server embedding)
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -243,8 +244,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         .unwrap();
 
         // Index the project — must reach the embedding phase without a 404.
-        Command::cargo_bin("spelunk")
-            .unwrap()
+        spelunk_bin()
             .arg("--config")
             .arg(&config_path)
             .arg("index")
@@ -330,7 +330,7 @@ async fn test_status_shows_offline_tier() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -339,7 +339,7 @@ async fn test_status_shows_offline_tier() {
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -387,7 +387,7 @@ async fn test_status_shows_server_tier() {
         &mock_server.uri(),
     );
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -395,7 +395,7 @@ async fn test_status_shows_server_tier() {
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -445,7 +445,7 @@ async fn test_status_json_includes_tier_fields() {
         &mock_server.uri(),
     );
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -453,8 +453,7 @@ async fn test_status_json_includes_tier_fields() {
         .assert()
         .success();
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -518,8 +517,7 @@ async fn test_status_json_stable_schema() {
     .unwrap();
 
     // Index the project so there is data to query.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -528,8 +526,7 @@ async fn test_status_json_stable_schema() {
         .assert()
         .success();
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -644,7 +641,7 @@ async fn test_check_reports_server_reachable() {
         &mock_server.uri(),
     );
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -652,7 +649,7 @@ async fn test_check_reports_server_reachable() {
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -683,7 +680,7 @@ async fn test_check_reports_server_unreachable() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -691,7 +688,7 @@ async fn test_check_reports_server_unreachable() {
         .assert()
         .success();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -720,7 +717,7 @@ async fn test_index_prints_note_when_no_server_configured() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -751,7 +748,7 @@ fn test_status_json_offline_tier() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -760,8 +757,7 @@ fn test_status_json_offline_tier() {
         .assert()
         .success();
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -812,7 +808,7 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
 
     // With no index, auto mode must not fail with a hard error.
     // It either returns ast-grep results or a clean "No results found." message.
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     let assert = cmd
         .current_dir(&project_dir)
         .arg("--config")
@@ -858,8 +854,7 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     // Build the index (offline — no embedder needed for parse phase).
     // SPELUNK_NO_SERVER=1 keeps the embed phase from auto-discovering a
     // loopback spelunk-server on 127.0.0.1:7777.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -869,7 +864,7 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
         .success();
 
     // Now search in auto mode: embedder is unavailable, so fallback kicks in.
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     let assert = cmd
         .current_dir(&project_dir)
         .arg("--config")
@@ -903,8 +898,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
     )
     .unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .arg("--config")
         .arg(&config_path)
@@ -916,8 +910,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
     // Explicit --mode hybrid with no server → succeeds with text search silently
     // (ADR-004: inference-only routing; fallback is resolved at capability detection,
     // no per-query notice is emitted).
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -942,8 +935,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
     let db_path = temp.path().join("index.db");
     fs::write(&config_path, format!("db_path = {:?}\n", db_path)).unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .arg("--config")
         .arg(&config_path)
@@ -955,8 +947,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
     // Explicit --mode semantic with no server configured → silent fallback to
     // text search (ADR-004: no explicit server_url = inference-only routing,
     // fallback notice is suppressed; same as the hybrid test above).
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .current_dir(&project_dir)
         .arg("--config")
@@ -977,9 +968,7 @@ fn test_search_explicit_semantic_no_server_falls_back_to_text() {
 fn test_server_status_not_running() {
     let tmp = tempdir().unwrap();
     // Point HOME to an empty tmpdir so no real state files interfere.
-    Command::cargo_bin("spelunk")
-        .unwrap()
-        .env("HOME", tmp.path())
+    spelunk_bin_in(tmp.path())
         .arg("server")
         .arg("status")
         .assert()
@@ -991,8 +980,7 @@ fn test_server_status_not_running() {
 #[test]
 fn test_server_logs_missing_file() {
     let tmp = tempdir().unwrap();
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("logs")
@@ -1005,8 +993,7 @@ fn test_server_logs_missing_file() {
 #[test]
 fn test_server_stop_not_running() {
     let tmp = tempdir().unwrap();
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("stop")
@@ -1028,8 +1015,7 @@ fn test_server_start_binary_not_found() {
     // Unix-style path like /tmp/... is interpreted as a relative path and will
     // also not exist, so any clearly non-existent path works here.
     let nonexistent = tmp.path().join("spelunk-server-does-not-exist-xyzzy");
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("start")
@@ -1067,8 +1053,7 @@ fn test_init_non_tty_prints_skip_notice() {
 
     // stdin is piped (not a TTY) when launched via assert_cmd, so
     // is_terminal() returns false — the non-interactive branch runs.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("SPELUNK_NO_SERVER", "1")
@@ -1225,8 +1210,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
 
     // Build a local index so memory commands have a DB to resolve `mem_path`
     // from (offline embedding — SPELUNK_NO_SERVER keeps `index` from probing).
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
@@ -1239,8 +1223,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     // Add a note via the auto-discovery path. No SPELUNK_NO_SERVER, so the
     // loopback server embeds the note (via /index/embed) while the note text +
     // metadata are written to the LOCAL memory.db.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
@@ -1265,8 +1248,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     // locally-stored note — proving add and search share one store. The server
     // only embedded the query; the `/memory/search` guard ensures no memory rows
     // were fetched from the server.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
@@ -1283,8 +1265,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
 
     // Cross-check: `memory list` (which has always read memory.db) sees the same
     // note. Before ADR-004 `search` and `list` could disagree; now they cannot.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
@@ -1328,8 +1309,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     )
     .unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
@@ -1339,8 +1319,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
         .assert()
         .success();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")
@@ -1360,8 +1339,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
         .assert()
         .success();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("HOME", &home)
         .env("SPELUNK_STATE_DIR", &state_dir)
         .env_remove("SPELUNK_NO_SERVER")

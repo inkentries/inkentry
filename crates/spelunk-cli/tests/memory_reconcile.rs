@@ -13,6 +13,9 @@
 //!    transaction rolls back (no partial import).
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
 
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -200,7 +203,7 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
     let tmp_dir = config_path
         .parent()
         .expect("config_path must have a parent");
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(tmp_dir)
         .env("SPELUNK_NO_SERVER", "1")
         .env("SPELUNK_NO_RECONCILE_NUDGE", "1")
@@ -918,7 +921,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
 
         // Bootstrap reconcile: run from boot_dir so config resolves correctly.
         // Use --all-projects (only boot-for-rollback slug exists in bootstrap_db).
-        let mut boot_cmd = Command::cargo_bin("spelunk").unwrap();
+        let mut boot_cmd = spelunk_bin();
         boot_cmd
             .current_dir(&boot_dir)
             .env("SPELUNK_NO_SERVER", "1")

@@ -4,9 +4,8 @@
 //! on disk and emits JSONL chunks.
 
 mod plumbing_helpers;
-use plumbing_helpers::parse_jsonl;
+use plumbing_helpers::{parse_jsonl, spelunk_bin};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
@@ -37,8 +36,7 @@ fn parse_file_emits_jsonl_for_rust_file() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -76,8 +74,7 @@ fn parse_file_finds_function_and_struct_chunks() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -114,8 +111,7 @@ fn parse_file_exits_1_for_unsupported_file_type() {
     let unknown = tmp.path().join("file.xyz123");
     std::fs::write(&unknown, "some content").unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -132,8 +128,7 @@ fn parse_file_exits_nonzero_for_missing_file() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -150,8 +145,7 @@ fn parse_file_exits_nonzero_missing_argument() {
     let config = dummy_config(&tmp);
 
     // Missing required positional argument → clap error.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

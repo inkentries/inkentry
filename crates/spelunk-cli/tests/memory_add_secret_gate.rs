@@ -12,6 +12,9 @@
 //! exercise it run inside a temporary `git init` directory.  Tests that only
 //! check the error/SQLite side can use a plain temp dir.
 
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::{Path, PathBuf};
@@ -37,7 +40,7 @@ fn write_config(dir: &Path, mem_db: &Path, git_notes: bool) -> PathBuf {
 
 /// Build `spelunk --config <cfg> memory --db <mem_db> add --kind note …` command.
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
         // Avoid picking up any server config from the real user environment.
         .env_remove("SPELUNK_SERVER_URL")

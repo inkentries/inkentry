@@ -4,6 +4,9 @@
 //! entry point, printing handoffs, open questions, decisions, and requirements
 //! in one shot.
 
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin;
+
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -99,8 +102,7 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     ];
 
     for (kind, title, body) in entries {
-        Command::cargo_bin("spelunk")
-            .unwrap()
+        spelunk_bin()
             .arg("--config")
             .arg(&config_path)
             .arg("memory")
@@ -136,7 +138,7 @@ fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathB
 /// Does NOT pass `--db`; the command derives `memory.db` from `db_path` in
 /// the config, which matches where `setup_context_project` seeds entries.
 fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     // Run from the temp dir so find_project_db doesn't walk up and discover
     // the real .spelunk/index.db in the project root.
     if let Some(dir) = config_path.parent() {
@@ -504,8 +506,7 @@ fn context_exits_nonzero_when_config_invalid() {
     )
     .expect("write config");
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .current_dir(&tmp)
         .arg("--config")
         .arg(&config_path)
