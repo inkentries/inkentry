@@ -22,17 +22,23 @@ const MODEL_ID: &str = "codefuse-ai/F2LLM-v2-330M";
 /// artifact.
 const MODEL_REVISION: &str = "1239cdd544b24c247ed75df2ae22e5a401ac4659";
 
-/// Optional Hugging Face repo id holding our **own pre-quantized Q8_0 GGUF**
-/// (e.g. `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`). Read from
-/// `SPELUNK_EMBEDDER_GGUF_REPO` at load time.
+/// Override env var naming the Hugging Face repo id that holds a **pre-quantized
+/// Q8_0 GGUF** for the embedder. Read from `SPELUNK_EMBEDDER_GGUF_REPO` at load
+/// time; see [`prequantized_gguf_repo`] for the accepted values.
 ///
-/// When set, `load()` downloads `QUANT_GGUF` directly from that repo via the
-/// existing hf-hub cache — first-run download drops to ~339 MB and there is no
-/// on-device safetensors download or quantize step. When unset (the default),
-/// the loader keeps the download-safetensors-and-quantize-on-device path, so
-/// merging this change alters nothing until the GGUF repo exists and an operator
-/// sets the env var. Activation = upload the artifact, then default this on.
+/// By default (unset) the loader fetches `QUANT_GGUF` from [`DEFAULT_GGUF_REPO`]
+/// directly via the existing hf-hub cache — first-run download is ~339 MB and
+/// there is no on-device safetensors download or quantize step. Set this to a
+/// different `org/repo` to fetch the pre-quant GGUF from there instead, or to
+/// `off` to build the GGUF from the upstream BF16 weights on device.
 const GGUF_REPO_ENV: &str = "SPELUNK_EMBEDDER_GGUF_REPO";
+
+/// Default Hugging Face repo id holding our **own pre-quantized Q8_0 GGUF**
+/// (`f2llm-v2-330m-q8_0.gguf`). Used when `SPELUNK_EMBEDDER_GGUF_REPO` is unset,
+/// so a stock install fetches the ~339 MB pre-quant GGUF instead of downloading
+/// the ~638 MB upstream BF16 safetensors and quantizing on device. Override with
+/// the env var (see [`GGUF_REPO_ENV`]).
+const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
 
 /// Hard ceiling for token sequences (max_position_embeddings).
 const MAX_SEQ_LEN: usize = 40960;
@@ -524,15 +530,17 @@ impl NativeEmbedder {
     /// Two acquisition paths select the Q8_0 GGUF cached in
     /// `~/.local/share/spelunk/models/`:
     ///
-    /// * **Default (dev / pre-activation):** download the ~638 MB BF16
-    ///   safetensors from the pinned upstream revision of
-    ///   `codefuse-ai/F2LLM-v2-330M`, quantize on device to a ~339 MB GGUF
-    ///   (`f2llm-v2-330m-q8_0.gguf`), then delete the cached safetensors so
-    ///   steady-state disk is ~339 MB rather than ~1.5 GB.
-    /// * **Direct GGUF (activated via `SPELUNK_EMBEDDER_GGUF_REPO`):** download
-    ///   our own pre-quantized GGUF straight from the named HF repo through the
-    ///   same hf-hub cache (checksum/resume reused) — first-run download is
-    ///   ~339 MB and there is no on-device quantize step.
+    /// * **Default (direct GGUF):** download our own pre-quantized GGUF
+    ///   (`f2llm-v2-330m-q8_0.gguf`) straight from `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`
+    ///   through the hf-hub cache (checksum/resume reused) — first-run download is
+    ///   ~339 MB and there is no on-device quantize step. Set
+    ///   `SPELUNK_EMBEDDER_GGUF_REPO` to a different `org/repo` to fetch the
+    ///   pre-quant GGUF from there instead.
+    /// * **On-device quantize (escape hatch, `SPELUNK_EMBEDDER_GGUF_REPO=off`):**
+    ///   download the ~638 MB BF16 safetensors from the pinned upstream revision
+    ///   of `codefuse-ai/F2LLM-v2-330M`, quantize on device to a ~339 MB GGUF,
+    ///   then delete the cached safetensors so steady-state disk is ~339 MB
+    ///   rather than ~1.5 GB.
     ///
     /// Either way subsequent calls read the cached GGUF directly with no network
     /// access. The tokenizer and config are always fetched from the pinned
@@ -580,7 +588,7 @@ impl NativeEmbedder {
         // Acquire the Q8_0 GGUF if it isn't already cached.
         if !gguf_path.exists() {
             match prequantized_gguf_repo() {
-                // Activated: pull our own pre-quantized GGUF directly.
+                // Default (or overridden repo): pull a pre-quantized GGUF directly.
                 Some(gguf_repo) => {
                     tracing::info!(
                         "fetching pre-quantized F2LLM-v2-330M Q8_0 GGUF from {gguf_repo} (first run)…"
@@ -602,7 +610,8 @@ impl NativeEmbedder {
                     }
                     tracing::info!("fetched pre-quantized model to {}", gguf_path.display());
                 }
-                // Default / dev fallback: download safetensors and quantize.
+                // Escape hatch (SPELUNK_EMBEDDER_GGUF_REPO=off): download
+                // safetensors and quantize on device.
                 None => {
                     tracing::info!("quantizing F2LLM-v2-330M to Q8_0 GGUF (first run; one-time)…");
                     let weight_paths = download_weights(&repo)?;
@@ -761,18 +770,33 @@ fn model_cache_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))
 }
 
-/// HF repo id of our pre-quantized Q8_0 GGUF, from `SPELUNK_EMBEDDER_GGUF_REPO`.
+/// Resolve the HF repo id of the pre-quantized Q8_0 GGUF to fetch, from
+/// `SPELUNK_EMBEDDER_GGUF_REPO`.
 ///
-/// Returns `None` (the default) when the variable is unset or blank, keeping the
-/// download-safetensors-and-quantize path active. This is the single config gate
-/// that activates direct-GGUF distribution; flipping the default to
-/// `Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF")` is the activation step, done
-/// only once the artifact has been uploaded.
+/// Returns `Some(repo)` to fetch the pre-quant GGUF directly, or `None` to build
+/// it from the upstream BF16 weights on device. The env var (after trimming
+/// surrounding whitespace, case-insensitive for the sentinel) is interpreted as:
+///
+/// * **unset** → `Some(DEFAULT_GGUF_REPO)` — the default; a stock install fetches
+///   the ~339 MB pre-quant GGUF from `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`.
+/// * **`off`** → `None` — escape hatch: skip the pre-quant repo and download the
+///   upstream BF16 safetensors, quantizing on device.
+/// * **empty / whitespace** → `None` — a blank value disables the pre-quant fetch
+///   (treated the same as `off`) rather than attempting to fetch from `""`.
+/// * **any other value** → `Some(value)` — override: fetch the pre-quant GGUF
+///   from that `org/repo` id (trimmed).
 fn prequantized_gguf_repo() -> Option<String> {
-    std::env::var(GGUF_REPO_ENV)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+    match std::env::var(GGUF_REPO_ENV) {
+        Ok(v) => {
+            let v = v.trim();
+            if v.is_empty() || v.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        }
+        Err(_) => Some(DEFAULT_GGUF_REPO.to_string()),
+    }
 }
 
 /// Delete the cached BF16 safetensors after the Q8_0 GGUF has been written.
@@ -910,41 +934,55 @@ impl spelunk_core::embeddings::EmbeddingBackend for NativeEmbedder {
 mod tests {
     use super::*;
 
-    /// The direct-GGUF path is gated: with `SPELUNK_EMBEDDER_GGUF_REPO` unset or
-    /// blank, `prequantized_gguf_repo()` returns `None`, so `load()` keeps the
-    /// default download-safetensors-and-quantize path. This is what makes the PR
-    /// safe to merge before the HF GGUF repo exists — merging changes nothing
-    /// until an operator sets the variable. Uses `serial` because it mutates a
-    /// process-global env var.
+    /// `prequantized_gguf_repo()` resolves the GGUF source from
+    /// `SPELUNK_EMBEDDER_GGUF_REPO`: unset → the bundled default repo (so a stock
+    /// install fetches the pre-quant GGUF); `off`/blank → `None` (escape hatch:
+    /// build from upstream BF16 on device); any other value → that `org/repo`
+    /// (trimmed). Uses `serial` because it mutates a process-global env var.
     #[test]
     #[serial_test::serial(gguf_repo_env)]
-    fn prequantized_gguf_repo_gate_defaults_off() {
+    fn prequantized_gguf_repo_defaults_to_bundled_repo() {
         // SAFETY: guarded by #[serial] so no other test reads/writes this var
         // concurrently; we restore it before returning.
         let prev = std::env::var(GGUF_REPO_ENV).ok();
 
         unsafe { std::env::remove_var(GGUF_REPO_ENV) };
         assert_eq!(
+            prequantized_gguf_repo().as_deref(),
+            Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF"),
+            "unset env var must default to fetching the bundled pre-quant GGUF"
+        );
+
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "off") };
+        assert_eq!(
             prequantized_gguf_repo(),
             None,
-            "unset env var must keep the quantize-on-first-run default path"
+            "`off` must disable the pre-quant fetch (build from upstream on device)"
+        );
+
+        // The `off` sentinel is case-insensitive.
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "OFF") };
+        assert_eq!(
+            prequantized_gguf_repo(),
+            None,
+            "`off` must be case-insensitive"
         );
 
         unsafe { std::env::set_var(GGUF_REPO_ENV, "   ") };
         assert_eq!(
             prequantized_gguf_repo(),
             None,
-            "blank/whitespace env var must be treated as unset"
+            "blank/whitespace env var must disable the pre-quant fetch, not fetch \"\""
         );
 
-        unsafe { std::env::set_var(GGUF_REPO_ENV, "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF") };
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "  off  ") };
         assert_eq!(
-            prequantized_gguf_repo().as_deref(),
-            Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF"),
-            "set env var must activate the direct-GGUF path with the repo id"
+            prequantized_gguf_repo(),
+            None,
+            "`off` with surrounding whitespace must still be the escape hatch"
         );
 
-        // Trimming: surrounding whitespace is stripped from the repo id.
+        // Override: an explicit repo id is used verbatim, with whitespace trimmed.
         unsafe { std::env::set_var(GGUF_REPO_ENV, "  org/repo  ") };
         assert_eq!(prequantized_gguf_repo().as_deref(), Some("org/repo"));
 
