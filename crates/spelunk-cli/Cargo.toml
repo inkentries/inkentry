@@ -55,6 +55,10 @@ gix-fs = ">=0.21.1"
 gix-transport = ">=0.56.0"
 
 [dev-dependencies]
+# test-support exposes spelunk-core's in-memory secret-store double
+# (config::secret_store::MemoryStore) so unit tests inject it instead of
+# hitting the real OS keychain. Dev-only: not enabled for release builds.
+spelunk-core = { path = "../spelunk-core", features = ["test-support"] }
 assert_cmd = "2.2"
 predicates = "3.1"
 tempfile = { workspace = true }

@@ -673,7 +673,14 @@ mod tests {
         assert_eq!(vec, Some(vec![0.1_f32, 0.2, 0.3]));
 
         // Rotated tokens were persisted to the injected config path.
-        let cfg = spelunk_core::config::Config::load(Some(&config_path)).unwrap();
+        // Inject an in-memory secret store so the test never touches the real
+        // OS keychain (DI; cf. config.rs tests). #473 only isolated the
+        // spawned-binary integration tests in tests/*, not these in-process ones.
+        let cfg = spelunk_core::config::Config::load_with_store(
+            Some(&config_path),
+            &spelunk_core::config::secret_store::MemoryStore::default(),
+        )
+        .unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some(at_new.as_str()));
         assert_eq!(cfg.auth.unwrap().refresh_token, "rt-new");
     }
@@ -822,7 +829,11 @@ mod tests {
         };
         spelunk_core::config::save_auth_tokens_to(&tokens, &path).unwrap();
 
-        let mut cfg = crate::config::Config::load(Some(&path)).unwrap();
+        let mut cfg = crate::config::Config::load_with_store(
+            Some(&path),
+            &spelunk_core::config::secret_store::MemoryStore::default(),
+        )
+        .unwrap();
         // from_config needs an inference URL to build a client at all.
         cfg.inference_url = Some("http://127.0.0.1:7777".into());
         let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
@@ -849,7 +860,11 @@ mod tests {
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
 
-        let mut cfg = crate::config::Config::load(Some(&path)).unwrap();
+        let mut cfg = crate::config::Config::load_with_store(
+            Some(&path),
+            &spelunk_core::config::secret_store::MemoryStore::default(),
+        )
+        .unwrap();
         cfg.inference_url = Some("http://127.0.0.1:7777".into());
         let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
 
