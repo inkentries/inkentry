@@ -27,6 +27,7 @@ use anyhow::{Context, Result};
 use super::{MemoryPullArgs, MemorySyncArgs};
 use crate::{
     capability,
+    cli::cmd::auth_api,
     config::Config,
     storage::{BatchPushItem, CloudSyncClient, MemoryStore},
 };
@@ -36,7 +37,11 @@ use crate::{
 /// Sync always speaks to an explicit `server_url` — it is the cloud-convergence
 /// path, not the inference loopback. Errors with actionable guidance when the
 /// project is offline or missing a `project_id`.
-fn sync_target(cfg: &Config) -> Result<(String, String, Option<String>)> {
+///
+/// The bearer key is resolved through [`auth_api::ensure_fresh_server_key`] so a
+/// WorkOS access token that has expired since `spelunk login` is refreshed (and
+/// the rotated tokens persisted) before the cloud-api call, rather than 401-ing.
+async fn sync_target(cfg: &Config) -> Result<(String, String, Option<String>)> {
     let base_url = cfg.server_url.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "sync requires a server. Set `server_url` in your spelunk config \
@@ -49,7 +54,8 @@ fn sync_target(cfg: &Config) -> Result<(String, String, Option<String>)> {
              or via `SPELUNK_PROJECT_ID` so sync can address the project."
         )
     })?;
-    Ok((base_url, project_id, cfg.server_key.clone()))
+    let key = auth_api::ensure_fresh_server_key(cfg).await?;
+    Ok((base_url, project_id, key))
 }
 
 /// `spelunk memory pull` — one-way delta pull + apply.
@@ -60,7 +66,7 @@ pub async fn memory_pull(
 ) -> Result<()> {
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("memory pull", tier, cfg.server_url.as_deref())?;
-    let (base_url, project_id, key) = sync_target(cfg)?;
+    let (base_url, project_id, key) = sync_target(cfg).await?;
 
     let local = MemoryStore::open(mem_path)
         .with_context(|| format!("opening local memory at {}", mem_path.display()))?;
@@ -79,7 +85,7 @@ pub async fn memory_sync(
 ) -> Result<()> {
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("sync", tier, cfg.server_url.as_deref())?;
-    let (base_url, project_id, key) = sync_target(cfg)?;
+    let (base_url, project_id, key) = sync_target(cfg).await?;
 
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = MemoryStore::open(src_path)

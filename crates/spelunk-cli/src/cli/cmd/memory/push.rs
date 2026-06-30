@@ -21,6 +21,7 @@ use super::MemoryPushArgs;
 use super::sync::push_local_oneway;
 use crate::{
     capability,
+    cli::cmd::auth_api,
     config::Config,
     storage::{CloudSyncClient, MemoryStore},
 };
@@ -48,7 +49,9 @@ pub async fn memory_push(
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = MemoryStore::open(src_path)
         .with_context(|| format!("opening local memory at {}", src_path.display()))?;
-    let client = CloudSyncClient::new(&base_url, &project_id, cfg.server_key.as_deref())?;
+    // Refresh a stale WorkOS access token before the cloud-api call (oss^40).
+    let key = auth_api::ensure_fresh_server_key(cfg).await?;
+    let client = CloudSyncClient::new(&base_url, &project_id, key.as_deref())?;
 
     println!("Pushing local memory to {base_url}…");
     let summary = push_local_oneway(&local, &client, args.include_archived).await?;

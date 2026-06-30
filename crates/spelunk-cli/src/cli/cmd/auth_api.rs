@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use spelunk_core::config::AuthTokens;
+use spelunk_core::config::{AuthTokens, Config};
 
 /// Default cloud API base URL (used only for `GET /v1/me`).
 pub const DEFAULT_CLOUD_URL: &str = "https://api.spelunk.cloud";
@@ -31,7 +31,7 @@ pub const DEFAULT_CLOUD_URL: &str = "https://api.spelunk.cloud";
 pub const DEFAULT_WORKOS_URL: &str = "https://api.workos.com";
 
 /// Embedded PUBLIC-CLIENT `client_id` for the **production** WorkOS environment.
-pub const WORKOS_CLIENT_ID_PROD: &str = "client_01KTY5G10DF7854DNX5EWC9R6Y";
+pub const WORKOS_CLIENT_ID_PROD: &str = "client_01KTY5G1EK45Y93B0RB9Q1D2Q2";
 
 /// Embedded PUBLIC-CLIENT `client_id` for the **dev / staging** WorkOS environment.
 pub const WORKOS_CLIENT_ID_DEV: &str = "client_01KTY5JEJSZQD6R3QBXZS19WVF";
@@ -390,6 +390,86 @@ pub async fn refresh_token(
     token_or_error(resp, "refreshing token").await
 }
 
+/// Ensure the access token in `auth` is fresh before a cloud-api call.
+///
+/// WorkOS access tokens are short-lived (~5 min), so a token read straight from
+/// the stored `[auth]` table is frequently already expired by the time the CLI
+/// runs — every cloud-api call would then `401`. This guard refreshes proactively
+/// when the token is at/past expiry (with a small skew window, see
+/// [`AuthTokens::is_expired`]) using the stored refresh token directly against
+/// WorkOS (refresh grant, ADR-047), persists the rotated tokens to `[auth]`, and
+/// returns the tokens to use.
+///
+/// When the token is still valid, `auth` is returned unchanged (no network
+/// call). A refresh failure (revoked/expired refresh token) surfaces a clear
+/// "run `spelunk login`" error rather than a raw 401 from the downstream call.
+///
+/// `persist` is invoked with the rotated tokens so the caller controls *where*
+/// they are written (the global config in production, a temp path in tests).
+pub async fn ensure_fresh_token(
+    client: &reqwest::Client,
+    workos_url: &str,
+    client_id: &str,
+    auth: &AuthTokens,
+    persist: impl FnOnce(&AuthTokens) -> Result<()>,
+) -> Result<AuthTokens> {
+    if !auth.is_expired() {
+        return Ok(auth.clone());
+    }
+
+    let rotated = refresh_token(client, workos_url, client_id, &auth.refresh_token, None)
+        .await
+        .map_err(|e| e.context("session expired and token refresh failed — run `spelunk login`"))?
+        .into_auth_tokens();
+    persist(&rotated)?;
+    Ok(rotated)
+}
+
+/// Resolve the bearer token to send to cloud-api, refreshing the stored WorkOS
+/// access token first if it has expired.
+///
+/// The CLI's effective bearer (`cfg.server_key`) is the `[auth]` access token
+/// when the user logged in via WorkOS. Because access tokens are short-lived,
+/// commands that hit cloud-api directly (e.g. `spelunk sync`, `spelunk memory
+/// pull`) must guard against using an already-expired token, which would 401.
+///
+/// Behaviour:
+///   - When `[auth]` tokens are present AND the bearer was derived from them
+///     (the WorkOS-login case) AND they are expired, refresh directly against
+///     WorkOS, persist the rotated tokens, and return the fresh access token.
+///   - Otherwise return `cfg.server_key` unchanged — a bare/team `server_key`
+///     or an env override is not refreshable here, and a still-valid token needs
+///     no network round-trip.
+///
+/// A refresh failure surfaces a clear "run `spelunk login`" error.
+pub async fn ensure_fresh_server_key(cfg: &Config) -> Result<Option<String>> {
+    // Only the WorkOS-login bearer (server_key derived from [auth].access_token)
+    // is refreshable; a team/env key is returned as-is.
+    let Some(auth) = cfg
+        .auth
+        .as_ref()
+        .filter(|a| Some(a.access_token.as_str()) == cfg.server_key.as_deref())
+    else {
+        return Ok(cfg.server_key.clone());
+    };
+
+    if !auth.is_expired() {
+        return Ok(cfg.server_key.clone());
+    }
+
+    let client = build_client()?;
+    let client_id = workos_client_id(DEFAULT_CLOUD_URL);
+    let fresh = ensure_fresh_token(
+        &client,
+        &workos_url(),
+        &client_id,
+        auth,
+        spelunk_core::config::save_auth_tokens,
+    )
+    .await?;
+    Ok(Some(fresh.access_token))
+}
+
 /// `GET /v1/me` (cloud-api) — fetch the caller's identity and org memberships.
 ///
 /// Authenticated with the stored WorkOS access token as a bearer. Used to
@@ -557,6 +637,16 @@ mod tests {
         }
     }
 
+    /// Guard the embedded prod `client_id` against an accidental revert to a
+    /// stale WorkOS environment (prod rotated on 2026-06-30).
+    #[test]
+    fn prod_client_id_is_current_rotated_value() {
+        assert_eq!(
+            WORKOS_CLIENT_ID_PROD, "client_01KTY5G1EK45Y93B0RB9Q1D2Q2",
+            "prod client_id must track the rotated WorkOS prod environment"
+        );
+    }
+
     #[test]
     fn is_prod_cloud_url_only_matches_canonical_host() {
         assert!(is_prod_cloud_url("https://api.spelunk.cloud"));
@@ -564,6 +654,110 @@ mod tests {
         assert!(is_prod_cloud_url("https://API.SPELUNK.CLOUD"));
         assert!(!is_prod_cloud_url("https://staging.spelunk.cloud"));
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
+    }
+
+    // ── ensure_fresh_token (expiry guard, spelunk-oss^40) ────────────────────────
+
+    /// A still-valid access token is returned unchanged with NO network call and
+    /// NO persist call (the persist closure would panic if invoked).
+    #[tokio::test]
+    async fn ensure_fresh_token_noop_when_valid() {
+        let auth = AuthTokens {
+            access_token: "at-valid".into(),
+            refresh_token: "rt".into(),
+            // Far in the future ⇒ not expired.
+            expires_at: 5_000_000_000,
+            org_id: "org_1".into(),
+        };
+        let client = build_client().unwrap();
+        // workos_url points nowhere reachable; it must never be hit.
+        let out = ensure_fresh_token(&client, "http://127.0.0.1:1", "client_test", &auth, |_| {
+            panic!("persist must not be called when the token is still valid");
+        })
+        .await
+        .expect("a valid token needs no refresh");
+        assert_eq!(out, auth);
+    }
+
+    /// An expired access token is refreshed via WorkOS, the rotated tokens are
+    /// handed to `persist`, and the fresh tokens are returned.
+    #[tokio::test]
+    async fn ensure_fresh_token_refreshes_and_persists_when_expired() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh_jwt =
+            fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64, "org_id": "org_1" }));
+        Mock::given(method("POST"))
+            .and(path("/user_management/authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": fresh_jwt,
+                "refresh_token": "rt-rotated",
+                "organization_id": "org_1",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let expired = AuthTokens {
+            access_token: "at-expired".into(),
+            refresh_token: "rt-old".into(),
+            expires_at: 0, // definitely past expiry
+            org_id: "org_1".into(),
+        };
+
+        let persisted: Arc<Mutex<Option<AuthTokens>>> = Arc::new(Mutex::new(None));
+        let sink = persisted.clone();
+        let client = build_client().unwrap();
+        let out = ensure_fresh_token(&client, &server.uri(), "client_test", &expired, |t| {
+            *sink.lock().unwrap() = Some(t.clone());
+            Ok(())
+        })
+        .await
+        .expect("an expired token should refresh");
+
+        assert_eq!(out.refresh_token, "rt-rotated");
+        assert_eq!(out.access_token, fresh_jwt);
+        assert_eq!(
+            persisted.lock().unwrap().as_ref().unwrap().refresh_token,
+            "rt-rotated",
+            "rotated tokens must be persisted"
+        );
+    }
+
+    /// When the refresh grant is rejected (revoked/expired refresh token), the
+    /// error carries a clear "run `spelunk login`" hint instead of a raw 401.
+    #[tokio::test]
+    async fn ensure_fresh_token_refresh_failure_says_run_login() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/user_management/authenticate"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let expired = AuthTokens {
+            access_token: "at-expired".into(),
+            refresh_token: "rt-revoked".into(),
+            expires_at: 0,
+            org_id: "org_1".into(),
+        };
+        let client = build_client().unwrap();
+        let err = ensure_fresh_token(&client, &server.uri(), "client_test", &expired, |_| Ok(()))
+            .await
+            .expect_err("a revoked refresh token must error");
+        assert!(
+            err.to_string().contains("spelunk login"),
+            "error should tell the user to re-login, got: {err}"
+        );
     }
 
     // ── Wire-level tests for initiate_device ─────────────────────────────────────
@@ -769,7 +963,7 @@ mod tests {
 
     /// After a device login yields an initial token for org A, passing `--org
     /// <beta-slug>` re-scopes via `switch_org`: GET /v1/me resolves the slug to
-    /// a local UUID and POST /authenticate (refresh grant + organization_id)
+    /// its WorkOS org id and POST /authenticate (refresh grant + organization_id)
     /// returns tokens scoped to the target org.
     #[tokio::test]
     async fn login_then_switch_org_resolves_slug_and_refreshes() {
@@ -779,6 +973,7 @@ mod tests {
         use crate::cli::cmd::org::switch_org;
 
         const BETA_UUID: &str = "22222222-2222-2222-2222-222222222222";
+        const BETA_WORKOS: &str = "org_beta01";
 
         let server = MockServer::start().await;
 
@@ -788,25 +983,27 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "orgs": [
                     { "id": "11111111-1111-1111-1111-111111111111",
-                      "name": "Acme", "slug": "acme", "role": "admin" },
-                    { "id": BETA_UUID, "name": "Beta Corp", "slug": "beta", "role": "member" }
+                      "name": "Acme", "slug": "acme",
+                      "workos_org_id": "org_acme01", "role": "admin" },
+                    { "id": BETA_UUID, "name": "Beta Corp", "slug": "beta",
+                      "workos_org_id": BETA_WORKOS, "role": "member" }
                 ]
             })))
             .expect(1)
             .mount(&server)
             .await;
 
-        // POST /authenticate (refresh grant) — must carry the resolved local UUID.
+        // POST /authenticate (refresh grant) — must carry the resolved WorkOS org id.
         let beta_jwt = fake_jwt(&serde_json::json!({
             "exp": 5_000_000_000_i64,
-            "org_id": BETA_UUID
+            "org_id": BETA_WORKOS
         }));
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": beta_jwt,
                 "refresh_token": "rt-beta",
-                "organization_id": BETA_UUID,
+                "organization_id": BETA_WORKOS,
             })))
             .expect(1)
             .mount(&server)
@@ -833,7 +1030,8 @@ mod tests {
         .await
         .expect("login-then-switch should succeed");
 
-        assert_eq!(switched.org_id, BETA_UUID);
+        // Rotated session org_id is the WorkOS org id echoed by /authenticate.
+        assert_eq!(switched.org_id, BETA_WORKOS);
         assert_eq!(switched.refresh_token, "rt-beta");
         assert_eq!(switched.expires_at, 5_000_000_000_i64);
     }
@@ -858,7 +1056,8 @@ mod tests {
             .and(path("/v1/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "orgs": [
-                    { "id": BETA_UUID, "name": "Beta Corp", "slug": "beta", "role": "member" }
+                    { "id": BETA_UUID, "name": "Beta Corp", "slug": "beta",
+                      "workos_org_id": "org_beta01", "role": "member" }
                 ]
             })))
             .mount(&server)

@@ -1,15 +1,21 @@
 //! `spelunk org switch <org>` — silently re-scope the session to another
 //! organisation without a new device login (ADR-047).
 //!
-//! Resolves the org slug to its local UUID via cloud-api `GET /v1/me`, then
-//! uses the stored refresh token directly against WorkOS `/authenticate`
-//! (refresh grant) with `organization_id`, and persists the rotated tokens.
+//! Resolves the org argument to its **WorkOS org id** (`org_…`) — that is what
+//! WorkOS's `/authenticate` refresh grant expects in `organization_id`, NOT the
+//! cloud-api local org UUID. Resolution rules:
+//!
+//! - a raw `org_…` value is already a WorkOS org id and is used directly;
+//! - a slug or a local org UUID is mapped to its `workos_org_id` via cloud-api
+//!   `GET /v1/me`.
+//!
+//! The resolved WorkOS org id is then sent to WorkOS `/authenticate` (refresh
+//! grant) using the stored refresh token, and the rotated tokens are persisted.
 //! Shared org-resolution and token-persistence helpers also back
 //! `spelunk login --org`.
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use uuid::Uuid;
 
 use spelunk_core::config::{self, AuthTokens};
 
@@ -33,8 +39,9 @@ pub enum OrgCommand {
 
 #[derive(Args, Debug)]
 pub struct OrgSwitchArgs {
-    /// Organization to switch to. Accepts a local org UUID or an org slug; a
-    /// slug is resolved to its UUID via `GET /v1/me` before switching.
+    /// Organization to switch to. Accepts a WorkOS org id (`org_…`), an org
+    /// slug, or a local org UUID. A slug or local UUID is resolved to its
+    /// WorkOS org id via `GET /v1/me` before switching.
     pub org: String,
 }
 
@@ -70,11 +77,15 @@ async fn org_switch(workos_url: &str, cloud_url: &str, client_id: &str, org: &st
 
 /// Silently switch the session to `org` using the stored refresh token.
 ///
-/// `org` may be a local org UUID or a slug. A slug is resolved to its local org
-/// UUID via cloud-api `GET /v1/me`; the UUID is then sent as `organization_id`
-/// to WorkOS `/authenticate` (refresh grant), which rotates the tokens scoped
-/// to that organisation (or returns an `organization_not_found` membership
-/// error).
+/// `org` may be a WorkOS org id (`org_…`), an org slug, or a local org UUID.
+/// A slug or local UUID is resolved to its **WorkOS org id** via cloud-api
+/// `GET /v1/me`; that WorkOS org id is then sent as `organization_id` to WorkOS
+/// `/authenticate` (refresh grant), which rotates the tokens scoped to that
+/// organisation (or returns an `organization_not_found` membership error).
+///
+/// The access token used for the `GET /v1/me` lookup is refreshed first if it
+/// has expired (WorkOS access tokens are ~5-minute-lived), so a paused session
+/// does not fail the lookup with a `401`.
 pub async fn switch_org(
     client: &reqwest::Client,
     workos_url: &str,
@@ -83,44 +94,70 @@ pub async fn switch_org(
     auth: &AuthTokens,
     org: &str,
 ) -> Result<AuthTokens> {
-    let org_uuid = resolve_org_uuid(client, cloud_url, auth, org).await?;
+    let workos_org_id =
+        resolve_workos_org_id(client, workos_url, cloud_url, client_id, auth, org).await?;
     let success = auth_api::refresh_token(
         client,
         workos_url,
         client_id,
         &auth.refresh_token,
-        Some(&org_uuid),
+        Some(&workos_org_id),
     )
     .await?;
     Ok(success.into_auth_tokens())
 }
 
-/// Resolve `arg` to a local org UUID.
+/// Resolve `arg` to a **WorkOS org id** (`org_…`).
 ///
-/// A value that already parses as a UUID is used directly. Otherwise `arg` is
-/// treated as a slug and matched against the caller's `orgs[]` from `GET /v1/me`,
-/// returning the matching entry's `id` (the local org UUID). No match is a clear
-/// error.
-async fn resolve_org_uuid(
+/// - A value already shaped like a WorkOS org id (`org_…`) is used directly,
+///   with no `GET /v1/me` lookup.
+/// - Any other value (a slug or a local org UUID) is matched against the
+///   caller's `orgs[]` from `GET /v1/me` and mapped to the matching entry's
+///   `workos_org_id`. No match — or a matched entry whose `workos_org_id` is
+///   absent — is a clear error.
+///
+/// The `/v1/me` call refreshes an expired access token first (persisting the
+/// rotated tokens) so a paused session does not 401.
+async fn resolve_workos_org_id(
     client: &reqwest::Client,
+    workos_url: &str,
     cloud_url: &str,
+    client_id: &str,
     auth: &AuthTokens,
     arg: &str,
 ) -> Result<String> {
-    if Uuid::parse_str(arg).is_ok() {
+    if is_workos_org_id(arg) {
         return Ok(arg.to_string());
     }
 
-    let me = auth_api::fetch_me(client, cloud_url, &auth.access_token).await?;
-    resolve_slug_to_uuid(&me.orgs, arg)
+    let fresh =
+        auth_api::ensure_fresh_token(client, workos_url, client_id, auth, persist_tokens).await?;
+    let me = auth_api::fetch_me(client, cloud_url, &fresh.access_token).await?;
+    resolve_arg_to_workos_org_id(&me.orgs, arg)
 }
 
-/// Find the `orgs[]` entry whose slug equals `slug` and return its local UUID.
-fn resolve_slug_to_uuid(orgs: &[MeOrg], slug: &str) -> Result<String> {
-    orgs.iter()
-        .find(|o| o.slug == slug)
-        .map(|o| o.id.clone())
-        .ok_or_else(|| anyhow::anyhow!("not a member of org '{slug}', or unknown org"))
+/// Whether `arg` is already a WorkOS org id (`org_…`), in which case it is the
+/// value WorkOS expects and needs no `/v1/me` lookup.
+fn is_workos_org_id(arg: &str) -> bool {
+    arg.starts_with("org_")
+}
+
+/// Find the `orgs[]` entry matching `arg` (by slug or local UUID) and return its
+/// WorkOS org id (`workos_org_id`).
+///
+/// WorkOS's refresh grant keys `organization_id` on the provider org id, not the
+/// cloud-api local UUID, so this maps either human identifier onto the right one.
+fn resolve_arg_to_workos_org_id(orgs: &[MeOrg], arg: &str) -> Result<String> {
+    let entry = orgs
+        .iter()
+        .find(|o| o.slug == arg || o.id == arg)
+        .ok_or_else(|| anyhow::anyhow!("not a member of org '{arg}', or unknown org"))?;
+    entry.workos_org_id.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "org '{arg}' has no WorkOS org id on record; cannot switch \
+             (re-run `spelunk login` or contact support)"
+        )
+    })
 }
 
 /// Persist rotated/issued tokens to the `[auth]` table (written `0600`).
@@ -138,30 +175,63 @@ mod tests {
                 id: "11111111-1111-1111-1111-111111111111".into(),
                 name: "Acme".into(),
                 slug: "acme".into(),
-                workos_org_id: None,
+                workos_org_id: Some("org_acme".into()),
             },
             MeOrg {
                 id: "22222222-2222-2222-2222-222222222222".into(),
                 name: "Beta".into(),
                 slug: "beta".into(),
-                workos_org_id: None,
+                workos_org_id: Some("org_beta".into()),
             },
         ]
     }
 
-    /// A slug resolves to the matching entry's local org UUID.
+    /// `org_…` is already a WorkOS org id — no lookup, used verbatim.
     #[test]
-    fn resolve_slug_to_uuid_matches_slug() {
-        let uuid = resolve_slug_to_uuid(&me_orgs(), "beta").unwrap();
-        assert_eq!(uuid, "22222222-2222-2222-2222-222222222222");
+    fn is_workos_org_id_recognises_provider_ids() {
+        assert!(is_workos_org_id("org_01ABCDEF"));
+        assert!(!is_workos_org_id("beta"));
+        assert!(!is_workos_org_id("22222222-2222-2222-2222-222222222222"));
     }
 
-    /// An unknown slug is a clear membership error.
+    /// A slug resolves to the matching entry's WorkOS org id (NOT its local UUID).
     #[test]
-    fn resolve_slug_to_uuid_unknown_errors() {
-        let err = resolve_slug_to_uuid(&me_orgs(), "gamma").unwrap_err();
+    fn resolve_arg_to_workos_org_id_matches_slug() {
+        let id = resolve_arg_to_workos_org_id(&me_orgs(), "beta").unwrap();
+        assert_eq!(id, "org_beta");
+    }
+
+    /// A local org UUID resolves to that entry's WorkOS org id.
+    #[test]
+    fn resolve_arg_to_workos_org_id_matches_local_uuid() {
+        let id = resolve_arg_to_workos_org_id(&me_orgs(), "11111111-1111-1111-1111-111111111111")
+            .unwrap();
+        assert_eq!(id, "org_acme");
+    }
+
+    /// An unknown arg is a clear membership error.
+    #[test]
+    fn resolve_arg_to_workos_org_id_unknown_errors() {
+        let err = resolve_arg_to_workos_org_id(&me_orgs(), "gamma").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("gamma"), "error should name the slug: {msg}");
+        assert!(msg.contains("gamma"), "error should name the arg: {msg}");
+    }
+
+    /// A matched entry whose `workos_org_id` is absent is a clear error, never a
+    /// silent fall-through to the local UUID.
+    #[test]
+    fn resolve_arg_to_workos_org_id_missing_workos_id_errors() {
+        let orgs = vec![MeOrg {
+            id: "33333333-3333-3333-3333-333333333333".into(),
+            name: "Gamma".into(),
+            slug: "gamma".into(),
+            workos_org_id: None,
+        }];
+        let err = resolve_arg_to_workos_org_id(&orgs, "gamma").unwrap_err();
+        assert!(
+            err.to_string().contains("WorkOS org id"),
+            "error should explain the missing WorkOS org id: {err}"
+        );
     }
 
     // ── switch_org wire-level tests (WorkOS-direct, ADR-047) ──────────────────
@@ -178,6 +248,9 @@ mod tests {
         use spelunk_core::config::AuthTokens;
 
         const BETA_UUID: &str = "22222222-2222-2222-2222-222222222222";
+        /// WorkOS provider org id for Beta — this is what must reach WorkOS as
+        /// `organization_id`, NOT the local `BETA_UUID`.
+        const BETA_WORKOS: &str = "org_beta01";
         const CLIENT_ID: &str = "client_test";
 
         fn auth() -> AuthTokens {
@@ -228,14 +301,14 @@ mod tests {
         }
 
         /// Asserts the WorkOS form body carries the expected `organization_id`
-        /// (the resolved local UUID) and the refresh grant fields.
+        /// (the resolved WorkOS org id, `org_…`) and the refresh grant fields.
         struct AssertForm(&'static str);
         impl Respond for AssertForm {
             fn respond(&self, request: &Request) -> ResponseTemplate {
                 let body = String::from_utf8_lossy(&request.body);
                 assert!(
                     body.contains(&format!("organization_id={}", self.0)),
-                    "organization_id must be the local org UUID, got body: {body}"
+                    "organization_id must be the WorkOS org id, got body: {body}"
                 );
                 assert!(
                     body.contains("grant_type=refresh_token"),
@@ -245,8 +318,9 @@ mod tests {
             }
         }
 
-        /// `switch_org(<slug>)` calls GET /v1/me, resolves the slug to its local
-        /// UUID, and POSTs that UUID as `organization_id` to WorkOS.
+        /// `switch_org(<slug>)` calls GET /v1/me, resolves the slug to its WorkOS
+        /// org id, and POSTs that WorkOS org id (NOT the local UUID) as
+        /// `organization_id` to WorkOS.
         #[tokio::test]
         async fn slug_resolves_via_me_then_switches() {
             let server = MockServer::start().await;
@@ -256,8 +330,10 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "orgs": [
                         { "id": "11111111-1111-1111-1111-111111111111",
-                          "name": "Acme", "slug": "acme", "role": "member" },
-                        { "id": BETA_UUID, "name": "Beta", "slug": "beta", "role": "admin" }
+                          "name": "Acme", "slug": "acme",
+                          "workos_org_id": "org_acme01", "role": "member" },
+                        { "id": BETA_UUID, "name": "Beta", "slug": "beta",
+                          "workos_org_id": BETA_WORKOS, "role": "admin" }
                     ]
                 })))
                 .expect(1)
@@ -266,7 +342,7 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/user_management/authenticate"))
-                .respond_with(AssertForm(BETA_UUID))
+                .respond_with(AssertForm(BETA_WORKOS))
                 .expect(1)
                 .mount(&server)
                 .await;
@@ -283,19 +359,31 @@ mod tests {
             .await
             .expect("slug switch should succeed");
             assert_eq!(tokens.refresh_token, "rt-new");
-            assert_eq!(tokens.org_id, BETA_UUID);
+            // Rotated session org_id comes from the JWT/echo = the WorkOS org id.
+            assert_eq!(tokens.org_id, BETA_WORKOS);
         }
 
-        /// A UUID arg is passed straight through as `organization_id` with no
-        /// GET /v1/me lookup.
+        /// A local org UUID arg is resolved via GET /v1/me to its WorkOS org id,
+        /// which is what reaches WorkOS as `organization_id`.
         #[tokio::test]
-        async fn uuid_passed_directly_skips_me() {
+        async fn local_uuid_resolves_to_workos_org_id() {
             let server = MockServer::start().await;
 
-            // No /v1/me mock mounted: if it is hit, the request 404s.
+            Mock::given(method("GET"))
+                .and(path("/v1/me"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "orgs": [
+                        { "id": BETA_UUID, "name": "Beta", "slug": "beta",
+                          "workos_org_id": BETA_WORKOS, "role": "admin" }
+                    ]
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
             Mock::given(method("POST"))
                 .and(path("/user_management/authenticate"))
-                .respond_with(AssertForm(BETA_UUID))
+                .respond_with(AssertForm(BETA_WORKOS))
                 .expect(1)
                 .mount(&server)
                 .await;
@@ -310,8 +398,36 @@ mod tests {
                 BETA_UUID,
             )
             .await
-            .expect("uuid switch should succeed");
-            assert_eq!(tokens.org_id, BETA_UUID);
+            .expect("local-uuid switch should succeed");
+            assert_eq!(tokens.org_id, BETA_WORKOS);
+        }
+
+        /// An `org_…` arg is already a WorkOS org id and is passed straight
+        /// through as `organization_id` with no GET /v1/me lookup.
+        #[tokio::test]
+        async fn workos_org_id_passed_directly_skips_me() {
+            let server = MockServer::start().await;
+
+            // No /v1/me mock mounted: if it is hit, the request 404s.
+            Mock::given(method("POST"))
+                .and(path("/user_management/authenticate"))
+                .respond_with(AssertForm(BETA_WORKOS))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let client = reqwest::Client::new();
+            let tokens = switch_org(
+                &client,
+                &server.uri(),
+                &server.uri(),
+                CLIENT_ID,
+                &auth(),
+                BETA_WORKOS,
+            )
+            .await
+            .expect("workos-org-id switch should succeed");
+            assert_eq!(tokens.org_id, BETA_WORKOS);
         }
 
         /// A slug not present in `orgs[]` is a clear membership error and no
@@ -324,7 +440,8 @@ mod tests {
                 .and(path("/v1/me"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "orgs": [
-                        { "id": BETA_UUID, "name": "Beta", "slug": "beta", "role": "admin" }
+                        { "id": BETA_UUID, "name": "Beta", "slug": "beta",
+                          "workos_org_id": BETA_WORKOS, "role": "admin" }
                     ]
                 })))
                 .mount(&server)
@@ -332,7 +449,7 @@ mod tests {
 
             Mock::given(method("POST"))
                 .and(path("/user_management/authenticate"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(workos_success(BETA_UUID)))
+                .respond_with(ResponseTemplate::new(200).set_body_json(workos_success(BETA_WORKOS)))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -365,7 +482,8 @@ mod tests {
                 .and(path("/v1/me"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "orgs": [
-                        { "id": BETA_UUID, "name": "Beta", "slug": "beta", "role": "admin" }
+                        { "id": BETA_UUID, "name": "Beta", "slug": "beta",
+                          "workos_org_id": BETA_WORKOS, "role": "admin" }
                     ]
                 })))
                 .mount(&server)
