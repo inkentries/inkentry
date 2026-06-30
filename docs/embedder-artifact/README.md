@@ -50,6 +50,7 @@ made.
 
 ## Usage in Spelunk
 
-`spelunk-server` downloads this GGUF directly when the
-`SPELUNK_EMBEDDER_GGUF_REPO` config points at this repository. Otherwise it falls
-back to downloading the upstream BF16 safetensors and quantizing on device.
+`spelunk-server` downloads this GGUF directly by default. Set
+`SPELUNK_EMBEDDER_GGUF_REPO` to a different repo to fetch the pre-quant GGUF from
+there, or to `off` to fall back to downloading the upstream BF16 safetensors and
+quantizing on device.

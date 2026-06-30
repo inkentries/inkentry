@@ -26,13 +26,14 @@ safetensors are **quantized to Q8_0** (projection matmuls and the token-embeddin
 table are stored Q8_0; RMSNorm weights are kept F32) and packaged as a single
 GGUF file. No other changes are made to the weights.
 
-By default spelunk performs this quantization **on the user's device** on first
-run, downloading the original BF16 safetensors from the pinned upstream revision
-and writing the Q8_0 GGUF locally. spelunk may alternatively distribute the
-pre-quantized GGUF from a Hugging Face repository it owns
-(`SPELUNK_EMBEDDER_GGUF_REPO`); that artifact carries its own `LICENSE`,
-`NOTICE`, and model card reproducing this attribution. See
-`docs/embedder-artifact/` for the text that accompanies the distributed artifact.
+By default spelunk fetches the pre-quantized Q8_0 GGUF from a Hugging Face
+repository it owns (`spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`); that artifact
+carries its own `LICENSE`, `NOTICE`, and model card reproducing this attribution.
+Set `SPELUNK_EMBEDDER_GGUF_REPO` to a different repo to fetch the pre-quant GGUF
+from there, or to `off` to build the GGUF from the upstream BF16 weights on
+device (download the original BF16 safetensors from the pinned upstream revision
+and quantize locally on first run). See `docs/embedder-artifact/` for the text
+that accompanies the distributed artifact.
 
 ### Other bundled inference dependencies
 
