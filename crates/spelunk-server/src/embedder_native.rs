@@ -107,12 +107,11 @@ fn total_system_ram() -> u64 {
             return 0;
         };
         for line in meminfo.lines() {
-            if let Some(rest) = line.strip_prefix("MemTotal:") {
-                if let Some(kb) = rest.split_whitespace().next() {
-                    if let Ok(kb) = kb.parse::<u64>() {
-                        return kb * 1024;
-                    }
-                }
+            if let Some(rest) = line.strip_prefix("MemTotal:")
+                && let Some(kb) = rest.split_whitespace().next()
+                && let Ok(kb) = kb.parse::<u64>()
+            {
+                return kb * 1024;
             }
         }
         0
