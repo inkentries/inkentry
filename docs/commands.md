@@ -48,7 +48,7 @@ spelunk index <path> [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d, --db <path>` | auto | Override database path |
-| `--batch-size <n>` | 32 | Max concurrent embedding requests |
+| `--batch-size <n>` | 32 | Embedding batch size: number of chunks sent per server request |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
@@ -493,7 +493,7 @@ so memory travels with the code. Outside a git repo this is a graceful no-op.
 
 ## spelunk sync
 
-Alias for `spelunk memory push`: sync local memory entries to the configured
+Shorthand for `spelunk memory push`: sync local memory entries to the configured
 server.
 
 ```
