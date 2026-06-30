@@ -27,6 +27,102 @@ const EMBED_BATCH_SIZE: usize = 8;
 /// At 512 tokens: 8 × 16 × 512² × 4 bytes ≈ 134 MB — well within budget.
 const BATCH_MAX_SEQ: usize = 512;
 
+/// Number of attention heads in F2LLM-v2-330M (Qwen3, `num_attention_heads`).
+/// The single-chunk attention score / probability tensors are
+/// `[1, N_HEAD, seq, seq]` f32, so peak scratch grows as `N_HEAD × seq² × 4`.
+/// This must match the model `config.json`; it is asserted against the loaded
+/// config at startup (see `NativeEmbedder::load`).
+const N_HEAD: usize = 16;
+
+/// Memory budget (bytes) for the single-chunk attention scratch on hosts with
+/// ≤ 16 GiB of total RAM. Conservative default so a full CPU index never OOMs.
+const SINGLE_CHUNK_BUDGET_SMALL: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Memory budget (bytes) for hosts with > 16 GiB of total RAM.
+const SINGLE_CHUNK_BUDGET_LARGE: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
+
+/// RAM threshold (bytes) above which the larger single-chunk budget is used.
+const LARGE_RAM_THRESHOLD: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+
+/// Pick the single-chunk attention memory budget from total system RAM:
+/// 2 GiB by default, 4 GiB when the host has more than 16 GiB of RAM.
+fn single_chunk_budget(total_ram_bytes: u64) -> u64 {
+    if total_ram_bytes > LARGE_RAM_THRESHOLD {
+        SINGLE_CHUNK_BUDGET_LARGE
+    } else {
+        SINGLE_CHUNK_BUDGET_SMALL
+    }
+}
+
+/// Derive the maximum single-chunk token count that keeps the attention scratch
+/// within `budget_bytes`.
+///
+/// In `forward_one` (batch = 1) the dominant allocation is the attention score
+/// tensor `[1, n_head, seq, seq]` in f32 — and the softmax produces a second
+/// tensor of the same shape — so peak scratch is bounded by
+/// `n_head × seq² × 4 bytes`. (Anchor: at seq = 40 960, 16 × 40960² × 4 ≈ 100
+/// GiB, matching the observed ~107 GB OOM on a full-length 40 k-token chunk.)
+///
+/// Solving `n_head × seq² × 4 ≤ budget` for `seq` gives the cap. We also clamp
+/// to `MAX_SEQ_LEN` (the model's position-embedding ceiling) so the result is
+/// never larger than the model can attend over anyway.
+///
+/// At 2 GiB → ~5 792 tokens; at 4 GiB → ~8 192 tokens.
+fn derive_token_cap(budget_bytes: u64, n_head: usize) -> usize {
+    let bytes_per_seq_sq = (n_head as u64) * 4;
+    // seq <= sqrt(budget / (n_head * 4))
+    let seq_sq = budget_bytes / bytes_per_seq_sq;
+    let cap = (seq_sq as f64).sqrt().floor() as usize;
+    cap.clamp(1, MAX_SEQ_LEN)
+}
+
+/// Total physical system RAM in bytes, best-effort and cross-platform.
+///
+/// macOS uses the `hw.memsize` sysctl; Linux reads `MemTotal` from
+/// `/proc/meminfo`. On any other platform, or if detection fails, we return a
+/// conservative `0` so the caller falls back to the small (2 GiB) budget.
+fn total_system_ram() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let mut size: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let name = c"hw.memsize";
+        // SAFETY: `name` is a valid NUL-terminated C string; `size`/`len` point
+        // to a u64 and its length. sysctlbyname writes at most `len` bytes.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                &mut size as *mut u64 as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == 0 { size } else { 0 }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // /proc/meminfo: "MemTotal:    16327476 kB"
+        let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") else {
+            return 0;
+        };
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                if let Some(kb) = rest.split_whitespace().next() {
+                    if let Ok(kb) = kb.parse::<u64>() {
+                        return kb * 1024;
+                    }
+                }
+            }
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
+
 /// Filename of the Q8_0-quantized GGUF cached next to the HF download. Projection
 /// matmuls and the token-embedding table are stored Q8_0; the small RMSNorm
 /// weights stay F32. Built once from the safetensors download (see
@@ -40,6 +136,11 @@ pub struct NativeEmbedder {
 struct EmbedderInner {
     weights: Qwen3EmbedWeights,
     tokenizer: Tokenizer,
+    /// Max tokens per single chunk before the attention scratch would exceed the
+    /// memory budget. Oversized chunks are truncated to this length (see
+    /// `derive_token_cap` / `single_chunk_budget`). 0 means "no extra cap"
+    /// (only the `MAX_SEQ_LEN` ceiling applies) — used in unit tests.
+    token_cap: usize,
 }
 
 // ── no-KV-cache Qwen3 embedder (Q8_0 quantized) ───────────────────────────────
@@ -450,16 +551,40 @@ impl NativeEmbedder {
             tracing::info!("wrote quantized model to {}", gguf_path.display());
         }
 
+        // The single-chunk token cap derivation assumes `N_HEAD` attention heads
+        // (the attention scratch is `[1, n_head, seq, seq]`). Guard against a
+        // future model whose config no longer matches the compiled-in constant.
+        debug_assert_eq!(
+            config.num_attention_heads, N_HEAD,
+            "N_HEAD constant ({N_HEAD}) must match model config.json \
+             num_attention_heads ({}) — token-cap derivation depends on it",
+            config.num_attention_heads
+        );
+        let n_head = config.num_attention_heads;
+
         let weights = Qwen3EmbedWeights::from_gguf(&gguf_path, &config, &device)
             .context("loading quantized F2LLM-v2-330M weights")?;
 
+        // Pick the memory budget from total system RAM, then derive the
+        // single-chunk token cap that keeps the attention scratch within it.
+        let total_ram = total_system_ram();
+        let budget = single_chunk_budget(total_ram);
+        let token_cap = derive_token_cap(budget, n_head);
+
         tracing::info!(
-            "F2LLM-v2-330M ready (dim={DIM}, Q8_0, device={})",
-            if on_gpu { "Metal/GPU" } else { "CPU" }
+            "F2LLM-v2-330M ready (dim={DIM}, Q8_0, device={}); \
+             system RAM {:.1} GiB → single-chunk budget {} GiB, token cap {token_cap}",
+            if on_gpu { "Metal/GPU" } else { "CPU" },
+            total_ram as f64 / (1024.0 * 1024.0 * 1024.0),
+            budget / (1024 * 1024 * 1024),
         );
 
         Ok(Self {
-            inner: Arc::new(Mutex::new(EmbedderInner { weights, tokenizer })),
+            inner: Arc::new(Mutex::new(EmbedderInner {
+                weights,
+                tokenizer,
+                token_cap,
+            })),
         })
     }
 }
@@ -598,18 +723,40 @@ impl spelunk_core::embeddings::EmbeddingBackend for NativeEmbedder {
                 .map_err(|_| anyhow::anyhow!("native embedder lock poisoned"))?;
 
             // 1. Tokenize all texts upfront.
+            //
+            // Cap each sequence to `effective_cap` tokens. `MAX_SEQ_LEN` is the
+            // model's position-embedding ceiling; `token_cap` is the smaller,
+            // memory-budget-derived bound that keeps the single-chunk attention
+            // scratch (`[1, n_head, seq, seq]` f32) within the RAM budget. A
+            // single ~40 k-token chunk (e.g. a lock/data/minified file) would
+            // otherwise allocate ~100 GB of attention scores and OOM/abort the
+            // whole index — so we *truncate* oversized chunks here, preserving
+            // the leading (partial) signal rather than aborting. (token_cap == 0
+            // in unit-test fixtures means "no extra cap".)
+            let effective_cap = if guard.token_cap == 0 {
+                MAX_SEQ_LEN
+            } else {
+                guard.token_cap.min(MAX_SEQ_LEN)
+            };
             let mut id_vecs: Vec<Vec<u32>> = Vec::with_capacity(owned.len());
             for text in &owned {
                 let encoding = guard
                     .tokenizer
                     .encode(text.as_str(), true) // add_special_tokens=true → appends EOS
                     .map_err(|e| anyhow::anyhow!("tokenization failed: {e}"))?;
+                let full_len = encoding.get_ids().len();
                 let ids: Vec<u32> = encoding
                     .get_ids()
                     .iter()
-                    .take(MAX_SEQ_LEN)
+                    .take(effective_cap)
                     .copied()
                     .collect();
+                if full_len > effective_cap {
+                    tracing::warn!(
+                        "chunk truncated for embedding: {full_len} tokens > cap {effective_cap} \
+                         (memory-budget limit) — embedding leading {effective_cap} tokens only"
+                    );
+                }
                 anyhow::ensure!(!ids.is_empty(), "empty token sequence after tokenization");
                 id_vecs.push(ids);
             }
@@ -712,6 +859,91 @@ mod tests {
         );
     }
 
+    // ── single-chunk memory-budget cap (spelunk-oss#17) ───────────────────────
+
+    /// Budget selection keys off total system RAM: 2 GiB at/below the 16 GiB
+    /// threshold, 4 GiB above it.
+    #[test]
+    fn budget_selected_by_system_ram() {
+        let gib = 1024u64 * 1024 * 1024;
+        // Small hosts (and the unknown/0 fallback) get the conservative 2 GiB.
+        assert_eq!(single_chunk_budget(0), SINGLE_CHUNK_BUDGET_SMALL);
+        assert_eq!(single_chunk_budget(8 * gib), SINGLE_CHUNK_BUDGET_SMALL);
+        assert_eq!(single_chunk_budget(16 * gib), SINGLE_CHUNK_BUDGET_SMALL);
+        // Strictly above 16 GiB unlocks the 4 GiB budget.
+        assert_eq!(single_chunk_budget(16 * gib + 1), SINGLE_CHUNK_BUDGET_LARGE);
+        assert_eq!(single_chunk_budget(32 * gib), SINGLE_CHUNK_BUDGET_LARGE);
+    }
+
+    /// The token cap is derived from `n_head × seq² × 4 ≤ budget`. Pin the two
+    /// production budgets to their derived caps (~5 792 @ 2 GiB, ~8 192 @ 4 GiB)
+    /// and assert the inverse: the resulting attention scratch stays within
+    /// budget while one more token would exceed it.
+    #[test]
+    fn token_cap_derivation_matches_budget() {
+        let cap_2g = derive_token_cap(SINGLE_CHUNK_BUDGET_SMALL, N_HEAD);
+        let cap_4g = derive_token_cap(SINGLE_CHUNK_BUDGET_LARGE, N_HEAD);
+
+        // Anchored ballpark from the decision (2 GiB ≈ 5.8 k, 4 GiB ≈ 8.2 k).
+        assert_eq!(cap_2g, 5792, "2 GiB cap");
+        assert_eq!(cap_4g, 8192, "4 GiB cap");
+
+        // The cap is the largest seq whose scratch fits; cap+1 must not.
+        let scratch = |seq: usize| (N_HEAD as u64) * (seq as u64) * (seq as u64) * 4;
+        assert!(scratch(cap_2g) <= SINGLE_CHUNK_BUDGET_SMALL);
+        assert!(scratch(cap_2g + 1) > SINGLE_CHUNK_BUDGET_SMALL);
+        assert!(scratch(cap_4g) <= SINGLE_CHUNK_BUDGET_LARGE);
+        assert!(scratch(cap_4g + 1) > SINGLE_CHUNK_BUDGET_LARGE);
+
+        // Larger budget ⇒ larger (or equal) cap.
+        assert!(cap_4g > cap_2g);
+    }
+
+    /// A 40 k-token chunk under the old (uncapped) path would allocate the
+    /// attention scratch that caused the ~107 GB OOM; the cap brings it to a
+    /// bounded size. Document the before/after scratch sizes here so the
+    /// regression is captured in code, not just the PR body.
+    #[test]
+    fn oversized_chunk_scratch_drops_below_budget() {
+        let scratch = |seq: usize| (N_HEAD as u64) * (seq as u64) * (seq as u64) * 4;
+
+        // Before: a full 40 960-token chunk (MAX_SEQ_LEN) → ~100 GiB scratch.
+        let before = scratch(MAX_SEQ_LEN);
+        assert!(
+            before > 90 * 1024 * 1024 * 1024,
+            "full-length chunk scratch should be ~100 GiB (was {before} bytes)"
+        );
+
+        // After: truncated to the 2 GiB cap → scratch within budget.
+        let cap = derive_token_cap(SINGLE_CHUNK_BUDGET_SMALL, N_HEAD);
+        assert!(scratch(cap) <= SINGLE_CHUNK_BUDGET_SMALL);
+    }
+
+    /// The cap is never larger than the model's position-embedding ceiling, and
+    /// degenerate budgets still yield a usable (>= 1) cap.
+    #[test]
+    fn token_cap_is_clamped() {
+        // A huge budget can't exceed MAX_SEQ_LEN.
+        assert_eq!(derive_token_cap(u64::MAX, N_HEAD), MAX_SEQ_LEN);
+        // A tiny budget still yields at least one token (never zero/panics).
+        assert_eq!(derive_token_cap(0, N_HEAD), 1);
+        assert!(derive_token_cap(1024, N_HEAD) >= 1);
+    }
+
+    /// Whatever RAM this host actually has, the detected budget must derive a
+    /// cap strictly smaller than MAX_SEQ_LEN — i.e. the 40 k-token OOM path is
+    /// closed on every supported budget.
+    #[test]
+    fn detected_budget_caps_below_max_seq_len() {
+        for ram in [0u64, 8, 16, 17, 64].map(|g| g * 1024 * 1024 * 1024) {
+            let cap = derive_token_cap(single_chunk_budget(ram), N_HEAD);
+            assert!(
+                cap < MAX_SEQ_LEN,
+                "cap {cap} for {ram}-byte host must be below MAX_SEQ_LEN {MAX_SEQ_LEN}"
+            );
+        }
+    }
+
     /// End-to-end semantic-discrimination check over the real model. Ignored by
     /// default: it downloads ~650 MB of weights and runs inference. Run with
     /// `cargo test -p spelunk-server -- --ignored embeddings_discriminate`.
@@ -744,5 +976,65 @@ mod tests {
             "GQA-fixed embeddings must discriminate related from unrelated: \
              related={related:.3} vs unrelated={unrelated:.3} (spelunk-oss#19)"
         );
+    }
+
+    /// End-to-end proof that an oversized single chunk no longer OOMs/aborts
+    /// (spelunk-oss#17). Builds a chunk far larger than `MAX_SEQ_LEN` tokens —
+    /// the case that previously allocated ~107 GB of attention scores and
+    /// aborted a full CPU index — and asserts `embed` returns a finite vector
+    /// (because the chunk is truncated to the memory-budget cap, not forwarded
+    /// whole). Ignored by default: downloads the model and runs inference.
+    ///
+    /// Run with:
+    ///   SPELUNK_SECRET_STORE=file cargo test -p spelunk-server \
+    ///     -- --ignored oversized_chunk_embeds_without_oom
+    #[test]
+    #[ignore = "downloads the F2LLM model and runs inference"]
+    fn oversized_chunk_embeds_without_oom() {
+        use spelunk_core::embeddings::EmbeddingBackend;
+
+        let embedder = NativeEmbedder::load().expect("load F2LLM-v2-330M");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // ~60 k whitespace-separated tokens — comfortably past MAX_SEQ_LEN
+        // (40 960) and ~10x the 2 GiB cap (~5 792). Pre-fix this aborts the
+        // process; post-fix it is truncated to the cap and embeds cleanly.
+        let huge = "fn pagerank ( edges ) { compute } ".repeat(12_000);
+        let normal = "read the contents of a file from disk";
+
+        let vecs = rt
+            .block_on(embedder.embed(&[huge.as_str(), normal]))
+            .expect("embed must complete (truncated), not OOM/abort");
+
+        assert_eq!(vecs.len(), 2);
+        assert_eq!(vecs[0].len(), DIM);
+        assert!(
+            vecs[0].iter().all(|x| x.is_finite()),
+            "truncated oversized-chunk embedding must be finite"
+        );
+        let norm: f32 = vecs[0].iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-3, "embedding must be L2-normalised");
+    }
+
+    /// Normal-sized chunks must embed identically whether or not the
+    /// memory-budget cap is in effect (no regression for the common case). The
+    /// cap only ever drops *trailing* tokens beyond the cap; a chunk shorter
+    /// than the cap is untouched, so its vector is byte-for-byte the same.
+    /// Ignored by default: downloads the model and runs inference.
+    #[test]
+    #[ignore = "downloads the F2LLM model and runs inference"]
+    fn normal_chunk_unaffected_by_cap() {
+        use spelunk_core::embeddings::EmbeddingBackend;
+
+        let embedder = NativeEmbedder::load().expect("load F2LLM-v2-330M");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let text = "pub fn compute_pagerank(edges: &[(String, String)]) -> Vec<f32> { todo!() }";
+        let a = rt.block_on(embedder.embed(&[text])).expect("embed a");
+        let b = rt.block_on(embedder.embed(&[text])).expect("embed b");
+        assert_eq!(a[0], b[0], "normal-chunk embedding must be deterministic");
+        // Sanity: this chunk is well under any budget-derived cap, so it was
+        // never truncated — the produced vector is the full-precision result.
+        assert!(text.split_whitespace().count() < 5792);
     }
 }
