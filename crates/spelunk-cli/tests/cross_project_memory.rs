@@ -20,6 +20,9 @@
 //!  13. MemoryStore unit assertions: source_project is None for local notes,
 //!      archived notes are excluded from list().
 
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin_in;
+
 use assert_cmd::Command;
 use rusqlite::Connection;
 use std::fs;
@@ -310,7 +313,7 @@ fn setup_linked_projects() -> (
 /// - `--config` points to the primary config.toml (which has `db_path = <index.db>`).
 /// - `memory --db <primary_mem>` routes memory reads to the primary's memory.db.
 fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin_in(home);
     cmd.env("HOME", home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(home))
         // Unset XDG_CONFIG_HOME so dirs::config_dir() uses $HOME/.config on Linux,
@@ -334,7 +337,7 @@ fn context_cmd(
     primary_mem: &Path,
     primary_index: &Path,
 ) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin_in(home);
     cmd.env("HOME", home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(home))
         .env_remove("XDG_CONFIG_HOME")
@@ -541,8 +544,7 @@ fn untagged_dep_decision_is_not_surfaced() {
         "active",
     );
 
-    let raw = Command::cargo_bin("spelunk")
-        .unwrap()
+    let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -587,8 +589,7 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
         "active",
     );
 
-    let raw = Command::cargo_bin("spelunk")
-        .unwrap()
+    let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -678,8 +679,7 @@ fn single_project_no_deps_works_unchanged() {
         "active",
     );
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -988,8 +988,7 @@ fn archived_dep_decision_is_not_surfaced() {
         "archived", // <-- archived
     );
 
-    let raw = Command::cargo_bin("spelunk")
-        .unwrap()
+    let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -1072,8 +1071,7 @@ fn dep_question_is_never_surfaced_cross_project() {
         "active",
     );
 
-    let raw = Command::cargo_bin("spelunk")
-        .unwrap()
+    let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -1163,8 +1161,7 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     reg.add_dep(primary_id, dep_a_id);
     reg.add_dep(primary_id, dep_b_id);
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -1248,8 +1245,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
     reg.add_dep(primary_id, dep_a_id);
     reg.add_dep(primary_id, dep_b_id);
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin_in(&home)
         .env("HOME", &home)
         .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")

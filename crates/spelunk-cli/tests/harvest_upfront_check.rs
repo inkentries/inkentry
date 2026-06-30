@@ -5,6 +5,9 @@
 //! These tests don't need a running server or a real git repo; they only
 //! exercise the early server-gate check.
 
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
@@ -29,7 +32,7 @@ fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBu
 
 /// Build a `spelunk --config <cfg> memory harvest --git-range HEAD~1..HEAD` command.
 fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
         .env_remove("SPELUNK_SERVER_URL")
         .env_remove("SPELUNK_MEMORY_SERVER_URL")

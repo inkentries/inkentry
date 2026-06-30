@@ -1,9 +1,8 @@
 //! Component tests for `spelunk plumbing read-memory`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, spelunk_cmd, write_config};
+use plumbing_helpers::{parse_jsonl, spelunk_bin, spelunk_cmd, write_config};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -45,8 +44,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // phase is skipped — these plumbing tests only need parsed chunks + a memory
     // note, not embeddings, and without it the index would auto-discover a
     // loopback spelunk-server on 127.0.0.1:7777 and fail on a dim mismatch.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -63,8 +61,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // workspace's .spelunk/memory.db instead).
     let mem_path = db_path.with_file_name("memory.db");
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("memory")
@@ -209,8 +206,7 @@ fn read_memory_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

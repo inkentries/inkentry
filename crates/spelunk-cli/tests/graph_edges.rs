@@ -1,9 +1,8 @@
 //! Component tests for `spelunk plumbing graph-edges`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -145,8 +144,7 @@ fn graph_edges_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

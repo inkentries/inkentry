@@ -5,9 +5,8 @@
 //! a fixed 768-dimensional vector, so no real server is needed.
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, IndexEmbedResponder};
+use plumbing_helpers::{FIXTURE_PROJECT_ID, IndexEmbedResponder, spelunk_bin};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
@@ -51,8 +50,7 @@ async fn embed_exits_0_with_empty_piped_stdin() {
     let config = write_server_config(&tmp, &mock.uri());
 
     // Pipe empty stdin — command should succeed (no lines to embed).
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -89,8 +87,7 @@ async fn embed_document_mode_produces_jsonl_vector() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -142,8 +139,7 @@ async fn embed_query_mode_produces_jsonl_vector() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -183,8 +179,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -208,8 +203,7 @@ fn embed_exits_nonzero_when_no_server_configured() {
     let config = tmp.path().join("config.toml");
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

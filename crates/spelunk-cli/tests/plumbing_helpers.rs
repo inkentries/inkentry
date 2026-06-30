@@ -9,6 +9,56 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Build a `spelunk` test command that never touches the OS keychain and never
+/// reads or writes the developer's real `~/.config/spelunk`.
+///
+/// Every integration test spawns the real `spelunk` binary, and each spawned
+/// process runs `Config::load`, which resolves a secret store. In auto mode
+/// (`SPELUNK_SECRET_STORE` unset) that selects the OS keychain whenever one is
+/// present — which on macOS is always — triggering a Keychain access prompt on
+/// every test binary. "Always Allow" never sticks because each rebuilt test
+/// binary is a fresh app to the Keychain ACL. CI (Linux, no Secret Service) is
+/// silent only by accident of the auto fallback.
+///
+/// This constructor pins two things on the child process:
+///
+/// * `SPELUNK_SECRET_STORE=file` — force the plaintext file store, so a spawned
+///   CLI can never reach the keychain. Production behaviour is unchanged: real
+///   users still get the keychain in auto mode; only tests pin the backend.
+/// * `HOME` / `XDG_CONFIG_HOME` redirected to a throwaway temp dir — so the file
+///   store writes its `secrets.toml` into an isolated `~/.config/spelunk` under
+///   the temp HOME, never the developer's real config dir.
+///
+/// The temp dir is intentionally leaked (its path is kept for the lifetime of
+/// the process) so the child can read/write it after this function returns; the
+/// OS reclaims it on the next reboot. Tests that already manage their own `HOME`
+/// (e.g. for registry isolation) should use [`spelunk_bin_in`] instead so the
+/// keychain pin composes with their existing home dir.
+pub fn spelunk_bin() -> Command {
+    let home = TempDir::new()
+        .expect("create temp HOME for spelunk test command")
+        .keep();
+    spelunk_bin_in(&home)
+}
+
+/// Like [`spelunk_bin`], but uses the caller-supplied `home` directory as the
+/// isolated `HOME` instead of allocating a throwaway temp dir.
+///
+/// Use this from tests that set `HOME` themselves (registry isolation, seeded
+/// config under `<home>/.config/spelunk`, etc.). It applies the same keychain
+/// pin (`SPELUNK_SECRET_STORE=file`) and home redirection so those tests stop
+/// prompting for Keychain access while keeping their existing home semantics.
+pub fn spelunk_bin_in(home: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    cmd.env("SPELUNK_SECRET_STORE", "file") // never the OS keychain in tests
+        .env("HOME", home)
+        // `spelunk_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
+        // XDG_CONFIG_HOME so the file store lands under `<home>/.config/spelunk`
+        // and never the developer's real config dir.
+        .env_remove("XDG_CONFIG_HOME");
+    cmd
+}
+
 /// Path (relative to the workspace root) of the synthetic fixture project.
 pub const FIXTURE_DIR: &str = "tests/fixtures/simple-project";
 
@@ -23,7 +73,7 @@ pub const FIXTURE_PROJECT_ID: &str = "test-org/test-project";
 /// command.  The correct invocation shape is:
 ///   spelunk --config <cfg> plumbing --db <db> <subcommand> [args]
 pub fn spelunk_cmd(db_path: &Path, config_path: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("plumbing")
@@ -160,8 +210,7 @@ pub fn index_fixture_project() -> (TempDir, PathBuf, PathBuf) {
 
     // Pass `--db` explicitly so the index is written to our temp DB path,
     // not to `<fixture>/.spelunk/index.db` (the default project-local location).
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin_in(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("index")

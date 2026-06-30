@@ -8,9 +8,8 @@
 //! Error-path tests (bad JSON on stdin, missing DB) run without a server.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -54,8 +53,7 @@ fn knn_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -120,8 +118,7 @@ fn knn_returns_jsonl_results_for_valid_vector() {
         "vector": vec,
     });
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -169,8 +166,7 @@ fn knn_lang_filter_restricts_to_language() {
         "vector": vec,
     });
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -220,8 +216,7 @@ fn knn_min_score_filter_respects_threshold() {
         "vector": vec,
     });
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

@@ -8,9 +8,8 @@
 //! non-deterministic; tests assert structure and non-emptiness only.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
 
-use assert_cmd::Command;
 use std::path::Path;
 
 // ── Test 1: search --format jsonl vs embed | knn ────────────────────────────
@@ -24,8 +23,7 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     // `spelunk search "test" --db <db> --format jsonl --no-stale-check`
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("search")
@@ -70,8 +68,7 @@ fn plumbing_knn_returns_valid_chunk_ids() {
 
     // Step 1: embed a query string via `spelunk plumbing embed --query`
     // The mock server returns [0.1f32; 768] for every request.
-    let embed_output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let embed_output = spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -129,8 +126,7 @@ fn status_json_file_count_matches_ls_files_count() {
     //
     // Run from the temp dir so the registry won't match any registered project
     // via CWD, forcing resolve_project_and_deps to fall back to cfg.db_path.
-    let status_output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let status_output = spelunk_bin()
         .current_dir(_tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -184,8 +180,7 @@ fn parse_file_content_appears_in_cat_chunks() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/lib.rs");
 
     // parse-file: parse lib.rs without DB.
-    let parse_output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let parse_output = spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

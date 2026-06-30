@@ -1,7 +1,9 @@
 //! Integration tests for issue #308: `memory_backend` field in
 //! `spelunk status --format json` and `spelunk check --format json`.
 
-use assert_cmd::Command;
+mod plumbing_helpers;
+use plumbing_helpers::spelunk_bin;
+
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
@@ -36,8 +38,7 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     // auto-discovery can pick up a `spelunk-server` running on 127.0.0.1:7777
     // and route the embed call there, which fails the build with a dimension
     // mismatch. We only care about the SQLite memory-backend path here.
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .env("SPELUNK_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -57,8 +58,7 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
 fn status_json_includes_memory_backend_field() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
         .env("SPELUNK_NO_SERVER", "1")
@@ -108,8 +108,7 @@ fn status_json_includes_memory_backend_field() {
 fn check_json_includes_memory_backend_field() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    let output = Command::cargo_bin("spelunk")
-        .unwrap()
+    let output = spelunk_bin()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
         .env("SPELUNK_NO_SERVER", "1")
@@ -154,8 +153,7 @@ fn check_json_includes_memory_backend_field() {
 fn status_text_mentions_memory_backend() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .current_dir(&project_dir)
         .env_remove("SPELUNK_SERVER_URL")
         .env("SPELUNK_NO_SERVER", "1")

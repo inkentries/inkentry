@@ -4,7 +4,7 @@
 //! colored text summary instead of emitting one JSON object per line.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, write_config};
+use plumbing_helpers::{parse_jsonl, spelunk_bin, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -20,8 +20,7 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
     // No server needed for `memory add`/`memory list` on the local backend.
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
-    Command::cargo_bin("spelunk")
-        .unwrap()
+    spelunk_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("memory")
@@ -42,7 +41,7 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
 
 /// Build a `spelunk --config <cfg> memory --db <mem> list` Command.
 fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+    let mut cmd = spelunk_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("memory")
