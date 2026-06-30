@@ -14,6 +14,26 @@ use tokenizers::Tokenizer;
 pub const DIM: usize = 896;
 
 const MODEL_ID: &str = "codefuse-ai/F2LLM-v2-330M";
+/// Upstream revision (commit SHA) of `codefuse-ai/F2LLM-v2-330M` we download and
+/// quantize from. Pinning the revision makes the on-device quantize path
+/// reproducible (the same weights every first run) and is the provenance anchor
+/// recorded in the NOTICE / model card for our redistributed Q8_0 GGUF. Update
+/// this in lockstep with regenerating and re-uploading the pre-quantized
+/// artifact.
+const MODEL_REVISION: &str = "1239cdd544b24c247ed75df2ae22e5a401ac4659";
+
+/// Optional Hugging Face repo id holding our **own pre-quantized Q8_0 GGUF**
+/// (e.g. `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`). Read from
+/// `SPELUNK_EMBEDDER_GGUF_REPO` at load time.
+///
+/// When set, `load()` downloads `QUANT_GGUF` directly from that repo via the
+/// existing hf-hub cache — first-run download drops to ~339 MB and there is no
+/// on-device safetensors download or quantize step. When unset (the default),
+/// the loader keeps the download-safetensors-and-quantize-on-device path, so
+/// merging this change alters nothing until the GGUF repo exists and an operator
+/// sets the env var. Activation = upload the artifact, then default this on.
+const GGUF_REPO_ENV: &str = "SPELUNK_EMBEDDER_GGUF_REPO";
+
 /// Hard ceiling for token sequences (max_position_embeddings).
 const MAX_SEQ_LEN: usize = 40960;
 /// Number of sequences processed in one padded forward pass.
@@ -401,12 +421,23 @@ fn causal_mask(seq: usize, dtype: DType, device: &Device) -> Result<Tensor> {
 impl NativeEmbedder {
     /// Load the F2LLM-v2-330M model, quantized to Q8_0.
     ///
-    /// On first call the ~650 MB safetensors weights are downloaded into
-    /// `~/.local/share/spelunk/models/` via the hf-hub cache, quantized to Q8_0,
-    /// and written to a ~355 MB GGUF (`f2llm-v2-330m-q8_0.gguf`) in the same
-    /// directory. Subsequent calls read the GGUF directly with no network access
-    /// and no safetensors load. Uses Metal/GPU on macOS when built with the
-    /// `metal` cargo feature, CPU otherwise.
+    /// Two acquisition paths select the Q8_0 GGUF cached in
+    /// `~/.local/share/spelunk/models/`:
+    ///
+    /// * **Default (dev / pre-activation):** download the ~638 MB BF16
+    ///   safetensors from the pinned upstream revision of
+    ///   `codefuse-ai/F2LLM-v2-330M`, quantize on device to a ~339 MB GGUF
+    ///   (`f2llm-v2-330m-q8_0.gguf`), then delete the cached safetensors so
+    ///   steady-state disk is ~339 MB rather than ~1.5 GB.
+    /// * **Direct GGUF (activated via `SPELUNK_EMBEDDER_GGUF_REPO`):** download
+    ///   our own pre-quantized GGUF straight from the named HF repo through the
+    ///   same hf-hub cache (checksum/resume reused) — first-run download is
+    ///   ~339 MB and there is no on-device quantize step.
+    ///
+    /// Either way subsequent calls read the cached GGUF directly with no network
+    /// access. The tokenizer and config are always fetched from the pinned
+    /// upstream revision. Uses Metal/GPU on macOS when built with the `metal`
+    /// cargo feature, CPU otherwise.
     pub fn load() -> Result<Self> {
         let cache_dir = model_cache_dir()?;
         std::fs::create_dir_all(&cache_dir)
@@ -425,7 +456,12 @@ impl NativeEmbedder {
             .with_cache_dir(cache_dir)
             .build()
             .context("building HuggingFace Hub API client")?;
-        let repo = api.repo(Repo::new(MODEL_ID.to_string(), RepoType::Model));
+        // Tokenizer + config always come from the pinned upstream revision.
+        let repo = api.repo(Repo::with_revision(
+            MODEL_ID.to_string(),
+            RepoType::Model,
+            MODEL_REVISION.to_string(),
+        ));
 
         let tokenizer_path = repo
             .get("tokenizer.json")
@@ -441,13 +477,43 @@ impl NativeEmbedder {
         )
         .context("parsing F2LLM-v2-330M config.json")?;
 
-        // Build the quantized GGUF once from the safetensors download.
+        // Acquire the Q8_0 GGUF if it isn't already cached.
         if !gguf_path.exists() {
-            tracing::info!("quantizing F2LLM-v2-330M to Q8_0 GGUF (first run; one-time)…");
-            let weight_paths = download_weights(&repo)?;
-            write_quantized_gguf(&weight_paths, &gguf_path)
-                .context("writing quantized F2LLM-v2-330M GGUF")?;
-            tracing::info!("wrote quantized model to {}", gguf_path.display());
+            match prequantized_gguf_repo() {
+                // Activated: pull our own pre-quantized GGUF directly.
+                Some(gguf_repo) => {
+                    tracing::info!(
+                        "fetching pre-quantized F2LLM-v2-330M Q8_0 GGUF from {gguf_repo} (first run)…"
+                    );
+                    let downloaded = api
+                        .repo(Repo::new(gguf_repo.clone(), RepoType::Model))
+                        .get(QUANT_GGUF)
+                        .with_context(|| format!("downloading {QUANT_GGUF} from {gguf_repo}"))?;
+                    // hf-hub returns a path inside its own blob/snapshot layout;
+                    // copy it to the stable cache path the loader reads from.
+                    if downloaded != gguf_path {
+                        std::fs::copy(&downloaded, &gguf_path).with_context(|| {
+                            format!(
+                                "caching {} -> {}",
+                                downloaded.display(),
+                                gguf_path.display()
+                            )
+                        })?;
+                    }
+                    tracing::info!("fetched pre-quantized model to {}", gguf_path.display());
+                }
+                // Default / dev fallback: download safetensors and quantize.
+                None => {
+                    tracing::info!("quantizing F2LLM-v2-330M to Q8_0 GGUF (first run; one-time)…");
+                    let weight_paths = download_weights(&repo)?;
+                    write_quantized_gguf(&weight_paths, &gguf_path)
+                        .context("writing quantized F2LLM-v2-330M GGUF")?;
+                    tracing::info!("wrote quantized model to {}", gguf_path.display());
+                    // Reclaim ~638 MB: the BF16 safetensors are only needed to
+                    // build the GGUF; the loader reads the GGUF from here on.
+                    cleanup_safetensors(&weight_paths);
+                }
+            }
         }
 
         let weights = Qwen3EmbedWeights::from_gguf(&gguf_path, &config, &device)
@@ -571,6 +637,59 @@ fn model_cache_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))
 }
 
+/// HF repo id of our pre-quantized Q8_0 GGUF, from `SPELUNK_EMBEDDER_GGUF_REPO`.
+///
+/// Returns `None` (the default) when the variable is unset or blank, keeping the
+/// download-safetensors-and-quantize path active. This is the single config gate
+/// that activates direct-GGUF distribution; flipping the default to
+/// `Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF")` is the activation step, done
+/// only once the artifact has been uploaded.
+fn prequantized_gguf_repo() -> Option<String> {
+    std::env::var(GGUF_REPO_ENV)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Delete the cached BF16 safetensors after the Q8_0 GGUF has been written.
+///
+/// The hf-hub cache stores each file as a content-addressed blob under `blobs/`
+/// with a symlink from `snapshots/<rev>/<file>`. We resolve the symlink to its
+/// blob and remove both, reclaiming ~638 MB; the loader only ever reads the
+/// GGUF after this point. Best-effort: a failure to reclaim disk is logged, not
+/// fatal (the GGUF is already written and valid).
+fn cleanup_safetensors(weight_paths: &[PathBuf]) {
+    let mut reclaimed: u64 = 0;
+    for path in weight_paths {
+        // Resolve the blob the snapshot symlink points at (if it is one).
+        let blob = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        for target in [&blob, path] {
+            match std::fs::metadata(target) {
+                Ok(meta) if meta.is_file() => {
+                    let len = meta.len();
+                    match std::fs::remove_file(target) {
+                        Ok(()) => reclaimed += len,
+                        Err(e) => tracing::warn!(
+                            "could not delete cached safetensors {}: {e}",
+                            target.display()
+                        ),
+                    }
+                }
+                _ => {}
+            }
+            if blob == *path {
+                break; // not a symlink; only one path to remove
+            }
+        }
+    }
+    if reclaimed > 0 {
+        tracing::info!(
+            "reclaimed {:.0} MB by deleting cached BF16 safetensors after quantization",
+            reclaimed as f64 / 1_048_576.0
+        );
+    }
+}
+
 fn l2_normalise(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
@@ -644,6 +763,71 @@ impl spelunk_core::embeddings::EmbeddingBackend for NativeEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The direct-GGUF path is gated: with `SPELUNK_EMBEDDER_GGUF_REPO` unset or
+    /// blank, `prequantized_gguf_repo()` returns `None`, so `load()` keeps the
+    /// default download-safetensors-and-quantize path. This is what makes the PR
+    /// safe to merge before the HF GGUF repo exists — merging changes nothing
+    /// until an operator sets the variable. Uses `serial` because it mutates a
+    /// process-global env var.
+    #[test]
+    #[serial_test::serial(gguf_repo_env)]
+    fn prequantized_gguf_repo_gate_defaults_off() {
+        // SAFETY: guarded by #[serial] so no other test reads/writes this var
+        // concurrently; we restore it before returning.
+        let prev = std::env::var(GGUF_REPO_ENV).ok();
+
+        unsafe { std::env::remove_var(GGUF_REPO_ENV) };
+        assert_eq!(
+            prequantized_gguf_repo(),
+            None,
+            "unset env var must keep the quantize-on-first-run default path"
+        );
+
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "   ") };
+        assert_eq!(
+            prequantized_gguf_repo(),
+            None,
+            "blank/whitespace env var must be treated as unset"
+        );
+
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF") };
+        assert_eq!(
+            prequantized_gguf_repo().as_deref(),
+            Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF"),
+            "set env var must activate the direct-GGUF path with the repo id"
+        );
+
+        // Trimming: surrounding whitespace is stripped from the repo id.
+        unsafe { std::env::set_var(GGUF_REPO_ENV, "  org/repo  ") };
+        assert_eq!(prequantized_gguf_repo().as_deref(), Some("org/repo"));
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var(GGUF_REPO_ENV, v) },
+            None => unsafe { std::env::remove_var(GGUF_REPO_ENV) },
+        }
+    }
+
+    /// `cleanup_safetensors` removes the cached weight files (reclaiming disk)
+    /// and tolerates already-absent paths without erroring — it is best-effort
+    /// and must never fail the load after the GGUF is already written.
+    #[test]
+    fn cleanup_safetensors_removes_files_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("model-00001-of-00002.safetensors");
+        let b = dir.path().join("model-00002-of-00002.safetensors");
+        std::fs::write(&a, vec![0u8; 4096]).unwrap();
+        std::fs::write(&b, vec![0u8; 4096]).unwrap();
+        assert!(a.exists() && b.exists());
+
+        let paths = vec![a.clone(), b.clone()];
+        cleanup_safetensors(&paths);
+        assert!(!a.exists(), "safetensors must be deleted to reclaim disk");
+        assert!(!b.exists(), "safetensors must be deleted to reclaim disk");
+
+        // Second call over now-missing paths must not panic or error.
+        cleanup_safetensors(&paths);
+    }
 
     /// Build a `[1, n_kv, seq, head_dim]` tensor where every element of kv-head
     /// `k` equals `k` — so the head index is recoverable from any of its values.
