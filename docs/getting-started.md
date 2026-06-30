@@ -394,3 +394,11 @@ spelunk memory push
 ```
 
 For full setup and deployment guide: **[Server setup](server.md)** — Docker, configuration, API reference.
+
+### Enterprise / MDM deployment
+
+Rolling spelunk out to a managed fleet? The
+[`examples/mdm/`](../examples/mdm/README.md) directory shows how to deploy and
+pre-configure `spelunk` and `spelunk-server` via MDM (managed config file,
+fleet-wide environment, and a macOS profile for a managed server daemon),
+grounded in spelunk's real config surface.

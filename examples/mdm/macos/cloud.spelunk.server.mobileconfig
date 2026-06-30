@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS configuration profile (.mobileconfig) for spelunk.
+
+  WHAT THIS DOES
+  This profile installs a managed launchd LaunchDaemon that keeps a shared,
+  always-on `spelunk-server` running on a managed host (for example a build
+  host or a team server). It is the macOS-native, MDM-deployable form of the
+  LaunchAgent shipped in packaging/spelunk-server.plist, promoted to a
+  system-scoped LaunchDaemon so it runs without an interactive login session.
+
+  WHAT THIS DOES NOT DO
+  spelunk has NO macOS managed-preferences (MCX) domain. The CLI and server
+  read their settings from TOML config files and environment variables, not
+  from a macOS preference domain. So this profile does not push spelunk's
+  application settings the way an MCX "Forced preferences" payload would. To
+  pre-configure spelunk itself (server_url, project_id, models cache, etc.),
+  deploy the config file and/or environment via an MDM file or script payload
+  see ../README.md ("Pushing spelunk configuration").
+
+  BEFORE YOU DEPLOY
+  1. Regenerate every PayloadUUID below (`uuidgen`) so this profile does not
+     collide with another org's profile.
+  2. Set PayloadOrganization to your organization name.
+  3. Confirm the binary path matches where your fleet installs spelunk-server
+     (the install script places it in /usr/local/bin when run as root).
+  4. Adjust the --port, --db path, and SPELUNK_SERVER_KEY to suit your
+     deployment. For a shared server, ALWAYS set an API key (see README).
+-->
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>spelunk-server (managed LaunchDaemon)</string>
+	<key>PayloadDescription</key>
+	<string>Installs and keeps the shared spelunk-server daemon running on a managed macOS host.</string>
+	<key>PayloadIdentifier</key>
+	<string>cloud.spelunk.server.profile</string>
+	<key>PayloadOrganization</key>
+	<string>Example Organization</string>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>f29e1c06-4a76-4d48-9d15-c8f535f1d8fd</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>spelunk-server LaunchDaemon</string>
+			<key>PayloadDescription</key>
+			<string>com.apple.ManagedClient.preferences payload that writes a launchd LaunchDaemon job.</string>
+			<key>PayloadIdentifier</key>
+			<string>cloud.spelunk.server.profile.launchd</string>
+			<key>PayloadType</key>
+			<string>com.apple.ManagedClient.preferences</string>
+			<key>PayloadUUID</key>
+			<string>0f951f58-5016-4716-8b8e-11b938807e8e</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadContent</key>
+			<dict>
+				<!--
+				  The launchd domain. macOS materialises this payload as a
+				  LaunchDaemon plist named cloud.spelunk.server, owned by root
+				  and run at boot, with no interactive login required.
+				-->
+				<key>cloud.spelunk.server</key>
+				<dict>
+					<key>Forced</key>
+					<array>
+						<dict>
+							<key>mcx_preference_settings</key>
+							<dict>
+								<key>Label</key>
+								<string>cloud.spelunk.server</string>
+								<key>ProgramArguments</key>
+								<array>
+									<!-- Path the install script uses when run as root. -->
+									<string>/usr/local/bin/spelunk-server</string>
+									<string>--host</string>
+									<string>0.0.0.0</string>
+									<string>--port</string>
+									<string>7777</string>
+									<!-- Persistent DB path for a shared/always-on host. -->
+									<string>--db</string>
+									<string>/var/lib/spelunk/spelunk.db</string>
+								</array>
+								<key>EnvironmentVariables</key>
+								<dict>
+									<!--
+									  Set a real API key for any shared server.
+									  An unset key leaves the server unauthenticated
+									  (dev only). You can also inject it out-of-band
+									  rather than committing it into the profile.
+									-->
+									<key>SPELUNK_SERVER_KEY</key>
+									<string>replace-with-your-shared-api-key</string>
+									<key>RUST_LOG</key>
+									<string>info</string>
+								</dict>
+								<key>RunAtLoad</key>
+								<true/>
+								<key>KeepAlive</key>
+								<true/>
+								<key>StandardOutPath</key>
+								<string>/var/log/spelunk-server.log</string>
+								<key>StandardErrorPath</key>
+								<string>/var/log/spelunk-server.err</string>
+							</dict>
+						</dict>
+					</array>
+				</dict>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

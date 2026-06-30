@@ -1,0 +1,53 @@
+# Example managed spelunk configuration.
+#
+# Deploy this file to each user's global config path so a fleet of machines
+# points at the same shared spelunk-server without any per-user setup:
+#
+#   ~/.config/spelunk/config.toml
+#
+# spelunk uses ~/.config on every platform (macOS included); it does NOT use
+# ~/Library/Application Support. Push it there with your MDM's file/script
+# payload (see README.md, "Pushing spelunk configuration").
+#
+# Every key below is a real field read by Config::load in
+# crates/spelunk-core/src/config.rs. Remove the ones you do not need; all are
+# optional and fall back to sensible defaults.
+#
+# IMPORTANT: do NOT bake a personal credential into this file. The shared API
+# key for a team server is better delivered as the SPELUNK_SERVER_KEY
+# environment variable (see spelunk.env.example); that takes precedence and
+# keeps the secret out of a world-readable config file.
+
+# --- Shared team memory server -----------------------------------------------
+# When set, the CLI shares memory (decisions, requirements, context) through a
+# long-lived deployed server. Leave unset to keep every machine fully local.
+server_url = "http://spelunk.internal:7777"
+
+# Human-readable project slug. Required when server_url points at a non-loopback
+# host. The CLI resolves the slug to the server's internal id on first use.
+project_id = "acme/my-app"
+
+# Sync mode: "offline" | "local_first" | "cloud_first".
+# "local_first" (the default when server_url is set) reads and writes locally,
+# then syncs to the shared server best-effort. Pin it explicitly if you want a
+# fleet to always behave the same way regardless of server reachability.
+mode = "local_first"
+
+# --- Optional: point at your own inference endpoint --------------------------
+# By default spelunk-server bundles a native embedder, so most fleets leave
+# these unset. Set them only if you run a shared OpenAI-compatible endpoint
+# (LM Studio, Ollama, vLLM, ...) for embeddings/LLM.
+# api_base_url    = "http://inference.internal:1234"
+# embedding_model = "text-embedding-embeddinggemma-300m-qat"
+# llm_model       = "google/gemma-3n-e4b"
+# batch_size      = 32
+
+# --- Optional: directory conventions -----------------------------------------
+# Where `spelunk plan create` and spec discovery look (relative to project root).
+# plans_dir = "docs/plans"
+# specs_dir = "docs/specs"
+
+# --- Optional: git-notes memory ----------------------------------------------
+# `spelunk memory add` also appends entries to refs/notes/spelunk by default.
+# Set to false to opt a fleet out of writing git notes.
+# store_in_git_notes = true
