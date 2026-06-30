@@ -1,0 +1,39 @@
+F2LLM-v2-330M-Q8_0-GGUF
+=======================
+
+This artifact is a modified, redistributed copy of:
+
+    codefuse-ai/F2LLM-v2-330M
+    https://huggingface.co/codefuse-ai/F2LLM-v2-330M
+    Licensed under the Apache License, Version 2.0.
+
+Source revision (pinned)
+-------------------------
+    Upstream revision: <PINNED_UPSTREAM_REVISION>
+    (the commit/revision the GGUF below was quantized from)
+
+Modification (Apache-2.0 Section 4(b))
+--------------------------------------
+The original BF16 safetensors weights have been quantized to Q8_0 and
+packaged as a single GGUF file:
+
+    f2llm-v2-330m-q8_0.gguf
+    sha256: <GGUF_SHA256>
+
+Quantization detail: projection matmul weights and the token-embedding
+table are stored Q8_0; RMSNorm weights are kept F32. No other changes are
+made to the weights.
+
+License
+-------
+The Apache License, Version 2.0 governs this artifact. The full license
+text is included in the accompanying LICENSE file and is also available at:
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Original work is Copyright its respective authors (codefuse-ai). This NOTICE
+file is provided to satisfy Apache-2.0 Section 4(d); it does not modify the
+license terms.
+
+Redistributed by the Spelunk project (https://github.com/spelunk-cloud/spelunk)
+for use as the bundled embedding model in spelunk-server.

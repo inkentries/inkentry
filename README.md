@@ -183,3 +183,6 @@ Contributions welcome. See [Building from source](docs/building.md) for setup in
 ## License
 
 [MIT](LICENSE)
+
+spelunk-server bundles a third-party embedding model (Apache-2.0). See
+[Third-party models](docs/third-party-models.md) for attribution.
