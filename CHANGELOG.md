@@ -9,6 +9,44 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-06-30
+
+### Fixed
+
+- **Single-chunk embedder OOM on large files.** The native embedder now caps a
+  single chunk's attention by a RAM-aware memory budget; chunks that would exceed
+  the budget are truncated (or skipped) instead of allocating an attention tensor
+  large enough to exhaust memory and crash indexing of large files. (#475)
+- **`spelunk org switch`** now persists the selected `workos_org_id`, refreshes the
+  access token against the correct organization, and uses the production WorkOS
+  client id. (#478)
+- Corrected stale and inaccurate `--help` text across all commands. (#477)
+
+### Added
+
+- **Official Windows build.** Releases now publish an `x86_64-pc-windows-msvc`
+  `.zip` artifact and an `install.ps1` one-liner installer, with Windows added to
+  the CI build and test matrix. (#453, #444)
+- OS-keychain credential storage for the CLI bearer credential, with automatic
+  migration of any existing plaintext-config credential into the keychain.
+  `SPELUNK_SECRET_STORE=file` forces the previous file-based store for headless
+  environments. (#456)
+- Organization name is now shown in the `spelunk login` confirmation. (#452)
+- `spelunk-server --version` flag; `--help` output is now prefixed with the
+  version line. (#449)
+- Pre-flight embedding-dimension check in the CLI probe, guarding against a stale
+  loopback server with a mismatched embedding dimension. (#457)
+- Enterprise MDM deployment example for `spelunk` and `spelunk-server`. (#472)
+
+### Changed
+
+- The native embedder now downloads a **pre-quantized Q8_0 GGUF by default**
+  (~339 MB) instead of downloading the ~638 MB BF16 weights and quantizing on
+  device. Set `SPELUNK_EMBEDDER_GGUF_REPO=off` to build from the upstream weights
+  on device, or point it at another repo to override. Cached BF16 safetensors are
+  removed after the GGUF is written; the upstream embedder revision is pinned.
+  (#474, #479)
+
 ## [0.9.0] — 2026-06-26
 
 ### Breaking changes — migration required
