@@ -40,11 +40,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Reduced steady-state disk usage: the cached BF16 safetensors are deleted after
-  the Q8_0 GGUF is written, and the upstream embedder revision is now pinned to an
-  exact commit. An opt-in direct-GGUF loader (enabled via
-  `SPELUNK_EMBEDDER_GGUF_REPO`) can download a pre-quantized Q8_0 GGUF instead of
-  quantizing locally. (#474)
+- The native embedder now downloads a **pre-quantized Q8_0 GGUF by default**
+  (~339 MB) instead of downloading the ~638 MB BF16 weights and quantizing on
+  device. Set `SPELUNK_EMBEDDER_GGUF_REPO=off` to build from the upstream weights
+  on device, or point it at another repo to override. Cached BF16 safetensors are
+  removed after the GGUF is written; the upstream embedder revision is pinned.
+  (#474, #479)
 
 ## [0.9.0] — 2026-06-26
 
