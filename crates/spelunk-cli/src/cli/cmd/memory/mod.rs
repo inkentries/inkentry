@@ -18,7 +18,7 @@ pub struct MemoryArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum MemoryCommand {
-    /// Store a decision, context, requirement, note, question, answer, handoff, or intent
+    /// Store a memory entry (decision, requirement, note, question, handoff, intent, antipattern, etc.)
     Add(MemoryAddArgs),
     /// Semantic search over stored memory
     Search(MemorySearchArgs),
@@ -36,7 +36,7 @@ pub enum MemoryCommand {
     Push(MemoryPushArgs),
     /// Pull new memory entries from the configured server into local memory.db
     Pull(MemoryPullArgs),
-    /// Two-way sync: push local changes and pull remote changes (ADR-037)
+    /// Two-way sync: push local entries to the server and pull remote entries to local
     Sync(MemorySyncArgs),
     /// Show how the team's understanding of a topic evolved over time
     Timeline(MemoryTimelineArgs),
@@ -48,7 +48,7 @@ pub enum MemoryCommand {
     Watch(MemoryWatchArgs),
     /// List all stored antipatterns (shortcut for `list --kind antipattern`)
     Failures(MemoryFailuresArgs),
-    /// Import unique notes from server.db into memory.db (one-time recovery after ADR-004 migration)
+    /// Import unique notes from server.db into the local memory.db (recovery / migration tool)
     Reconcile(MemoryReconcileArgs),
 }
 
@@ -90,7 +90,7 @@ pub struct MemoryAddArgs {
     #[arg(long)]
     pub from_url: Option<String>,
 
-    /// Kind: decision, context, requirement, note, question, answer, handoff, intent
+    /// Kind: decision, context, requirement, note, question, answer, handoff, intent, antipattern
     #[arg(short, long, default_value = "note")]
     pub kind: String,
 
@@ -205,7 +205,7 @@ pub struct MemoryHarvestArgs {
     #[arg(long, default_value_t = 3)]
     pub batch_size: usize,
 
-    /// Source to harvest from: git (default) or claude-code
+    /// Source to harvest from: git (default), claude-code, or failures
     #[arg(long, default_value = "git")]
     pub source: String,
 
@@ -219,7 +219,7 @@ pub struct MemoryHarvestArgs {
     #[arg(long)]
     pub since: Option<String>,
 
-    /// Confirm reading git objects or history files (required for --source claude-code)
+    /// Confirm reading the Claude Code history file (required for --source claude-code)
     #[arg(long)]
     pub confirm: bool,
 
