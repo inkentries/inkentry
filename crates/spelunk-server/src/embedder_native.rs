@@ -20,7 +20,7 @@ const MODEL_ID: &str = "codefuse-ai/F2LLM-v2-330M";
 /// recorded in the NOTICE / model card for our redistributed Q8_0 GGUF. Update
 /// this in lockstep with regenerating and re-uploading the pre-quantized
 /// artifact.
-const MODEL_REVISION: &str = "main";
+const MODEL_REVISION: &str = "1239cdd544b24c247ed75df2ae22e5a401ac4659";
 
 /// Optional Hugging Face repo id holding our **own pre-quantized Q8_0 GGUF**
 /// (e.g. `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`). Read from

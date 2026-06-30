@@ -9,7 +9,8 @@ are attributed here.
 
 - **Model:** `codefuse-ai/F2LLM-v2-330M`
 - **Upstream:** https://huggingface.co/codefuse-ai/F2LLM-v2-330M
-- **Pinned source revision:** `main` (tracked by the `MODEL_REVISION` constant in
+- **Pinned source revision:** `1239cdd544b24c247ed75df2ae22e5a401ac4659`
+  (tracked by the `MODEL_REVISION` constant in
   `crates/spelunk-server/src/embedder_native.rs`; update both together when the
   pin moves).
 - **License:** Apache License 2.0 (declared via the upstream Hugging Face

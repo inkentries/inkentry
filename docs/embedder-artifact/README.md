@@ -29,12 +29,12 @@ first run; distributing it pre-quantized cuts the first-run download from
 
 | File | Approx. size | sha256 |
 |------|--------------|--------|
-| `f2llm-v2-330m-q8_0.gguf` | ~339 MB | `<GGUF_SHA256>` |
+| `f2llm-v2-330m-q8_0.gguf` | ~339 MB | `2c12aad2951f1d9a3b457f890a2586d1ee19b755b377c0fb424e856e615b8f2b` |
 
 ## Provenance
 
 - **Base model:** `codefuse-ai/F2LLM-v2-330M`
-- **Pinned source revision:** `<PINNED_UPSTREAM_REVISION>`
+- **Pinned source revision:** `1239cdd544b24c247ed75df2ae22e5a401ac4659`
 - **Quantization:** Q8_0 from the original BF16 weights (see above)
 - **Architecture / dim:** Qwen3 decoder, 896-dim embeddings
 
