@@ -21,6 +21,45 @@ fn test_help_output() {
         .stdout(predicate::str::contains("Commands:"));
 }
 
+/// Guard the help-text corrections from PR fix(cli): correct stale and inaccurate --help text.
+///
+/// Checks that:
+/// - `memory add --kind` lists `antipattern` (was missing before the fix)
+/// - `memory harvest --source` lists `failures` (was missing before the fix)
+/// - `memory harvest --help` does not contain an `ADR-` internal reference (removed)
+/// - `sync --help` says "shorthand" not "alias" (was inaccurate before the fix)
+///
+/// These assertions are deliberately non-brittle: they check for the *presence* of
+/// a corrected token or the *absence* of a stale one, not for exact prose alignment,
+/// so ordinary copy edits won't break them.
+#[test]
+fn test_help_text_accuracy_guards() {
+    // `memory add --help` must list `antipattern` as a valid kind.
+    spelunk_bin()
+        .args(["memory", "add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("antipattern"));
+
+    // `memory harvest --help` must list `failures` as a valid --source value.
+    spelunk_bin()
+        .args(["memory", "harvest", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("failures"))
+        // Must not embed internal ADR references in user-facing help.
+        .stdout(predicate::str::contains("ADR-").not());
+
+    // Top-level `sync --help` must say "shorthand", not "alias"
+    // (sync dispatches directly, it is not a clap alias).
+    spelunk_bin()
+        .args(["sync", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shorthand"))
+        .stdout(predicate::str::contains("alias").not());
+}
+
 #[test]
 fn test_invalid_command() {
     let mut cmd = spelunk_bin();

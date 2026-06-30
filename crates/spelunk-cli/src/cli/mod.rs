@@ -78,7 +78,7 @@ pub enum Command {
     Links(LinksArgs),
     /// Low-level plumbing commands for agents and scripts (JSONL output)
     Plumbing(PlumbingArgs),
-    /// Two-way sync of local memory with the configured server (alias for `memory sync`)
+    /// Two-way sync of local memory with the configured server (shorthand for `memory sync`)
     Sync(SyncArgs),
     /// Manage the local spelunk-server daemon (start / stop / status / logs)
     Server(ServerArgs),
