@@ -9,6 +9,43 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-06-30
+
+### Fixed
+
+- **Single-chunk embedder OOM on large files.** The native embedder now caps a
+  single chunk's attention by a RAM-aware memory budget; chunks that would exceed
+  the budget are truncated (or skipped) instead of allocating an attention tensor
+  large enough to exhaust memory and crash indexing of large files. (#475)
+- **`spelunk org switch`** now persists the selected `workos_org_id`, refreshes the
+  access token against the correct organization, and uses the production WorkOS
+  client id. (#478)
+- Corrected stale and inaccurate `--help` text across all commands. (#477)
+
+### Added
+
+- **Official Windows build.** Releases now publish an `x86_64-pc-windows-msvc`
+  `.zip` artifact and an `install.ps1` one-liner installer, with Windows added to
+  the CI build and test matrix. (#453, #444)
+- OS-keychain credential storage for the CLI bearer credential, with automatic
+  migration of any existing plaintext-config credential into the keychain.
+  `SPELUNK_SECRET_STORE=file` forces the previous file-based store for headless
+  environments. (#456)
+- Organization name is now shown in the `spelunk login` confirmation. (#452)
+- `spelunk-server --version` flag; `--help` output is now prefixed with the
+  version line. (#449)
+- Pre-flight embedding-dimension check in the CLI probe, guarding against a stale
+  loopback server with a mismatched embedding dimension. (#457)
+- Enterprise MDM deployment example for `spelunk` and `spelunk-server`. (#472)
+
+### Changed
+
+- Reduced steady-state disk usage: the cached BF16 safetensors are deleted after
+  the Q8_0 GGUF is written, and the upstream embedder revision is now pinned to an
+  exact commit. An opt-in direct-GGUF loader (enabled via
+  `SPELUNK_EMBEDDER_GGUF_REPO`) can download a pre-quantized Q8_0 GGUF instead of
+  quantizing locally. (#474)
+
 ## [0.9.0] — 2026-06-26
 
 ### Breaking changes — migration required
