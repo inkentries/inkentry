@@ -26,6 +26,12 @@ used; the binary is the same in both tiers.
 **The CLI never calls embedding or LLM APIs directly, regardless of
 configuration.** All inference routes through `spelunk-server`.
 
+**Tier 0 requires no external tools.** The `ast-grep` structural search shown
+above runs **in-process** (compiled into the `spelunk` binary via
+`ast-grep-core` and the `ast-grep-language` grammars) — there is no external
+`ast-grep` binary to install. Offline search works with the `spelunk` binary
+alone.
+
 ---
 
 ## Configuration

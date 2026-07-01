@@ -489,86 +489,55 @@ pub(crate) fn search_all_dbs_linearrag(
     Ok(all)
 }
 
-/// Run an ast-grep pattern search for `query` over the working tree rooted at `root`.
+/// Run a structural ("ast-grep") pattern search for `query` over the working
+/// tree rooted at `root`.
 ///
-/// This is the zero-infra fallback: no index and no embedder required.
-/// It mirrors the `graph_live` pattern in `graph.rs`, but maps ast-grep matches
-/// into `SearchResult` structs so the output shape is **identical** to the
-/// regular/semantic search paths.
+/// This is the zero-infra fallback: no index and no embedder required, and no
+/// external `ast-grep` binary — structural matching runs in-process via
+/// `ast-grep-core` (see `spelunk_core::search::live`). It mirrors the
+/// `graph_live` pattern in `graph.rs`, but maps matches into `SearchResult`
+/// structs so the output shape is **identical** to the regular/semantic search
+/// paths.
 ///
-/// Field mapping from ast-grep JSON to `SearchResult`:
-/// - `path`                → `file_path`
-/// - `range.start.line`    → `start_line` (ast-grep 0-indexed → spelunk 1-indexed)
-/// - `range.end.line`      → `end_line`   (same conversion)
-/// - `text`                → `content`
-/// - `language`            → `language`   (defaults to "unknown")
-/// - `chunk_id`            → `-1` sentinel (not indexed)
-/// - `node_type`           → `"live"`
-/// - `distance`            → `0.0` (not meaningful for pattern search)
+/// Field mapping from a `LiveMatch` to `SearchResult`:
+/// - `file_path`  → `file_path`
+/// - `start_line` → `start_line` (already 1-indexed by the matcher)
+/// - `end_line`   → `end_line`
+/// - `text`       → `content`
+/// - `language`   → `language`
+/// - `chunk_id`   → `-1` sentinel (not indexed)
+/// - `node_type`  → `"live"`
+/// - `distance`   → `0.0` (not meaningful for pattern search)
 pub(crate) fn search_live(
     query: &str,
     format: &str,
     root: &std::path::Path,
     limit: usize,
 ) -> Result<()> {
-    if std::process::Command::new("ast-grep")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        anyhow::bail!(
-            "ast-grep not found. Install with: brew install ast-grep\n\
-             (or: cargo install ast-grep --locked)\n\
-             Run `spelunk index .` to enable index-backed search."
-        );
-    }
+    let matches = crate::search::live::search_live_matches(query, root, limit);
 
-    let out = std::process::Command::new("ast-grep")
-        .args(["run", "--pattern", query, "--json"])
-        .arg(root)
-        .output()?;
-
-    if !out.status.success() && out.stdout.is_empty() {
-        println!("No results found.");
-        return Ok(());
-    }
-
-    let raw: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
-
-    // Map ast-grep matches to the canonical SearchResult shape so downstream
+    // Map structural matches to the canonical SearchResult shape so downstream
     // consumers (agents, benchmarks) see a consistent structure regardless of
     // which backend produced the results.
-    let results: Vec<SearchResult> = raw
+    let results: Vec<SearchResult> = matches
         .into_iter()
-        .filter_map(|m| {
-            let file_path = m["path"].as_str()?.to_string();
-            let start_raw = m["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
-            let end_raw = m["range"]["end"]["line"]
-                .as_u64()
-                .unwrap_or(start_raw as u64) as usize;
-            let start_line = start_raw + 1;
-            let end_line = end_raw + 1;
-            let content = m["text"].as_str().unwrap_or("").to_string();
-            let language = m["language"].as_str().unwrap_or("unknown").to_string();
-            Some(SearchResult {
-                chunk_id: -1,
-                file_path,
-                language,
-                node_type: "live".to_string(),
-                name: None,
-                start_line,
-                end_line,
-                content,
-                distance: 0.0,
-                from_graph: false,
-                governing_specs: vec![],
-                token_count: 0,
-                project_name: None,
-                project_path: None,
-                summary: None,
-            })
+        .map(|m| SearchResult {
+            chunk_id: -1,
+            file_path: m.file_path,
+            language: m.language,
+            node_type: "live".to_string(),
+            name: None,
+            start_line: m.start_line,
+            end_line: m.end_line,
+            content: m.text,
+            distance: 0.0,
+            from_graph: false,
+            governing_specs: vec![],
+            token_count: 0,
+            project_name: None,
+            project_path: None,
+            summary: None,
         })
-        .take(limit)
         .collect();
 
     if results.is_empty() {

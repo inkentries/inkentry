@@ -2,26 +2,33 @@ use super::super::chunker::{Chunk, ChunkKind};
 use anyhow::{Result, bail};
 
 pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
-    // Grammar crates 0.23+ expose a `LANGUAGE: LanguageFn` constant via the
-    // stable `tree-sitter-language` ABI crate; `.into()` converts to Language.
-    Ok(match name {
-        "rust" => tree_sitter_rust::LANGUAGE.into(),
-        "python" => tree_sitter_python::LANGUAGE.into(),
-        "javascript" | "jsx" => tree_sitter_javascript::LANGUAGE.into(),
-        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        "go" => tree_sitter_go::LANGUAGE.into(),
-        "java" => tree_sitter_java::LANGUAGE.into(),
-        "c" => tree_sitter_c::LANGUAGE.into(),
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
-        "json" => tree_sitter_json::LANGUAGE.into(),
-        "html" => tree_sitter_html::LANGUAGE.into(),
-        "css" => tree_sitter_css::LANGUAGE.into(),
-        "hcl" => tree_sitter_hcl::LANGUAGE.into(),
-        "sql" => tree_sitter_sequel::LANGUAGE.into(),
-        "proto" => tree_sitter_proto::LANGUAGE.into(),
+    use ast_grep_language::{LanguageExt, SupportLang};
+
+    // Most grammars are sourced from `ast-grep-language`, which exposes each
+    // `SupportLang` variant's raw `tree_sitter::Language` via `get_ts_language()`
+    // on the unified tree-sitter 0.26 runtime (single `tree_sitter::Language`
+    // type — no duplicate-runtime bloat). `proto` and `sql` are not shipped by
+    // ast-grep-language, so they stay on their standalone grammar crates, which
+    // expose a `LANGUAGE: LanguageFn` constant convertible via `.into()`.
+    let support = match name {
+        "rust" => SupportLang::Rust,
+        "python" => SupportLang::Python,
+        "javascript" | "jsx" => SupportLang::JavaScript,
+        "typescript" => SupportLang::TypeScript,
+        "tsx" => SupportLang::Tsx,
+        "go" => SupportLang::Go,
+        "java" => SupportLang::Java,
+        "c" => SupportLang::C,
+        "cpp" => SupportLang::Cpp,
+        "json" => SupportLang::Json,
+        "html" => SupportLang::Html,
+        "css" => SupportLang::Css,
+        "hcl" => SupportLang::Hcl,
+        "sql" => return Ok(tree_sitter_sequel::LANGUAGE.into()),
+        "proto" => return Ok(tree_sitter_proto::LANGUAGE.into()),
         other => bail!("unsupported language: {other}"),
-    })
+    };
+    Ok(support.get_ts_language())
 }
 
 // ---------------------------------------------------------------------------
