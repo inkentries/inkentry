@@ -591,8 +591,23 @@ impl Config {
     /// `project_id` is allowed to be absent — it will be derived at runtime by
     /// `Config::resolve_project_id()` (see spelunk#307 / section D of #303).
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_project(self.project_id.is_some())
+    }
+
+    /// Like [`validate`](Self::validate) but lets the caller assert that a
+    /// project identity is available from a source outside the config — e.g. an
+    /// explicit `spelunk sync --project <slug>` flag.
+    ///
+    /// `spelunk sync` supplies its slug lazily (the project is created on first
+    /// sync; ADR / founder decision 2026-07-01), so at config-validation time
+    /// `project_id` may legitimately be `None` while `--project` carries the
+    /// slug. Pass `project_available = true` in that case so the non-loopback
+    /// `server_url` requirement is satisfied without a persisted `project_id`.
+    /// The actual slug resolution (and the halt-with-guidance when *no* slug is
+    /// available) is done by the sync command itself.
+    pub fn validate_with_project(&self, project_available: bool) -> Result<()> {
         if let Some(url) = &self.server_url
-            && self.project_id.is_none()
+            && !project_available
             && !is_loopback_url(url)
         {
             anyhow::bail!(
@@ -1135,6 +1150,49 @@ project_id = "my-proj"
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    // ── validate_with_project() — --project satisfies the requirement (oss^47) ─
+
+    #[test]
+    fn validate_with_project_true_passes_non_loopback_without_project_id() {
+        // First-run `spelunk sync --project <slug>`: a non-loopback server_url is
+        // set, no project_id is persisted, but the caller asserts a project slug
+        // is available from --project. This must pass (previously blocked sync).
+        let cfg = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(cfg.validate_with_project(true).is_ok());
+    }
+
+    #[test]
+    fn validate_with_project_false_still_fails_non_loopback_without_project_id() {
+        // No --project and no configured project_id → the requirement still bites.
+        let cfg = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(cfg.validate_with_project(false).is_err());
+    }
+
+    #[test]
+    fn validate_delegates_to_validate_with_project() {
+        // validate() == validate_with_project(project_id.is_some()).
+        let with_id = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: Some("p".to_string()),
+            ..Default::default()
+        };
+        assert!(with_id.validate().is_ok());
+        let without_id = Config {
+            server_url: Some("http://spelunk.internal:7777".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(without_id.validate().is_err());
     }
 
     // ── is_loopback_url ──────────────────────────────────────────────────────

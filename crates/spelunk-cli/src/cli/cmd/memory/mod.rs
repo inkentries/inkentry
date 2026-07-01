@@ -255,6 +255,12 @@ pub struct MemorySyncArgs {
     /// Include archived entries in the push (propagates tombstones)
     #[arg(long)]
     pub include_archived: bool,
+    /// Cloud project slug to sync into. Required when no `project_id` is
+    /// configured. On first sync the server lazily creates this project from the
+    /// slug; repeat syncs with the same slug reuse it. The slug is never
+    /// auto-derived from the folder or git remote (project-taxonomy).
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Args, Debug)]
