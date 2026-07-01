@@ -12,8 +12,8 @@ pub struct IndexArgs {
     #[arg(short, long)]
     pub db: Option<PathBuf>,
 
-    /// Embedding batch size: number of chunks sent per server request (default: 32)
-    #[arg(long, default_value = "32")]
+    /// Embedding batch size: number of chunks sent per server request (default: 64)
+    #[arg(long, default_value = "64")]
     pub batch_size: usize,
 
     /// Force full re-index (ignore change detection)
@@ -148,6 +148,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             &cfg,
             tier,
             &project_root,
+            args.batch_size,
             &mp,
         )
         .await?;
@@ -283,4 +284,34 @@ async fn run_background_phases(
     db_path: &std::path::Path,
 ) -> Result<()> {
     run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Minimal parser wrapper so we can exercise `IndexArgs` clap parsing in
+    /// isolation without pulling in the whole top-level `Cli`.
+    #[derive(clap::Parser, Debug)]
+    struct TestCli {
+        #[command(flatten)]
+        index: IndexArgs,
+    }
+
+    #[test]
+    fn batch_size_flag_is_captured() {
+        // The user-supplied `--batch-size` must land in `IndexArgs.batch_size`,
+        // which `index()` then threads into `run_embed_phase`. Before this fix
+        // the value was parsed but never passed through (silent no-op).
+        let cli =
+            TestCli::try_parse_from(["spelunk", "some/path", "--batch-size", "16"]).expect("parse");
+        assert_eq!(cli.index.batch_size, 16);
+    }
+
+    #[test]
+    fn batch_size_defaults_to_64() {
+        let cli = TestCli::try_parse_from(["spelunk", "some/path"]).expect("parse");
+        assert_eq!(cli.index.batch_size, 64);
+    }
 }
