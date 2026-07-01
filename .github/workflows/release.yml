@@ -53,20 +53,57 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.target }}-
 
+      # The `keyring` crate's `sync-secret-service` feature links libdbus (a C
+      # library) on Linux, so the dev package + pkg-config must be present.
+      - name: Install Linux build dependencies (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libdbus-1-dev
+
+      # For the aarch64 cross-build we need the cross toolchain *and* the arm64
+      # build of libdbus. The latter requires enabling the arm64 architecture
+      # and pointing apt at the ports mirror (the default mirrors are amd64-only).
       - name: Install aarch64 cross-compilation toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
+          CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          # Restrict the existing (amd64) sources so apt doesn't try to fetch
+          # arm64 indexes from amd64-only mirrors.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i '/^Architectures:/d' /etc/apt/sources.list.d/ubuntu.sources
+            sudo sed -i '/^URIs:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          # Add an arm64-only ports source.
+          sudo tee /etc/apt/sources.list.d/arm64-ports.sources >/dev/null <<EOF
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-backports ${CODENAME}-security
+          Components: main universe restricted multiverse
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            libc6-dev-arm64-cross
+            libc6-dev-arm64-cross \
+            pkg-config \
+            libdbus-1-dev:arm64
 
       - name: Build release binaries
         shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          # Let pkg-config resolve the arm64 libdbus when cross-compiling.
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
+          fi
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then
             cargo build --release --target ${{ matrix.target }} --features "$FEATURES"

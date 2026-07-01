@@ -34,8 +34,6 @@ rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
-openssl = { workspace = true }
-openssl-sys = { workspace = true }
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.7", features = ["auth"] }
 async-stream = "0.3"
@@ -48,7 +46,7 @@ dirs = "6"
 candle-core = { version = "0.11.0", optional = true }
 candle-nn = { version = "0.11.0", optional = true }
 candle-transformers = { version = "0.11.0", optional = true }
-hf-hub = { version = "0.5", optional = true }
+hf-hub = { version = "0.5", optional = true, default-features = false, features = ["tokio", "ureq", "rustls-tls"] }
 tokenizers = { version = "0.23", optional = true }
 
 # macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
