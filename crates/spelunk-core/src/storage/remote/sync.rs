@@ -361,6 +361,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_batch_threads_explicit_slug_into_request_path() {
+        // spelunk-oss^47: an explicit project slug (e.g. from `spelunk sync
+        // --project acme/new-app`) must reach the server verbatim in the request
+        // path, so the server can lazily create/reuse that project on first sync.
+        // The mock only matches the slug-scoped path, so a match proves it.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/acme%2Fnew-app/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": "e1", "id": "cloud-1"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "acme/new-app", None).unwrap();
+        let res = client.push_batch(vec![item("e1")]).await.unwrap();
+        assert_eq!(res.created, 1);
+    }
+
+    #[tokio::test]
     async fn delete_remote_treats_404_as_success() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
