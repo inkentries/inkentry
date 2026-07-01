@@ -4,7 +4,7 @@ pub mod handlers;
 pub mod rate_limiter;
 pub mod security;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     Json, Router,
@@ -21,6 +21,121 @@ use auth::{AuthError, AuthProvider};
 use db::ServerDb;
 use rate_limiter::RateLimiter;
 
+/// Readiness state of the server-side embedder.
+///
+/// The native (in-process) embedder is loaded on a background task *after* the
+/// listener binds, so `/v1/health` is live immediately while the model is still
+/// warming up. This enum is the single source of truth for that readiness; the
+/// health body carries it and the embed endpoints branch on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbedderState {
+    /// Native embedder build/download in progress. Not ready — embed endpoints
+    /// return `503 + Retry-After` and the CLI should keep polling.
+    Loading,
+    /// Model loaded (or an external embedding backend is configured); embed
+    /// endpoints will serve.
+    Ready,
+    /// The background load failed (download error, OOM, …). Terminal for this
+    /// process; embed endpoints return `503` and the CLI should stop polling.
+    Unavailable,
+    /// No in-process model to load — the server was built without an embedder
+    /// and has no external `--embedding-url`. Embed endpoints return `400`
+    /// (permanent misconfiguration for that request).
+    Disabled,
+}
+
+/// Inner, lock-guarded contents of the embedder slot.
+struct EmbedderSlotInner {
+    state: EmbedderState,
+    /// The concrete backend once it is ready. `None` while `loading`,
+    /// `unavailable`, or `disabled`.
+    backend: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>>,
+    /// Optional human-readable detail (e.g. the load error) surfaced in the
+    /// health body and warm-up responses.
+    detail: Option<String>,
+}
+
+/// Shared, mutable readiness cell for the server-side embedder.
+///
+/// Health/handlers read the current state without blocking; a background load
+/// task flips it `loading → ready | unavailable`. Reads only ever hold the lock
+/// long enough to copy the state and clone an `Arc`, so there is no contention
+/// with the (single) background writer.
+#[derive(Clone)]
+pub struct EmbedderSlot(Arc<RwLock<EmbedderSlotInner>>);
+
+impl EmbedderSlot {
+    /// A slot that starts in `loading` — the native embedder is being built on
+    /// a background task and will publish itself via [`EmbedderSlot::set_ready`].
+    pub fn loading() -> Self {
+        Self(Arc::new(RwLock::new(EmbedderSlotInner {
+            state: EmbedderState::Loading,
+            backend: None,
+            detail: Some("loading embedding model".to_string()),
+        })))
+    }
+
+    /// A slot that is immediately ready with the given backend (e.g. an external
+    /// `--embedding-url` that has no local model to warm up).
+    pub fn ready(backend: Arc<dyn spelunk_core::embeddings::EmbeddingBackend>) -> Self {
+        Self(Arc::new(RwLock::new(EmbedderSlotInner {
+            state: EmbedderState::Ready,
+            backend: Some(backend),
+            detail: None,
+        })))
+    }
+
+    /// A slot with no embedder at all (no feature / no external URL). Embed
+    /// endpoints treat this as a permanent `400` misconfiguration.
+    pub fn disabled() -> Self {
+        Self(Arc::new(RwLock::new(EmbedderSlotInner {
+            state: EmbedderState::Disabled,
+            backend: None,
+            detail: None,
+        })))
+    }
+
+    /// Publish a successfully-loaded backend: state → `ready`.
+    pub fn set_ready(&self, backend: Arc<dyn spelunk_core::embeddings::EmbeddingBackend>) {
+        let mut inner = self.0.write().expect("embedder slot poisoned");
+        inner.state = EmbedderState::Ready;
+        inner.backend = Some(backend);
+        inner.detail = None;
+    }
+
+    /// Mark the background load as failed: state → `unavailable` (terminal).
+    pub fn set_unavailable(&self, detail: impl Into<String>) {
+        let mut inner = self.0.write().expect("embedder slot poisoned");
+        inner.state = EmbedderState::Unavailable;
+        inner.backend = None;
+        inner.detail = Some(detail.into());
+    }
+
+    /// Current readiness state (cheap, non-blocking copy).
+    pub fn state(&self) -> EmbedderState {
+        self.0.read().expect("embedder slot poisoned").state
+    }
+
+    /// Optional human-readable detail for the current state.
+    pub fn detail(&self) -> Option<String> {
+        self.0
+            .read()
+            .expect("embedder slot poisoned")
+            .detail
+            .clone()
+    }
+
+    /// The backend, cloned, if and only if the slot is `ready`.
+    pub fn backend(&self) -> Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> {
+        self.0
+            .read()
+            .expect("embedder slot poisoned")
+            .backend
+            .clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<tokio::sync::Mutex<ServerDb>>,
@@ -29,10 +144,12 @@ pub struct AppState {
     /// Cosine similarity threshold above which a new entry is flagged as conflicting (0.0–1.0).
     /// Default: 0.92. Set to 1.0 to disable conflict detection.
     pub conflict_threshold: f32,
-    /// Optional server-side embedder. When set, the server embeds entries that arrive without
-    /// a pre-computed vector. If absent, entries without a vector are stored without one
-    /// (text search only).
-    pub embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>>,
+    /// Server-side embedder readiness cell. The native embedder loads on a
+    /// background task after the listener binds, flipping this slot
+    /// `loading → ready | unavailable`; an external `--embedding-url` starts
+    /// `ready`; no embedder at all starts `disabled`. Handlers read the current
+    /// state without blocking. See [`EmbedderSlot`].
+    pub embedder: EmbedderSlot,
     /// Optional LLM backend for `/explore` and `/llm/complete`.
     pub llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
@@ -95,6 +212,8 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::SinceQuery,
         handlers::StreamQuery,
         handlers::HealthResponse,
+        handlers::EmbedderStatus,
+        EmbedderState,
         handlers::EmbedRequest,
         handlers::EmbedChunkIn,
         handlers::EmbedResponse,
@@ -280,6 +399,14 @@ pub enum AppError {
     NotFound,
     BadRequest(String),
     ServiceUnavailable(String),
+    /// The server-side embedder is not ready. `503` for both, but `loading`
+    /// (transient) adds `Retry-After: 5` and carries `"state": "loading"` so the
+    /// CLI keeps polling, whereas `unavailable` (terminal, `terminal: true`)
+    /// carries `"state": "unavailable"` so the CLI stops and surfaces the error.
+    EmbedderWarmingUp {
+        terminal: bool,
+        detail: String,
+    },
     Internal(anyhow::Error),
 }
 
@@ -301,6 +428,30 @@ impl IntoResponse for AppError {
                 Json(ErrorBody::new("service_unavailable", &msg)),
             )
                 .into_response(),
+            AppError::EmbedderWarmingUp { terminal, detail } => {
+                let state = if terminal { "unavailable" } else { "loading" };
+                let error = if terminal {
+                    "embedder unavailable"
+                } else {
+                    "embedder warming up, retry shortly"
+                };
+                let body = Json(serde_json::json!({
+                    "error": error,
+                    "state": state,
+                    "detail": detail,
+                }));
+                if terminal {
+                    (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
+                } else {
+                    // Transient: tell polite clients when to retry.
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        [(axum::http::header::RETRY_AFTER, "5")],
+                        body,
+                    )
+                        .into_response()
+                }
+            }
             AppError::Internal(e) => {
                 let msg = e.to_string();
                 // Surface dimension-mismatch and other user-facing errors as 400.

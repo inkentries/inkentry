@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,7 +18,7 @@ use tokio::sync::mpsc;
 use utoipa::ToSchema;
 
 use super::auth::AuthContext;
-use super::{AppError, AppState, ErrorBody};
+use super::{AppError, AppState, EmbedderState, ErrorBody};
 
 // ── Request / Response types ──────────────────────────────────────────────────
 
@@ -103,26 +104,50 @@ pub struct SupersedeRequest {
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
+/// Embedder readiness reported inside the health body.
+///
+/// Liveness (`status: "ok"`) is independent of this: `/v1/health` returns `200`
+/// the instant the listener binds, and this sub-object reports whether the
+/// embedder is `loading`, `ready`, `unavailable` (load failed), or `disabled`.
+#[derive(Serialize, ToSchema)]
+pub struct EmbedderStatus {
+    /// Readiness of the server-side embedder.
+    pub state: EmbedderState,
+    /// Optional human-readable detail (e.g. the load-failure summary while
+    /// `unavailable`). `null` when not useful.
+    pub detail: Option<String>,
+}
+
 /// Server capabilities reported in the health response.
 #[derive(Serialize, ToSchema)]
 pub struct HealthResponse {
-    /// Always `"ok"`.
+    /// Always `"ok"` — liveness marker, independent of embedder readiness.
     pub status: &'static str,
     /// Server version string.
     pub version: &'static str,
     /// List of feature capabilities supported by this server instance.
+    /// `index.embed` / `search.semantic` are advertised **only** when the
+    /// embedder is `ready`, so pre-readiness clients that key off `capabilities`
+    /// keep working (they see "no semantic yet").
     pub capabilities: Vec<String>,
     /// Persistent UUID v7 identifying this server instance across restarts.
     pub instance_id: String,
     /// Effective UID of the process that started the server (Unix); `null` on Windows.
     pub started_by: Option<u32>,
     /// Embedding dimension produced by this server's embedder.
-    /// `0` when no embedder is loaded (capability `index.embed` absent).
+    /// `0` until the embedder is `ready` (capability `index.embed` absent).
     pub embedding_dim: usize,
+    /// Embedder readiness. Newer clients read `embedder.state` for the finer
+    /// `loading` vs `unavailable` distinction that `capabilities` cannot express.
+    pub embedder: EmbedderStatus,
 }
 
 /// Server liveness check. No authentication required.
-/// Returns server version, capabilities, and identity fields.
+///
+/// Returns `200` the instant the listener is bound, regardless of embedder
+/// state — it never blocks on, and never fails because of, model loading.
+/// Returns server version, capabilities, identity fields, and the embedder
+/// readiness sub-object.
 #[utoipa::path(
     get,
     path = "/v1/health",
@@ -132,16 +157,23 @@ pub struct HealthResponse {
     tag = "health"
 )]
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let embedder_state = state.embedder.state();
+    // Ready backends (native model loaded, or an external embedding URL) are the
+    // only ones that can serve embeddings, so advertise the semantic caps and a
+    // non-zero dim only then.
+    let ready_backend = state.embedder.backend();
+
     let mut capabilities = vec!["memory".to_string()];
-    if state.embedder.is_some() {
+    if let Some(backend) = &ready_backend {
         capabilities.push("index.embed".to_string());
         capabilities.push("search.semantic".to_string());
+        let _ = backend; // dim read below
     }
     if state.llm.is_some() {
         capabilities.push("explore".to_string());
         capabilities.push("llm.complete".to_string());
     }
-    let embedding_dim = state.embedder.as_ref().map_or(0, |e| e.dimension());
+    let embedding_dim = ready_backend.as_ref().map_or(0, |e| e.dimension());
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -149,7 +181,45 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         instance_id: state.instance_id.clone(),
         started_by: state.started_by,
         embedding_dim,
+        embedder: EmbedderStatus {
+            state: embedder_state,
+            detail: state.embedder.detail(),
+        },
     })
+}
+
+/// Resolve the embedder for an embed-consuming handler, translating the slot's
+/// readiness into the correct HTTP error when it is not `ready`:
+/// - `loading`     → `503` + `Retry-After: 5` (transient — CLI keeps polling)
+/// - `unavailable` → `503` (terminal — CLI stops polling, surfaces the error)
+/// - `disabled`    → `400` (permanent misconfiguration for this request)
+fn require_embedder(
+    state: &AppState,
+    disabled_msg: &str,
+) -> Result<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>, AppError> {
+    if let Some(backend) = state.embedder.backend() {
+        return Ok(backend);
+    }
+    match state.embedder.state() {
+        EmbedderState::Loading => Err(AppError::EmbedderWarmingUp {
+            terminal: false,
+            detail: state
+                .embedder
+                .detail()
+                .unwrap_or_else(|| "embedder warming up, retry shortly".to_string()),
+        }),
+        EmbedderState::Unavailable => Err(AppError::EmbedderWarmingUp {
+            terminal: true,
+            detail: state
+                .embedder
+                .detail()
+                .unwrap_or_else(|| "embedder failed to load".to_string()),
+        }),
+        // Disabled (or the improbable ready-but-no-backend race) → permanent 400.
+        EmbedderState::Disabled | EmbedderState::Ready => {
+            Err(AppError::BadRequest(disabled_msg.to_string()))
+        }
+    }
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -221,8 +291,11 @@ pub async fn add_note(
     }
 
     // Server-side embedding: embed the entry when no client vector is supplied.
+    // Only the *ready* backend can embed; while the embedder is loading/unavailable
+    // we store the entry text-only (graceful — a memory write must not block on
+    // model warm-up), matching the existing "no embedder" degradation.
     let server_embedding: Option<Vec<f32>> = if body.embedding.is_none() {
-        if let Some(embedder) = &state.embedder {
+        if let Some(embedder) = state.embedder.backend() {
             let text = format!("title: {} | text: {}", body.title, body.body);
             match embedder.embed(&[text.as_str()]).await {
                 Ok(mut vecs) if !vecs.is_empty() => vecs.pop(),
@@ -391,12 +464,10 @@ pub async fn search_notes(
     Path(project_id): Path<String>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let embedder = state.embedder.as_ref().ok_or_else(|| {
-        AppError::BadRequest(
-            "This server has no embedder configured. Semantic memory search is unavailable."
-                .to_string(),
-        )
-    })?;
+    let embedder = require_embedder(
+        &state,
+        "This server has no embedder configured. Semantic memory search is unavailable.",
+    )?;
 
     // F2LLM QA query prefix — matches the instruction format used for memory documents.
     let query_text = format!(
@@ -753,12 +824,10 @@ pub async fn index_embed(
             .into_response());
     }
 
-    let embedder = state.embedder.as_ref().ok_or_else(|| {
-        AppError::BadRequest(
-            "index.embed requires an embedder. Configure SPELUNK_EMBEDDING_URL on the server."
-                .to_string(),
-        )
-    })?;
+    let embedder = require_embedder(
+        &state,
+        "index.embed requires an embedder. Configure SPELUNK_EMBEDDING_URL on the server.",
+    )?;
 
     if body.chunks.is_empty() {
         return Ok(octet_stream(Vec::new()));
@@ -889,13 +958,11 @@ pub async fn project_search(
     }
 
     // Semantic / hybrid: require an embedder.
-    let embedder = state.embedder.as_ref().ok_or_else(|| {
-        AppError::BadRequest(
-            "semantic/hybrid search requires an embedder. \
-             Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text."
-                .to_string(),
-        )
-    })?;
+    let embedder = require_embedder(
+        &state,
+        "semantic/hybrid search requires an embedder. \
+         Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text.",
+    )?;
 
     // F2LLM-v2-330M query prefix: instruction + query. Documents are embedded
     // without a prefix; queries must use this format for correct retrieval.
@@ -1234,7 +1301,7 @@ mod tests {
             db: Arc::new(tokio::sync::Mutex::new(db)),
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold,
-            embedder: None,
+            embedder: super::super::EmbedderSlot::disabled(),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -1393,8 +1460,8 @@ mod tests {
         }
     }
 
-    /// Build an app with a mock embedder of the given dimension.
-    fn make_app_with_embedder(dim: usize) -> axum::Router {
+    /// Build an app with the given embedder slot (dim used only to size the DB).
+    fn make_app_with_slot(dim: usize, embedder: super::super::EmbedderSlot) -> axum::Router {
         register_sqlite_vec();
         let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
             .expect("failed to open in-memory server db");
@@ -1403,7 +1470,7 @@ mod tests {
             db: Arc::new(tokio::sync::Mutex::new(db)),
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold: 0.92,
-            embedder: Some(Arc::new(MockEmbedder { dim })),
+            embedder,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -1411,6 +1478,14 @@ mod tests {
             started_by: None,
         };
         super::super::router(state)
+    }
+
+    /// Build an app with a ready mock embedder of the given dimension.
+    fn make_app_with_embedder(dim: usize) -> axum::Router {
+        make_app_with_slot(
+            dim,
+            super::super::EmbedderSlot::ready(Arc::new(MockEmbedder { dim })),
+        )
     }
 
     /// GET /v1/health should return JSON with `status`, `version`, and `capabilities`.
@@ -1451,6 +1526,12 @@ mod tests {
         assert!(
             json["started_by"].is_null(),
             "started_by must be null in test (None)"
+        );
+        // make_app has no embedder → disabled.
+        assert_eq!(
+            json["embedder"]["state"],
+            json!("disabled"),
+            "embedder.state must be 'disabled' when no embedder is configured"
         );
     }
 
@@ -1577,6 +1658,11 @@ mod tests {
             caps.iter().any(|c| c == "index.embed"),
             "capabilities must include index.embed when embedder is loaded"
         );
+        assert_eq!(
+            json["embedder"]["state"],
+            json!("ready"),
+            "embedder.state must be 'ready' when the embedder is loaded"
+        );
     }
 
     /// GET /v1/health with no embedder (the default make_app) must report `embedding_dim: 0`.
@@ -1598,6 +1684,170 @@ mod tests {
             json["embedding_dim"],
             json!(0),
             "embedding_dim must be 0 when no embedder is configured"
+        );
+    }
+
+    // ── Readiness / warm-up contract (oss^50) ────────────────────────────────
+
+    async fn get_health_json(app: axum::Router) -> Value {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK, "health must be 200");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).expect("health must return JSON")
+    }
+
+    /// While the embedder is `loading`, `/v1/health` is still live (200), reports
+    /// `embedder.state: "loading"`, withholds the semantic capabilities, and keeps
+    /// `embedding_dim: 0` — i.e. health is live *before* the model is ready.
+    #[tokio::test]
+    async fn health_live_while_embedder_loading() {
+        let slot = super::super::EmbedderSlot::loading();
+        let app = make_app_with_slot(4, slot);
+        let json = get_health_json(app).await;
+        assert_eq!(json["status"], json!("ok"));
+        assert_eq!(
+            json["embedder"]["state"],
+            json!("loading"),
+            "state must be 'loading' before the model is published"
+        );
+        assert_eq!(
+            json["embedding_dim"],
+            json!(0),
+            "embedding_dim must stay 0 until ready"
+        );
+        let caps = json["capabilities"].as_array().unwrap();
+        assert!(
+            !caps
+                .iter()
+                .any(|c| c == "index.embed" || c == "search.semantic"),
+            "semantic capabilities must be absent while loading: {caps:?}"
+        );
+    }
+
+    /// The readiness cell flips `loading → ready`: after `set_ready`, health
+    /// reports `ready`, advertises the caps, and surfaces the real `embedding_dim`.
+    #[tokio::test]
+    async fn health_reflects_loading_to_ready_transition() {
+        let slot = super::super::EmbedderSlot::loading();
+        // Before: loading.
+        let app = make_app_with_slot(4, slot.clone());
+        assert_eq!(
+            get_health_json(app).await["embedder"]["state"],
+            json!("loading")
+        );
+
+        // Publish the backend (as the background load task would).
+        slot.set_ready(Arc::new(MockEmbedder { dim: 4 }));
+
+        let app = make_app_with_slot(4, slot);
+        let json = get_health_json(app).await;
+        assert_eq!(json["embedder"]["state"], json!("ready"));
+        assert_eq!(json["embedding_dim"], json!(4));
+        let caps = json["capabilities"].as_array().unwrap();
+        assert!(caps.iter().any(|c| c == "index.embed"));
+    }
+
+    /// A failed load flips `loading → unavailable`, carrying the error detail.
+    #[tokio::test]
+    async fn health_reflects_load_failure() {
+        let slot = super::super::EmbedderSlot::loading();
+        slot.set_unavailable("download error: boom");
+        let app = make_app_with_slot(4, slot);
+        let json = get_health_json(app).await;
+        assert_eq!(json["embedder"]["state"], json!("unavailable"));
+        assert_eq!(
+            json["embedder"]["detail"],
+            json!("download error: boom"),
+            "detail must carry the failure summary"
+        );
+        assert_eq!(json["embedding_dim"], json!(0));
+    }
+
+    async fn post_embed(app: axum::Router) -> http::Response<Body> {
+        let body = json!({"chunks": [{"chunk_id": "abc", "content": "fn foo() {}"}]});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/proj/index/embed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    /// While `loading`, embed endpoints return `503 + Retry-After: 5` and a body
+    /// with `state: "loading"` (transient — the CLI keeps polling).
+    #[tokio::test]
+    async fn embed_while_loading_returns_503_retry_after() {
+        let app = make_app_with_slot(4, super::super::EmbedderSlot::loading());
+        let resp = post_embed(app).await;
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "embed while loading must return 503"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("5"),
+            "loading 503 must carry Retry-After: 5"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["state"], json!("loading"));
+    }
+
+    /// While `unavailable` (load failed), embed endpoints return a terminal `503`
+    /// with `state: "unavailable"` and no `Retry-After` (the CLI stops polling).
+    #[tokio::test]
+    async fn embed_while_unavailable_returns_terminal_503() {
+        let slot = super::super::EmbedderSlot::loading();
+        slot.set_unavailable("oom");
+        let app = make_app_with_slot(4, slot);
+        let resp = post_embed(app).await;
+        assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            resp.headers().get(http::header::RETRY_AFTER).is_none(),
+            "terminal 503 must not advise a retry"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["state"], json!("unavailable"));
+    }
+
+    /// While `disabled`, embed endpoints keep the permanent `400` (unchanged
+    /// behaviour for the genuinely-misconfigured case).
+    #[tokio::test]
+    async fn embed_while_disabled_returns_400() {
+        let app = make_app_with_slot(4, super::super::EmbedderSlot::disabled());
+        let resp = post_embed(app).await;
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::BAD_REQUEST,
+            "embed while disabled must stay 400"
+        );
+    }
+
+    /// When `ready`, embed endpoints serve `200`.
+    #[tokio::test]
+    async fn embed_while_ready_returns_200() {
+        let app = make_app_with_embedder(4);
+        let resp = post_embed(app).await;
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::OK,
+            "embed while ready must return 200"
         );
     }
 }

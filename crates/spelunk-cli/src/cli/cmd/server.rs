@@ -195,9 +195,22 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     std::fs::write(pid_path(&state_dir), format!("{pid}\n")).context("writing server.pid")?;
     std::fs::write(port_path(&state_dir), format!("{port}\n")).context("writing server.port")?;
 
-    let ready = wait_for_health(port, Duration::from_secs(5)).await;
+    // Wait for *liveness* (the port binds, /v1/health responds) — not model
+    // readiness. Health now goes live at bind, before the model download, so
+    // 30 s comfortably covers a cold listener bind even on Windows; it only
+    // bounds the give-up time and is free in the happy path (200 ms poll,
+    // returns on first success).
+    let ready = wait_for_health(port, Duration::from_secs(30)).await;
     if !ready {
-        tracing::warn!("spelunk-server started (pid={pid}) but did not respond within 5 s");
+        // Liveness genuinely not achieved within the timeout — most commonly a
+        // firewall blocking the loopback listener. Don't warn merely because the
+        // model is still loading (health is live before that).
+        tracing::warn!(
+            "spelunk-server started (pid={pid}) but /v1/health did not respond within 30 s. \
+             A firewall may be blocking the local server (allow it, e.g. accept the Windows \
+             Defender Firewall prompt), or the process failed to start — check \
+             `spelunk server logs`."
+        );
     }
 
     Ok((port, true))
@@ -260,15 +273,20 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     std::fs::write(pid_path(&state_dir), format!("{pid}\n")).context("writing server.pid")?;
     std::fs::write(port_path(&state_dir), format!("{port}\n")).context("writing server.port")?;
 
-    // Wait up to 5 s for the server to become reachable.
-    let ready = wait_for_health(port, Duration::from_secs(5)).await;
+    // Wait up to 30 s for the server to become reachable (liveness, not model
+    // readiness — /v1/health is live at bind, before any model download).
+    let ready = wait_for_health(port, Duration::from_secs(30)).await;
     if ready {
         println!("spelunk-server started (pid={pid}, port={port}).");
         println!("  Log: {}", log_path(&state_dir).display());
     } else {
+        // Fires only on genuine liveness-timeout — typically a firewall blocking
+        // the loopback listener, or a process that failed to start.
         eprintln!(
-            "warning: spelunk-server process started (pid={pid}) but did not respond \
-             on port {port} within 5 s. Check the log: {}",
+            "warning: spelunk-server process started (pid={pid}) but /v1/health did not \
+             respond on port {port} within 30 s. A firewall may be blocking the local \
+             server (allow it, e.g. accept the Windows Defender Firewall prompt), or the \
+             process failed to start. Check the log: {}",
             log_path(&state_dir).display()
         );
     }

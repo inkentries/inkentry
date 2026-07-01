@@ -357,7 +357,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth: Arc::new(ApiKeyAuth::new(None)),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
-        embedder: None,
+        embedder: spelunk_server::EmbedderSlot::disabled(),
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(RateLimiter::new(1000, 60)),

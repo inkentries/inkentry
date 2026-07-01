@@ -9,6 +9,32 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **First-run auto-start no longer misreports failure while the model loads.**
+  `spelunk-server` now binds its listener and serves `/v1/health` **before**
+  loading the native embedder (the ~339 MB model now loads on a background task),
+  so the CLI's auto-start health check sees a live server immediately instead of
+  timing out during the first-run download. The auto-start/`spelunk server start`
+  wait was also extended to 30 s, and its failure warning now fires only on a
+  genuine liveness timeout (with firewall + `spelunk server logs` guidance).
+
+### Changed
+
+- **`spelunk-server` now binds `127.0.0.1` by default** (was `0.0.0.0`). Loopback
+  is the safer, firewall-exempt default; pass `--host 0.0.0.0` explicitly to
+  expose the server on all interfaces. The container image sets `--host 0.0.0.0`
+  in its entrypoint so published ports stay reachable. The CLI auto-spawned daemon
+  already forced `--host 127.0.0.1` and is unaffected.
+- **`/v1/health` now reports embedder readiness** via a new
+  `embedder: { state, detail }` sub-object (`loading` | `ready` | `unavailable` |
+  `disabled`). `capabilities` (`index.embed` / `search.semantic`) and
+  `embedding_dim` are populated only once the embedder is `ready`
+  (backward-compatible). While the embedder is warming up, the embed/search
+  endpoints return `503` (with `Retry-After: 5` while `loading`, terminal while
+  `unavailable`) instead of the `400` now reserved for the genuinely unconfigured
+  case.
+
 ## [0.9.1] — 2026-06-30
 
 ### Fixed
