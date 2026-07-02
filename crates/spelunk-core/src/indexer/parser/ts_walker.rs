@@ -26,6 +26,9 @@ pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
         "hcl" => SupportLang::Hcl,
         "php" => SupportLang::Php,
         "ruby" => SupportLang::Ruby,
+        "csharp" => SupportLang::CSharp,
+        "kotlin" => SupportLang::Kotlin,
+        "swift" => SupportLang::Swift,
         "sql" => return Ok(tree_sitter_sequel::LANGUAGE.into()),
         "proto" => return Ok(tree_sitter_proto::LANGUAGE.into()),
         other => bail!("unsupported language: {other}"),
@@ -145,6 +148,39 @@ pub(super) fn node_specs(language: &str) -> Vec<NodeSpec> {
             s("singleton_method", Method, Some("name")),
             s("class", Class, Some("name")),
             s("module", Module, Some("name")),
+        ],
+        // C#: classes, structs, interfaces, enums, records, methods, and
+        // constructors. tree-sitter-c-sharp exposes a direct `name` field on each,
+        // so no custom name walker is needed. (Properties/fields are not chunked,
+        // matching the existing languages, which chunk types + callables only.)
+        "csharp" => vec![
+            s("class_declaration", Class, Some("name")),
+            s("struct_declaration", Struct, Some("name")),
+            s("interface_declaration", Interface, Some("name")),
+            s("enum_declaration", Enum, Some("name")),
+            s("record_declaration", Struct, Some("name")),
+            s("method_declaration", Method, Some("name")),
+            s("constructor_declaration", Method, Some("name")),
+        ],
+        // Kotlin: classes/interfaces/enums (all `class_declaration`), objects
+        // (incl. named `object` singletons), and functions. The grammar does not
+        // expose a `name` field — names are unnamed `type_identifier` /
+        // `simple_identifier` children — so extraction is handled by kotlin_decl_name.
+        "kotlin" => vec![
+            s("class_declaration", Class, None),
+            s("object_declaration", Class, None),
+            s("function_declaration", Function, None),
+        ],
+        // Swift: `class_declaration` is a unified node covering class/struct/enum/
+        // extension (distinguished by the `declaration_kind` field); protocols are a
+        // separate `protocol_declaration`. Functions and initializers round it out.
+        // Most expose a direct `name` field; `init_declaration` has none, handled by
+        // swift_init_name.
+        "swift" => vec![
+            s("class_declaration", Class, Some("name")),
+            s("protocol_declaration", Interface, Some("name")),
+            s("function_declaration", Function, Some("name")),
+            s("init_declaration", Method, None),
         ],
         // HCL/Terraform: top-level blocks (resource, data, module, locals, …).
         // Name extraction is handled by hcl_block_name (identifier + string labels).
@@ -293,7 +329,38 @@ pub(super) fn extract_name(
         "hcl" => hcl_block_name(node, src),
         "proto" => proto_named_child(node, src),
         "sql" => sql_object_name(node, src),
+        "kotlin" => kotlin_decl_name(node, src),
+        "swift" => swift_init_name(node),
         _ => None,
+    }
+}
+
+/// Extract the declared name from a Kotlin declaration node. tree-sitter-kotlin
+/// (the `-sg` grammar) does not expose a `name` field: classes/interfaces/enums
+/// and named objects carry their name as a `type_identifier` child, and functions
+/// as a `simple_identifier` child. A `companion object` has no name — returns None.
+fn kotlin_decl_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    let want = match node.kind() {
+        "class_declaration" | "object_declaration" => "type_identifier",
+        "function_declaration" => "simple_identifier",
+        _ => return None,
+    };
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32)
+            && child.kind() == want
+        {
+            return child.utf8_text(src).ok().map(str::to_owned);
+        }
+    }
+    None
+}
+
+/// Swift `init_declaration` nodes have no name field; label them `init`.
+fn swift_init_name(node: &tree_sitter::Node<'_>) -> Option<String> {
+    if node.kind() == "init_declaration" {
+        Some("init".to_owned())
+    } else {
+        None
     }
 }
 

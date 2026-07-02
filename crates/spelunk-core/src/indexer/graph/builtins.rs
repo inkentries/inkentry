@@ -168,6 +168,96 @@ pub(super) fn is_ruby_builtin(name: &str) -> bool {
     )
 }
 
+pub(super) fn is_csharp_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "WriteLine"
+            | "Write"
+            | "ToString"
+            | "Equals"
+            | "GetHashCode"
+            | "GetType"
+            | "Parse"
+            | "TryParse"
+            | "Format"
+            | "Add"
+            | "Remove"
+            | "Contains"
+            | "Count"
+            | "Select"
+            | "Where"
+            | "First"
+            | "FirstOrDefault"
+            | "Any"
+            | "All"
+            | "ToList"
+            | "ToArray"
+            | "nameof"
+            | "typeof"
+    )
+}
+
+pub(super) fn is_kotlin_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "println"
+            | "print"
+            | "listOf"
+            | "mutableListOf"
+            | "mapOf"
+            | "mutableMapOf"
+            | "setOf"
+            | "arrayOf"
+            | "emptyList"
+            | "emptyMap"
+            | "let"
+            | "run"
+            | "apply"
+            | "also"
+            | "with"
+            | "require"
+            | "requireNotNull"
+            | "check"
+            | "error"
+            | "TODO"
+            | "lazy"
+            | "map"
+            | "filter"
+            | "forEach"
+            | "toString"
+    )
+}
+
+pub(super) fn is_swift_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print"
+            | "debugPrint"
+            | "assert"
+            | "assertionFailure"
+            | "precondition"
+            | "fatalError"
+            | "map"
+            | "filter"
+            | "reduce"
+            | "forEach"
+            | "compactMap"
+            | "flatMap"
+            | "sorted"
+            | "append"
+            | "insert"
+            | "remove"
+            | "contains"
+            | "count"
+            | "min"
+            | "max"
+            | "abs"
+            | "String"
+            | "Int"
+            | "Array"
+    )
+}
+
 pub(super) fn is_c_builtin(name: &str) -> bool {
     matches!(
         name,

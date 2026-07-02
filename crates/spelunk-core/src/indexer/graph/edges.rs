@@ -398,6 +398,233 @@ pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
     out
 }
 
+pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        // using System; / using System.Collections.Generic;
+        "using_directive" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && matches!(child.kind(), "identifier" | "qualified_name")
+                    && let Ok(text) = child.utf8_text(src)
+                {
+                    out.push((text.to_owned(), EdgeKind::Imports));
+                    break;
+                }
+            }
+        }
+        // Foo() / obj.Method() / Type.Method() — callee is the `function` field.
+        "invocation_expression" => {
+            if let Some(func) = node.child_by_field_name("function") {
+                match func.kind() {
+                    "identifier" => {
+                        if let Ok(name) = func.utf8_text(src)
+                            && !is_csharp_builtin(name)
+                        {
+                            out.push((name.to_owned(), EdgeKind::Calls));
+                        }
+                    }
+                    // obj.Method() / Type.Method() — method name is the `name` field.
+                    "member_access_expression" => {
+                        if let Some(name_node) = func.child_by_field_name("name")
+                            && let Ok(name) = name_node.utf8_text(src)
+                            && !is_csharp_builtin(name)
+                        {
+                            out.push((name.to_owned(), EdgeKind::Calls));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // class Service : Base, IGreeter { … } — the base type and interfaces are
+        // listed in a `base_list`, which the grammar does not distinguish
+        // syntactically, so every entry is modelled as Extends.
+        "class_declaration"
+        | "struct_declaration"
+        | "record_declaration"
+        | "interface_declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "base_list"
+                {
+                    for j in 0..child.child_count() {
+                        if let Some(base) = child.child(j as u32)
+                            && matches!(
+                                base.kind(),
+                                "identifier" | "qualified_name" | "generic_name"
+                            )
+                            && let Ok(text) = base.utf8_text(src)
+                        {
+                            out.push((text.to_owned(), EdgeKind::Extends));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        // import com.demo.util.Helper
+        "import_header" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "identifier"
+                    && let Ok(text) = child.utf8_text(src)
+                {
+                    out.push((text.to_owned(), EdgeKind::Imports));
+                    break;
+                }
+            }
+        }
+        // foo() / println(x) — the callee is the leading `simple_identifier`.
+        // obj.method() nests differently (navigation_expression) and is not
+        // captured here, matching the conservative approach the other langs take.
+        "call_expression" => {
+            if let Some(callee) = node.child(0)
+                && callee.kind() == "simple_identifier"
+                && let Ok(name) = callee.utf8_text(src)
+                && !is_kotlin_builtin(name)
+            {
+                out.push((name.to_owned(), EdgeKind::Calls));
+            }
+        }
+        // class Service(…) : Base(), Greeter — supertypes are `delegation_specifier`
+        // children. Kotlin does not distinguish class inheritance from interface
+        // implementation syntactically, so every supertype is modelled as Extends.
+        "class_declaration" | "object_declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "delegation_specifier"
+                    && let Some(name) = user_type_name(&child, src)
+                {
+                    out.push((name, EdgeKind::Extends));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        // import Foundation
+        "import_declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "identifier"
+                    && let Ok(text) = child.utf8_text(src)
+                {
+                    out.push((text.to_owned(), EdgeKind::Imports));
+                    break;
+                }
+            }
+        }
+        // foo() / self.run() / print(x) — the callee is either a leading
+        // `simple_identifier` or a `navigation_expression` (obj.method).
+        "call_expression" => {
+            if let Some(callee) = node.child(0) {
+                match callee.kind() {
+                    "simple_identifier" => {
+                        if let Ok(name) = callee.utf8_text(src)
+                            && !is_swift_builtin(name)
+                        {
+                            out.push((name.to_owned(), EdgeKind::Calls));
+                        }
+                    }
+                    // self.run() / obj.method() — method name is the
+                    // `simple_identifier` inside the trailing `navigation_suffix`.
+                    "navigation_expression" => {
+                        if let Some(name) = navigation_suffix_name(&callee, src)
+                            && !is_swift_builtin(&name)
+                        {
+                            out.push((name, EdgeKind::Calls));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // class Service: Base, Greeter { … } — supertypes are `inheritance_specifier`
+        // children. Swift does not distinguish superclass from protocol conformance
+        // syntactically, so each is modelled as Extends.
+        "class_declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "inheritance_specifier"
+                    && let Some(name) = user_type_name(&child, src)
+                {
+                    out.push((name, EdgeKind::Extends));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Extract a type name from a node wrapping a `user_type` → `type_identifier`
+/// (Kotlin `delegation_specifier`, Swift `inheritance_specifier`). Falls back to
+/// a directly-nested `type_identifier`.
+fn user_type_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            match child.kind() {
+                "type_identifier" => return child.utf8_text(src).ok().map(str::to_owned),
+                "user_type" | "constructor_invocation" => {
+                    for j in 0..child.child_count() {
+                        if let Some(g) = child.child(j as u32)
+                            && g.kind() == "type_identifier"
+                        {
+                            return g.utf8_text(src).ok().map(str::to_owned);
+                        }
+                        // constructor_invocation nests user_type → type_identifier
+                        if let Some(g) = child.child(j as u32)
+                            && g.kind() == "user_type"
+                        {
+                            for k in 0..g.child_count() {
+                                if let Some(t) = g.child(k as u32)
+                                    && t.kind() == "type_identifier"
+                                {
+                                    return t.utf8_text(src).ok().map(str::to_owned);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Return the method name from a Swift `navigation_expression` (`obj.method`),
+/// i.e. the `simple_identifier` inside its `navigation_suffix`.
+fn navigation_suffix_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32)
+            && child.kind() == "navigation_suffix"
+        {
+            for j in 0..child.child_count() {
+                if let Some(g) = child.child(j as u32)
+                    && g.kind() == "simple_identifier"
+                {
+                    return g.utf8_text(src).ok().map(str::to_owned);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
     let mut out = Vec::new();
     match node.kind() {
