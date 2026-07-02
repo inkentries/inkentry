@@ -9,6 +9,32 @@ use crate::{
     storage::{NoteInput, open_memory_backend},
 };
 
+/// Reject a `--branch` / `--git-range` value that could be parsed by `git log`
+/// as an option rather than a revision (argument-injection / option-injection
+/// guard).
+///
+/// Every callsite in this file already appends a `--` separator before the
+/// pathspec position, which stops git from treating the ref as an option to
+/// `git log` itself; this check is defense-in-depth for revision walkers
+/// (like `A..B` ranges) where a leading `-` component can still be
+/// misinterpreted, and it gives a clear, immediate error instead of relying
+/// solely on the separator.
+fn reject_option_like_ref(git_ref: &str) -> Result<()> {
+    let is_option_like = |s: &str| s.starts_with('-') && s != "-";
+    let offending = git_ref
+        .split("..")
+        .find(|part| is_option_like(part))
+        .or_else(|| is_option_like(git_ref).then_some(git_ref));
+
+    if let Some(bad) = offending {
+        anyhow::bail!(
+            "Invalid --branch/--git-range value '{bad}': refs beginning with '-' are rejected \
+             to prevent them from being interpreted as git options."
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn memory_harvest(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
@@ -65,8 +91,10 @@ async fn memory_harvest_git(
         None => (args.git_range.clone(), format!("'{}'", args.git_range)),
     };
 
+    reject_option_like_ref(&git_ref)?;
+
     let git_out = std::process::Command::new("git")
-        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---"])
+        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---", "--"])
         .output()
         .context("running git log (is git installed and are we in a git repo?)")?;
 
@@ -458,8 +486,10 @@ async fn memory_harvest_failures(
         None => format!("'{git_ref}'"),
     };
 
+    reject_option_like_ref(&git_ref)?;
+
     let git_out = std::process::Command::new("git")
-        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---"])
+        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---", "--"])
         .output()
         .context("running git log")?;
     if !git_out.status.success() {
@@ -784,4 +814,82 @@ fn is_failure_subject(subject: &str) -> bool {
         "stack overflow",
     ];
     failure_signals.iter().any(|p| s.contains(p))
+}
+
+#[cfg(test)]
+mod option_injection_guard_tests {
+    use super::reject_option_like_ref;
+
+    #[test]
+    fn accepts_ordinary_refs_and_ranges() {
+        assert!(reject_option_like_ref("main").is_ok());
+        assert!(reject_option_like_ref("HEAD~10..HEAD").is_ok());
+        assert!(reject_option_like_ref("feature/foo..main").is_ok());
+        assert!(reject_option_like_ref("-").is_ok());
+    }
+
+    #[test]
+    fn rejects_option_like_branch() {
+        let err = reject_option_like_ref("--output=/tmp/x").unwrap_err();
+        assert!(err.to_string().contains("--output=/tmp/x"));
+    }
+
+    #[test]
+    fn rejects_option_like_range_endpoint() {
+        assert!(reject_option_like_ref("--output=/tmp/x..HEAD").is_err());
+        assert!(reject_option_like_ref("HEAD..--output=/tmp/x").is_err());
+    }
+
+    /// A ref that is exactly the `--` end-of-options marker. It starts with
+    /// `-` and is not the single-char `-` literal, so it is rejected like any
+    /// other option-like value — it must not be special-cased into an accept,
+    /// since `git log -- --` is ambiguous/nonsensical as a revision anyway.
+    #[test]
+    fn rejects_bare_double_dash() {
+        assert!(reject_option_like_ref("--").is_err());
+    }
+
+    /// Short numeric-looking options (`git log -1`, `-n5`, etc.) must be
+    /// rejected too, not just long `--flag=value` forms — the guard checks
+    /// only the leading `-`, so this should already hold, but it's worth
+    /// pinning explicitly since `-1`/`-n` are among the most common ways to
+    /// accidentally (or maliciously) alter `git log`'s behavior.
+    #[test]
+    fn rejects_short_option_like_refs() {
+        assert!(reject_option_like_ref("-1").is_err());
+        assert!(reject_option_like_ref("-n5").is_err());
+        assert!(reject_option_like_ref("-p").is_err());
+    }
+
+    /// A very long option-like value must still be rejected (no length-based
+    /// bypass / no truncation before the check).
+    #[test]
+    fn rejects_long_option_like_ref() {
+        let long_val = format!("--output={}", "a".repeat(4096));
+        assert!(reject_option_like_ref(&long_val).is_err());
+    }
+
+    /// Refs containing shell metacharacters are not shell-parsed anywhere in
+    /// this codebase (git is always spawned via argv, never a shell), so
+    /// these are harmless from a shell-injection standpoint — but they must
+    /// still pass straight through unless they are *also* option-like
+    /// (leading `-`), proving the guard is narrowly scoped to option-shape
+    /// and doesn't accidentally reject or mangle legitimate-looking (if
+    /// unusual) ref/range strings.
+    #[test]
+    fn shell_metacharacters_alone_do_not_trigger_rejection() {
+        assert!(reject_option_like_ref("feature/$(whoami)").is_ok());
+        assert!(reject_option_like_ref("a;b|c&d").is_ok());
+        assert!(reject_option_like_ref("main..feature`x`").is_ok());
+    }
+
+    /// Combining a leading dash with shell metacharacters must still be
+    /// rejected via the option-like check (belt-and-braces: even though argv
+    /// spawning means these can't reach a shell, the leading `-` alone is
+    /// sufficient grounds for rejection).
+    #[test]
+    fn rejects_option_like_ref_with_shell_metacharacters() {
+        assert!(reject_option_like_ref("--output=/tmp/x;rm -rf /").is_err());
+        assert!(reject_option_like_ref("-$(whoami)").is_err());
+    }
 }

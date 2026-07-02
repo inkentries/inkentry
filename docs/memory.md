@@ -250,6 +250,8 @@ spelunk memory harvest --git-range v1.0..HEAD
 
 Already-harvested commits are skipped (tracked via a `git:<sha>` tag). Routine commits ("fix typo", "wip", etc.) are ignored by the LLM.
 
+`--branch` and `--git-range` values (or either endpoint of an `A..B` range) that start with `-` are rejected before reaching `git`, with a clear error — this prevents a malformed or attacker-controlled ref from being parsed as a `git log` option.
+
 ### Automatic harvesting
 
 Install the git hook and harvesting happens on every commit:
