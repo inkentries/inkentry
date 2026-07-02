@@ -45,9 +45,12 @@ use crate::{
 /// - `memory_backend` — stable identifier for the active memory backend:
 ///   `"sqlite"`, `"git-notes"`, or `"remote"` (see issue #308)
 ///
-/// Additional fields (`tier`, `server_url`, `capabilities`, `snapshot_count`,
-/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
-/// richer tooling; treat them as unstable extensions.
+/// Additional fields (`tier`, `server_url`, `capabilities`, `embedder_state`,
+/// `snapshot_count`, `drift_candidates`, `usage_7d`) are present for backward
+/// compatibility and richer tooling; treat them as unstable extensions.
+/// `embedder_state` mirrors the server's `/v1/health` readiness
+/// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
+/// offline or when the reachable server pre-dates the readiness field.
 pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let fmt = crate::utils::effective_format(&args.format);
 
@@ -110,6 +113,13 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             ),
         };
 
+        // Server-side embedder readiness (spelunk-oss^50). `null` when offline
+        // or when talking to a server that pre-dates the readiness field.
+        let embedder_state_json: serde_json::Value = match tier.embedder_state() {
+            Some(capability::EmbedderState::Unknown) | None => serde_json::Value::Null,
+            Some(s) => serde_json::Value::String(s.as_str().to_string()),
+        };
+
         // Serialize languages as [{name, file_count}, ...]
         let languages_json: Vec<serde_json::Value> = languages
             .iter()
@@ -141,6 +151,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "tier": tier_str,
                 "server_url": tier_url,
                 "capabilities": caps_json,
+                "embedder_state": embedder_state_json,
                 "embedding_count": stats.embedding_count,
                 "snapshot_count": stats.snapshot_count,
                 "drift_candidates": drift,
@@ -333,6 +344,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             url,
             caps,
             auto_discovered,
+            embedder_state,
         } => {
             let url_label = if *auto_discovered {
                 format!("{url}  \x1b[2m(local, auto)\x1b[0m")
@@ -346,6 +358,11 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
                 "ast-grep + text"
             };
             println!("  search          {search_label}");
+            // Embedder readiness: explain *why* semantic search isn't in the
+            // search line yet when the server is up but the model isn't ready.
+            if let Some(line) = embedder_status_line(embedder_state) {
+                println!("{line}");
+            }
             let mem_label = if caps.memory_push {
                 "git-notes + server sync"
             } else {
@@ -369,6 +386,32 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
     println!();
 }
 
+/// Render the `embedder` line for `spelunk status` (text mode) from the
+/// server-side readiness state, or `None` when there is nothing useful to show
+/// (an older server that never reported readiness). Pure so it can be unit
+/// tested without capturing stdout (spelunk-oss^50).
+fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
+    use capability::EmbedderState;
+    let line = match state {
+        EmbedderState::Loading => {
+            "  embedder        \x1b[33mloading\x1b[0m  [model warming up — retry shortly]"
+                .to_string()
+        }
+        EmbedderState::Unavailable => {
+            "  embedder        \x1b[31munavailable\x1b[0m  [model failed to load — see `spelunk server logs`]"
+                .to_string()
+        }
+        EmbedderState::Ready => "  embedder        ready".to_string(),
+        EmbedderState::Disabled => {
+            "  embedder        disabled  [external embedding backend]".to_string()
+        }
+        // Older server without the readiness field: stay quiet rather than
+        // print a confusing "unknown".
+        EmbedderState::Unknown => return None,
+    };
+    Some(line)
+}
+
 pub(crate) fn format_age(unix_ts: i64) -> String {
     let Some(then) = chrono::DateTime::<chrono::Utc>::from_timestamp(unix_ts, 0) else {
         return "unknown".to_string();
@@ -383,5 +426,49 @@ pub(crate) fn format_age(unix_ts: i64) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::EmbedderState;
+
+    // ── embedder_status_line: `spelunk status` rendering of each state ──────────
+
+    #[test]
+    fn embedder_line_loading_advises_warmup() {
+        let line = embedder_status_line(&EmbedderState::Loading).expect("loading renders a line");
+        assert!(line.contains("loading"));
+        assert!(line.contains("warming up"));
+    }
+
+    #[test]
+    fn embedder_line_unavailable_points_at_logs() {
+        let line =
+            embedder_status_line(&EmbedderState::Unavailable).expect("unavailable renders a line");
+        assert!(line.contains("unavailable"));
+        assert!(line.contains("failed to load"));
+        assert!(line.contains("spelunk server logs"));
+    }
+
+    #[test]
+    fn embedder_line_ready_is_plain() {
+        let line = embedder_status_line(&EmbedderState::Ready).expect("ready renders a line");
+        assert!(line.contains("ready"));
+    }
+
+    #[test]
+    fn embedder_line_disabled_notes_external_backend() {
+        let line = embedder_status_line(&EmbedderState::Disabled).expect("disabled renders a line");
+        assert!(line.contains("disabled"));
+        assert!(line.contains("external"));
+    }
+
+    #[test]
+    fn embedder_line_unknown_renders_nothing() {
+        // Older server without the readiness field: no line rather than a
+        // confusing "unknown".
+        assert!(embedder_status_line(&EmbedderState::Unknown).is_none());
     }
 }
