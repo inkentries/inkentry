@@ -58,7 +58,7 @@ AI coding agents lose context between sessions and can't trace how code connects
 
 - **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
 - **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
-- **Works without any server** — memory, code graph, and full-text/ast-grep search work with just the binary. No API keys, no configuration.
+- **Works without any server** — memory, code graph, and full-text/structural (ast-grep) search work with just the binary. No API keys, no configuration.
 - **Semantic search built in** — a local `spelunk-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point spelunk at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
 - **100% local** — your code never leaves your machine. The server is self-hosted (local by default).
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.

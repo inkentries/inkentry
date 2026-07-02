@@ -23,7 +23,7 @@ pub struct GraphArgs {
     #[arg(long)]
     pub no_stale_check: bool,
 
-    /// Skip the index and scan live files with ast-grep (requires ast-grep in PATH)
+    /// Skip the index and scan live files with in-process structural matching
     #[arg(long)]
     pub live: bool,
 }
@@ -96,45 +96,28 @@ pub fn graph(args: GraphArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
-/// Run an ast-grep caller search for `symbol` over the working tree rooted at `root`.
+/// Run a structural ("ast-grep") caller search for `symbol` over the working
+/// tree rooted at `root`, in-process via `ast-grep-core` (no external binary).
 fn graph_live(symbol: &str, format: &str, kind_filter: &Option<String>, root: &Path) -> Result<()> {
-    if std::process::Command::new("ast-grep")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        anyhow::bail!(
-            "ast-grep not found. Install with: brew install ast-grep\n\
-             (or: cargo install ast-grep --locked)\n\
-             Index-backed graph queries require `spelunk index .` first."
-        );
-    }
-
+    // Match call sites of `symbol`, e.g. `foo(...)`. The matcher walks the tree
+    // per-language; the pattern only compiles/matches where it's syntactically
+    // valid, so languages where `symbol($$$)` is not a valid call are skipped.
     let pattern = format!("{symbol}($$$)");
-    let out = std::process::Command::new("ast-grep")
-        .args(["run", "--pattern", &pattern, "--json"])
-        .arg(root)
-        .output()?;
-
-    if !out.status.success() && out.stdout.is_empty() {
-        println!("No graph edges found for '{symbol}' (live scan).");
-        return Ok(());
-    }
-
-    let matches: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    // Graph fallback is unranked, so an ample cap keeps it useful without
+    // unbounded memory on huge trees.
+    let matches = crate::search::live::search_live_matches(&pattern, root, 1000);
 
     let mut edges: Vec<GraphEdge> = matches
         .into_iter()
-        .filter_map(|m| {
-            let path = m["path"].as_str()?.to_string();
-            let line = m["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
-            Some(GraphEdge {
-                source_file: path,
-                source_name: None,
-                target_name: symbol.to_string(),
-                kind: "calls".to_string(),
-                line,
-            })
+        .map(|m| GraphEdge {
+            source_file: m.file_path,
+            source_name: None,
+            target_name: symbol.to_string(),
+            kind: "calls".to_string(),
+            // `LiveMatch` reports 1-indexed lines; the previous subprocess path
+            // emitted ast-grep's 0-indexed `range.start.line`. Preserve the
+            // original 0-indexed semantics for the graph edge `line` field.
+            line: m.start_line.saturating_sub(1),
         })
         .collect();
 

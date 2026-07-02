@@ -237,7 +237,7 @@ spelunk graph <symbol> [options]
 | `--format text\|json\|jsonl` | text | Output format |
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
-| `--live` | false | Skip the index and scan live files with ast-grep (requires `ast-grep` in PATH) |
+| `--live` | false | Skip the index and scan live files directly |
 
 **Example:**
 

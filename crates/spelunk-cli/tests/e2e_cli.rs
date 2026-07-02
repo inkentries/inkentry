@@ -815,14 +815,13 @@ fn test_status_json_offline_tier() {
     assert!(body["capabilities"].is_null());
 }
 
-// ── Issue #284: search falls back to ast-grep when no index / no embedder ───
+// ── Issue #284: search falls back to structural matching when no index / no embedder ───
 
 /// When there is no .spelunk/index.db, `spelunk search` in auto mode must
-/// succeed (via ast-grep fallback) rather than printing an opaque error.
-/// Skipped on Windows because `ast-grep` (`sg`) is not available on the
-/// `windows-latest` GitHub Actions runner, so the fallback can't be exercised.
+/// succeed (via the in-process structural fallback) rather than printing an
+/// opaque error. Runs on every platform: the fallback is now compiled into the
+/// `spelunk` binary (ast-grep-core), so it no longer requires `ast-grep` on PATH.
 #[test]
-#[cfg_attr(windows, ignore)]
 fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
@@ -862,12 +861,11 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
 }
 
 /// When the index exists but there is no embedder (api_base_url points
-/// nowhere), `spelunk search` in auto mode must fall back to ast-grep and
-/// succeed, not bail out with a hard error.
-/// Skipped on Windows because `ast-grep` (`sg`) is not available on the
-/// `windows-latest` GitHub Actions runner, so the fallback can't be exercised.
+/// nowhere), `spelunk search` in auto mode must fall back to structural search
+/// and succeed, not bail out with a hard error.
+/// Runs on every platform: the in-process fallback (ast-grep-core) is compiled
+/// into the `spelunk` binary and no longer requires `ast-grep` on PATH.
 #[test]
-#[cfg_attr(windows, ignore)]
 fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");

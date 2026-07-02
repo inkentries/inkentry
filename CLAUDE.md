@@ -364,8 +364,14 @@ cargo audit
 
 ## Dependency Notes
 
-- Tree-sitter language crate versions must be compatible with the `tree-sitter`
-  core. If you bump the core, check all `tree-sitter-*` crates too.
+- Tree-sitter grammars come from **`ast-grep-language`** (a single crate,
+  ABI-aligned to the `tree-sitter` core). Bump that one crate instead of many
+  `tree-sitter-*` deps. `proto` and `sql` are the only exceptions —
+  ast-grep-language doesn't ship them, so they stay on the standalone
+  `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
+  `tree-sitter` core, check that `ast-grep-language` (and the two standalone
+  grammars) still resolve to the same runtime line. `ast-grep-core` provides the
+  in-process structural-search fallback (`crates/spelunk-core/src/search/live.rs`).
 - `sqlite-vec` is loaded at runtime via `sqlite3_auto_extension` (see
   `crates/spelunk-cli/src/main.rs` and `crates/spelunk-server/src/main.rs`).
   The extension binary is bundled by the crate — no system install needed.

@@ -26,6 +26,8 @@ used; the binary is the same in both tiers.
 **The CLI never calls embedding or LLM APIs directly, regardless of
 configuration.** All inference routes through `spelunk-server`.
 
+**Tier 0 requires no external tools.** Uses `ast-grep` structural search.
+
 ---
 
 ## Configuration

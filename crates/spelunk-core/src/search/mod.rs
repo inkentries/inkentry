@@ -1,4 +1,5 @@
 pub mod explore;
+pub mod live;
 pub mod rag;
 pub mod tokens;
 pub mod tools;
