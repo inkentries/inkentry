@@ -16,6 +16,27 @@
 //!
 //! The port file is read by `capability.rs` for loopback auto-discovery
 //! (spelunk#316).  The writer here **must** use the same path.
+//!
+//! ## Spawned-binary resolution (PATH vs. sibling/absolute)
+//!
+//! `spelunk-server` is resolved preferring a path next to the running
+//! `spelunk` executable, falling back to a `$PATH` walk only if no sibling
+//! binary is found (see [`which_spelunk_server`]) — this avoids a
+//! PATH/CWD-hijack where a malicious `spelunk-server` earlier on `$PATH`
+//! (or in an untrusted repo's local tooling dir) gets executed instead of
+//! the real one.
+//!
+//! Other external tools spawned elsewhere in the CLI (`git`, `gh`, `bun`,
+//! `$EDITOR`, and `taskkill` on Windows — see `memory/add.rs`,
+//! `memory/harvest.rs`, `memory/mod.rs`, and the `stop` command below) are
+//! **not** given the same treatment: they are resolved via the bare name on
+//! `$PATH` as is conventional for CLI-invoked developer tools (the same way
+//! `git`, shell, and editor integrations normally work), and the user is
+//! trusted to control their own `$PATH`. This is a deliberate scope
+//! decision, not an oversight — `spelunk-server` is different because it is
+//! a first-party binary spelunk itself ships and auto-spawns without the
+//! user typing a command, so a bundled/co-located binary is both available
+//! and the more trustworthy choice by default.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,6 +64,107 @@ fn port_path(state_dir: &Path) -> PathBuf {
 }
 fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.log")
+}
+
+/// Create `dir` (and parents) with `0700` permissions on Unix so only the
+/// owner can read the PID/port/log files inside it. A no-op permission
+/// tightening on platforms without Unix perms.
+fn create_state_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("setting 0700 permissions on {}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Open `path` for a full-content (truncating) write, refusing to follow a
+/// symlink and creating the file `0600` (owner-only) on Unix.
+///
+/// State files (`server.pid`, `server.port`) live in a fixed, predictable
+/// location (`~/.local/state/spelunk/`); on a shared host an attacker could
+/// pre-create a symlink there pointing at an arbitrary file the spelunk user
+/// can write, turning a routine `server start` into an overwrite primitive.
+/// `O_NOFOLLOW` (Unix) makes the open fail instead of following such a link.
+fn open_state_file_for_write(path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc_o_nofollow())
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))
+    }
+}
+
+/// `O_NOFOLLOW` — not exposed by `std`, so defined locally to avoid pulling
+/// in the `libc` crate for a single constant. Value is stable across Linux
+/// and macOS (both define it as `0o400000`, i.e. `0x0100`... — actual
+/// per-platform values below).
+#[cfg(unix)]
+fn libc_o_nofollow() -> i32 {
+    #[cfg(target_os = "macos")]
+    {
+        0x0000_0100 // O_NOFOLLOW on macOS/BSD
+    }
+    #[cfg(target_os = "linux")]
+    {
+        0o400_000 // O_NOFOLLOW on Linux
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
+
+/// Write `contents` to a state file, creating it `0600` and refusing to
+/// follow an existing symlink at `path` (see [`open_state_file_for_write`]).
+fn write_state_file(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    let mut f = open_state_file_for_write(path)?;
+    f.write_all(contents.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+/// Open a state file for daemon-log append, creating it `0600` and refusing
+/// to follow an existing symlink at `path`.
+fn open_log_file_for_append(path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc_o_nofollow())
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))
+    }
 }
 
 /// Read PID from the state file. Returns `None` if absent or unparseable.
@@ -163,8 +285,7 @@ pub async fn server(args: ServerArgs) -> Result<()> {
 /// Called by `spelunk init` to auto-spawn the server when running interactively.
 pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     let state_dir = spelunk_state_dir()?;
-    std::fs::create_dir_all(&state_dir)
-        .with_context(|| format!("creating state dir {}", state_dir.display()))?;
+    create_state_dir(&state_dir)?;
 
     // Already running and healthy?
     if let Some(pid) = read_pid(&state_dir)
@@ -180,11 +301,7 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     const PORT_RANGE: u16 = 11;
     let port = find_available_port(start_port, PORT_RANGE)?;
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path(&state_dir))
-        .with_context(|| format!("opening {}", log_path(&state_dir).display()))?;
+    let log_file = open_log_file_for_append(&log_path(&state_dir))?;
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
@@ -192,8 +309,9 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
 
     let pid = child.id();
-    std::fs::write(pid_path(&state_dir), format!("{pid}\n")).context("writing server.pid")?;
-    std::fs::write(port_path(&state_dir), format!("{port}\n")).context("writing server.port")?;
+    write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
+    write_state_file(&port_path(&state_dir), &format!("{port}\n"))
+        .context("writing server.port")?;
 
     // Wait for *liveness* (the port binds, /v1/health responds) — not model
     // readiness. Health now goes live at bind, before the model download, so
@@ -220,8 +338,7 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
 
 async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     let state_dir = spelunk_state_dir()?;
-    std::fs::create_dir_all(&state_dir)
-        .with_context(|| format!("creating state dir {}", state_dir.display()))?;
+    create_state_dir(&state_dir)?;
 
     // ── Idempotency check ────────────────────────────────────────────────────
     if let Some(pid) = read_pid(&state_dir)
@@ -256,11 +373,7 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     let port = find_available_port(args.port, PORT_RANGE)?;
 
     // ── Spawn daemonised process ─────────────────────────────────────────────
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path(&state_dir))
-        .with_context(|| format!("opening {}", log_path(&state_dir).display()))?;
+    let log_file = open_log_file_for_append(&log_path(&state_dir))?;
 
     #[cfg(unix)]
     let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
@@ -270,8 +383,9 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     let pid = child.id();
 
     // Write state files.
-    std::fs::write(pid_path(&state_dir), format!("{pid}\n")).context("writing server.pid")?;
-    std::fs::write(port_path(&state_dir), format!("{port}\n")).context("writing server.port")?;
+    write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
+    write_state_file(&port_path(&state_dir), &format!("{port}\n"))
+        .context("writing server.port")?;
 
     // Wait up to 30 s for the server to become reachable (liveness, not model
     // readiness — /v1/health is live at bind, before any model download).
@@ -469,6 +583,26 @@ async fn cmd_stop() -> Result<()> {
         return Ok(());
     }
 
+    // ── Identity check ───────────────────────────────────────────────────────
+    // A liveness check alone (`pid_is_alive`) is not enough: PIDs are reused
+    // by the OS, so after a crash/reboot the recorded PID may now belong to
+    // an entirely unrelated process. Verify it is actually *our* server
+    // before sending a kill signal — mirroring the health-check `start`
+    // already does on its restart path (see `cmd_start`'s idempotency
+    // check above).
+    verify_server_identity(&state_dir, pid)
+        .await
+        .with_context(|| {
+            format!(
+                "refusing to stop pid={pid}: it does not look like the spelunk-server \
+             recorded in {}. If the server crashed and this PID was reused by an \
+             unrelated process, remove the stale state files manually \
+             (`server.pid`, `server.port` under {}) and retry.",
+                pid_path(&state_dir).display(),
+                state_dir.display()
+            )
+        })?;
+
     // Send SIGTERM (Unix) or TerminateProcess (Windows).
     terminate_process(pid)?;
 
@@ -489,6 +623,35 @@ async fn cmd_stop() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Verify that `pid` is actually the spelunk-server we started, not some
+/// unrelated process that happens to have reused the PID after a crash.
+///
+/// Mirrors the health-check `start` already performs on its restart path:
+/// read the recorded port, probe `/v1/health`, and require a response.
+/// A `state_dir` written by *this* CLI always has a `server.port` alongside
+/// `server.pid` (both are written together in `cmd_start` /
+/// `ensure_server_running`), so a healthy probe on that port is strong
+/// evidence the PID still names our daemon. If no port is recorded or the
+/// probe fails, we do not have enough signal to safely distinguish "our
+/// server, just briefly unhealthy" from "PID reused by something else" —
+/// refuse rather than guess.
+///
+/// We do not attempt to also match `instance_id` against a previously
+/// recorded value because none is persisted to disk today (only exposed at
+/// runtime via `/v1/health`); a live, successful health response on the
+/// port we ourselves recorded is the available identity signal.
+async fn verify_server_identity(state_dir: &Path, pid: u32) -> Result<()> {
+    let port = read_port(state_dir).ok_or_else(|| {
+        anyhow::anyhow!("no server.port recorded — cannot verify pid={pid} is spelunk-server")
+    })?;
+    match probe_health(port).await {
+        Some(_instance_id) => Ok(()),
+        None => Err(anyhow::anyhow!(
+            "pid={pid} is alive but /v1/health on port {port} did not respond"
+        )),
+    }
 }
 
 fn terminate_process(pid: u32) -> Result<()> {
@@ -854,6 +1017,141 @@ mod tests {
             db_value,
             &db.to_string_lossy().into_owned(),
             "daemon arg --db value should match supplied db path"
+        );
+    }
+
+    // ── verify_server_identity (PID-reuse hardening, spelunk-oss^64 #1) ──────
+
+    /// `stop` must refuse to signal a PID whose recorded port is unreachable
+    /// (the PID may have been reused by an unrelated process after a crash).
+    #[tokio::test]
+    async fn verify_server_identity_rejects_no_port_recorded() {
+        let tmp = TempDir::new().unwrap();
+        // No server.port written — nothing to verify against.
+        let result = verify_server_identity(tmp.path(), 999_999).await;
+        assert!(
+            result.is_err(),
+            "identity check must fail when no port is recorded"
+        );
+    }
+
+    /// `stop` must refuse to signal a PID when the recorded port's
+    /// `/v1/health` does not respond — most commonly because that PID was
+    /// reused by an unrelated process after the real server crashed.
+    #[tokio::test]
+    async fn verify_server_identity_rejects_unhealthy_port() {
+        let tmp = TempDir::new().unwrap();
+        // Bind (but don't serve HTTP on) an ephemeral port so it's a real,
+        // non-listening-for-HTTP port rather than a guessed free one.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port again, but /v1/health still won't respond
+
+        std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
+
+        let result = verify_server_identity(tmp.path(), 999_999).await;
+        assert!(
+            result.is_err(),
+            "identity check must fail when /v1/health does not respond on the recorded port"
+        );
+    }
+
+    /// `stop` proceeds only when the recorded port's `/v1/health` responds —
+    /// this is the positive case mirroring a genuinely-running server.
+    #[tokio::test]
+    async fn verify_server_identity_accepts_healthy_port() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "instance_id": "abc123" })),
+            )
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let port = server.address().port();
+        std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
+
+        let result = verify_server_identity(tmp.path(), 999_999).await;
+        assert!(
+            result.is_ok(),
+            "identity check must succeed when /v1/health responds: {result:?}"
+        );
+    }
+
+    // ── state file / dir permissions (unix-gated, spelunk-oss^64 #2) ─────────
+
+    #[cfg(unix)]
+    #[test]
+    fn create_state_dir_sets_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("state");
+        create_state_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "state dir should be 0700, got {mode:o}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_state_file_sets_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("server.pid");
+        write_state_file(&file, "12345\n").unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "state file should be 0600, got {mode:o}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "12345\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_log_file_for_append_sets_0600() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("server.log");
+        {
+            let mut f = open_log_file_for_append(&file).unwrap();
+            f.write_all(b"line one\n").unwrap();
+        }
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "log file should be 0600, got {mode:o}");
+        // Append semantics: opening again and writing should not truncate.
+        {
+            let mut f = open_log_file_for_append(&file).unwrap();
+            f.write_all(b"line two\n").unwrap();
+        }
+        let contents = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(contents, "line one\nline two\n");
+    }
+
+    /// `write_state_file` must refuse to follow a pre-existing symlink at the
+    /// target path rather than writing through it (O_NOFOLLOW).
+    #[cfg(unix)]
+    #[test]
+    fn write_state_file_refuses_to_follow_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let outside_target = tmp.path().join("outside.txt");
+        std::fs::write(&outside_target, "do not overwrite me").unwrap();
+
+        let link_path = tmp.path().join("server.pid");
+        std::os::unix::fs::symlink(&outside_target, &link_path).unwrap();
+
+        let result = write_state_file(&link_path, "12345\n");
+        assert!(
+            result.is_err(),
+            "write_state_file must refuse to follow a symlink at the target path"
+        );
+        // The symlink target must be untouched.
+        assert_eq!(
+            std::fs::read_to_string(&outside_target).unwrap(),
+            "do not overwrite me"
         );
     }
 }

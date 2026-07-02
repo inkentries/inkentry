@@ -303,10 +303,29 @@ impl Registry {
                     // Remove the leftover .spelunk dir (worktree was cleaned but
                     // .spelunk was skipped because it is in .gitignore).
                     let spelunk_dir = p.root_path.join(".spelunk");
-                    std::fs::remove_dir_all(&spelunk_dir)
-                        .with_context(|| format!("removing {}", spelunk_dir.display()))?;
-                    // Root dir is now empty — remove it too.
-                    let _ = std::fs::remove_dir(&p.root_path);
+                    // Refuse to recursively delete through a symlink: a symlinked
+                    // `.spelunk` (attacker-controlled or a poisoned registry row)
+                    // could otherwise point `remove_dir_all` at an arbitrary
+                    // directory outside the project root.
+                    match std::fs::symlink_metadata(&spelunk_dir) {
+                        Ok(meta) if meta.file_type().is_symlink() => {
+                            tracing::warn!(
+                                "registry autoclean: refusing to remove {} — it is a symlink, \
+                                 not a directory",
+                                spelunk_dir.display()
+                            );
+                            continue;
+                        }
+                        Ok(_) => {
+                            std::fs::remove_dir_all(&spelunk_dir)
+                                .with_context(|| format!("removing {}", spelunk_dir.display()))?;
+                            // Root dir is now empty — remove it too.
+                            let _ = std::fs::remove_dir(&p.root_path);
+                        }
+                        Err(_) => {
+                            // Already gone (race) — nothing to remove.
+                        }
+                    }
                 }
                 self.conn
                     .execute("DELETE FROM projects WHERE id = ?1", params![p.id])
@@ -431,5 +450,106 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    /// Point `registry_path()` at a fresh tempdir for the duration of the
+    /// closure and open a `Registry` against it. `#[serial]` on each test
+    /// guards the shared `SPELUNK_REGISTRY_DIR` env var — these tests must
+    /// not run concurrently with each other.
+    fn with_test_registry<F: FnOnce(&Registry, &std::path::Path)>(f: F) {
+        let tmp = TempDir::new().unwrap();
+        // SAFETY: guarded by #[serial] — no other thread in this test binary
+        // reads/writes SPELUNK_REGISTRY_DIR concurrently.
+        unsafe { std::env::set_var("SPELUNK_REGISTRY_DIR", tmp.path()) };
+        let reg = Registry::open().expect("open test registry");
+        f(&reg, tmp.path());
+        unsafe { std::env::remove_var("SPELUNK_REGISTRY_DIR") };
+    }
+
+    /// `autoclean` must refuse to `remove_dir_all` through a symlinked
+    /// `.spelunk` directory left behind at a "remnant" project root (a
+    /// worktree whose tracked files were removed but whose gitignored
+    /// `.spelunk` dir survived). A symlink there — attacker-planted or from a
+    /// poisoned registry row — must not turn routine cleanup into an
+    /// arbitrary recursive delete outside the project root.
+    #[test]
+    #[serial]
+    fn autoclean_skips_symlinked_spelunk_dir() {
+        with_test_registry(|reg, _registry_dir| {
+            let workdir = TempDir::new().unwrap();
+            let project_root = workdir.path().join("project");
+            std::fs::create_dir_all(&project_root).unwrap();
+
+            // A directory OUTSIDE the project root that must survive.
+            let victim = workdir.path().join("victim");
+            std::fs::create_dir_all(&victim).unwrap();
+            std::fs::write(victim.join("keep-me.txt"), b"do not delete").unwrap();
+
+            // project_root/.spelunk is a symlink pointing at `victim`, and
+            // project_root otherwise contains nothing else — satisfying the
+            // "only-remnant" check in `spelunk_only_remnant`.
+            let spelunk_link = project_root.join(".spelunk");
+            std::os::unix::fs::symlink(&victim, &spelunk_link).unwrap();
+
+            let db_path = project_root.join("index.db"); // never created; irrelevant to autoclean
+            reg.register(&project_root, &db_path).unwrap();
+
+            let removed = reg.autoclean().expect("autoclean should not error");
+
+            assert!(
+                removed.is_empty(),
+                "autoclean must not report the remnant as removed when .spelunk is a symlink: {removed:?}"
+            );
+            assert!(
+                victim.join("keep-me.txt").exists(),
+                "autoclean must not have deleted through the symlink"
+            );
+            assert!(
+                spelunk_link.exists() || spelunk_link.symlink_metadata().is_ok(),
+                "the symlink itself should be left in place"
+            );
+            // The registry row must still be present since we refused to clean it up.
+            assert!(
+                reg.find_by_root(&project_root).unwrap().is_some(),
+                "registry row should not be deleted when autoclean refused the symlink"
+            );
+        });
+    }
+
+    /// Sanity check: autoclean still removes a genuine (non-symlinked)
+    /// `.spelunk`-only remnant, so the symlink guard doesn't regress the
+    /// existing cleanup behaviour.
+    #[test]
+    #[serial]
+    fn autoclean_removes_real_remnant_dir() {
+        with_test_registry(|reg, _registry_dir| {
+            let workdir = TempDir::new().unwrap();
+            let project_root = workdir.path().join("project");
+            let spelunk_dir = project_root.join(".spelunk");
+            std::fs::create_dir_all(&spelunk_dir).unwrap();
+            std::fs::write(spelunk_dir.join("index.db"), b"fake").unwrap();
+
+            let db_path = spelunk_dir.join("index.db");
+            reg.register(&project_root, &db_path).unwrap();
+
+            let removed = reg.autoclean().expect("autoclean should not error");
+
+            assert_eq!(removed.len(), 1, "expected the remnant to be cleaned up");
+            assert!(
+                !spelunk_dir.exists(),
+                "real (non-symlinked) remnant .spelunk dir should be removed"
+            );
+        });
     }
 }

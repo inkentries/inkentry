@@ -148,8 +148,26 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
         }
     }
 
+    // Optional user hook: `memory add --from-url` can shell out to a local
+    // Markdown-conversion script under `bun` for higher-fidelity extraction
+    // than the naive HTML strip below. This is opt-in and guarded: the script
+    // must live at a fixed, spelunk-owned path
+    // (`~/.config/spelunk/scripts/web-to-md.ts`), *not* anywhere under the
+    // home directory. Prior to this guard the CLI ran `~/scripts/web-to-md.ts`
+    // whenever it happened to exist — a surprising, undocumented dependency
+    // that made any attacker-writable home-dir script (e.g. via a prior
+    // unrelated compromise, or a shared/managed machine) an implicit
+    // code-execution path every time `memory add --from-url` ran. Scoping the
+    // path to `~/.config/spelunk/` narrows this to a location the user
+    // explicitly manages for spelunk and documents the mechanism in one place.
+    // See docs/memory.md#web-to-md-hook.
     let script = dirs::home_dir()
-        .map(|h| h.join("scripts/web-to-md.ts"))
+        .map(|h| {
+            h.join(".config")
+                .join("spelunk")
+                .join("scripts")
+                .join("web-to-md.ts")
+        })
         .filter(|p| p.exists());
 
     if let Some(script_path) = script {
