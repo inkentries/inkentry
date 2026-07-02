@@ -130,7 +130,7 @@ docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Client impersonates a legitimate spelunk user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--api-key`. |
+| Client impersonates a legitimate spelunk user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--key` / `SPELUNK_SERVER_KEY`. |
 | Attacker spoofs the embedding/LLM backend to return adversarial responses | A | Low | Medium | No server certificate validation is documented; if `api_base_url` is remote and HTTP (not HTTPS), responses can be intercepted. Recommend HTTPS for any non-localhost backend. |
 
 ### T — Tampering
@@ -156,7 +156,7 @@ docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent to third-party embedding service** | A | **High** | **High** | **No mitigation in spelunk itself.** If `api_base_url` points to a cloud service, every indexed chunk (post-secret-scan) is transmitted. Users must be informed via docs. |
 | **Memory notes sent to third-party LLM** | A | **Medium** | **High** | **No mitigation in spelunk itself.** `spelunk ask` and `memory harvest` send memory content + code context to the configured LLM endpoint. |
-| Server memory accessible without auth | B | Medium | High | No `--api-key` by default; any process that can reach the port reads all notes |
+| Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires a key — `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses without `--key` / `SPELUNK_SERVER_KEY`; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `SPELUNK_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
@@ -327,6 +327,6 @@ From this threat model, the following requirements are binding:
 3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
-6. **spelunk-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--api-key` is set.
+6. **spelunk-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `SPELUNK_SERVER_KEY` is set.
 7. **Config documentation must warn** that setting `api_base_url` to a non-local address transmits source code and memory content to that endpoint.
 8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-notespelunk) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**
