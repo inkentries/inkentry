@@ -139,10 +139,51 @@ Archived entries are skipped by default; pass `--include-archived` to push them.
 ## Multiple projects
 
 One server instance supports multiple projects. Each project has its own
-namespace — entries from `project_id = "api"` are invisible to clients
-configured with `project_id = "frontend"`.
+*namespace* — entries from `project_id = "api"` are not mixed with entries
+from `project_id = "frontend"`. This is an addressing convenience, **not an
+access-control boundary**: see [Trust model](#trust-model) below.
 
 Projects are auto-created on first write — no registration step required.
+
+`GET /v1/projects` enumerates every project slug on the instance. This is
+intended behaviour, by design — it is not a data leak to be fixed, it follows
+directly from the trust model below.
+
+## Trust model
+
+**A `spelunk-server` instance is a single trust domain.** The shared API key
+(`--key` / `SPELUNK_SERVER_KEY`) is the *only* access boundary the server has.
+It answers exactly one question — "does this bearer token match the
+configured key?" — and nothing more: there is no per-project or per-user
+authorization layer. Concretely, holding a server's key grants **full
+administrator access to every project on that instance**: list, read, search,
+write, supersede, archive, and permanently delete, regardless of which project
+slug a request names.
+
+This is a deliberate decision, not an oversight — see
+[ADR-056](adr/056-oss-server-tenancy-model.md) for the full rationale. The
+project-id in the URL path is an addressing convenience for routing requests
+to the right namespace; it was never a security boundary, and this document
+says so explicitly so no one has to infer it from behaviour.
+
+**What this means for you:**
+
+- A shared/team server is for **one group that already trusts each other** —
+  the same trust you'd extend by giving someone commit access to the repo.
+  Don't put memory for two teams or organisations that must not see each
+  other's data on one instance.
+- **Isolation between teams or projects is achieved by running separate server
+  instances** — each with its own key and its own database — not by relying on
+  project slugs within one instance. Two groups that must not see each other's
+  memory run two servers.
+- The server enforces this at startup: binding to a non-loopback address with
+  a key configured (a shared/team deployment) logs a prominent warning
+  restating exactly this — every keyholder is a full administrator of every
+  project on the instance.
+- If you need per-project or per-user access control within a single
+  instance, this server does not provide it (and is not planned to for
+  v1.0 — see ADR-056's "Revisit if" clause). The managed cloud product
+  provides organization-scoped isolation if you need that instead.
 
 ## Embedding dimension
 

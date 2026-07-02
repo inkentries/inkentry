@@ -41,6 +41,7 @@
           "projects"
         ],
         "summary": "List all projects registered on this server.",
+        "description": "Enumerates every project on the instance, by design: this server is a\nsingle trust domain (ADR-056) and any valid key is a full administrator of\nevery project on it, so there is no per-caller filtering to apply here.",
         "operationId": "list_projects",
         "responses": {
           "200": {

@@ -10,6 +10,14 @@ network adds is that **TLS becomes mandatory.**
 public or shared-network interface. Put a TLS-terminating reverse proxy in front
 of it and keep the server itself bound to loopback.
 
+> **Trust model.** Everything on the other side of that proxy — every holder of
+> the shared `SPELUNK_SERVER_KEY` — is a full administrator of every project on
+> this server instance; there is no per-project access control. See
+> [Trust model](server.md#trust-model) and
+> [ADR-056](adr/056-oss-server-tenancy-model.md) before sharing a key with more
+> than one mutually-trusting group. If you need isolation between teams, run
+> separate server instances (separate keys), not one shared instance.
+
 > Spelunk does not run your agents. This page is about exposing the *memory +
 > retrieval* server so remote agents can use it as a peer. It is not an agent
 > runtime.
