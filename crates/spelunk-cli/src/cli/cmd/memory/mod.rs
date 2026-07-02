@@ -468,29 +468,53 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
     println!();
 }
 
+/// Create the draft file used by [`open_editor_for_body`]: an unpredictably-named,
+/// `O_EXCL`-created, mode-0600 (unix), `.md`-suffixed temp file pre-populated with
+/// `title`. Kept as its own function so tests can exercise draft creation without
+/// spawning an editor.
+fn create_draft_file(title: &str) -> Result<tempfile::NamedTempFile> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("spelunk_memory_").suffix(".md");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let mut file = builder
+        .tempfile()
+        .context("failed to create temporary draft file")?;
+
+    use std::io::Write;
+    write!(
+        file,
+        "# {title}\n\n\
+         # Write your memory entry below. Lines starting with # are ignored.\n\
+         # Save and close the editor when done.\n\n"
+    )?;
+    file.flush()?;
+    Ok(file)
+}
+
 /// Open $EDITOR (or $VISUAL, then vi) for the user to write a memory body.
 pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
 
-    let tmp = std::env::temp_dir().join(format!("ca_memory_{}.md", std::process::id()));
-    std::fs::write(
-        &tmp,
-        format!(
-            "# {title}\n\n\
-         # Write your memory entry below. Lines starting with # are ignored.\n\
-         # Save and close the editor when done.\n\n"
-        ),
-    )?;
+    // NamedTempFile is created with a random name via O_EXCL (mode 0600 on unix,
+    // set via the Builder above). The handle is kept open across the editor spawn
+    // and used to read the content back afterwards, so the path can't be swapped
+    // out from under us (TOCTOU) between write and read-back.
+    let tmp = create_draft_file(title)?;
+    let tmp_path = tmp.path().to_path_buf();
 
     let status = std::process::Command::new(&editor)
-        .arg(&tmp)
+        .arg(&tmp_path)
         .status()
         .with_context(|| format!("could not open editor '{editor}'"))?;
 
-    let content = std::fs::read_to_string(&tmp)?;
-    std::fs::remove_file(&tmp).ok();
+    let content = std::fs::read_to_string(&tmp_path)?;
+    // `tmp` (NamedTempFile) removes the file on drop.
 
     if !status.success() {
         anyhow::bail!("Editor exited with a non-zero status; entry not saved.");
@@ -526,5 +550,83 @@ pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
         )
     } else {
         e
+    }
+}
+
+#[cfg(test)]
+mod draft_file_tests {
+    use super::create_draft_file;
+
+    #[test]
+    fn round_trip_content_is_readable() {
+        let file = create_draft_file("My Title").expect("draft file should be created");
+        let content = std::fs::read_to_string(file.path()).expect("draft file should be readable");
+        assert!(content.contains("# My Title"));
+        assert!(content.contains("Write your memory entry below"));
+    }
+
+    #[test]
+    fn draft_path_has_md_suffix() {
+        let file = create_draft_file("t").expect("draft file should be created");
+        assert_eq!(file.path().extension().and_then(|e| e.to_str()), Some("md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn draft_file_mode_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let file = create_draft_file("t").expect("draft file should be created");
+        let mode = std::fs::metadata(file.path())
+            .expect("draft file should have metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "draft file must be owner-only");
+    }
+
+    /// A local attacker who can predict/guess the draft's location pre-creates a
+    /// symlink there pointing at a victim-owned file. Because `NamedTempFile`
+    /// creates its file with `O_CREAT | O_EXCL` at an unpredictable, randomised
+    /// name, draft creation must never land on — let alone follow/clobber — a
+    /// pre-existing path.
+    #[cfg(unix)]
+    #[test]
+    fn preexisting_symlink_at_guessed_path_is_not_clobbered() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let victim = dir.path().join("victim.md");
+        std::fs::write(&victim, "victim contents\n").expect("victim file should be writable");
+
+        // Recreate the *old* predictable-name scheme's guessed path as a symlink
+        // to the victim file, as a local attacker would.
+        let guessed = dir
+            .path()
+            .join(format!("ca_memory_{}.md", std::process::id()));
+        symlink(&victim, &guessed).expect("symlink should be created");
+
+        // The new draft-creation path never targets `guessed` at all — it asks
+        // the OS for a random, exclusively-created name — so the symlink must be
+        // left completely untouched.
+        let file = create_draft_file("t").expect("draft file should be created");
+        assert_ne!(
+            file.path(),
+            guessed.as_path(),
+            "draft must not reuse the old predictable path"
+        );
+
+        let victim_contents =
+            std::fs::read_to_string(&victim).expect("victim file should still be readable");
+        assert_eq!(
+            victim_contents, "victim contents\n",
+            "pre-existing symlink target must not be clobbered"
+        );
+        assert!(
+            std::fs::symlink_metadata(&guessed)
+                .expect("guessed path should still be a symlink")
+                .file_type()
+                .is_symlink(),
+            "pre-existing symlink itself must be left alone"
+        );
     }
 }
