@@ -1,5 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::collections::HashSet;
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::memory::Note;
@@ -34,7 +36,7 @@ pub async fn append_to_git_notes(
         .map(|s| s.trim().to_string())?;
 
     // ── 2. Read existing note (may not exist) ─────────────────────────────────
-    let existing = run_git(git_root, &["notes", "--ref=spelunk", "show", &head])
+    let existing = run_git(git_root, &["notes", "--ref=spelunk", "show", "--", &head])
         .await
         .unwrap_or_default();
 
@@ -48,17 +50,26 @@ pub async fn append_to_git_notes(
     };
 
     // ── 4. Write back ─────────────────────────────────────────────────────────
-    run_git(
+    // The note body is passed via stdin (`-F -`) rather than as a `-m` argv
+    // value: this keeps arbitrary/attacker-influenced note content off the
+    // process argv (and therefore out of `ps`/process-list visibility) and
+    // means the body can never be misparsed as an option, regardless of its
+    // contents. `--` guards the trailing `<object>` (HEAD sha) so it can't be
+    // interpreted as an option either, even though `head` is always a
+    // `rev-parse`-verified sha here.
+    run_git_with_stdin(
         git_root,
         &[
             "notes",
             "--ref=spelunk",
             "add",
             "-f",
-            "-m",
-            &combined,
+            "-F",
+            "-",
+            "--",
             &head,
         ],
+        &combined,
     )
     .await?;
 
@@ -73,6 +84,44 @@ async fn run_git(dir: Option<&std::path::Path>, args: &[&str]) -> Result<String>
         cmd.current_dir(d);
     }
     let out = cmd.args(args).output().await?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(anyhow!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Run a git subprocess, optionally in `dir`, writing `stdin_data` to its
+/// stdin and returning stdout as a `String`. Used with `-F -` invocations so
+/// note bodies never appear on argv.
+async fn run_git_with_stdin(
+    dir: Option<&std::path::Path>,
+    args: &[&str],
+    stdin_data: &str,
+) -> Result<String> {
+    let mut cmd = Command::new("git");
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open stdin for git {}", args.join(" ")))?;
+        stdin.write_all(stdin_data.as_bytes()).await?;
+        // Drop closes stdin so git sees EOF.
+    }
+    let out = child.wait_with_output().await?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -150,6 +199,45 @@ impl GitNotesBackend {
         }
     }
 
+    /// Write a spelunk note body to `object` via `git notes add -f -F - --
+    /// <object>`, passing `body` over stdin. Keeps note content (which may
+    /// contain arbitrary user/LLM text) off argv, and the `--` separator
+    /// stops `object` from being parsed as an option.
+    async fn add_note_stdin(&self, object: &str, body: &str) -> Result<()> {
+        let mut cmd = self.git();
+        cmd.args([
+            "notes",
+            "--ref=spelunk",
+            "add",
+            "-f",
+            "-F",
+            "-",
+            "--",
+            object,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow!("failed to open stdin for git notes add"))?;
+            stdin.write_all(body.as_bytes()).await?;
+        }
+        let out = child.wait_with_output().await?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "git notes add failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+
     async fn head_sha(&self) -> Result<String> {
         Ok(self.run(&["rev-parse", "HEAD"]).await?.trim().to_string())
     }
@@ -200,7 +288,7 @@ impl GitNotesBackend {
     async fn read_record(&self, commit_sha: &str) -> Result<Option<NoteRecord>> {
         let out = self
             .git()
-            .args(["notes", "--ref=spelunk", "show", commit_sha])
+            .args(["notes", "--ref=spelunk", "show", "--", commit_sha])
             .output()
             .await?;
 

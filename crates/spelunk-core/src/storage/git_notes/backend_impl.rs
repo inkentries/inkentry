@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
@@ -30,15 +30,7 @@ impl MemoryBackend for GitNotesBackend {
         let json = serde_json::to_string(&record)?;
         let head = self.head_sha().await?;
 
-        let status = self
-            .git()
-            .args(["notes", "--ref=spelunk", "add", "-f", "-m", &json, &head])
-            .status()
-            .await?;
-
-        if !status.success() {
-            return Err(anyhow!("git notes add failed"));
-        }
+        self.add_note_stdin(&head, &json).await?;
 
         Ok(id)
     }
@@ -95,12 +87,7 @@ impl MemoryBackend for GitNotesBackend {
             {
                 record.status = "archived".to_string();
                 let json = serde_json::to_string(&record)?;
-                let status = self
-                    .git()
-                    .args(["notes", "--ref=spelunk", "add", "-f", "-m", &json, &sha])
-                    .status()
-                    .await?;
-                return Ok(status.success());
+                return Ok(self.add_note_stdin(&sha, &json).await.is_ok());
             }
         }
         Ok(false)

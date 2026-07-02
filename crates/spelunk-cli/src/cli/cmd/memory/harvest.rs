@@ -9,6 +9,32 @@ use crate::{
     storage::{NoteInput, open_memory_backend},
 };
 
+/// Reject a `--branch` / `--git-range` value that could be parsed by `git log`
+/// as an option rather than a revision (argument-injection / option-injection
+/// guard).
+///
+/// Every callsite in this file already appends a `--` separator before the
+/// pathspec position, which stops git from treating the ref as an option to
+/// `git log` itself; this check is defense-in-depth for revision walkers
+/// (like `A..B` ranges) where a leading `-` component can still be
+/// misinterpreted, and it gives a clear, immediate error instead of relying
+/// solely on the separator.
+fn reject_option_like_ref(git_ref: &str) -> Result<()> {
+    let is_option_like = |s: &str| s.starts_with('-') && s != "-";
+    let offending = git_ref
+        .split("..")
+        .find(|part| is_option_like(part))
+        .or_else(|| is_option_like(git_ref).then_some(git_ref));
+
+    if let Some(bad) = offending {
+        anyhow::bail!(
+            "Invalid --branch/--git-range value '{bad}': refs beginning with '-' are rejected \
+             to prevent them from being interpreted as git options."
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn memory_harvest(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
@@ -65,8 +91,10 @@ async fn memory_harvest_git(
         None => (args.git_range.clone(), format!("'{}'", args.git_range)),
     };
 
+    reject_option_like_ref(&git_ref)?;
+
     let git_out = std::process::Command::new("git")
-        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---"])
+        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---", "--"])
         .output()
         .context("running git log (is git installed and are we in a git repo?)")?;
 
@@ -458,8 +486,10 @@ async fn memory_harvest_failures(
         None => format!("'{git_ref}'"),
     };
 
+    reject_option_like_ref(&git_ref)?;
+
     let git_out = std::process::Command::new("git")
-        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---"])
+        .args(["log", &git_ref, "--format=%H%x00%s%x00%b%x00---", "--"])
         .output()
         .context("running git log")?;
     if !git_out.status.success() {
@@ -784,4 +814,29 @@ fn is_failure_subject(subject: &str) -> bool {
         "stack overflow",
     ];
     failure_signals.iter().any(|p| s.contains(p))
+}
+
+#[cfg(test)]
+mod option_injection_guard_tests {
+    use super::reject_option_like_ref;
+
+    #[test]
+    fn accepts_ordinary_refs_and_ranges() {
+        assert!(reject_option_like_ref("main").is_ok());
+        assert!(reject_option_like_ref("HEAD~10..HEAD").is_ok());
+        assert!(reject_option_like_ref("feature/foo..main").is_ok());
+        assert!(reject_option_like_ref("-").is_ok());
+    }
+
+    #[test]
+    fn rejects_option_like_branch() {
+        let err = reject_option_like_ref("--output=/tmp/x").unwrap_err();
+        assert!(err.to_string().contains("--output=/tmp/x"));
+    }
+
+    #[test]
+    fn rejects_option_like_range_endpoint() {
+        assert!(reject_option_like_ref("--output=/tmp/x..HEAD").is_err());
+        assert!(reject_option_like_ref("HEAD..--output=/tmp/x").is_err());
+    }
 }
