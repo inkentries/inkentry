@@ -11,6 +11,25 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **CLI local-hardening bundle** (`server stop`, state file perms, `registry
+  autoclean`, web-to-md hook path):
+  - `spelunk server stop` now verifies the recorded server is actually alive
+    and healthy (via `/v1/health`) before signaling its PID, instead of
+    signaling on a bare liveness check. Prevents killing an unrelated process
+    that has since reused the old PID after a crash.
+  - The state directory and `server.pid`/`server.port`/`server.log` files are
+    now created `0700`/`0600` (previously default/world-readable perms), and
+    writes no longer follow a pre-planted symlink at those paths.
+  - `registry autoclean` now refuses to `remove_dir_all` a project's
+    `.spelunk` directory if that path is a symlink, instead of deleting
+    through it.
+  - **Breaking:** the optional `memory add --from-url` web-to-Markdown hook
+    script must now live at `~/.config/spelunk/scripts/web-to-md.ts` — the
+    previous `~/scripts/web-to-md.ts` location is no longer read. See
+    [docs/memory.md](docs/memory.md#web-to-md-hook) for migration. This closes
+    an implicit-code-execution path where any script an attacker could plant
+    under `$HOME/scripts/` (e.g. via a prior unrelated compromise, or on a
+    shared/managed machine) would run automatically.
 - **Suppressed two `quick-xml` DoS advisories with no upstream fix
   (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
   the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during
