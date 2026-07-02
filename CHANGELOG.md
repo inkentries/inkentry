@@ -11,6 +11,25 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Hardened `spelunk-server`'s DoS surface: timeouts, body/concurrency caps, input-length
+  limits, and `/explore` rate limiting.** `router()` now attaches a `tower_http` middleware
+  stack — a 30s `TimeoutLayer` on every route except `/memory/stream` (exempt as a deliberate
+  long-lived SSE connection), a 2 MiB `RequestBodyLimitLayer` on every route, and a global
+  `ConcurrencyLimitLayer` (256 concurrent requests). Memory writes now enforce input caps at the
+  handler (title ≤ 500 chars, body ≤ 50,000 chars, embedding vector length must match the
+  server's configured dim; project-id slugs capped at 200 bytes), returning 400 on violation.
+  `/explore` is now rate-limited the same way `/llm/complete` already was, closing an unmetered
+  token-burn hole (up to `2048 * max_turns` generated tokens per call were previously free); both
+  endpoints now key their rate-limit bucket on **principal + client IP** rather than principal
+  alone, so a shared team key no longer collapses every distinct caller onto one bucket. Fixed a
+  related bug along the way: `/explore` and `/llm/complete` hand generation to a detached
+  `tokio::spawn` after constructing their streaming response, so the outer `TimeoutLayer` never
+  actually bounded a hung LLM backend on those two routes; the spawned `generate()` call is now
+  separately wrapped in its own `tokio::time::timeout`. See `docs/security/THREAT-MODEL.md`
+  ("D — Denial of Service") for the full threat breakdown, including a known limitation where
+  `ConcurrencyLimitLayer`'s permit release doesn't yet bound concurrent *streaming* sessions on
+  `/explore`/`/llm/complete`. (spelunk-oss^60)
+
 - **Suppressed two `quick-xml` DoS advisories with no upstream fix
   (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
   the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during

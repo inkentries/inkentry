@@ -49,6 +49,19 @@ The CLI threat model (`THREAT-MODEL.md`) remains valid for the CLI crate. This d
 | Body field: max 50 000 characters enforced at route handler | ☐ |
 | UUID path params validated (malformed UUID returns 400, not 500) | ☐ |
 | All SQL uses parameterised queries — no string concatenation | ☐ |
+<!-- spelunk-oss^60 (PR pending, task/engineer-oss60-20260702-1743): `add_note` now enforces
+     MAX_TITLE_LEN=500 / MAX_BODY_LEN=50_000 (handlers.rs) plus an embedding-vector-length ==
+     configured-dim check, all returning 400 on violation. `project_id` slugs (not UUIDs — project
+     ids are human slugs like `usercise/spelunk`, so this is a length/sanity cap, not UUID-format
+     validation) are capped at 200 bytes, centralized in `require_project` plus explicit calls in
+     the handlers that don't route through it (add_note/index_embed/project_search/explore/
+     llm_complete). Also added in this task, beyond this table: a `tower_http` middleware stack
+     (TimeoutLayer 30s exempting /memory/stream, RequestBodyLimitLayer 2 MiB, ConcurrencyLimitLayer
+     256) and IP-keyed rate limiting on /explore + /llm/complete — see THREAT-MODEL.md's
+     "D — Denial of Service" table for the full breakdown, including the ConcurrencyLimitLayer
+     known-limitation note on streaming routes. First two rows above ready for ✅ + initials/date
+     sign-off by whoever closes oss^66; UUID-path-param row and SQL-parameterisation row are
+     unrelated to this task and remain open. -->
 
 ## 5. SSE stream
 
