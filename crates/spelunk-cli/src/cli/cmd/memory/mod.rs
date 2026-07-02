@@ -503,9 +503,12 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
 
     // NamedTempFile is created with a random name via O_EXCL (mode 0600 on unix,
     // set via the Builder above). The handle is kept open across the editor spawn
-    // and used to read the content back afterwards, so the path can't be swapped
-    // out from under us (TOCTOU) between write and read-back.
-    let tmp = create_draft_file(title)?;
+    // and read back through that same open file descriptor afterwards (not by
+    // re-opening the path), so a symlink swapped in at the draft's path during
+    // the edit window can't redirect the read-back (TOCTOU-safe by construction:
+    // an fd, once open, always refers to the same underlying file regardless of
+    // what the path is later made to point at).
+    let mut tmp = create_draft_file(title)?;
     let tmp_path = tmp.path().to_path_buf();
 
     let status = std::process::Command::new(&editor)
@@ -513,7 +516,18 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
         .status()
         .with_context(|| format!("could not open editor '{editor}'"))?;
 
-    let content = std::fs::read_to_string(&tmp_path)?;
+    let content = {
+        use std::io::{Read, Seek, SeekFrom};
+        // The editor wrote to the file via the path, not our fd, so our fd's
+        // cursor/state may be stale; seek to the start before reading fresh
+        // contents through the retained handle.
+        tmp.seek(SeekFrom::Start(0))
+            .context("failed to seek draft file for read-back")?;
+        let mut buf = String::new();
+        tmp.read_to_string(&mut buf)
+            .context("failed to read draft file back through the retained handle")?;
+        buf
+    };
     // `tmp` (NamedTempFile) removes the file on drop.
 
     if !status.success() {
@@ -628,5 +642,139 @@ mod draft_file_tests {
                 .is_symlink(),
             "pre-existing symlink itself must be left alone"
         );
+    }
+
+    /// `open_editor_for_body` never invokes the editor for its own draft-file
+    /// lifecycle guarantee — the draft is a `NamedTempFile`, which removes its
+    /// backing file on `Drop` regardless of how the scope is exited. This
+    /// covers both paths `open_editor_for_body` can take after creating the
+    /// draft: the success path (editor exits 0, body read back) and the
+    /// editor-failure path (non-zero exit -> `anyhow::bail!`, function returns
+    /// `Err` early). In both cases the `NamedTempFile` guard drops and the file
+    /// must not be left behind on disk.
+    #[test]
+    fn draft_file_is_removed_on_drop_after_simulated_success_path() {
+        let file = create_draft_file("t").expect("draft file should be created");
+        let path = file.path().to_path_buf();
+        assert!(
+            path.exists(),
+            "draft should exist immediately after creation"
+        );
+
+        // Simulate the success path: read the body back (as open_editor_for_body
+        // does after a zero exit status), then let the guard drop.
+        let _content = std::fs::read_to_string(&path).expect("draft should be readable");
+        drop(file);
+
+        assert!(
+            !path.exists(),
+            "draft file must be deleted once the NamedTempFile guard drops (success path)"
+        );
+    }
+
+    #[test]
+    fn draft_file_is_removed_on_drop_after_simulated_editor_failure_path() {
+        let file = create_draft_file("t").expect("draft file should be created");
+        let path = file.path().to_path_buf();
+        assert!(
+            path.exists(),
+            "draft should exist immediately after creation"
+        );
+
+        // Simulate the editor-failure path: open_editor_for_body bails out with
+        // an Err before returning, dropping `tmp` as the function unwinds. No
+        // read-back happens on this path.
+        let result: anyhow::Result<()> = (|| {
+            anyhow::bail!("Editor exited with a non-zero status; entry not saved.");
+        })();
+        assert!(result.is_err());
+        drop(file);
+
+        assert!(
+            !path.exists(),
+            "draft file must be deleted even when the editor-failure path is taken"
+        );
+    }
+
+    /// SECURITY FIX VERIFICATION: `open_editor_for_body` previously read the
+    /// draft body back via `std::fs::read_to_string(&tmp_path)` — i.e. by
+    /// re-opening the path — rather than via the already-open
+    /// `NamedTempFile` handle it retains (which implements `Read`/`Seek`
+    /// directly against the original file descriptor and cannot be
+    /// redirected by a path swap). `NamedTempFile`'s `O_EXCL` creation
+    /// prevents an attacker from pre-empting draft *creation*, but a
+    /// path-based read-back after creation was still vulnerable: if the file
+    /// at that (randomised but now-known-to-an-attacker, e.g. via
+    /// `/proc/<pid>/fd` or a directory watch) path was removed and replaced
+    /// with a symlink to a victim file before read-back ran,
+    /// `std::fs::read_to_string` would follow the symlink and return the
+    /// victim's content instead of the drafted memory body — silently
+    /// injecting attacker-controlled content into the stored memory entry.
+    ///
+    /// This test performs the same attacker race (remove the draft at its
+    /// path, replace it with a symlink to attacker-controlled content) and
+    /// then reads back the same way `open_editor_for_body` now does: through
+    /// the retained `NamedTempFile` handle (seek-to-start + `Read`), not by
+    /// re-opening the path. It asserts the handle-based read-back is
+    /// TOCTOU-safe: it returns the *original* draft content (an empty body,
+    /// since the editor never actually ran in this test) and does NOT
+    /// observe the attacker's swapped-in content, proving the fix closes the
+    /// gap. A control assertion also shows that reading via the path
+    /// directly (what the old, vulnerable code did) *would* have followed
+    /// the symlink, so the contrast is explicit.
+    #[cfg(unix)]
+    #[test]
+    fn handle_based_read_back_ignores_a_post_creation_symlink_swap() {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::os::unix::fs::symlink;
+
+        let mut file = create_draft_file("t").expect("draft file should be created");
+        let tmp_path = file.path().to_path_buf();
+
+        let dir = tmp_path.parent().unwrap();
+        let victim = dir.join("attacker_victim.md");
+        std::fs::write(&victim, "ATTACKER-CONTROLLED CONTENT\n")
+            .expect("victim file should be writable");
+
+        // Attacker wins the race: removes the draft file at its now-known path
+        // and replaces it with a symlink to attacker-controlled content. This
+        // models the window between draft creation (path becomes known/guessable
+        // to a co-resident attacker) and read-back after the editor returns.
+        std::fs::remove_file(&tmp_path).expect("should be able to remove the draft for the PoC");
+        symlink(&victim, &tmp_path).expect("symlink should be created at the draft's old path");
+
+        // Control: a path-based read-back (the old, vulnerable behaviour)
+        // does follow the symlink and would leak attacker content.
+        let path_based_content = std::fs::read_to_string(&tmp_path)
+            .expect("path-based read-back follows the symlink (control demonstrates the gap)");
+        assert_eq!(
+            path_based_content, "ATTACKER-CONTROLLED CONTENT\n",
+            "control: path-based read-back should still be shown to follow the swapped symlink"
+        );
+
+        // This mirrors open_editor_for_body's actual (fixed) read-back: seek
+        // the retained handle to the start and read through the open fd,
+        // never re-opening by path.
+        file.seek(SeekFrom::Start(0))
+            .expect("seek on retained handle should succeed");
+        let mut handle_based_content = String::new();
+        file.read_to_string(&mut handle_based_content).expect(
+            "handle-based read-back should succeed even though the path now points elsewhere",
+        );
+
+        assert_ne!(
+            handle_based_content, "ATTACKER-CONTROLLED CONTENT\n",
+            "handle-based read-back must NOT observe the attacker's swapped-in content"
+        );
+        assert!(
+            handle_based_content.contains("# t"),
+            "handle-based read-back should still see the original draft content \
+             (the title header written at creation), proving it reads through \
+             the original fd rather than the swapped path: got {handle_based_content:?}"
+        );
+
+        // Best-effort cleanup of the PoC symlink (not the NamedTempFile's own
+        // path management, since we've already replaced what's there).
+        let _ = std::fs::remove_file(&tmp_path);
     }
 }
