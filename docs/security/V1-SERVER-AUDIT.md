@@ -25,6 +25,10 @@ The CLI threat model (`THREAT-MODEL.md`) remains valid for the CLI crate. This d
 |---|---|
 | API key stored as BLAKE3 hash — plaintext never persisted | ☐ |
 | Key comparison uses constant-time equality (not `==` on strings) | ☐ |
+<!-- spelunk-oss^58 (PR #502, draft): ApiKeyAuth now hashes the configured key with BLAKE3 at
+     construction and compares per-request tokens via constant_time_eq_32 on the two 32-byte
+     digests — the two rows above are implemented in crates/spelunk-server/src/auth.rs. Sign-off
+     (✅ + initials/date) still owned by whoever closes oss^66. -->
 | `sk-sp-` prefix format validated before any DB lookup | ☐ |
 | Revoked/deleted keys rejected immediately (no cache window) | ☐ |
 | Key scope enforced: project-scoped key cannot write to other projects | ☐ |
