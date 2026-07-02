@@ -295,9 +295,17 @@ these commands to query only the primary project's memory. See
 `docs/memory.md#cross-project-visibility`.
 
 ### Secret scanning
-`crates/spelunk-core/src/indexer/secrets.rs` runs before each chunk is stored. Chunks matching
-known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are
-silently dropped and a warning is logged — content is never echoed.
+`crates/spelunk-core/src/indexer/secrets.rs` runs before each chunk is stored, scanning the full
+text that will be persisted and embedded (docstring + content; LLM summaries are scanned
+separately when generated, since they don't exist yet at store time). Chunks matching known
+credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped — including
+their docstring, so nothing lands in stored metadata either — and a warning naming only the
+symbol is logged; a secret-bearing summary is replaced with an empty string instead of being
+stored. **This is best-effort defense-in-depth, not a security boundary**: a finite regex list
+cannot catch every credential format. The real boundary is that code never leaves the local
+machine unless a team `server_url` is explicitly configured (see above); the scanner only reduces
+the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted)
+by accident.
 
 ### Prompt structure
 The ask prompt uses XML-style delimiters to separate untrusted RAG context
