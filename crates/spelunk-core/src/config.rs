@@ -871,6 +871,34 @@ pub fn is_loopback_url(url: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
 }
 
+/// Validate that `url` is an acceptable transport for sending a bearer token /
+/// talking to a spelunk-server: either `https://` (any host), or `http://` to a
+/// loopback host (`127.0.0.1`, `::1`, `localhost`).
+///
+/// A non-loopback `http://` URL is invalid config — plaintext HTTP outside the
+/// loopback interface would send the bearer token (and query content) in the
+/// clear. There is no opt-out env var (Johan, 2026-07-02 — see spelunk-oss^63):
+/// the fix is always "use https, or loopback".
+///
+/// Returns `Ok(())` for a valid URL, or a one-line `Err` naming the fix.
+pub fn validate_transport_url(url: &str) -> Result<(), String> {
+    if url.starts_with("https://") {
+        return Ok(());
+    }
+    if url.starts_with("http://") {
+        if is_loopback_url(url) {
+            return Ok(());
+        }
+        return Err(format!(
+            "invalid server URL {url:?}: plaintext http:// is only allowed to a loopback \
+             address (127.0.0.1/::1/localhost); use https:// for any other host"
+        ));
+    }
+    Err(format!(
+        "invalid server URL {url:?}: expected an http:// or https:// URL"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1233,6 +1261,44 @@ project_id = "my-proj"
     fn is_loopback_url_rejects_address_with_127_in_path() {
         // Should NOT match just because "127" appears somewhere
         assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
+    }
+
+    // ── validate_transport_url (spelunk-oss^63: loopback-only plaintext http) ──
+
+    #[test]
+    fn validate_transport_url_rejects_non_loopback_http() {
+        let err = validate_transport_url("http://team-server:7777")
+            .expect_err("non-loopback http:// must be rejected");
+        assert!(err.contains("http://team-server:7777"));
+        assert!(err.contains("https"));
+        assert!(err.contains("loopback"));
+    }
+
+    #[test]
+    fn validate_transport_url_rejects_non_loopback_ip_http() {
+        assert!(validate_transport_url("http://192.168.1.100:7777").is_err());
+        assert!(validate_transport_url("http://10.0.0.1:7777").is_err());
+    }
+
+    #[test]
+    fn validate_transport_url_accepts_loopback_http() {
+        assert!(validate_transport_url("http://127.0.0.1:7777").is_ok());
+        assert!(validate_transport_url("http://localhost:7777").is_ok());
+        assert!(validate_transport_url("http://[::1]:7777").is_ok());
+        assert!(validate_transport_url("http://127.5.6.7:7777").is_ok());
+    }
+
+    #[test]
+    fn validate_transport_url_accepts_any_https() {
+        assert!(validate_transport_url("https://team-server:7777").is_ok());
+        assert!(validate_transport_url("https://example.com").is_ok());
+        assert!(validate_transport_url("https://127.0.0.1:7777").is_ok());
+    }
+
+    #[test]
+    fn validate_transport_url_rejects_unknown_scheme() {
+        let err = validate_transport_url("ftp://team-server:7777").unwrap_err();
+        assert!(err.contains("http"));
     }
 
     // ── looks_like_uuid (ADR-005) ────────────────────────────────────────────
