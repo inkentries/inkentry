@@ -147,6 +147,7 @@ fn collect_files(root: &std::path::Path) -> Result<Vec<ignore::DirEntry>> {
     walk.standard_filters(true);
     walk.add_custom_ignore_filename(".spelunkignore");
     let mut ob = ignore::overrides::OverrideBuilder::new(root);
+    ob.case_insensitive(true).ok();
     for pat in &sensitive_patterns {
         ob.add(pat).ok();
     }
@@ -349,7 +350,13 @@ fn store_chunks(
     acc: &mut ParseAcc,
 ) -> Result<()> {
     for chunk in chunks {
-        if crate::indexer::secrets::contains_secret(&chunk.content) {
+        // Scan the full text that will be persisted/embedded (docstring + content;
+        // `chunk.summary` is always `None` at this point, so `embedding_text()`
+        // here is exactly docstring+content). Dropping the chunk here — before the
+        // metadata JSON is built — ensures a secret in the docstring never lands
+        // in stored metadata either. See secrets.rs module doc: this is
+        // best-effort defense-in-depth, not a security boundary.
+        if crate::indexer::secrets::contains_secret(&chunk.embedding_text()) {
             tracing::warn!(
                 "skipping chunk '{}' in {path_str} (possible secret detected)",
                 chunk.name.as_deref().unwrap_or("<anonymous>"),

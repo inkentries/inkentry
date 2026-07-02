@@ -56,10 +56,13 @@ in-scope — see [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md
 
 ## Security Controls
 
-- Secret scanning runs before any chunk is stored in the index
-  (`src/indexer/secrets.rs`)
+- Secret scanning runs before any chunk (docstring + content) is stored in the
+  index, and again on LLM-generated summaries when they're produced
+  (`src/indexer/secrets.rs`). This is best-effort defense-in-depth, not a
+  security boundary — the boundary is that code never leaves the local
+  machine unless a team `server_url` is explicitly configured
 - `.env*`, `*.pem`, `*.key`, and similar sensitive file patterns are excluded
-  from indexing unconditionally
+  from indexing unconditionally, matched case-insensitively
 - All database writes use parameterised queries — no SQL string concatenation
 - LLM prompts use XML delimiter isolation with angle-bracket escaping of all
   retrieved context

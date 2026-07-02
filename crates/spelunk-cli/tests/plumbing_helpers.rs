@@ -159,6 +159,19 @@ impl wiremock::Respond for IndexEmbedResponder {
 /// Returns `(TempDir, db_path, config_path)`.  The `TempDir` must be kept
 /// alive for the duration of the test.
 pub fn index_fixture_project() -> (TempDir, PathBuf, PathBuf) {
+    // Resolve the fixture directory relative to the workspace root.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_DIR);
+    index_project_dir(&fixture)
+}
+
+/// Like [`index_fixture_project`], but indexes an arbitrary project directory
+/// instead of the shared `tests/fixtures/simple-project` fixture. Useful for
+/// tests that need full control over the exact source files being indexed
+/// (e.g. secret-scanner regression tests).
+///
+/// Returns `(TempDir, db_path, config_path)`.  The `TempDir` must be kept
+/// alive for the duration of the test.
+pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
     let db_path = tmp.path().join("spelunk.db");
 
@@ -205,18 +218,15 @@ pub fn index_fixture_project() -> (TempDir, PathBuf, PathBuf) {
     let mock_url = _mock_server.uri();
     let config_path = write_config_with_server(tmp.path(), &db_path, &mock_url, &mock_url);
 
-    // Resolve the fixture directory relative to the workspace root.
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_DIR);
-
     // Pass `--db` explicitly so the index is written to our temp DB path,
-    // not to `<fixture>/.spelunk/index.db` (the default project-local location).
+    // not to `<project_dir>/.spelunk/index.db` (the default project-local location).
     spelunk_bin_in(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg("--db")
         .arg(&db_path)
-        .arg(&fixture)
+        .arg(project_dir)
         .assert()
         .success();
 

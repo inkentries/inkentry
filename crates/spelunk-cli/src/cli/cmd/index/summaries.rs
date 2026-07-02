@@ -60,7 +60,20 @@ pub(super) async fn generate_summaries(
             Ok(summaries) => {
                 let mut summarised_ids = std::collections::HashSet::new();
                 for (chunk_id, summary) in summaries {
-                    if let Err(e) = db.update_chunk_summary(chunk_id, &summary) {
+                    // A secret can appear in an LLM-generated summary even when the
+                    // underlying chunk was clean (the model may echo surrounding
+                    // context). Scan before storing, since the summary is prepended
+                    // into `embedding_text()` and thus gets embedded. Best-effort
+                    // defense-in-depth, not a security boundary — see secrets.rs.
+                    let summary_to_store = if crate::indexer::secrets::contains_secret(&summary) {
+                        tracing::warn!(
+                            "dropping summary for chunk {chunk_id} (possible secret detected)"
+                        );
+                        ""
+                    } else {
+                        summary.as_str()
+                    };
+                    if let Err(e) = db.update_chunk_summary(chunk_id, summary_to_store) {
                         tracing::warn!("failed to store summary for chunk {chunk_id}: {e}");
                     } else {
                         summarised_ids.insert(chunk_id);

@@ -6,6 +6,16 @@
 //! Patterns are deliberately conservative (high precision, some false
 //! negatives) to avoid blocking legitimate code that discusses secrets
 //! conceptually (e.g., documentation, tests with placeholder values).
+//!
+//! **This scanner is best-effort defense-in-depth, not a security boundary.**
+//! A finite set of regexes cannot catch every possible credential format, and
+//! it is not the mechanism that keeps code private. The actual boundary is
+//! that code never leaves the local machine unless a team `server_url` is
+//! explicitly configured (see `docs/adr/004-unified-memory-storage.md`); this
+//! scanner only reduces the chance of a credential being embedded/stored (and,
+//! on that explicit-server path, transmitted) by accident. Treat a clean scan
+//! as "nothing matched a known pattern", never as a guarantee that no secret
+//! is present.
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -46,6 +56,16 @@ fn patterns() -> &'static Vec<Regex> {
             r"npm_[A-Za-z0-9]{36,}",
             // Database URLs with embedded passwords (postgres, mysql, mongodb)
             r"(?i)(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^:@\s]+:[^@\s]{8,}@",
+            // GCP API keys
+            r"AIza[0-9A-Za-z\-_]{35}",
+            // SendGrid API keys
+            r"SG\.[\w\-]{22}\.[\w\-]{43}",
+            // Twilio API key SIDs
+            r"SK[0-9a-fA-F]{32}",
+            // npm auth token assignments (.npmrc style: //registry/:_authToken=...)
+            r#"(?i)_authToken\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{20,}["']?"#,
+            // Azure Storage / Service Bus connection strings
+            r"(?i)(?:DefaultEndpointsProtocol|Endpoint)=[^;\s]+;\s*(?:AccountName|SharedAccessKeyName)=[^;\s]+;\s*(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{20,}={0,2}",
         ];
         raw.iter()
             .map(|p| Regex::new(p).expect("invalid secret pattern"))
@@ -150,5 +170,58 @@ mod tests {
     fn db_url_without_password_not_flagged() {
         // No password segment (no colon before @)
         assert!(!contains_secret("postgresql://localhost/mydb"));
+    }
+
+    #[test]
+    fn detects_gcp_api_key() {
+        assert!(contains_secret(
+            "key = \"AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ012345678\""
+        ));
+    }
+
+    #[test]
+    fn detects_sendgrid_key() {
+        let key = format!(
+            "SG.{}.{}",
+            "ABCDEFGHIJKLMNOPQRSTUV", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+        );
+        assert!(contains_secret(&format!("sendgrid_key = \"{key}\"")));
+    }
+
+    #[test]
+    fn detects_twilio_key_sid() {
+        // Concatenate to avoid triggering push-protection on an obviously fake key.
+        let key = format!("SK{}", "0123456789abcdef0123456789abcdef");
+        assert!(contains_secret(&format!("twilio_key = {key}")));
+    }
+
+    #[test]
+    fn detects_npm_auth_token() {
+        assert!(contains_secret(
+            "//registry.npmjs.org/:_authToken=abcdefgh-1234-5678-90ab-cdefghijklmn"
+        ));
+    }
+
+    #[test]
+    fn detects_azure_storage_connection_string() {
+        assert!(contains_secret(
+            "DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=abcdEFGH1234567890abcdEFGH1234567890abcdEFGH1234567890AB==;EndpointSuffix=core.windows.net"
+        ));
+    }
+
+    #[test]
+    fn git_sha_not_flagged() {
+        // A bare 40-char hex git SHA with no assignment context must not trip
+        // any pattern (we deliberately did not add a blanket hex-40 rule).
+        assert!(!contains_secret(
+            "commit 8f14e45fceea167a5a36dedd4bea2543dc1c8b40 fixed the bug"
+        ));
+    }
+
+    #[test]
+    fn blake3_hash_not_flagged() {
+        assert!(!contains_secret(
+            "hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a1"
+        ));
     }
 }
