@@ -24,7 +24,7 @@ spelunk has two distinct operational modes with different attack surfaces:
 ### Mode B — spelunk-server
 An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
 - Binds to a configurable port; intended for shared team use
-- Optional bearer token authentication (`--api-key`; **unauthenticated by default**)
+- Bearer token authentication (`--key` / `SPELUNK_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind without a key is refused at startup (see "Key difference" below)
 - Accepts pre-computed embedding vectors from clients (clients embed locally, server stores and searches)
 - Serves multiple projects via project_id routing
 - Exposes: `POST /v1/projects/{id}/memory`, `POST /v1/projects/{id}/memory/search`, DELETE, archive, supersede
@@ -115,8 +115,12 @@ Client (spelunk CLI / any HTTP client)
 ```
 
 **Key difference from Mode A:** In server mode, memory content is accessible to anyone
-who can reach the server's port. If the server is run without `--api-key` and is
-reachable beyond localhost (e.g. on a LAN or cloud VM), all memory is unauthenticated.
+who can reach the server's port. To prevent an open, unauthenticated server on a
+shared network, `spelunk-server` **refuses to start** when `--host` is a non-loopback
+address (`0.0.0.0`, a LAN/public IP) and no `--key` / `SPELUNK_SERVER_KEY` is set. A
+keyless server can therefore only bind loopback (`127.0.0.1`), where it is reachable
+by local processes but not by other machines. (A blank/whitespace key — e.g.
+docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 
 ---
 
@@ -153,7 +157,7 @@ reachable beyond localhost (e.g. on a LAN or cloud VM), all memory is unauthenti
 | **Source code sent to third-party embedding service** | A | **High** | **High** | **No mitigation in spelunk itself.** If `api_base_url` points to a cloud service, every indexed chunk (post-secret-scan) is transmitted. Users must be informed via docs. |
 | **Memory notes sent to third-party LLM** | A | **Medium** | **High** | **No mitigation in spelunk itself.** `spelunk ask` and `memory harvest` send memory content + code context to the configured LLM endpoint. |
 | Server memory accessible without auth | B | Medium | High | No `--api-key` by default; any process that can reach the port reads all notes |
-| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | Bind address is configurable; default and documentation should recommend `127.0.0.1` unless team use is intended |
+| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires a key — `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses without `--key` / `SPELUNK_SERVER_KEY`; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `SPELUNK_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
 | **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-notespelunk) section. Track: issue to add secret-scan gate on write-through path. |
