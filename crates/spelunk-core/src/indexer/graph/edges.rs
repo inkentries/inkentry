@@ -245,6 +245,159 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
     out
 }
 
+pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        // require/require_once/include "file.php" — the path is a `string` child
+        // whose text sits inside a `string_content` node.
+        "require_expression" | "include_expression" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "string"
+                    && let Ok(text) = child.utf8_text(src)
+                {
+                    let path = text.trim_matches('"').trim_matches('\'').to_owned();
+                    if !path.is_empty() {
+                        out.push((path, EdgeKind::Imports));
+                    }
+                    break;
+                }
+            }
+        }
+        // use App\Models\User; — namespace import.
+        "namespace_use_declaration" => {
+            if let Ok(text) = node.utf8_text(src) {
+                let path = text
+                    .trim_start_matches("use ")
+                    .trim_end_matches(';')
+                    .trim()
+                    .to_owned();
+                if !path.is_empty() {
+                    out.push((path, EdgeKind::Imports));
+                }
+            }
+        }
+        // foo() — the callee is in the `function` field.
+        "function_call_expression" => {
+            if let Some(func) = node.child_by_field_name("function")
+                && func.kind() == "name"
+                && let Ok(name) = func.utf8_text(src)
+                && !is_php_builtin(name)
+            {
+                out.push((name.to_owned(), EdgeKind::Calls));
+            }
+        }
+        // $obj->method() / self::method() — the method name is in the `name` field.
+        "member_call_expression" | "scoped_call_expression" => {
+            if let Some(name_node) = node.child_by_field_name("name")
+                && let Ok(name) = name_node.utf8_text(src)
+                && !is_php_builtin(name)
+            {
+                out.push((name.to_owned(), EdgeKind::Calls));
+            }
+        }
+        // class C extends Base implements I, J { … }
+        "class_declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i as u32) {
+                    match child.kind() {
+                        "base_clause" => {
+                            for j in 0..child.child_count() {
+                                if let Some(base) = child.child(j as u32)
+                                    && base.kind() == "name"
+                                    && let Ok(text) = base.utf8_text(src)
+                                {
+                                    out.push((text.to_owned(), EdgeKind::Extends));
+                                }
+                            }
+                        }
+                        "class_interface_clause" => {
+                            for j in 0..child.child_count() {
+                                if let Some(iface) = child.child(j as u32)
+                                    && iface.kind() == "name"
+                                    && let Ok(text) = iface.utf8_text(src)
+                                {
+                                    out.push((text.to_owned(), EdgeKind::Implements));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        // Ruby has no dedicated import/mixin syntax — require, require_relative,
+        // include, extend, and ordinary calls are all `call` nodes whose callee
+        // is the `method` field.  Classify by the method name.
+        "call" => {
+            if let Some(method) = node.child_by_field_name("method")
+                && method.kind() == "identifier"
+                && let Ok(name) = method.utf8_text(src)
+            {
+                match name {
+                    "require" | "require_relative" | "load" | "autoload" => {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i as u32)
+                                    && arg.kind() == "string"
+                                    && let Ok(text) = arg.utf8_text(src)
+                                {
+                                    let path = text.trim_matches('"').trim_matches('\'').to_owned();
+                                    if !path.is_empty() {
+                                        out.push((path, EdgeKind::Imports));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // include Mod / extend Mod / prepend Mod — mixin, modelled as Implements.
+                    "include" | "extend" | "prepend" => {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            for i in 0..args.child_count() {
+                                if let Some(arg) = args.child(i as u32)
+                                    && arg.kind() == "constant"
+                                    && let Ok(text) = arg.utf8_text(src)
+                                {
+                                    out.push((text.to_owned(), EdgeKind::Implements));
+                                }
+                            }
+                        }
+                    }
+                    other if !is_ruby_builtin(other) => {
+                        out.push((other.to_owned(), EdgeKind::Calls));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // class Service < Base — single inheritance via the `superclass` field.
+        "class" => {
+            if let Some(superclass) = node.child_by_field_name("superclass") {
+                // `superclass` node wraps `< Base`; the constant is its named child.
+                for i in 0..superclass.child_count() {
+                    if let Some(child) = superclass.child(i as u32)
+                        && child.kind() == "constant"
+                        && let Ok(text) = child.utf8_text(src)
+                    {
+                        out.push((text.to_owned(), EdgeKind::Extends));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
     let mut out = Vec::new();
     match node.kind() {
