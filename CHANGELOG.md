@@ -11,6 +11,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Breaking: non-loopback `http://` URLs are now rejected as invalid config.**
+  `server_url` and any configured inference URL must be `https://` unless they
+  point at loopback (`127.0.0.1`, `::1`, `localhost`) — the CLI attaches your
+  `Authorization: Bearer` token to these requests, so a plaintext non-loopback
+  URL previously sent it in the clear. There is no opt-out. **If your
+  `.spelunk/config.toml` has `server_url = "http://<host>:<port>"` pointing at
+  anything other than loopback, spelunk will now refuse to start** with a
+  one-line error telling you to switch to `https://` (put a TLS-terminating
+  reverse proxy in front — see [Self-hosting](docs/self-hosting.md)) or move
+  the server to loopback. Loopback `http://` and all `https://` URLs are
+  unaffected.
+- **The CLI no longer sends the bearer token to `/v1/health`.** That endpoint
+  is unauthenticated on the server side (see below), so the probe no longer
+  attaches `Authorization` to it — matching the server, which never required
+  it. Authenticated endpoints (search, memory, inference) are unaffected.
 - **Suppressed two `quick-xml` DoS advisories with no upstream fix
   (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
   the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during
