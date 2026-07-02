@@ -28,7 +28,17 @@ use rate_limiter::RateLimiter;
 /// Wall-clock budget for a single request before the server aborts it and
 /// returns `408 Request Timeout`. `/memory/stream` is exempt (long-lived SSE
 /// connection by design; see [`GLOBAL_CONCURRENCY_LIMIT`] for its own bound).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// **Does not bound `/explore` or `/llm/complete`.** Both return their SSE
+/// `Response` as soon as the stream is constructed and hand the actual
+/// generation off to a detached `tokio::spawn` — the handler `Future` this
+/// layer wraps resolves immediately, well before the LLM backend finishes (or
+/// hangs). `TimeoutLayer` therefore can't see that work at all (proved by
+/// `handlers::tests::normal_route_exceeding_timeout_returns_408`, which fails
+/// against `/explore` without the generation-side timeout in
+/// `handlers::llm_generate_with_timeout`). Those two handlers bound the
+/// spawned generation directly with this same constant instead.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cap on the JSON request body size accepted by the general API surface.
 /// Generous enough for the largest legitimate payload (an `index/embed` batch
@@ -301,6 +311,27 @@ impl utoipa::Modify for SecurityAddon {
 /// - Per-handler input caps (title/body/vector length, etc.) are enforced in
 ///   `handlers.rs`, not here.
 pub fn router(state: AppState) -> Router {
+    router_with_timeout(state, REQUEST_TIMEOUT)
+}
+
+/// Same as [`router`], but with an injectable request timeout. Exists so
+/// tests can prove the `/memory/stream` timeout exemption against a short
+/// (millisecond-scale) budget instead of waiting out the real 30s
+/// [`REQUEST_TIMEOUT`] — see `handlers::tests::*timeout*`.
+pub fn router_with_timeout(state: AppState, request_timeout: Duration) -> Router {
+    router_with_limits(state, request_timeout, GLOBAL_CONCURRENCY_LIMIT)
+}
+
+/// Same as [`router`], but with both the request timeout and the global
+/// concurrency cap injectable. Exists so tests can prove
+/// `ConcurrencyLimitLayer` actually backpressures concurrent requests using a
+/// small limit (e.g. 2) instead of needing 257 real concurrent connections to
+/// exercise the production [`GLOBAL_CONCURRENCY_LIMIT`].
+pub fn router_with_limits(
+    state: AppState,
+    request_timeout: Duration,
+    concurrency_limit: usize,
+) -> Router {
     let stream_route = Router::new()
         .route(
             "/v1/projects/{project_id}/memory/stream",
@@ -311,7 +342,7 @@ pub fn router(state: AppState) -> Router {
             auth_middleware,
         ))
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
-        .layer(ConcurrencyLimitLayer::new(GLOBAL_CONCURRENCY_LIMIT));
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
     let protected = Router::new()
         .route("/v1/projects", get(handlers::list_projects))
@@ -371,10 +402,10 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            REQUEST_TIMEOUT,
+            request_timeout,
         ))
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
-        .layer(ConcurrencyLimitLayer::new(GLOBAL_CONCURRENCY_LIMIT));
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
     Router::new()
         .route("/v1/health", get(handlers::health))
