@@ -80,7 +80,7 @@ Full threat model: `docs/security/THREAT-MODEL.md`.
 | Control                                          | Where                      |
 | ------------------------------------------------ | -------------------------- |
 | `.env*`, `*.pem`, `*.key` excluded from indexing | `src/cli/cmd/index/mod.rs` |
-| RUSTSEC advisory monitoring                      | `audit.toml`               |
+| RUSTSEC advisory monitoring                      | `.cargo/audit.toml`, `deny.toml` |
 
 ---
 

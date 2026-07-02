@@ -78,6 +78,14 @@ ignore = [
     # No patched version available and the crate is only used in proc-macro context
     # (compile-time only, no runtime risk).
     { id = "RUSTSEC-2024-0436", reason = "compile-time only transitive dep via candle/tokenizers; no runtime risk, no fix available" },
+    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml DoS (quadratic run time on duplicate
+    # attribute names; unbounded namespace-declaration allocation in NsReader). Fixed in
+    # quick-xml >= 0.41.0, but pulled transitively via calamine 0.35.0 (^0.39, XLSX/ODS) and
+    # docx-rs 0.4.20 (^0.36, DOCX) — both latest, neither on quick-xml 0.41 yet. No patched
+    # version to upgrade to. Risk is a local DoS while indexing a crafted office document
+    # (no memory unsafety, no data exposure). Drop once calamine + docx-rs bump quick-xml.
+    { id = "RUSTSEC-2026-0194", reason = "no fix available; calamine 0.35.0 + docx-rs 0.4.20 (both latest) pin quick-xml <0.41; local-DoS-only via crafted document" },
+    { id = "RUSTSEC-2026-0195", reason = "no fix available; calamine 0.35.0 + docx-rs 0.4.20 (both latest) pin quick-xml <0.41; local-DoS-only via crafted document" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
