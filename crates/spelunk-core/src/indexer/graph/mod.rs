@@ -152,11 +152,43 @@ fn enclosing_scope(node: &tree_sitter::Node<'_>, src: &[u8], language: &str) -> 
         ("ruby", "singleton_method") => "name",
         ("ruby", "class") => "name",
         ("ruby", "module") => "name",
+        // C# exposes a direct `name` field on each declaration.
+        ("csharp", "class_declaration") => "name",
+        ("csharp", "struct_declaration") => "name",
+        ("csharp", "interface_declaration") => "name",
+        ("csharp", "record_declaration") => "name",
+        ("csharp", "method_declaration") => "name",
+        ("csharp", "constructor_declaration") => "name",
+        // Swift exposes a `name` field on class/struct/enum/extension
+        // (`class_declaration`), protocols, and functions.
+        ("swift", "class_declaration") => "name",
+        ("swift", "protocol_declaration") => "name",
+        ("swift", "function_declaration") => "name",
+        // Kotlin has no `name` field — its scopes are resolved below.
+        ("kotlin", "class_declaration" | "object_declaration") => {
+            return kotlin_scope_name(node, src, "type_identifier");
+        }
+        ("kotlin", "function_declaration") => {
+            return kotlin_scope_name(node, src, "simple_identifier");
+        }
         _ => return None,
     };
     node.child_by_field_name(field)
         .and_then(|n| n.utf8_text(src).ok())
         .map(str::to_owned)
+}
+
+/// Resolve a Kotlin scope name from an unnamed child of the given kind
+/// (`type_identifier` for classes/objects, `simple_identifier` for functions).
+fn kotlin_scope_name(node: &tree_sitter::Node<'_>, src: &[u8], child_kind: &str) -> Option<String> {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32)
+            && child.kind() == child_kind
+        {
+            return child.utf8_text(src).ok().map(str::to_owned);
+        }
+    }
+    None
 }
 
 /// Emit edges (if any) produced by `node`, deduplicating via `seen`.
@@ -180,6 +212,9 @@ fn collect(
         "c" | "cpp" => edges::c_edges(node, src),
         "php" => edges::php_edges(node, src),
         "ruby" => edges::ruby_edges(node, src),
+        "csharp" => edges::csharp_edges(node, src),
+        "kotlin" => edges::kotlin_edges(node, src),
+        "swift" => edges::swift_edges(node, src),
         "html" => edges::html_edges(node, src),
         "css" => edges::css_edges(node, src),
         _ => vec![],
