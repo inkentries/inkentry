@@ -880,6 +880,13 @@ pub fn is_loopback_url(url: &str) -> bool {
 /// clear. There is no opt-out env var (Johan, 2026-07-02 — see spelunk-oss^63):
 /// the fix is always "use https, or loopback".
 ///
+/// Like [`is_loopback_url`], this is a lightweight string check on the literal
+/// host — there is no DNS resolution. A `/etc/hosts` alias or other custom DNS
+/// entry that resolves to a loopback address but isn't spelled `127.x.x.x`,
+/// `::1`, or `localhost` is **not** recognised as loopback and is rejected;
+/// this is intentional (fail closed, not open) and the known limitation of a
+/// string-based check.
+///
 /// Returns `Ok(())` for a valid URL, or a one-line `Err` naming the fix.
 pub fn validate_transport_url(url: &str) -> Result<(), String> {
     if url.starts_with("https://") {
@@ -1299,6 +1306,38 @@ project_id = "my-proj"
     fn validate_transport_url_rejects_unknown_scheme() {
         let err = validate_transport_url("ftp://team-server:7777").unwrap_err();
         assert!(err.contains("http"));
+    }
+
+    /// IPv6 non-loopback addresses must be rejected too, not just the IPv4 case
+    /// — the check is symmetric across address families.
+    #[test]
+    fn validate_transport_url_rejects_non_loopback_ipv6_http() {
+        assert!(validate_transport_url("http://[2001:db8::1]:7777").is_err());
+        assert!(validate_transport_url("http://[fe80::1]:7777").is_err());
+    }
+
+    /// Known limitation, asserted so it can't silently regress into a security
+    /// hole: this is a *string* check with no DNS resolution. A hostname alias
+    /// (e.g. an `/etc/hosts` entry) that an OS resolver would send to
+    /// 127.0.0.1 is NOT recognised as loopback here and is correctly rejected
+    /// (fail closed) rather than accepted on the assumption it "means"
+    /// loopback. If a caller ever needs alias support, that requires an
+    /// explicit, reviewed allow-list — not a silent DNS lookup at validation
+    /// time (which would also make validation do network I/O).
+    #[test]
+    fn validate_transport_url_rejects_hostname_alias_even_if_it_would_resolve_to_loopback() {
+        let err = validate_transport_url("http://my-loopback-alias:7777")
+            .expect_err("a non-literal loopback hostname must be rejected, not DNS-resolved");
+        assert!(err.contains("loopback"));
+    }
+
+    /// `localhost` with an explicit port-less bare form and a trailing slash
+    /// path both still resolve to the same host extraction as the bracketed
+    /// IPv6 case — pin the unbracketed `::1` (no port) form too, since the
+    /// bracket-stripping logic in `is_loopback_url` is easy to regress.
+    #[test]
+    fn validate_transport_url_accepts_bare_ipv6_loopback_no_port() {
+        assert!(validate_transport_url("http://[::1]/").is_ok());
     }
 
     // ── looks_like_uuid (ADR-005) ────────────────────────────────────────────
