@@ -145,6 +145,13 @@ fn enclosing_scope(node: &tree_sitter::Node<'_>, src: &[u8], language: &str) -> 
         ("go", "method_declaration") => "name",
         ("java", "class_declaration") => "name",
         ("java", "method_declaration") => "name",
+        ("php", "function_definition") => "name",
+        ("php", "method_declaration") => "name",
+        ("php", "class_declaration") => "name",
+        ("ruby", "method") => "name",
+        ("ruby", "singleton_method") => "name",
+        ("ruby", "class") => "name",
+        ("ruby", "module") => "name",
         _ => return None,
     };
     node.child_by_field_name(field)
@@ -171,6 +178,8 @@ fn collect(
         "go" => edges::go_edges(node, src),
         "java" => edges::java_edges(node, src),
         "c" | "cpp" => edges::c_edges(node, src),
+        "php" => edges::php_edges(node, src),
+        "ruby" => edges::ruby_edges(node, src),
         "html" => edges::html_edges(node, src),
         "css" => edges::css_edges(node, src),
         _ => vec![],

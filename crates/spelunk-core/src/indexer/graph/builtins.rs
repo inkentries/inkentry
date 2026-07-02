@@ -105,6 +105,69 @@ pub(super) fn is_go_builtin(name: &str) -> bool {
     )
 }
 
+pub(super) fn is_php_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "isset"
+            | "unset"
+            | "empty"
+            | "count"
+            | "echo"
+            | "print"
+            | "printf"
+            | "sprintf"
+            | "var_dump"
+            | "die"
+            | "exit"
+            | "array"
+            | "in_array"
+            | "array_map"
+            | "array_filter"
+            | "array_merge"
+            | "implode"
+            | "explode"
+            | "strlen"
+            | "str_replace"
+            | "trim"
+            | "is_array"
+            | "is_null"
+            | "is_string"
+            | "gettype"
+            | "intval"
+            | "strval"
+    )
+}
+
+pub(super) fn is_ruby_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "puts"
+            | "print"
+            | "p"
+            | "pp"
+            | "raise"
+            | "require"
+            | "require_relative"
+            | "loop"
+            | "lambda"
+            | "proc"
+            | "attr_accessor"
+            | "attr_reader"
+            | "attr_writer"
+            | "new"
+            | "freeze"
+            | "dup"
+            | "clone"
+            | "send"
+            | "format"
+            | "sprintf"
+            | "Integer"
+            | "String"
+            | "Array"
+            | "Hash"
+    )
+}
+
 pub(super) fn is_c_builtin(name: &str) -> bool {
     matches!(
         name,

@@ -24,6 +24,8 @@ pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
         "html" => SupportLang::Html,
         "css" => SupportLang::Css,
         "hcl" => SupportLang::Hcl,
+        "php" => SupportLang::Php,
+        "ruby" => SupportLang::Ruby,
         "sql" => return Ok(tree_sitter_sequel::LANGUAGE.into()),
         "proto" => return Ok(tree_sitter_proto::LANGUAGE.into()),
         other => bail!("unsupported language: {other}"),
@@ -124,6 +126,25 @@ pub(super) fn node_specs(language: &str) -> Vec<NodeSpec> {
             s("media_statement", Module, None),
             s("keyframes_statement", Function, None),
             s("supports_statement", Module, None),
+        ],
+        // PHP: functions, methods, classes, interfaces, traits, enums. The grammar
+        // exposes a direct `name` field on each, so no custom name walker is needed.
+        "php" => vec![
+            s("function_definition", Function, Some("name")),
+            s("method_declaration", Method, Some("name")),
+            s("class_declaration", Class, Some("name")),
+            s("interface_declaration", Interface, Some("name")),
+            s("trait_declaration", Trait, Some("name")),
+            s("enum_declaration", Enum, Some("name")),
+        ],
+        // Ruby: methods (incl. `def self.x` singletons), classes, and modules.
+        // Each exposes a direct `name` field (`name`/`constant`), so the field
+        // path handles extraction with no custom walker.
+        "ruby" => vec![
+            s("method", Method, Some("name")),
+            s("singleton_method", Method, Some("name")),
+            s("class", Class, Some("name")),
+            s("module", Module, Some("name")),
         ],
         // HCL/Terraform: top-level blocks (resource, data, module, locals, …).
         // Name extraction is handled by hcl_block_name (identifier + string labels).

@@ -21,6 +21,8 @@ pub const SUPPORTED_LANGUAGES: &[&str] = &[
     "html",
     "css",
     "hcl",
+    "php",
+    "ruby",
     "sql",
     "proto",
     // text formats (sliding-window / heading-based, no tree-sitter)
@@ -55,6 +57,8 @@ pub fn detect_language(path: &std::path::Path) -> Option<&'static str> {
         "html" | "htm" => Some("html"),
         "css" => Some("css"),
         "tf" | "hcl" => Some("hcl"),
+        "php" | "phtml" => Some("php"),
+        "rb" | "rake" | "gemspec" => Some("ruby"),
         "sql" | "sequel" => Some("sql"),
         "proto" => Some("proto"),
         #[cfg(feature = "rich-formats")]
