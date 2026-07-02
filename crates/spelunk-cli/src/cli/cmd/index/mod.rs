@@ -141,7 +141,14 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    if tier.is_server() {
+    // Embed only when the server's embedder is actually ready to serve
+    // (`caps.index_embed` is advertised only in the `ready` state). When the
+    // server is reachable but the model is still `loading` or has failed
+    // (`unavailable`), skip embedding and print a visible, differentiated
+    // notice rather than letting the embed request 503 out mid-index or
+    // silently producing an unembedded index (spelunk-oss^50 #5).
+    let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
+    if tier.is_server() && embed_ready {
         embed_phase::run_embed_phase(
             result.chunk_ids_and_texts,
             &db,
@@ -152,18 +159,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             &mp,
         )
         .await?;
-    } else if cfg.server_url.is_some() {
-        eprintln!(
-            "Warning: spelunk-server at {} is unreachable — skipping embedding phase.",
-            cfg.server_url.as_deref().unwrap_or("?")
-        );
-        eprintln!(
-            "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` when the server is back to add embeddings."
-        );
     } else {
-        eprintln!(
-            "Note: configure server_url in ~/.config/spelunk/config.toml to enable semantic search."
-        );
+        eprint_embed_skipped_notice(tier, &cfg);
     }
 
     let stats = db.stats()?;
@@ -195,6 +192,63 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     run_phases_3_to_5(&args, &cfg, &db, &root_canonical, &db_path).await
+}
+
+/// Build the differentiated notice lines shown when the embedding phase is
+/// skipped, so an unembedded index is never a silent surprise (spelunk-oss^50
+/// #5). Pure so it can be unit-tested; the four cases mirror PR A's readiness
+/// contract. `server_url` is `cfg.server_url` (used only for the offline case).
+fn embed_skipped_lines(
+    embedder_state: Option<capability::EmbedderState>,
+    server_url: Option<&str>,
+) -> Vec<String> {
+    use capability::EmbedderState;
+    match embedder_state {
+        Some(EmbedderState::Loading) => vec![
+            "Note: the embedder is still warming up — chunks indexed for text/ast-grep search."
+                .to_string(),
+            "Re-run `spelunk index` in a moment to add embeddings (check `spelunk server status`)."
+                .to_string(),
+        ],
+        Some(EmbedderState::Unavailable) => vec![
+            "Warning: the embedder failed to load — chunks indexed for text/ast-grep search only."
+                .to_string(),
+            "See `spelunk server logs` for the load error, then re-run `spelunk index`."
+                .to_string(),
+        ],
+        // Reachable server without a ready embedder for any other reason
+        // (`disabled`, or an older server that never advertised `index.embed`).
+        Some(_) => vec![
+            "Note: this server has no embedder — chunks indexed for text/ast-grep search only."
+                .to_string(),
+        ],
+        // Offline: no server reachable.
+        None => {
+            if let Some(url) = server_url {
+                vec![
+                    format!(
+                        "Warning: spelunk-server at {url} is unreachable — skipping embedding phase."
+                    ),
+                    "On Windows, allow the loopback listener through Defender Firewall (accept the prompt on `spelunk server start`)."
+                        .to_string(),
+                    "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` once the server is reachable to add embeddings."
+                        .to_string(),
+                ]
+            } else {
+                vec![
+                    "Note: start a local server (`spelunk server start`) to enable semantic search."
+                        .to_string(),
+                ]
+            }
+        }
+    }
+}
+
+/// Print the embed-skipped notice to stderr.
+fn eprint_embed_skipped_notice(tier: &capability::Tier, cfg: &Config) {
+    for line in embed_skipped_lines(tier.embedder_state(), cfg.server_url.as_deref()) {
+        eprintln!("{line}");
+    }
 }
 
 // ── Phases 3–5 (shared between inline and background-phases mode) ─────────────
@@ -313,5 +367,61 @@ mod tests {
     fn batch_size_defaults_to_64() {
         let cli = TestCli::try_parse_from(["spelunk", "some/path"]).expect("parse");
         assert_eq!(cli.index.batch_size, 64);
+    }
+
+    // ── embed_skipped_lines: 0-chunks / offline notice (#5) ─────────────────────
+
+    #[test]
+    fn embed_skipped_loading_advises_retry() {
+        let lines = embed_skipped_lines(Some(capability::EmbedderState::Loading), None);
+        assert!(!lines.is_empty(), "notice must not be silent");
+        let joined = lines.join("\n");
+        assert!(joined.contains("warming up"));
+        assert!(joined.contains("Re-run `spelunk index`"));
+    }
+
+    #[test]
+    fn embed_skipped_unavailable_points_at_logs() {
+        let lines = embed_skipped_lines(Some(capability::EmbedderState::Unavailable), None);
+        let joined = lines.join("\n");
+        assert!(joined.contains("failed to load"));
+        assert!(joined.contains("spelunk server logs"));
+    }
+
+    #[test]
+    fn embed_skipped_unreachable_server_mentions_firewall() {
+        // Offline (no reachable server) with a configured server_url: the notice
+        // names the URL and the Windows firewall cause, replacing the old silent
+        // 0-chunk embed.
+        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"));
+        let joined = lines.join("\n");
+        assert!(joined.contains("http://127.0.0.1:7777"));
+        assert!(joined.contains("unreachable"));
+        assert!(joined.contains("Firewall"));
+    }
+
+    #[test]
+    fn embed_skipped_no_server_suggests_starting_one() {
+        let lines = embed_skipped_lines(None, None);
+        let joined = lines.join("\n");
+        assert!(joined.contains("spelunk server start"));
+    }
+
+    #[test]
+    fn embed_skipped_is_never_silent() {
+        for state in [
+            Some(capability::EmbedderState::Loading),
+            Some(capability::EmbedderState::Unavailable),
+            Some(capability::EmbedderState::Disabled),
+            Some(capability::EmbedderState::Unknown),
+            None,
+        ] {
+            for url in [Some("http://x:1"), None] {
+                assert!(
+                    !embed_skipped_lines(state, url).is_empty(),
+                    "state {state:?} url {url:?} produced no notice"
+                );
+            }
+        }
     }
 }

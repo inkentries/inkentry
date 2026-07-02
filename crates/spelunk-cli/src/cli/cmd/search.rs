@@ -204,10 +204,13 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             Err(e) => Err(e),
         };
 
-        // In auto mode, if the embedding call fails (e.g. embedder unreachable),
-        // fall back to ast-grep silently.
+        // In auto mode, if the embedding call fails (e.g. embedder unreachable or
+        // still warming up), fall back to ast-grep. Print a visible, one-line
+        // notice first so the degradation isn't silent and a downstream
+        // "ast-grep not found" error isn't misattributed (spelunk-oss^50 #5).
         if auto_mode && query_vec_result.is_err() && snapshot_id.is_none() {
             sp.finish_and_clear();
+            eprint_semantic_unavailable_notice(tier, &cfg);
             return search_live(
                 &args.query,
                 &args.format,
@@ -587,4 +590,103 @@ pub(crate) fn search_live(
     }
 
     Ok(())
+}
+
+/// Build the one-line notice explaining why `auto`-mode search is falling back
+/// from semantic to ast-grep, differentiating the cases the readiness contract
+/// exposes (spelunk-oss^50 #5).
+///
+/// Pure so it can be unit-tested without capturing stderr; `has_server_url` is
+/// `cfg.server_url.is_some()`.
+fn semantic_unavailable_message(
+    embedder_state: Option<capability::EmbedderState>,
+    has_server_url: bool,
+) -> String {
+    use capability::EmbedderState;
+    match embedder_state {
+        Some(EmbedderState::Loading) => "[semantic search unavailable: model still warming up — \
+             retry shortly (`spelunk server status`); using ast-grep]"
+            .to_string(),
+        Some(EmbedderState::Unavailable) => {
+            "[semantic search unavailable: embedder failed to load — \
+             see `spelunk server logs`; using ast-grep]"
+                .to_string()
+        }
+        Some(_) => "[semantic search unavailable on this server; using ast-grep]".to_string(),
+        None => {
+            if has_server_url {
+                "[no server reachable — on Windows, allow the loopback listener through \
+                 Defender Firewall (`spelunk server status`); using ast-grep]"
+                    .to_string()
+            } else {
+                "[no server running — start one with `spelunk server start` to enable \
+                 semantic search; using ast-grep]"
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// Print the semantic-unavailable notice to stderr so structured
+/// (`--json`/`--jsonl`) output on stdout stays clean.
+fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
+    eprintln!(
+        "{}",
+        semantic_unavailable_message(tier.embedder_state(), cfg.server_url.is_some())
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::EmbedderState;
+
+    // ── semantic_unavailable_message: auto-mode fallback notice (#5) ────────────
+
+    #[test]
+    fn notice_loading_advises_retry() {
+        let msg = semantic_unavailable_message(Some(EmbedderState::Loading), true);
+        assert!(msg.contains("warming up"));
+        assert!(msg.contains("ast-grep"));
+    }
+
+    #[test]
+    fn notice_unavailable_points_at_logs() {
+        let msg = semantic_unavailable_message(Some(EmbedderState::Unavailable), true);
+        assert!(msg.contains("failed to load"));
+        assert!(msg.contains("spelunk server logs"));
+    }
+
+    #[test]
+    fn notice_no_server_with_configured_url_mentions_firewall() {
+        // Offline (no reachable server) but a server_url was configured →
+        // the likely Windows cause is a blocked loopback listener.
+        let msg = semantic_unavailable_message(None, true);
+        assert!(msg.contains("no server reachable"));
+        assert!(msg.contains("Firewall"));
+    }
+
+    #[test]
+    fn notice_no_server_no_url_suggests_starting_one() {
+        let msg = semantic_unavailable_message(None, false);
+        assert!(msg.contains("spelunk server start"));
+    }
+
+    #[test]
+    fn notice_is_never_silent() {
+        // Every case yields a visible, non-empty notice — the whole point of #5
+        // is that the fallback is no longer silent.
+        for state in [
+            Some(EmbedderState::Loading),
+            Some(EmbedderState::Unavailable),
+            Some(EmbedderState::Ready),
+            Some(EmbedderState::Disabled),
+            Some(EmbedderState::Unknown),
+            None,
+        ] {
+            for has_url in [true, false] {
+                assert!(!semantic_unavailable_message(state, has_url).is_empty());
+            }
+        }
+    }
 }

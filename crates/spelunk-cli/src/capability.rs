@@ -21,7 +21,7 @@
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use crate::config::Config;
@@ -63,6 +63,45 @@ fn read_server_port_file() -> Option<u16> {
 }
 
 static TIER: OnceCell<Tier> = OnceCell::const_new();
+
+/// Server-side embedder readiness, mirrored from the `/v1/health` `embedder.state`
+/// field (spelunk-oss^50 PR A). The CLI uses this to distinguish, when semantic
+/// search is unavailable, between "no server reachable", "server up but the model
+/// is still warming up", and "the model failed to load" — so it can print an
+/// actionable one-line notice rather than silently degrading (task item #5).
+///
+/// Serialized lowercase to match the server's health body and to feed
+/// `spelunk status --format json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbedderState {
+    /// Native embedder build/download in progress — not ready yet, keep polling.
+    Loading,
+    /// Model loaded; embed endpoints will serve.
+    Ready,
+    /// Background load failed (download error, OOM, …). Terminal for that process.
+    Unavailable,
+    /// Server started with no in-process model to load (external embedding URL,
+    /// or no embedder feature). Treated as ready.
+    Disabled,
+    /// Field absent from the health body (server pre-dates PR A). Unknown state.
+    #[default]
+    Unknown,
+}
+
+impl EmbedderState {
+    /// Lowercase wire string (matches the server's `embedder.state` field and
+    /// feeds `spelunk status --format json`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmbedderState::Loading => "loading",
+            EmbedderState::Ready => "ready",
+            EmbedderState::Unavailable => "unavailable",
+            EmbedderState::Disabled => "disabled",
+            EmbedderState::Unknown => "unknown",
+        }
+    }
+}
 
 /// Feature availability for a server-connected tier.
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +178,12 @@ pub enum Tier {
         /// Consumed by `is_auto_discovered()` and sub-issue #324 UX wiring.
         #[allow(dead_code)]
         auto_discovered: bool,
+        /// Server-side embedder readiness, mirrored from the `/v1/health`
+        /// `embedder.state` field (spelunk-oss^50). `Unknown` when the field is
+        /// absent (server pre-dates PR A). Lets the CLI distinguish "server up
+        /// but model still warming up / failed to load" from a ready server when
+        /// semantic search is unavailable (task item #5; rendered by `status`).
+        embedder_state: EmbedderState,
     },
 }
 
@@ -161,6 +206,18 @@ impl Tier {
     pub fn caps(&self) -> Option<&Capabilities> {
         match self {
             Tier::Server { caps, .. } => Some(caps),
+            Tier::Offline => None,
+        }
+    }
+
+    /// Server-side embedder readiness for a `Server` tier, or `None` when
+    /// offline. `EmbedderState::Unknown` is returned for a reachable server that
+    /// pre-dates the `embedder.state` health field. Used by the offline notice
+    /// (`search`/`index`) and by `spelunk status` to explain why semantic search
+    /// is unavailable (spelunk-oss^50).
+    pub fn embedder_state(&self) -> Option<EmbedderState> {
+        match self {
+            Tier::Server { embedder_state, .. } => Some(*embedder_state),
             Tier::Offline => None,
         }
     }
@@ -351,7 +408,7 @@ async fn probe_url(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let (caps, server_dim) = parse_health(url, resp).await;
+            let (caps, server_dim, embedder_state) = parse_health(url, resp).await;
 
             // If the server advertises index.embed, its embedding dimension must match ours.
             if caps.index_embed && server_dim != 0 {
@@ -384,6 +441,7 @@ async fn probe_url(
                 url: url.to_string(),
                 caps,
                 auto_discovered,
+                embedder_state,
             })
         }
         Ok(resp) => {
@@ -406,12 +464,23 @@ async fn probe_url(
     }
 }
 
-/// Parse the health response body and return `(Capabilities, embedding_dim)`.
+/// Parse the health response body and return `(Capabilities, embedding_dim,
+/// embedder_state)`.
 ///
 /// `embedding_dim` is `0` when the field is absent (old server without the field)
 /// or when no embedder is loaded. A `0` dim skips the dimension check in `probe_url`
 /// for backward compatibility.
-async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usize) {
+///
+/// `embedder_state` mirrors the `/v1/health` `embedder.state` field shipped in
+/// spelunk-oss^50 PR A (`embedder: { state, detail }`). It is `Unknown` when the
+/// sub-object is absent (older server) or the body is legacy plain-text.
+async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usize, EmbedderState) {
+    #[derive(serde::Deserialize)]
+    struct EmbedderBody {
+        #[serde(default)]
+        state: EmbedderState,
+    }
+
     #[derive(serde::Deserialize)]
     struct HealthBody {
         #[serde(default)]
@@ -422,10 +491,19 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usiz
         /// Absent on old servers that pre-date this field; defaults to 0 (skip check).
         #[serde(default)]
         embedding_dim: usize,
+        /// Embedder readiness sub-object (spelunk-oss^50). Absent on older servers
+        /// → `embedder_state` stays `Unknown`.
+        #[serde(default)]
+        embedder: Option<EmbedderBody>,
     }
 
     match resp.json::<HealthBody>().await {
         Ok(body) => {
+            let embedder_state = body
+                .embedder
+                .as_ref()
+                .map(|e| e.state)
+                .unwrap_or(EmbedderState::Unknown);
             // Warn if the server was started by a different user on this host.
             if let Some(server_uid) = body.started_by {
                 let my_uid = current_uid();
@@ -446,12 +524,17 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usiz
             (
                 Capabilities::from_server_caps(&cap_strs),
                 body.embedding_dim,
+                embedder_state,
             )
         }
         Err(_) => {
             // Legacy server returns plain-text "ok" — conservative fallback.
-            // embedding_dim = 0 skips the dimension check.
-            (Capabilities::legacy_memory_only(), 0)
+            // embedding_dim = 0 skips the dimension check; state Unknown.
+            (
+                Capabilities::legacy_memory_only(),
+                0,
+                EmbedderState::Unknown,
+            )
         }
     }
 }
@@ -602,6 +685,7 @@ mod tests {
             url: "http://example.com".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         assert!(tier.is_server());
     }
@@ -618,6 +702,7 @@ mod tests {
             url: "http://spelunk.internal:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         assert_eq!(tier.server_url(), Some("http://spelunk.internal:7777"));
     }
@@ -635,6 +720,7 @@ mod tests {
             url: "http://example.com".to_string(),
             caps: caps.clone(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         assert!(tier.caps().is_some());
     }
@@ -651,11 +737,13 @@ mod tests {
             url: "http://127.0.0.1:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
+            embedder_state: EmbedderState::Ready,
         };
         let explicit = Tier::Server {
             url: "http://server.example.com:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         assert!(auto.is_auto_discovered());
         assert!(!explicit.is_auto_discovered());
@@ -674,6 +762,7 @@ mod tests {
             url: "http://127.0.0.1:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
+            embedder_state: EmbedderState::Ready,
         };
         let cfg = Config::default(); // server_url = None
         let eff = tier.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
@@ -703,6 +792,7 @@ mod tests {
             url: "http://team.example.com:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -738,6 +828,7 @@ mod tests {
             url: "http://example.com".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
         };
         assert!(require_tier1("explore", &tier, Some("http://example.com")).is_ok());
     }
@@ -949,5 +1040,114 @@ mod tests {
             msg.contains("server_url"),
             "error must mention 'server_url' for actionable guidance: {msg}"
         );
+    }
+
+    // ── EmbedderState (spelunk-oss^50) ───────────────────────────────────────
+
+    #[test]
+    fn embedder_state_default_is_unknown() {
+        assert_eq!(EmbedderState::default(), EmbedderState::Unknown);
+    }
+
+    #[test]
+    fn embedder_state_deserializes_lowercase_wire_values() {
+        // Must match the server's `#[serde(rename_all = "lowercase")]` values.
+        for (wire, want) in [
+            ("loading", EmbedderState::Loading),
+            ("ready", EmbedderState::Ready),
+            ("unavailable", EmbedderState::Unavailable),
+            ("disabled", EmbedderState::Disabled),
+        ] {
+            let got: EmbedderState =
+                serde_json::from_value(serde_json::Value::String(wire.to_string())).unwrap();
+            assert_eq!(got, want, "wire {wire:?} should deserialize to {want:?}");
+            assert_eq!(want.as_str(), wire, "as_str round-trips the wire value");
+        }
+    }
+
+    #[test]
+    fn tier_embedder_state_accessor() {
+        let tier = Tier::Server {
+            url: "http://127.0.0.1:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: true,
+            embedder_state: EmbedderState::Loading,
+        };
+        assert_eq!(tier.embedder_state(), Some(EmbedderState::Loading));
+        assert_eq!(Tier::Offline.embedder_state(), None);
+    }
+
+    /// Health body carrying the PR-A `embedder: { state, detail }` sub-object.
+    fn health_body_with_embedder(state: &str) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "version": "0.9.1",
+            "capabilities": ["memory"],
+            "instance_id": "00000000-0000-0000-0000-000000000001",
+            "started_by": null,
+            "embedding_dim": 0,
+            "embedder": { "state": state, "detail": null }
+        })
+    }
+
+    /// `probe_url` must surface the server's `embedder.state` on `Tier::Server`.
+    #[tokio::test]
+    async fn probe_url_carries_embedder_state_loading() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(health_body_with_embedder("loading")),
+            )
+            .mount(&server)
+            .await;
+
+        let tier = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe ok");
+        assert_eq!(tier.embedder_state(), Some(EmbedderState::Loading));
+    }
+
+    #[tokio::test]
+    async fn probe_url_carries_embedder_state_unavailable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(health_body_with_embedder("unavailable")),
+            )
+            .mount(&server)
+            .await;
+
+        let tier = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe ok");
+        assert_eq!(tier.embedder_state(), Some(EmbedderState::Unavailable));
+    }
+
+    /// A server that pre-dates the `embedder` field → `Unknown` (not an error).
+    #[tokio::test]
+    async fn probe_url_absent_embedder_field_is_unknown() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // `health_body` (no `embedder` key) simulates an older server.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(&["memory"], 0)))
+            .mount(&server)
+            .await;
+
+        let tier = probe_url(&server.uri(), None, REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe ok");
+        assert_eq!(tier.embedder_state(), Some(EmbedderState::Unknown));
     }
 }

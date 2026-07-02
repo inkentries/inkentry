@@ -40,6 +40,15 @@ To opt out entirely and keep spelunk fully offline, set `SPELUNK_NO_SERVER=1`
 With it set, spelunk never autostarts a server and inference-only features exit
 with a clear message instead.
 
+### Windows: allow the local listener through the firewall
+
+On Windows, the first time the local server binds its loopback port, Windows
+Defender Firewall may show a prompt — **accept it**. If it's blocked, `spelunk`
+can't reach the server and quietly drops to text/ast-grep search (you'll see a
+one-line "no server reachable" notice). If you dismissed the prompt, run
+`spelunk server start` again to re-trigger it, then `spelunk server status` to
+confirm the server is reachable.
+
 How discovery decides whether to reuse or start a server is documented in
 [CLI capability tiers → Loopback auto-discovery](architecture/capability-tiers.md#loopback-auto-discovery).
 The `instance_id` and `started_by` UID checks described there are implemented
