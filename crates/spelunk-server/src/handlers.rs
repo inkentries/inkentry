@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,8 +7,8 @@ use anyhow::Result;
 use async_stream::stream;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -19,6 +20,102 @@ use utoipa::ToSchema;
 
 use super::auth::AuthContext;
 use super::{AppError, AppState, EmbedderState, ErrorBody};
+
+// ── Input validation caps (V1-SERVER-AUDIT §4 / spelunk-oss^60) ────────────────
+
+/// Max length (chars) for a memory entry's `title`.
+pub const MAX_TITLE_LEN: usize = 500;
+/// Max length (chars) for a memory entry's `body`.
+pub const MAX_BODY_LEN: usize = 50_000;
+/// Max length (bytes) for a `project_id` path slug (e.g. `usercise/spelunk`).
+pub const MAX_SLUG_LEN: usize = 200;
+
+/// Reject a title/body pair that exceeds the configured caps. Shared by every
+/// handler that accepts free-text memory content (`add_note`, `supersede`'s
+/// linked note content is validated at insert time, etc.).
+fn validate_title_body(title: &str, body: &str) -> Result<(), AppError> {
+    if title.chars().count() > MAX_TITLE_LEN {
+        return Err(AppError::BadRequest(format!(
+            "title exceeds maximum length of {MAX_TITLE_LEN} characters (got {})",
+            title.chars().count()
+        )));
+    }
+    if body.chars().count() > MAX_BODY_LEN {
+        return Err(AppError::BadRequest(format!(
+            "body exceeds maximum length of {MAX_BODY_LEN} characters (got {})",
+            body.chars().count()
+        )));
+    }
+    Ok(())
+}
+
+/// Reject an embedding vector whose length doesn't match the server's
+/// configured embedding dimension. `None` (no vector supplied) always passes
+/// — embedding is optional on write.
+fn validate_embedding_dim(
+    embedding: Option<&[f32]>,
+    configured_dim: usize,
+) -> Result<(), AppError> {
+    if let Some(v) = embedding
+        && configured_dim != 0
+        && v.len() != configured_dim
+    {
+        return Err(AppError::BadRequest(format!(
+            "embedding vector length {} does not match server's configured dimension {configured_dim}",
+            v.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Reject a `project_id` path parameter that is empty or unreasonably long.
+/// Project ids are human slugs (e.g. `usercise/spelunk`), not UUIDs, so this
+/// is a length/sanity cap rather than a UUID-format check.
+fn validate_project_slug(slug: &str) -> Result<(), AppError> {
+    if slug.is_empty() {
+        return Err(AppError::BadRequest("project_id must not be empty".into()));
+    }
+    if slug.len() > MAX_SLUG_LEN {
+        return Err(AppError::BadRequest(format!(
+            "project_id exceeds maximum length of {MAX_SLUG_LEN} bytes (got {})",
+            slug.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve the client's IP address for rate-limiting: prefer the leftmost
+/// `X-Forwarded-For` entry when present (the server is expected to sit behind
+/// a trusted proxy in shared/team deployments — see ADR-056 tenancy model),
+/// falling back to the TCP peer address from `ConnectInfo`. Returns a stable
+/// string key; when neither is available, falls back to a constant so all
+/// such requests share one bucket rather than bypassing rate limiting.
+fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        let first = xff.split(',').next().unwrap_or("").trim();
+        if !first.is_empty() {
+            return first.to_string();
+        }
+    }
+    match peer {
+        Some(addr) => addr.ip().to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+/// Build the rate-limiter bucket key for an authenticated inference request:
+/// `"<principal>|<client-ip>"`. Keying on IP as well as principal means a
+/// shared team API key (a single `Principal::ApiKey` string, or the empty
+/// string when no key is configured at all) doesn't collapse every distinct
+/// client onto one shared bucket — each caller gets its own budget.
+fn rate_limit_key(auth_ctx: &AuthContext, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    let principal = match &auth_ctx.principal {
+        super::auth::Principal::ApiKey(k) => k.clone(),
+        super::auth::Principal::User { id } => id.clone(),
+    };
+    let ip = client_ip_key(headers, peer);
+    format!("{principal}|{ip}")
+}
 
 // ── Request / Response types ──────────────────────────────────────────────────
 
@@ -279,6 +376,13 @@ pub async fn add_note(
     Path(project_id): Path<String>,
     Json(body): Json<AddNoteRequest>,
 ) -> Result<Response, AppError> {
+    validate_project_slug(&project_id)?;
+    validate_title_body(&body.title, &body.body)?;
+    {
+        let configured_dim = state.db.lock().await.embedding_dim;
+        validate_embedding_dim(body.embedding.as_deref(), configured_dim)?;
+    }
+
     // Reject entries that contain prompt-injection patterns.
     if let Some(m) = super::security::scan_for_injection(&body.title, &body.body) {
         return Ok((
@@ -808,9 +912,10 @@ pub struct EmbedResponse {
 )]
 pub async fn index_embed(
     State(state): State<AppState>,
-    Path(_project_id): Path<String>,
+    Path(project_id): Path<String>,
     Json(body): Json<EmbedRequest>,
 ) -> Result<Response, AppError> {
+    validate_project_slug(&project_id)?;
     const MAX_BATCH: usize = 256;
 
     // Check batch size first so clients get a 413 even when no embedder is configured.
@@ -941,9 +1046,10 @@ pub struct CodeSearchResponse {
 )]
 pub async fn project_search(
     State(state): State<AppState>,
-    Path(_project_id): Path<String>,
+    Path(project_id): Path<String>,
     Json(body): Json<CodeSearchRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    validate_project_slug(&project_id)?;
     let mode = body.mode.as_str();
 
     // Validate mode.
@@ -1029,6 +1135,7 @@ fn default_max_turns() -> usize {
     responses(
         (status = 200, description = "SSE stream: thought/answer/done/error events"),
         (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 429, description = "Rate limit exceeded", body = ErrorBody),
         (status = 503, description = "No LLM configured", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
@@ -1036,9 +1143,34 @@ fn default_max_turns() -> usize {
 )]
 pub async fn explore(
     State(state): State<AppState>,
-    Path(_project_id): Path<String>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
     Json(body): Json<ExploreRequest>,
 ) -> Result<Response, AppError> {
+    validate_project_slug(&project_id)?;
+
+    // ── Rate limit ────────────────────────────────────────────────────────────
+    // Same token-burn exposure as `/llm/complete` (up to `2048 * max_turns`
+    // generated tokens per call) — key on client IP (not just principal) so a
+    // shared team key can't be used to bypass the limit from many clients.
+    let rate_key = rate_limit_key(
+        &auth_ctx,
+        &headers,
+        connect_info.map(|Extension(ConnectInfo(addr))| addr),
+    );
+    if state.rate_limiter.check(&rate_key).is_err() {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorBody::new(
+                "rate_limited",
+                "Rate limit exceeded. Slow down and retry.",
+            )),
+        )
+            .into_response());
+    }
+
     let llm = state.llm.clone().ok_or_else(|| {
         AppError::ServiceUnavailable(
             "This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."
@@ -1177,9 +1309,13 @@ pub struct LlmCompleteRequest {
 pub async fn llm_complete(
     State(state): State<AppState>,
     Extension(auth_ctx): Extension<AuthContext>,
-    Path(_project_id): Path<String>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
     Json(body): Json<LlmCompleteRequest>,
 ) -> Result<Response, AppError> {
+    validate_project_slug(&project_id)?;
+
     // ── Validate request ──────────────────────────────────────────────────────
     if body.messages.is_empty() {
         return Ok((
@@ -1197,16 +1333,19 @@ pub async fn llm_complete(
     }
 
     // ── Rate limit ────────────────────────────────────────────────────────────
-    let principal_key = match &auth_ctx.principal {
-        super::auth::Principal::ApiKey(k) => k.clone(),
-        super::auth::Principal::User { id } => id.clone(),
-    };
-    if state.rate_limiter.check(&principal_key).is_err() {
+    // Keyed on principal + client IP (not principal alone) so a shared team
+    // key doesn't collapse every distinct caller onto one bucket.
+    let rate_key = rate_limit_key(
+        &auth_ctx,
+        &headers,
+        connect_info.map(|Extension(ConnectInfo(addr))| addr),
+    );
+    if state.rate_limiter.check(&rate_key).is_err() {
         return Ok((
             StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorBody::new(
                 "rate_limited",
-                "Per-principal rate limit exceeded. Slow down and retry.",
+                "Rate limit exceeded. Slow down and retry.",
             )),
         )
             .into_response());
@@ -1261,6 +1400,7 @@ pub async fn llm_complete(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn require_project(db: &super::db::ServerDb, slug: &str) -> Result<super::db::Project, AppError> {
+    validate_project_slug(slug)?;
     db.get_project(slug)?.ok_or(AppError::NotFound)
 }
 
@@ -1852,6 +1992,188 @@ mod tests {
             resp.status(),
             http::StatusCode::OK,
             "embed while ready must return 200"
+        );
+    }
+
+    // ── Input-length caps (spelunk-oss^60 / V1-SERVER-AUDIT §4) ───────────────
+
+    /// POST /v1/projects/{slug}/memory with a title over `MAX_TITLE_LEN` chars
+    /// must be rejected with 400, not silently truncated or stored.
+    #[tokio::test]
+    async fn add_note_oversized_title_returns_400() {
+        let (app, _dim) = make_app(0.92);
+        let oversized_title = "x".repeat(super::MAX_TITLE_LEN + 1);
+        let (status, body) =
+            post_note(app, "cap-test", &oversized_title, vec![1.0, 0.0, 0.0, 0.0]).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "oversized title must be 400; body: {body}"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/memory with a body over `MAX_BODY_LEN` chars
+    /// must be rejected with 400.
+    #[tokio::test]
+    async fn add_note_oversized_body_returns_400() {
+        let (app, _dim) = make_app(0.92);
+        let req_body = json!({
+            "kind": "note",
+            "title": "normal title",
+            "body": "x".repeat(super::MAX_BODY_LEN + 1),
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/cap-test/memory")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::BAD_REQUEST,
+            "oversized body must be 400"
+        );
+    }
+
+    /// POST /v1/projects/{slug}/memory with an embedding vector whose length
+    /// doesn't match the server's configured dimension must be rejected (400),
+    /// not stored with a mismatched dimension.
+    #[tokio::test]
+    async fn add_note_mismatched_embedding_dim_returns_400() {
+        // Test DB is opened with dim=4 (see `make_app`); send a 7-dim vector.
+        let (app, _dim) = make_app(0.92);
+        let wrong_dim_vec = vec![1.0_f32; 7];
+        let (status, body) = post_note(app, "cap-test", "title", wrong_dim_vec).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "mismatched embedding dimension must be 400; body: {body}"
+        );
+    }
+
+    /// A correctly-sized title/body/vector must still succeed (guards against
+    /// an off-by-one in the cap checks rejecting valid input).
+    #[tokio::test]
+    async fn add_note_within_caps_returns_201() {
+        let (app, _dim) = make_app(0.92);
+        let title = "x".repeat(super::MAX_TITLE_LEN);
+        let (status, body) = post_note(app, "cap-test", &title, vec![1.0, 0.0, 0.0, 0.0]).await;
+        assert_eq!(
+            status,
+            http::StatusCode::CREATED,
+            "title at exactly the cap must be accepted; body: {body}"
+        );
+    }
+
+    // ── /explore rate limiting (spelunk-oss^60) ────────────────────────────────
+
+    /// An LLM backend that immediately closes the token channel — enough to
+    /// exercise routing/rate-limiting without generating real content.
+    struct NoopLlm;
+
+    #[async_trait::async_trait]
+    impl spelunk_core::llm::LlmBackend for NoopLlm {
+        async fn generate(
+            &self,
+            _messages: &[spelunk_core::llm::Message],
+            _max_tokens: usize,
+            _tx: tokio::sync::mpsc::Sender<spelunk_core::llm::Token>,
+            _json_schema: Option<serde_json::Value>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build an app with a configured LLM backend and a tight rate limit, for
+    /// exercising `/explore` and `/llm/complete` rate limiting.
+    fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4)
+            .expect("failed to open in-memory server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
+        let state = AppState {
+            db: Arc::new(tokio::sync::Mutex::new(db)),
+            auth: Arc::new(ApiKeyAuth::new(None)),
+            conflict_threshold: 0.92,
+            embedder: super::super::EmbedderSlot::disabled(),
+            llm: Some(Arc::new(NoopLlm)),
+            max_tokens_ceiling: 8192,
+            rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(
+                max_requests,
+                60,
+            )),
+            instance_id,
+            started_by: None,
+        };
+        router(state)
+    }
+
+    async fn post_explore(app: &axum::Router, question: &str) -> http::StatusCode {
+        let body = json!({"question": question, "context_chunks": [], "max_turns": 1});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/projects/explore-test/explore")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    /// `/explore` must be rate-limited the same way `/llm/complete` is: once
+    /// the per-bucket budget is exhausted, further calls get 429, not a normal
+    /// (SSE 200) response. This closes the "unmetered token-burn proxy" hole
+    /// from V1-SERVER-AUDIT §4 — previously `/explore` had no rate check at all.
+    #[tokio::test]
+    async fn explore_returns_429_past_rate_limit() {
+        let app = make_app_with_llm_and_limit(2);
+
+        let status1 = post_explore(&app, "q1").await;
+        let status2 = post_explore(&app, "q2").await;
+        let status3 = post_explore(&app, "q3").await;
+
+        assert_eq!(status1, http::StatusCode::OK, "1st call within budget");
+        assert_eq!(status2, http::StatusCode::OK, "2nd call within budget");
+        assert_eq!(
+            status3,
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "3rd call must exceed the 2-request budget and return 429"
+        );
+    }
+
+    /// Two different client IPs (via `X-Forwarded-For`) must not share one
+    /// rate-limit bucket — each gets its own budget. Guards the "single shared
+    /// key = single global bucket" hole from V1-SERVER-AUDIT §4.
+    #[tokio::test]
+    async fn explore_rate_limit_keyed_per_client_ip() {
+        let app = make_app_with_llm_and_limit(1);
+
+        let body = json!({"question": "q", "context_chunks": [], "max_turns": 1});
+        let req_from = |ip: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/v1/projects/explore-test/explore")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+
+        // Client A's first call succeeds and exhausts its (budget=1) bucket.
+        let resp_a1 = app.clone().oneshot(req_from("10.0.0.1")).await.unwrap();
+        assert_eq!(resp_a1.status(), http::StatusCode::OK);
+
+        // Client A's second call is rate-limited.
+        let resp_a2 = app.clone().oneshot(req_from("10.0.0.1")).await.unwrap();
+        assert_eq!(resp_a2.status(), http::StatusCode::TOO_MANY_REQUESTS);
+
+        // Client B (different IP) still has its own budget.
+        let resp_b1 = app.clone().oneshot(req_from("10.0.0.2")).await.unwrap();
+        assert_eq!(
+            resp_b1.status(),
+            http::StatusCode::OK,
+            "a different client IP must not share client A's exhausted bucket"
         );
     }
 }

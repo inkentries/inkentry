@@ -5,6 +5,7 @@ pub mod rate_limiter;
 pub mod security;
 
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use axum::{
     Json, Router,
@@ -15,11 +16,33 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde::Serialize;
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 use utoipa::{OpenApi, ToSchema};
 
 use auth::{AuthError, AuthProvider};
 use db::ServerDb;
 use rate_limiter::RateLimiter;
+
+/// Wall-clock budget for a single request before the server aborts it and
+/// returns `408 Request Timeout`. `/memory/stream` is exempt (long-lived SSE
+/// connection by design; see [`GLOBAL_CONCURRENCY_LIMIT`] for its own bound).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cap on the JSON request body size accepted by the general API surface.
+/// Generous enough for the largest legitimate payload (an `index/embed` batch
+/// of up to 256 chunks) while still bounding memory use per request.
+/// `title` (≤500) + `body` (≤50 000) caps are enforced in the handlers on top
+/// of this — this layer is the outer, cheap-to-check net.
+const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
+
+/// Global cap on requests being processed concurrently across the whole
+/// server. Bounds worst-case resource usage (including the SSE poll loop on
+/// `/memory/stream`, which otherwise has no other backpressure now that the
+/// single-mutex → read-pool refactor is out of scope for this change — see
+/// the follow-up note in the task).
+const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
 /// Readiness state of the server-side embedder.
 ///
@@ -269,7 +292,27 @@ impl utoipa::Modify for SecurityAddon {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 /// Build the axum router with all routes.
+///
+/// Protective middleware (see V1-SERVER-AUDIT §4 / spelunk-oss^60):
+/// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route,
+///   including `/memory/stream`.
+/// - `TimeoutLayer` (30s) applies to everything **except** `/memory/stream`,
+///   which is a long-lived SSE connection by design.
+/// - Per-handler input caps (title/body/vector length, etc.) are enforced in
+///   `handlers.rs`, not here.
 pub fn router(state: AppState) -> Router {
+    let stream_route = Router::new()
+        .route(
+            "/v1/projects/{project_id}/memory/stream",
+            get(handlers::memory_stream),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
+        .layer(ConcurrencyLimitLayer::new(GLOBAL_CONCURRENCY_LIMIT));
+
     let protected = Router::new()
         .route("/v1/projects", get(handlers::list_projects))
         .route("/v1/projects/{project_id}/memory", post(handlers::add_note))
@@ -288,10 +331,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/projects/{project_id}/memory/since",
             get(handlers::memory_since),
-        )
-        .route(
-            "/v1/projects/{project_id}/memory/stream",
-            get(handlers::memory_stream),
         )
         .route(
             "/v1/projects/{project_id}/memory/{note_id}",
@@ -329,11 +368,18 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
-        ));
+        ))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
+        .layer(ConcurrencyLimitLayer::new(GLOBAL_CONCURRENCY_LIMIT));
 
     Router::new()
         .route("/v1/health", get(handlers::health))
         .route("/api-docs/openapi.json", get(openapi_spec))
+        .merge(stream_route)
         .merge(protected)
         .with_state(state)
 }

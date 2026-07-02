@@ -275,7 +275,11 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "embed-native"))]
     let _ = (load_native, &embedder_slot);
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
