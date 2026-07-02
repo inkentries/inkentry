@@ -371,3 +371,125 @@ async fn append_to_git_notes_returns_err_outside_git_repo() {
     let result = append_to_git_notes(Some(non_git_dir.path()), &record).await;
     assert!(result.is_err(), "should return Err when not in a git repo");
 }
+
+// ── security regression: note bodies must go via stdin, never argv ──────────
+//
+// oss^61: `git notes add` used to receive the note body as a `-m <arg>` argv
+// value. A body that itself looked like a git option (e.g. starting with `-`)
+// could previously be misparsed as an option to `git notes add` rather than
+// literal note content. These tests prove (a) option-like / metacharacter-
+// laden bodies round-trip as *literal* note text rather than being
+// interpreted or truncated, which is only possible if they're delivered via
+// stdin (`-F -`) rather than argv (`-m`), and (b) the same holds for
+// `GitNotesBackend::add`/`archive`, which route through `add_note_stdin`.
+
+/// A note body that is itself option-shaped (starts with `-`) must be stored
+/// and read back byte-for-byte, not interpreted as a `git notes add` option
+/// or truncated. This would fail (or `git notes add` would error/misbehave)
+/// if the body were still passed via `-m <body>` on argv.
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_body_starting_with_dash_is_literal() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let mut record = make_note_record(1, "dash body");
+    record.body = "--force-with-lease=origin/main --output=/tmp/pwned".to_string();
+
+    append_to_git_notes(Some(root), &record)
+        .await
+        .expect("append should succeed even with option-like body");
+
+    let out = std::process::Command::new("git")
+        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .current_dir(root)
+        .output()
+        .expect("git notes show");
+    assert!(out.status.success(), "note should exist on HEAD");
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(text.trim()).expect("note should be valid JSON");
+    assert_eq!(
+        parsed["body"].as_str().unwrap(),
+        "--force-with-lease=origin/main --output=/tmp/pwned",
+        "option-like body must round-trip literally, proving it was never argv-parsed"
+    );
+
+    // The exploit this guards against: if the body had leaked onto argv as an
+    // option value or been split by the shell/argv parser, it could reach
+    // paths outside the repo. Confirm no such file was created as a side
+    // effect of writing this note.
+    assert!(
+        !std::path::Path::new("/tmp/pwned").exists(),
+        "option-like note body must never be interpreted as a git option"
+    );
+    let _ = std::fs::remove_file("/tmp/pwned");
+}
+
+/// A note body containing shell metacharacters must round-trip untouched.
+/// All git spawns in this codebase use argv vectors (no shell), so this is
+/// defense-in-depth / regression coverage rather than a shell-injection PoC.
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_body_with_shell_metacharacters_is_literal() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let mut record = make_note_record(2, "metachar body");
+    record.body = "$(rm -rf /); `echo pwned`; a && b || c; a | b > /tmp/x; a; b\nnewline".into();
+
+    append_to_git_notes(Some(root), &record)
+        .await
+        .expect("append should succeed with shell-metacharacter body");
+
+    let out = std::process::Command::new("git")
+        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .current_dir(root)
+        .output()
+        .expect("git notes show");
+    assert!(out.status.success());
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Body is one line of a `\n`-joined ledger; find the JSON line for id=2.
+    let line = text
+        .lines()
+        .find(|l| l.contains("\"id\":2"))
+        .expect("record for id=2 present");
+    let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+    assert_eq!(
+        parsed["body"].as_str().unwrap(),
+        "$(rm -rf /); `echo pwned`; a && b || c; a | b > /tmp/x; a; b\nnewline",
+        "shell-metacharacter body must round-trip literally"
+    );
+}
+
+/// `GitNotesBackend::add` (used by the `MemoryBackend` trait impl, i.e. the
+/// `spelunk memory add` path) also writes via `add_note_stdin`. Confirm an
+/// option-like note title/body round-trips literally through that path too —
+/// not just through the lower-level `append_to_git_notes` free function.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_add_with_option_like_body_round_trips() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    let mut input = note_input("decision", "--amend");
+    input.body = "-f --force --output=/tmp/should-not-exist-oss61".to_string();
+
+    let id = backend.add(input).await.expect("add");
+
+    let notes = backend
+        .list(Some("decision"), 10, false, None)
+        .await
+        .expect("list");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, id);
+    assert_eq!(notes[0].title, "--amend");
+    assert_eq!(
+        notes[0].body, "-f --force --output=/tmp/should-not-exist-oss61",
+        "option-like body must round-trip literally via GitNotesBackend::add"
+    );
+
+    assert!(!std::path::Path::new("/tmp/should-not-exist-oss61").exists());
+}

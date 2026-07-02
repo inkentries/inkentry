@@ -115,3 +115,102 @@ fn harvest_rejects_option_like_git_range() {
 
     assert!(!victim_path.exists());
 }
+
+/// Short option-shaped refs (e.g. `-1`, mimicking `git log -1`) must be
+/// rejected too, not just long `--flag=value` forms. Regression coverage
+/// for the "short option that looks like a legitimate-ish ref" edge case.
+#[test]
+fn harvest_rejects_short_option_like_branch() {
+    let temp = tempdir().unwrap();
+    init_repo(temp.path());
+
+    let config_path = write_harvest_config(
+        temp.path(),
+        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
+    );
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(temp.path())
+        .env_remove("SPELUNK_SERVER_URL")
+        .env_remove("SPELUNK_MEMORY_SERVER_URL")
+        .env_remove("SPELUNK_LLM_URL")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--branch=-1");
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
+}
+
+/// A ref value that is exactly the `--` end-of-options marker must be
+/// rejected (not silently accepted or treated as a no-op separator).
+#[test]
+fn harvest_rejects_bare_double_dash_branch() {
+    let temp = tempdir().unwrap();
+    init_repo(temp.path());
+
+    let config_path = write_harvest_config(
+        temp.path(),
+        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
+    );
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(temp.path())
+        .env_remove("SPELUNK_SERVER_URL")
+        .env_remove("SPELUNK_MEMORY_SERVER_URL")
+        .env_remove("SPELUNK_LLM_URL")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--branch=--");
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
+}
+
+/// A ref value starting with `-` but containing shell metacharacters must
+/// still be rejected by the option-like guard (belt-and-braces: no shell is
+/// ever involved since git is spawned via argv, but the leading `-` alone is
+/// grounds for rejection, and this pins that no metacharacter-based bypass
+/// exists).
+#[test]
+fn harvest_rejects_option_like_branch_with_shell_metacharacters() {
+    let temp = tempdir().unwrap();
+    init_repo(temp.path());
+
+    let victim_dir = tempdir().unwrap();
+    let victim_path = victim_dir.path().join("victim3.txt");
+
+    let config_path = write_harvest_config(
+        temp.path(),
+        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
+    );
+
+    let malicious_branch_arg = format!(
+        "--branch=--output={};touch /tmp/oss61-pwned",
+        victim_path.display()
+    );
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(temp.path())
+        .env_remove("SPELUNK_SERVER_URL")
+        .env_remove("SPELUNK_MEMORY_SERVER_URL")
+        .env_remove("SPELUNK_LLM_URL")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("harvest")
+        .arg(&malicious_branch_arg);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
+
+    assert!(!victim_path.exists());
+    assert!(!std::path::Path::new("/tmp/oss61-pwned").exists());
+}
