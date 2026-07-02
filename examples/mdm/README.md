@@ -79,6 +79,17 @@ That is the whole rollout. No config file is required for the local-only case.
 A long-lived `spelunk-server` holds the team's shared memory, and every laptop
 points at it. This shape uses all three files.
 
+> **Trust model.** A `spelunk-server` instance is a single trust domain: the
+> shared `SPELUNK_SERVER_KEY` is the only access boundary, and every keyholder
+> is a full administrator of every project on that instance — they can list,
+> read, write, supersede, archive, and delete any project's memory, not just
+> their own team's. There is no per-project or per-user ACL. If you are
+> deploying this server to more than one team or organisation that must not see
+> each other's memory, deploy **separate server instances with separate keys**
+> for each — do not put them on one shared instance and rely on project slugs
+> for isolation. See
+> [ADR-056](../../docs/adr/056-oss-server-tenancy-model.md).
+
 Steps:
 
 1. **Install the binaries** on the laptops (as in Shape A) and on the host that

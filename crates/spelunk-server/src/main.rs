@@ -126,6 +126,16 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Single-trust-domain notice (ADR-056): a keyed, non-loopback bind is a
+    // shared/team server. The shared key is the *only* boundary — every
+    // keyholder is a full administrator of every project on this instance
+    // (list, read, write, supersede, archive, delete). This is intended
+    // behaviour, not a bug; teams that must not see each other's memory need
+    // separate server instances (separate keys, separate databases), not a
+    // per-project ACL on one instance. Loopback binds are a single developer's
+    // own machine, so the notice does not apply there.
+    warn_single_trust_domain(&args.host, api_key.is_some());
+
     // Build the auth provider from the configured key.
     let auth: Arc<dyn spelunk_server::auth::AuthProvider> =
         Arc::new(ApiKeyAuth::new(api_key.clone()));
@@ -312,6 +322,31 @@ fn check_bind_safety(host: &str, key_is_set: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether a keyed, non-loopback bind is a shared/team server that should get
+/// the ADR-056 single-trust-domain notice: the shared key is the tenancy
+/// boundary, and every keyholder is a full administrator of every project on
+/// the instance — this is intended behaviour, not a defect. `false` for a
+/// loopback bind (a developer's own machine) or when no key is set
+/// (`check_bind_safety` already refuses a keyless non-loopback bind, so in
+/// practice this is never `true` with `key_is_set == false`).
+fn should_warn_single_trust_domain(host: &str, key_is_set: bool) -> bool {
+    !host_is_loopback(host) && key_is_set
+}
+
+/// Emit the ADR-056 single-trust-domain notice (see
+/// `should_warn_single_trust_domain` for the firing condition).
+fn warn_single_trust_domain(host: &str, key_is_set: bool) {
+    if should_warn_single_trust_domain(host, key_is_set) {
+        tracing::warn!(
+            "Shared server: every keyholder can read, modify and permanently delete \
+             ALL projects' memory on this server. This instance is a single trust \
+             domain — the shared key is the only access boundary, not a per-project \
+             one. Run separate servers (separate keys) if you need isolation between \
+             teams or projects. See docs/adr/056-oss-server-tenancy-model.md."
+        );
+    }
 }
 
 // ── Effective UID helper ──────────────────────────────────────────────────────
@@ -607,5 +642,46 @@ mod arg_tests {
             super::normalize_api_key(Some("  secret  ")).as_deref(),
             Some("secret")
         );
+    }
+
+    // ── ADR-056 single-trust-domain notice ──────────────────────────────────
+
+    /// The notice fires for a keyed shared bind (`0.0.0.0` + key) — the
+    /// scenario the ADR calls out: every keyholder is a full administrator of
+    /// every project on the instance, and an operator standing up a shared
+    /// server must be told that explicitly.
+    #[test]
+    fn trust_domain_warning_fires_for_non_loopback_with_key() {
+        for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            assert!(
+                super::should_warn_single_trust_domain(h, true),
+                "{h} with a key should trigger the single-trust-domain notice"
+            );
+        }
+    }
+
+    /// The notice is suppressed on loopback (a developer's own machine, not a
+    /// shared deployment) regardless of whether a key is set.
+    #[test]
+    fn trust_domain_warning_suppressed_on_loopback() {
+        for h in ["127.0.0.1", "::1", "localhost"] {
+            assert!(
+                !super::should_warn_single_trust_domain(h, true),
+                "{h} with a key should NOT trigger the notice (loopback)"
+            );
+            assert!(
+                !super::should_warn_single_trust_domain(h, false),
+                "{h} without a key should NOT trigger the notice (loopback)"
+            );
+        }
+    }
+
+    /// The notice is suppressed when no key is set. In practice
+    /// `check_bind_safety` already refuses a keyless non-loopback bind before
+    /// this check runs, but the predicate itself must not fire either way —
+    /// there is no "shared key" boundary to warn about without a key.
+    #[test]
+    fn trust_domain_warning_suppressed_without_key() {
+        assert!(!super::should_warn_single_trust_domain("0.0.0.0", false));
     }
 }
