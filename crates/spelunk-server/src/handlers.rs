@@ -103,6 +103,43 @@ fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     }
 }
 
+/// Test-only override for the generation budget `llm_generate_with_timeout`
+/// enforces. Production code always uses `super::REQUEST_TIMEOUT` (30s); this
+/// lets tests inject a millisecond-scale budget so a genuinely-hanging LLM
+/// backend can be proven cut off without the test itself waiting 30+ real
+/// seconds. `#[cfg(test)]`-gated: compiled out of (and inert in) the release
+/// binary. See `handlers::tests::explore_cuts_off_hanging_llm_backend`.
+#[cfg(test)]
+static GENERATION_TIMEOUT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<Duration>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_generation_timeout_override(d: Duration) {
+    let cell = GENERATION_TIMEOUT_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));
+    *cell.lock().expect("override mutex poisoned") = Some(d);
+}
+
+#[cfg(test)]
+fn clear_generation_timeout_override() {
+    if let Some(cell) = GENERATION_TIMEOUT_OVERRIDE.get() {
+        *cell.lock().expect("override mutex poisoned") = None;
+    }
+}
+
+#[cfg(test)]
+fn generation_timeout() -> Duration {
+    GENERATION_TIMEOUT_OVERRIDE
+        .get()
+        .and_then(|cell| *cell.lock().expect("override mutex poisoned"))
+        .unwrap_or(super::REQUEST_TIMEOUT)
+}
+
+#[cfg(not(test))]
+#[inline]
+fn generation_timeout() -> Duration {
+    super::REQUEST_TIMEOUT
+}
+
 /// Run an LLM backend's `generate` call with a wall-clock budget, so a
 /// hung/slow backend can't hold the spawned generation task (and the SSE
 /// connection + channel it feeds) open forever.
@@ -118,7 +155,10 @@ fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
 /// open indefinitely, closing that gap without changing the SSE framing.
 /// (Verified failing without this wrapper by
 /// `handlers::tests::normal_route_exceeding_timeout_returns_408`, which drove
-/// `/explore` against a backend that never returns.)
+/// `/explore` against a backend that never returns. The wrapper's own
+/// effectiveness — that it actually cuts off a hung backend within budget —
+/// is proved directly by
+/// `handlers::tests::explore_cuts_off_hanging_llm_backend`.)
 async fn llm_generate_with_timeout(
     llm: Arc<dyn spelunk_core::llm::LlmBackend>,
     messages: Vec<spelunk_core::llm::Message>,
@@ -127,18 +167,13 @@ async fn llm_generate_with_timeout(
     json_schema: Option<serde_json::Value>,
     label: &'static str,
 ) {
-    match tokio::time::timeout(
-        super::REQUEST_TIMEOUT,
-        llm.generate(&messages, max_tokens, tx, json_schema),
-    )
-    .await
-    {
+    let budget = generation_timeout();
+    match tokio::time::timeout(budget, llm.generate(&messages, max_tokens, tx, json_schema)).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!("{label} LLM generate error: {e}"),
         Err(_elapsed) => {
             tracing::warn!(
-                "{label} LLM generate exceeded the {:?} generation budget; aborting",
-                super::REQUEST_TIMEOUT
+                "{label} LLM generate exceeded the {budget:?} generation budget; aborting",
             );
             // Dropping `tx`-holding future here closes the channel; the SSE
             // stream's `rx.recv()` loop sees `None` and ends the connection
@@ -1471,6 +1506,7 @@ mod tests {
     use super::super::auth::ApiKeyAuth;
     use super::super::db::ServerDb;
     use super::super::{AppState, router};
+    use super::{clear_generation_timeout_override, set_generation_timeout_override};
 
     /// Register sqlite-vec extension once per test process.
     fn register_sqlite_vec() {
@@ -2409,6 +2445,153 @@ mod tests {
         );
 
         release_task.await.expect("release task panicked");
+    }
+
+    // ── Generation-side timeout on `/explore` and `/llm/complete` (spelunk-oss^60,
+    //    QA follow-up) ──────────────────────────────────────────────────────────
+    //
+    // `normal_route_exceeding_timeout_returns_408` above proves the *router's*
+    // `TimeoutLayer` doesn't (and structurally can't) bound `/explore` or
+    // `/llm/complete` — those handlers return their SSE `Response` immediately
+    // and hand generation to a detached `tokio::spawn`. This is the missing
+    // other half: proving `llm_generate_with_timeout` — the generation-side
+    // wrapper added to close that gap — actually cuts a hung backend off
+    // within budget, rather than just reading correct on inspection. Without
+    // this test, deleting the `tokio::time::timeout(...)` wrapper around
+    // `llm.generate(...)` in `llm_generate_with_timeout` would compile and
+    // pass every other test in this suite.
+
+    /// An LLM backend whose `generate()` never returns and never sends a
+    /// token — models a genuinely hung inference backend (wedged HTTP call,
+    /// deadlocked model runtime, etc.), the case `llm_generate_with_timeout`
+    /// exists to bound. Awaits a `Notify` that the test never fires, rather
+    /// than e.g. `std::future::pending()`, purely so it's unmistakable in a
+    /// stack trace / debugger what's being awaited if this ever fails.
+    struct HangingLlm {
+        /// Bumped once `generate()` is actually entered, so tests can assert
+        /// generation genuinely started (and wasn't e.g. skipped by a
+        /// short-circuit) before checking it gets cut off.
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl spelunk_core::llm::LlmBackend for HangingLlm {
+        async fn generate(
+            &self,
+            _messages: &[spelunk_core::llm::Message],
+            _max_tokens: usize,
+            _tx: tokio::sync::mpsc::Sender<spelunk_core::llm::Token>,
+            _json_schema: Option<serde_json::Value>,
+        ) -> anyhow::Result<()> {
+            self.entered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Never returns, never sends anything, never drops `_tx` on its
+            // own — the only way this future completes is by being dropped
+            // from outside (i.e. by `tokio::time::timeout` in
+            // `llm_generate_with_timeout` firing).
+            std::future::pending::<()>().await;
+            unreachable!("pending() never resolves");
+        }
+    }
+
+    /// `/explore` backed by a `HangingLlm` must still have its connection cut
+    /// off within the generation budget — proving `llm_generate_with_timeout`
+    /// actually bounds a hung backend, not just that the code compiles.
+    ///
+    /// Without the `tokio::time::timeout` wrapper in `llm_generate_with_timeout`
+    /// (i.e. reverting to a bare `llm.generate(...).await`), this test hangs
+    /// until the outer `#[tokio::test]` runtime / CI timeout kills it — this
+    /// was confirmed manually while writing this test (temporarily replacing
+    /// the wrapped call with the bare `.await` reproduces exactly the "200
+    /// immediately, then the SSE stream never ends" symptom QA's review
+    /// flagged) and is *not* re-verified on every run, since a test that
+    /// hangs on regression instead of failing fast would be a worse failure
+    /// mode than the gap this closes.
+    #[tokio::test]
+    async fn explore_cuts_off_hanging_llm_backend() {
+        // Millisecond-scale budget via the test-only override, so this test
+        // doesn't need to wait out the real 30s `REQUEST_TIMEOUT`. Global
+        // (process-wide) by construction, so this test must not run
+        // concurrently with anything else that spawns `llm_generate_with_timeout`
+        // under a *different* intended budget; `#[tokio::test]` gives each
+        // test its own runtime but they still share this process, so guard
+        // with a lock rather than relying on test-harness serialization.
+        static OVERRIDE_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = OVERRIDE_GUARD.lock().await;
+
+        let generation_budget = std::time::Duration::from_millis(150);
+        set_generation_timeout_override(generation_budget);
+        // Router-level TimeoutLayer is set generously long (well past the
+        // generation budget) so it's structurally impossible for it to be
+        // what cuts the connection off — isolates this test to proving the
+        // generation-side wrapper alone does the job, per
+        // `normal_route_exceeding_timeout_returns_408`'s finding that the
+        // router layer can't see this endpoint's spawned work at all.
+        let router_timeout = generation_budget * 20;
+
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let llm: Arc<dyn spelunk_core::llm::LlmBackend> = Arc::new(HangingLlm {
+            entered: entered.clone(),
+        });
+        let (base, _db) = spawn_test_server(Some(llm), router_timeout).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/v1/projects/timeout-test/explore"))
+            .json(&json!({"question": "q", "context_chunks": [], "max_turns": 1}))
+            .send()
+            .await
+            .expect("SSE connection should open");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "/explore returns its SSE Response immediately regardless of backend \
+             state — 200 here is expected and is exactly why the router-level \
+             TimeoutLayer can't bound this endpoint (see normal_route_exceeding_timeout_returns_408)"
+        );
+
+        // Read the stream until it ends (or errors), bounded by a deadline
+        // well past the generation budget but far short of what "never cut
+        // off" (i.e. the pre-fix bug) would need — if the wrapper weren't
+        // doing its job, `stream.next()` would still be pending when this
+        // deadline hits and `tokio::time::timeout` below would fire instead
+        // of the stream ending on its own, which the assertion distinguishes.
+        use futures_util::StreamExt;
+        let mut stream = resp.bytes_stream();
+        let overall_deadline = generation_budget * 10;
+        let outcome = tokio::time::timeout(overall_deadline, async {
+            loop {
+                match stream.next().await {
+                    Some(Ok(_)) => continue, // keep-alive / event; keep draining
+                    Some(Err(e)) => return Err(format!("stream errored: {e}")),
+                    None => return Ok(()), // channel closed -> stream ended cleanly
+                }
+            }
+        })
+        .await;
+
+        clear_generation_timeout_override();
+
+        assert_eq!(
+            entered.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "HangingLlm::generate must have actually been entered — otherwise this \
+             test would trivially pass without exercising the timeout wrapper at all"
+        );
+        match outcome {
+            Ok(Ok(())) => {} // stream ended on its own, within the deadline: fixed behaviour
+            Ok(Err(e)) => panic!(
+                "SSE stream errored instead of ending cleanly once the hung backend's \
+                 generation budget elapsed: {e}"
+            ),
+            Err(_elapsed) => panic!(
+                "the SSE connection was still open {overall_deadline:?} after a HangingLlm \
+                 backend started generating — llm_generate_with_timeout did not cut it off \
+                 within its {generation_budget:?} budget. This is exactly the bug QA flagged \
+                 (spelunk-oss^60): /explore's TimeoutLayer can't see spawned generation work, \
+                 so a hung backend would otherwise hold the connection open indefinitely."
+            ),
+        }
     }
 
     /// `/memory/stream` must survive well past the `TimeoutLayer` budget that
