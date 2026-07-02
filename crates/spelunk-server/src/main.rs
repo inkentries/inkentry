@@ -99,6 +99,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Normalise the API key: treat a blank/whitespace value as "no key". This
+    // matters because clap reads a *set-but-empty* env var as `Some("")` — e.g.
+    // docker-compose's `SPELUNK_SERVER_KEY=${SPELUNK_SERVER_KEY:-}` default —
+    // which must count as unauthenticated, not as a (broken, empty-token) key.
+    let api_key = normalize_api_key(args.key.as_deref());
+
+    // Bind-safety: never expose an unauthenticated server off-host. Fail fast,
+    // before touching the DB or warming the embedder.
+    check_bind_safety(&args.host, api_key.is_some())?;
+
     let db = ServerDb::open(&args.db, args.embedding_dim)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
 
@@ -109,7 +119,7 @@ async fn main() -> Result<()> {
 
     let started_by = effective_uid();
 
-    if args.key.is_none() {
+    if api_key.is_none() {
         tracing::warn!(
             "No API key configured — server is running without authentication. \
              Set --key or SPELUNK_SERVER_KEY for production use."
@@ -118,7 +128,7 @@ async fn main() -> Result<()> {
 
     // Build the auth provider from the configured key.
     let auth: Arc<dyn spelunk_server::auth::AuthProvider> =
-        Arc::new(ApiKeyAuth::new(args.key.clone()));
+        Arc::new(ApiKeyAuth::new(api_key.clone()));
 
     // Build the server-side embedder readiness slot.
     //
@@ -257,6 +267,50 @@ async fn main() -> Result<()> {
 
     axum::serve(listener, app).await?;
 
+    Ok(())
+}
+
+// ── Bind-safety guard ─────────────────────────────────────────────────────────
+
+/// Returns `true` when `host` names the loopback interface only — `127.0.0.0/8`,
+/// `::1`, or the literal `localhost`. A loopback bind is not reachable from other
+/// machines, so it is safe to serve without authentication. Anything else
+/// (`0.0.0.0`, `::`, a LAN/public IP, an unresolved hostname) is treated as
+/// off-host and is *not* loopback.
+fn host_is_loopback(host: &str) -> bool {
+    let h = host.trim();
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Normalise a configured API key: a blank/whitespace value (including the
+/// `Some("")` that clap yields for a set-but-empty `SPELUNK_SERVER_KEY`) becomes
+/// `None`, so "empty key" is treated as "no key" everywhere — both by the
+/// bind-safety guard and by the auth provider.
+fn normalize_api_key(key: Option<&str>) -> Option<String> {
+    key.map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_owned)
+}
+
+/// Refuse to expose an *unauthenticated* server off-host. Binding to any
+/// non-loopback address makes the endpoint reachable from other machines; with
+/// no API key that would be an open, unauthenticated server. Loopback binds (the
+/// default) are always allowed. Setting `--key` / `SPELUNK_SERVER_KEY` unlocks a
+/// non-loopback bind (shared/team server, the container entrypoint's `0.0.0.0`).
+fn check_bind_safety(host: &str, key_is_set: bool) -> Result<()> {
+    if !host_is_loopback(host) && !key_is_set {
+        anyhow::bail!(
+            "Refusing to bind to non-loopback address '{host}' without authentication.\n\
+             A server reachable from other machines must require an API key. Either:\n  \
+             • set --key / SPELUNK_SERVER_KEY to expose it on {host}, or\n  \
+             • bind to loopback (the default --host 127.0.0.1) for local-only use."
+        );
+    }
     Ok(())
 }
 
@@ -468,5 +522,90 @@ mod arg_tests {
     fn explicit_wildcard_host_is_honoured() {
         let args = Args::parse_from(["spelunk-server", "--host", "0.0.0.0"]);
         assert_eq!(args.host, "0.0.0.0");
+    }
+
+    #[test]
+    fn loopback_hosts_recognised() {
+        for h in [
+            "127.0.0.1",
+            "127.0.0.5",
+            "::1",
+            "localhost",
+            "LocalHost",
+            " 127.0.0.1 ",
+        ] {
+            assert!(super::host_is_loopback(h), "{h} should be loopback");
+        }
+    }
+
+    #[test]
+    fn non_loopback_hosts_recognised() {
+        for h in [
+            "0.0.0.0",
+            "::",
+            "192.168.1.10",
+            "10.0.0.2",
+            "example.com",
+            "",
+        ] {
+            assert!(!super::host_is_loopback(h), "{h} should NOT be loopback");
+        }
+    }
+
+    /// Loopback binds never require a key (local-only, unreachable off-host).
+    #[test]
+    fn loopback_without_key_is_allowed() {
+        for h in ["127.0.0.1", "::1", "localhost"] {
+            assert!(
+                super::check_bind_safety(h, false).is_ok(),
+                "{h} without a key should be allowed"
+            );
+        }
+    }
+
+    /// A non-loopback bind without a key is refused — no open, unauthenticated
+    /// server reachable from other machines.
+    #[test]
+    fn non_loopback_without_key_is_refused() {
+        for h in ["0.0.0.0", "::", "192.168.1.10"] {
+            assert!(
+                super::check_bind_safety(h, false).is_err(),
+                "{h} without a key must be refused"
+            );
+        }
+    }
+
+    /// Setting an API key unlocks a non-loopback bind (shared/team server).
+    #[test]
+    fn non_loopback_with_key_is_allowed() {
+        for h in ["0.0.0.0", "192.168.1.10"] {
+            assert!(
+                super::check_bind_safety(h, true).is_ok(),
+                "{h} with a key should be allowed"
+            );
+        }
+    }
+
+    /// A blank/whitespace key (incl. clap's `Some("")` for a set-but-empty
+    /// `SPELUNK_SERVER_KEY`, e.g. docker-compose's default) normalises to `None`
+    /// — otherwise a keyless container would slip past the bind-safety guard.
+    #[test]
+    fn blank_api_key_normalises_to_none() {
+        assert_eq!(super::normalize_api_key(None), None);
+        assert_eq!(super::normalize_api_key(Some("")), None);
+        assert_eq!(super::normalize_api_key(Some("   ")), None);
+        assert_eq!(super::normalize_api_key(Some("\t\n")), None);
+    }
+
+    #[test]
+    fn real_api_key_is_preserved_and_trimmed() {
+        assert_eq!(
+            super::normalize_api_key(Some("secret")).as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            super::normalize_api_key(Some("  secret  ")).as_deref(),
+            Some("secret")
+        );
     }
 }
