@@ -364,11 +364,11 @@ cargo audit
 
 ## Dependency Notes
 
-- Tree-sitter grammars come from **`ast-grep-language`** (a single crate that
-  bundles 27 language grammars, ABI-aligned to the `tree-sitter` core). Bump
-  that one crate instead of many `tree-sitter-*` deps. `proto` and `sql` are the
-  only exceptions — ast-grep-language doesn't ship them, so they stay on the
-  standalone `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
+- Tree-sitter grammars come from **`ast-grep-language`** (a single crate,
+  ABI-aligned to the `tree-sitter` core). Bump that one crate instead of many
+  `tree-sitter-*` deps. `proto` and `sql` are the only exceptions —
+  ast-grep-language doesn't ship them, so they stay on the standalone
+  `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
   `tree-sitter` core, check that `ast-grep-language` (and the two standalone
   grammars) still resolve to the same runtime line. `ast-grep-core` provides the
   in-process structural-search fallback (`crates/spelunk-core/src/search/live.rs`).

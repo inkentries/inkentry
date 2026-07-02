@@ -92,9 +92,7 @@ spelunk search <query> [options]
 
 `semantic`/`hybrid` uses LinearRAG: a two-stage entity-activation + personalised
 PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
-`ast-grep` need no embedding model or server. Structural (`ast-grep`) search
-runs **in-process** — it is compiled into the `spelunk` binary, so no external
-`ast-grep` tool needs to be installed.
+`ast-grep` need no embedding model or server.
 
 **Example:**
 
@@ -239,7 +237,7 @@ spelunk graph <symbol> [options]
 | `--format text\|json\|jsonl` | text | Output format |
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
-| `--live` | false | Skip the index and scan live files with in-process structural matching (no external tool required) |
+| `--live` | false | Skip the index and scan live files directly |
 
 **Example:**
 
