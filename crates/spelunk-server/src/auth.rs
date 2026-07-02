@@ -130,4 +130,115 @@ mod tests {
         let result = auth.authenticate(&headers).await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn rejects_missing_authorization_header() {
+        // A key is configured but the request carries no header at all —
+        // distinct code path from a present-but-wrong Bearer token.
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = HeaderMap::new();
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_provided_token() {
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = headers_with_bearer("");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_prefix_of_real_key() {
+        // A token that is an exact prefix of the configured key is the
+        // canonical case a naive byte-by-byte compare would leak timing
+        // information on (more matching bytes before the first mismatch).
+        // Hashing first means this has no timing advantage over any other
+        // wrong key.
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = headers_with_bearer("correct-horse");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_key_plus_extra_suffix() {
+        // The inverse of the prefix case: provided token is the real key
+        // with trailing bytes appended.
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = headers_with_bearer("correct-horse-battery-staple-extra");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_same_length_single_byte_difference() {
+        // Same length as the real key, differs only in the last byte —
+        // complements the existing "differs in length and first byte" test
+        // by ruling out any residual length-based or leading-byte shortcut.
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = headers_with_bearer("correct-horse-battery-staplE");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_key_when_configured_key_is_empty() {
+        // Degenerate config: an empty string was configured as the key.
+        // This must still require an exact (empty) match, not silently
+        // behave like "no key configured" (which is represented by `None`,
+        // not `Some("")`).
+        let auth = ApiKeyAuth::new(Some(String::new()));
+        let headers = headers_with_bearer("anything");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn accepts_empty_key_with_empty_token() {
+        let auth = ApiKeyAuth::new(Some(String::new()));
+        let headers = headers_with_bearer("");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejects_very_long_wrong_token() {
+        // Guards against any accidental length-dependent behavior
+        // (e.g. panics, allocation issues) reappearing on large input,
+        // since hashing must handle arbitrary-length tokens uniformly.
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let long_wrong = "x".repeat(10_000);
+        let headers = headers_with_bearer(&long_wrong);
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_unicode_token_against_ascii_key() {
+        let auth = ApiKeyAuth::new(Some("correct-horse-battery-staple".into()));
+        let headers = headers_with_bearer("correct-hörse-bättery-staplé");
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_unicode_key_even_with_matching_unicode_token() {
+        // `HeaderValue::to_str()` (called in `authenticate`) rejects any
+        // non-visible-ASCII bytes per RFC 7230, so a raw UTF-8 bearer token
+        // is always unauthenticated — even a byte-for-byte match against a
+        // (pathological) unicode configured key never reaches the digest
+        // compare. Uses `HeaderValue::from_bytes` directly since
+        // `HeaderValue::from_str`/`format!` would panic first on non-ASCII
+        // input, which would only test the test helper, not `authenticate`.
+        let auth = ApiKeyAuth::new(Some("clé-secrète-🔑".into()));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_bytes("Bearer clé-secrète-🔑".as_bytes()).unwrap(),
+        );
+        let result = auth.authenticate(&headers).await;
+        assert!(result.is_err());
+    }
 }
