@@ -51,4 +51,7 @@ USER spelunk
 EXPOSE 7777
 
 ENTRYPOINT ["/usr/local/bin/spelunk-server"]
-CMD ["--db", "/data/spelunk.db"]
+# The server default host is 127.0.0.1 (loopback). Inside a container that would
+# only be reachable from within the container, so bind all interfaces explicitly
+# to keep the published `-p 7777:7777` mapping reachable.
+CMD ["--host", "0.0.0.0", "--db", "/data/spelunk.db"]

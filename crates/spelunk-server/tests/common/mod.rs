@@ -52,7 +52,7 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> spelunk_server::
         db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
         auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(auth_key)),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
-        embedder: None,
+        embedder: spelunk_server::EmbedderSlot::disabled(),
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(1000, 60)),

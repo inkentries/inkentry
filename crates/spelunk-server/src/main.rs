@@ -7,7 +7,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use spelunk_server::auth::ApiKeyAuth;
 use spelunk_server::db::ServerDb;
 use spelunk_server::rate_limiter::RateLimiter;
-use spelunk_server::{ApiDoc, AppState, default_conflict_threshold, router};
+use spelunk_server::{ApiDoc, AppState, EmbedderSlot, default_conflict_threshold, router};
 use utoipa::OpenApi;
 
 #[cfg(feature = "embed-native")]
@@ -25,8 +25,11 @@ struct Args {
     #[arg(long, default_value = "7777")]
     port: u16,
 
-    /// Host/address to bind
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Host/address to bind. Defaults to loopback (`127.0.0.1`) — the safe,
+    /// firewall-exempt posture for a local server. Pass `--host 0.0.0.0`
+    /// explicitly to expose the server on all interfaces (e.g. a shared/team
+    /// server or the container image, which sets this in its entrypoint).
+    #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
     /// Path to the server SQLite database
@@ -117,12 +120,17 @@ async fn main() -> Result<()> {
     let auth: Arc<dyn spelunk_server::auth::AuthProvider> =
         Arc::new(ApiKeyAuth::new(args.key.clone()));
 
-    // Build the optional server-side embedder.
-    let embedder: Option<Arc<dyn spelunk_core::embeddings::EmbeddingBackend>> = if let Some(
-        base_url,
-    ) =
-        args.embedding_url
-    {
+    // Build the server-side embedder readiness slot.
+    //
+    // The external `--embedding-url` backend is ready synchronously (it has no
+    // local model to warm up), so it starts `ready`. The bundled native embedder
+    // is CPU-/download-heavy, so we start the slot `loading` and defer the actual
+    // `NativeEmbedder::load()` to a background task spawned *after* the listener
+    // binds (below) — that way `/v1/health` is live immediately with
+    // `embedder.state = "loading"` instead of being dark for the whole first-run
+    // model download. When no embedder is configured at all, the slot is
+    // `disabled` (embed endpoints return a permanent 400).
+    let (embedder, load_native): (EmbedderSlot, bool) = if let Some(base_url) = args.embedding_url {
         let model = if args.embedding_model.is_empty() {
             "default".to_string()
         } else {
@@ -133,35 +141,22 @@ async fn main() -> Result<()> {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .context("building HTTP client for server-side embedder")?;
-        Some(Arc::new(ServerEmbedder {
-            client,
-            base_url,
-            model,
-        }))
+        let backend: Arc<dyn spelunk_core::embeddings::EmbeddingBackend> =
+            Arc::new(ServerEmbedder {
+                client,
+                base_url,
+                model,
+            });
+        (EmbedderSlot::ready(backend), false)
     } else {
         // No --embedding-url: try the bundled native embedder (embed-native feature).
         #[cfg(feature = "embed-native")]
         {
-            match embedder_native::NativeEmbedder::load() {
-                Ok(native) => {
-                    tracing::info!(
-                        "native embedding model loaded (dim={})",
-                        embedder_native::DIM
-                    );
-                    Some(Arc::new(native) as Arc<dyn spelunk_core::embeddings::EmbeddingBackend>)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "native embedding model failed to load: {e}; \
-                             running without embedder (set --embedding-url to override)"
-                    );
-                    None
-                }
-            }
+            (EmbedderSlot::loading(), true)
         }
         #[cfg(not(feature = "embed-native"))]
         {
-            None
+            (EmbedderSlot::disabled(), false)
         }
     };
 
@@ -207,13 +202,59 @@ async fn main() -> Result<()> {
         started_by,
     };
 
+    // Keep a handle to the embedder slot so the background load task can flip it
+    // `loading → ready | unavailable` after the listener binds.
+    let embedder_slot = state.embedder.clone();
+
     let app = router(state);
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
         .context("parsing bind address")?;
 
-    tracing::info!("spelunk-server listening on http://{addr}");
+    // Bind first: `/v1/health` must be reachable the instant the port is bound,
+    // *before* the (potentially multi-minute, ~339 MB) native model download.
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("spelunk-server listening on http://{addr}");
+
+    // Load the native embedder on a background task now that health is live.
+    // `NativeEmbedder::load()` is blocking/CPU-heavy, so run it on the blocking
+    // pool; publish the backend into the slot on success (state → ready) or
+    // record the failure (state → unavailable). Only the native path warms up
+    // here — external/disabled slots are already in a terminal state.
+    #[cfg(feature = "embed-native")]
+    if load_native {
+        let slot = embedder_slot.clone();
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(embedder_native::NativeEmbedder::load).await {
+                Ok(Ok(native)) => {
+                    tracing::info!(
+                        "native embedding model loaded (dim={})",
+                        embedder_native::DIM
+                    );
+                    slot.set_ready(
+                        Arc::new(native) as Arc<dyn spelunk_core::embeddings::EmbeddingBackend>
+                    );
+                }
+                Ok(Err(e)) => {
+                    let msg = format!("{e}");
+                    tracing::warn!(
+                        "native embedding model failed to load: {msg}; \
+                         embedder unavailable (set --embedding-url to override)"
+                    );
+                    slot.set_unavailable(msg);
+                }
+                Err(join_err) => {
+                    let msg = format!("embedder load task panicked: {join_err}");
+                    tracing::warn!("{msg}");
+                    slot.set_unavailable(msg);
+                }
+            }
+        });
+    }
+    // Silence "unused" for the non-embed-native build (no background load).
+    #[cfg(not(feature = "embed-native"))]
+    let _ = (load_native, &embedder_slot);
+
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -399,5 +440,33 @@ impl spelunk_core::llm::LlmBackend for ServerLlm {
         }
 
         Ok(())
+    }
+}
+
+// ── Args default tests ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod arg_tests {
+    use super::Args;
+    use clap::Parser;
+
+    /// The server binary default host must be loopback (127.0.0.1), not the
+    /// wildcard (0.0.0.0). The wildcard bind is now an explicit `--host 0.0.0.0`
+    /// opt-in (loopback is firewall-exempt and the safer default). oss^50 / req #6.
+    #[test]
+    fn default_host_is_loopback() {
+        let args = Args::parse_from(["spelunk-server"]);
+        assert_eq!(
+            args.host, "127.0.0.1",
+            "server binary default host must be 127.0.0.1 (loopback), not the wildcard"
+        );
+    }
+
+    /// `--host 0.0.0.0` still binds all interfaces when explicitly requested
+    /// (e.g. the container entrypoint / a shared team server).
+    #[test]
+    fn explicit_wildcard_host_is_honoured() {
+        let args = Args::parse_from(["spelunk-server", "--host", "0.0.0.0"]);
+        assert_eq!(args.host, "0.0.0.0");
     }
 }
