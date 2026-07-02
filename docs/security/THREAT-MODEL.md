@@ -168,6 +168,7 @@ docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
 | Path traversal via project_id or note body to read arbitrary server files | B | Low | High | project_id is a DB-assigned integer; note body is stored as-is but never executed. No file reads from user input. |
+| Git argument injection via `spelunk memory harvest --branch`/`--git-range` (e.g. `--branch=--output=<path>`) forwarded to `git log` with no `--` separator, letting an option-shaped value be parsed as a git flag instead of a ref (arbitrary local file clobber) | A | Low | Medium | Fixed: `reject_option_like_ref()` rejects any ref, or either endpoint of an `A..B` range, starting with `-` before the subprocess spawns; both `git log` invocations also append a trailing `--` separator as defense-in-depth. Same review applied to the git-notes write path (`git_notes/mod.rs`): all `<object>` args to `notes show`/`add` are `--`-guarded, and note bodies are written via stdin (`-F -`) instead of `-m <arg>`, so a body can't be argv-parsed as an option or exposed on `ps`. |
 
 ### D — Denial of Service
 
