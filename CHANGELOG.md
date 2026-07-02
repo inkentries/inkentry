@@ -9,6 +9,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Suppressed two `quick-xml` DoS advisories with no upstream fix
+  (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
+  the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during
+  `spelunk index`; both crates are on their latest release and still pin
+  `quick-xml < 0.41`, where the fixes land, so there is no version to upgrade to.
+  The exposure is a local denial-of-service while indexing a maliciously crafted
+  office document (no memory unsafety, no data exposure). The advisories are
+  ignored in `.cargo/audit.toml` and `deny.toml` with a re-check note, to be
+  dropped once the parsers bump `quick-xml`. The vestigial repo-root `audit.toml`
+  (never read by `cargo audit`, which loads `.cargo/audit.toml`) was removed.
+
 ### Fixed
 
 - **First-run auto-start no longer misreports failure while the model loads.**

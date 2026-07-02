@@ -1,0 +1,28 @@
+[advisories]
+# Active vulnerability ignores.
+#
+# RUSTSEC-2026-0187 (lopdf: stack overflow via deeply nested PDF objects) was fixed by
+#   upgrading lopdf 0.41 -> 0.42 in crates/spelunk-core (optional `rich-formats` feature),
+#   not by ignoring it.
+# RUSTSEC-2026-0097 (rand 0.10.0 pulled via the old lopdf) no longer applies after that bump
+#   — the tree now resolves rand 0.10.1 — so its previous ignore was removed.
+#
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195 (quick-xml DoS: quadratic run time on duplicate
+#   attribute names, and unbounded namespace-declaration allocation in `NsReader`) are both
+#   fixed only in quick-xml >= 0.41.0. We pull quick-xml transitively through two document
+#   parsers used by `spelunk index`:
+#     - calamine 0.35.0 (latest) -> quick-xml ^0.39  (XLSX/ODS spreadsheet reader)
+#     - docx-rs   0.4.20 (latest) -> quick-xml ^0.36  (DOCX reader)
+#   Both are on their newest release and neither has moved to quick-xml 0.41, so there is no
+#   patched version to upgrade to. The risk is a local denial-of-service while indexing a
+#   maliciously crafted office document (no memory unsafety, no data exposure). Ignored until
+#   calamine and docx-rs publish releases that depend on quick-xml >= 0.41.
+#   Re-check: `cargo update` + drop these ignores once both parents bump quick-xml.
+#
+# `cargo audit` still prints three informational `unmaintained` warnings
+#   (paste RUSTSEC-2024-0436, proc-macro-error2 RUSTSEC-2026-0173, ttf-parser
+#   RUSTSEC-2026-0192); these are warnings, not vulnerabilities, and do not fail the audit.
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
