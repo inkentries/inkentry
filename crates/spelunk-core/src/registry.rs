@@ -483,6 +483,7 @@ mod tests {
     /// `.spelunk` dir survived). A symlink there — attacker-planted or from a
     /// poisoned registry row — must not turn routine cleanup into an
     /// arbitrary recursive delete outside the project root.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn autoclean_skips_symlinked_spelunk_dir() {
