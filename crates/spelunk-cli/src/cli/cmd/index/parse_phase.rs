@@ -20,6 +20,33 @@ use crate::{
     storage::Database,
 };
 
+/// Upper bound on the size of any single file read into memory during
+/// indexing, checked via `metadata().len()` *before* the file is opened for
+/// reading. Applied uniformly to every format (text, markdown, tree-sitter
+/// source, PDF, DOCX, XLSX, …) — a single gate, not one per branch — so a
+/// multi-GB file (or a compression-bomb office/PDF doc) can't be read fully
+/// into memory and OOM-kill the indexer. This is distinct from (and
+/// complementary to) `MAX_PARSE_BYTES` in `spelunk_core::indexer::parser`,
+/// which only bounds how much of an *already-read* buffer tree-sitter will
+/// attempt to GLR-parse before falling back to a sliding window.
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Return `true` (and log a warning) if `path` is over `MAX_FILE_BYTES`,
+/// checked via a `metadata()` call — no file content is read either way.
+/// Callers must skip the file without reading it when this returns `true`.
+fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_FILE_BYTES => {
+            tracing::warn!(
+                "skipping {path_str}: file too large ({} bytes > {MAX_FILE_BYTES} byte cap)",
+                meta.len()
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(super) struct ParseResult {
     /// (chunk_id, embedding_text) pairs awaiting embedding.
     pub chunk_ids_and_texts: Vec<(i64, String)>,
@@ -179,6 +206,10 @@ fn process_doc_file(
     args: &IndexArgs,
     acc: &mut ParseAcc,
 ) -> Result<bool> {
+    if is_file_too_large(path, path_str) {
+        acc.skipped += 1;
+        return Ok(true);
+    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -211,6 +242,10 @@ fn process_pdf_file(
     args: &IndexArgs,
     acc: &mut ParseAcc,
 ) -> Result<bool> {
+    if is_file_too_large(path, path_str) {
+        acc.skipped += 1;
+        return Ok(true);
+    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -273,6 +308,10 @@ fn process_text_file(
 
     // Skip binary files (e.g. compiled output with wrong extension)
     if matches!(language, "text" | "markdown") && is_binary_file(path) {
+        return Ok(());
+    }
+    if is_file_too_large(path, path_str) {
+        acc.skipped += 1;
         return Ok(());
     }
     let source = match std::fs::read_to_string(path) {
@@ -405,4 +444,124 @@ fn cleanup_stale(files: &[ignore::DirEntry], root: &std::path::Path, db: &Databa
         }
     }
     Ok(removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::OnceLock;
+
+    /// Register the sqlite-vec extension exactly once per test process.
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn open_db() -> Database {
+        register_sqlite_vec();
+        Database::open(std::path::Path::new(":memory:")).expect("open in-memory Database")
+    }
+
+    fn default_args(path: std::path::PathBuf) -> IndexArgs {
+        IndexArgs {
+            path,
+            db: None,
+            batch_size: 64,
+            force: false,
+            recount: false,
+            no_summaries: false,
+            summary_batch_size: 10,
+            background_phases: false,
+            detach: false,
+        }
+    }
+
+    /// A sparse file whose reported length is over `MAX_FILE_BYTES`, created
+    /// via `set_len` so no actual bytes are written/allocated on disk — the
+    /// test itself must not read megabytes of data to prove the cap works.
+    fn make_oversized_sparse_file() -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().expect("create temp file");
+        file.as_file()
+            .set_len(MAX_FILE_BYTES + 1)
+            .expect("set_len on temp file");
+        file
+    }
+
+    // ── is_file_too_large ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_file_too_large_true_over_cap() {
+        let file = make_oversized_sparse_file();
+        assert!(is_file_too_large(file.path(), "oversized.txt"));
+    }
+
+    #[test]
+    fn is_file_too_large_false_under_cap() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"small file content").unwrap();
+        assert!(!is_file_too_large(file.path(), "small.txt"));
+    }
+
+    // ── process_text_file: oversized files are skipped before any read ──────
+
+    /// An oversized text file must be skipped without ever being read into
+    /// memory. We assert this indirectly but strongly: `process_text_file`
+    /// only calls `db.upsert_file` (recording a content hash) *after*
+    /// `std::fs::read_to_string` succeeds. If the size gate didn't
+    /// short-circuit before the read, the file would still get indexed (a
+    /// sparse file reads back as all-zero bytes, which is valid UTF-8) and
+    /// `db.file_hash` would return `Some(..)`. Asserting it stays `None`
+    /// proves the read (and everything downstream of it) never happened —
+    /// not just that some later step errored out.
+    #[test]
+    fn process_text_file_oversized_is_skipped_before_read() {
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        // `.rs` (tree-sitter language) rather than `.txt`, so the unrelated
+        // is_binary_file() sniff (which only applies to "text"/"markdown"
+        // languages) doesn't short-circuit before we reach the size gate —
+        // a sparse file reads back as all-zero bytes, which is_binary_file
+        // would otherwise flag as binary regardless of the size cap.
+        let path = dir.path().join("huge.rs");
+        {
+            let f = std::fs::File::create(&path).unwrap();
+            f.set_len(MAX_FILE_BYTES + 1).unwrap();
+        }
+        let args = default_args(dir.path().to_path_buf());
+        let mut acc = ParseAcc {
+            out: Vec::new(),
+            indexed: 0,
+            skipped: 0,
+        };
+
+        let path_str = "huge.rs";
+        let result = process_text_file(&path, path_str, &db, &args, &mut acc);
+
+        assert!(result.is_ok(), "oversized file must be skipped, not error");
+        assert_eq!(acc.indexed, 0, "oversized file must not be indexed");
+        assert_eq!(acc.skipped, 1, "oversized file must be counted as skipped");
+        assert!(
+            db.file_hash(path_str).unwrap().is_none(),
+            "oversized file must never reach upsert_file — proves the read never happened"
+        );
+    }
+
+    /// A file just at the cap boundary is allowed through to the normal read
+    /// path (sanity check that the gate uses `>`, not `>=`, matching the doc
+    /// comment "over the size cap").
+    #[test]
+    fn process_text_file_at_cap_boundary_is_not_skipped_by_size_gate() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        // Exactly at the cap: must NOT be flagged as too large.
+        file.as_file().set_len(MAX_FILE_BYTES).unwrap();
+        assert!(!is_file_too_large(file.path(), "boundary.bin"));
+    }
 }

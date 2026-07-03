@@ -415,6 +415,75 @@ pub fn router_with_limits(
         .with_state(state)
 }
 
+// ── AppError response mapping tests ────────────────────────────────────────────
+
+#[cfg(test)]
+mod app_error_tests {
+    use axum::response::IntoResponse;
+
+    use super::AppError;
+    use crate::db::DimensionMismatch;
+
+    /// Extract the response status + JSON body as a string for assertions.
+    async fn body_string(resp: axum::response::Response) -> (axum::http::StatusCode, String) {
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// A `DimensionMismatch` wrapped in `AppError::Internal` must map to a 400
+    /// with the typed, safe message — not fall through to the generic 500.
+    #[tokio::test]
+    async fn dimension_mismatch_maps_to_typed_bad_request() {
+        let err = anyhow::Error::new(DimensionMismatch {
+            slug: "proj".to_string(),
+            expected: 896,
+            got: 4,
+        });
+        let (status, body) = body_string(AppError::Internal(err).into_response()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(body.contains("dimension mismatch"));
+        assert!(body.contains("proj"));
+    }
+
+    /// Any other error — even one whose `Display` text happens to contain the
+    /// words "mismatch" or "required" — must NEVER have its raw text reach the
+    /// client body. Only the fixed, generic "Internal server error" message is
+    /// allowed through for `AppError::Internal` errors that aren't the one
+    /// explicitly-typed, known-safe variant. This is the regression test for
+    /// the substring-sniffing leak: the old code matched on `msg.contains(...)`
+    /// and echoed the raw error string back to the client.
+    #[tokio::test]
+    async fn generic_internal_error_never_leaks_raw_text_even_with_trigger_words() {
+        let secret_path = "/Users/johan/.ssh/id_ed25519";
+        let err = anyhow::anyhow!(
+            "column count mismatch: table 'chunks' required 12 columns but got 3 at {secret_path}"
+        );
+        let (status, body) = body_string(AppError::Internal(err).into_response()).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!body.contains("mismatch"));
+        assert!(!body.contains("required"));
+        assert!(!body.contains(secret_path));
+        assert!(!body.contains("chunks"));
+        assert_eq!(
+            body,
+            r#"{"error":{"code":"internal_error","message":"Internal server error"}}"#
+        );
+    }
+
+    /// A plain anyhow error with no special substrings still gets the generic
+    /// message (baseline, no leak).
+    #[tokio::test]
+    async fn plain_internal_error_returns_generic_message() {
+        let err = anyhow::anyhow!("disk I/O error at /var/lib/spelunk/server.db");
+        let (status, body) = body_string(AppError::Internal(err).into_response()).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!body.contains("/var/lib/spelunk"));
+    }
+}
+
 // ── OpenAPI spec endpoint ─────────────────────────────────────────────────────
 
 /// Serve the OpenAPI spec as JSON. Import into Postman via
@@ -530,12 +599,14 @@ impl IntoResponse for AppError {
                 }
             }
             AppError::Internal(e) => {
-                let msg = e.to_string();
-                // Surface dimension-mismatch and other user-facing errors as 400.
-                if msg.contains("mismatch") || msg.contains("required") {
+                // Only a known, explicitly-typed user-facing error is ever
+                // surfaced to the client; everything else gets a generic
+                // message so raw error text (paths, SQL, etc.) never reaches
+                // the response body. No substring sniffing of the message.
+                if let Some(mismatch) = e.downcast_ref::<crate::db::DimensionMismatch>() {
                     (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorBody::new("bad_request", &msg)),
+                        Json(ErrorBody::new("bad_request", &mismatch.to_string())),
                     )
                         .into_response()
                 } else {

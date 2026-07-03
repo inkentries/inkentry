@@ -2140,6 +2140,29 @@ mod tests {
         );
     }
 
+    /// `ServerDb::upsert_project`'s own per-project dimension check (distinct
+    /// from the server-wide `validate_embedding_dim` guard exercised above)
+    /// must return the typed `DimensionMismatch` error rather than a plain
+    /// `anyhow` string. The regression coverage for how that error then
+    /// renders over HTTP (safe 400, no substring sniffing, no raw text) lives
+    /// in `app_error_tests` in `lib.rs`, which exercises
+    /// `AppError::into_response` directly.
+    #[test]
+    fn upsert_project_dimension_mismatch_is_typed_error() {
+        register_sqlite_vec();
+        let db =
+            ServerDb::open(std::path::Path::new(":memory:"), 4).expect("open in-memory server db");
+        db.upsert_project("proj", 4).expect("first upsert sets dim");
+        let err = db
+            .upsert_project("proj", 7)
+            .expect_err("second upsert with different dim must error");
+        let mismatch = err
+            .downcast_ref::<super::super::db::DimensionMismatch>()
+            .expect("error must be the typed DimensionMismatch, not a generic anyhow error");
+        assert_eq!(mismatch.expected, 4);
+        assert_eq!(mismatch.got, 7);
+    }
+
     /// A correctly-sized title/body/vector must still succeed (guards against
     /// an off-by-one in the cap checks rejecting valid input).
     #[tokio::test]

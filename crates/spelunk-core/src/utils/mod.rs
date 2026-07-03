@@ -76,6 +76,40 @@ pub fn effective_format(format: &str) -> &str {
     }
 }
 
+/// Quote a user-supplied search term as a literal FTS5 string, so it is
+/// always treated as plain text rather than FTS5 query syntax.
+///
+/// FTS5 `MATCH` interprets punctuation like `"`, `:`, `(`, `)`, `*`, `-`,
+/// `OR`/`AND`/`NOT` as query-language syntax. Passing a user's raw search
+/// term straight through can throw a parse error (which would otherwise leak
+/// as a raw internal error to the caller) or silently change the query's
+/// meaning. Wrapping the whole term in double quotes forces FTS5 to treat it
+/// as one literal string token; any internal `"` is escaped by doubling it
+/// (`"` → `""`), per FTS5's string-literal escaping rule. Advanced FTS query
+/// syntax (column filters, boolean operators, prefix matching, …) is
+/// intentionally not exposed — every term is always literal.
+///
+/// An empty term quotes to `""`, which is a valid (empty) FTS5 string that
+/// simply matches nothing.
+///
+/// Embedded NUL bytes (`\0`) are stripped before quoting. FTS5's query-string
+/// parser (independent of SQLite's NUL-safe TEXT binding) treats `\0` as an
+/// early string terminator, so the closing `"` this function appends would
+/// never be seen by FTS5 and a raw "unterminated string" parse error would
+/// leak to the caller instead of being treated as part of the literal.
+pub fn fts5_quote_literal(term: &str) -> String {
+    let mut out = String::with_capacity(term.len() + 2);
+    out.push('"');
+    for c in term.chars().filter(|&c| c != '\0') {
+        if c == '"' {
+            out.push('"');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 /// Strip ANSI escape sequences and unsafe control characters from a string.
 ///
 /// Allows newline, carriage return, and tab. Strips all other C0 control
@@ -240,6 +274,52 @@ mod tests {
         // already-forward-slash and bare names are unchanged
         assert_eq!(normalize_index_path("src/lib.rs"), "src/lib.rs");
         assert_eq!(normalize_index_path("lib.rs"), "lib.rs");
+    }
+
+    // ── fts5_quote_literal ───────────────────────────────────────────────────
+
+    #[test]
+    fn fts5_quote_plain_term() {
+        assert_eq!(fts5_quote_literal("hello world"), "\"hello world\"");
+    }
+
+    #[test]
+    fn fts5_quote_escapes_internal_quotes() {
+        assert_eq!(fts5_quote_literal("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn fts5_quote_colon_term_stays_literal() {
+        // `foo:` looks like an FTS5 column filter; quoting keeps it literal.
+        assert_eq!(fts5_quote_literal("foo:bar"), "\"foo:bar\"");
+    }
+
+    #[test]
+    fn fts5_quote_boolean_keywords_stay_literal() {
+        assert_eq!(fts5_quote_literal("a OR NOT b"), "\"a OR NOT b\"");
+    }
+
+    #[test]
+    fn fts5_quote_empty_term() {
+        assert_eq!(fts5_quote_literal(""), "\"\"");
+    }
+
+    #[test]
+    fn fts5_quote_near_keyword_stays_literal() {
+        assert_eq!(fts5_quote_literal("a NEAR/3 b"), "\"a NEAR/3 b\"");
+    }
+
+    #[test]
+    fn fts5_quote_consecutive_internal_quotes_all_escaped() {
+        // Every internal `"` must be doubled, including runs of them.
+        assert_eq!(fts5_quote_literal("\"\"\""), "\"\"\"\"\"\"\"\"");
+    }
+
+    #[test]
+    fn fts5_quote_embedded_nul_is_stripped() {
+        let term = "before\0after";
+        let quoted = fts5_quote_literal(term);
+        assert_eq!(quoted, "\"beforeafter\"");
     }
 
     // ── strip_ansi ────────────────────────────────────────────────────────────
