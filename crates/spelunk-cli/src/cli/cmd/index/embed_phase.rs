@@ -82,9 +82,26 @@ pub(super) async fn run_embed_phase(
         ProgressBar::hidden()
     };
 
+    // Draw the bar immediately, before the first (possibly long) request blocks,
+    // so the embedding phase shows visible movement within ~1 s of parsing
+    // finishing instead of only after the first batch round-trip returns
+    // (spelunk-oss^73). The steady tick animates the spinner while a request is
+    // in flight so a single slow batch never looks frozen.
+    bar.set_message("awaiting first batch\u{2026}");
+    bar.enable_steady_tick(std::time::Duration::from_millis(120));
+    bar.tick();
+
+    let num_batches = total.div_ceil(batch_size as u64).max(1);
     let mut embedded = 0u64;
 
-    for batch in chunk_ids_and_texts.chunks(batch_size) {
+    for (batch_idx, batch) in chunk_ids_and_texts.chunks(batch_size).enumerate() {
+        // Show which batch is in flight so a single slow request reads as
+        // "waiting on batch N/M", not a frozen bar (spelunk-oss^73).
+        bar.set_message(format!(
+            "sent batch {}/{num_batches}, awaiting response\u{2026}",
+            batch_idx + 1,
+        ));
+
         let req_chunks: Vec<ReqChunk> = batch
             .iter()
             .map(|(id, text)| ReqChunk {
