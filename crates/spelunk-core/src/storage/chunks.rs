@@ -54,6 +54,41 @@ impl Database {
         Ok(count)
     }
 
+    /// Return chunks that have **no** matching row in the `embeddings` vec0
+    /// table, i.e. chunks that were parsed/stored but never embedded (e.g. an
+    /// `init`/`index` run where the embedder wasn't ready yet, so the embed
+    /// phase was skipped). Returns the raw fields needed to reconstruct the
+    /// exact `Chunk::embedding_text()` document format: `(chunk_id, name,
+    /// metadata_json, summary, content)`.
+    ///
+    /// A plain re-`index` skips unchanged files by file-hash, so those chunks
+    /// never reach the embed phase on their own; the index command unions the
+    /// rows returned here into the embed batch so unchanged-but-unembedded
+    /// chunks still get embedded without reparsing.
+    #[allow(clippy::type_complexity)]
+    pub fn chunks_missing_embeddings(
+        &self,
+    ) -> Result<Vec<(i64, Option<String>, Option<String>, Option<String>, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT c.id, c.name, c.metadata, c.summary, c.content
+             FROM chunks c
+             LEFT JOIN embeddings e ON e.chunk_id = c.id
+             WHERE e.chunk_id IS NULL
+             ORDER BY c.id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     pub fn delete_chunks_for_file(&self, file_id: i64) -> Result<()> {
         self.conn.execute(
             "DELETE FROM chunks WHERE file_id = ?1",
@@ -254,6 +289,38 @@ mod tests {
             .insert_chunk(file_id, "function", Some("b"), 6, 9, "fn b() {}", None, 4)
             .expect("insert b");
         (a, b)
+    }
+
+    /// A chunk with no matching `embeddings` row must surface via
+    /// `chunks_missing_embeddings` (the parse phase unions these into the embed
+    /// batch so a parse-only index doesn't leave chunks permanently
+    /// unembedded — spelunk-oss^72). Once an embedding is inserted, the chunk
+    /// drops out of the result.
+    #[test]
+    fn chunks_missing_embeddings_finds_unembedded_then_clears() {
+        let db = open_db();
+        let (a, b) = seed_two_chunks(&db);
+
+        // Both chunks parsed, neither embedded yet.
+        let mut missing: Vec<i64> = db
+            .chunks_missing_embeddings()
+            .expect("query missing")
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        missing.sort();
+        assert_eq!(missing, vec![a, b], "both unembedded chunks are missing");
+
+        // Embed one; only the other remains missing.
+        db.insert_embedding(a, &[0.1f32; 896])
+            .expect("insert embedding");
+        let still_missing: Vec<i64> = db
+            .chunks_missing_embeddings()
+            .expect("query missing")
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert_eq!(still_missing, vec![b], "embedded chunk drops out");
     }
 
     #[test]

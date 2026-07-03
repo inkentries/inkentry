@@ -135,16 +135,65 @@ pub(super) fn run_parse_phase(
 
     let removed = cleanup_stale(&files, root, db)?;
     let ParseAcc {
-        out: chunk_ids_and_texts,
+        out: mut chunk_ids_and_texts,
         indexed,
         ..
     } = acc;
+
+    // Backfill: pick up any chunks that exist in the index but have no
+    // embedding row yet (e.g. a prior `init`/`index` parsed & chunked while
+    // the embedder was still loading, so the embed phase was skipped). These
+    // belong to unchanged files that the hash-based skip above never re-emits,
+    // so without this union a plain `spelunk index` would report "nothing to
+    // do" and leave them permanently unembedded (spelunk-oss^72).
+    //
+    // Freshly-parsed chunks from this run also lack an embedding row, so they
+    // appear here too; dedupe against the ids we already queued to avoid
+    // embedding them twice.
+    let already: std::collections::HashSet<i64> =
+        chunk_ids_and_texts.iter().map(|(id, _)| *id).collect();
+    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+        if already.contains(&chunk_id) {
+            continue;
+        }
+        let text =
+            reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
+        chunk_ids_and_texts.push((chunk_id, text));
+    }
 
     Ok(ParseResult {
         chunk_ids_and_texts,
         indexed,
         removed,
     })
+}
+
+/// Rebuild the exact document text that `Chunk::embedding_text()` produces,
+/// from the columns stored for a chunk. The `docstring` lives inside the
+/// `metadata` JSON (`{ "docstring": ..., "parent_scope": ... }`), mirroring how
+/// `store_chunks` persists it. Keep this in lockstep with
+/// `spelunk_core::indexer::Chunk::embedding_text`.
+fn reconstruct_embedding_text(
+    name: Option<&str>,
+    metadata: Option<&str>,
+    summary: Option<String>,
+    content: String,
+) -> String {
+    let title = name.unwrap_or("none");
+    let docstring = metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("docstring")
+                .and_then(|d| d.as_str().map(str::to_string))
+        });
+    let body = match docstring {
+        Some(doc) => format!("{doc}\n{content}"),
+        None => content,
+    };
+    match summary {
+        Some(summary) => format!("title: {title} | summary: {summary} | text: {body}"),
+        None => format!("title: {title} | text: {body}"),
+    }
 }
 
 // ── File collection ───────────────────────────────────────────────────────────
@@ -493,6 +542,53 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .expect("set_len on temp file");
         file
+    }
+
+    // ── reconstruct_embedding_text mirrors Chunk::embedding_text ─────────────
+
+    /// The DB-side reconstruction used to backfill unembedded chunks must
+    /// produce byte-for-byte the same document text as `Chunk::embedding_text()`
+    /// did at store time, so a backfilled embedding is identical to one written
+    /// during a normal parse (spelunk-oss^72). Covers: name present/absent and
+    /// docstring present/absent (summary is always None at store time).
+    #[test]
+    fn reconstruct_embedding_text_matches_chunk_embedding_text() {
+        use crate::indexer::{Chunk, ChunkKind};
+
+        let cases = [
+            (Some("do_thing"), Some("Does the thing.")),
+            (Some("do_thing"), None),
+            (None, Some("Anonymous doc.")),
+            (None, None),
+        ];
+        for (name, docstring) in cases {
+            let chunk = Chunk {
+                file_path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                kind: ChunkKind::Function,
+                name: name.map(str::to_string),
+                start_line: 1,
+                end_line: 3,
+                content: "fn do_thing() {}".to_string(),
+                docstring: docstring.map(str::to_string),
+                parent_scope: None,
+                summary: None,
+            };
+            // Metadata JSON exactly as store_chunks persists it.
+            let metadata = serde_json::json!({
+                "docstring": chunk.docstring,
+                "parent_scope": chunk.parent_scope,
+            })
+            .to_string();
+
+            let reconstructed =
+                reconstruct_embedding_text(name, Some(&metadata), None, chunk.content.clone());
+            assert_eq!(
+                reconstructed,
+                chunk.embedding_text(),
+                "reconstruction diverged for name={name:?} docstring={docstring:?}"
+            );
+        }
     }
 
     // ── is_file_too_large ────────────────────────────────────────────────────
