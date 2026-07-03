@@ -152,6 +152,13 @@ impl ServerInferenceClient {
             .resolve_inference_url()?
             .trim_end_matches('/')
             .to_string();
+        if let Err(msg) = spelunk_core::config::validate_transport_url(&base_url) {
+            // Fail loudly and immediately: the alternative is silently sending a
+            // bearer token in the clear. No opt-out (Johan, 2026-07-02 — see
+            // spelunk-oss^63): the fix is always "use https, or loopback".
+            eprintln!("error: {msg}");
+            std::process::exit(2);
+        }
         let project_id = cfg.project_id.clone().unwrap_or_default();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -929,5 +936,91 @@ mod tests {
         assert_eq!(a.get_version(), Some(uuid::Version::SortRand));
         let chunk_id = format!("query:{a}");
         assert!(chunk_id.starts_with("query:"));
+    }
+
+    // ── transport-scheme validation (spelunk-oss^63) ─────────────────────────
+    //
+    // `from_config` hard-exits the process on an invalid (non-loopback http://)
+    // inference URL, so the exit path itself isn't exercised in-process here
+    // (that would kill the test binary). These tests instead cover the pure
+    // validator directly (used identically by `capability.rs::probe_url`) and
+    // confirm `from_config` still builds normally for every URL shape the
+    // validator accepts.
+
+    #[test]
+    fn transport_validator_rejects_non_loopback_http() {
+        let err = spelunk_core::config::validate_transport_url("http://team-server:7777")
+            .expect_err("non-loopback http:// must be rejected");
+        assert!(err.contains("loopback"));
+        assert!(err.contains("https"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn from_config_accepts_loopback_http_inference_url() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        let mut cfg = crate::config::Config::load_with_store(
+            Some(&path),
+            &spelunk_core::config::secret_store::MemoryStore::default(),
+        )
+        .unwrap();
+        cfg.inference_url = Some("http://127.0.0.1:7777".into());
+        assert!(
+            ServerInferenceClient::from_config(&cfg).is_some(),
+            "loopback http:// inference URL must be accepted"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn from_config_accepts_https_inference_url() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        let mut cfg = crate::config::Config::load_with_store(
+            Some(&path),
+            &spelunk_core::config::secret_store::MemoryStore::default(),
+        )
+        .unwrap();
+        cfg.inference_url = Some("https://team-server:7777".into());
+        assert!(
+            ServerInferenceClient::from_config(&cfg).is_some(),
+            "https:// inference URL (any host) must be accepted"
+        );
+    }
+
+    /// `/v1/health`-style probes aside, inference requests built via
+    /// `send_authed`/`authed` still attach the bearer — this is expected (those
+    /// routes ARE authenticated); this test just documents/pins that behaviour
+    /// so a future edit doesn't accidentally strip auth from real inference
+    /// calls while fixing the health probe.
+    #[tokio::test]
+    async fn inference_requests_still_carry_bearer_when_present() {
+        let inference = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/search"))
+            .and(header("authorization", "Bearer sk-test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "query_vector": [0.1_f32],
+                "mode": "semantic",
+            })))
+            .expect(1)
+            .mount(&inference)
+            .await;
+
+        let client = ServerInferenceClient::for_test(
+            &inference.uri(),
+            "proj",
+            Some("sk-test".to_string()),
+            None,
+        );
+        let vec = client.search_query("q", "semantic", 1).await.unwrap();
+        assert_eq!(vec, Some(vec![0.1_f32]));
     }
 }

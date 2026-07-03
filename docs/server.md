@@ -96,9 +96,16 @@ Each developer adds a `.spelunk/config.toml` at the project root (commit it):
 
 ```toml
 # .spelunk/config.toml — commit this, it's not a secret
-server_url = "http://spelunk.internal:7777"
+server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 ```
+
+> **`server_url` must be `https://` unless it points at loopback**
+> (`127.0.0.1` / `::1` / `localhost`). The CLI attaches your bearer token to
+> requests built from this URL, so a non-loopback `http://` config is rejected
+> at startup with no override — see [Self-hosting](self-hosting.md) for how to
+> put TLS in front of a deployed server. Loopback `http://` (e.g. while
+> developing against a server on your own machine) is fine.
 
 Personal config (`~/.config/spelunk/config.toml` — never commit):
 
@@ -247,7 +254,9 @@ cargo build --release --bin spelunk-server
 
 ## API reference
 
-All routes require `Authorization: Bearer <key>` except `/v1/health`.
+All routes require `Authorization: Bearer <key>` except `/v1/health`, which is
+unauthenticated by design (it's the liveness probe used before a client knows
+whether a key is even needed) — the CLI never attaches a bearer token to it.
 
 ```
 GET    /v1/health
