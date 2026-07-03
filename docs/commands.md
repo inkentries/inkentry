@@ -55,6 +55,12 @@ spelunk index <path> [options]
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
 
+A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
+and also backfills embeddings for any already-parsed chunk that has no embedding
+yet – for example if a previous run parsed the tree before the embedder had
+finished loading. Unchanged, already-embedded files are skipped, so you no
+longer need `--force` just to fill in missing embeddings.
+
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
 

@@ -135,16 +135,65 @@ pub(super) fn run_parse_phase(
 
     let removed = cleanup_stale(&files, root, db)?;
     let ParseAcc {
-        out: chunk_ids_and_texts,
+        out: mut chunk_ids_and_texts,
         indexed,
         ..
     } = acc;
+
+    // Backfill: pick up any chunks that exist in the index but have no
+    // embedding row yet (e.g. a prior `init`/`index` parsed & chunked while
+    // the embedder was still loading, so the embed phase was skipped). These
+    // belong to unchanged files that the hash-based skip above never re-emits,
+    // so without this union a plain `spelunk index` would report "nothing to
+    // do" and leave them permanently unembedded (spelunk-oss^72).
+    //
+    // Freshly-parsed chunks from this run also lack an embedding row, so they
+    // appear here too; dedupe against the ids we already queued to avoid
+    // embedding them twice.
+    let already: std::collections::HashSet<i64> =
+        chunk_ids_and_texts.iter().map(|(id, _)| *id).collect();
+    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+        if already.contains(&chunk_id) {
+            continue;
+        }
+        let text =
+            reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
+        chunk_ids_and_texts.push((chunk_id, text));
+    }
 
     Ok(ParseResult {
         chunk_ids_and_texts,
         indexed,
         removed,
     })
+}
+
+/// Rebuild the exact document text that `Chunk::embedding_text()` produces,
+/// from the columns stored for a chunk. The `docstring` lives inside the
+/// `metadata` JSON (`{ "docstring": ..., "parent_scope": ... }`), mirroring how
+/// `store_chunks` persists it. Keep this in lockstep with
+/// `spelunk_core::indexer::Chunk::embedding_text`.
+fn reconstruct_embedding_text(
+    name: Option<&str>,
+    metadata: Option<&str>,
+    summary: Option<String>,
+    content: String,
+) -> String {
+    let title = name.unwrap_or("none");
+    let docstring = metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("docstring")
+                .and_then(|d| d.as_str().map(str::to_string))
+        });
+    let body = match docstring {
+        Some(doc) => format!("{doc}\n{content}"),
+        None => content,
+    };
+    match summary {
+        Some(summary) => format!("title: {title} | summary: {summary} | text: {body}"),
+        None => format!("title: {title} | text: {body}"),
+    }
 }
 
 // ── File collection ───────────────────────────────────────────────────────────
@@ -493,6 +542,212 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .expect("set_len on temp file");
         file
+    }
+
+    // ── reconstruct_embedding_text mirrors Chunk::embedding_text ─────────────
+
+    /// The DB-side reconstruction used to backfill unembedded chunks must
+    /// produce byte-for-byte the same document text as `Chunk::embedding_text()`
+    /// did at store time, so a backfilled embedding is identical to one written
+    /// during a normal parse (spelunk-oss^72). Covers: name present/absent and
+    /// docstring present/absent (summary is always None at store time).
+    #[test]
+    fn reconstruct_embedding_text_matches_chunk_embedding_text() {
+        use crate::indexer::{Chunk, ChunkKind};
+
+        let cases = [
+            (Some("do_thing"), Some("Does the thing.")),
+            (Some("do_thing"), None),
+            (None, Some("Anonymous doc.")),
+            (None, None),
+        ];
+        for (name, docstring) in cases {
+            let chunk = Chunk {
+                file_path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                kind: ChunkKind::Function,
+                name: name.map(str::to_string),
+                start_line: 1,
+                end_line: 3,
+                content: "fn do_thing() {}".to_string(),
+                docstring: docstring.map(str::to_string),
+                parent_scope: None,
+                summary: None,
+            };
+            // Metadata JSON exactly as store_chunks persists it.
+            let metadata = serde_json::json!({
+                "docstring": chunk.docstring,
+                "parent_scope": chunk.parent_scope,
+            })
+            .to_string();
+
+            let reconstructed =
+                reconstruct_embedding_text(name, Some(&metadata), None, chunk.content.clone());
+            assert_eq!(
+                reconstructed,
+                chunk.embedding_text(),
+                "reconstruction diverged for name={name:?} docstring={docstring:?}"
+            );
+        }
+    }
+
+    /// The summary branch of `reconstruct_embedding_text` must also match
+    /// `Chunk::embedding_text()`. Phase-4 LLM summaries can be written to a
+    /// chunk (`chunks.summary`) before a later re-index backfills its embedding,
+    /// so the backfill path reconstructs with a non-null `summary` and must
+    /// produce the exact `title: {name} | summary: {summary} | text: {body}`
+    /// document (spelunk-oss^72). Covers summary × docstring present/absent.
+    #[test]
+    fn reconstruct_embedding_text_matches_chunk_embedding_text_with_summary() {
+        use crate::indexer::{Chunk, ChunkKind};
+
+        let cases = [
+            (
+                Some("do_thing"),
+                Some("Does the thing."),
+                "Summarised: does the thing.",
+            ),
+            (Some("do_thing"), None, "Summarised: no docstring."),
+            (None, Some("Anonymous doc."), "Summarised: anonymous."),
+            (None, None, "Summarised: bare."),
+        ];
+        for (name, docstring, summary) in cases {
+            let chunk = Chunk {
+                file_path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                kind: ChunkKind::Function,
+                name: name.map(str::to_string),
+                start_line: 1,
+                end_line: 3,
+                content: "fn do_thing() {}".to_string(),
+                docstring: docstring.map(str::to_string),
+                parent_scope: None,
+                summary: Some(summary.to_string()),
+            };
+            // Metadata JSON exactly as store_chunks persists it (docstring lives
+            // in metadata; the summary is a separate stored column).
+            let metadata = serde_json::json!({
+                "docstring": chunk.docstring,
+                "parent_scope": chunk.parent_scope,
+            })
+            .to_string();
+
+            let reconstructed = reconstruct_embedding_text(
+                name,
+                Some(&metadata),
+                Some(summary.to_string()),
+                chunk.content.clone(),
+            );
+            assert_eq!(
+                reconstructed,
+                chunk.embedding_text(),
+                "reconstruction diverged for name={name:?} docstring={docstring:?} summary={summary:?}"
+            );
+        }
+    }
+
+    // ── End-to-end backfill: parse-only run leaves chunks unembedded, a
+    //    second parse run backfills them without reparsing (spelunk-oss^72) ────
+
+    /// `run_parse_phase` stores chunks but never writes embeddings — that is the
+    /// embed phase's job. So a single parse run models the real bug: an
+    /// `init`/`index` that chunked while the embedder was still loading, leaving
+    /// the `embeddings` table empty. This test drives the full parse path over a
+    /// real fixture repo twice (no `--force`) and asserts:
+    ///   (a) after run 1, every stored chunk is unembedded (embeddings empty);
+    ///   (b) run 2 reparses nothing (`indexed == 0`, all files hash-skipped);
+    ///   (c) yet run 2 still returns a NON-EMPTY `chunk_ids_and_texts` — the
+    ///       missing-embedding chunks are unioned in for the embed phase;
+    ///   (d) the backfilled ids are exactly the chunk ids stored in run 1
+    ///       (same ids ⇒ no delete+reinsert ⇒ no unchanged file was reparsed).
+    #[test]
+    fn reindex_backfills_unembedded_chunks_without_reparsing() {
+        use indicatif::MultiProgress;
+
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "/// Doc for foo.\npub fn foo() -> i32 { 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.rs"),
+            "pub struct Bar { x: i32 }\npub fn bar() {}\n",
+        )
+        .unwrap();
+
+        let args = default_args(dir.path().to_path_buf());
+        let mp = MultiProgress::new();
+
+        // ── Run 1: parse + store chunks. No embeddings are ever written here. ──
+        let first = run_parse_phase(dir.path(), &db, &args, &mp).expect("first parse phase");
+        assert!(
+            first.indexed >= 2,
+            "both fixture files must be indexed on the first run"
+        );
+        assert!(
+            !first.chunk_ids_and_texts.is_empty(),
+            "the first run must queue freshly-parsed chunks for embedding"
+        );
+
+        // Every chunk stored in run 1 is currently unembedded (embeddings empty):
+        // the set of missing-embedding chunk ids must equal the run-1 queued ids.
+        let mut queued_run1: Vec<i64> = first
+            .chunk_ids_and_texts
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        queued_run1.sort();
+        let mut missing_after_run1: Vec<i64> = db
+            .chunks_missing_embeddings()
+            .expect("missing after run 1")
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        missing_after_run1.sort();
+        assert_eq!(
+            missing_after_run1, queued_run1,
+            "after a parse-only run the embeddings table is empty — every stored chunk is missing its embedding"
+        );
+
+        // ── Run 2: no file changed, so nothing is reparsed. The backfill union
+        //    must still surface the unembedded chunks for the embed phase. ──────
+        let second = run_parse_phase(dir.path(), &db, &args, &mp).expect("second parse phase");
+        assert_eq!(
+            second.indexed, 0,
+            "no file changed — the hash-based skip must reparse nothing on the second run"
+        );
+        assert!(
+            !second.chunk_ids_and_texts.is_empty(),
+            "the fix must union the missing-embedding chunks into the embed batch even though indexed == 0"
+        );
+
+        // (d) The backfilled ids are exactly the run-1 chunk ids: identical ids
+        // prove the chunks were NOT deleted and reinserted (a reparse would mint
+        // fresh rowids), i.e. no unchanged file was reparsed — only its missing
+        // embeddings were queued.
+        let mut backfilled: Vec<i64> = second
+            .chunk_ids_and_texts
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        backfilled.sort();
+        assert_eq!(
+            backfilled, queued_run1,
+            "backfill must queue the same chunk ids stored in run 1 (no reparse / re-chunk)"
+        );
+
+        // The reconstructed embedding texts must also be byte-identical to what
+        // the first (parse-time) run produced for those same chunks.
+        let mut texts_run1: Vec<(i64, String)> = first.chunk_ids_and_texts.clone();
+        texts_run1.sort_by_key(|(id, _)| *id);
+        let mut texts_run2: Vec<(i64, String)> = second.chunk_ids_and_texts.clone();
+        texts_run2.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            texts_run2, texts_run1,
+            "backfilled embedding text must match the parse-time embedding text byte-for-byte"
+        );
     }
 
     // ── is_file_too_large ────────────────────────────────────────────────────
