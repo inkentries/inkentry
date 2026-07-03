@@ -35,7 +35,8 @@ sqlite-vec = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 axum = { version = "0.8", features = ["macros"] }
-tower-http = { version = "0.7", features = ["auth"] }
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.7", features = ["auth", "timeout", "limit"] }
 async-stream = "0.3"
 tokio-stream = "0.1"
 futures-util = "0.3"
@@ -61,5 +62,4 @@ tempfile = { workspace = true }
 wiremock = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
 utoipa = { version = "5", features = ["axum_extras"] }
