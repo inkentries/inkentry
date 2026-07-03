@@ -789,6 +789,7 @@ fn cmd_logs(args: ServerLogsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     // ── spelunk_state_dir ────────────────────────────────────────────────────
@@ -861,7 +862,32 @@ mod tests {
 
     // ── which_spelunk_server ─────────────────────────────────────────────────
 
+    /// Restores the `PATH` env var to its captured value when dropped, so a
+    /// panic mid-test cannot leak a mutated `PATH` into other tests.
+    struct PathGuard(std::ffi::OsString);
+
+    impl PathGuard {
+        /// Capture the current `PATH` so it can be restored on drop.
+        fn capture() -> Self {
+            PathGuard(std::env::var_os("PATH").unwrap_or_default())
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            // SAFETY: the `#[serial(path_env)]` attribute guarantees no other
+            // test that reads or writes `PATH` runs concurrently.
+            unsafe { std::env::set_var("PATH", &self.0) };
+        }
+    }
+
+    // NOTE: both `which_spelunk_server_*` tests mutate the process-global `PATH`.
+    // Cargo runs unit tests multi-threaded by default, so they are pinned to the
+    // same `#[serial(path_env)]` group to keep them from racing each other (and
+    // any future PATH-touching test in this crate).
+
     #[test]
+    #[serial(path_env)]
     fn which_spelunk_server_finds_sibling_binary() {
         // Create a fake `spelunk-server[.exe]` next to the current executable.
         let tmp = TempDir::new().unwrap();
@@ -879,8 +905,10 @@ mod tests {
         // We can't override current_exe() at runtime, so just verify the PATH
         // fallback path: put tmp on PATH and confirm discovery succeeds.
         //
-        // SAFETY: test binary is single-threaded at this point; no other thread
-        // reads PATH concurrently within this test.
+        // SAFETY: `#[serial(path_env)]` serialises this test against every other
+        // PATH-mutating test, so no other thread reads or writes PATH while this
+        // runs. The `PathGuard` restores PATH even if the assertion below panics.
+        let _guard = PathGuard::capture();
         let old_path = std::env::var_os("PATH").unwrap_or_default();
         // Use the platform PATH separator (`;` on Windows, `:` on Unix).
         #[cfg(windows)]
@@ -889,18 +917,19 @@ mod tests {
         let new_path = format!("{}:{}", tmp.path().display(), old_path.to_string_lossy());
         unsafe { std::env::set_var("PATH", &new_path) };
         let result = which_spelunk_server();
-        unsafe { std::env::set_var("PATH", &old_path) };
 
         assert!(result.is_ok(), "should discover binary on PATH: {result:?}");
     }
 
     #[test]
+    #[serial(path_env)]
     fn which_spelunk_server_fails_when_not_on_path() {
-        // SAFETY: see note in which_spelunk_server_finds_sibling_binary.
-        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        // SAFETY: see note in which_spelunk_server_finds_sibling_binary; the
+        // `#[serial(path_env)]` group serialises this against the sibling test,
+        // and the `PathGuard` restores PATH even if the assertion panics.
+        let _guard = PathGuard::capture();
         unsafe { std::env::set_var("PATH", "") };
         let result = which_spelunk_server();
-        unsafe { std::env::set_var("PATH", &old_path) };
         assert!(result.is_err(), "should fail when binary is not on PATH");
     }
 
