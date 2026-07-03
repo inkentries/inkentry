@@ -297,7 +297,9 @@ spelunk initialised for my-project
   Embeddings: 1 840 vectors
 ```
 
-**Subsequent runs** only re-index changed files (via blake3 hash):
+**Subsequent runs** only re-index changed files (via blake3 hash), and also
+backfill embeddings for any chunk that was parsed but never embedded (for
+instance if the embedder model was still loading on the first run):
 
 ```bash
 spelunk index /path/to/your/project
