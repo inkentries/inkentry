@@ -236,17 +236,13 @@ mod tests {
         }
     }
 
-    /// KNOWN GAP (filed as spelunk-oss follow-up, see task comment on
-    /// spelunk-oss^65): a query term containing an embedded NUL byte still
-    /// surfaces a raw FTS5 "unterminated string" parse error. `fts5_quote_literal`
-    /// doubles internal `"` characters correctly, but FTS5's own query-string
-    /// parser appears to treat the embedded `\0` as an early string terminator
-    /// (distinct from SQLite's NUL-safe text binding), so the closing `"` we
-    /// appended is never seen by the parser. This is `#[ignore]`d because it
-    /// currently fails — it documents the bug rather than passing. Remove
-    /// `#[ignore]` once fixed.
+    /// A query term containing an embedded NUL byte must not surface a raw
+    /// FTS5 "unterminated string" parse error. `fts5_quote_literal` strips
+    /// embedded `\0` before quoting, since FTS5's own query-string parser
+    /// treats `\0` as an early string terminator (distinct from SQLite's
+    /// NUL-safe text binding), which would otherwise hide the closing `"` we
+    /// append. See spelunk-oss^65 follow-up.
     #[test]
-    #[ignore = "known bug: embedded NUL byte still leaks a raw FTS5 parse error, see spelunk-oss^65 follow-up"]
     fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
         let db = open_db();
         seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");

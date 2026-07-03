@@ -91,10 +91,16 @@ pub fn effective_format(format: &str) -> &str {
 ///
 /// An empty term quotes to `""`, which is a valid (empty) FTS5 string that
 /// simply matches nothing.
+///
+/// Embedded NUL bytes (`\0`) are stripped before quoting. FTS5's query-string
+/// parser (independent of SQLite's NUL-safe TEXT binding) treats `\0` as an
+/// early string terminator, so the closing `"` this function appends would
+/// never be seen by FTS5 and a raw "unterminated string" parse error would
+/// leak to the caller instead of being treated as part of the literal.
 pub fn fts5_quote_literal(term: &str) -> String {
     let mut out = String::with_capacity(term.len() + 2);
     out.push('"');
-    for c in term.chars() {
+    for c in term.chars().filter(|&c| c != '\0') {
         if c == '"' {
             out.push('"');
         }
@@ -310,10 +316,10 @@ mod tests {
     }
 
     #[test]
-    fn fts5_quote_embedded_nul_is_preserved_not_special() {
+    fn fts5_quote_embedded_nul_is_stripped() {
         let term = "before\0after";
         let quoted = fts5_quote_literal(term);
-        assert_eq!(quoted, "\"before\0after\"");
+        assert_eq!(quoted, "\"beforeafter\"");
     }
 
     // ── strip_ansi ────────────────────────────────────────────────────────────
