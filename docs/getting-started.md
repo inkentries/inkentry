@@ -361,9 +361,15 @@ Add `.spelunk/config.toml` at your repo root (commit it):
 
 ```toml
 # .spelunk/config.toml — commit this, no secrets
-server_url = "http://spelunk.internal:7777"
+server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 ```
+
+> **`server_url` must be `https://` unless it points at loopback**
+> (`127.0.0.1` / `::1` / `localhost`) — a non-loopback `http://` URL is
+> rejected at startup, with no opt-out, because the CLI attaches your bearer
+> token to these requests. See [Self-hosting](self-hosting.md) for putting TLS
+> in front of a deployed server.
 
 Each developer provides their API key. Prefer the `SPELUNK_SERVER_KEY`
 environment variable, which works everywhere (including CI / headless):
