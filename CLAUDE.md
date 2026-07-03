@@ -324,8 +324,8 @@ from the user's question, mitigating prompt injection:
 
 ## Supported Languages
 
-Rust, Go, Python, TypeScript, JavaScript, JSX, TSX, Java, C, C++, Ruby,
-Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text.
+Rust, Go, Python, TypeScript, JavaScript, JSX, TSX, Java, C, C++, PHP, Ruby,
+C#, Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text.
 
 ---
 

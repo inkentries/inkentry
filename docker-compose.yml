@@ -1,9 +1,7 @@
 # spelunk-server — minimal compose (server + persistent volume)
 #
-# Usage:
-#   docker compose up -d
-#
-# With API key:
+# Usage (API key required — the container binds 0.0.0.0, and spelunk-server
+# refuses to start on a non-loopback bind with no key configured):
 #   SPELUNK_SERVER_KEY=your-key docker compose up -d
 #
 # Clients configure:

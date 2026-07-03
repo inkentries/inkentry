@@ -64,22 +64,15 @@ above: it's long-lived, reachable over the network, and protected by an API key.
 
 ## Quick start (Docker)
 
+The container image binds `--host 0.0.0.0` in its entrypoint, so an API key is
+required — `spelunk-server` refuses to start on a non-loopback bind with no key
+configured (see [Trust model](#trust-model)).
+
 ```bash
 # Clone and build
 git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
-# Start the server (no auth — dev only)
-docker compose up -d
-
-# Verify
-curl http://localhost:7777/v1/health
-# → {"status":"ok","version":"0.8.0","capabilities":["memory"],...}
-```
-
-## With an API key (recommended)
-
-```bash
 # Generate a key
 export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
 
@@ -88,6 +81,10 @@ SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY docker compose up -d
 
 # Save the key — you'll need to distribute it to your team
 echo "SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY"
+
+# Verify
+curl http://localhost:7777/v1/health
+# → {"status":"ok","version":"0.8.0","capabilities":["memory"],...}
 ```
 
 ## Client configuration

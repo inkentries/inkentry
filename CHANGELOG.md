@@ -82,6 +82,47 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   world-readable info-leak window. The read-back after the editor exits now
   goes through the retained file handle instead of re-opening by path, so a
   symlink swapped in during the edit window can't be followed.
+- **Fixed argument injection in `spelunk memory harvest`'s `git log` invocations.**
+  `--branch`/`--git-range` values were passed straight to `git log` without a
+  `--` separator, so a value starting with `-` (e.g. `--output=/path/to/victim`)
+  could be parsed as a git option instead of a revision, enabling arbitrary-file
+  overwrite. Both `git log` call sites now add the `--` separator and reject any
+  ref/range endpoint that starts with `-` before it reaches git. As
+  defense-in-depth, the git-notes write path now passes note bodies via stdin
+  (`-F -`) instead of `-m <arg>`, so they can never be parsed as options and no
+  longer appear on argv/process listings.
+- **Constant-time API key comparison in `spelunk-server`.** Bearer-token auth
+  compared the provided token against the configured key with a plain `&str ==`,
+  which short-circuits on length and first differing byte — a timing side
+  channel on a network-exposed team server. The configured key is now hashed
+  once with BLAKE3 at startup and compared against a per-request hash of the
+  provided token using `constant_time_eq`; loopback (no-key) behaviour is
+  unchanged.
+- **`spelunk-server` refuses to bind a non-loopback address without an API key
+  configured.** Previously it would happily expose an unauthenticated endpoint
+  off-host. `--host`/`SPELUNK_SERVER_KEY` are checked at startup, before any DB
+  or embedder work: a non-loopback bind (`0.0.0.0`, `::`, a LAN/public IP) with
+  no key now fails to start. Loopback binds are unaffected. **Breaking for the
+  keyless Docker quickstart**: the container image binds `0.0.0.0` by default,
+  so `docker compose up -d` with no `SPELUNK_SERVER_KEY` set now refuses to
+  start — see [Quick start (Docker)](docs/server.md#quick-start-docker).
+- **ADR-056 single-trust-domain guardrails.** Per [ADR-056](docs/adr/056-oss-server-tenancy-model.md),
+  a `spelunk-server` instance's shared API key is the tenancy boundary by
+  design — every keyholder administers every project on that instance; there is
+  no per-project ACL. The server now logs a prominent startup warning restating
+  this whenever it binds a non-loopback address with a key configured (a
+  shared/team deployment); suppressed on loopback binds and when no key is
+  configured. See [Trust model](docs/server.md#trust-model).
+- **Secret scanner now scans the docstring and LLM summary, not just the raw
+  chunk content.** `Chunk::embedding_text()` prepends the docstring (and, once
+  generated, the LLM summary) to what actually gets stored and embedded, but the
+  scanner previously only checked `chunk.content` — a credential living only in
+  a doc-comment or an LLM summary was persisted and embedded unscanned. Also
+  added detection patterns for GCP API keys, SendGrid keys, Twilio key SIDs, npm
+  `_authToken` assignments, and Azure storage/service-bus connection strings, and
+  made sensitive-file exclusion globs (`*.pem`, `id_rsa`, etc.) case-insensitive.
+  Still best-effort defense-in-depth, not a security boundary — see
+  [docs/architecture.md](docs/architecture.md).
 
 ### Fixed
 
@@ -92,9 +133,43 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   timing out during the first-run download. The auto-start/`spelunk server start`
   wait was also extended to 30 s, and its failure warning now fires only on a
   genuine liveness timeout (with firewall + `spelunk server logs` guidance).
+- **`spelunk index --batch-size` was a silent no-op.** The flag was parsed but
+  never passed to the embed phase, which always used a hardcoded 64-chunk batch.
+  It's now threaded through and clamped to the server's 256-chunk ceiling
+  (falls back to the previous 64 default when unset).
+
+### Added
+
+- **Full semantic indexing — AST chunking plus import/call/inheritance graph
+  edges — for PHP, Ruby, C#, Kotlin, and Swift.** These five languages
+  previously only got plain structural (`ast-grep`) search; `spelunk index` now
+  extracts the same chunk/edge fidelity already available for Rust, Python, Go,
+  Java, and the rest. `spelunk languages` / `SUPPORTED_LANGUAGES` grew
+  accordingly; see the [Supported languages](README.md#supported-languages) list.
+- **`spelunk login` resolves your org automatically after a no-org device
+  login**, instead of leaving a session that needs a follow-up `spelunk org
+  switch`. WorkOS doesn't auto-select an org even for single-org accounts: a
+  plain `spelunk login` (no `--org`) now silently selects your org when you
+  have exactly one, offers an interactive selector when you have several and
+  you're on a TTY, and otherwise errors with an actionable "pass `--org`"
+  message (no hang on a non-interactive/agent shell). Zero orgs gets a clear
+  onboarding message with no dangling session persisted. The scripted `--org
+  <slug>` path is unchanged.
+- **`spelunk sync --project <slug>`** selects the cloud project to sync into.
+  Required on first sync when no `project_id` is configured — `spelunk sync`
+  never auto-derives a project name from the folder or git remote; it now halts
+  with an actionable message pointing at `--project` instead. Repeat syncs with
+  the same slug reuse the (lazily server-created) project.
 
 ### Changed
 
+- **Tree-sitter grammars now come from `ast-grep-language`** instead of 13
+  hand-pinned `tree-sitter-*` crates (`proto` and `sql` are the two exceptions,
+  which stay on standalone grammar crates). Structural (`ast-grep`) fallback
+  search — used by `search --mode ast-grep`, `--live`, and Tier 0 when no
+  server/index is available — now runs fully in-process via `ast-grep-core`;
+  there is no external `ast-grep` binary to install anymore, and the fallback's
+  language coverage is no longer limited to the languages spelunk fully indexes.
 - **`spelunk-server` now binds `127.0.0.1` by default** (was `0.0.0.0`). Loopback
   is the safer, firewall-exempt default; pass `--host 0.0.0.0` explicitly to
   expose the server on all interfaces. The container image sets `--host 0.0.0.0`
