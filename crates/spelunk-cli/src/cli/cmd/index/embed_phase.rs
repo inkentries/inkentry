@@ -358,6 +358,47 @@ mod tests {
         assert!(t >= MIN_SCALED_TIMEOUT && t <= MAX_SCALED_TIMEOUT);
     }
 
+    #[test]
+    fn scaled_timeout_scales_roughly_four_x_for_a_typical_sample() {
+        // Typical case: a first batch of 64 chunks in 30 s is ~0.469 s/chunk. A
+        // full 64-chunk batch at that rate is ~30 s; the 4x safety factor lifts
+        // it to ~120 s, which happens to coincide with the floor. Nudge the
+        // sample up so the derived budget clears the floor and we actually
+        // observe the ~4x scaling rather than the clamp: 64 chunks in 60 s is
+        // ~240 s scaled, well inside the band and ~4x the raw per-batch time.
+        let raw_batch = Duration::from_secs(60);
+        let t = scaled_timeout(raw_batch, 64, 64);
+        assert!(
+            t > MIN_SCALED_TIMEOUT && t < MAX_SCALED_TIMEOUT,
+            "a typical sample must scale inside the band, not hit a clamp, got {t:?}"
+        );
+        // 60 s per batch x 4 = 240 s.
+        assert_eq!(t, Duration::from_secs(240));
+    }
+
+    // ── embed_progress_style: the ETA-aware indicatif template must build ───────
+    // (spelunk-oss^74)
+
+    #[test]
+    fn embed_progress_style_builds_with_eta_token() {
+        // `embed_progress_style()` calls `ProgressStyle::with_template(..).unwrap()`
+        // on a template string containing `{eta}`. A malformed template (e.g. a
+        // typo'd token) would panic at that unwrap the first time the embed phase
+        // runs. Building it here proves the ETA-aware style is well-formed and
+        // wired up, and applying it to a bar exercises the same path the embed
+        // phase takes when it calls `bar.set_style(embed_progress_style())`.
+        let style = embed_progress_style();
+        let bar = ProgressBar::hidden();
+        bar.set_style(style);
+        // Driving the bar the way the embed phase does (steady tick + per-chunk
+        // inc) must not panic with the ETA template applied.
+        bar.enable_steady_tick(Duration::from_millis(120));
+        bar.set_length(10);
+        bar.tick();
+        bar.inc(1);
+        bar.finish_and_clear();
+    }
+
     // ── run_embed_phase: a mid-run batch failure must not discard earlier,
     //    already-committed embeddings (spelunk-oss^71) ─────────────────────────
 
