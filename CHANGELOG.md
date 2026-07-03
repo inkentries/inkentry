@@ -163,13 +163,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Tree-sitter grammars now come from `ast-grep-language`** instead of 13
-  hand-pinned `tree-sitter-*` crates (`proto` and `sql` are the two exceptions,
-  which stay on standalone grammar crates). Structural (`ast-grep`) fallback
-  search — used by `search --mode ast-grep`, `--live`, and Tier 0 when no
-  server/index is available — now runs fully in-process via `ast-grep-core`;
-  there is no external `ast-grep` binary to install anymore, and the fallback's
-  language coverage is no longer limited to the languages spelunk fully indexes.
+- **Tree-sitter grammars now come from `ast-grep-language`**, a single crate
+  replacing 13 hand-pinned `tree-sitter-*` deps (`proto` and `sql` stay on
+  standalone grammar crates, which `ast-grep-language` doesn't ship). Internal
+  dependency consolidation; chunking and graph-edge output are unchanged for
+  existing languages. (#487)
 - **`spelunk-server` now binds `127.0.0.1` by default** (was `0.0.0.0`). Loopback
   is the safer, firewall-exempt default; pass `--host 0.0.0.0` explicitly to
   expose the server on all interfaces. The container image sets `--host 0.0.0.0`
