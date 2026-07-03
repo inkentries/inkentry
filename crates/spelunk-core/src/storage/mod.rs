@@ -98,53 +98,82 @@ pub async fn open_memory_backend(
     // cloud; `offline` and `local_first` resolve to the local store.
     let route_remote = cfg.resolve_mode() == SyncMode::CloudFirst;
     if let Some(url) = cfg.server_url.as_ref().filter(|_| route_remote) {
-        let project_id = cfg.project_id.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "server_url is set ({url}) but project_id is missing.\n\
-                 Set `project_id` in your spelunk config (e.g. ~/.config/spelunk/config.toml \
-                 or .spelunk/config.toml), or set the SPELUNK_PROJECT_ID environment variable, \
-                 so memory operations can be keyed to a project on the server."
-            )
-        })?;
-        // ADR-005: cloud-api routes are scoped by `/v1/projects/{uuid}` (the
-        // `{project_id}` path param is a `Path<Uuid>`), so a human slug must be
-        // resolved to its UUID before it is used as the backend's project key.
-        //
-        // - D5: a `project_id` that is already a UUID is used directly (no lookup).
-        // - D6: an unset/loopback `server_url` is the OSS spelunk-server path,
-        //   which accepts arbitrary slugs as the project key — no resolution.
-        //   (This branch is only reached when `server_url` is set, but we still
-        //   guard on loopback so a loopback team server keeps using the slug.)
-        let project_id =
-            if crate::config::looks_like_uuid(&project_id) || crate::config::is_loopback_url(url) {
-                project_id
-            } else {
-                // The cache file lives next to `memory.db`/`config.toml`, i.e. the
-                // project's `.spelunk/` directory. `mem_path` is `<.spelunk>/memory.db`.
-                let spelunk_dir = mem_path.parent().unwrap_or(mem_path);
-                let uuid = remote::resolve_cloud_project_uuid(
-                    &project_id,
-                    url,
-                    cfg.server_key.as_deref(),
-                    spelunk_dir,
-                )
-                .await?;
-                uuid.to_string()
-            };
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-        Ok(Box::new(RemoteMemoryBackend {
-            client,
-            base_url: url.clone(),
-            project_id,
-            api_key: cfg.server_key.clone(),
-        }))
-    } else {
-        Ok(Box::new(LocalMemoryBackend::new(MemoryStore::open(
-            mem_path,
-        )?)))
+        // spelunk-oss^63 follow-up (^77): the cloud-routing path attaches
+        // `Authorization: Bearer {server_key}` to every memory request
+        // (`RemoteMemoryBackend::authed`) and to the slug→UUID `GET
+        // /v1/projects` lookup. A non-loopback plaintext `http://` `server_url`
+        // would send that bearer in the clear. Reject it here — the single
+        // production choke point that dominates both exposures — before any
+        // request is built, mirroring `ServerInferenceClient::from_config`.
+        // Loopback `http://` and any `https://` still pass; there is no opt-out
+        // (Johan, 2026-07-02). A library returns the error rather than
+        // `process::exit`; the CLI surfaces it and exits non-zero.
+        crate::config::validate_transport_url(url).map_err(anyhow::Error::msg)?;
+        return open_remote_memory_backend(cfg, mem_path, url).await;
     }
+    Ok(Box::new(LocalMemoryBackend::new(MemoryStore::open(
+        mem_path,
+    )?)))
+}
+
+/// Build the cloud-routing memory backend (slug→UUID resolution + REST client)
+/// for an already **transport-validated** `url`.
+///
+/// Split out of [`open_memory_backend`] as the test seam for the cloud-routing
+/// branch. Production reaches it only after `open_memory_backend` has enforced
+/// [`crate::config::validate_transport_url`], so a non-loopback plaintext
+/// `http://` url is rejected before any bearer is sent. Integration tests that
+/// must drive resolution against a plaintext-http mock addressed as a
+/// non-loopback host (wiremock via `0.0.0.0`) call this directly — the same
+/// reason [`remote::resolve_cloud_project_uuid`]'s `_inner` half exists, to
+/// bypass a guard the production entry point enforces.
+async fn open_remote_memory_backend(
+    cfg: &crate::config::Config,
+    mem_path: &Path,
+    url: &str,
+) -> Result<Box<dyn MemoryBackend + Send>> {
+    let project_id = cfg.project_id.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "server_url is set ({url}) but project_id is missing.\n\
+             Set `project_id` in your spelunk config (e.g. ~/.config/spelunk/config.toml \
+             or .spelunk/config.toml), or set the SPELUNK_PROJECT_ID environment variable, \
+             so memory operations can be keyed to a project on the server."
+        )
+    })?;
+    // ADR-005: cloud-api routes are scoped by `/v1/projects/{uuid}` (the
+    // `{project_id}` path param is a `Path<Uuid>`), so a human slug must be
+    // resolved to its UUID before it is used as the backend's project key.
+    //
+    // - D5: a `project_id` that is already a UUID is used directly (no lookup).
+    // - D6: an unset/loopback `server_url` is the OSS spelunk-server path,
+    //   which accepts arbitrary slugs as the project key — no resolution.
+    //   (This branch is only reached when `server_url` is set, but we still
+    //   guard on loopback so a loopback team server keeps using the slug.)
+    let project_id =
+        if crate::config::looks_like_uuid(&project_id) || crate::config::is_loopback_url(url) {
+            project_id
+        } else {
+            // The cache file lives next to `memory.db`/`config.toml`, i.e. the
+            // project's `.spelunk/` directory. `mem_path` is `<.spelunk>/memory.db`.
+            let spelunk_dir = mem_path.parent().unwrap_or(mem_path);
+            let uuid = remote::resolve_cloud_project_uuid(
+                &project_id,
+                url,
+                cfg.server_key.as_deref(),
+                spelunk_dir,
+            )
+            .await?;
+            uuid.to_string()
+        };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    Ok(Box::new(RemoteMemoryBackend {
+        client,
+        base_url: url.to_string(),
+        project_id,
+        api_key: cfg.server_key.clone(),
+    }))
 }
 
 // ── Tests for escape_like ─────────────────────────────────────────────────────
@@ -257,8 +286,11 @@ mod backend_selection_tests {
         // ADR-005 D5: a `project_id` that is already a UUID is used directly,
         // so the remote backend is constructed without any slug→UUID lookup
         // (no network call against the unreachable team.example.com host).
+        // A non-loopback host must be `https://` to clear the transport guard
+        // (spelunk-oss^63/^77); the scheme is irrelevant to the raw-UUID path
+        // otherwise, since nothing is sent here.
         let cfg = Config {
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("https://team.example.com:7777".to_string()),
             project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
@@ -291,6 +323,12 @@ mod backend_selection_tests {
     /// the OS routes to the loopback listener but `is_loopback_url` classifies as
     /// non-loopback — so the cloud-routing branch is exercised without a live
     /// network or DNS.
+    ///
+    /// That same non-loopback plaintext `http://` url is now rejected by
+    /// `open_memory_backend`'s transport guard (spelunk-oss^63/^77), so this
+    /// test enters at the `open_remote_memory_backend` seam directly.
+    /// Production reaches that seam only *after* the guard has passed; the guard
+    /// itself is covered by `cloud_first_rejects_non_loopback_http` below.
     ///
     /// Ignored on Windows: connecting to `0.0.0.0` raises `WSAEADDRNOTAVAIL`
     /// (os error 10049). Slug-resolution unit coverage lives in
@@ -348,7 +386,14 @@ mod backend_selection_tests {
             ..Default::default()
         };
 
-        let be = open_memory_backend(&cfg, &mem_path, None).await.unwrap();
+        // Enter at the seam: production reaches `open_remote_memory_backend`
+        // only after `open_memory_backend`'s transport guard passes, which this
+        // non-loopback `http://` url would not (that guard is covered
+        // separately). The seam exercises the same resolution + keying logic.
+        let url = cfg.server_url.clone().unwrap();
+        let be = super::open_remote_memory_backend(&cfg, &mem_path, &url)
+            .await
+            .unwrap();
         assert_eq!(be.backend_kind(), "remote");
 
         // Drive a call: it succeeds only if the backend is keyed by the resolved
@@ -368,6 +413,42 @@ mod backend_selection_tests {
             lock.contains("spelunk") && lock.contains(RESOLVED_UUID),
             "lock file must record slug→UUID; got: {lock}"
         );
+    }
+
+    /// spelunk-oss^63 follow-up (^77): a `cloud_first` config with a non-loopback
+    /// plaintext `http://` `server_url` must be rejected by `open_memory_backend`
+    /// before any bearer token is sent — over the memory REST calls
+    /// (`RemoteMemoryBackend::authed`) or the slug→UUID `GET /v1/projects`
+    /// lookup. Mirrors `server_client::transport_validator_rejects_non_loopback_http`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn cloud_first_rejects_non_loopback_http() {
+        clear_env();
+        // A raw-UUID project_id proves the rejection is the transport check, not
+        // a failed lookup: D5 short-circuits resolution, so absent the guard
+        // nothing would reach the network at all — yet the bearer would still be
+        // attached to every subsequent memory call over plaintext.
+        let cfg = Config {
+            server_url: Some("http://team-server:7777".to_string()),
+            project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            server_key: Some("secret".to_string()),
+            ..Default::default()
+        };
+        // `map(|_| ())` discards the non-`Debug` `Box<dyn MemoryBackend>` so
+        // `expect_err` can format the (never-taken) Ok arm.
+        let err = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .map(|_| ())
+            .expect_err(
+                "non-loopback http:// server_url must be rejected before any bearer is sent",
+            );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("loopback"),
+            "error must name the fix; got: {msg}"
+        );
+        assert!(msg.contains("https"), "error must name the fix; got: {msg}");
     }
 
     #[tokio::test]
