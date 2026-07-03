@@ -36,6 +36,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   ignored in `.cargo/audit.toml` and `deny.toml` with a re-check note, to be
   dropped once the parsers bump `quick-xml`. The vestigial repo-root `audit.toml`
   (never read by `cargo audit`, which loads `.cargo/audit.toml`) was removed.
+- **Insecure temp file for the `spelunk memory add`/edit `$EDITOR` draft.** The
+  draft body is now created with `tempfile::Builder` (unpredictable name,
+  `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in
+  `std::env::temp_dir()`, closing a local symlink/TOCTOU clobber and a
+  world-readable info-leak window. The read-back after the editor exits now
+  goes through the retained file handle instead of re-opening by path, so a
+  symlink swapped in during the edit window can't be followed.
 
 ### Fixed
 
