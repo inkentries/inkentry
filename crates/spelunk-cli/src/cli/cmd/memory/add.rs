@@ -148,9 +148,20 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
         }
     }
 
-    let script = dirs::home_dir()
-        .map(|h| h.join("scripts/web-to-md.ts"))
-        .filter(|p| p.exists());
+    // Optional user hook: `memory add --from-url` can shell out to a local
+    // Markdown-conversion script under `bun` for higher-fidelity extraction
+    // than the naive HTML strip below. This is opt-in and guarded: the script
+    // must live at a fixed, spelunk-owned path
+    // (`~/.config/spelunk/scripts/web-to-md.ts`), *not* anywhere under the
+    // home directory. Prior to this guard the CLI ran `~/scripts/web-to-md.ts`
+    // whenever it happened to exist — a surprising, undocumented dependency
+    // that made any attacker-writable home-dir script (e.g. via a prior
+    // unrelated compromise, or a shared/managed machine) an implicit
+    // code-execution path every time `memory add --from-url` ran. Scoping the
+    // path to `~/.config/spelunk/` narrows this to a location the user
+    // explicitly manages for spelunk and documents the mechanism in one place.
+    // See docs/memory.md#web-to-md-hook.
+    let script = web_to_md_script_path().filter(|p| p.exists());
 
     if let Some(script_path) = script {
         let out = tokio::process::Command::new("bun")
@@ -195,6 +206,28 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
     };
 
     Ok((title, body))
+}
+
+/// The fixed, spelunk-owned path the web-to-md hook script must live at to be
+/// picked up (`~/.config/spelunk/scripts/web-to-md.ts`). Deliberately does
+/// *not* consider the old `~/scripts/web-to-md.ts` location — see the
+/// opt-in-guard comment above this function's call site.
+///
+/// `SPELUNK_SCRIPTS_DIR` overrides the `~/.config/spelunk/scripts` directory
+/// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
+/// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
+/// making per-process environment overrides of `HOME` ineffective — see the
+/// identical note on `spelunk_state_dir` in `capability.rs`.
+fn web_to_md_script_path() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("SPELUNK_SCRIPTS_DIR") {
+        return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));
+    }
+    dirs::home_dir().map(|h| {
+        h.join(".config")
+            .join("spelunk")
+            .join("scripts")
+            .join("web-to-md.ts")
+    })
 }
 
 fn parse_web_to_md_output(md: &str, url: &str) -> Result<(String, String)> {
@@ -249,5 +282,109 @@ async fn try_embed_via_server(cfg: &Config, text: &str) -> Option<Vec<u8>> {
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    /// Run `f` with `SPELUNK_SCRIPTS_DIR` pointed at `dir` for the duration of
+    /// the call. `#[serial]` on each test guards the shared process-wide env
+    /// var. Deliberately overrides `SPELUNK_SCRIPTS_DIR` rather than `HOME` —
+    /// `dirs::home_dir()` (v6) doesn't read `HOME` on Windows (it calls
+    /// `SHGetKnownFolderPath`), so a `HOME`-only override is silently
+    /// ineffective there. See the identical note on `web_to_md_script_path`.
+    fn with_scripts_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
+        let prev = std::env::var_os("SPELUNK_SCRIPTS_DIR");
+        // SAFETY: guarded by #[serial] — no other thread in this test binary
+        // reads/writes SPELUNK_SCRIPTS_DIR concurrently.
+        unsafe { std::env::set_var("SPELUNK_SCRIPTS_DIR", dir) };
+        f();
+        unsafe {
+            match &prev {
+                Some(v) => std::env::set_var("SPELUNK_SCRIPTS_DIR", v),
+                None => std::env::remove_var("SPELUNK_SCRIPTS_DIR"),
+            }
+        }
+    }
+
+    /// `web_to_md_script_path` must resolve to the new, spelunk-owned path
+    /// (`~/.config/spelunk/scripts/web-to-md.ts`, or `SPELUNK_SCRIPTS_DIR` if set).
+    #[test]
+    #[serial]
+    fn web_to_md_script_path_is_config_spelunk_scripts() {
+        let tmp = TempDir::new().unwrap();
+        with_scripts_dir(tmp.path(), || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            assert_eq!(path, tmp.path().join("web-to-md.ts"));
+        });
+    }
+
+    /// Regression guard for the opt-in fix (spelunk-oss^64 #5): a script left
+    /// at the *old*, unguarded location (`~/scripts/web-to-md.ts`) must NOT be
+    /// picked up any more — only the fixed `~/.config/spelunk/scripts/` path
+    /// counts. Prior to the fix, any attacker-writable home-dir script at the
+    /// old path was an implicit code-execution path on every `memory add
+    /// --from-url` call; this test ensures that door stays shut.
+    #[test]
+    #[serial]
+    fn old_home_scripts_path_is_not_used() {
+        let tmp = TempDir::new().unwrap();
+        let old_dir = tmp.path().join("scripts");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("web-to-md.ts"), b"// legacy script").unwrap();
+
+        let new_dir = tmp.path().join("new-scripts");
+        with_scripts_dir(&new_dir, || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            assert_ne!(
+                path,
+                old_dir.join("web-to-md.ts"),
+                "resolved script path must not be the old ~/scripts/web-to-md.ts location"
+            );
+            assert!(
+                !path.exists(),
+                "a script only present at the old location must not be found at the \
+                 resolved (new) path — the old path must be silently ignored, not \
+                 still honoured"
+            );
+        });
+    }
+
+    /// Positive case: a script placed at the new, guarded location IS found.
+    #[test]
+    #[serial]
+    fn new_config_spelunk_scripts_path_is_used_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let new_dir = tmp.path().join(".config").join("spelunk").join("scripts");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(new_dir.join("web-to-md.ts"), b"// new script").unwrap();
+
+        with_scripts_dir(&new_dir, || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            assert!(
+                path.exists(),
+                "script placed at the new opt-in path should be found"
+            );
+        });
+    }
+
+    #[test]
+    fn parse_web_to_md_output_extracts_title_from_heading() {
+        let md = "# My Title\n\nSome body text.";
+        let (title, body) = parse_web_to_md_output(md, "https://example.com").unwrap();
+        assert_eq!(title, "My Title");
+        assert_eq!(body, "Some body text.");
+    }
+
+    #[test]
+    fn parse_web_to_md_output_falls_back_to_url_without_heading() {
+        let md = "No heading here, just body text.";
+        let (title, body) = parse_web_to_md_output(md, "https://example.com/page").unwrap();
+        assert_eq!(title, "https://example.com/page");
+        assert_eq!(body, "No heading here, just body text.");
     }
 }

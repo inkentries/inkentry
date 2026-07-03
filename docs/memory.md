@@ -91,6 +91,23 @@ spelunk memory add --from-url https://github.com/owner/repo/issues/99 \
 
 For GitHub issues, `spelunk` calls `gh api` to get structured issue data (requires the [GitHub CLI](https://cli.github.com/) and `gh auth login`). For all other URLs it does an HTTP GET and extracts readable text.
 
+### Web-to-Markdown hook (opt-in) {#web-to-md-hook}
+
+For non-GitHub URLs, if a script exists at `~/.config/spelunk/scripts/web-to-md.ts`, `spelunk` runs it under `bun` (`bun ~/.config/spelunk/scripts/web-to-md.ts <url>`) and uses its stdout instead of the built-in HTML-stripping fallback — useful for sites that need JS rendering or custom extraction logic. The script's first line (`# Title`) becomes the entry title; the rest becomes the body.
+
+This is opt-in by design: the script only runs if you've placed it at that exact, spelunk-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `spelunk` silently falls back to the built-in HTML extraction. Set `SPELUNK_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/spelunk/scripts`.
+
+> **Breaking change:** prior to this, `spelunk` looked for the hook script at
+> `~/scripts/web-to-md.ts`. That location is **no longer read** — any script
+> left there is silently ignored, and `memory add --from-url` falls back to
+> the built-in HTML extraction instead. If you were relying on the old hook,
+> move the script to `~/.config/spelunk/scripts/web-to-md.ts` (creating the
+> directory if needed). The path moved because the old, undocumented
+> `~/scripts/` convention meant *any* script an attacker could plant there —
+> via an unrelated prior compromise, or on a shared/managed machine — would
+> get silently executed on every `--from-url` call; the new path is scoped to
+> a location you explicitly manage for spelunk.
+
 ## Searching memory
 
 ```bash
