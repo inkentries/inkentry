@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** June 2026 (PR #390: ADR-004 unified memory storage)  
+**Last reviewed:** July 2026 (server reconciliation: ADR-056 single-trust-domain tenancy)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -122,6 +122,31 @@ keyless server can therefore only bind loopback (`127.0.0.1`), where it is reach
 by local processes but not by other machines. (A blank/whitespace key — e.g.
 docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 
+### Tenancy boundary: single trust domain (ADR-056)
+
+A `spelunk-server` instance is a **single trust domain**, and its shared key is
+the tenancy boundary. This is a deliberate design decision recorded in
+[ADR-056](../adr/056-oss-server-tenancy-model.md), not an unimplemented control:
+
+- Holding the server's key grants full participation in **every** project on
+  that instance: list, read, search, write, supersede, archive, and delete.
+  `GET /v1/projects` enumerating all project slugs is intended behaviour.
+- The `project_id` slug in the request path is an **addressing convenience, not
+  a security boundary**. The server implements no per-project or per-principal
+  authorization, because the OSS SQLite server has no identity, org, or role
+  model to hang one on.
+- Isolation between teams or projects that must not see each other's memory is
+  achieved by running **separate server instances**, each with its own key and
+  its own database.
+- Consequently, cross-project read/write on a single instance is documented,
+  intended behaviour under this model, not a vulnerability. A future ADR that
+  introduces a scoped-key and ACL model would supersede this decision.
+
+**Transport (ADR-056 addendum):** the server serves plaintext HTTP only on a
+loopback bind. A shared, non-loopback deployment terminates TLS in a front proxy
+so the shared key never crosses the network in cleartext. `/v1/health` is
+unauthenticated (no bearer required or sent).
+
 ---
 
 ## Threat Analysis (STRIDE)
@@ -147,7 +172,7 @@ docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| No record of who created/deleted a memory note on the server | B | Medium | Medium | Server has no per-request audit log. `source_ref` field can record commit SHA but is not required. Consider adding `created_by` / request logging for multi-user deployments. |
+| No record of who created/deleted a memory note on the server | B | Medium | Medium | Server has no per-request audit log. `source_ref` field can record commit SHA but is not required. Under the single-trust-domain model (ADR-056) every keyholder is a full administrator, so per-principal attribution is not an isolation control; `created_by` / request logging remains a possible future operational aid for shared deployments. |
 
 ### I — Information Disclosure
 
@@ -168,7 +193,8 @@ docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Path traversal via project_id or note body to read arbitrary server files | B | Low | High | project_id is a DB-assigned integer; note body is stored as-is but never executed. No file reads from user input. |
+| Path traversal via project_id or note body to read arbitrary server files | B | Low | High | The `project_id` is a slug used only as a database key (capped in length at the handler), never as a filesystem path; the note body is stored as-is but never executed. No file reads derive from user-supplied request fields. |
+| Keyholder reads or deletes another project's memory on a shared instance | B | n/a | n/a | **Intended behaviour, not a defect (ADR-056).** A server instance is a single trust domain; the shared key grants full access to every project. Teams that must be isolated run separate instances. This is not an elevation of privilege because there is no lower privilege level to elevate from: one key is one trust domain. |
 | Git argument injection via `spelunk memory harvest --branch`/`--git-range` (e.g. `--branch=--output=<path>`) forwarded to `git log` with no `--` separator, letting an option-shaped value be parsed as a git flag instead of a ref (arbitrary local file clobber) | A | Low | Medium | Fixed: `reject_option_like_ref()` rejects any ref, or either endpoint of an `A..B` range, starting with `-` before the subprocess spawns; both `git log` invocations also append a trailing `--` separator as defense-in-depth. Same review applied to the git-notes write path (`git_notes/mod.rs`): all `<object>` args to `notes show`/`add` are `--`-guarded, and note bodies are written via stdin (`-F -`) instead of `-m <arg>`, so a body can't be argv-parsed as an option or exposed on `ps`. |
 
 ### D — Denial of Service
