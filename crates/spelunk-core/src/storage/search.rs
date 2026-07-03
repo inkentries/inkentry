@@ -219,6 +219,12 @@ mod tests {
             "trailing*",
             "-leading-dash",
             "",
+            "a NEAR b",
+            "a NEAR/3 b",
+            "content:secret", // attempted FTS5 column-filter injection
+            "\"\"\"\"\"",     // consecutive quotes
+            "^prefix",
+            "((()))",
         ];
         for q in queries {
             let result = db.search_text(q, 10);
@@ -228,6 +234,29 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    /// KNOWN GAP (filed as spelunk-oss follow-up, see task comment on
+    /// spelunk-oss^65): a query term containing an embedded NUL byte still
+    /// surfaces a raw FTS5 "unterminated string" parse error. `fts5_quote_literal`
+    /// doubles internal `"` characters correctly, but FTS5's own query-string
+    /// parser appears to treat the embedded `\0` as an early string terminator
+    /// (distinct from SQLite's NUL-safe text binding), so the closing `"` we
+    /// appended is never seen by the parser. This is `#[ignore]`d because it
+    /// currently fails — it documents the bug rather than passing. Remove
+    /// `#[ignore]` once fixed.
+    #[test]
+    #[ignore = "known bug: embedded NUL byte still leaks a raw FTS5 parse error, see spelunk-oss^65 follow-up"]
+    fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
+        let db = open_db();
+        seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");
+
+        let result = db.search_text("\0embedded nul", 10);
+        assert!(
+            result.is_ok(),
+            "query with embedded NUL must not surface a raw FTS5 parse error, got: {:?}",
+            result.err()
+        );
     }
 
     /// A literal-quoted term still matches real content containing that
@@ -242,5 +271,20 @@ mod tests {
             !results.is_empty(),
             "expected the seeded chunk to match a plain-word query"
         );
+    }
+
+    /// A term shaped like an FTS5 column filter (`content:...`) must be
+    /// treated as a literal string to search for, not interpreted as
+    /// targeting the `content` column. Quoted, it should behave like any
+    /// other safe literal search (no match on an unrelated nonsense term,
+    /// no error).
+    #[test]
+    fn search_text_column_filter_syntax_is_literal_not_a_filter() {
+        let db = open_db();
+        seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");
+
+        let result = db.search_text("content:nonexistent_term_xyz", 10);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }

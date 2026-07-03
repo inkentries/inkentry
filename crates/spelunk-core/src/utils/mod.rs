@@ -298,6 +298,24 @@ mod tests {
         assert_eq!(fts5_quote_literal(""), "\"\"");
     }
 
+    #[test]
+    fn fts5_quote_near_keyword_stays_literal() {
+        assert_eq!(fts5_quote_literal("a NEAR/3 b"), "\"a NEAR/3 b\"");
+    }
+
+    #[test]
+    fn fts5_quote_consecutive_internal_quotes_all_escaped() {
+        // Every internal `"` must be doubled, including runs of them.
+        assert_eq!(fts5_quote_literal("\"\"\""), "\"\"\"\"\"\"\"\"");
+    }
+
+    #[test]
+    fn fts5_quote_embedded_nul_is_preserved_not_special() {
+        let term = "before\0after";
+        let quoted = fts5_quote_literal(term);
+        assert_eq!(quoted, "\"before\0after\"");
+    }
+
     // ── strip_ansi ────────────────────────────────────────────────────────────
 
     #[test]

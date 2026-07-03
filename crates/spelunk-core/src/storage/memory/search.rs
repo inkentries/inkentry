@@ -220,6 +220,12 @@ mod tests {
             "trailing*",
             "-leading-dash",
             "",
+            "a NEAR b",
+            "a NEAR/3 b",
+            "content:secret",
+            "\"\"\"\"\"",
+            "^prefix",
+            "((()))",
         ];
         for q in queries {
             let result = store.search_text(q, 10, None);
@@ -229,6 +235,36 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    /// KNOWN GAP (filed as a spelunk-oss follow-up, see task comment on
+    /// spelunk-oss^65): a query term containing an embedded NUL byte still
+    /// surfaces a raw FTS5 "unterminated string" parse error via this
+    /// memory-search path too (same root cause as the code-search path in
+    /// `storage::search::tests`). `#[ignore]`d because it currently fails —
+    /// documents the bug rather than passing. Remove `#[ignore]` once fixed.
+    #[test]
+    #[ignore = "known bug: embedded NUL byte still leaks a raw FTS5 parse error, see spelunk-oss^65 follow-up"]
+    fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
+        let store = open_store();
+        store
+            .add_note(
+                "note",
+                "Config parsing",
+                "handles foo:bar style keys",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let result = store.search_text("\0embedded nul", 10, None);
+        assert!(
+            result.is_ok(),
+            "query with embedded NUL must not surface a raw FTS5 parse error, got: {:?}",
+            result.err()
+        );
     }
 
     /// Quoting the term as an FTS5 literal must not break normal matching.
