@@ -212,7 +212,16 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
 /// picked up (`~/.config/spelunk/scripts/web-to-md.ts`). Deliberately does
 /// *not* consider the old `~/scripts/web-to-md.ts` location — see the
 /// opt-in-guard comment above this function's call site.
+///
+/// `SPELUNK_SCRIPTS_DIR` overrides the `~/.config/spelunk/scripts` directory
+/// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
+/// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
+/// making per-process environment overrides of `HOME` ineffective — see the
+/// identical note on `spelunk_state_dir` in `capability.rs`.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("SPELUNK_SCRIPTS_DIR") {
+        return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));
+    }
     dirs::home_dir().map(|h| {
         h.join(".config")
             .join("spelunk")
@@ -282,38 +291,35 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Run `f` with `$HOME` pointed at `home` for the duration of the call.
-    /// `#[serial]` on each test guards the shared process-wide `HOME` env var.
-    fn with_home<F: FnOnce()>(home: &std::path::Path, f: F) {
-        let prev = std::env::var_os("HOME");
+    /// Run `f` with `SPELUNK_SCRIPTS_DIR` pointed at `dir` for the duration of
+    /// the call. `#[serial]` on each test guards the shared process-wide env
+    /// var. Deliberately overrides `SPELUNK_SCRIPTS_DIR` rather than `HOME` —
+    /// `dirs::home_dir()` (v6) doesn't read `HOME` on Windows (it calls
+    /// `SHGetKnownFolderPath`), so a `HOME`-only override is silently
+    /// ineffective there. See the identical note on `web_to_md_script_path`.
+    fn with_scripts_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
+        let prev = std::env::var_os("SPELUNK_SCRIPTS_DIR");
         // SAFETY: guarded by #[serial] — no other thread in this test binary
-        // reads/writes HOME concurrently.
-        unsafe { std::env::set_var("HOME", home) };
+        // reads/writes SPELUNK_SCRIPTS_DIR concurrently.
+        unsafe { std::env::set_var("SPELUNK_SCRIPTS_DIR", dir) };
         f();
         unsafe {
             match &prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
+                Some(v) => std::env::set_var("SPELUNK_SCRIPTS_DIR", v),
+                None => std::env::remove_var("SPELUNK_SCRIPTS_DIR"),
             }
         }
     }
 
     /// `web_to_md_script_path` must resolve to the new, spelunk-owned path
-    /// (`~/.config/spelunk/scripts/web-to-md.ts`).
+    /// (`~/.config/spelunk/scripts/web-to-md.ts`, or `SPELUNK_SCRIPTS_DIR` if set).
     #[test]
     #[serial]
     fn web_to_md_script_path_is_config_spelunk_scripts() {
         let tmp = TempDir::new().unwrap();
-        with_home(tmp.path(), || {
-            let path = web_to_md_script_path().expect("HOME is set");
-            assert_eq!(
-                path,
-                tmp.path()
-                    .join(".config")
-                    .join("spelunk")
-                    .join("scripts")
-                    .join("web-to-md.ts")
-            );
+        with_scripts_dir(tmp.path(), || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            assert_eq!(path, tmp.path().join("web-to-md.ts"));
         });
     }
 
@@ -331,8 +337,9 @@ mod tests {
         std::fs::create_dir_all(&old_dir).unwrap();
         std::fs::write(old_dir.join("web-to-md.ts"), b"// legacy script").unwrap();
 
-        with_home(tmp.path(), || {
-            let path = web_to_md_script_path().expect("HOME is set");
+        let new_dir = tmp.path().join("new-scripts");
+        with_scripts_dir(&new_dir, || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
             assert_ne!(
                 path,
                 old_dir.join("web-to-md.ts"),
@@ -356,8 +363,8 @@ mod tests {
         std::fs::create_dir_all(&new_dir).unwrap();
         std::fs::write(new_dir.join("web-to-md.ts"), b"// new script").unwrap();
 
-        with_home(tmp.path(), || {
-            let path = web_to_md_script_path().expect("HOME is set");
+        with_scripts_dir(&new_dir, || {
+            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
             assert!(
                 path.exists(),
                 "script placed at the new opt-in path should be found"
