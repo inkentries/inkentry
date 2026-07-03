@@ -54,12 +54,21 @@ spelunk index <path> [options]
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
+| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a background process and return the prompt |
 
 A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
+
+`--detach-embed` is useful when embedding a large codebase on slow hardware:
+parsing finishes in the foreground (so the index is immediately usable for
+text and ast-grep search) and the long embedding pass continues in the
+background. Run `spelunk status` afterwards to check progress; it shows an
+"Embedding in progress" line with the embedded/total count until every chunk
+is embedded. If the background pass is interrupted, re-running `spelunk index`
+resumes it (already-embedded chunks are skipped).
 
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.

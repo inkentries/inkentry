@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use indicatif::{MultiProgress, ProgressBar};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Serialize;
 
-use super::super::ui::{is_tty, progress_style};
+use super::super::ui::is_tty;
 use crate::{capability::Tier, config::Config, storage::Database};
 
 /// Hard ceiling on chunks per request — the server enforces 256 (returns 413 if
@@ -72,6 +72,20 @@ fn scaled_timeout(
     budget.clamp(MIN_SCALED_TIMEOUT, MAX_SCALED_TIMEOUT)
 }
 
+/// Progress style for the embed phase, including indicatif's built-in `{eta}`
+/// token. The ETA is driven by `bar.inc(1)` per embedded chunk and uses
+/// indicatif's double-exponentially-smoothed rate estimator, so the first
+/// batch's cold-start skew washes out as later batches land (spelunk-oss^74). A
+/// steady tick keeps the spinner and ETA moving even while a request is in
+/// flight, so a slow batch never looks frozen (spelunk-oss^73).
+fn embed_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  ETA {eta}  {wide_msg}",
+    )
+    .unwrap()
+    .progress_chars("=>-")
+}
+
 #[derive(Serialize)]
 struct EmbedRequest {
     chunks: Vec<ReqChunk>,
@@ -123,7 +137,7 @@ pub(super) async fn run_embed_phase(
     let total = chunk_ids_and_texts.len() as u64;
     let bar = if is_tty() && !crate::utils::is_agent_mode() {
         let b = mp.add(ProgressBar::new(total));
-        b.set_style(progress_style("Embedding"));
+        b.set_style(embed_progress_style());
         b
     } else {
         ProgressBar::hidden()
@@ -223,7 +237,9 @@ pub(super) async fn run_embed_phase(
         // After the first batch, scale the per-request timeout to this
         // machine's measured speed so later (and slower) batches degrade
         // gracefully instead of inheriting the fixed pessimistic deadline
-        // (spelunk-oss^71).
+        // (spelunk-oss^71). The same per-chunk `bar.inc(1)` cadence above also
+        // feeds the visible `{eta}`, which indicatif smooths across batches so
+        // the first batch's cold-start skew washes out (spelunk-oss^74).
         if batch_idx == 0 {
             request_timeout = scaled_timeout(started.elapsed(), batch.len(), batch_size);
         }

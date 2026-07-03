@@ -168,12 +168,28 @@ pub(super) fn run_parse_phase(
     })
 }
 
+/// Build the `(chunk_id, embedding_text)` list for every chunk in the index
+/// that has no embedding row yet, reconstructing each chunk's document text
+/// from its stored columns. This is the same union `run_parse_phase` applies as
+/// a backfill (spelunk-oss^72); exposed separately so a detached embed-only
+/// subprocess can rebuild the embed queue straight from the DB without
+/// re-parsing (spelunk-oss^74).
+pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String)>> {
+    let mut out = Vec::new();
+    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+        let text =
+            reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
+        out.push((chunk_id, text));
+    }
+    Ok(out)
+}
+
 /// Rebuild the exact document text that `Chunk::embedding_text()` produces,
 /// from the columns stored for a chunk. The `docstring` lives inside the
 /// `metadata` JSON (`{ "docstring": ..., "parent_scope": ... }`), mirroring how
 /// `store_chunks` persists it. Keep this in lockstep with
 /// `spelunk_core::indexer::Chunk::embedding_text`.
-fn reconstruct_embedding_text(
+pub(super) fn reconstruct_embedding_text(
     name: Option<&str>,
     metadata: Option<&str>,
     summary: Option<String>,
@@ -529,7 +545,9 @@ mod tests {
             no_summaries: false,
             summary_batch_size: 10,
             background_phases: false,
+            embed_phases: false,
             detach: false,
+            detach_embed: false,
         }
     }
 
