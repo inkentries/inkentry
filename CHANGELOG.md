@@ -48,6 +48,29 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     warning instead. This is local-indexing hardening, distinct from and complementary to the
     server-side request-body caps shipped in 0.9.2 above.
 
+### Features
+
+- **`spelunk index --detach-embed`: background embedding on slow hardware.** [spelunk-oss^74]
+  When embedding a large codebase on slow hardware, parsing can now run in the foreground (so
+  text/ast-grep search is immediately available) while the long embedding phase runs in the
+  background. Useful for CI/CD and multi-corebot indexing workflows where waiting for full
+  embeddings blocks other tasks unnecessarily. Run `spelunk status` to check progress (shows
+  "Embedding in progress: N/M embedded" when a background or interrupted embed is underway). If
+  the background pass is interrupted (machine sleep, process killed, network downtime), simply
+  re-run `spelunk index` to resume from where it left off.
+- **Embedding progress bar displayed immediately during indexing.** [spelunk-oss^73]
+  The ETA-aware embedding progress bar now appears as soon as the embed phase begins, instead of
+  waiting for the first batch to complete.
+
+### Fixes
+
+- **`spelunk index` no longer loses computed embeddings when a batch times out on slow hardware.**
+  [spelunk-oss^71] Per-batch timeout now scales to the machine's observed embedding speed,
+  gracefully degrading on slower hardware instead of losing work with a hard deadline. Each batch
+  is persisted to the database before the next request, so an interrupted run (due to timeout,
+  machine sleep, or process termination) can resume by re-running `spelunk index`. Prior batches
+  are retained, and already-embedded chunks are skipped.
+
 ## [0.9.2] — 2026-07-03
 
 ### Security

@@ -168,6 +168,11 @@ spelunk status [options]
 | `-l, --list` | false | One-line-per-project format (implies `--all`) |
 | `--format text\|json` | text | Output format |
 
+When chunks outnumber embeddings, `spelunk status` prints an "Embedding in
+progress" line showing the embedded/total count. This covers both an active
+background embed (e.g. `spelunk index --detach-embed` still running) and an
+interrupted run that can be resumed with `spelunk index`.
+
 **Example:**
 
 ```bash
