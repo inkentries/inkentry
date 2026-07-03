@@ -30,6 +30,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     an implicit-code-execution path where any script an attacker could plant
     under `$HOME/scripts/` (e.g. via a prior unrelated compromise, or on a
     shared/managed machine) would run automatically.
+- **Breaking: non-loopback `http://` URLs are now rejected as invalid config.**
+  `server_url` and any configured inference URL must be `https://` unless they
+  point at loopback (`127.0.0.1`, `::1`, `localhost`) — the CLI attaches your
+  `Authorization: Bearer` token to these requests, so a plaintext non-loopback
+  URL previously sent it in the clear. There is no opt-out. **If your
+  `.spelunk/config.toml` has `server_url = "http://<host>:<port>"` pointing at
+  anything other than loopback, spelunk will now refuse to start** with a
+  one-line error telling you to switch to `https://` (put a TLS-terminating
+  reverse proxy in front — see [Self-hosting](docs/self-hosting.md)) or move
+  the server to loopback. Loopback `http://` and all `https://` URLs are
+  unaffected.
+- **The CLI no longer sends the bearer token to `/v1/health`.** That endpoint
+  is unauthenticated on the server side (see below), so the probe no longer
+  attaches `Authorization` to it — matching the server, which never required
+  it. Authenticated endpoints (search, memory, inference) are unaffected.
 - **Suppressed two `quick-xml` DoS advisories with no upstream fix
   (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
   the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during
@@ -40,6 +55,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   ignored in `.cargo/audit.toml` and `deny.toml` with a re-check note, to be
   dropped once the parsers bump `quick-xml`. The vestigial repo-root `audit.toml`
   (never read by `cargo audit`, which loads `.cargo/audit.toml`) was removed.
+- **Insecure temp file for the `spelunk memory add`/edit `$EDITOR` draft.** The
+  draft body is now created with `tempfile::Builder` (unpredictable name,
+  `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in
+  `std::env::temp_dir()`, closing a local symlink/TOCTOU clobber and a
+  world-readable info-leak window. The read-back after the editor exits now
+  goes through the retained file handle instead of re-opening by path, so a
+  symlink swapped in during the edit window can't be followed.
 
 ### Fixed
 

@@ -52,6 +52,7 @@ gix = { version = "0.85.0", default-features = false, features = [
 gix-pack = ">=0.69.0"
 gix-fs = ">=0.21.1"
 gix-transport = ">=0.56.0"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 # test-support exposes spelunk-core's in-memory secret-store double
@@ -60,7 +61,6 @@ gix-transport = ">=0.56.0"
 spelunk-core = { path = "../spelunk-core", features = ["test-support"] }
 assert_cmd = "2.2"
 predicates = "3.1"
-tempfile = { workspace = true }
 wiremock = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
