@@ -377,6 +377,18 @@ spelunk login
 spelunk login --org acme
 ```
 
+**No `--org`, and the device login itself didn't scope you to an org** (WorkOS
+doesn't auto-select an org even for single-org accounts): `spelunk login`
+resolves one for you instead of leaving a session that needs a follow-up
+`spelunk org switch`.
+
+- Exactly one org on your account → selected silently.
+- Multiple orgs, on a TTY → an interactive `name (slug)` selector.
+- Multiple orgs, non-TTY (CI/agent shell) → errors with an actionable "pass
+  `--org <slug>`" message and a non-zero exit; never hangs on a prompt.
+- Zero orgs → a clear onboarding message and a non-zero exit; no dangling
+  no-org session is persisted.
+
 Tokens are written to the `[auth]` table of `~/.config/spelunk/config.toml`
 (file mode `0600`). Existing setups that use a static `server_key` (or the
 `SPELUNK_SERVER_KEY` environment variable) keep working unchanged until you next
@@ -497,8 +509,12 @@ Shorthand for `spelunk memory push`: sync local memory entries to the configured
 server.
 
 ```
-spelunk sync
+spelunk sync [--project <slug>]
 ```
+
+| Flag | Notes |
+|------|-------|
+| `--project <slug>` | Cloud project slug to sync into. Required on first sync when no `project_id` is configured — the server lazily creates the project from this slug, and repeat syncs with the same slug reuse it. Overrides a configured `project_id` when both are present. Never auto-derived from the folder name or git remote: with neither flag nor a configured `project_id`, sync halts with an actionable message pointing at `--project`. |
 
 ---
 

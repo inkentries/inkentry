@@ -5097,7 +5097,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-cli"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5135,7 +5135,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-core"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -5180,7 +5180,7 @@ dependencies = [
 
 [[package]]
 name = "spelunk-server"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "async-stream",
