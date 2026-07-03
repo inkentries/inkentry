@@ -9,6 +9,33 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
+  file reads).** [spelunk-oss^65]
+  - `AppError::Internal` no longer inspects the error message text (previously it returned the
+    raw error string to the client whenever it contained `"mismatch"` or `"required"`). The one
+    legitimately-safe case — a project's configured embedding dimension not matching an
+    incoming vector — is now a typed `DimensionMismatch` error mapped to a 400 with a fixed
+    safe message; everything else funnels through `AppError::Internal` to a fixed generic
+    `"Internal server error"` 500, regardless of what the underlying error's `Display` text
+    says. Closes the V1-SERVER-AUDIT §8 "5xx do not leak stack traces or internal paths" gap.
+  - Full-text search queries (`spelunk search --mode text` and the server's `/v1/search`
+    hybrid search) are now quoted as FTS5 string literals before being bound to `MATCH`
+    (internal `"` doubled per FTS5 escaping rules), so punctuation in a search term — `"`,
+    `:`, `OR`/`NOT`/`NEAR`, unbalanced parens, etc. — no longer surfaces a raw FTS5 query-parse
+    error to the caller. **Known gap:** a query term containing an embedded NUL byte still
+    leaks a raw FTS5 parse error despite the quoting (FTS5's own parser appears to treat `\0`
+    as an early string terminator, independent of SQLite's NUL-safe `TEXT` binding); tracked as
+    a follow-up in spelunk-oss^75.
+  - `spelunk index` now enforces a `MAX_FILE_BYTES` (64 MiB) cap via `metadata().len()` before
+    reading a file into memory, applied uniformly across every format (text/Markdown/tree-sitter
+    source, PDF, DOCX, XLSX) — previously the cap only bounded an already-read buffer on the
+    tree-sitter branch, so a very large or maliciously crafted file of any other supported
+    format could still be read fully into memory first. Oversized files are now skipped with a
+    warning instead. This is local-indexing hardening, distinct from and complementary to the
+    server-side request-body caps shipped in 0.9.2 above.
+
 ## [0.9.2] — 2026-07-03
 
 ### Security

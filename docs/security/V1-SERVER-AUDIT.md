@@ -93,9 +93,27 @@ The CLI threat model (`THREAT-MODEL.md`) remains valid for the CLI crate. This d
 
 | Check | Status |
 |---|---|
-| 5xx responses do not leak stack traces or internal paths | ☐ |
+| 5xx responses do not leak stack traces or internal paths | ✅ |
 | 422 injection responses reveal category, not pattern | ☐ |
 | 401/403 responses consistent — cannot distinguish missing key from wrong key | ☐ |
+
+<!-- spelunk-oss^65 (PR #509, merged): AppError::Internal no longer sniffs the error Display text
+     for substrings like "mismatch"/"required" — that was the leak: any future error whose
+     message happened to contain those words would have reached the client. The one legitimately
+     safe case (per-project embedding dimension mismatch) is now a typed DimensionMismatch error
+     mapped to a 400 with a fixed safe message (crates/spelunk-server/src/db.rs, lib.rs); every
+     other Internal error returns a fixed generic "Internal server error" 500 regardless of its
+     underlying text. Same PR also closed two adjacent robustness gaps found alongside this one
+     (not strictly in-scope for this checklist row, noted here for traceability): FTS5 MATCH
+     queries are now quoted as literal strings (crates/spelunk-core/src/utils/mod.rs
+     fts5_quote_literal(), applied in storage/search.rs + storage/memory/search.rs) so punctuation
+     in a search term no longer surfaces a raw FTS5 parse error — except an embedded-NUL-byte
+     edge case that still leaks one, tracked as a follow-up in spelunk-oss^75; and
+     `spelunk index` now applies a uniform MAX_FILE_BYTES size gate before reading any file
+     format into memory (crates/spelunk-cli/src/cli/cmd/index/parse_phase.rs), not just the
+     tree-sitter branch. Row marked ✅ 2026-07-03 by docs-writer per test-engineer verification
+     (task comments on spelunk-oss^65); other two rows in this section are unrelated to this task
+     and remain open. -->
 
 ---
 
