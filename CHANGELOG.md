@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-07-03
+
 ### Security
 
 - **CLI local-hardening bundle** (`server stop`, state file perms, `registry
