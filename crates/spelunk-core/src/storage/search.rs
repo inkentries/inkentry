@@ -94,7 +94,8 @@ impl Database {
              ORDER BY score
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![query, limit as i64], |row| {
+        let fts_query = crate::utils::fts5_quote_literal(query);
+        let rows = stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
             let bm25_score: f64 = row.get(8)?;
             Ok(crate::search::SearchResult {
                 chunk_id: row.get(0)?,
@@ -167,5 +168,79 @@ impl Database {
             .collect();
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Database;
+    use std::sync::OnceLock;
+
+    /// Register the sqlite-vec extension exactly once per test process.
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn open_db() -> Database {
+        register_sqlite_vec();
+        Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
+    }
+
+    fn seed_chunk(db: &Database, content: &str) {
+        let file_id = db
+            .upsert_file("src/lib.rs", Some("rust"), "deadbeef")
+            .expect("upsert file");
+        db.insert_chunk(file_id, "function", Some("f"), 1, 5, content, None, 4)
+            .expect("insert chunk");
+    }
+
+    /// A search term containing FTS5-special punctuation (unbalanced `"`,
+    /// a bare `:`, and boolean-looking keywords) must never surface a raw
+    /// FTS5 parse error — it should be treated as a literal string and either
+    /// return matches or an empty result, but always `Ok`.
+    #[test]
+    fn search_text_with_punctuation_never_errors() {
+        let db = open_db();
+        seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");
+
+        let queries = [
+            "foo:bar",
+            "\"unterminated quote",
+            "a OR NOT b",
+            "weird (parens",
+            "trailing*",
+            "-leading-dash",
+            "",
+        ];
+        for q in queries {
+            let result = db.search_text(q, 10);
+            assert!(
+                result.is_ok(),
+                "query {q:?} must not surface a raw FTS5 parse error, got: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    /// A literal-quoted term still matches real content containing that
+    /// literal substring, so quoting doesn't silently break search relevance.
+    #[test]
+    fn search_text_quoted_colon_term_still_matches() {
+        let db = open_db();
+        seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");
+
+        let results = db.search_text("parse_config", 10).expect("search ok");
+        assert!(
+            !results.is_empty(),
+            "expected the seeded chunk to match a plain-word query"
+        );
     }
 }

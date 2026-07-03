@@ -63,8 +63,9 @@ impl MemoryStore {
              LIMIT {limit}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
+        let fts_query = crate::utils::fts5_quote_literal(query);
         let notes = if let Some(ts) = as_of {
-            stmt.query_map(rusqlite::params![query, ts], |row| {
+            stmt.query_map(rusqlite::params![fts_query, ts], |row| {
                 let bm25_score: f64 = row.get(12)?;
                 let mut note = row_to_note(row)?;
                 note.distance = Some(-bm25_score);
@@ -72,7 +73,7 @@ impl MemoryStore {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
-            stmt.query_map(rusqlite::params![query], |row| {
+            stmt.query_map(rusqlite::params![fts_query], |row| {
                 let bm25_score: f64 = row.get(12)?;
                 let mut note = row_to_note(row)?;
                 // Negate so that higher relevance → lower distance (ascending convention).
@@ -166,5 +167,90 @@ impl MemoryStore {
             .query_map(rusqlite::params![query_blob], row_to_note_with_distance)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(notes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryStore;
+    use std::sync::OnceLock;
+
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn open_store() -> MemoryStore {
+        register_sqlite_vec();
+        MemoryStore::open(std::path::Path::new(":memory:"))
+            .expect("failed to open in-memory MemoryStore")
+    }
+
+    /// A search term containing FTS5-special punctuation must never surface a
+    /// raw FTS5 parse error from `search_text` — it's always treated as a
+    /// literal term (quoted internally), so the call returns `Ok` (results or
+    /// empty) regardless of punctuation.
+    #[test]
+    fn search_text_with_punctuation_never_errors() {
+        let store = open_store();
+        store
+            .add_note(
+                "note",
+                "Config parsing",
+                "handles foo:bar style keys",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let queries = [
+            "foo:bar",
+            "\"unterminated quote",
+            "a OR NOT b",
+            "weird (parens",
+            "trailing*",
+            "-leading-dash",
+            "",
+        ];
+        for q in queries {
+            let result = store.search_text(q, 10, None);
+            assert!(
+                result.is_ok(),
+                "query {q:?} must not surface a raw FTS5 parse error, got: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    /// Quoting the term as an FTS5 literal must not break normal matching.
+    #[test]
+    fn search_text_plain_term_still_matches() {
+        let store = open_store();
+        store
+            .add_note(
+                "note",
+                "Config parsing",
+                "handles foo:bar style keys",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let results = store.search_text("parsing", 10, None).expect("search ok");
+        assert!(
+            !results.is_empty(),
+            "expected the seeded note to match a plain-word query"
+        );
     }
 }

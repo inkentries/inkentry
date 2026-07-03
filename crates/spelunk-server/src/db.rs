@@ -6,6 +6,30 @@ use uuid::Uuid;
 
 use spelunk_core::embeddings::blob_to_vec;
 
+/// Typed error for an embedding-dimension mismatch on a project. Kept distinct
+/// from `anyhow::Error` so callers (the HTTP layer) can map it to a safe,
+/// specific 400 response without sniffing the error message for substrings —
+/// see `AppError::BadRequest` in `lib.rs`.
+#[derive(Debug)]
+pub struct DimensionMismatch {
+    pub slug: String,
+    pub expected: usize,
+    pub got: usize,
+}
+
+impl std::fmt::Display for DimensionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "embedding dimension mismatch for project '{}': server expects {}, got {}. \
+             All clients on the same project must use the same embedding model.",
+            self.slug, self.expected, self.got
+        )
+    }
+}
+
+impl std::error::Error for DimensionMismatch {}
+
 /// Shared state for all DB operations on the server.
 pub struct ServerDb {
     pub conn: Connection,
@@ -123,13 +147,12 @@ impl ServerDb {
         if let Some(mut p) = existing {
             // Validate dimension if already set.
             if p.embedding_dim != 0 && p.embedding_dim != incoming_dim {
-                anyhow::bail!(
-                    "embedding dimension mismatch for project '{}': server expects {}, got {}. \
-                     All clients on the same project must use the same embedding model.",
-                    slug,
-                    p.embedding_dim,
-                    incoming_dim
-                );
+                return Err(DimensionMismatch {
+                    slug: slug.to_string(),
+                    expected: p.embedding_dim,
+                    got: incoming_dim,
+                }
+                .into());
             }
             // Set dimension on first note.
             if p.embedding_dim == 0 {
