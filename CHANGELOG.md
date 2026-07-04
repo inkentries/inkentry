@@ -11,6 +11,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **`spelunk-server` now refuses a keyed non-loopback plaintext bind by default.**
+  Previously the startup guard only refused a *keyless* non-loopback bind (an open,
+  unauthenticated server). A *keyed* non-loopback bind over plaintext HTTP was still
+  allowed, so a shared server on a routable interface sent the bearer
+  `SPELUNK_SERVER_KEY` across the network in cleartext. The guard now refuses a
+  non-loopback plaintext bind whether or not a key is set; the error names the
+  interface/port and points at the loopback-only / TLS-front guidance (bind loopback
+  and terminate TLS in a front proxy). A new opt-out, `--allow-insecure-remote` /
+  `SPELUNK_ALLOW_INSECURE_REMOTE=1` (accepts `1`/`true`/`yes`/`on`; set-but-empty
+  counts as unset), downgrades only the keyed-plaintext refusal to a loud one-time
+  startup warning and proceeds. It is an accepted-risk escape hatch for a private,
+  trusted network or the Docker remote-agent workflow (`host.docker.internal` /
+  `172.17.0.1`), not a recommended posture, and it never lifts the keyless refusal.
+  Keyless behaviour, loopback binds, and TLS-fronted (loopback) binds are unchanged.
+  See [docs/server.md](docs/server.md#insecure-non-loopback-plaintext-bind-opt-out).
+  (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).** [spelunk-oss^65]
   - `AppError::Internal` no longer inspects the error message text (previously it returned the

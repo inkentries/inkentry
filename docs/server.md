@@ -66,7 +66,10 @@ above: it's long-lived, reachable over the network, and protected by an API key.
 
 The container image binds `--host 0.0.0.0` in its entrypoint, so an API key is
 required — `spelunk-server` refuses to start on a non-loopback bind with no key
-configured (see [Trust model](#trust-model)).
+configured (see [Trust model](#trust-model)). It also refuses a non-loopback bind
+over plaintext HTTP even *with* a key, because the bearer key would then cross the
+network in cleartext; terminate TLS in a front proxy and bind loopback, or accept
+the risk with [`--allow-insecure-remote`](#insecure-non-loopback-plaintext-bind-opt-out).
 
 ```bash
 # Clone and build
@@ -247,6 +250,46 @@ cargo build --release --bin spelunk-server
   --db /var/lib/spelunk/spelunk.db \
   --port 7777 \
   --key your-api-key
+```
+
+### Bind and auth flags
+
+| Flag | Env | Default | Purpose |
+|---|---|---|---|
+| `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs a key and TLS in front (see below). |
+| `--port` | (none) | `7777` | Port to bind. |
+| `--key` | `SPELUNK_SERVER_KEY` | unset | Shared bearer API key. Leave unset only for a loopback dev server. |
+| `--allow-insecure-remote` | `SPELUNK_ALLOW_INSECURE_REMOTE` | `false` | **Insecure:** allow a keyed non-loopback bind over plaintext HTTP. See below. |
+
+The env var accepts `1`/`true`/`yes`/`on` (case-insensitive) as true; anything
+else, including set-but-empty, is false.
+
+### Insecure non-loopback plaintext bind opt-out
+
+By default `spelunk-server` refuses to bind a non-loopback address over plaintext
+HTTP, whether or not a key is set. With no key that would be an open,
+unauthenticated server; with a key the bearer `SPELUNK_SERVER_KEY` would travel
+across the network in cleartext. The refusal names the interface/port and points
+back at this guidance. The supported deployment is to bind loopback and terminate
+TLS in a front proxy (see [Self-hosting](self-hosting.md)).
+
+`--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE=1` downgrades **only**
+the keyed-plaintext refusal to a loud one-time startup warning and starts anyway.
+It never lifts the keyless refusal (an unauthenticated server is always refused on
+a non-loopback bind).
+
+> **Insecure: this sends the bearer key in cleartext.** Only use it on a private,
+> trusted network where you accept that risk, or for the Docker remote-agent case
+> where a container reaches the host over `host.docker.internal` / `172.17.0.1`.
+> It is an accepted-risk escape hatch, not a recommended posture; prefer a TLS
+> front proxy.
+
+```bash
+# Docker remote-agent case: bind the host interface for a container to reach,
+# on a trusted local network, accepting cleartext key transport.
+SPELUNK_ALLOW_INSECURE_REMOTE=1 \
+SPELUNK_SERVER_KEY=your-api-key \
+  ./target/release/spelunk-server --host 172.17.0.1 --port 7777
 ```
 
 ## API reference

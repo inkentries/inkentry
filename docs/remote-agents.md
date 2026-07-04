@@ -102,6 +102,14 @@ docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
   LAN. Do not bind the OSS server to a public interface in plain HTTP — for
   remote access over a network, terminate TLS in front of it (see
   [Self-hosting](self-hosting.md)).
+- **If you must bind the bridge gateway (`172.17.0.1`) instead of loopback**
+  so a Linux container can reach it, that is a non-loopback plaintext bind, which
+  `spelunk-server` refuses by default. Start it with
+  `SPELUNK_ALLOW_INSECURE_REMOTE=1` to accept the risk on your trusted local
+  bridge (the bearer key then travels in cleartext on that link). See
+  [spelunk-server bind and auth flags](server.md#insecure-non-loopback-plaintext-bind-opt-out).
+  On Docker Desktop the `host.docker.internal` recipe reaches a loopback-bound
+  server and needs no opt-out.
 - **Project identity.** Bind-mounting `~/.config/spelunk/` is the simplest way
   to share project identity. Alternatively set `SPELUNK_PROJECT_ID` explicitly
   in the container's environment.
