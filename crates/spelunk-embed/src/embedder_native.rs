@@ -1233,7 +1233,7 @@ mod tests {
 
     /// End-to-end semantic-discrimination check over the real model. Ignored by
     /// default: it downloads ~650 MB of weights and runs inference. Run with
-    /// `cargo test -p spelunk-server -- --ignored embeddings_discriminate`.
+    /// `cargo test -p spelunk-embed -- --ignored embeddings_discriminate`.
     ///
     /// With the #19 GQA bug present, related and unrelated pairs collapse to the
     /// same cosine (~0.1–0.25); with the fix, related pairs sit well above
@@ -1273,7 +1273,7 @@ mod tests {
     /// whole). Ignored by default: downloads the model and runs inference.
     ///
     /// Run with:
-    ///   SPELUNK_SECRET_STORE=file cargo test -p spelunk-server \
+    ///   SPELUNK_SECRET_STORE=file cargo test -p spelunk-embed \
     ///     -- --ignored oversized_chunk_embeds_without_oom
     #[test]
     #[ignore = "downloads the F2LLM model and runs inference"]
@@ -1343,6 +1343,41 @@ mod tests {
         assert!(
             msg.contains("GGUF file not found"),
             "load_from_path must fail on the local-file check (no network), got: {msg}"
+        );
+    }
+
+    /// Stronger offline guarantee: even when the GGUF *exists* (so the fail-fast
+    /// existence check passes), `load_from_path` must resolve the tokenizer and
+    /// config from the local paths it was handed and error locally — never fall
+    /// back to a Hub download for a missing/invalid artifact. Here the GGUF is
+    /// present but the tokenizer file is absent, so the load must fail on the
+    /// local tokenizer read (`loading tokenizer from ...`), proving the code
+    /// past the existence guard also stays on disk. Runs with no network.
+    #[test]
+    fn load_from_path_present_gguf_missing_tokenizer_errors_locally() {
+        let dir = tempfile::tempdir().unwrap();
+        // A present (empty) GGUF: the `exists()` guard passes, so control reaches
+        // the tokenizer/config loading that a Hub-fallback bug would live in.
+        let gguf = dir.path().join("present.gguf");
+        std::fs::write(&gguf, b"").unwrap();
+        let tokenizer = dir.path().join("tokenizer.json"); // absent
+        let config = dir.path().join("config.json"); // absent
+
+        let msg = match NativeEmbedder::load_from_path(&gguf, &tokenizer, &config) {
+            Ok(_) => panic!("an empty GGUF with no tokenizer must be a load error"),
+            Err(e) => format!("{e:#}"),
+        };
+        // The error must name the local tokenizer path (a filesystem read),
+        // never a Hub URL / download. This is the regression guard against a
+        // future Hub fallback slipping into the post-existence-check path.
+        assert!(
+            msg.contains("loading tokenizer from")
+                && msg.contains(&tokenizer.display().to_string()),
+            "load_from_path must fail on the local tokenizer read (no network), got: {msg}"
+        );
+        assert!(
+            !msg.contains("http") && !msg.contains("huggingface") && !msg.contains("downloading"),
+            "load_from_path must not reference any network fetch, got: {msg}"
         );
     }
 
