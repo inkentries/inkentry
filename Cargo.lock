@@ -5179,6 +5179,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "spelunk-embed"
+version = "0.9.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "dirs",
+ "hf-hub",
+ "libc",
+ "pretty_assertions",
+ "serde_json",
+ "serial_test",
+ "spelunk-core",
+ "tempfile",
+ "tokenizers 0.23.1",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "spelunk-server"
 version = "0.9.2"
 dependencies = [
@@ -5187,15 +5209,9 @@ dependencies = [
  "async-trait",
  "axum",
  "blake3",
- "candle-core",
- "candle-nn",
- "candle-transformers",
  "clap",
  "constant_time_eq 0.5.0",
- "dirs",
  "futures-util",
- "hf-hub",
- "libc",
  "pretty_assertions",
  "regex",
  "reqwest",
@@ -5204,9 +5220,9 @@ dependencies = [
  "serde_json",
  "serial_test",
  "spelunk-core",
+ "spelunk-embed",
  "sqlite-vec",
  "tempfile",
- "tokenizers 0.23.1",
  "tokio",
  "tokio-stream",
  "tower",

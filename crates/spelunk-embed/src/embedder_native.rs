@@ -57,7 +57,7 @@ const BATCH_MAX_SEQ: usize = 512;
 /// The single-chunk attention score / probability tensors are
 /// `[1, N_HEAD, seq, seq]` f32, so peak scratch grows as `N_HEAD × seq² × 4`.
 /// This must match the model `config.json`; it is asserted against the loaded
-/// config at startup (see `NativeEmbedder::load`).
+/// config at startup (see `NativeEmbedder::from_files`).
 const N_HEAD: usize = 16;
 
 /// Memory budget (bytes) for the single-chunk attention scratch on hosts with
@@ -525,7 +525,7 @@ fn causal_mask(seq: usize, dtype: DType, device: &Device) -> Result<Tensor> {
 // ── NativeEmbedder ────────────────────────────────────────────────────────────
 
 impl NativeEmbedder {
-    /// Load the F2LLM-v2-330M model, quantized to Q8_0.
+    /// Load the F2LLM-v2-330M model, quantized to Q8_0, via the Hugging Face Hub.
     ///
     /// Two acquisition paths select the Q8_0 GGUF cached in
     /// `~/.local/share/spelunk/models/`:
@@ -546,7 +546,10 @@ impl NativeEmbedder {
     /// access. The tokenizer and config are always fetched from the pinned
     /// upstream revision. Uses Metal/GPU on macOS when built with the `metal`
     /// cargo feature, CPU otherwise.
-    pub fn load() -> Result<Self> {
+    ///
+    /// For a fully offline load from files already on disk, see
+    /// [`NativeEmbedder::load_from_path`].
+    pub fn load_from_hub() -> Result<Self> {
         let cache_dir = model_cache_dir()?;
         std::fs::create_dir_all(&cache_dir)
             .with_context(|| format!("creating model cache dir {}", cache_dir.display()))?;
@@ -625,6 +628,69 @@ impl NativeEmbedder {
             }
         }
 
+        Self::from_files(&gguf_path, tokenizer, config, device)
+    }
+
+    /// Load the F2LLM-v2-330M embedder from local files already on disk, with
+    /// **zero network access**.
+    ///
+    /// This is the entry point for callers that fetch the model artifacts
+    /// themselves (rather than through the Hugging Face Hub cache). All three
+    /// inputs must be present locally:
+    ///
+    /// * `gguf_path` points at the Q8_0-quantized GGUF (the same layout produced
+    ///   by [`NativeEmbedder::load_from_hub`], i.e. the `f2llm-v2-330m-q8_0.gguf`
+    ///   artifact).
+    /// * `tokenizer_path` points at the model's `tokenizer.json`.
+    /// * `config_path` points at the model's `config.json` (a Qwen3 config).
+    ///
+    /// The GGUF, tokenizer, and config must all come from the same F2LLM-v2-330M
+    /// revision so the weight keys and tensor shapes line up. Uses Metal/GPU on
+    /// macOS when built with the `metal` cargo feature, CPU otherwise. No files
+    /// are downloaded, written, or deleted.
+    pub fn load_from_path(
+        gguf_path: &Path,
+        tokenizer_path: &Path,
+        config_path: &Path,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            gguf_path.exists(),
+            "GGUF file not found: {}",
+            gguf_path.display()
+        );
+
+        let device = select_device();
+        let on_gpu = !matches!(device, Device::Cpu);
+        tracing::info!(
+            "loading F2LLM-v2-330M (Q8_0) from local path via candle on {} ({})",
+            if on_gpu { "Metal/GPU" } else { "CPU" },
+            gguf_path.display()
+        );
+
+        let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| {
+            anyhow::anyhow!("loading tokenizer from {}: {e}", tokenizer_path.display())
+        })?;
+
+        let config: Qwen3Config = serde_json::from_str(
+            &std::fs::read_to_string(config_path)
+                .with_context(|| format!("reading config.json {}", config_path.display()))?,
+        )
+        .with_context(|| format!("parsing config.json {}", config_path.display()))?;
+
+        Self::from_files(gguf_path, tokenizer, config, device)
+    }
+
+    /// Shared final step for both load paths: build the quantized weights from an
+    /// on-disk GGUF, derive the single-chunk token cap from system RAM, and wrap
+    /// everything in the `NativeEmbedder`. Performs no network access.
+    fn from_files(
+        gguf_path: &Path,
+        tokenizer: Tokenizer,
+        config: Qwen3Config,
+        device: Device,
+    ) -> Result<Self> {
+        let on_gpu = !matches!(device, Device::Cpu);
+
         // The single-chunk token cap derivation assumes `N_HEAD` attention heads
         // (the attention scratch is `[1, n_head, seq, seq]`). Guard against a
         // future model whose config no longer matches the compiled-in constant.
@@ -636,7 +702,7 @@ impl NativeEmbedder {
         );
         let n_head = config.num_attention_heads;
 
-        let weights = Qwen3EmbedWeights::from_gguf(&gguf_path, &config, &device)
+        let weights = Qwen3EmbedWeights::from_gguf(gguf_path, &config, &device)
             .context("loading quantized F2LLM-v2-330M weights")?;
 
         // Pick the memory budget from total system RAM, then derive the
@@ -1177,7 +1243,7 @@ mod tests {
     fn embeddings_discriminate_related_from_unrelated() {
         use spelunk_core::embeddings::EmbeddingBackend;
 
-        let embedder = NativeEmbedder::load().expect("load F2LLM-v2-330M");
+        let embedder = NativeEmbedder::load_from_hub().expect("load F2LLM-v2-330M");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let texts: [&str; 3] = [
@@ -1214,7 +1280,7 @@ mod tests {
     fn oversized_chunk_embeds_without_oom() {
         use spelunk_core::embeddings::EmbeddingBackend;
 
-        let embedder = NativeEmbedder::load().expect("load F2LLM-v2-330M");
+        let embedder = NativeEmbedder::load_from_hub().expect("load F2LLM-v2-330M");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // ~60 k whitespace-separated tokens — comfortably past MAX_SEQ_LEN
@@ -1247,7 +1313,7 @@ mod tests {
     fn normal_chunk_unaffected_by_cap() {
         use spelunk_core::embeddings::EmbeddingBackend;
 
-        let embedder = NativeEmbedder::load().expect("load F2LLM-v2-330M");
+        let embedder = NativeEmbedder::load_from_hub().expect("load F2LLM-v2-330M");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let text = "pub fn compute_pagerank(edges: &[(String, String)]) -> Vec<f32> { todo!() }";
@@ -1257,5 +1323,69 @@ mod tests {
         // Sanity: this chunk is well under any budget-derived cap, so it was
         // never truncated — the produced vector is the full-precision result.
         assert!(text.split_whitespace().count() < 5792);
+    }
+
+    /// `load_from_path` must do no network access: with a missing GGUF it fails
+    /// fast on the local-file check rather than reaching out to the Hub. This is
+    /// the offline-load contract for callers that supply the model artifacts
+    /// themselves, and runs without downloading anything.
+    #[test]
+    fn load_from_path_missing_gguf_errors_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let gguf = dir.path().join("absent.gguf");
+        let tokenizer = dir.path().join("tokenizer.json");
+        let config = dir.path().join("config.json");
+
+        let msg = match NativeEmbedder::load_from_path(&gguf, &tokenizer, &config) {
+            Ok(_) => panic!("missing GGUF must be a load error"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains("GGUF file not found"),
+            "load_from_path must fail on the local-file check (no network), got: {msg}"
+        );
+    }
+
+    /// End-to-end: load the embedder from a local GGUF/tokenizer/config on disk
+    /// with no network, then embed and assert an 896-dim L2-normalised vector.
+    /// Ignored by default; it reuses the artifacts already fetched into the
+    /// hf-hub cache by a prior `load_from_hub` run and does no download itself.
+    ///
+    /// Run with:
+    ///   SPELUNK_SECRET_STORE=file cargo test -p spelunk-embed \
+    ///     -- --ignored load_from_path_embeds
+    #[test]
+    #[ignore = "requires model artifacts already present in the local cache"]
+    fn load_from_path_embeds_896_dim() {
+        use spelunk_core::embeddings::EmbeddingBackend;
+
+        // Warm the local cache via the Hub loader (no-op if already cached),
+        // then discover the on-disk artifact paths and load them offline.
+        NativeEmbedder::load_from_hub().expect("prime local cache");
+
+        let cache_dir = model_cache_dir().expect("cache dir");
+        let gguf = cache_dir.join(QUANT_GGUF);
+
+        // Resolve the tokenizer/config the Hub cache placed on disk for the
+        // pinned revision. The snapshot layout is
+        // `<cache>/models--codefuse-ai--F2LLM-v2-330M/snapshots/<rev>/<file>`.
+        let snapshot = cache_dir
+            .join("models--codefuse-ai--F2LLM-v2-330M")
+            .join("snapshots")
+            .join(MODEL_REVISION);
+        let tokenizer = snapshot.join("tokenizer.json");
+        let config = snapshot.join("config.json");
+
+        let embedder = NativeEmbedder::load_from_path(&gguf, &tokenizer, &config)
+            .expect("offline load from local path");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let vecs = rt
+            .block_on(embedder.embed(&["read the contents of a file from disk"]))
+            .expect("embed");
+
+        assert_eq!(vecs.len(), 1);
+        assert_eq!(vecs[0].len(), DIM, "must be 896-dim");
+        let norm: f32 = vecs[0].iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-3, "embedding must be L2-normalised");
     }
 }
