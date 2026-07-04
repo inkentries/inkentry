@@ -40,6 +40,15 @@ struct Args {
     #[arg(long, env = "SPELUNK_SERVER_KEY")]
     key: Option<String>,
 
+    /// Allow a non-loopback bind over plaintext HTTP even though the bearer key
+    /// would then cross the network in cleartext. INSECURE: only for a private,
+    /// trusted network (or the Docker remote-agent workflow reaching
+    /// `host.docker.internal` / `172.17.0.1`). Downgrades the refusal to a loud
+    /// one-time warning. Prefer terminating TLS in a front proxy and binding
+    /// loopback. Accepts `1`/`true`/`yes`/`on` via `SPELUNK_ALLOW_INSECURE_REMOTE`.
+    #[arg(long, env = "SPELUNK_ALLOW_INSECURE_REMOTE", value_parser = parse_env_flag, default_value_t = false)]
+    allow_insecure_remote: bool,
+
     /// Embedding dimension expected from clients (must match the team's model).
     /// Default: 896 (F2LLM-v2-330M).
     #[arg(long, default_value = "896")]
@@ -105,9 +114,12 @@ async fn main() -> Result<()> {
     // which must count as unauthenticated, not as a (broken, empty-token) key.
     let api_key = normalize_api_key(args.key.as_deref());
 
-    // Bind-safety: never expose an unauthenticated server off-host. Fail fast,
-    // before touching the DB or warming the embedder.
-    check_bind_safety(&args.host, api_key.is_some())?;
+    // Bind-safety: refuse to expose the server off-host over plaintext HTTP,
+    // whether that would leak an open (keyless) endpoint or the bearer key in
+    // cleartext (keyed). Fail fast, before touching the DB or warming the
+    // embedder. `--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE`
+    // downgrades the refusal to a loud one-time warning for a trusted network.
+    check_bind_safety(&args.host, api_key.is_some(), args.allow_insecure_remote)?;
 
     let db = ServerDb::open(&args.db, args.embedding_dim)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
@@ -311,13 +323,48 @@ fn normalize_api_key(key: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Refuse to expose an *unauthenticated* server off-host. Binding to any
-/// non-loopback address makes the endpoint reachable from other machines; with
-/// no API key that would be an open, unauthenticated server. Loopback binds (the
-/// default) are always allowed. Setting `--key` / `SPELUNK_SERVER_KEY` unlocks a
-/// non-loopback bind (shared/team server, the container entrypoint's `0.0.0.0`).
-fn check_bind_safety(host: &str, key_is_set: bool) -> Result<()> {
-    if !host_is_loopback(host) && !key_is_set {
+/// Parse a boolean opt-out flag from its string value. Accepts `1`, `true`,
+/// `yes`, `on` (case-insensitive) as `true`; empty, `0`, `false`, `no`, `off`
+/// as `false`. Treating a set-but-empty value as `false` mirrors the
+/// `normalize_api_key` handling of docker-compose's `${VAR:-}` default, so an
+/// empty `SPELUNK_ALLOW_INSECURE_REMOTE` does not accidentally opt in.
+fn parse_env_flag(raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" | "off" => Ok(false),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        other => Err(format!(
+            "expected a boolean (1/true/yes/on or 0/false/no/off), got '{other}'"
+        )),
+    }
+}
+
+/// Refuse to expose the server off-host over plaintext HTTP. Binding to any
+/// non-loopback address makes the endpoint reachable from other machines, and
+/// the server only ever speaks plaintext HTTP (TLS is terminated in a front
+/// proxy). Two cases are refused by default:
+///
+/// - **keyless** non-loopback bind: an open, unauthenticated server; and
+/// - **keyed** non-loopback bind: the bearer `SPELUNK_SERVER_KEY` would cross
+///   the network in cleartext.
+///
+/// This matches the ADR-056 transport guardrail ("loopback-only plaintext;
+/// TLS-front for non-loopback"). Loopback binds (the default) are always
+/// allowed. A shared/team server binds loopback and terminates TLS in a front
+/// proxy, so the key never travels in the clear.
+///
+/// `allow_insecure` (from `--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE`)
+/// is the sanctioned escape hatch for a private, trusted network (or the Docker
+/// remote-agent workflow): it downgrades the refusal to a loud one-time
+/// `tracing::warn!` and proceeds. It never applies to a keyless bind: an open
+/// unauthenticated server off-host is refused regardless.
+fn check_bind_safety(host: &str, key_is_set: bool, allow_insecure: bool) -> Result<()> {
+    if host_is_loopback(host) {
+        return Ok(());
+    }
+
+    if !key_is_set {
+        // Keyless off-host bind: an open, unauthenticated server. The insecure
+        // opt-out does not cover this: there is no auth to protect at all.
         anyhow::bail!(
             "Refusing to bind to non-loopback address '{host}' without authentication.\n\
              A server reachable from other machines must require an API key. Either:\n  \
@@ -325,6 +372,33 @@ fn check_bind_safety(host: &str, key_is_set: bool) -> Result<()> {
              • bind to loopback (the default --host 127.0.0.1) for local-only use."
         );
     }
+
+    // Keyed off-host bind over plaintext HTTP: the bearer key would cross the
+    // network in cleartext. Refuse unless the operator has explicitly accepted
+    // the risk on a trusted network.
+    if !allow_insecure {
+        anyhow::bail!(
+            "Refusing to bind to non-loopback address '{host}' over plaintext HTTP: \
+             the bearer SPELUNK_SERVER_KEY would cross the network in cleartext.\n\
+             A shared server must not send its key in the clear. Either:\n  \
+             • bind to loopback (the default --host 127.0.0.1) and terminate TLS in a \
+             front proxy (nginx/Caddy/Traefik), which is the recommended posture, or\n  \
+             • if this is a private, trusted network (or the Docker remote-agent \
+             workflow), set --allow-insecure-remote / SPELUNK_ALLOW_INSECURE_REMOTE=1 \
+             to accept the risk.\n\
+             See docs/adr/056-oss-server-tenancy-model.md."
+        );
+    }
+
+    // Opt-out engaged: proceed, but make the risk loud and unmissable. This runs
+    // once at startup (there is a single bind), satisfying the "one-time" intent.
+    tracing::warn!(
+        "INSECURE: binding to non-loopback address '{host}' over plaintext HTTP with \
+         --allow-insecure-remote. The bearer SPELUNK_SERVER_KEY will cross the network \
+         in CLEARTEXT and can be captured by anyone on-path. Only acceptable on a \
+         private, trusted network. The secure posture is to bind loopback and terminate \
+         TLS in a front proxy. See docs/adr/056-oss-server-tenancy-model.md."
+    );
     Ok(())
 }
 
@@ -591,38 +665,96 @@ mod arg_tests {
         }
     }
 
-    /// Loopback binds never require a key (local-only, unreachable off-host).
+    /// Loopback binds never require a key (local-only, unreachable off-host),
+    /// and never need (or trip) the insecure opt-out.
     #[test]
     fn loopback_without_key_is_allowed() {
         for h in ["127.0.0.1", "::1", "localhost"] {
             assert!(
-                super::check_bind_safety(h, false).is_ok(),
+                super::check_bind_safety(h, false, false).is_ok(),
                 "{h} without a key should be allowed"
+            );
+            assert!(
+                super::check_bind_safety(h, true, false).is_ok(),
+                "{h} with a key should be allowed on loopback"
             );
         }
     }
 
     /// A non-loopback bind without a key is refused — no open, unauthenticated
-    /// server reachable from other machines.
+    /// server reachable from other machines. The insecure opt-out does NOT
+    /// cover the keyless case (there is no auth to protect).
     #[test]
     fn non_loopback_without_key_is_refused() {
         for h in ["0.0.0.0", "::", "192.168.1.10"] {
             assert!(
-                super::check_bind_safety(h, false).is_err(),
+                super::check_bind_safety(h, false, false).is_err(),
                 "{h} without a key must be refused"
+            );
+            assert!(
+                super::check_bind_safety(h, false, true).is_err(),
+                "{h} without a key must stay refused even with --allow-insecure-remote"
             );
         }
     }
 
-    /// Setting an API key unlocks a non-loopback bind (shared/team server).
+    /// A keyed non-loopback *plaintext* bind is refused by default: the bearer
+    /// key would cross the network in cleartext (ADR-056 transport guardrail).
+    /// The error names the interface and points at the loopback/TLS guidance.
     #[test]
-    fn non_loopback_with_key_is_allowed() {
-        for h in ["0.0.0.0", "192.168.1.10"] {
+    fn non_loopback_with_key_plaintext_is_refused_by_default() {
+        for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            let err = super::check_bind_safety(h, true, false).expect_err(&format!(
+                "{h} with a key over plaintext must be refused by default"
+            ));
+            let msg = format!("{err}");
             assert!(
-                super::check_bind_safety(h, true).is_ok(),
-                "{h} with a key should be allowed"
+                msg.contains(h),
+                "error must name the interface '{h}': {msg}"
+            );
+            assert!(
+                msg.contains("cleartext"),
+                "error must mention cleartext exposure: {msg}"
+            );
+            assert!(
+                msg.contains("loopback") && msg.contains("--allow-insecure-remote"),
+                "error must point at the loopback/TLS guidance and the opt-out: {msg}"
             );
         }
+    }
+
+    /// The `--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE` opt-out
+    /// downgrades the keyed-plaintext refusal and lets the bind proceed (the
+    /// sanctioned path for a trusted network / the Docker remote-agent workflow).
+    #[test]
+    fn non_loopback_with_key_allowed_via_insecure_opt_out() {
+        for h in ["0.0.0.0", "192.168.1.10", "172.17.0.1"] {
+            assert!(
+                super::check_bind_safety(h, true, true).is_ok(),
+                "{h} with a key should be allowed once --allow-insecure-remote is set"
+            );
+        }
+    }
+
+    /// The env/flag value parser accepts the documented truthy/falsy spellings
+    /// and treats a set-but-empty value as `false` (docker `${VAR:-}` default),
+    /// so an empty `SPELUNK_ALLOW_INSECURE_REMOTE` never opts in by accident.
+    #[test]
+    fn insecure_flag_value_parsing() {
+        for v in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert_eq!(super::parse_env_flag(v), Ok(true), "{v} should parse true");
+        }
+        for v in ["", "  ", "0", "false", "no", "off", "OFF"] {
+            assert_eq!(
+                super::parse_env_flag(v),
+                Ok(false),
+                "{v} should parse false"
+            );
+        }
+        assert!(
+            super::parse_env_flag("maybe").is_err(),
+            "a non-boolean value must be a hard error, not a silent opt-in"
+        );
     }
 
     /// A blank/whitespace key (incl. clap's `Some("")` for a set-but-empty
