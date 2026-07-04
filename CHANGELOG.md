@@ -18,8 +18,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `snapshot_chunks`, `snapshot_embeddings`) are dropped via migration 021 on any
   database opened with this version; existing `spelunk search` (without `--as-of`)
   continues to work unchanged. Note: `spelunk memory list/search --as-of <date>` for
-  point-in-time memory archaeology remains available and unaffected.
-  (spelunk-oss^67)
+  point-in-time memory archaeology remains available and unaffected. (#517,
+  spelunk-oss^67)
 
 ### Security
 
