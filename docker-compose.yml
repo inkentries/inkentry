@@ -7,13 +7,22 @@
 # with the server itself kept on loopback. This compose file wires that up:
 #
 #   - `spelunk-server` binds 127.0.0.1 (the image's own default — see
-#     Dockerfile) and is not published to the host on its own.
+#     Dockerfile) and is not reachable off-host on its own.
 #   - `proxy` (Caddy) runs with `network_mode: "service:spelunk-server"`, i.e.
 #     it shares the spelunk-server container's network namespace instead of
 #     getting its own. From inside that shared namespace, spelunk-server's
 #     loopback bind is directly reachable as `127.0.0.1:7777` — including from
 #     the proxy — without spelunk-server ever binding a routable interface.
-#     `proxy` is what actually publishes a port to the host/network.
+#   - The published port lives on `spelunk-server`'s service block, not
+#     `proxy`'s: Docker requires whichever container is the *owner* of a
+#     network namespace (`network_mode: "service:spelunk-server"` points at
+#     it) to be the one declaring `ports:`. A container joining another's
+#     namespace (`proxy`, here) can't also publish ports itself — the
+#     daemon rejects that combination at container-creation
+#     ("conflicting options: port publishing and the container type network
+#     mode"). The port still ends up serving Caddy's listener: publishing
+#     attaches to the shared namespace as a whole, not to whichever process
+#     opened the socket.
 #
 # Usage (API key required — a keyless server reachable off-host would be an
 # open, unauthenticated endpoint, refused the same way):
@@ -40,9 +49,16 @@ services:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    # No `ports:` here on purpose — spelunk-server binds 127.0.0.1 inside the
-    # container (its own default) and is reached only via the `proxy` sidecar,
-    # which shares this container's network namespace (see `proxy` below).
+    # Published here (not on `proxy`) because Docker requires the network
+    # namespace *owner* to declare `ports:` — `proxy` below joins this
+    # container's namespace via `network_mode: "service:spelunk-server"` and
+    # cannot also publish a port itself. The port still serves Caddy's
+    # listener on 8443: publishing attaches to the shared namespace, not to
+    # whichever container's process opened the socket. spelunk-server itself
+    # still only binds 127.0.0.1:7777 inside that namespace (its own
+    # default) — it never binds the routable interface this exposes.
+    ports:
+      - "8443:8443"
     volumes:
       - spelunk-data:/data
     environment:
@@ -62,6 +78,10 @@ services:
     # loopback inside this container IS spelunk-server's loopback, so Caddy
     # can reach 127.0.0.1:7777 directly. This is what lets spelunk-server
     # keep its loopback-only bind while still being reachable off-host.
+    # No `ports:` here — a container joining another's namespace can't also
+    # publish ports (Docker rejects that combination at container-creation);
+    # the published port lives on `spelunk-server` above instead, which owns
+    # the namespace `proxy` is joining.
     network_mode: "service:spelunk-server"
     depends_on:
       spelunk-server:
@@ -70,11 +90,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    # Ports are published here, not on spelunk-server, because publishing is
-    # tied to whichever service in a shared netns declares it — see Compose's
-    # `network_mode: "service:..."` docs.
-    ports:
-      - "8443:8443"
 
 volumes:
   spelunk-data:

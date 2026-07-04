@@ -66,16 +66,21 @@ above: it's long-lived, reachable over the network, and protected by an API key.
 
 The container image binds `spelunk-server` to `127.0.0.1` inside its own
 container (the binary's own default). `docker-compose.yml` puts a Caddy
-sidecar in front of it that terminates TLS and publishes the port to the
-host/network — the sidecar shares the `spelunk-server` container's network
-namespace (`network_mode: "service:spelunk-server"`), so it reaches
-`spelunk-server` on loopback without `spelunk-server` itself ever binding a
-routable interface. This matters because `spelunk-server` refuses,
-unconditionally, to bind a non-loopback address over plaintext HTTP — keyed or
-not (see [Trust model](#trust-model)): a keyless non-loopback bind would be an
-open, unauthenticated server, and a keyed one would send the bearer key across
-the network in cleartext. There is no override; the proxy sidecar is how a
-keyed deployment satisfies that guardrail instead of fighting it.
+sidecar in front of it that terminates TLS: the sidecar shares the
+`spelunk-server` container's network namespace
+(`network_mode: "service:spelunk-server"`), so it reaches `spelunk-server` on
+loopback without `spelunk-server` itself ever binding a routable interface.
+The port to the host/network (`8443`) is published from the `spelunk-server`
+service block in the compose file — Docker requires the namespace *owner* to
+declare `ports:`, not a container joining another's namespace via
+`network_mode` — but it still serves Caddy's listener, since publishing
+attaches to the shared namespace as a whole. This matters because
+`spelunk-server` refuses, unconditionally, to bind a non-loopback address over
+plaintext HTTP — keyed or not (see [Trust model](#trust-model)): a keyless
+non-loopback bind would be an open, unauthenticated server, and a keyed one
+would send the bearer key across the network in cleartext. There is no
+override; the proxy sidecar is how a keyed deployment satisfies that
+guardrail instead of fighting it.
 
 ```bash
 # Clone and build
@@ -127,9 +132,11 @@ image binds `127.0.0.1` *inside* its own container by default, and Docker's
 interface, not into its private loopback — so nothing published from the host
 ever reaches a loopback-only bind. (This is exactly why `docker-compose.yml`
 needs the Caddy sidecar: it shares spelunk-server's network namespace so its
-own `127.0.0.1` *is* spelunk-server's loopback, and it's the one publishing a
-port to the host/network.) If you need the server reachable from the host or
-off-host, use `docker-compose.yml` above rather than a bare `docker run`.
+own `127.0.0.1` *is* spelunk-server's loopback, and — via the port published
+on the `spelunk-server` service block, whose namespace it shares — Caddy's
+listener is what's reachable from the host/network.) If you need the server
+reachable from the host or off-host, use `docker-compose.yml` above rather
+than a bare `docker run`.
 
 ## Client configuration
 

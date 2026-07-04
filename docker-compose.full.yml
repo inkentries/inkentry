@@ -19,8 +19,13 @@ services:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    # No `ports:` — see docker-compose.yml. Reached via the `proxy` sidecar,
-    # which shares this container's network namespace.
+    # Published here, not on `proxy` — see docker-compose.yml for why (the
+    # network namespace owner must be the one declaring `ports:`; `proxy`
+    # only joins this container's namespace and can't also publish).
+    # spelunk-server itself still only binds 127.0.0.1:7777 inside that
+    # namespace (its own default).
+    ports:
+      - "8443:8443"
     volumes:
       - spelunk-data:/data
     environment:
@@ -36,6 +41,9 @@ services:
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
+    # Shares spelunk-server's network namespace — see docker-compose.yml.
+    # No `ports:` here: a container joining another's namespace can't also
+    # publish ports (Docker rejects that combination at container-creation).
     network_mode: "service:spelunk-server"
     depends_on:
       spelunk-server:
@@ -44,8 +52,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    ports:
-      - "8443:8443"
 
   ollama:
     image: ollama/ollama:latest
