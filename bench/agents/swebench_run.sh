@@ -4,9 +4,14 @@
 # Reads task IDs from bench/agents/tasks_50.json, expects repos to be
 # checked out at bench/repos/<task_id>/ (via bench/setup_repos.sh).
 #
+# This is the canonical batch orchestrator for bench/agents/ (see
+# bench/agents/README.md — batch_run.py is a retired duplicate, do not use
+# it for new runs).
+#
 # Usage:
 #   bash bench/agents/swebench_run.sh \\
 #       --condition baseline \\
+#       --harness none \\
 #       --model deepseek-v4-flash \\
 #       --api-base-url https://api.deepseek.com/v1 \\
 #       --api-key "$DEEPSEEK_API_KEY" \\
@@ -14,18 +19,41 @@
 #
 # Options:
 #   --condition     baseline|spelunk_search|spelunk_full   (required)
+#   --harness       none|opencode|claude-code               (default: none)
+#                   none:        agent.py's own tool-calling loop (component-clean cell)
+#                   opencode:    headless `opencode run`, DeepSeek via a generated
+#                                custom-provider opencode.json (native DeepSeek /v1)
+#                   claude-code: headless `claude -p`, DeepSeek via its documented
+#                                Anthropic-compatible endpoint (or a shim — see
+#                                --endpoint-kind)
 #   --model         MODEL                                  (default: deepseek-v4-flash)
-#   --api-base-url  URL     (default: https://api.deepseek.com/v1)
+#   --api-base-url  URL     (default: https://api.deepseek.com/v1; ignored by
+#                           --harness claude-code, which has its own
+#                           --deepseek-base-url/--endpoint-kind below)
 #   --api-key       KEY     (falls back to DEEPSEEK_API_KEY env var)
 #   --tasks         N       only run first N tasks (default: 50)
 #   --max-turns     N       max agent turns per task (default: 20)
 #   --seed          N       random seed (default: 42)
-#   --skip-index            skip spelunk index (if repos are pre-indexed)
+#   --skip-index            skip spelunk index (if repos are pre-indexed;
+#                           --harness none only — opencode/claude-code cells
+#                           never invoke spelunk, see README "Adapter notes")
 #   --repos-dir     DIR     checkout root (default: bench/repos)
 #   --patches-dir   DIR     where per-task .patch files are saved
 #                           (default: bench/patches/<condition>-<timestamp>)
 #   --eval                  automatically run swebench_eval.sh after agent run
 #                           (requires Docker and swebench pip package)
+#
+# --harness claude-code only:
+#   --effort        LEVEL   low|medium|high|xhigh|max (default: high) — always
+#                           pinned and recorded in provenance
+#   --thinking              request step-by-step thinking (recorded in provenance)
+#   --endpoint-kind  KIND   anthropic-compat|shim (default: anthropic-compat)
+#   --shim-base-url  URL    Anthropic->OpenAI proxy base URL (required with
+#                           --endpoint-kind shim)
+#   --deepseek-base-url URL override DeepSeek's Anthropic-compat endpoint
+#   --no-deepseek           use Claude Code's own ambient Anthropic credentials
+#                           instead of DeepSeek (future native Claude-model cells)
+#
 #   -h|--help
 
 set -euo pipefail
@@ -45,6 +73,7 @@ for k, v in os.environ.items():
 fi
 
 CONDITION=""
+HARNESS="none"
 MODEL="deepseek-v4-flash"
 API_BASE_URL="https://api.deepseek.com/v1"
 API_KEY="${DEEPSEEK_API_KEY:-}"
@@ -54,6 +83,14 @@ SEED=42
 SKIP_INDEX=false
 RUN_EVAL=false
 PATCHES_DIR_OVERRIDE=""
+
+# --harness claude-code only
+EFFORT="high"
+THINKING=false
+ENDPOINT_KIND="anthropic-compat"
+SHIM_BASE_URL=""
+DEEPSEEK_CLAUDE_BASE_URL="https://api.deepseek.com/anthropic"
+NO_DEEPSEEK=false
 
 # Default to the shared spelunk-bench checkout if it exists
 if [[ -d "${HOME}/opensource/spelunk-bench/repos" ]]; then
@@ -70,6 +107,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --condition)    CONDITION="$2";              shift 2 ;;
+        --harness)      HARNESS="$2";                shift 2 ;;
         --model)        MODEL="$2";                  shift 2 ;;
         --api-base-url) API_BASE_URL="$2";           shift 2 ;;
         --api-key)      API_KEY="$2";                shift 2 ;;
@@ -80,6 +118,12 @@ while [[ $# -gt 0 ]]; do
         --repos-dir)    REPOS_DIR="$2";              shift 2 ;;
         --patches-dir)  PATCHES_DIR_OVERRIDE="$2";  shift 2 ;;
         --eval)         RUN_EVAL=true;               shift ;;
+        --effort)       EFFORT="$2";                 shift 2 ;;
+        --thinking)     THINKING=true;               shift ;;
+        --endpoint-kind) ENDPOINT_KIND="$2";         shift 2 ;;
+        --shim-base-url) SHIM_BASE_URL="$2";         shift 2 ;;
+        --deepseek-base-url) DEEPSEEK_CLAUDE_BASE_URL="$2"; shift 2 ;;
+        --no-deepseek)  NO_DEEPSEEK=true;            shift ;;
         -h|--help)      usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
@@ -89,10 +133,26 @@ if [[ -z "$CONDITION" ]]; then
     echo "Error: --condition is required." >&2; usage
 fi
 
-API_KEY="${API_KEY:-${DEEPSEEK_API_KEY:-}}"
-if [[ -z "$API_KEY" ]]; then
-    echo "Error: No API key. Use --api-key or set DEEPSEEK_API_KEY env var." >&2
+case "$HARNESS" in
+    none|opencode|claude-code) ;;
+    *) echo "Error: --harness must be one of none|opencode|claude-code (got: ${HARNESS})" >&2; exit 1 ;;
+esac
+
+if [[ "$HARNESS" == "claude-code" && "$ENDPOINT_KIND" == "shim" && -z "$SHIM_BASE_URL" ]]; then
+    echo "Error: --shim-base-url is required with --harness claude-code --endpoint-kind shim." >&2
     exit 1
+fi
+
+# API key: not required at all for --harness claude-code --no-deepseek
+# (uses Claude Code's own ambient Anthropic credentials).
+if [[ "$HARNESS" == "claude-code" && "$NO_DEEPSEEK" == "true" ]]; then
+    :
+else
+    API_KEY="${API_KEY:-${DEEPSEEK_API_KEY:-}}"
+    if [[ -z "$API_KEY" ]]; then
+        echo "Error: No API key. Use --api-key or set DEEPSEEK_API_KEY env var." >&2
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -110,12 +170,18 @@ if [[ "$TASKS" != "50" ]]; then
 fi
 TOTAL=$(echo "$ALL_TASK_IDS" | wc -w | tr -d ' ')
 echo "Condition:    ${CONDITION}"
+echo "Harness:      ${HARNESS}"
 echo "Model:        ${MODEL}"
 echo "API base:     ${API_BASE_URL}"
 echo "Tasks:        ${TOTAL}"
 echo "Max turns:    ${MAX_TURNS}"
 echo "Seed:         ${SEED}"
 echo "Repos dir:    ${REPOS_DIR}"
+if [[ "$HARNESS" == "claude-code" ]]; then
+    echo "Effort:       ${EFFORT}"
+    echo "Thinking:     ${THINKING}"
+    echo "Endpoint:     ${ENDPOINT_KIND}"
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -124,12 +190,22 @@ echo ""
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 RESULTS_DIR="${SCRIPT_DIR}/../results"
 mkdir -p "$RESULTS_DIR"
-RESULTS_FILE="${RESULTS_DIR}/swebench-${CONDITION}-${TS}.json"
+# Keep harness=none filenames identical to pre-harness-matrix runs (additive
+# only — see spec point 2); only stamp the harness into the filename for the
+# new opencode/claude-code cells so they don't collide with each other or
+# with a "none" run of the same condition/timestamp.
+if [[ "$HARNESS" == "none" ]]; then
+    RESULTS_FILE="${RESULTS_DIR}/swebench-${CONDITION}-${TS}.json"
+else
+    RESULTS_FILE="${RESULTS_DIR}/swebench-${CONDITION}-${HARNESS}-${TS}.json"
+fi
 
 if [[ -n "$PATCHES_DIR_OVERRIDE" ]]; then
     PATCHES_DIR="$PATCHES_DIR_OVERRIDE"
-else
+elif [[ "$HARNESS" == "none" ]]; then
     PATCHES_DIR="${SCRIPT_DIR}/../patches/${CONDITION}-${TS}"
+else
+    PATCHES_DIR="${SCRIPT_DIR}/../patches/${CONDITION}-${HARNESS}-${TS}"
 fi
 mkdir -p "$PATCHES_DIR"
 
@@ -159,39 +235,108 @@ for TASK_ID in $ALL_TASK_IDS; do
         continue
     fi
 
-    # Index the repo for spelunk conditions (unless --skip-index)
-    if [[ "$CONDITION" != "baseline" && "$SKIP_INDEX" != "true" ]]; then
-        echo "  Indexing repo..."
-        spelunk index "$TASK_REPO" 2>&1 | tail -1 || true
+    # spelunk indexing / memory harvest only apply to the harness=none cell —
+    # opencode and claude-code are generic coding-agent harnesses, not
+    # spelunk-instrumented (see README "Adapter notes"). Gating on $HARNESS
+    # keeps this the single place that decides whether spelunk touches the
+    # repo, rather than duplicating the condition check per-harness.
+    if [[ "$HARNESS" == "none" ]]; then
+        # Index the repo for spelunk conditions (unless --skip-index)
+        if [[ "$CONDITION" != "baseline" && "$SKIP_INDEX" != "true" ]]; then
+            echo "  Indexing repo..."
+            spelunk index "$TASK_REPO" 2>&1 | tail -1 || true
+        fi
+
+        # For spelunk_full: attempt memory harvest from git history.
+        # Best-effort — single-commit SWE-bench repos have no harvestable history.
+        if [[ "$CONDITION" == "spelunk_full" ]]; then
+            echo "  Harvesting memory (best-effort)..."
+            spelunk memory harvest --git-range HEAD~50..HEAD "$TASK_REPO" 2>&1 | tail -1 || true
+        fi
     fi
 
-    # For spelunk_full: attempt memory harvest from git history.
-    # Best-effort — single-commit SWE-bench repos have no harvestable history.
-    if [[ "$CONDITION" == "spelunk_full" ]]; then
-        echo "  Harvesting memory (best-effort)..."
-        spelunk memory harvest --git-range HEAD~50..HEAD "$TASK_REPO" 2>&1 | tail -1 || true
-    fi
+    # Build the per-harness command. Each harness script takes the same
+    # (task_id, repo_path, issue, model, seed, save-patch) core so that only
+    # the harness itself varies between cells (bench/AGENTS.md principle #1).
+    PATCH_FILE="${PATCHES_DIR}/${TASK_ID}.patch"
+    case "$HARNESS" in
+        none)
+            RUNNER_ARGS=(
+                --condition "$CONDITION"
+                --task-id "$TASK_ID"
+                --repo-path "$TASK_REPO"
+                --issue "$ISSUE_FILE"
+                --model "$MODEL"
+                --api-base-url "$API_BASE_URL"
+                --api-key "$API_KEY"
+                --max-turns "$MAX_TURNS"
+                --seed "$SEED"
+                --save-patch "$PATCH_FILE"
+            )
+            RUNNER_SCRIPT="${SCRIPT_DIR}/agent.py"
+            ;;
+        opencode)
+            RUNNER_ARGS=(
+                --task-id "$TASK_ID"
+                --repo-path "$TASK_REPO"
+                --issue "$ISSUE_FILE"
+                --model "$MODEL"
+                --api-base-url "$API_BASE_URL"
+                --api-key "$API_KEY"
+                --max-turns "$MAX_TURNS"
+                --seed "$SEED"
+                --save-patch "$PATCH_FILE"
+            )
+            RUNNER_SCRIPT="${SCRIPT_DIR}/harness_opencode.py"
+            ;;
+        claude-code)
+            RUNNER_ARGS=(
+                --task-id "$TASK_ID"
+                --repo-path "$TASK_REPO"
+                --issue "$ISSUE_FILE"
+                --model "$MODEL"
+                --effort "$EFFORT"
+                --endpoint-kind "$ENDPOINT_KIND"
+                --deepseek-base-url "$DEEPSEEK_CLAUDE_BASE_URL"
+                --max-turns "$MAX_TURNS"
+                --seed "$SEED"
+                --save-patch "$PATCH_FILE"
+            )
+            if [[ "$NO_DEEPSEEK" == "true" ]]; then
+                RUNNER_ARGS+=(--no-deepseek)
+            else
+                RUNNER_ARGS+=(--api-key "$API_KEY")
+            fi
+            if [[ "$THINKING" == "true" ]]; then
+                RUNNER_ARGS+=(--thinking)
+            fi
+            if [[ "$ENDPOINT_KIND" == "shim" ]]; then
+                RUNNER_ARGS+=(--shim-base-url "$SHIM_BASE_URL")
+            fi
+            RUNNER_SCRIPT="${SCRIPT_DIR}/harness_claude_code.py"
+            ;;
+    esac
 
-    # Run the agent
-    AGENT_ARGS=(
-        --condition "$CONDITION"
-        --task-id "$TASK_ID"
-        --repo-path "$TASK_REPO"
-        --issue "$ISSUE_FILE"
-        --model "$MODEL"
-        --api-base-url "$API_BASE_URL"
-        --api-key "$API_KEY"
-        --max-turns "$MAX_TURNS"
-        --seed "$SEED"
-        --save-patch "${PATCHES_DIR}/${TASK_ID}.patch"
-    )
-
-    echo "  Running agent..."
-    RESULT=$(uv run --quiet --with-requirements "${SCRIPT_DIR}/../requirements.txt" python3 "${SCRIPT_DIR}/agent.py" "${AGENT_ARGS[@]}" 2>&1) || {
+    echo "  Running agent (harness=${HARNESS})..."
+    RAW_OUTPUT=$(uv run --quiet --with-requirements "${SCRIPT_DIR}/../requirements.txt" python3 "${RUNNER_SCRIPT}" "${RUNNER_ARGS[@]}" 2>&1) || {
         echo "  ERROR: agent crashed for ${TASK_ID}"
-        ALL_RESULTS+=("{\"task_id\": \"${TASK_ID}\", \"error\": true, \"stderr\": $(printf '%s' "${RESULT}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
+        ALL_RESULTS+=("{\"task_id\": \"${TASK_ID}\", \"harness\": \"${HARNESS}\", \"error\": true, \"stderr\": $(printf '%s' "${RAW_OUTPUT}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
         continue
     }
+
+    # The runner's JSON result is always the last line of stdout — earlier
+    # lines can include non-fatal warnings (e.g. "Warning: failed to save
+    # patch: ..." from harness_common.extract_patch / agent.py's own
+    # --save-patch handler), which end up merged into RAW_OUTPUT via 2>&1
+    # above. Extracting the last '{'-prefixed line keeps those warnings from
+    # corrupting the final results JSON (matches the same convention already
+    # used by batch_run.py's "parse the last JSON line" logic).
+    RESULT=$(printf '%s\n' "$RAW_OUTPUT" | grep '^{' | tail -1)
+    if [[ -z "$RESULT" ]]; then
+        echo "  ERROR: no JSON result line from ${RUNNER_SCRIPT} for ${TASK_ID}"
+        ALL_RESULTS+=("{\"task_id\": \"${TASK_ID}\", \"harness\": \"${HARNESS}\", \"error\": true, \"stderr\": $(printf '%s' "${RAW_OUTPUT}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}")
+        continue
+    fi
 
     echo "  Result: ${RESULT}"
     ALL_RESULTS+=("$RESULT")

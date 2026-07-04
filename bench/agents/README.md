@@ -1,7 +1,9 @@
 # Agents — SWE-bench Agent Scripts
 
 Unified agent for running SWE-bench tasks via any OpenAI-compatible API
-(DeepSeek, self-hosted, or local LM Studio).
+(DeepSeek, self-hosted, or local LM Studio), with a harness dimension so the
+same (task, model, condition) cell can be run under three different coding
+agents.
 
 ## Quick Start
 
@@ -9,7 +11,7 @@ Unified agent for running SWE-bench tasks via any OpenAI-compatible API
 # 1. Set up repos (one-time)
 bash bench/setup_repos.sh --tasks 5
 
-# 2. Run the agent on a single task
+# 2. Run the agent on a single task (harness=none, the component-clean cell)
 python bench/agents/agent.py \
     --condition baseline \
     --task-id django__django-11099 \
@@ -20,15 +22,23 @@ python bench/agents/agent.py \
 # 3. Run the full 50-task benchmark + Docker evaluation in one step
 bash bench/agents/swebench_run.sh \
     --condition spelunk_full \
+    --harness none \
     --api-key "$DEEPSEEK_API_KEY" \
     --eval
 
 # 3b. Agent run only (evaluate later)
 bash bench/agents/swebench_run.sh \
     --condition spelunk_full \
+    --harness none \
     --api-key "$DEEPSEEK_API_KEY"
 # The script prints the swebench_eval.sh command to run next.
 ```
+
+`swebench_run.sh` is the **canonical batch orchestrator** for this
+directory. `batch_run.py` is a retired duplicate (it hardcoded
+`~/opensource/spelunk-bench/repos` with no override and had drifted out of
+sync with `setup_repos.sh`'s repo-dir convention) — do not use it for new
+runs; it is kept only so old invocations in scrollback don't 404.
 
 ## Conditions
 
@@ -38,7 +48,25 @@ bash bench/agents/swebench_run.sh \
 | `spelunk_search` | baseline + `spelunk_search` (semantic code retrieval) |
 | `spelunk_full` | baseline + `spelunk_search` + `spelunk_graph` + `spelunk_memory_search` |
 
-## agent.py — Single-task runner
+`condition` and `harness` are independent dimensions — vary exactly one
+at a time between comparisons (bench/AGENTS.md principle #1). `spelunk_search`
+/ `spelunk_full` are meaningful only for `--harness none` (see "Harnesses"
+below); opencode and claude-code are generic coding agents, not
+spelunk-instrumented, so they only ever run as `baseline`.
+
+## Harnesses
+
+`--harness none|opencode|claude-code` (`swebench_run.sh` and each
+single-task runner script). Same task repo, issue text, model identity, and
+patch-extraction convention across all three — only the harness varies.
+
+| Harness | Runner script | What it shells out to |
+|---|---|---|
+| `none` | `agent.py` | Nothing external — this repo's own OpenAI-compatible tool-calling loop. The component-clean cell: no external agent framework in the loop at all. |
+| `opencode` | `harness_opencode.py` | Headless `opencode run` (or `npx opencode-ai@latest run` if `opencode` isn't on PATH). |
+| `claude-code` | `harness_claude_code.py` | Headless `claude -p`. |
+
+### `agent.py` — Single-task runner (harness=none)
 
 ```bash
 python bench/agents/agent.py \
@@ -55,52 +83,210 @@ python bench/agents/agent.py \
 The `--issue` argument accepts either inline text or a file path. If the
 argument points to an existing file, its contents are read as the issue text.
 
-Output is a single JSON object on stdout with reproducibility contract fields:
-`benchmark`, `condition`, `model`, `model_source`, `api_base_url`,
-`api_key_source`, `spelunk_version`, `seed`, plus task-level metrics
-(`task_id`, `turns`, `input_tokens`, `output_tokens`, `wall_seconds`).
+### `harness_opencode.py` — Single-task runner (harness=opencode)
+
+```bash
+python bench/agents/harness_opencode.py \
+    --task-id <task_id> \
+    --repo-path /path/to/repo \
+    --issue "Issue text or path to ISSUE.txt" \
+    --model deepseek-v4-flash \
+    --api-base-url https://api.deepseek.com/v1 \
+    --api-key "$DEEPSEEK_API_KEY" \
+    [--max-turns 20] [--seed 42]
+```
+
+DeepSeek is wired in via opencode's own native custom-provider mechanism, not
+a compat shim: the script writes a scratch `opencode.json` into the task repo
+(removed again once the run finishes) registering a `spelunk-bench-deepseek`
+provider —
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "spelunk-bench-deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek (spelunk-bench)",
+      "options": { "baseURL": "https://api.deepseek.com/v1", "apiKey": "..." },
+      "models": { "deepseek-v4-flash": { "name": "deepseek-v4-flash" } }
+    }
+  }
+}
+```
+
+— then runs `opencode run --dir <repo> --model spelunk-bench-deepseek/<model>
+--format json --auto <prompt>`. `--auto` auto-approves permissions (required
+for a headless run — there is no TTY to answer a permission prompt).
+Patch extraction is the same git-diff-of-the-working-tree approach as
+`agent.py` (spec point 3) — see `harness_common.py`.
+
+**Adapter notes:**
+- opencode has no first-class per-task turn cap; `--max-turns` is accepted
+  for CLI-contract parity across harnesses but is not enforced by opencode
+  itself. `--max-turns` is still recorded in provenance for the record, but
+  don't read it as an enforced ceiling for this harness the way it is for
+  `agent.py`.
+- Turn/token counts are parsed from `--format json`'s per-line event stream
+  on a best-effort basis (matching on `role`/`type` and `usage`/`tokens`
+  keys). A future opencode version that **renames** those fields (rather
+  than adding new ones) would silently zero out `turns`/`input_tokens`/
+  `output_tokens` — if those come back as 0 on an otherwise-successful run,
+  check `--format json`'s actual event shape against what this script parses
+  before trusting the numbers.
+- The generated `opencode.json` never gets committed or included in the
+  saved patch (it isn't a recognised source extension, and the script
+  deletes it in a `finally` block regardless) — do not point `--dir` at a
+  repo that already carries its own `opencode.json`; the scratch config
+  will clobber it for the duration of the run.
+
+### `harness_claude_code.py` — Single-task runner (harness=claude-code)
+
+```bash
+python bench/agents/harness_claude_code.py \
+    --task-id <task_id> \
+    --repo-path /path/to/repo \
+    --issue "Issue text or path to ISSUE.txt" \
+    --model deepseek-v4-flash \
+    --api-key "$DEEPSEEK_API_KEY" \
+    [--effort high] [--thinking] [--max-turns 20] [--seed 42]
+```
+
+DeepSeek is reached via its documented Anthropic-compatible endpoint, using
+env overrides (verified against DeepSeek's live docs — see "DeepSeek
+endpoint verification" below):
+
+```bash
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_AUTH_TOKEN=$DEEPSEEK_API_KEY   # note: AUTH_TOKEN, not API_KEY
+export ANTHROPIC_MODEL=deepseek-v4-flash
+```
+
+The script sets these itself (plus `ANTHROPIC_API_KEY` as a defensive
+belt-and-braces alias — see the docstring in `harness_claude_code.py` for
+why) in the subprocess env only; nothing is exported into the calling
+shell or written to disk.
+
+**Shim fallback policy:** if the Anthropic-compat endpoint misbehaves (e.g.
+malformed tool-call turns, streaming issues), pass
+`--endpoint-kind shim --shim-base-url http://<host>:<port>` to point Claude
+Code's `ANTHROPIC_BASE_URL` at an already-running Anthropic->OpenAI proxy
+(e.g. LiteLLM) in front of DeepSeek's OpenAI-compatible endpoint instead.
+This script does **not** start the proxy process itself — bring your own.
+Every result JSON records which path was used via `endpoint_kind`:
+`"native"` (no DeepSeek — Claude Code's own ambient Anthropic credentials,
+via `--no-deepseek`), `"anthropic-compat"` (DeepSeek's own compat endpoint,
+the default), or `"shim"` (proxy in front). Never conflate `anthropic-compat`
+and `shim` results in a comparison — they are, deliberately, not the same
+condition.
+
+**Effort/thinking (future Claude-model cells):** `--effort` is **always**
+pinned (default `high`) and recorded in provenance as `effort`, and
+`--thinking` is recorded as a boolean `thinking` field, so that a future cell
+running an actual Claude model through this same harness stays reproducible
+without a separate schema change.
+
+**Adapter notes:**
+- Headless runs use `--permission-mode acceptEdits` (accepts file edits
+  without a TTY prompt) and `--output-format json` (single JSON result
+  object, not a stream) — turns/tokens are read from `num_turns` and
+  `usage.input_tokens` + `usage.cache_creation_input_tokens` /
+  `usage.output_tokens` in that result object.
+- `--no-deepseek` runs Claude Code against its own ambient Anthropic
+  credentials (whatever `claude` is already authenticated with in the
+  environment) and skips all DeepSeek env overrides — this is the escape
+  hatch for exercising the harness plumbing without a DeepSeek key, and the
+  intended path for future native-Claude-model cells.
 
 ## swebench_run.sh — Batch orchestrator
 
 ```bash
 bash bench/agents/swebench_run.sh \
     --condition spelunk_full \
+    --harness none \
     --model deepseek-v4-flash \
     --api-key "$DEEPSEEK_API_KEY" \
     [--tasks 50] [--max-turns 20] [--seed 42] [--skip-index] [--eval]
+
+# opencode harness
+bash bench/agents/swebench_run.sh \
+    --condition baseline --harness opencode \
+    --api-key "$DEEPSEEK_API_KEY" --tasks 5
+
+# claude-code harness, DeepSeek via the Anthropic-compat endpoint
+bash bench/agents/swebench_run.sh \
+    --condition baseline --harness claude-code \
+    --api-key "$DEEPSEEK_API_KEY" --effort high --tasks 5
+
+# claude-code harness, native Claude model (no DeepSeek)
+bash bench/agents/swebench_run.sh \
+    --condition baseline --harness claude-code --no-deepseek \
+    --model claude-sonnet-5 --effort high --tasks 5
 ```
 
 Reads `bench/agents/tasks_50.json`, expects repos checked out at
-`bench/repos/<task_id>/` (via `bench/setup_repos.sh`).
+`bench/repos/<task_id>/` by default — or, if
+`~/opensource/spelunk-bench/repos` exists, that shared checkout instead
+(same convention as `bench/setup_repos.sh`, so both scripts always agree on
+where repos live without needing `--repos-dir` on every invocation).
+Override either with `--repos-dir`.
 
-For `spelunk_search` and `spelunk_full` conditions, runs `spelunk index` on
-each repo before the agent (unless `--skip-index` is set).
+For `--harness none` with `spelunk_search`/`spelunk_full` conditions, runs
+`spelunk index` (and, for `spelunk_full`, `spelunk memory harvest`) on each
+repo before the agent, unless `--skip-index` is set. The `opencode` and
+`claude-code` harnesses never invoke spelunk — they are generic coding
+agents being measured on their own, not spelunk-instrumented (see
+"Harnesses" above) — so this step is skipped entirely for them regardless of
+`--skip-index`.
 
-Each task's git diff is saved to `bench/patches/<condition>-<timestamp>/<task_id>.patch`
-(override with `--patches-dir`). These patches are required for the Docker harness.
+Each task's patch is saved to
+`bench/patches/<condition>-<timestamp>/<task_id>.patch` for `--harness none`,
+or `bench/patches/<condition>-<harness>-<timestamp>/<task_id>.patch` for the
+other two (override either with `--patches-dir`). These patches are required
+for the Docker harness.
 
-Results are written to `bench/results/swebench-<condition>-<timestamp>.json`.
+Results are written to `bench/results/swebench-<condition>-<timestamp>.json`
+for `--harness none` (unchanged filename convention — additive only, so
+existing tooling/scripts that glob for this pattern keep working), or
+`bench/results/swebench-<condition>-<harness>-<timestamp>.json` for
+`opencode`/`claude-code`.
 
 Pass `--eval` to automatically invoke `swebench_eval.sh` after the agent run
 completes, computing real `resolve_rate` via the SWE-bench Docker harness.
 Without `--eval`, the script prints the exact command to run next.
 
-## Reproducibility
+## Reproducibility / provenance contract
 
-Every result JSON includes:
+Every result JSON includes the original reproducibility fields, plus the
+harness-matrix provenance extension (all additive — `--harness none` output
+is a strict superset of the pre-harness-matrix schema, so existing consumers
+that read specific keys via `.get()` — `export_patches.py`, `report.py` — are
+unaffected):
 
 ```json
 {
     "benchmark": "swebench-verified",
     "condition": "spelunk_full",
+    "harness": "none",
+    "harness_version": null,
+    "endpoint_kind": "native",
+    "effort": null,
+    "thinking": null,
     "model": "deepseek-v4-flash",
     "model_source": "api",
     "api_base_url": "https://api.deepseek.com/v1",
     "api_key_source": "env:DEEPSEEK_API_KEY",
-    "spelunk_version": "0.6.0",
+    "spelunk_version": "0.9.2",
     "seed": 42,
+    "run_seed": 42,
     "max_turns": 20,
     "task_id": "django__django-11099",
+    "patch_file": "bench/patches/spelunk_full-20260704T120000Z/django__django-11099.patch",
+    "question_set_version": null,
+    "instance_filter": null,
+    "judge_model": null,
+    "judge_version": null,
+    "judge_error_rate": null,
     "turns": 5,
     "input_tokens": 12000,
     "output_tokens": 1500,
@@ -109,10 +295,32 @@ Every result JSON includes:
 }
 ```
 
-Anyone with a DeepSeek API key can reproduce:
+New fields:
+
+| Field | Meaning | Populated by |
+|---|---|---|
+| `harness` | `none`\|`opencode`\|`claude-code` | all three runners |
+| `harness_version` | `opencode --version` / `claude --version` output; `null` for harness=none | `harness_opencode.py`, `harness_claude_code.py` |
+| `effort` | Claude Code `--effort` level (`low`\|`medium`\|`high`\|`xhigh`\|`max`); `null` for non-claude-code harnesses | `harness_claude_code.py` |
+| `thinking` | Claude Code thinking requested (bool); `null` for non-claude-code harnesses | `harness_claude_code.py` |
+| `endpoint_kind` | `native`\|`anthropic-compat`\|`shim` — which wire format/endpoint reached the model | all three runners |
+| `run_seed` | Alias of `seed`, always present alongside it — the field name every harness's provenance dict should read to line up seeds across a run regardless of which runner produced the row | all three runners |
+| `question_set_version` | Reserved, `null` today — will identify the question-set revision once judge-based benchmarks (Phase 6+) land | reserved |
+| `instance_filter` | Reserved, `null` today — will record any task-subset filter applied | reserved |
+| `judge_model` / `judge_version` / `judge_error_rate` | Reserved, `null` today — will record the LLM-judge identity/version and its measured error rate once judge-based scoring lands | reserved |
+| `harness_exit_code` | Exit code of the underlying `opencode`/`claude` process | `harness_opencode.py`, `harness_claude_code.py` |
+| `harness_error` | Best-effort error text if the harness process failed or its output couldn't be parsed; `null` on a clean run | `harness_opencode.py`, `harness_claude_code.py` |
+| `resolved_model_usage` | Claude Code's own `modelUsage` breakdown (per-model token/cost, e.g. if it internally used a smaller model for a subagent step); `null` for the other harnesses | `harness_claude_code.py` |
+
+`harness=none` rows keep `harness_version: null`, `effort: null`,
+`thinking: null` — there is no separate "harness" version to report beyond
+`spelunk_version` (already present), and no effort/thinking concept in
+agent.py's own loop.
+
+Anyone with a DeepSeek API key can reproduce a harness=none run:
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-bash bench/agents/swebench_run.sh --condition spelunk_full --seed 42
+bash bench/agents/swebench_run.sh --condition spelunk_full --harness none --seed 42
 ```
 
 ## Contamination control: leakage-filtered instances
@@ -168,13 +376,55 @@ from the SWE-bench *full* split; see `setup_repos.sh`, issue #252). Only those
 `build_filtered_tasks.py --overlap-with bench/agents/tasks_50.json` once the
 label set is available.
 
+## DeepSeek endpoint verification
+
+DeepSeek's Anthropic-compatible endpoint details were verified live against
+`api-docs.deepseek.com` (guides/anthropic_api and
+quick_start/agent_integrations/claude_code) on 2026-07-04:
+
+- Endpoint: `https://api.deepseek.com/anthropic`
+- Env vars: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (not
+  `ANTHROPIC_API_KEY` — the docs are explicit about `AUTH_TOKEN`),
+  `ANTHROPIC_MODEL`
+- Model mapping: passing `claude-sonnet-*`/`claude-haiku-*` maps server-side
+  to `deepseek-v4-flash`; `claude-opus-*` maps to `deepseek-v4-pro`. Passing
+  `deepseek-v4-flash` directly (what `harness_claude_code.py` does) works
+  without relying on that mapping.
+
+## Endpoint-fidelity sanity check (DeepSeek native vs. Anthropic-compat)
+
+Not run in this pass: exercising it requires a live `DEEPSEEK_API_KEY`,
+which was not available in the environment this infra was built in (see
+"What actually ran" below). Once a key is available, run the same task
+through both endpoints and diff tool-call behaviour:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+
+# Native OpenAI-compatible endpoint, via harness=none
+python bench/agents/agent.py --condition baseline \
+    --task-id <task_id> --repo-path <repo> --issue <repo>/ISSUE.txt \
+    --model deepseek-v4-flash --api-base-url https://api.deepseek.com/v1 \
+    --api-key "$DEEPSEEK_API_KEY" --seed 42
+
+# Anthropic-compat endpoint, via harness=claude-code
+python bench/agents/harness_claude_code.py \
+    --task-id <task_id> --repo-path <repo> --issue <repo>/ISSUE.txt \
+    --model deepseek-v4-flash --api-key "$DEEPSEEK_API_KEY" --seed 42
+```
+
+Compare: number of tool-call turns for the same issue, whether the model
+front-loads exploration the same way, and whether the final patch differs in
+substance (not just formatting). Record findings here once run — this
+section is a placeholder for that write-up, not a result.
+
 ## Notes
 
-- `resolved` is always `false` in agent output from `agent.py` — resolution
+- `resolved` is always `false` in agent output from every runner — resolution
   comes from the SWE-bench Docker harness. Use `--eval` on `swebench_run.sh`
   or run `swebench_eval.sh` separately to populate real resolve rates.
-- The spelunk CLI must be in PATH. The agent handles exit code 1 (no results)
-  gracefully.
+- The spelunk CLI must be in PATH for `--harness none`. The agent handles
+  exit code 1 (no results) gracefully.
 - DeepSeek API may have rate limits — the orchestrator pauses 1 s between tasks.
 - **Infrastructure vs. resolve_rate:** Infrastructure fixes (Phase 3) unblock
   benchmarks by ensuring tasks run without crashes. They do not improve

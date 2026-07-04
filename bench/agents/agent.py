@@ -589,18 +589,37 @@ def main() -> None:
         except Exception as e:
             print(f"Warning: failed to save patch: {e}", file=sys.stderr)
 
-    # Reproducibility contract
+    # Reproducibility contract.
+    #
+    # harness/harness_version/endpoint_kind/run_seed and the
+    # question_set_version/instance_filter/judge_* fields are part of the
+    # harness-matrix provenance extension (bench/agents/README.md
+    # "Provenance contract") — additive-only, so pre-existing consumers
+    # (export_patches.py, report.py) that only read specific keys via
+    # dict.get() are unaffected. This is the harness=none, "component-clean"
+    # cell: no external agent harness, just this script's own tool-calling
+    # loop, run directly against the model's own (non-Anthropic-compat) API.
     output = {
         "benchmark": "swebench-verified",
         "condition": args.condition,
+        "harness": "none",
+        "harness_version": None,
+        "endpoint_kind": "native",
         "model": args.model,
         "model_source": "api",
         "api_base_url": args.api_base_url,
         "api_key_source": api_key_source,
         "spelunk_version": get_spelunk_version(),
         "seed": args.seed,
+        "run_seed": args.seed,
         "max_turns": args.max_turns,
         "patch_file": str(patch_path) if patch_path else None,
+        # Populated later, once the corresponding infra lands (README §Provenance):
+        "question_set_version": None,
+        "instance_filter": None,
+        "judge_model": None,
+        "judge_version": None,
+        "judge_error_rate": None,
         **agent_result,
     }
     print(json.dumps(output))
