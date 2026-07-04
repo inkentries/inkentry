@@ -720,6 +720,11 @@ mod arg_tests {
                 msg.contains("loopback") && msg.contains("--allow-insecure-remote"),
                 "error must point at the loopback/TLS guidance and the opt-out: {msg}"
             );
+            assert!(
+                msg.contains("docs/adr/056-oss-server-tenancy-model.md"),
+                "error must point at the ADR-056 guidance doc so the operator \
+                 can find the loopback-only / TLS-front policy: {msg}"
+            );
         }
     }
 
