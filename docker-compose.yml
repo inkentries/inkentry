@@ -1,29 +1,82 @@
-# spelunk-server — minimal compose (server + persistent volume)
+# spelunk-server — minimal compose (server + TLS-terminating proxy sidecar +
+# persistent volume)
 #
-# Usage (API key required — the container binds 0.0.0.0, and spelunk-server
-# refuses to start on a non-loopback bind with no key configured):
+# spelunk-server refuses to bind a non-loopback address over plaintext HTTP,
+# unconditionally — keyed or not (see docs/server.md#trust-model). A keyed
+# server reachable off-host must sit behind a TLS-terminating reverse proxy,
+# with the server itself kept on loopback. This compose file wires that up:
+#
+#   - `spelunk-server` binds 127.0.0.1 (the image's own default — see
+#     Dockerfile) and is not published to the host on its own.
+#   - `proxy` (Caddy) runs with `network_mode: "service:spelunk-server"`, i.e.
+#     it shares the spelunk-server container's network namespace instead of
+#     getting its own. From inside that shared namespace, spelunk-server's
+#     loopback bind is directly reachable as `127.0.0.1:7777` — including from
+#     the proxy — without spelunk-server ever binding a routable interface.
+#     `proxy` is what actually publishes a port to the host/network.
+#
+# Usage (API key required — a keyless server reachable off-host would be an
+# open, unauthenticated endpoint, refused the same way):
 #   SPELUNK_SERVER_KEY=your-key docker compose up -d
 #
+# Verify (the proxy's default cert is self-signed via Caddy's `tls internal`,
+# see Caddyfile — `-k` skips certificate verification, fine for a local check,
+# not for anything crossing an untrusted network):
+#   curl -k https://localhost:8443/v1/health
+#
 # Clients configure:
-#   memory_server_url = "http://your-host:7777"
+#   memory_server_url = "https://your-host:8443"
 #   project_id        = "my-project"
+#
+# No key / purely local use? You don't need the proxy — run spelunk-server
+# directly on loopback (`docker run -p 127.0.0.1:7777:7777 spelunk-server`, no
+# compose) and skip TLS entirely. That shape isn't reachable off-host, which
+# is also why it's not what this compose file ships: the point of a
+# docker-compose deployment is normally to make the server reachable to other
+# machines (teammates, remote agents), and that requires both a key and TLS.
 
 services:
   spelunk-server:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    ports:
-      - "7777:7777"
+    # No `ports:` here on purpose — spelunk-server binds 127.0.0.1 inside the
+    # container (its own default) and is reached only via the `proxy` sidecar,
+    # which shares this container's network namespace (see `proxy` below).
     volumes:
       - spelunk-data:/data
     environment:
       SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7777/v1/health"]
+      # Runs inside the spelunk-server container's own namespace, so loopback
+      # here is this container regardless of the proxy's netns sharing.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
 
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Share spelunk-server's network namespace instead of getting its own:
+    # loopback inside this container IS spelunk-server's loopback, so Caddy
+    # can reach 127.0.0.1:7777 directly. This is what lets spelunk-server
+    # keep its loopback-only bind while still being reachable off-host.
+    network_mode: "service:spelunk-server"
+    depends_on:
+      spelunk-server:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    # Ports are published here, not on spelunk-server, because publishing is
+    # tied to whichever service in a shared netns declares it — see Compose's
+    # `network_mode: "service:..."` docs.
+    ports:
+      - "8443:8443"
+
 volumes:
   spelunk-data:
+  caddy-data:
+  caddy-config:

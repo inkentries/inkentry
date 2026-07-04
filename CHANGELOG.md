@@ -23,6 +23,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   Loopback binds are unchanged. See
   [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
   (spelunk-oss^79)
+  - **Docker packaging updated to match:** the shipped `docker-compose.yml` /
+    `docker-compose.full.yml` previously bound the `spelunk-server` container
+    to `0.0.0.0` directly, which now refuses to start as soon as
+    `SPELUNK_SERVER_KEY` is set — exactly the documented keyed quick-start.
+    `spelunk-server` now binds loopback inside its own container (the
+    Dockerfile's default), and a Caddy sidecar (`network_mode:
+    "service:spelunk-server"`, `Caddyfile`) terminates TLS and publishes the
+    port instead, so the keyed compose flow starts cleanly and satisfies the
+    same loopback-plus-TLS-front posture as a bare-metal deployment. See
+    [docs/server.md](docs/server.md#quick-start-docker). (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).** [spelunk-oss^65]
   - `AppError::Internal` no longer inspects the error message text (previously it returned the

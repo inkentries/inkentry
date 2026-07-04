@@ -1,4 +1,5 @@
-# spelunk-server — full stack with Ollama for server-side LLM
+# spelunk-server — full stack with Ollama for server-side LLM, behind a TLS
+# proxy sidecar (same pattern as docker-compose.yml — see there for why).
 #
 # NOTE: Ollama GPU passthrough requires Linux + nvidia-container-toolkit.
 #       This compose does NOT work on Apple Silicon (Docker runs in a Linux VM).
@@ -9,25 +10,42 @@
 #
 # Usage (CPU-only, slow):
 #   SPELUNK_SERVER_KEY=your-key OLLAMA_GPUS= docker compose -f docker-compose.full.yml up -d
+#
+# Verify:
+#   curl -k https://localhost:8443/v1/health
 
 services:
   spelunk-server:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    ports:
-      - "7777:7777"
+    # No `ports:` — see docker-compose.yml. Reached via the `proxy` sidecar,
+    # which shares this container's network namespace.
     volumes:
       - spelunk-data:/data
     environment:
       SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7777/v1/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
     depends_on:
       - ollama
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: "service:spelunk-server"
+    depends_on:
+      spelunk-server:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "8443:8443"
 
   ollama:
     image: ollama/ollama:latest
@@ -47,3 +65,5 @@ services:
 volumes:
   spelunk-data:
   ollama-data:
+  caddy-data:
+  caddy-config:
