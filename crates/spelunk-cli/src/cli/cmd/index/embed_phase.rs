@@ -8,76 +8,171 @@ use super::super::ui::is_tty;
 use crate::{capability::Tier, config::Config, storage::Database};
 
 /// Hard ceiling on chunks per request — the server enforces 256 (returns 413 if
-/// exceeded), so the user-supplied `--batch-size` is clamped to this. The
-/// server's candle embedder (F2LLM-v2-330M) runs inference in padded sub-batches
-/// of EMBED_BATCH_SIZE=8, so e.g. 64 chunks = 8 forward passes.
+/// exceeded), so both the user-supplied `--batch-size` and the calibrated batch
+/// size are clamped to this. The server's candle embedder (F2LLM-v2-330M) runs
+/// inference in padded sub-batches of EMBED_BATCH_SIZE=8, so e.g. 64 chunks = 8
+/// forward passes.
 const MAX_BATCH: usize = 256;
 
-/// Default request batch size when the flag is left at its baseline. Kept well
-/// below MAX_BATCH so each HTTP call completes within the request timeout.
-const DEFAULT_BATCH: usize = 64;
+/// Default ceiling on the calibrated batch size when the user has not set
+/// `--batch-size` (i.e. it is still 0): the server's own hard limit, so
+/// calibration is free to grow the batch as large as the measured throughput
+/// justifies. `--batch-size` exists to let a user *lower* this ceiling (e.g.
+/// memory-constrained hardware), not to hand-pick a fixed size (see
+/// `resolve_batch_ceiling`).
+const DEFAULT_BATCH_CEILING: usize = MAX_BATCH;
 
-/// Baseline per-request timeout used for the FIRST batch, before we have any
-/// measurement of this machine's embedding speed. After the first batch lands we
-/// switch to a timeout scaled to the observed per-chunk rate (see
-/// `scaled_timeout`), so slow hardware degrades gracefully instead of eating a
-/// fixed deadline with nothing persisted (spelunk-oss^71).
-const FIRST_BATCH_TIMEOUT: Duration = Duration::from_secs(600);
+/// Size of the very first request: a single chunk. We deliberately do not
+/// guess a batch size before we have ANY timing data — a full batch's cold
+/// start (model load, first-request JIT, etc.) used to be exactly what made
+/// the old fixed-timeout approach unsafe on slow hardware. A batch of 1 gives
+/// an initial per-entry estimate almost immediately, and also makes the
+/// progress bar move right away (spelunk-oss^73) instead of only after a full
+/// batch round-trips.
+const CALIBRATION_BATCH_1: usize = 1;
 
-/// Floor for a scaled per-request timeout. Even on a very fast machine we never
-/// drop below this, to absorb transient latency spikes.
-const MIN_SCALED_TIMEOUT: Duration = Duration::from_secs(120);
+/// Size of the second request, used to refine the estimate from
+/// `CALIBRATION_BATCH_1` (which is dominated by one-off cold-start costs: model
+/// warm-up, first-connection overhead, etc.) before committing to a steady-
+/// state batch size. Only run when enough chunks remain (see
+/// `next_batch_size` / calibration bookkeeping in `run_embed_phase`).
+const CALIBRATION_BATCH_2: usize = 4;
 
-/// Ceiling for a scaled per-request timeout, so a pathologically slow first
+/// Target wall-clock time we aim to keep each *steady-state* (post-calibration)
+/// batch under. Batch size is derived by dividing this budget by the measured
+/// per-entry rate: slow hardware (e.g. ~60 s/entry) gets a small batch (~4), fast
+/// hardware (e.g. ~1 s/entry) gets a large one (up to `MAX_BATCH`), per the
+/// founder's calibration approach for spelunk-oss^74/^71 — we time a couple of
+/// small batches up front and size subsequent ones from the observed rate,
+/// rather than always sending a fixed-size batch and reacting after the fact.
+const TARGET_BATCH_SECONDS: u64 = 240;
+
+/// Floor for a calibrated per-request timeout. Even on very fast hardware we
+/// never drop below this, to absorb transient latency spikes (a slow DNS
+/// lookup, a GC pause on the server, etc.).
+const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Ceiling for a calibrated per-request timeout, so a pathologically slow
 /// sample can't derive an effectively unbounded deadline.
-const MAX_SCALED_TIMEOUT: Duration = Duration::from_secs(1800);
+const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Safety multiple applied to the observed per-chunk time when scaling the
-/// timeout for later batches: give each request this much headroom over the
-/// measured rate so normal jitter never trips it.
+/// Safety multiple applied to a batch's *expected* duration (at the current
+/// measured per-entry rate) when deriving that batch's request timeout: give
+/// it this much headroom over the estimate so normal jitter never trips it.
 const TIMEOUT_SAFETY_FACTOR: u32 = 4;
 
-/// Resolve the effective per-request batch size from the user-supplied
-/// `--batch-size` flag: 0 falls back to the default, and anything above the
-/// server ceiling is clamped to `MAX_BATCH`.
-fn resolve_batch_size(requested: usize) -> usize {
+/// Resolve the effective ceiling the calibrated batch size may grow to, from
+/// the user-supplied `--batch-size` flag: 0 falls back to the default ceiling,
+/// and anything above the server ceiling is clamped to `MAX_BATCH`. Unlike the
+/// old fixed batch size, this is now only an upper bound — the actual
+/// per-request size is calibrated from measured throughput and may end up
+/// smaller (see `next_batch_size`).
+fn resolve_batch_ceiling(requested: usize) -> usize {
     if requested == 0 {
-        DEFAULT_BATCH
+        DEFAULT_BATCH_CEILING
     } else {
         requested.min(MAX_BATCH)
     }
 }
 
-/// Derive a per-request timeout for subsequent batches from the FIRST batch's
-/// observed wall-clock time.
+/// Choose the next steady-state batch size from the measured per-entry
+/// duration, so a batch takes roughly `TARGET_BATCH_SECONDS` wall-clock: slow
+/// hardware (large `per_entry`) gets a small batch, fast hardware gets a large
+/// one. Clamped to `[1, ceiling]` — `ceiling` is the smaller of `MAX_BATCH` (the
+/// server's hard 413 limit) and the user's `--batch-size`, if they set one.
 ///
-/// The first batch of `first_batch_len` chunks took `first_batch_elapsed`; that
-/// includes one-off model cold-start, so it is a deliberately pessimistic per-
-/// chunk sample. We budget `TIMEOUT_SAFETY_FACTOR ×` the observed per-chunk time
-/// for a full `batch_size`-chunk request, then clamp into
-/// `[MIN_SCALED_TIMEOUT, MAX_SCALED_TIMEOUT]`. On slow hardware this stretches
-/// the deadline so a genuinely slow-but-progressing request is not killed
-/// mid-flight and its whole batch discarded (spelunk-oss^71).
-fn scaled_timeout(
-    first_batch_elapsed: Duration,
-    first_batch_len: usize,
-    batch_size: usize,
-) -> Duration {
-    let per_chunk = first_batch_elapsed
-        .checked_div(first_batch_len.max(1) as u32)
-        .unwrap_or(FIRST_BATCH_TIMEOUT);
-    let budget = per_chunk
-        .saturating_mul(batch_size.max(1) as u32)
-        .saturating_mul(TIMEOUT_SAFETY_FACTOR);
-    budget.clamp(MIN_SCALED_TIMEOUT, MAX_SCALED_TIMEOUT)
+/// Examples from the calibration this replaces the old "time a fixed 64-batch"
+/// approach with: ~60 s/entry ⇒ batch 4; ~1 s/entry ⇒ batch 256 (assuming the
+/// ceiling allows it).
+fn next_batch_size(per_entry: Duration, ceiling: usize) -> usize {
+    if per_entry.is_zero() {
+        return ceiling.max(1);
+    }
+    let target = Duration::from_secs(TARGET_BATCH_SECONDS).as_secs_f64();
+    let size = (target / per_entry.as_secs_f64()).round();
+    if size < 1.0 {
+        1
+    } else if size >= ceiling.max(1) as f64 {
+        ceiling.max(1)
+    } else {
+        size as usize
+    }
+}
+
+/// Derive the per-request timeout for a batch of `batch_size` entries from the
+/// current measured per-entry rate: `TIMEOUT_SAFETY_FACTOR ×` the batch's
+/// expected duration at that rate, clamped into
+/// `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`. Because batch size itself is
+/// derived from the same rate to target `TARGET_BATCH_SECONDS`, this timeout
+/// tracks the batch size rather than a single fixed deadline — a genuinely
+/// slow-but-progressing request is not killed mid-flight and its whole batch
+/// discarded (spelunk-oss^71).
+fn batch_timeout(per_entry: Duration, batch_size: usize) -> Duration {
+    let expected = per_entry.saturating_mul(batch_size.max(1) as u32);
+    let budget = expected.saturating_mul(TIMEOUT_SAFETY_FACTOR);
+    budget.clamp(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT)
+}
+
+/// Timeout used for the very first request (a single chunk), before we have
+/// any measurement of this machine's embedding speed at all. Pessimistic
+/// because it must also absorb one-off model cold-start.
+const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Running estimate of this run's embedding throughput, refined after every
+/// batch so a rate that drifts mid-run (e.g. thermal throttling, another
+/// process contending for the GPU) is picked up rather than locked in from the
+/// first sample alone.
+struct RateEstimate {
+    /// Exponentially-weighted per-entry duration. `None` until the first batch
+    /// lands.
+    per_entry: Option<Duration>,
+}
+
+impl RateEstimate {
+    fn new() -> Self {
+        Self { per_entry: None }
+    }
+
+    /// Fold in a newly-observed batch: `elapsed` wall-clock time for
+    /// `entries` chunks. The first observation seeds the estimate outright;
+    /// later ones are blended in with an exponential weight so the estimate
+    /// keeps tracking the current rate (letting later, larger batches
+    /// dominate the noisier single-chunk calibration sample) without being
+    /// destabilised by a single outlier batch.
+    fn update(&mut self, elapsed: Duration, entries: usize) {
+        if entries == 0 {
+            return;
+        }
+        let sample = elapsed.div_f64(entries as f64);
+        self.per_entry = Some(match self.per_entry {
+            None => sample,
+            // Blend 50/50 with the running estimate. This is a simple
+            // exponential moving average: recent batches matter more than
+            // stale ones, so a hardware/network rate change mid-run (thermal
+            // throttling, contention) is reflected within a couple of
+            // batches instead of being permanently anchored to the first
+            // sample.
+            Some(prev) => {
+                let blended = (prev.as_secs_f64() + sample.as_secs_f64()) / 2.0;
+                Duration::from_secs_f64(blended)
+            }
+        });
+    }
+
+    /// Current best estimate, or `None` before the first batch has landed.
+    fn per_entry(&self) -> Option<Duration> {
+        self.per_entry
+    }
 }
 
 /// Progress style for the embed phase, including indicatif's built-in `{eta}`
 /// token. The ETA is driven by `bar.inc(1)` per embedded chunk and uses
-/// indicatif's double-exponentially-smoothed rate estimator, so the first
-/// batch's cold-start skew washes out as later batches land (spelunk-oss^74). A
-/// steady tick keeps the spinner and ETA moving even while a request is in
-/// flight, so a slow batch never looks frozen (spelunk-oss^73).
+/// indicatif's double-exponentially-smoothed rate estimator; starting
+/// calibration with a batch of 1 (rather than a full batch) means the first
+/// data point lands almost immediately, so the ETA and the bar itself become
+/// visible right away instead of only after a full batch completes
+/// (spelunk-oss^73/^74). A steady tick keeps the spinner and ETA moving even
+/// while a request is in flight, so a slow batch never looks frozen.
 fn embed_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  ETA {eta}  {wide_msg}",
@@ -117,7 +212,9 @@ pub(super) async fn run_embed_phase(
         Tier::Offline => return Ok(0),
     };
 
-    let batch_size = resolve_batch_size(batch_size);
+    // Ceiling the calibrated batch size may grow to. Unlike the old scheme,
+    // this is no longer the size we always send — see `next_batch_size`.
+    let ceiling = resolve_batch_ceiling(batch_size);
 
     // Use `resolve_project_id` so that loopback auto-discovered servers (where
     // `cfg.project_id` may be absent) derive the id from the project root path,
@@ -125,10 +222,10 @@ pub(super) async fn run_embed_phase(
     let project_id_owned = cfg.resolve_project_id(project_root);
     let project_id = project_id_owned.as_str();
 
-    // No client-wide timeout: we apply a PER-REQUEST timeout below, starting
-    // pessimistic (`FIRST_BATCH_TIMEOUT`) and then scaling to this machine's
-    // observed embedding speed after the first batch. A single fixed client
-    // deadline is what let a slow first batch expire with nothing persisted
+    // No client-wide timeout: we apply a PER-REQUEST timeout below, derived
+    // from the measured rate once we have one (starting pessimistic for the
+    // very first, single-chunk request). A single fixed client deadline is
+    // what let a slow first batch expire with nothing persisted
     // (spelunk-oss^71).
     let client = reqwest::Client::builder()
         .build()
@@ -143,28 +240,56 @@ pub(super) async fn run_embed_phase(
         ProgressBar::hidden()
     };
 
-    // Draw the bar immediately, before the first (possibly long) request blocks,
-    // so the embedding phase shows visible movement within ~1 s of parsing
-    // finishing instead of only after the first batch round-trip returns
-    // (spelunk-oss^73). The steady tick animates the spinner while a request is
-    // in flight so a single slow batch never looks frozen.
-    bar.set_message("awaiting first batch\u{2026}");
+    // Draw the bar immediately, before the first (small, fast) request even
+    // fires, so the embedding phase shows visible movement within ~1 s of
+    // parsing finishing instead of only after a full batch round-trip returns
+    // (spelunk-oss^73). The steady tick animates the spinner while a request
+    // is in flight so a single slow batch never looks frozen.
+    bar.set_message("calibrating batch size\u{2026}");
     bar.enable_steady_tick(std::time::Duration::from_millis(120));
     bar.tick();
 
-    let num_batches = total.div_ceil(batch_size as u64).max(1);
+    let mut rate = RateEstimate::new();
     let mut embedded = 0u64;
-    // Per-request timeout: pessimistic for batch 1, then scaled to the observed
-    // per-chunk rate for every later batch (spelunk-oss^71).
-    let mut request_timeout = FIRST_BATCH_TIMEOUT;
+    let mut cursor = 0usize;
+    let mut batch_num = 0u64;
+    let remaining = chunk_ids_and_texts.len();
 
-    for (batch_idx, batch) in chunk_ids_and_texts.chunks(batch_size).enumerate() {
-        // Show which batch is in flight so a single slow request reads as
-        // "waiting on batch N/M", not a frozen bar (spelunk-oss^73).
+    while cursor < remaining {
+        batch_num += 1;
+        let left = remaining - cursor;
+
+        // Calibration phase: the first request is a single chunk, the second
+        // is a small 4-chunk sample (both clamped to what's actually left, for
+        // small indexes). Both exist purely to get real timing data before
+        // committing to a steady-state batch size, per the founder's feedback
+        // on spelunk-oss^71/^74 — we no longer time a full default-sized batch
+        // and adapt afterward.
+        let this_batch_size = match batch_num {
+            1 => CALIBRATION_BATCH_1,
+            2 => CALIBRATION_BATCH_2,
+            _ => {
+                let per_entry = rate
+                    .per_entry()
+                    .expect("rate is seeded after the first batch completes");
+                next_batch_size(per_entry, ceiling)
+            }
+        }
+        .clamp(1, left);
+
+        let request_timeout = match rate.per_entry() {
+            Some(per_entry) => batch_timeout(per_entry, this_batch_size),
+            None => FIRST_REQUEST_TIMEOUT,
+        };
+
+        // Show which chunks are in flight so a single slow request reads as
+        // progress against a known window, not a frozen bar (spelunk-oss^73).
         bar.set_message(format!(
-            "sent batch {}/{num_batches}, awaiting response\u{2026}",
-            batch_idx + 1,
+            "sent {this_batch_size} chunk(s) ({}/{total} done so far), awaiting response\u{2026}",
+            embedded,
         ));
+
+        let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
         let req_chunks: Vec<ReqChunk> = batch
             .iter()
@@ -205,14 +330,11 @@ pub(super) async fn run_embed_phase(
             // (spelunk-oss^71).
             Err(e) => {
                 bar.abandon_with_message(format!(
-                    "batch {}/{num_batches} failed after {embedded}/{total} embedded; \
+                    "batch failed after {embedded}/{total} embedded; \
                      re-run `spelunk index` to finish the rest",
-                    batch_idx + 1,
                 ));
                 eprintln!(
-                    "Embedding stopped at batch {}/{num_batches} ({embedded}/{total} chunks \
-                     embedded and saved): {e:#}",
-                    batch_idx + 1,
+                    "Embedding stopped after {embedded}/{total} chunks embedded and saved: {e:#}",
                 );
                 eprintln!(
                     "Re-run `spelunk index` to embed the remaining {} chunk(s); \
@@ -234,15 +356,17 @@ pub(super) async fn run_embed_phase(
             bar.inc(1);
         }
 
-        // After the first batch, scale the per-request timeout to this
-        // machine's measured speed so later (and slower) batches degrade
-        // gracefully instead of inheriting the fixed pessimistic deadline
-        // (spelunk-oss^71). The same per-chunk `bar.inc(1)` cadence above also
-        // feeds the visible `{eta}`, which indicatif smooths across batches so
-        // the first batch's cold-start skew washes out (spelunk-oss^74).
-        if batch_idx == 0 {
-            request_timeout = scaled_timeout(started.elapsed(), batch.len(), batch_size);
-        }
+        // Fold this batch's measured rate in and re-estimate: later batches'
+        // sizes (and timeouts) track the current rate rather than being fixed
+        // from a single early sample, so a rate that drifts mid-run is picked
+        // up within a couple of batches (spelunk-oss^71/^74). The same
+        // per-chunk `bar.inc(1)` cadence above also feeds the visible `{eta}`,
+        // which indicatif smooths across batches so the tiny first
+        // calibration batch's cold-start skew washes out quickly
+        // (spelunk-oss^74).
+        rate.update(started.elapsed(), batch.len());
+
+        cursor += this_batch_size;
     }
 
     bar.finish_with_message(format!("{embedded} chunks embedded"));
@@ -252,7 +376,7 @@ pub(super) async fn run_embed_phase(
 /// Send one embed batch and return the raw little-endian f32 response bytes:
 /// one `EMBEDDING_DIM`-float vector per request chunk, in request order.
 ///
-/// Applies a per-request `timeout` (see `scaled_timeout`) and validates the
+/// Applies a per-request `timeout` (see `batch_timeout`) and validates the
 /// response length before returning, so callers get a single fallible unit they
 /// can treat as all-or-nothing for that batch (spelunk-oss^71).
 async fn embed_one_batch(
@@ -294,86 +418,145 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_batch_size_passes_through_valid_values() {
-        // A user-supplied value within range is used verbatim — this is the
-        // value that reaches `chunk_ids_and_texts.chunks(batch_size)` and so
-        // actually controls the per-request batch size.
-        assert_eq!(resolve_batch_size(1), 1);
-        assert_eq!(resolve_batch_size(32), 32);
-        assert_eq!(resolve_batch_size(64), 64);
-        assert_eq!(resolve_batch_size(200), 200);
-        assert_eq!(resolve_batch_size(MAX_BATCH), MAX_BATCH);
+    fn resolve_batch_ceiling_passes_through_valid_values() {
+        // A user-supplied value within range is used verbatim as the ceiling
+        // that calibration may grow the batch size up to.
+        assert_eq!(resolve_batch_ceiling(1), 1);
+        assert_eq!(resolve_batch_ceiling(32), 32);
+        assert_eq!(resolve_batch_ceiling(64), 64);
+        assert_eq!(resolve_batch_ceiling(200), 200);
+        assert_eq!(resolve_batch_ceiling(MAX_BATCH), MAX_BATCH);
     }
 
     #[test]
-    fn resolve_batch_size_falls_back_to_default_for_zero() {
-        assert_eq!(resolve_batch_size(0), DEFAULT_BATCH);
-        assert_eq!(DEFAULT_BATCH, 64);
+    fn resolve_batch_ceiling_falls_back_to_default_for_zero() {
+        // 0 means the user left `--batch-size` at its default: the ceiling is
+        // the server's own hard limit, not some fixed pre-calibration size.
+        assert_eq!(resolve_batch_ceiling(0), DEFAULT_BATCH_CEILING);
+        assert_eq!(DEFAULT_BATCH_CEILING, MAX_BATCH);
     }
 
     #[test]
-    fn resolve_batch_size_clamps_above_server_ceiling() {
-        assert_eq!(resolve_batch_size(MAX_BATCH + 1), MAX_BATCH);
-        assert_eq!(resolve_batch_size(10_000), MAX_BATCH);
+    fn resolve_batch_ceiling_clamps_above_server_ceiling() {
+        assert_eq!(resolve_batch_ceiling(MAX_BATCH + 1), MAX_BATCH);
+        assert_eq!(resolve_batch_ceiling(10_000), MAX_BATCH);
     }
 
-    // ── scaled_timeout: derive later-batch deadline from first-batch timing ────
+    // ── next_batch_size: calibration-driven batch sizing ────────────────────
+    // (spelunk-oss^71/^74, founder review on PR #513)
+
+    #[test]
+    fn next_batch_size_shrinks_for_slow_hardware() {
+        // ~60 s/entry ⇒ a 4-min (240 s) budget fits ~4 entries per batch —
+        // this is the founder's own worked example from the PR review.
+        assert_eq!(next_batch_size(Duration::from_secs(60), 256), 4);
+    }
+
+    #[test]
+    fn next_batch_size_grows_for_fast_hardware() {
+        // ~1 s/entry ⇒ a 240 s budget fits 240 entries, clamped to the 256
+        // ceiling only if it would exceed it; here it doesn't, so we get the
+        // budget-derived value rather than always maxing out.
+        assert_eq!(next_batch_size(Duration::from_secs(1), 256), 240);
+    }
+
+    #[test]
+    fn next_batch_size_clamps_to_ceiling() {
+        // A very fast rate would derive a batch far above the ceiling (e.g.
+        // the server's hard 256-chunk / 413 limit, or a user-supplied
+        // `--batch-size`); the ceiling wins.
+        let t = next_batch_size(Duration::from_millis(1), 256);
+        assert_eq!(t, 256);
+        let t = next_batch_size(Duration::from_millis(1), 32);
+        assert_eq!(t, 32);
+    }
+
+    #[test]
+    fn next_batch_size_floors_at_one_for_extremely_slow_hardware() {
+        // If a single entry alone blows the whole per-batch budget, we still
+        // must send at least one entry per request.
+        let t = next_batch_size(Duration::from_secs(10_000), 256);
+        assert_eq!(t, 1);
+    }
+
+    #[test]
+    fn next_batch_size_handles_zero_duration_without_panicking() {
+        // A degenerate zero-duration sample (e.g. a clock quirk) must not
+        // divide-by-zero; falls back to the ceiling since the rate is
+        // unmeasurably fast.
+        let t = next_batch_size(Duration::ZERO, 256);
+        assert_eq!(t, 256);
+    }
+
+    // ── batch_timeout: derive a per-request deadline from the measured rate ──
     // (spelunk-oss^71)
 
     #[test]
-    fn scaled_timeout_stretches_for_slow_hardware() {
-        // First batch of 64 chunks took 200 s ⇒ ~3.125 s/chunk. A full 64-chunk
-        // batch at that rate is 200 s; with the 4× safety factor the scaled
-        // deadline is ~800 s, well above both the floor and the fixed 600 s
-        // that previously killed slow first batches with nothing persisted.
-        let t = scaled_timeout(Duration::from_secs(200), 64, 64);
+    fn batch_timeout_scales_with_expected_batch_duration() {
+        // At 60 s/entry, a batch of 4 is expected to take 240 s; with the 4x
+        // safety factor that's 960 s, clamped to the 1800 s ceiling.
+        let t = batch_timeout(Duration::from_secs(60), 4);
+        assert_eq!(t, Duration::from_secs(960));
+    }
+
+    #[test]
+    fn batch_timeout_clamps_to_floor_for_fast_hardware() {
+        // At 1 s/entry, a batch of 4 is expected to take 4 s; even with the
+        // 4x safety factor (16 s) that's far below the floor, which must win
+        // so transient latency spikes are still absorbed.
+        let t = batch_timeout(Duration::from_secs(1), 4);
+        assert_eq!(t, MIN_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn batch_timeout_clamps_to_ceiling_for_pathologically_slow_rate() {
+        let t = batch_timeout(Duration::from_secs(100_000), 256);
+        assert_eq!(t, MAX_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn batch_timeout_never_panics_on_degenerate_inputs() {
+        let t = batch_timeout(Duration::ZERO, 0);
+        assert!(t >= MIN_REQUEST_TIMEOUT && t <= MAX_REQUEST_TIMEOUT);
+    }
+
+    // ── RateEstimate: continuously re-estimate the per-entry rate ───────────
+    // (spelunk-oss^74 — "keep re-estimating the rate as batches complete")
+
+    #[test]
+    fn rate_estimate_seeds_from_first_observation() {
+        let mut r = RateEstimate::new();
+        assert!(r.per_entry().is_none());
+        r.update(Duration::from_secs(2), 1);
+        assert_eq!(r.per_entry(), Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn rate_estimate_blends_later_batches_rather_than_locking_to_first_sample() {
+        // First (calibration) sample: 1 entry in 10 s ⇒ 10 s/entry, skewed by
+        // one-off cold start. A later, larger batch at 1 s/entry should pull
+        // the blended estimate down, not be ignored in favour of the stale
+        // first sample.
+        let mut r = RateEstimate::new();
+        r.update(Duration::from_secs(10), 1);
+        r.update(Duration::from_secs(4), 4); // 1 s/entry
+        let blended = r.per_entry().unwrap();
         assert!(
-            t > Duration::from_secs(600),
-            "slow hardware must get a longer deadline than the old fixed 600 s, got {t:?}"
+            blended < Duration::from_secs(10),
+            "the rate must move toward the newer, faster sample, got {blended:?}"
         );
-        assert!(t <= MAX_SCALED_TIMEOUT, "never exceeds the ceiling");
-    }
-
-    #[test]
-    fn scaled_timeout_clamps_to_floor_for_fast_hardware() {
-        // First batch of 64 chunks in 1 s ⇒ a scaled budget far below the
-        // floor; the floor must win so transient spikes are still absorbed.
-        let t = scaled_timeout(Duration::from_secs(1), 64, 64);
-        assert_eq!(t, MIN_SCALED_TIMEOUT);
-    }
-
-    #[test]
-    fn scaled_timeout_clamps_to_ceiling_for_pathologically_slow_sample() {
-        // An absurdly slow first sample must not derive an effectively
-        // unbounded deadline.
-        let t = scaled_timeout(Duration::from_secs(100_000), 1, MAX_BATCH);
-        assert_eq!(t, MAX_SCALED_TIMEOUT);
-    }
-
-    #[test]
-    fn scaled_timeout_handles_empty_first_batch_without_panicking() {
-        // Degenerate inputs (zero-length batch / zero batch size) must not
-        // divide-by-zero or overflow; the clamp still yields a valid duration.
-        let t = scaled_timeout(Duration::from_secs(10), 0, 0);
-        assert!(t >= MIN_SCALED_TIMEOUT && t <= MAX_SCALED_TIMEOUT);
-    }
-
-    #[test]
-    fn scaled_timeout_scales_roughly_four_x_for_a_typical_sample() {
-        // Typical case: a first batch of 64 chunks in 30 s is ~0.469 s/chunk. A
-        // full 64-chunk batch at that rate is ~30 s; the 4x safety factor lifts
-        // it to ~120 s, which happens to coincide with the floor. Nudge the
-        // sample up so the derived budget clears the floor and we actually
-        // observe the ~4x scaling rather than the clamp: 64 chunks in 60 s is
-        // ~240 s scaled, well inside the band and ~4x the raw per-batch time.
-        let raw_batch = Duration::from_secs(60);
-        let t = scaled_timeout(raw_batch, 64, 64);
         assert!(
-            t > MIN_SCALED_TIMEOUT && t < MAX_SCALED_TIMEOUT,
-            "a typical sample must scale inside the band, not hit a clamp, got {t:?}"
+            blended > Duration::from_secs(1),
+            "a single fast batch should not instantly erase the earlier sample either, \
+             got {blended:?}"
         );
-        // 60 s per batch x 4 = 240 s.
-        assert_eq!(t, Duration::from_secs(240));
+    }
+
+    #[test]
+    fn rate_estimate_ignores_zero_length_batches() {
+        let mut r = RateEstimate::new();
+        r.update(Duration::from_secs(1), 0);
+        assert!(r.per_entry().is_none());
     }
 
     // ── embed_progress_style: the ETA-aware indicatif template must build ───────
@@ -481,20 +664,22 @@ mod tests {
 
     #[tokio::test]
     async fn batch_failure_keeps_prior_batches_and_stops_gracefully() {
-        // 3 batches of 2 chunks each. The first two requests succeed; the third
-        // returns 500. The run must persist the first 4 embeddings, NOT error,
-        // and report only 4 of 6 embedded, proving a mid-run failure never
-        // discards the batches the server already computed (spelunk-oss^71).
+        // 6 chunks with a small ceiling so calibration quickly ramps toward a
+        // multi-chunk steady-state batch; the mock server's third response
+        // (whichever batch it lands on) fails with 500. The run must persist
+        // every chunk embedded before the failure, NOT error, and report only
+        // the successfully-embedded count — proving a mid-run failure never
+        // discards batches the server already computed (spelunk-oss^71).
         let mock = MockServer::start().await;
-        // First two POSTs succeed (mounts are matched newest-first, and
-        // `up_to_n_times` bounds this one to the first two calls).
+        // The first two requests (calibration: 1 chunk, then up to 4 chunks)
+        // succeed; everything after that fails, so the run stops partway
+        // through a small index without ever reaching a "finished" state.
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
             .respond_with(OkEmbedResponder)
             .up_to_n_times(2)
             .mount(&mock)
             .await;
-        // Everything after that fails.
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
             .respond_with(ResponseTemplate::new(500))
@@ -515,28 +700,32 @@ mod tests {
             &cfg,
             &tier,
             std::path::Path::new("/tmp/proj"),
-            2, // batch_size
+            4, // batch_size ceiling
             &mp,
         )
         .await
         .expect("a failing batch must NOT return Err; it stops gracefully");
 
+        // Calibration sends batch 1 (1 chunk) then batch 2 (up to 4 chunks,
+        // clamped to what's left); both succeed here, so exactly
+        // 1 + min(4, 5) = 5 chunks land before the third request fails.
         assert_eq!(
-            embedded, 4,
-            "the two successful batches (4 chunks) must be reported as embedded"
+            embedded, 5,
+            "the two successful calibration batches (1 + 4 chunks) must be reported as embedded"
         );
         assert_eq!(
             db.stats().unwrap().embedding_count,
-            4,
-            "the 4 embeddings from the successful batches must be persisted in the DB, \
-             not rolled back when the third batch failed"
+            5,
+            "the 5 embeddings from the successful batches must be persisted in the DB, \
+             not rolled back when the next batch failed"
         );
     }
 
     #[tokio::test]
     async fn all_batches_success_embeds_everything() {
         // Control case: when every batch succeeds, all chunks are embedded and
-        // persisted (guards against the failure path over-triggering).
+        // persisted (guards against the failure path over-triggering), across
+        // calibration batches and into steady state.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -544,7 +733,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let (db, ids) = seed_chunks(5);
+        let (db, ids) = seed_chunks(50);
         let chunk_ids_and_texts: Vec<(i64, String)> =
             ids.iter().map(|id| (*id, format!("text {id}"))).collect();
 
@@ -558,13 +747,84 @@ mod tests {
             &cfg,
             &tier,
             std::path::Path::new("/tmp/proj"),
-            2,
+            8,
             &mp,
         )
         .await
         .expect("all-success run");
 
-        assert_eq!(embedded, 5);
-        assert_eq!(db.stats().unwrap().embedding_count, 5);
+        assert_eq!(embedded, 50);
+        assert_eq!(db.stats().unwrap().embedding_count, 50);
+    }
+
+    #[tokio::test]
+    async fn small_index_below_calibration_size_still_embeds_everything() {
+        // An index with fewer chunks than even the first calibration batch
+        // (or between the two) must not panic on slicing and must still embed
+        // every chunk — regression guard for the `.min(left)` clamps.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(OkEmbedResponder)
+            .mount(&mock)
+            .await;
+
+        for n in [1usize, 2, 3] {
+            let (db, ids) = seed_chunks(n);
+            let chunk_ids_and_texts: Vec<(i64, String)> =
+                ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+
+            let cfg = Config::default();
+            let tier = server_tier(mock.uri());
+            let mp = MultiProgress::new();
+
+            let embedded = run_embed_phase(
+                chunk_ids_and_texts,
+                &db,
+                &cfg,
+                &tier,
+                std::path::Path::new("/tmp/proj"),
+                64,
+                &mp,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("n={n} must succeed: {e:#}"));
+
+            assert_eq!(embedded, n as u64, "n={n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_queue_returns_immediately_without_any_request() {
+        // Nothing to embed (e.g. a re-run where every chunk already has an
+        // embedding) must not enter the batch loop at all — a regression
+        // guard for the `while cursor < remaining` loop that replaced the old
+        // fixed-size `.chunks()` iterator, which handled a zero-length slice
+        // for free.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock)
+            .await;
+
+        let (db, _ids) = seed_chunks(0);
+        let cfg = Config::default();
+        let tier = server_tier(mock.uri());
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase(
+            Vec::new(),
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            64,
+            &mp,
+        )
+        .await
+        .expect("an empty queue must succeed trivially");
+
+        assert_eq!(embedded, 0);
     }
 }

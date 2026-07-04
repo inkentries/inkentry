@@ -48,7 +48,7 @@ spelunk index <path> [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d, --db <path>` | auto | Override database path |
-| `--batch-size <n>` | 32 | Embedding batch size: number of chunks sent per server request |
+| `--batch-size <n>` | 0 (auto) | Cap on the embedding batch size (chunks per server request); the embed phase calibrates the actual size from measured throughput, up to this cap. 0 leaves the cap at the server's own 256-chunk limit |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
@@ -61,6 +61,16 @@ and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
+
+The embed phase calibrates its own batch size instead of guessing: it times a
+1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
+their timeouts) from the observed per-chunk rate — smaller batches on slow
+hardware, larger ones (up to 256 chunks, or your `--batch-size` cap if lower)
+on fast hardware. It keeps re-measuring as the run progresses, so a rate that
+drifts partway through is picked up rather than locked to the first sample.
+Each batch is written to the database as soon as it completes, so an
+interrupted run (timeout, machine sleep, process kill) never loses
+already-embedded chunks — re-run `spelunk index` to pick up where it left off.
 
 `--detach-embed` is useful when embedding a large codebase on slow hardware:
 parsing finishes in the foreground (so the index is immediately usable for

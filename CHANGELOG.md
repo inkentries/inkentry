@@ -65,11 +65,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Fixes
 
 - **`spelunk index` no longer loses computed embeddings when a batch times out on slow hardware.**
-  [spelunk-oss^71] Per-batch timeout now scales to the machine's observed embedding speed,
-  gracefully degrading on slower hardware instead of losing work with a hard deadline. Each batch
-  is persisted to the database before the next request, so an interrupted run (due to timeout,
-  machine sleep, or process termination) can resume by re-running `spelunk index`. Prior batches
-  are retained, and already-embedded chunks are skipped.
+  [spelunk-oss^71] The embed phase now calibrates against real timing before committing to a
+  batch size: it sends a 1-chunk request, then a 4-chunk request, and derives the per-request
+  batch size (and its timeout) from the measured per-chunk rate — a small batch on slow hardware,
+  a large one (up to the 256-chunk server limit) on fast hardware — re-estimating as later
+  batches land so a mid-run rate change is picked up rather than locked to the first sample. Each
+  batch is persisted to the database before the next request, so an interrupted run (due to
+  timeout, machine sleep, or process termination) can resume by re-running `spelunk index`. Prior
+  batches are retained, and already-embedded chunks are skipped.
 
 ## [0.9.2] — 2026-07-03
 

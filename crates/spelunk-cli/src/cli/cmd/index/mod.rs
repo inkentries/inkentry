@@ -12,8 +12,12 @@ pub struct IndexArgs {
     #[arg(short, long)]
     pub db: Option<PathBuf>,
 
-    /// Embedding batch size: number of chunks sent per server request (default: 64)
-    #[arg(long, default_value = "64")]
+    /// Cap on the embedding batch size: number of chunks sent per server
+    /// request. The embed phase calibrates the actual per-request size from
+    /// measured throughput (small batches on slow hardware, larger ones on
+    /// fast hardware); this flag only sets the ceiling it may grow to. 0 (the
+    /// default) leaves the ceiling at the server's own limit (256 chunks).
+    #[arg(long, default_value = "0")]
     pub batch_size: usize,
 
     /// Force full re-index (ignore change detection)
@@ -470,9 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn batch_size_defaults_to_64() {
+    fn batch_size_defaults_to_zero_meaning_calibrated_with_no_user_cap() {
+        // 0 means "no user-supplied cap" — the embed phase calibrates the
+        // batch size from measured throughput up to the server's own 256-chunk
+        // ceiling, rather than being pinned to a fixed default (see
+        // `resolve_batch_ceiling` in embed_phase.rs).
         let cli = TestCli::try_parse_from(["spelunk", "some/path"]).expect("parse");
-        assert_eq!(cli.index.batch_size, 64);
+        assert_eq!(cli.index.batch_size, 0);
     }
 
     // ── embed_skipped_lines: 0-chunks / offline notice (#5) ─────────────────────
