@@ -146,9 +146,9 @@ memory stranded on the stale 768-dim layout.
 
 ### Backend abstraction
 
-The `EmbeddingBackend` and `LlmBackend` traits (in spelunk-core's `embeddings/` and `llm/`) are the only interface between spelunk and inference. spelunk-core ships **no** concrete implementations; the concrete backends live in `spelunk-server` (the native F2LLM embedder in `embedder_native.rs`, plus OpenAI-compatible HTTP clients). The CLI reaches inference only through `ServerLlmClient` / `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`.
+The `EmbeddingBackend` and `LlmBackend` traits (in spelunk-core's `embeddings/` and `llm/`) are the only interface between spelunk and inference. spelunk-core ships **no** concrete implementations. The native F2LLM embedder lives in its own `spelunk-embed` library crate (`crates/spelunk-embed/src/embedder_native.rs`, `NativeEmbedder`); `spelunk-server` depends on that crate and additionally provides the OpenAI-compatible HTTP clients. The CLI reaches inference only through `ServerLlmClient` / `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`.
 
-To add a new backend: implement the trait in spelunk-server and wire it into the server's endpoint handlers. Nothing in spelunk-core imports a concrete backend.
+To add a new backend: implement the trait (in `spelunk-embed` for an embedder, or in spelunk-server for an LLM/HTTP backend) and wire it into the server's endpoint handlers. Nothing in spelunk-core imports a concrete backend.
 
 ### Secret scanning
 
