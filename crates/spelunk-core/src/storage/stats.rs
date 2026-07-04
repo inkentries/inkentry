@@ -10,7 +10,6 @@ pub struct IndexStats {
     pub chunk_count: i64,
     pub embedding_count: i64,
     pub last_indexed: Option<i64>,
-    pub snapshot_count: i64,
 }
 
 /// Result of a lightweight random-sample staleness probe.
@@ -64,16 +63,11 @@ impl Database {
             .query_row("SELECT MAX(indexed_at) FROM files", [], |r| r.get(0))
             .ok()
             .flatten();
-        let snapshot_count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM snapshots", [], |r| r.get(0))
-            .unwrap_or(0);
         Ok(IndexStats {
             file_count,
             chunk_count,
             embedding_count,
             last_indexed,
-            snapshot_count,
         })
     }
 

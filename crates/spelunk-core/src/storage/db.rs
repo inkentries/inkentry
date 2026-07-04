@@ -34,11 +34,10 @@ impl Database {
         db.apply_graph_rank_migration()?;
         db.apply_summary_migration()?;
         db.apply_usage_migration()?;
-        db.apply_snapshot_migration()?;
-        db.apply_snapshot_vector_migration()?;
         db.apply_compound_graph_idx_migration()?;
         db.apply_conventions_migration()?;
         db.apply_dim_upgrade_migration()?;
+        db.apply_drop_snapshots_migration()?;
         Ok(db)
     }
 
@@ -121,30 +120,13 @@ impl Database {
         Ok(())
     }
 
-    /// Create the snapshots, snapshot_files, and snapshot_chunks tables. Idempotent.
-    pub fn apply_snapshot_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/016_snapshots.sql"))
-            .context("running snapshot migration")?;
-        Ok(())
-    }
-
-    /// Create the snapshot_embeddings vec0 virtual table. Idempotent.
-    /// Must be called after sqlite-vec extension is loaded.
-    pub fn apply_snapshot_vector_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/017_snapshot_vectors.sql"))
-            .context("running snapshot vector migration")?;
-        Ok(())
-    }
-
     /// Upgrade the sqlite-vec embedding tables from 768-dim (Nomic) to 896-dim (F2LLM-v2-330M).
     ///
     /// Idempotent — guarded by the `schema_v896_embeddings` marker table. On
-    /// fresh databases the tables are already created at 896-dim by
-    /// `apply_vector_migration` / `apply_snapshot_vector_migration`, so this
-    /// is a fast no-op. On existing 768-dim databases the tables are dropped
-    /// and recreated; a full `spelunk index` re-run is required afterwards.
+    /// fresh databases the table is already created at 896-dim by
+    /// `apply_vector_migration`, so this is a fast no-op. On existing 768-dim
+    /// databases the table is dropped and recreated; a full `spelunk index`
+    /// re-run is required afterwards.
     pub fn apply_dim_upgrade_migration(&self) -> Result<()> {
         let already: bool = self
             .conn
@@ -192,17 +174,6 @@ impl Database {
                  re-run `spelunk index` to rebuild"
             );
         }
-        if upgrade_needed("snapshot_embeddings")? {
-            self.conn
-                .execute_batch(
-                    "DROP TABLE IF EXISTS snapshot_embeddings; \
-                     CREATE VIRTUAL TABLE snapshot_embeddings USING vec0(\
-                         chunk_id INTEGER PRIMARY KEY, embedding INT8[896]\
-                     );",
-                )
-                .context("upgrading snapshot_embeddings table to int8[896]")?;
-        }
-
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS schema_int8_embeddings \
@@ -219,6 +190,21 @@ impl Database {
                 "../../migrations/018_graph_edges_compound_idx.sql"
             ))
             .context("running compound graph index migration")?;
+        Ok(())
+    }
+
+    /// Drop the snapshot storage tables (spelunk-oss^67).
+    ///
+    /// `snapshots`/`snapshot_files`/`snapshot_chunks` were created by
+    /// `016_snapshots.sql` and `snapshot_embeddings` by
+    /// `017_snapshot_vectors.sql`, but nothing ever populated them (`spelunk
+    /// search --as-of` always errored with "no snapshot found"). Removed for
+    /// v1.0 rather than gated behind a flag. `IF EXISTS` makes this a no-op on
+    /// fresh databases, which never create these tables in the first place.
+    pub fn apply_drop_snapshots_migration(&self) -> Result<()> {
+        self.conn
+            .execute_batch(include_str!("../../migrations/021_drop_snapshots.sql"))
+            .context("running drop-snapshots migration")?;
         Ok(())
     }
 

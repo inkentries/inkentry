@@ -354,7 +354,7 @@ This section is elevated because the original model assumed local-only backends.
 From this threat model, the following requirements are binding:
 
 1. **No SQL string formatting.** All DB operations use rusqlite parameterised queries.
-2. **Secret scanner must run before every DB write of chunk content.** Enforced in `parse_phase.rs` and `snapshot.rs`.
+2. **Secret scanner must run before every DB write of chunk content.** Enforced in `parse_phase.rs`.
 3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**

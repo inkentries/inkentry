@@ -94,7 +94,6 @@ spelunk search <query> [options]
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Search only the primary index, skip linked projects |
-| `--as-of <sha>` | — | Search a snapshot at a commit SHA instead of the live index |
 
 `semantic`/`hybrid` uses LinearRAG: a two-stage entity-activation + personalised
 PageRank pipeline that improves multi-hop recall over raw KNN. `text` and

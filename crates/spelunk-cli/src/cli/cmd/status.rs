@@ -46,8 +46,8 @@ use crate::{
 ///   `"sqlite"`, `"git-notes"`, or `"remote"` (see issue #308)
 ///
 /// Additional fields (`tier`, `server_url`, `capabilities`, `embedder_state`,
-/// `snapshot_count`, `drift_candidates`, `usage_7d`) are present for backward
-/// compatibility and richer tooling; treat them as unstable extensions.
+/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
+/// richer tooling; treat them as unstable extensions.
 /// `embedder_state` mirrors the server's `/v1/health` readiness
 /// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
 /// offline or when the reachable server pre-dates the readiness field.
@@ -153,7 +153,6 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "capabilities": caps_json,
                 "embedder_state": embedder_state_json,
                 "embedding_count": stats.embedding_count,
-                "snapshot_count": stats.snapshot_count,
                 "drift_candidates": drift,
                 "usage_7d": {
                     "search": usage_map.get("search").copied().unwrap_or(0),
@@ -267,9 +266,6 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     println!("Files:      {}", s.file_count);
     println!("Chunks:     {}", s.chunk_count);
     println!("Embeddings: {}", s.embedding_count);
-    if s.snapshot_count > 0 {
-        println!("Snapshots:  {}", s.snapshot_count);
-    }
     if let Some(ts) = s.last_indexed {
         println!("Last index: {}", format_age(ts));
     }

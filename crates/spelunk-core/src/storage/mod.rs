@@ -11,7 +11,6 @@ mod conventions;
 mod files;
 mod graph;
 mod search;
-mod snapshots;
 mod specs;
 mod sql;
 mod stats;
@@ -28,7 +27,6 @@ pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry,
     RemoteMemoryBackend, resolve_cloud_project_uuid,
 };
-pub use snapshots::{Snapshot, SymbolVersion};
 pub use specs::{SpecRecord, StaleSpec};
 pub use stats::{DriftCandidate, IndexStats, LanguageStat, StalenessReport, record_usage_at};
 
