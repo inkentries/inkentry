@@ -9,6 +9,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`spelunk search --as-of <sha>` (snapshot-based temporal search).** The snapshot
+  storage layer was never wired to the indexer — `list_snapshots()` was always empty
+  and the flag errored on every use. Temporal/as-of semantic search is deferred to a
+  future design. The dead snapshot tables (`snapshots`, `snapshot_files`,
+  `snapshot_chunks`, `snapshot_embeddings`) are dropped via migration 021 on any
+  database opened with this version; existing `spelunk search` (without `--as-of`)
+  continues to work unchanged. Note: `spelunk memory list/search --as-of <date>` for
+  point-in-time memory archaeology remains available and unaffected. (#515,
+  spelunk-oss^67)
+
 ### Security
 
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
