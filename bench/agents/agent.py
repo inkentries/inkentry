@@ -605,6 +605,13 @@ def main() -> None:
         "harness": "none",
         "harness_version": None,
         "endpoint_kind": "native",
+        # harness=none has no effort/thinking concept of its own (that's a
+        # claude-code-harness-only knob) -- always null here so every
+        # harness's result JSON is a strict key-superset of the documented
+        # provenance contract (bench/agents/README.md "Reproducibility /
+        # provenance contract"), never a per-harness subset.
+        "effort": None,
+        "thinking": None,
         "model": args.model,
         "model_source": "api",
         "api_base_url": args.api_base_url,

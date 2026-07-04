@@ -431,7 +431,7 @@ Tests are fully offline — no API keys, network, or external harness binaries
 - `test_harness_common.py`: `extract_patch` (normal/regression/no-changes cases; `git add` silent-null bug fix validation)
 - `test_harness_opencode.py`: `write_provider_config`, `get_opencode_command`
 - `test_swebench_run_args.py`: argument validation (`--harness` enum, `--endpoint-kind`, `--no-deepseek`)
-- `test_provenance_contract.py`: harness-matrix provenance fields (additive-only contract verification)
+- `test_provenance_contract.py`: harness-matrix provenance fields (additive-only contract verification), exercised against all three harnesses — `agent.py` (harness=none, via a stubbed `openai`/`dotenv` import — no real dependency required), `harness_opencode.py`, and `harness_claude_code.py` (both via a fake binary shimmed onto `PATH`)
 
 ## Notes
 
