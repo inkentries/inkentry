@@ -198,6 +198,7 @@ fn drop_snapshots_migration_removes_tables_with_preexisting_rows() {
 #[test]
 #[serial]
 fn fresh_database_has_no_snapshot_tables() {
+    common::register_sqlite_vec();
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("fresh.db");
 
