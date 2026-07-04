@@ -418,6 +418,21 @@ front-loads exploration the same way, and whether the final patch differs in
 substance (not just formatting). Record findings here once run — this
 section is a placeholder for that write-up, not a result.
 
+## Testing
+
+The harness matrix is covered by a pytest suite in `bench/agents/tests/`:
+
+```bash
+uv run --with pytest pytest bench/agents/tests/ -v
+```
+
+Tests are fully offline — no API keys, network, or external harness binaries
+(opencode/claude) required. Coverage includes:
+- `test_harness_common.py`: `extract_patch` (normal/regression/no-changes cases; `git add` silent-null bug fix validation)
+- `test_harness_opencode.py`: `write_provider_config`, `get_opencode_command`
+- `test_swebench_run_args.py`: argument validation (`--harness` enum, `--endpoint-kind`, `--no-deepseek`)
+- `test_provenance_contract.py`: harness-matrix provenance fields (additive-only contract verification)
+
 ## Notes
 
 - `resolved` is always `false` in agent output from every runner — resolution

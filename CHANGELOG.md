@@ -101,6 +101,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   that embeds raw commit messages with the native F2LLM embedder and ranks by
   cosine similarity, isolating the lift of `memory_search` from harvesting and LLM
   extraction. 20 offline unit tests in `bench/memory/tests/test_vanilla_rag.py`.
+- **Benchmark test suite** (`bench/agents/tests/`) — comprehensive offline pytest coverage for the SWE-bench harness matrix, including patch extraction, opencode provider config, swebench_run.sh argument validation, and provenance contract verification. Run with `uv run --with pytest pytest bench/agents/tests/ -v`. No API keys, network, or external harness binaries required.
 
 ### Features
 
