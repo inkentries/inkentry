@@ -74,17 +74,13 @@ Status: ☑ implemented in `main.rs::should_warn_single_trust_domain` /
 
 **Transport guardrail (applicable, ☑ implemented):** the shared key is a bearer
 credential that must not travel in cleartext (ADR-056). `main.rs::check_bind_safety`
-therefore refuses **by default** to bind a non-loopback address over plaintext HTTP,
-covering both the keyless case (an open, unauthenticated server) and the keyed case
-(the bearer key would cross the network in the clear). The refusal names the
-interface/port and points at the loopback-only / TLS-front guidance. The sanctioned
-posture for a shared server is to bind loopback and terminate TLS in a front proxy.
-An explicit opt-out, `--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE=1`,
-downgrades the keyed-plaintext refusal to a loud one-time startup `tracing::warn!`
-for a private, trusted network (or the Docker remote-agent workflow, oss^70); it
-never lifts the refusal on a keyless bind. Covered by unit tests
-`non_loopback_with_key_plaintext_is_refused_by_default` and
-`non_loopback_with_key_allowed_via_insecure_opt_out` (oss^79).
+therefore refuses **unconditionally** to bind a non-loopback address over plaintext
+HTTP, covering both the keyless case (an open, unauthenticated server) and the keyed
+case (the bearer key would cross the network in the clear). The refusal names the
+interface/port and points at the loopback-only / TLS-front guidance. There is no
+override; the only supported posture for a shared server is to bind loopback and
+terminate TLS in a front proxy. Covered by unit test
+`non_loopback_with_key_plaintext_is_refused_unconditionally` (oss^79).
 
 ## 4. Input validation
 
@@ -134,7 +130,7 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
 
 | Check | Status |
 |---|---|
-| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **by default** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface and pointing at the loopback/TLS-front guidance. The keyed-plaintext refusal has a named opt-out (`--allow-insecure-remote` / `SPELUNK_ALLOW_INSECURE_REMOTE=1`) that logs a loud one-time warning for a trusted network; the keyless refusal has no opt-out (oss^79). |
+| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface and pointing at the loopback/TLS-front guidance. Neither refusal has an opt-out (oss^79). |
 | `DATABASE_URL` never logged | N/A (cloud-only). No `DATABASE_URL`; the DB is a local SQLite file path. The applicable rule, that the bearer key is never logged, holds: ☑ `auth.rs` never logs the key or its hash. |
 | No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `SPELUNK_SERVER_KEY` is supplied by the operator at runtime |
 | `.env*` excluded from any server-side file operations | N/A. The server does not walk the filesystem or index files; only the CLI indexer reads project trees (where `.env*` exclusion applies, and is documented in the CLI program). |

@@ -97,18 +97,14 @@ and this ADR says so out loud.
   - The deployment documentation and the fleet-management example state the
     single-trust-domain model plainly, and `GET /v1/projects` is documented as
     enumerating all projects by design.
-  - The server serves plaintext HTTP only on a loopback bind. By default it
-    refuses to start on a non-loopback plaintext bind, whether that bind is
-    keyless (an open, unauthenticated server) or keyed (the bearer key would
-    cross the network in cleartext); the refusal names the interface and points
-    at the loopback-only / TLS-front guidance. A shared deployment binds loopback
-    and terminates TLS in a front proxy, so the shared key never crosses the
-    network in cleartext. An explicit opt-out, `--allow-insecure-remote` /
-    `SPELUNK_ALLOW_INSECURE_REMOTE=1`, downgrades the keyed-plaintext refusal to
-    a loud one-time startup warning and proceeds; it is intended only for a
-    private, trusted network (or the Docker remote-agent workflow) and never
-    lifts the refusal on a keyless bind. `/v1/health` is an unauthenticated
-    endpoint (no bearer required or sent).
+  - The server serves plaintext HTTP only on a loopback bind. It refuses,
+    unconditionally, to start on a non-loopback plaintext bind, whether that
+    bind is keyless (an open, unauthenticated server) or keyed (the bearer key
+    would cross the network in cleartext); the refusal names the interface and
+    points at the loopback-only / TLS-front guidance. There is no override. A
+    shared deployment binds loopback and terminates TLS in a front proxy, so
+    the shared key never crosses the network in cleartext. `/v1/health` is an
+    unauthenticated endpoint (no bearer required or sent).
 - **Revisit if:** a genuine need appears to host mutually distrusting groups on
   one instance. That would be a new ADR introducing scoped keys and an ACL, and
   it would supersede this one.
@@ -122,11 +118,10 @@ the primary mitigation. The consequences for the threat model:
   project on the instance. It must be treated as a high-value secret:
   transmitted only over a secure transport, stored with restrictive
   permissions, and rotated on exposure. Because the key rides on the transport,
-  the server restricts plaintext HTTP to loopback and, by default, requires TLS
-  (a front proxy) for any non-loopback deployment (see Consequences). The
-  `--allow-insecure-remote` opt-out is the one sanctioned way to bind
-  non-loopback plaintext with a key, and it is explicitly an accepted-risk
-  posture for a trusted network, not a recommended one. Key-comparison hardening
+  the server restricts plaintext HTTP to loopback and unconditionally requires
+  TLS (a front proxy) for any non-loopback deployment (see Consequences), with
+  no override: an operator who needs the server reachable off-host binds
+  loopback and puts a reverse proxy in front of it. Key-comparison hardening
   (constant-time comparison) is tracked separately as part of the pre-v1.0
   server security review.
 - The cross-project access that the review identified is reclassified from a
