@@ -23,7 +23,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-TASKS_FILE="${SCRIPT_DIR}/../agents/tasks_50.json"
+TASKS_FILE="${SCRIPT_DIR}/agents/tasks_50.json"
 TASKS=0          # 0 = all
 
 # Default to the shared spelunk-bench checkout if it exists
