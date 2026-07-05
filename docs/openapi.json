@@ -1522,7 +1522,8 @@
           "capabilities",
           "instance_id",
           "embedding_dim",
-          "embedder"
+          "embedder",
+          "limits"
         ],
         "properties": {
           "capabilities": {
@@ -1544,6 +1545,10 @@
           "instance_id": {
             "type": "string",
             "description": "Persistent UUID v7 identifying this server instance across restarts."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ServerLimits",
+            "description": "Server-enforced operative limits for `/index/embed` batch sizing. See\n[`ServerLimits`]. Absent on servers that pre-date this field — treat\nthat as the legacy 30s/no-exemption profile, not \"no limit\"."
           },
           "started_by": {
             "type": [
@@ -1692,6 +1697,35 @@
           "query": {
             "type": "string",
             "description": "Text query — the server encodes this using its configured embedder."
+          }
+        }
+      },
+      "ServerLimits": {
+        "type": "object",
+        "description": "Server-enforced operative limits relevant to sizing an `/index/embed`\nrequest, so a client can clamp its own batching to what this particular\nserver build actually supports instead of assuming (spelunk-oss^71/^73/^74\nPR #513 field-failure follow-up).\n\nAdded alongside the `/index/embed`-specific request timeout (see\n`EMBED_REQUEST_TIMEOUT` in `lib.rs`): a CLI that calibrates a batch to run\nfor `request_timeout_secs` and gets 408'd is a **version-skew** signal — an\nold server (pre-dating this field, so the whole `limits` object is absent)\nstill enforces the old blanket 30s budget. Absent `limits` therefore means\n\"assume the legacy 30s / no-embed-exemption profile\", not \"unlimited\".",
+        "required": [
+          "embed_request_timeout_secs",
+          "max_batch_chunks"
+        ],
+        "properties": {
+          "embed_request_timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock budget (seconds) this server allows a single `/index/embed`\nrequest before returning `408`. A client should keep its per-request\nbatch's *expected* duration comfortably under this, not just under its\nown client-side timeout — the server will cut it off regardless of\nwhat the client is willing to wait for.",
+            "minimum": 0
+          },
+          "embedder_token_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Per-chunk token truncation cap the embedder enforces, if known (native\nbackend only — see `EmbeddingBackend::token_cap`). `null` when the\nembedder isn't ready yet or doesn't expose one (e.g. an external\n`--embedding-url` backend). Informational: a client can use it to avoid\nassuming every chunk is small when estimating a batch's total token\nvolume, but the binding constraint in practice is wall-clock time, not\nper-batch memory — sub-batches are already bounded independently of\ntotal batch size (see `EMBED_BATCH_SIZE` / `BATCH_MAX_SEQ` in\n`embedder_native.rs`).",
+            "minimum": 0
+          },
+          "max_batch_chunks": {
+            "type": "integer",
+            "description": "Max chunks accepted in a single `/index/embed` request (`413` above\nthis). Mirrors `MAX_EMBED_BATCH`.",
+            "minimum": 0
           }
         }
       },

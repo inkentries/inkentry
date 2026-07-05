@@ -354,6 +354,14 @@ per-row framing. The client maps response row `i` to request chunk `i` by
 position. The server does not store the vectors — the CLI is the only persistent
 store for index data. See `docs/openapi.json` for the full schema.
 
+`/index/embed` has its own, much longer request timeout (1800s) than the rest
+of the API (30s) — a legitimate batch can genuinely take minutes on slow or
+CPU-only hardware. `GET /v1/health`'s `limits` object advertises the current
+server's `embed_request_timeout_secs`, `max_batch_chunks`, and (when the native
+embedder is loaded) `embedder_token_cap`, so a client can size its own batching
+to the server it's actually talking to; a server predating this field should be
+assumed to still enforce the old blanket 30s budget with no exemption.
+
 ### Conflict detection
 
 When `POST /v1/projects/{project_id}/memory`, the server checks if a semantically similar entry already exists (cosine similarity >= 0.92). If a conflict is detected, the response is **HTTP 409** with a JSON body:

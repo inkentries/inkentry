@@ -78,6 +78,54 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     warning instead. This is local-indexing hardening, distinct from and complementary to the
     server-side request-body caps shipped in 0.9.2 above.
 
+### Features
+
+- **`spelunk index --detach-embed`: background embedding on slow hardware.** [spelunk-oss^74]
+  When embedding a large codebase on slow hardware, parsing can now run in the foreground (so
+  text/ast-grep search is immediately available) while the long embedding phase runs in the
+  background. Useful for CI/CD and multi-corebot indexing workflows where waiting for full
+  embeddings blocks other tasks unnecessarily. Run `spelunk status` to check progress (shows
+  "Embedding in progress: N/M embedded" when a background or interrupted embed is underway). If
+  the background pass is interrupted (machine sleep, process killed, network downtime), simply
+  re-run `spelunk index` to resume from where it left off.
+- **Embedding progress bar displayed immediately during indexing.** [spelunk-oss^73]
+  The ETA-aware embedding progress bar now appears as soon as the embed phase begins, instead of
+  waiting for the first batch to complete.
+
+### Fixes
+
+- **`spelunk index` no longer loses computed embeddings when a batch times out on slow hardware.**
+  [spelunk-oss^71] The embed phase now calibrates against real timing before committing to a
+  batch size: it sends a 1-chunk request, then a 4-chunk request, and derives the per-request
+  batch size (and its timeout) from the measured per-chunk rate — a small batch on slow hardware,
+  a large one (up to the 256-chunk server limit) on fast hardware — re-estimating as later
+  batches land so a mid-run rate change is picked up rather than locked to the first sample. Each
+  batch is persisted to the database before the next request, so an interrupted run (due to
+  timeout, machine sleep, or process termination) can resume by re-running `spelunk index`. Prior
+  batches are retained, and already-embedded chunks are skipped.
+- **`spelunk index` embedding could fail immediately with a server `408 Request Timeout`, even
+  on the very first (single-chunk) request.** [spelunk-oss^71/^73/^74 field-failure follow-up]
+  The calibration design above targets a ~240s round trip per batch (scaling down on slower
+  hardware), but `spelunk-server`'s general request-handling middleware enforced a blanket 30s
+  budget on every route — including `/index/embed` — so any batch sized for the calibration
+  target, or even a single oversized/slow-to-embed chunk on CPU-only hardware, could be killed by
+  the server before the CLI's own (much longer) client-side timeout ever applied. `/index/embed`
+  now has its own, much larger request budget (1800s, matching the CLI's own timeout ceiling),
+  while every other route keeps the original 30s budget — the same "long-lived, exempted from
+  the general timeout" pattern already used for `/memory/stream`'s SSE connections. `/v1/health`
+  now also advertises the server's operative `/index/embed` limits (request budget, max batch
+  size, embedder token cap), and the CLI reads them to size its calibration to the server it's
+  actually talking to — including a conservative fallback (small batches, with a one-line notice)
+  when talking to an older server that predates this fix and still enforces the old 30s budget.
+  Two related calibration bugs surfaced by this fix are also corrected: the very first
+  (single-chunk) calibration sample no longer gets equal weight against the second sample when
+  estimating throughput (it's dominated by one-off connection/cold-start overhead and was
+  skewing the estimate the batch-size decision relies on), and the batch size can no longer grow
+  by an arbitrarily large multiple in a single step (capped to 8x the previous batch). A
+  calibration request that still times out is now retried once with escalated patience before
+  giving up, and a steady-state batch that hits the server's budget shrinks and retries instead
+  of aborting the whole run at whatever had been embedded so far.
+
 ## [0.9.2] — 2026-07-03
 
 ### Security

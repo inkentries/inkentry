@@ -30,6 +30,8 @@ use rate_limiter::RateLimiter;
 /// Wall-clock budget for a single request before the server aborts it and
 /// returns `408 Request Timeout`. `/memory/stream` is exempt (long-lived SSE
 /// connection by design; see [`GLOBAL_CONCURRENCY_LIMIT`] for its own bound).
+/// `/index/embed` is also exempt — see [`EMBED_REQUEST_TIMEOUT`] — because a
+/// legitimate embed batch can genuinely run for minutes on slow hardware.
 ///
 /// **Does not bound `/explore` or `/llm/complete`.** Both return their SSE
 /// `Response` as soon as the stream is constructed and hand the actual
@@ -41,6 +43,31 @@ use rate_limiter::RateLimiter;
 /// `handlers::llm_generate_with_timeout`). Those two handlers bound the
 /// spawned generation directly with this same constant instead.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Wall-clock budget for a single `/index/embed` request before the server
+/// aborts it and returns `408 Request Timeout`. Deliberately much larger than
+/// [`REQUEST_TIMEOUT`] and sized to match the CLI's own `MAX_REQUEST_TIMEOUT`
+/// (`crates/spelunk-cli/src/cli/cmd/index/embed_phase.rs`): the CLI calibrates
+/// batch size to target a ~240s round trip on the *measured* hardware, and
+/// clamps its own per-request timeout up to 1800s to absorb slow-hardware
+/// outliers. A 30s server-side budget made that calibration impossible to
+/// satisfy — any batch sized for a 240s target, or even a single oversized
+/// chunk on slow/CPU-only hardware, was killed by the router before the CLI's
+/// own (much longer) client-side timeout ever had a chance to apply. This is
+/// the fix for the field failure captured in the CHANGELOG entry for this
+/// change (408 on `index/embed` batch 1).
+///
+/// This does **not** reopen the DoS gap `REQUEST_TIMEOUT` closes:
+/// `/index/embed` is still auth-gated (same `auth_middleware` as every other
+/// protected route) and still behind `ConcurrencyLimitLayer` and
+/// `RequestBodyLimitLayer`, so a hostile or misbehaving caller can hold open
+/// at most `GLOBAL_CONCURRENCY_LIMIT` embed requests, each bounded in size by
+/// `MAX_BATCH` (256 chunks) and `DEFAULT_BODY_LIMIT_BYTES` — not an unbounded
+/// number of unauthenticated, unbounded-duration connections. A slow legitimate
+/// batch and a held-open attack connection are indistinguishable to a generic
+/// wall-clock timeout; bounding the *count* and *size* of concurrent embed
+/// requests is what actually defends this endpoint, same as it always was.
+pub(crate) const EMBED_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Cap on the JSON request body size accepted by the general API surface.
 /// Generous enough for the largest legitimate payload (an `index/embed` batch
@@ -248,6 +275,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::StreamQuery,
         handlers::HealthResponse,
         handlers::EmbedderStatus,
+        handlers::ServerLimits,
         EmbedderState,
         handlers::EmbedRequest,
         handlers::EmbedChunkIn,
@@ -307,31 +335,55 @@ impl utoipa::Modify for SecurityAddon {
 ///
 /// Protective middleware (see V1-SERVER-AUDIT §4 / spelunk-oss^60):
 /// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route,
-///   including `/memory/stream`.
-/// - `TimeoutLayer` (30s) applies to everything **except** `/memory/stream`,
-///   which is a long-lived SSE connection by design.
-/// - Per-handler input caps (title/body/vector length, etc.) are enforced in
-///   `handlers.rs`, not here.
+///   including `/memory/stream` and `/index/embed`.
+/// - `TimeoutLayer` (30s) applies to everything **except** `/memory/stream`
+///   (long-lived SSE connection by design) and `/index/embed` (its own, much
+///   larger [`EMBED_REQUEST_TIMEOUT`] budget — see that constant's doc comment
+///   for why: a 30s budget cannot fit a legitimate embed batch on slow
+///   hardware, which is the root cause of the 408 this timeout split fixes).
+/// - Per-handler input caps (title/body/vector length, batch chunk count,
+///   etc.) are enforced in `handlers.rs`, not here.
 pub fn router(state: AppState) -> Router {
-    router_with_timeout(state, REQUEST_TIMEOUT)
+    router_with_timeouts(state, REQUEST_TIMEOUT, EMBED_REQUEST_TIMEOUT)
 }
 
-/// Same as [`router`], but with an injectable request timeout. Exists so
-/// tests can prove the `/memory/stream` timeout exemption against a short
-/// (millisecond-scale) budget instead of waiting out the real 30s
-/// [`REQUEST_TIMEOUT`] — see `handlers::tests::*timeout*`.
+/// Same as [`router`], but with an injectable request timeout applied to both
+/// the general route group and `/index/embed`. Exists so tests can prove the
+/// `/memory/stream` timeout exemption against a short (millisecond-scale)
+/// budget instead of waiting out the real 30s [`REQUEST_TIMEOUT`] — see
+/// `handlers::tests::*timeout*`.
 pub fn router_with_timeout(state: AppState, request_timeout: Duration) -> Router {
-    router_with_limits(state, request_timeout, GLOBAL_CONCURRENCY_LIMIT)
+    router_with_timeouts(state, request_timeout, request_timeout)
 }
 
-/// Same as [`router`], but with both the request timeout and the global
-/// concurrency cap injectable. Exists so tests can prove
+/// Same as [`router`], but with the general-route timeout, the `/index/embed`
+/// timeout, and the global concurrency cap all injectable. Exists so tests can
+/// prove `/index/embed` survives past the general [`REQUEST_TIMEOUT`] budget
+/// (mirroring the `/memory/stream` SSE-exemption tests) without waiting out
+/// the real 1800s [`EMBED_REQUEST_TIMEOUT`] — see
+/// `handlers::tests::embed_survives_general_timeout_budget`.
+pub fn router_with_timeouts(
+    state: AppState,
+    request_timeout: Duration,
+    embed_request_timeout: Duration,
+) -> Router {
+    router_with_limits(
+        state,
+        request_timeout,
+        embed_request_timeout,
+        GLOBAL_CONCURRENCY_LIMIT,
+    )
+}
+
+/// Same as [`router`], but with the request timeout, `/index/embed` timeout,
+/// and the global concurrency cap all injectable. Exists so tests can prove
 /// `ConcurrencyLimitLayer` actually backpressures concurrent requests using a
 /// small limit (e.g. 2) instead of needing 257 real concurrent connections to
 /// exercise the production [`GLOBAL_CONCURRENCY_LIMIT`].
 pub fn router_with_limits(
     state: AppState,
     request_timeout: Duration,
+    embed_request_timeout: Duration,
     concurrency_limit: usize,
 ) -> Router {
     let stream_route = Router::new()
@@ -342,6 +394,27 @@ pub fn router_with_limits(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit));
+
+    // `/index/embed` gets its own long-budget timeout instead of the general
+    // `REQUEST_TIMEOUT` (30s) — see [`EMBED_REQUEST_TIMEOUT`]. Auth,
+    // concurrency, and body-size limits are identical to `protected` below;
+    // only the wall-clock budget differs, same pattern as the `stream_route`
+    // carve-out above.
+    let embed_route = Router::new()
+        .route(
+            "/v1/projects/{project_id}/index/embed",
+            post(handlers::index_embed),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            embed_request_timeout,
         ))
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
         .layer(ConcurrencyLimitLayer::new(concurrency_limit));
@@ -386,10 +459,6 @@ pub fn router_with_limits(
             get(handlers::project_stats),
         )
         .route(
-            "/v1/projects/{project_id}/index/embed",
-            post(handlers::index_embed),
-        )
-        .route(
             "/v1/projects/{project_id}/search",
             post(handlers::project_search),
         )
@@ -413,6 +482,7 @@ pub fn router_with_limits(
         .route("/v1/health", get(handlers::health))
         .route("/api-docs/openapi.json", get(openapi_spec))
         .merge(stream_route)
+        .merge(embed_route)
         .merge(protected)
         .with_state(state)
 }

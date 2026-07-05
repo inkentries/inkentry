@@ -48,18 +48,37 @@ spelunk index <path> [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d, --db <path>` | auto | Override database path |
-| `--batch-size <n>` | 32 | Embedding batch size: number of chunks sent per server request |
+| `--batch-size <n>` | 0 (auto) | Cap on the embedding batch size (chunks per server request); the embed phase calibrates the actual size from measured throughput, up to this cap. 0 leaves the cap at the server's own 256-chunk limit |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
+| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a background process and return the prompt |
 
 A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
+
+The embed phase calibrates its own batch size instead of guessing: it times a
+1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
+their timeouts) from the observed per-chunk rate — smaller batches on slow
+hardware, larger ones (up to 256 chunks, or your `--batch-size` cap if lower)
+on fast hardware. It keeps re-measuring as the run progresses, so a rate that
+drifts partway through is picked up rather than locked to the first sample.
+Each batch is written to the database as soon as it completes, so an
+interrupted run (timeout, machine sleep, process kill) never loses
+already-embedded chunks — re-run `spelunk index` to pick up where it left off.
+
+`--detach-embed` is useful when embedding a large codebase on slow hardware:
+parsing finishes in the foreground (so the index is immediately usable for
+text and ast-grep search) and the long embedding pass continues in the
+background. Run `spelunk status` afterwards to check progress; it shows an
+"Embedding in progress" line with the embedded/total count until every chunk
+is embedded. If the background pass is interrupted, re-running `spelunk index`
+resumes it (already-embedded chunks are skipped).
 
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
@@ -158,6 +177,11 @@ spelunk status [options]
 | `-a, --all` | false | Show all registered projects |
 | `-l, --list` | false | One-line-per-project format (implies `--all`) |
 | `--format text\|json` | text | Output format |
+
+When chunks outnumber embeddings, `spelunk status` prints an "Embedding in
+progress" line showing the embedded/total count. This covers both an active
+background embed (e.g. `spelunk index --detach-embed` still running) and an
+interrupted run that can be resumed with `spelunk index`.
 
 **Example:**
 

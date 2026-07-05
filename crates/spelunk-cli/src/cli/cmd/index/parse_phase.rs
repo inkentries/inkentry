@@ -168,12 +168,28 @@ pub(super) fn run_parse_phase(
     })
 }
 
+/// Build the `(chunk_id, embedding_text)` list for every chunk in the index
+/// that has no embedding row yet, reconstructing each chunk's document text
+/// from its stored columns. This is the same union `run_parse_phase` applies as
+/// a backfill (spelunk-oss^72); exposed separately so a detached embed-only
+/// subprocess can rebuild the embed queue straight from the DB without
+/// re-parsing (spelunk-oss^74).
+pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String)>> {
+    let mut out = Vec::new();
+    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+        let text =
+            reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
+        out.push((chunk_id, text));
+    }
+    Ok(out)
+}
+
 /// Rebuild the exact document text that `Chunk::embedding_text()` produces,
 /// from the columns stored for a chunk. The `docstring` lives inside the
 /// `metadata` JSON (`{ "docstring": ..., "parent_scope": ... }`), mirroring how
 /// `store_chunks` persists it. Keep this in lockstep with
 /// `spelunk_core::indexer::Chunk::embedding_text`.
-fn reconstruct_embedding_text(
+pub(super) fn reconstruct_embedding_text(
     name: Option<&str>,
     metadata: Option<&str>,
     summary: Option<String>,
@@ -529,7 +545,9 @@ mod tests {
             no_summaries: false,
             summary_batch_size: 10,
             background_phases: false,
+            embed_phases: false,
             detach: false,
+            detach_embed: false,
         }
     }
 
@@ -747,6 +765,120 @@ mod tests {
         assert_eq!(
             texts_run2, texts_run1,
             "backfilled embedding text must match the parse-time embedding text byte-for-byte"
+        );
+    }
+
+    // ── missing_embedding_texts: detached embed-only queue reconstruction ──────
+    // (spelunk-oss^74)
+
+    /// The detached `--_embed-phases` subprocess rebuilds its embed queue purely
+    /// from the DB via `missing_embedding_texts()` — it never re-parses. This test
+    /// seeds chunks, embeds a subset directly, and proves the function returns
+    /// exactly the un-embedded chunks (skipping embedded ones), in id order, with
+    /// each text reconstructed byte-for-byte to `Chunk::embedding_text()`. If this
+    /// diverged, the detached run would either re-embed already-done chunks or
+    /// embed the wrong text.
+    #[test]
+    fn missing_embedding_texts_returns_only_unembedded_chunks_from_db() {
+        use crate::indexer::{Chunk, ChunkKind};
+
+        let db = open_db();
+        let file_id = db.upsert_file("src/lib.rs", Some("rust"), "hash0").unwrap();
+
+        // Store three chunks the way `store_chunks` does (docstring lives in the
+        // metadata JSON), so the reconstructed text is comparable to the
+        // parse-time `embedding_text()`.
+        let mut ids = Vec::new();
+        let chunks = [
+            ("alpha", Some("Doc for alpha."), "fn alpha() {}"),
+            ("beta", None, "fn beta() {}"),
+            ("gamma", Some("Doc for gamma."), "fn gamma() {}"),
+        ];
+        for (name, docstring, content) in chunks {
+            let chunk = Chunk {
+                file_path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                kind: ChunkKind::Function,
+                name: Some(name.to_string()),
+                start_line: 1,
+                end_line: 2,
+                content: content.to_string(),
+                docstring: docstring.map(str::to_string),
+                parent_scope: None,
+                summary: None,
+            };
+            let metadata = serde_json::json!({
+                "docstring": chunk.docstring,
+                "parent_scope": chunk.parent_scope,
+            })
+            .to_string();
+            let id = db
+                .insert_chunk(
+                    file_id,
+                    "function",
+                    Some(name),
+                    1,
+                    2,
+                    content,
+                    Some(&metadata),
+                    1,
+                )
+                .unwrap();
+            ids.push((id, chunk));
+        }
+
+        // Embed only the middle chunk (`beta`), leaving `alpha` and `gamma`
+        // missing their embedding rows.
+        let (beta_id, _) = &ids[1];
+        db.insert_embedding(
+            *beta_id,
+            &vec![0.1f32; spelunk_core::embeddings::EMBEDDING_DIM],
+        )
+        .unwrap();
+
+        let missing = missing_embedding_texts(&db).expect("missing_embedding_texts");
+
+        // Exactly the two un-embedded chunks, in ascending id order, and NOT the
+        // embedded one.
+        let got_ids: Vec<i64> = missing.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            got_ids,
+            vec![ids[0].0, ids[2].0],
+            "only the un-embedded chunks (alpha, gamma) must be queued, in id order"
+        );
+        assert!(
+            !got_ids.contains(beta_id),
+            "the already-embedded chunk must not be re-queued"
+        );
+
+        // Each queued text is reconstructed byte-for-byte to the parse-time
+        // `embedding_text()` for that chunk.
+        for (queued_id, queued_text) in &missing {
+            let (_, chunk) = ids.iter().find(|(id, _)| id == queued_id).unwrap();
+            assert_eq!(
+                queued_text,
+                &chunk.embedding_text(),
+                "queued text must match Chunk::embedding_text for chunk {queued_id}"
+            );
+        }
+    }
+
+    /// When every chunk already has an embedding, the detached embed queue must
+    /// be empty — the subprocess then does no embed work (guards against the
+    /// missing-embedding query over-matching).
+    #[test]
+    fn missing_embedding_texts_is_empty_when_all_embedded() {
+        let db = open_db();
+        let file_id = db.upsert_file("src/lib.rs", Some("rust"), "hash0").unwrap();
+        let id = db
+            .insert_chunk(file_id, "function", Some("f"), 1, 2, "fn f() {}", None, 1)
+            .unwrap();
+        db.insert_embedding(id, &vec![0.1f32; spelunk_core::embeddings::EMBEDDING_DIM])
+            .unwrap();
+
+        assert!(
+            missing_embedding_texts(&db).unwrap().is_empty(),
+            "a fully-embedded index yields an empty detached embed queue"
         );
     }
 

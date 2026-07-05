@@ -266,6 +266,13 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     println!("Files:      {}", s.file_count);
     println!("Chunks:     {}", s.chunk_count);
     println!("Embeddings: {}", s.embedding_count);
+    // Surface an in-progress (or interrupted) embed pass: when chunks outnumber
+    // embeddings there is embedding work left, e.g. a detached `--detach-embed`
+    // run still working through batches, or an interrupted run to resume. This
+    // is the completion check for a backgrounded embed (spelunk-oss^74).
+    if let Some(line) = embedding_progress_line(s.chunk_count, s.embedding_count) {
+        println!("{line}");
+    }
     if let Some(ts) = s.last_indexed {
         println!("Last index: {}", format_age(ts));
     }
@@ -341,6 +348,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             caps,
             auto_discovered,
             embedder_state,
+            ..
         } => {
             let url_label = if *auto_discovered {
                 format!("{url}  \x1b[2m(local, auto)\x1b[0m")
@@ -408,6 +416,24 @@ fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
     Some(line)
 }
 
+/// Render the "embedding in progress" line for `spelunk status` when the index
+/// has more chunks than embeddings, i.e. an embed pass is still running (e.g. a
+/// detached `--detach-embed` subprocess) or was interrupted and can be resumed.
+/// Returns `None` when every chunk is embedded (or the index is empty), so a
+/// fully-embedded index prints nothing extra. Pure so it can be unit tested
+/// (spelunk-oss^74).
+fn embedding_progress_line(chunk_count: i64, embedding_count: i64) -> Option<String> {
+    if chunk_count <= 0 || embedding_count >= chunk_count {
+        return None;
+    }
+    let pending = chunk_count - embedding_count;
+    Some(format!(
+        "  \x1b[33mEmbedding in progress\x1b[0m  {embedding_count}/{chunk_count} embedded \
+         ({pending} pending) \x1b[2m(a background embed may be running; re-run \
+         `spelunk index` to resume if not)\x1b[0m"
+    ))
+}
+
 pub(crate) fn format_age(unix_ts: i64) -> String {
     let Some(then) = chrono::DateTime::<chrono::Utc>::from_timestamp(unix_ts, 0) else {
         return "unknown".to_string();
@@ -466,5 +492,28 @@ mod tests {
         // Older server without the readiness field: no line rather than a
         // confusing "unknown".
         assert!(embedder_status_line(&EmbedderState::Unknown).is_none());
+    }
+
+    // ── embedding_progress_line: detached / interrupted embed signal ────────────
+    // (spelunk-oss^74)
+
+    #[test]
+    fn embedding_progress_shown_when_chunks_outnumber_embeddings() {
+        let line = embedding_progress_line(100, 40).expect("partial embed shows a line");
+        assert!(line.contains("Embedding in progress"));
+        assert!(line.contains("40/100"));
+        assert!(line.contains("60 pending"));
+    }
+
+    #[test]
+    fn embedding_progress_hidden_when_fully_embedded() {
+        assert!(embedding_progress_line(100, 100).is_none());
+        // Defensive: never render a negative pending count.
+        assert!(embedding_progress_line(100, 120).is_none());
+    }
+
+    #[test]
+    fn embedding_progress_hidden_for_empty_index() {
+        assert!(embedding_progress_line(0, 0).is_none());
     }
 }
