@@ -221,8 +221,8 @@ main.rs            — entry point: parse args, register sqlite-vec, start Axum 
 lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
 db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
 handlers.rs        — Axum route handlers for all /v1/ endpoints
-embed_hub.rs       — Hugging Face Hub download/quantize path for the bundled native embedder
-                     (gated by `embed-native`); resolves the GGUF/tokenizer/config on disk, then
+embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
+                     `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
                      calls spelunk-embed's `NativeEmbedder::load_from_path`. The only place in the
                      workspace that depends on `hf-hub`.
 
@@ -258,9 +258,9 @@ All AI inference goes through **spelunk-server**. The CLI calls the server via
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
 The native embedding *engine* lives in the `spelunk-embed` crate
 (`NativeEmbedder`, local-path load only); spelunk-server's `embed_hub` module
-owns the Hugging Face Hub download/quantize path that resolves the model
-artifacts before handing them to it. The LLM backend and the external HTTP
-embedder shim live in spelunk-server (`main.rs`).
+owns the Hugging Face Hub download path that resolves the (pre-quantized)
+model artifacts before handing them to it. The LLM backend and the external
+HTTP embedder shim live in spelunk-server (`main.rs`).
 
 `capability.rs` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.

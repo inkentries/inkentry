@@ -54,9 +54,10 @@ constant_time_eq = "0.5"
 # Hugging Face Hub acquisition path for the bundled native embedder
 # (`embed_hub` module) — the only place in the workspace that depends on
 # `hf-hub`. Gated behind `embed-native` so a build without that feature
-# carries none of this.
+# carries none of this. Pinned directly here (not in [workspace.dependencies])
+# since no other crate uses it.
 candle-core = { workspace = true, optional = true }
-hf-hub = { workspace = true, optional = true }
+hf-hub = { version = "0.5", default-features = false, features = ["tokio", "ureq", "rustls-tls"], optional = true }
 dirs = { workspace = true, optional = true }
 
 [dev-dependencies]

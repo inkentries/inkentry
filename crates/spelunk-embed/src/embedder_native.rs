@@ -853,6 +853,61 @@ mod tests {
         }
     }
 
+    // ── L2 normalisation invariant ────────────────────────────────────────────
+    //
+    // The public embedding contract is "896-dim, L2-normalised". The end-to-end
+    // proof of that runs through the ignored network tests in spelunk-server's
+    // `embed_hub`; these pin the normalisation step itself (the last thing each
+    // embedding passes through) without needing the model on disk, so a
+    // regression in `l2_normalise` is caught by the fast, offline suite too.
+
+    /// A non-zero vector must come out with unit L2 norm, and its direction must
+    /// be preserved (each component scaled by the same factor). This is the
+    /// invariant the ignored `*_896_dim` / `embeddings_discriminate` tests assert
+    /// end-to-end (`norm ≈ 1.0`), pinned here directly on the normaliser.
+    #[test]
+    fn l2_normalise_yields_unit_norm_and_preserves_direction() {
+        let original = [3.0f32, 0.0, 4.0]; // norm 5
+        let mut v = original;
+        l2_normalise(&mut v);
+
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-6,
+            "normalised vector must have unit L2 norm, got {norm}"
+        );
+        // Direction preserved: every component is the original divided by 5.
+        for (out, orig) in v.iter().zip(original) {
+            assert!((out - orig / 5.0).abs() < 1e-6);
+        }
+    }
+
+    /// The zero vector has no direction, so `l2_normalise` must leave it untouched
+    /// rather than divide by zero and produce NaNs. (A padded/empty forward pass
+    /// could in principle yield an all-zero hidden state; the normaliser must not
+    /// turn that into NaNs that would poison the int8 index.)
+    #[test]
+    fn l2_normalise_leaves_zero_vector_finite() {
+        let mut v = [0.0f32; 4];
+        l2_normalise(&mut v);
+        assert!(
+            v.iter().all(|x| x.is_finite() && *x == 0.0),
+            "zero vector must stay all-zero and finite (no divide-by-zero NaNs)"
+        );
+    }
+
+    /// The advertised embedding dimension is the F2LLM-v2-330M hidden size (896).
+    /// Pin the public `DIM` constant so an accidental change to the exported
+    /// contract (which the int8 vec0 index and every consumer depend on) fails a
+    /// cheap, offline test rather than only surfacing under the ignored model run.
+    #[test]
+    fn dim_is_f2llm_hidden_size() {
+        assert_eq!(
+            DIM, 896,
+            "public embedding dimension must stay 896 (F2LLM-v2-330M)"
+        );
+    }
+
     /// End-to-end semantic-discrimination check over the real model. Ignored by
     /// default: it downloads ~650 MB of weights and runs inference. Run with
     /// `cargo test -p spelunk-embed -- --ignored embeddings_discriminate`.
