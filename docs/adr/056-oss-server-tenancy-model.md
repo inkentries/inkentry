@@ -97,11 +97,13 @@ and this ADR says so out loud.
   - The deployment documentation and the fleet-management example state the
     single-trust-domain model plainly, and `GET /v1/projects` is documented as
     enumerating all projects by design.
-  - The server serves plaintext HTTP only on a loopback bind. It refuses to
-    start on a non-loopback plaintext bind; a shared deployment binds loopback
-    and terminates TLS in a front proxy, so the shared key never crosses the
-    network in cleartext. `/v1/health` is an unauthenticated endpoint (no bearer
-    required or sent).
+  - The server serves plaintext HTTP only on a loopback bind. It refuses,
+    unconditionally, to start on a non-loopback plaintext bind, whether that
+    bind is keyless (an open, unauthenticated server) or keyed (the bearer key
+    would cross the network in cleartext); the refusal names the interface and
+    points at the loopback-only. There is no override. 
+    The shared key never crosses the network in cleartext. `/v1/health` is an
+    unauthenticated endpoint (no bearer required or sent).
 - **Revisit if:** a genuine need appears to host mutually distrusting groups on
   one instance. That would be a new ADR introducing scoped keys and an ACL, and
   it would supersede this one.
@@ -115,10 +117,11 @@ the primary mitigation. The consequences for the threat model:
   project on the instance. It must be treated as a high-value secret:
   transmitted only over a secure transport, stored with restrictive
   permissions, and rotated on exposure. Because the key rides on the transport,
-  the server restricts plaintext HTTP to loopback and requires TLS (a front
-  proxy) for any non-loopback deployment (see Consequences). Key-comparison
-  hardening (constant-time comparison) is tracked separately as part of the
-  pre-v1.0 server security review.
+  the server restricts plaintext HTTP to loopback and unconditionally requires
+  TLS for any non-loopback deployment, with
+  no override. Key-comparison hardening
+  (constant-time comparison) is tracked separately as part of the pre-v1.0
+  server security review.
 - The cross-project access that the review identified is reclassified from a
   vulnerability to documented, intended behaviour under this model. It is not a
   defect to be fixed with an ACL; it is the boundary the operator opts into by

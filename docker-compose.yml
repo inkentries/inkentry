@@ -1,26 +1,34 @@
-# spelunk-server — minimal compose (server + persistent volume)
+# spelunk-server — minimal LOCAL SCAFFOLD (server + persistent volume)
 #
-# Usage (API key required — the container binds 0.0.0.0, and spelunk-server
-# refuses to start on a non-loopback bind with no key configured):
+# This is not a networked or team-serving deployment. spelunk-server binds
+# 127.0.0.1 inside its own container's network namespace (the image's own
+# default — see Dockerfile) and refuses to bind a non-loopback address over
+# plaintext HTTP, unconditionally, keyed or not (see
+# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override). No
+# port is published here, so the server is not reachable from the host or a
+# sibling container — only from inside this same network namespace, e.g. a
+# separate container started with `--network container:spelunk-server`
+# (the runtime image itself has no curl/wget to test from a bare
+# `docker compose exec` shell — see docs/server.md#quick-start-docker).
+#
+# For a team-reachable deployment, run the binary bare-metal under systemd
+# instead, with your own TLS terminator in front of the same loopback bind on
+# that host — see docs/self-hosting.md. That is the recommended path.
+#
+# Usage:
 #   SPELUNK_SERVER_KEY=your-key docker compose up -d
-#
-# Clients configure:
-#   memory_server_url = "http://your-host:7777"
-#   project_id        = "my-project"
 
 services:
   spelunk-server:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    ports:
-      - "7777:7777"
     volumes:
       - spelunk-data:/data
     environment:
       SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7777/v1/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3

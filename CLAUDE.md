@@ -57,7 +57,7 @@ You search with spelunk, then reason over the results yourself.
 
 ## Workspace Structure
 
-This is a Cargo workspace with three crates:
+This is a Cargo workspace with four crates:
 
 ```
 Cargo.toml                    — workspace root; [workspace.dependencies] for shared versions
@@ -65,7 +65,8 @@ Cargo.toml                    — workspace root; [workspace.dependencies] for s
 crates/
   spelunk-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
   spelunk-cli/                — `spelunk` binary; depends on spelunk-core
-  spelunk-server/             — `spelunk-server` binary + lib; depends on spelunk-core
+  spelunk-embed/              — library: native F2LLM-v2-330M embedder (candle); depends on spelunk-core
+  spelunk-server/             — `spelunk-server` binary + lib; depends on spelunk-core + spelunk-embed
 ```
 
 ## Module Map
@@ -219,11 +220,29 @@ main.rs            — entry point: parse args, register sqlite-vec, start Axum 
 lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
 db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
 handlers.rs        — Axum route handlers for all /v1/ endpoints
-embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal/GPU on macOS; `embed-native` feature)
+embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
+                     `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
+                     calls spelunk-embed's `NativeEmbedder::load_from_path`. The only place in the
+                     workspace that depends on `hf-hub`.
 
 migrations/  (crates/spelunk-server/migrations/)
   server_001.sql — projects + server memory schema
   server_002.sql — server memory FTS
+```
+
+The native embedder engine lives in the `spelunk-embed` crate (below); the
+server depends on it and forwards its `embed-native` / `metal` cargo features.
+
+### spelunk-embed (`crates/spelunk-embed/src/`)
+
+```
+lib.rs             — crate root; re-exports NativeEmbedder + DIM (gated by `embed-native`)
+embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal/GPU on macOS).
+                     NativeEmbedder::load_from_path(gguf, tokenizer, config) loads local files
+                     already on disk with zero network access — the crate's only load entry
+                     point, and it carries no download/fetch dependency. Implements
+                     spelunk-core's EmbeddingBackend. spelunk-server's embed_hub module (above)
+                     resolves those local files via the Hugging Face Hub before calling it.
 ```
 
 ---
@@ -236,7 +255,11 @@ All AI inference goes through **spelunk-server**. The CLI calls the server via
 
 `spelunk-core` defines the `EmbeddingBackend` and `LlmBackend` traits
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
-Concrete backends live in spelunk-server (not in this repo).
+The native embedding *engine* lives in the `spelunk-embed` crate
+(`NativeEmbedder`, local-path load only); spelunk-server's `embed_hub` module
+owns the Hugging Face Hub download path that resolves the (pre-quantized)
+model artifacts before handing them to it. The LLM backend and the external
+HTTP embedder shim live in spelunk-server (`main.rs`).
 
 `capability.rs` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.

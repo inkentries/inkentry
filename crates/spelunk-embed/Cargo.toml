@@ -1,0 +1,45 @@
+[package]
+name = "spelunk-embed"
+version = "0.9.2"
+edition = "2024"
+description = "Native F2LLM-v2-330M embedder (candle) for spelunk"
+license = "MIT"
+repository = "https://github.com/spelunk-cloud/spelunk"
+
+[lib]
+name = "spelunk_embed"
+path = "src/lib.rs"
+
+[features]
+default = ["embed-native"]
+# embed-native: bundle the F2LLM-v2-330M Qwen3 embedder via candle (CPU). No
+# download dependency here (no hf-hub) — this crate only loads from local
+# files (`load_from_path`); the Hugging Face Hub acquisition path lives in
+# spelunk-server's `embed_hub` module.
+embed-native = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+# metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+
+[dependencies]
+spelunk-core = { path = "../spelunk-core" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+
+# macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
+# /proc/meminfo, no FFI). Not in [workspace.dependencies] since spelunk-embed
+# is the only consumer; a bare version here keeps the cfg gate unambiguous
+# (Cargo has no way to gate workspace.dependencies itself by target).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }
+serial_test = { workspace = true }
