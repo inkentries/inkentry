@@ -613,7 +613,7 @@ fn l2_normalise(v: &mut [f32]) {
 }
 
 #[async_trait::async_trait]
-impl spelunk_core::embeddings::EmbeddingBackend for NativeEmbedder {
+impl crate::EmbeddingBackend for NativeEmbedder {
     /// Embed a batch of strings using F2LLM-v2-330M (Q8_0).
     ///
     /// Texts are tokenized, sorted by token length (to minimise padding waste),

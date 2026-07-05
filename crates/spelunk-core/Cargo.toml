@@ -14,6 +14,8 @@ rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 test-support = []
 
 [dependencies]
+# Trait-only dep (no candle): owns EmbeddingBackend, re-exported below. Storage-free.
+spelunk-embed = { path = "../spelunk-embed", default-features = false }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
