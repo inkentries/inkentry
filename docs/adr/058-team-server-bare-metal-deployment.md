@@ -70,10 +70,20 @@ bare-metal — not Docker — is the deployment vehicle for a networked team ser
 
 This also resolves the [spelunk-oss^70](../remote-agents.md) friction (Docker
 remote-agent loopback): the fix is to containerize the **agent**, not the
-**server**. With the server on bare-metal loopback, a containerized agent
-reaches it over the Docker bridge / `host.docker.internal`
-([`remote-agents.md`](../remote-agents.md)) exactly as documented — the server
-stays bare-metal, the client can be anywhere.
+**server**. With the server on bare-metal loopback behind the operator's TLS
+terminator, a containerized agent connects to the operator's `https://`
+endpoint the same way any other client does — the terminator forwards to
+`127.0.0.1` on the host, so the agent never needs to reach the server's raw
+loopback itself. It does **not** reach the server over the Docker bridge or
+`host.docker.internal`: on native Linux, `host.docker.internal`/the
+`docker0` gateway address (`172.17.0.1`) lands on the bridge, and a server
+bound to the host's `127.0.0.1` is not listening there (only Docker Desktop's
+special-cased gateway, or `--network host` on the agent's container, would
+make that path work, and neither is the recommended shape here). The server
+stays bare-metal on loopback; the client — containerized or not — always goes
+through the `https://` terminator, which is exactly what
+[`remote-agents.md`](../remote-agents.md)'s R1 recipe needs to be reworked to
+say (see §4).
 
 ### What already exists
 
@@ -146,10 +156,10 @@ LoadCredential=server-key:/etc/spelunk/server-key
 ExecStart=/usr/local/bin/spelunk-server \
   --host 127.0.0.1 --port 7777 \
   --db /var/lib/spelunk/spelunk.db
-# The binary reads SPELUNK_SERVER_KEY from the env; a tiny wrapper or a
-# systemd drop-in exports it from the credential file. (Impl decides between a
-# one-line ExecStartPre shim and teaching the binary to read
-# $CREDENTIALS_DIRECTORY/server-key directly — see Open questions.)
+# The binary reads the key from $CREDENTIALS_DIRECTORY/server-key directly (or
+# a --key-file path) as a first-class credential source — no ExecStartPre
+# shim needed. SPELUNK_SERVER_KEY as an env var remains supported as well, for
+# operators who prefer it or run outside systemd (see "Provisioning" below).
 
 Restart=on-failure
 RestartSec=5
@@ -170,13 +180,15 @@ WantedBy=multi-user.target
 ```
 
 `DynamicUser=` is attractive (no manual user management, per-boot UID) but is
-**not chosen** for the default unit: the server keeps a persistent SQLite
-database under `/var/lib/spelunk`, and `DynamicUser=` pairs cleanly with
-`StateDirectory=`-managed ownership but complicates operator backup/inspection
-of a fixed-owner data dir and the `started_by` UID discovery the CLI records.
-The default unit uses a **static `spelunk` system user**; a `DynamicUser=`
-variant may be offered as a documented alternative. (This is the one packaging
-sub-choice the impl may revisit with the founder — see Open questions.)
+**not chosen for the default unit**: the server keeps a persistent SQLite
+database under `/var/lib/spelunk`, and the default unit favours a fixed-owner
+data dir for operator backup/inspection and the `started_by` UID story the CLI
+records. The default unit therefore uses a **static `spelunk` system user**.
+Founder-reviewed decision: we additionally ship a **`DynamicUser=` +
+`StateDirectory=spelunk` variant as a documented alternative** unit — a
+reliability win for operators who prefer systemd-managed per-boot UIDs and are
+fine with `StateDirectory=`-managed ownership — alongside, not instead of, the
+static-user default (see §4 and "Follow-on implementation work").
 
 ### 3. Provisioning and securing `SPELUNK_SERVER_KEY` under systemd
 
@@ -184,14 +196,19 @@ sub-choice the impl may revisit with the founder — see Open questions.)
   it grants full admin of every project on the instance.
 - **Do not** put it in an `Environment=` line — that value is visible to any
   local user via `systemctl show spelunk-server` and `/proc/<pid>/environ`.
-- **Preferred:** `LoadCredential=server-key:/etc/spelunk/server-key`, where
-  `/etc/spelunk/server-key` is a `root:root 0600` file containing the raw key.
-  systemd exposes it at `$CREDENTIALS_DIRECTORY/server-key`, readable only by
-  the service process.
-- **Acceptable fallback for operators who prefer it:** an `EnvironmentFile=`
-  pointing at a `0600` root-owned file (`SPELUNK_SERVER_KEY=…`). This is better
-  than an inline `Environment=` line but still materialises the key into the
-  process environment.
+- **Preferred, first-class:** `LoadCredential=server-key:/etc/spelunk/server-key`,
+  where `/etc/spelunk/server-key` is a `root:root 0600` file containing the raw
+  key. systemd exposes it at `$CREDENTIALS_DIRECTORY/server-key`, and the
+  binary reads it **directly** from that path (or a `--key-file` flag pointed
+  at an equivalent file outside systemd) — founder-reviewed decision: this is a
+  first-class credential-read path in the binary, not a shim. No
+  `ExecStartPre`/wrapper is needed.
+- **Also supported, kept:** the existing `SPELUNK_SERVER_KEY` environment
+  variable. Founder-reviewed decision: env-var support stays alongside the
+  credential-file path (e.g. via `EnvironmentFile=` pointing at a `0600`
+  root-owned file, or set directly by operators/tooling outside systemd that
+  prefer it). The credential path is preferred for systemd deployments; the
+  env var remains a fully-supported alternative, not merely a fallback.
 - Generate the key with `openssl rand -hex 32`. Rotation = replace the file
   contents and `systemctl restart spelunk-server`, then re-distribute to clients.
 
@@ -212,17 +229,23 @@ in the implementation PR, not in this ADR's PR:
 - **`self-hosting.md`** — Elevate its existing loopback-plus-proxy-plus-systemd
   recipe to *the* recommended team-server path. Update its systemd section to
   match the first-party unit in §2 (credential-based key, static `spelunk` user,
-  fuller hardening) so the shipped unit and the doc agree. Keep the nginx/Caddy
-  blocks but mark them explicitly as **operator-owned reference examples**, not
-  shipped configuration.
+  fuller hardening) so the shipped unit and the doc agree, and document the
+  `DynamicUser=` + `StateDirectory=spelunk` variant alongside it as the
+  founder-reviewed alternative. Keep the nginx/Caddy blocks but mark them
+  explicitly as **operator-owned reference examples**, not shipped
+  configuration.
 - **`docker-compose.yml`** — Keep as the minimal local scaffold. Its header
   comment states plainly it is loopback/local-and-same-Docker-network only and
   is not a team-server deployment; it stays free of any proxy service (per
   PR #516).
-- **`remote-agents.md`** — Add a one-line cross-reference that the server-side
-  of a team deployment is the bare-metal path in `self-hosting.md`; keep the R1
-  containerized-*agent* → bare-metal-*server* recipe as-is (it is the oss^70
-  answer).
+- **`remote-agents.md`** — Rework the R1 recipe from the raw
+  `host.docker.internal:7777` bridge model to the TLS-endpoint model: a
+  containerized agent's `server_url` points at the operator's `https://`
+  terminator (the same one clients use), not the Docker bridge gateway or
+  `host.docker.internal`, which does not reach a host-loopback-bound server on
+  native Linux. This is the concrete [spelunk-oss^70](../remote-agents.md) fix;
+  add a one-line cross-reference that the server-side of a team deployment is
+  the bare-metal path in `self-hosting.md`.
 
 ### 5. Interaction with the health/limits surface
 
@@ -273,7 +296,7 @@ ADR does not depend on that field existing.
 | Add native TLS to `spelunk-server` | ✅ | Large, separate decision (cert lifecycle, ACME, renewal, cipher policy) that duplicates what a proxy does well. Deferred to a possible future ADR; a Non-goal here. |
 | Keep Docker as the recommended team-server deployment | ✅ | Mechanically broken for networked serving: a container's loopback bind is unreachable from off-container, and publishing forwards to the routable interface, not loopback. This is the exact broken state PR #516 left `server.md` in. |
 | Docs-only (no shipped unit) | ✅ | Leaves every operator to hand-roll the credential handling and sandboxing, the two things most likely to be done insecurely (key in a world-readable `Environment=` line, server run as root). Shipping a hardened default unit is the higher-leverage, low-surface win, and the unit is our own binary's — not a third party's. |
-| `DynamicUser=` in the default unit | ✅ | Attractive (no user management) but complicates a persistent, operator-owned SQLite data dir and the `started_by` UID story. Offered as a documented variant, not the default. See Open questions. |
+| `DynamicUser=` in the default unit | ✅ | Attractive (no user management) but complicates a persistent, operator-owned SQLite data dir and the `started_by` UID story. Not the default; ship a `DynamicUser=` + `StateDirectory=spelunk` variant as a documented alternative instead (founder-reviewed decision). |
 
 ---
 
@@ -290,12 +313,19 @@ ADR does not depend on that field existing.
   unit is the reference, not the only supported path.
 - **Follow-on implementation work (post-approval, tracked as its own task, not
   this ADR):**
-  - Add `spelunk-server.service` (and any small credential-export shim) to the
-    repo, with the hardening in §2 verified against the native embedder's
-    memory/JIT needs (esp. `MemoryDenyWriteExecute`).
+  - Teach `spelunk-server` to read the key directly from
+    `$CREDENTIALS_DIRECTORY/server-key` (and/or a `--key-file` flag) as a
+    first-class credential path, while keeping `SPELUNK_SERVER_KEY` env-var
+    support as-is (founder-reviewed decision, §2/§3).
+  - Add `spelunk-server.service` to the repo: the static-`spelunk`-user default
+    unit **and** a documented `DynamicUser=` + `StateDirectory=spelunk`
+    variant (founder-reviewed decision, §2), with the hardening in §2 verified
+    against the native embedder's memory/JIT needs (esp.
+    `MemoryDenyWriteExecute`).
   - Execute the §4 docs restructure across `server.md`, `self-hosting.md`,
-    `docker-compose.yml`, and `remote-agents.md`, superseding the PR #516
-    interim pointer.
+    `docker-compose.yml`, and `remote-agents.md` (including the R1
+    TLS-endpoint rework, the concrete spelunk-oss^70 fix), superseding the
+    PR #516 interim pointer.
   - Reconcile `self-hosting.md`'s existing systemd block (currently
     `Environment=`-based, `User=spelunk`) with the credential-based §2 unit.
 - **Revisit if:** an operator population appears that genuinely cannot run a
@@ -306,12 +336,12 @@ ADR does not depend on that field existing.
 
 ## Security implications
 
-- Moving the key from `Environment=` to a systemd credential (or, failing that,
-  a `0600` `EnvironmentFile=`) removes the most common exposure: the shared
-  admin key readable by any local user via `systemctl show` / `/proc/*/environ`.
-  Since the key is a full-admin bearer credential
-  ([ADR-056](056-oss-server-tenancy-model.md)), this is a material reduction in
-  local blast radius.
+- Moving the key from an inline `Environment=` line to a systemd credential (or
+  a `0600` `EnvironmentFile=`/env var for operators who prefer that supported
+  alternative) removes the most common exposure: the shared admin key readable
+  by any local user via `systemctl show` / `/proc/*/environ`. Since the key is
+  a full-admin bearer credential ([ADR-056](056-oss-server-tenancy-model.md)),
+  this is a material reduction in local blast radius.
 - Running under a dedicated unprivileged `spelunk` user with
   `ProtectSystem=strict`, `NoNewPrivileges=true`, `ProtectHome=true`, and a
   narrow `ReadWritePaths=` limits what a compromised server process can touch —
@@ -325,20 +355,7 @@ ADR does not depend on that field existing.
   docs, not code paths. Native TLS — which *would* add in-process attack
   surface — is explicitly a Non-goal.
 
----
-
-## Open questions (for founder review)
-
-1. **Credential wiring mechanism.** Two ways to feed the systemd credential to
-   the binary, which currently only reads `SPELUNK_SERVER_KEY` from the env:
-   (a) a one-line `ExecStartPre`/wrapper that exports
-   `SPELUNK_SERVER_KEY="$(cat "$CREDENTIALS_DIRECTORY/server-key")"`, shipping no
-   code change; or (b) teach `spelunk-server` to read
-   `$CREDENTIALS_DIRECTORY/server-key` (or a `--key-file`) directly, a small,
-   testable code addition that makes the credential path first-class. The ADR
-   leans (b) as cleaner long-term but does not force it; the impl can start with
-   (a). Founder preference?
-2. **`DynamicUser=` variant.** The default unit uses a static `spelunk` user for
-   the persistent data dir and `started_by` story. Ship a `DynamicUser=` +
-   `StateDirectory=spelunk` variant as a documented alternative, or keep only
-   the static-user unit? (Not a blocker; recorded so it is a conscious choice.)
+Both open questions raised in review are resolved above (§2/§3): the binary
+reads the systemd credential directly (with `SPELUNK_SERVER_KEY` kept as a
+supported alternative), and a `DynamicUser=` variant will ship alongside the
+static-user default unit.
