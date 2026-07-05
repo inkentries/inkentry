@@ -21,14 +21,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   binds are unchanged. See
   [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
   (spelunk-oss^79)
-  - **Docker packaging updated to match:** the shipped `docker-compose.yml`
+  - **Docker Compose demoted to a local scaffold; bare-metal/systemd is now
+    the recommended team-server deployment.** The shipped `docker-compose.yml`
     previously bound the `spelunk-server` container to `0.0.0.0` directly,
     which now refuses to start as soon as `SPELUNK_SERVER_KEY` is set —
-    exactly the documented keyed quick-start. `docker-compose.yml` is now the
-    minimal deployment — `spelunk-server` (binding loopback inside its own
-    container, the Dockerfile's default) and a named volume for the SQLite
-    database. `docker-compose.full.yml` (Ollama sidecar) is removed. See
-    [docs/server.md](docs/server.md#quick-start-docker). (spelunk-oss^79)
+    exactly the documented keyed quick-start. Rather than ship a proxy sidecar
+    to work around that, `docker-compose.yml` is stripped to just
+    `spelunk-server` (binding loopback inside its own container, the
+    Dockerfile's default) and a named volume for the SQLite database, with no
+    published port: a container's loopback lives in its own network
+    namespace, unreachable from the host or a sibling container by any of the
+    usual means (bridge port-publish, Docker Desktop host-mode, or
+    container-to-container DNS), so Docker is a poor fit for networked/team
+    serving. It remains useful as a minimal local scaffold for running the
+    server process itself. For a team-reachable instance, run the binary
+    bare-metal under systemd instead, with your own TLS terminator in front of
+    the same loopback bind on that host — see
+    [Self-hosting](docs/self-hosting.md). `docker-compose.full.yml` (Ollama
+    sidecar) and `Caddyfile` (bundled TLS sidecar) are removed; no proxy ships
+    with this repo. See [docs/server.md](docs/server.md#quick-start-docker).
+    (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).** [spelunk-oss^65]
   - `AppError::Internal` no longer inspects the error message text (previously it returned the

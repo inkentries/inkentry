@@ -1,4 +1,4 @@
-# spelunk-server — minimal production image
+# spelunk-server — minimal local-scaffold image
 #
 # Multi-stage build: compile in a Rust builder, copy the binary into a slim
 # Debian image. The result is a ~50 MB image with no Rust toolchain overhead.
@@ -6,25 +6,34 @@
 # Build:
 #   docker build -t spelunk-server .
 #
-# Run (dev, no auth, reachable only from other containers on the same Docker
-# network — a bare `docker run` cannot publish a container-loopback bind to
-# the host; see docker-compose.yml for the supported "reach it from the host /
-# off-host" shape):
+# This image binds spelunk-server to 127.0.0.1 *inside its own container* by
+# default (see CMD below) — that loopback lives in the container's private
+# network namespace, so it is NOT reachable via `docker run -p ...` port
+# publishing, Docker Desktop host-mode, or from a sibling container's DNS.
+# That's intentional, not a bug: spelunk-server refuses to bind a non-loopback
+# address over plaintext HTTP, unconditionally, keyed or not (see
+# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), and
+# this repo does not ship a proxy to pair with it.
+#
+# Run (dev, reachable only from other containers on the same Docker network):
 #   docker network create spelunk-dev
 #   docker run --rm --network spelunk-dev --name spelunk-server \
 #     -v spelunk-data:/data spelunk-server
 #   docker run --rm --network spelunk-dev curlimages/curl \
 #     curl http://spelunk-server:7777/v1/health
 #
-# Run (production, with API key): see docker-compose.yml. A keyed deployment
-# meant to be reached off-host MUST put a TLS-terminating reverse proxy in
-# front — spelunk-server refuses to bind non-loopback over plaintext HTTP,
-# unconditionally, keyed or not (see docs/server.md#trust-model). The compose
-# file wires this up as a Caddy sidecar sharing this container's network
-# namespace (loopback inside the container IS spelunk-server's loopback from
-# there), so this image's own default stays loopback-only and a bare
-# `docker run -p 7777:7777 ...` of this image will NOT expose it — that's
-# intentional, not a bug; use docker-compose.yml to publish a port.
+# Run (local scaffold, with API key): see docker-compose.yml. It runs this
+# image with a persistent volume — nothing more. It does not publish a
+# host-reachable port; reach the server from a separate container sharing
+# this one's network namespace (`--network container:spelunk-server`), the
+# same pattern as the dev recipe above but pointed at 127.0.0.1.
+#
+# For a team-reachable deployment, don't containerize this at all: run the
+# binary bare-metal/systemd on a host, with your own TLS terminator (nginx,
+# Caddy, ...) in front of the same loopback bind on that host. See
+# docs/self-hosting.md — that's the recommended path, since a container's
+# loopback can't be handed to a same-host proxy the way a bare-metal
+# process's can.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 FROM rust:1.96.1-slim AS builder
@@ -63,14 +72,13 @@ USER spelunk
 EXPOSE 7777
 
 ENTRYPOINT ["/usr/local/bin/spelunk-server"]
-# Bind loopback (the binary's own default) and let a reverse proxy — not this
-# container — be the thing that's reachable off-host. spelunk-server refuses
-# to bind a non-loopback address over plaintext HTTP unconditionally, keyed or
-# not (see docs/server.md#trust-model), so a bare `--host 0.0.0.0` here would
-# make a keyed deployment (docker-compose.yml) refuse to start. To publish the
-# server directly on the container's own interface anyway (e.g. behind your
-# own external TLS termination that isn't part of this compose file, or a
-# trusted-network dev setup with no key), override the CMD with
-# `--host 0.0.0.0` explicitly — this is the same non-loopback bind the server
-# itself will refuse unless it's paired with a proxy in front.
+# Bind loopback — the binary's own default, and the only bind this image
+# supports. spelunk-server refuses to bind a non-loopback address over
+# plaintext HTTP unconditionally, keyed or not (see
+# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), so a
+# `--host 0.0.0.0` override here would just make the server refuse to start —
+# this image ships no proxy to pair with it. For a deployment that needs to be
+# reachable off-host, don't override this; run bare-metal/systemd instead (see
+# docs/self-hosting.md), where a same-host reverse proxy can front the
+# server's loopback bind directly.
 CMD ["--host", "127.0.0.1", "--db", "/data/spelunk.db"]

@@ -62,31 +62,62 @@ The rest of this page covers running `spelunk-server` as a **deployed, shared**
 service so a team can sync memory. This is distinct from the local-auto server
 above: it's long-lived, reachable over the network, and protected by an API key.
 
+**Recommended: bare-metal / systemd.** The server binds `127.0.0.1`
+unconditionally (see [Non-loopback plaintext binds are refused](#non-loopback-plaintext-binds-are-refused-no-override)
+below) and refuses to serve plaintext off-host. Reaching it from another
+machine therefore needs a TLS terminator on the **same host**, in front of
+that loopback bind — which is straightforward with a bare-metal/systemd
+install, and awkward with Docker, since a container's own loopback lives in
+its private network namespace and isn't reachable from the host or sibling
+containers by any of the usual means (bridge port-publish, Docker Desktop
+host-mode, container-to-container DNS all fail to reach it). See
+[Self-hosting](self-hosting.md) for the systemd unit plus Caddy/nginx
+recipes — that's the recommended path for a team-reachable instance. (A
+fuller from-scratch team-deployment guide is tracked as follow-up work; this
+page and Self-hosting are the current source of truth in the meantime.)
+
 ## Quick start (Docker)
 
-The container image binds `spelunk-server` to `127.0.0.1` inside its own
-container (the binary's own default).
-The port to the host/network (`8443`) is published from the `spelunk-server`
-service block in the compose file
+`docker-compose.yml` in this repo is a **minimal local scaffold**: it builds
+the image and runs `spelunk-server` with a persistent named volume for the
+SQLite database. It is **not** a networked or team-serving recipe — the
+container binds `127.0.0.1` *inside its own network namespace* (the image's
+own default; see the Dockerfile), and nothing in the compose file publishes a
+port out of that namespace, so the server is not reachable from the host or
+from sibling containers. Use it to run the server process locally (e.g. to
+poke at the API by hand); for anything a team or a remote machine needs to
+reach, use the bare-metal/systemd path in [Self-hosting](self-hosting.md)
+instead.
 
 ```bash
 # Clone and build
 git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
-# Generate a key
+# Generate a key (optional for a purely local scaffold, but matches the
+# real deployment's shape if you're using this to test client config)
 export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
 
 # Start
 SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY docker compose up -d
-
-# Save the key — you'll need to distribute it to your team
-echo "SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY"
 ```
 
-No key and no need to reach the server from the host or another machine — just
-from other containers on the same Docker network (e.g. a containerized agent,
-see [Remote agents](remote-agents.md))? Skip compose and the proxy entirely:
+Because the container's loopback isn't reachable from outside its own
+network namespace, the only way to talk to this instance is from **inside
+that same namespace** — there is no host-reachable port to point a client
+at. The runtime image is a minimal Debian base with no `curl`/`wget`
+installed, so the practical way to reach it is a separate container that
+shares the same network namespace:
+
+```bash
+docker run --rm --network container:spelunk-server curlimages/curl \
+  curl http://127.0.0.1:7777/v1/health
+```
+
+If you want other **sibling containers** (not sharing the exact namespace) to
+reach a spelunk-server on the same Docker network — e.g. a containerized
+agent, see [Remote agents](remote-agents.md) — run it on a user-defined
+bridge network instead of via compose:
 
 ```bash
 docker network create spelunk-dev
@@ -95,17 +126,15 @@ docker run --rm -d --name spelunk-server --network spelunk-dev \
 # other containers on `spelunk-dev` reach it at http://spelunk-server:7777
 ```
 
-A bare `docker run -p 7777:7777 ...` of this image will **not** work here: the
-image binds `127.0.0.1` *inside* its own container by default, and Docker's
-`-p` port publishing forwards host traffic to the container's network
-interface, not into its private loopback — so nothing published from the host
-ever reaches a loopback-only bind. (This is exactly why `docker-compose.yml`
-needs the Caddy sidecar: it shares spelunk-server's network namespace so its
-own `127.0.0.1` *is* spelunk-server's loopback, and — via the port published
-on the `spelunk-server` service block, whose namespace it shares — Caddy's
-listener is what's reachable from the host/network.) If you need the server
-reachable from the host or off-host, use `docker-compose.yml` above rather
-than a bare `docker run`.
+This works because Docker's embedded DNS resolves the container's *address on
+the bridge network*, not its loopback — the request never needs to cross into
+the container's private loopback namespace. A bare
+`docker run -p 7777:7777 ...` of this image, by contrast, will **not** make it
+reachable from the host: `-p` forwards host traffic to the container's
+network interface, not into its private loopback, so nothing published from
+the host ever reaches a loopback-only bind. There is no Docker Compose
+recipe in this repo for host- or off-host-reachable serving — use
+bare-metal/systemd (see [Self-hosting](self-hosting.md)) for that.
 
 ## Client configuration
 
@@ -232,16 +261,25 @@ environment:
 
 ## Production deployment
 
-`docker-compose.yml` is the recommended minimal deployment — `spelunk-server`
-, and a named volume for the SQLite database.
+**Bare-metal / systemd is the recommended way to run a team-reachable
+`spelunk-server`.** The server itself binds loopback only; running it directly
+on the host (rather than in a container) means the operator's own TLS
+terminator — nginx, Caddy, whatever's already on the box — can sit in front of
+that same loopback bind on the same host and actually be reachable off-host.
+See [Self-hosting](self-hosting.md) for the systemd unit and reverse-proxy
+recipes.
 
+`docker-compose.yml` (see [Quick start (Docker)](#quick-start-docker) above)
+is a local scaffold for running the server process itself — useful for local
+development or testing — not a substitute for the bare-metal path when the
+server needs to be reachable by a team or over a network.
 
-Key considerations:
+Key considerations for any deployment:
 - Putting the server behind a VPN or private subnet is still good
   defense-in-depth (the API key is the app-level guard; network-level access
   control is an additional layer, not a substitute for it)
 - The SQLite WAL-mode database handles 2–20 concurrent writers comfortably
-- Back up the volume (`spelunk.db`) with your normal database backup process
+- Back up the database file with your normal database backup process
 - For large teams or heavy write loads, see the plan for Postgres support
 
 ## Running without Docker

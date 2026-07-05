@@ -1,8 +1,19 @@
-# spelunk-server — minimal compose (server + persistent volume)
+# spelunk-server — minimal LOCAL SCAFFOLD (server + persistent volume)
 #
-# spelunk-server binds 127.0.0.1 inside its own container (the image's own
+# This is not a networked or team-serving deployment. spelunk-server binds
+# 127.0.0.1 inside its own container's network namespace (the image's own
 # default — see Dockerfile) and refuses to bind a non-loopback address over
-# plaintext HTTP, unconditionally, keyed or not (see docs/server.md#trust-model).
+# plaintext HTTP, unconditionally, keyed or not (see
+# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override). No
+# port is published here, so the server is not reachable from the host or a
+# sibling container — only from inside this same network namespace, e.g. a
+# separate container started with `--network container:spelunk-server`
+# (the runtime image itself has no curl/wget to test from a bare
+# `docker compose exec` shell — see docs/server.md#quick-start-docker).
+#
+# For a team-reachable deployment, run the binary bare-metal under systemd
+# instead, with your own TLS terminator in front of the same loopback bind on
+# that host — see docs/self-hosting.md. That is the recommended path.
 #
 # Usage:
 #   SPELUNK_SERVER_KEY=your-key docker compose up -d
