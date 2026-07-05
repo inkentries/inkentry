@@ -17,8 +17,11 @@ path = "src/lib.rs"
 [features]
 default = ["embed-native"]
 # embed-native: bundle the F2LLM-v2-330M Qwen3 embedder (candle, CPU). The
-# engine lives in the `spelunk-embed` crate; this just forwards to its feature.
-embed-native = ["spelunk-embed/embed-native"]
+# inference engine lives in the `spelunk-embed` crate (local-path load only);
+# this crate additionally owns the Hugging Face Hub acquisition path
+# (`embed_hub` module) that resolves the model artifacts before handing them
+# to `spelunk-embed`'s `load_from_path`. Forwards to `spelunk-embed`'s feature.
+embed-native = ["spelunk-embed/embed-native", "dep:candle-core", "dep:hf-hub", "dep:dirs"]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the
 # macOS binary. Forwards to `spelunk-embed`'s `metal` feature.
 metal = ["spelunk-embed/metal"]
@@ -48,6 +51,13 @@ clap = { version = "4", features = ["derive", "env"] }
 regex = { version = "1", default-features = false, features = ["std"] }
 blake3 = "1"
 constant_time_eq = "0.5"
+# Hugging Face Hub acquisition path for the bundled native embedder
+# (`embed_hub` module) — the only place in the workspace that depends on
+# `hf-hub`. Gated behind `embed-native` so a build without that feature
+# carries none of this.
+candle-core = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

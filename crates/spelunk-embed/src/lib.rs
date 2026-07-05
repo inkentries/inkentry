@@ -5,15 +5,16 @@
 //! the bundled `spelunk-server` binary and downstream consumers that need a
 //! local embedder can depend on it directly.
 //!
-//! Two load entry points are provided:
+//! The sole load entry point is [`NativeEmbedder::load_from_path`], which loads
+//! the model from local files already on disk with **zero network access** —
+//! callers fetch the GGUF, tokenizer, and config themselves. This crate
+//! deliberately carries no download/fetch dependency of its own (no `hf-hub`),
+//! so anything that depends on `spelunk-embed` — e.g. a minimal embedding
+//! engine bundled elsewhere — inherits the smallest possible dependency
+//! surface. `spelunk-server` resolves the artifacts via its own Hugging Face
+//! Hub acquisition path (`embed_hub` module) and then calls `load_from_path`.
 //!
-//! * [`NativeEmbedder::load_from_hub`] downloads (and, first run, quantizes) the
-//!   model through the Hugging Face Hub cache.
-//! * [`NativeEmbedder::load_from_path`] loads the model from local files already
-//!   on disk with **zero network access** — for callers that fetch the GGUF,
-//!   tokenizer, and config themselves.
-//!
-//! Both produce the same [`NativeEmbedder`], which implements
+//! The result is a [`NativeEmbedder`], which implements
 //! [`spelunk_core::embeddings::EmbeddingBackend`]. The whole engine is gated
 //! behind the `embed-native` cargo feature (on by default); add the `metal`
 //! feature for Metal GPU acceleration on macOS.

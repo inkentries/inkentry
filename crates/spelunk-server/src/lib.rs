@@ -1,5 +1,7 @@
 pub mod auth;
 pub mod db;
+#[cfg(feature = "embed-native")]
+pub mod embed_hub;
 pub mod handlers;
 pub mod rate_limiter;
 pub mod security;

@@ -25,9 +25,6 @@ pretty_assertions = "1"
 serial_test = "3"
 wiremock    = "0.6"
 dirs        = "6"
-# `libc` is macOS-only here: the native embedder reads `hw.memsize` via the
-# `sysctlbyname` FFI to size its memory budget (Linux reads /proc/meminfo).
-libc        = "0.2"
 # Native embedder stack (F2LLM-v2-330M via candle). Pulled in by the
 # `spelunk-embed` crate behind its `embed-native` feature; versions pinned here
 # so the candle trio stays on one runtime line.

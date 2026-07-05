@@ -11,7 +11,7 @@ are attributed here.
 - **Upstream:** https://huggingface.co/codefuse-ai/F2LLM-v2-330M
 - **Pinned source revision:** `1239cdd544b24c247ed75df2ae22e5a401ac4659`
   (tracked by the `MODEL_REVISION` constant in
-  `crates/spelunk-embed/src/embedder_native.rs`; update both together when the
+  `crates/spelunk-server/src/embed_hub.rs`; update both together when the
   pin moves).
 - **License:** Apache License 2.0 (declared via the upstream Hugging Face
   model-card license tag). Full text:
