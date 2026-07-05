@@ -1,97 +1,26 @@
-# spelunk-server — minimal compose (server + TLS-terminating proxy sidecar +
-# persistent volume)
+# spelunk-server — minimal compose (server + persistent volume)
 #
-# spelunk-server refuses to bind a non-loopback address over plaintext HTTP,
-# unconditionally — keyed or not (see docs/server.md#trust-model). A keyed
-# server reachable off-host must sit behind a TLS-terminating reverse proxy,
-# with the server itself kept on loopback. This compose file wires that up:
+# spelunk-server binds 127.0.0.1 inside its own container (the image's own
+# default — see Dockerfile) and refuses to bind a non-loopback address over
+# plaintext HTTP, unconditionally, keyed or not (see docs/server.md#trust-model).
 #
-#   - `spelunk-server` binds 127.0.0.1 (the image's own default — see
-#     Dockerfile) and is not reachable off-host on its own.
-#   - `proxy` (Caddy) runs with `network_mode: "service:spelunk-server"`, i.e.
-#     it shares the spelunk-server container's network namespace instead of
-#     getting its own. From inside that shared namespace, spelunk-server's
-#     loopback bind is directly reachable as `127.0.0.1:7777` — including from
-#     the proxy — without spelunk-server ever binding a routable interface.
-#   - The published port lives on `spelunk-server`'s service block, not
-#     `proxy`'s: Docker requires whichever container is the *owner* of a
-#     network namespace (`network_mode: "service:spelunk-server"` points at
-#     it) to be the one declaring `ports:`. A container joining another's
-#     namespace (`proxy`, here) can't also publish ports itself — the
-#     daemon rejects that combination at container-creation
-#     ("conflicting options: port publishing and the container type network
-#     mode"). The port still ends up serving Caddy's listener: publishing
-#     attaches to the shared namespace as a whole, not to whichever process
-#     opened the socket.
-#
-# Usage (API key required — a keyless server reachable off-host would be an
-# open, unauthenticated endpoint, refused the same way):
+# Usage:
 #   SPELUNK_SERVER_KEY=your-key docker compose up -d
-#
-# Verify (the proxy's default cert is self-signed via Caddy's `tls internal`,
-# see Caddyfile — `-k` skips certificate verification, fine for a local check,
-# not for anything crossing an untrusted network):
-#   curl -k https://localhost:8443/v1/health
-#
-# Clients configure:
-#   memory_server_url = "https://your-host:8443"
-#   project_id        = "my-project"
-#
-# No key / purely local use? You don't need the proxy — run spelunk-server
-# directly on loopback (`docker run -p 127.0.0.1:7777:7777 spelunk-server`, no
-# compose) and skip TLS entirely. That shape isn't reachable off-host, which
-# is also why it's not what this compose file ships: the point of a
-# docker-compose deployment is normally to make the server reachable to other
-# machines (teammates, remote agents), and that requires both a key and TLS.
 
 services:
   spelunk-server:
     build: .
     image: spelunk-server:latest
     restart: unless-stopped
-    # Published here (not on `proxy`) because Docker requires the network
-    # namespace *owner* to declare `ports:` — `proxy` below joins this
-    # container's namespace via `network_mode: "service:spelunk-server"` and
-    # cannot also publish a port itself. The port still serves Caddy's
-    # listener on 8443: publishing attaches to the shared namespace, not to
-    # whichever container's process opened the socket. spelunk-server itself
-    # still only binds 127.0.0.1:7777 inside that namespace (its own
-    # default) — it never binds the routable interface this exposes.
-    ports:
-      - "8443:8443"
     volumes:
       - spelunk-data:/data
     environment:
       SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
     healthcheck:
-      # Runs inside the spelunk-server container's own namespace, so loopback
-      # here is this container regardless of the proxy's netns sharing.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7777/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  proxy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    # Share spelunk-server's network namespace instead of getting its own:
-    # loopback inside this container IS spelunk-server's loopback, so Caddy
-    # can reach 127.0.0.1:7777 directly. This is what lets spelunk-server
-    # keep its loopback-only bind while still being reachable off-host.
-    # No `ports:` here — a container joining another's namespace can't also
-    # publish ports (Docker rejects that combination at container-creation);
-    # the published port lives on `spelunk-server` above instead, which owns
-    # the namespace `proxy` is joining.
-    network_mode: "service:spelunk-server"
-    depends_on:
-      spelunk-server:
-        condition: service_healthy
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-
 volumes:
   spelunk-data:
-  caddy-data:
-  caddy-config:

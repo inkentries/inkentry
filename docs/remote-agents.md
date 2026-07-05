@@ -105,12 +105,9 @@ docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
 - **If a Linux container needs to reach the bridge gateway (`172.17.0.1`)
   instead of loopback**, binding the server to that address is a non-loopback
   plaintext bind, which `spelunk-server` refuses unconditionally — there is no
-  override. Put a reverse proxy (nginx, Caddy, Traefik) in front of a
-  loopback-bound server and terminate TLS there, and point the container at
-  the proxy instead. See
-  [spelunk-server bind and auth flags](server.md#bind-and-auth-flags). On
+  override. On
   Docker Desktop the `host.docker.internal` recipe reaches a loopback-bound
-  server directly and needs no proxy.
+  server directly.
 - **Project identity.** Bind-mounting `~/.config/spelunk/` is the simplest way
   to share project identity. Alternatively set `SPELUNK_PROJECT_ID` explicitly
   in the container's environment.

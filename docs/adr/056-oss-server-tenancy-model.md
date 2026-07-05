@@ -101,9 +101,8 @@ and this ADR says so out loud.
     unconditionally, to start on a non-loopback plaintext bind, whether that
     bind is keyless (an open, unauthenticated server) or keyed (the bearer key
     would cross the network in cleartext); the refusal names the interface and
-    points at the loopback-only / TLS-front guidance. There is no override. A
-    shared deployment binds loopback and terminates TLS in a front proxy, so
-    the shared key never crosses the network in cleartext. `/v1/health` is an
+    points at the loopback-only. There is no override. 
+    The shared key never crosses the network in cleartext. `/v1/health` is an
     unauthenticated endpoint (no bearer required or sent).
 - **Revisit if:** a genuine need appears to host mutually distrusting groups on
   one instance. That would be a new ADR introducing scoped keys and an ACL, and
@@ -119,9 +118,8 @@ the primary mitigation. The consequences for the threat model:
   transmitted only over a secure transport, stored with restrictive
   permissions, and rotated on exposure. Because the key rides on the transport,
   the server restricts plaintext HTTP to loopback and unconditionally requires
-  TLS (a front proxy) for any non-loopback deployment (see Consequences), with
-  no override: an operator who needs the server reachable off-host binds
-  loopback and puts a reverse proxy in front of it. Key-comparison hardening
+  TLS for any non-loopback deployment, with
+  no override. Key-comparison hardening
   (constant-time comparison) is tracked separately as part of the pre-v1.0
   server security review.
 - The cross-project access that the review identified is reclassified from a

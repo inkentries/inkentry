@@ -17,21 +17,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   plaintext HTTP was still allowed, so a shared server on a routable interface
   sent the bearer `SPELUNK_SERVER_KEY` across the network in cleartext. The guard
   now refuses a non-loopback plaintext bind unconditionally, whether or not a key
-  is set; the error names the interface/port and points at the loopback-only /
-  TLS-front guidance. There is no opt-out: to run the server reachable off-host,
-  bind loopback and put a reverse proxy in front of it (terminating TLS there).
-  Loopback binds are unchanged. See
+  is set; the error names the interface/port. There is no opt-out. Loopback
+  binds are unchanged. See
   [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
   (spelunk-oss^79)
-  - **Docker packaging updated to match:** the shipped `docker-compose.yml` /
-    `docker-compose.full.yml` previously bound the `spelunk-server` container
-    to `0.0.0.0` directly, which now refuses to start as soon as
-    `SPELUNK_SERVER_KEY` is set — exactly the documented keyed quick-start.
-    `spelunk-server` now binds loopback inside its own container (the
-    Dockerfile's default), and a Caddy sidecar (`network_mode:
-    "service:spelunk-server"`, `Caddyfile`) terminates TLS and publishes the
-    port instead, so the keyed compose flow starts cleanly and satisfies the
-    same loopback-plus-TLS-front posture as a bare-metal deployment. See
+  - **Docker packaging updated to match:** the shipped `docker-compose.yml`
+    previously bound the `spelunk-server` container to `0.0.0.0` directly,
+    which now refuses to start as soon as `SPELUNK_SERVER_KEY` is set —
+    exactly the documented keyed quick-start. `docker-compose.yml` is now the
+    minimal deployment — `spelunk-server` (binding loopback inside its own
+    container, the Dockerfile's default) and a named volume for the SQLite
+    database. `docker-compose.full.yml` (Ollama sidecar) is removed. See
     [docs/server.md](docs/server.md#quick-start-docker). (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).** [spelunk-oss^65]

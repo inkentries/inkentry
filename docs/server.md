@@ -65,22 +65,9 @@ above: it's long-lived, reachable over the network, and protected by an API key.
 ## Quick start (Docker)
 
 The container image binds `spelunk-server` to `127.0.0.1` inside its own
-container (the binary's own default). `docker-compose.yml` puts a Caddy
-sidecar in front of it that terminates TLS: the sidecar shares the
-`spelunk-server` container's network namespace
-(`network_mode: "service:spelunk-server"`), so it reaches `spelunk-server` on
-loopback without `spelunk-server` itself ever binding a routable interface.
+container (the binary's own default).
 The port to the host/network (`8443`) is published from the `spelunk-server`
-service block in the compose file — Docker requires the namespace *owner* to
-declare `ports:`, not a container joining another's namespace via
-`network_mode` — but it still serves Caddy's listener, since publishing
-attaches to the shared namespace as a whole. This matters because
-`spelunk-server` refuses, unconditionally, to bind a non-loopback address over
-plaintext HTTP — keyed or not (see [Trust model](#trust-model)): a keyless
-non-loopback bind would be an open, unauthenticated server, and a keyed one
-would send the bearer key across the network in cleartext. There is no
-override; the proxy sidecar is how a keyed deployment satisfies that
-guardrail instead of fighting it.
+service block in the compose file
 
 ```bash
 # Clone and build
@@ -90,30 +77,12 @@ cd spelunk
 # Generate a key
 export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
 
-# Start (spelunk-server + Caddy TLS proxy sidecar)
+# Start
 SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY docker compose up -d
 
 # Save the key — you'll need to distribute it to your team
 echo "SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY"
-
-# Verify (Caddy's default cert is self-signed via `tls internal`, see
-# Caddyfile — `-k` skips verification, fine for a local check, not for
-# anything crossing an untrusted network)
-curl -k https://localhost:8443/v1/health
-# → {"status":"ok","version":"0.9.2","capabilities":["memory"],...}
 ```
-
-Clients then point at the proxy's port, over `https://`:
-
-```toml
-server_url = "https://your-host:8443"
-```
-
-For a real (non-self-signed) certificate instead of Caddy's `tls internal`
-default, edit `Caddyfile` to name your domain — Caddy fetches and renews a
-Let's Encrypt certificate automatically. See
-[Self-hosting](self-hosting.md) for the bare-metal equivalent of this same
-loopback-plus-proxy shape.
 
 No key and no need to reach the server from the host or another machine — just
 from other containers on the same Docker network (e.g. a containerized agent,
@@ -264,27 +233,16 @@ environment:
 ## Production deployment
 
 `docker-compose.yml` is the recommended minimal deployment — `spelunk-server`
-(loopback-only), a Caddy sidecar terminating TLS and publishing the port, and
-a named volume for the SQLite database.
+, and a named volume for the SQLite database.
+
 
 Key considerations:
-- Putting the server behind a VPN or private subnet in addition to the proxy's
-  TLS is still good defense-in-depth (the API key is the app-level guard;
-  network-level access control is an additional layer, not a substitute for
-  either the key or TLS)
+- Putting the server behind a VPN or private subnet is still good
+  defense-in-depth (the API key is the app-level guard; network-level access
+  control is an additional layer, not a substitute for it)
 - The SQLite WAL-mode database handles 2–20 concurrent writers comfortably
 - Back up the volume (`spelunk.db`) with your normal database backup process
 - For large teams or heavy write loads, see the plan for Postgres support
-
-## Full stack with Ollama (Linux/NVIDIA only)
-
-`docker-compose.full.yml` adds Ollama for server-side LLM inference. This
-requires Linux + NVIDIA GPU + nvidia-container-toolkit. It does not work on
-Apple Silicon (Docker runs in a Linux VM without GPU passthrough).
-
-```bash
-SPELUNK_SERVER_KEY=your-key docker compose -f docker-compose.full.yml up -d
-```
 
 ## Running without Docker
 
