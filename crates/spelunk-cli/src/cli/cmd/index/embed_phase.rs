@@ -229,13 +229,16 @@ const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 /// first sample alone.
 ///
 /// This is the SINGLE authoritative rate source: `next_batch_size`,
-/// `batch_timeout`, and the progress-bar status message all read
+/// `batch_timeout`, and the progress-bar's displayed ETA (via `format_eta`,
+/// rendered into the status message — see `embed_progress_style`) all read
 /// `per_entry()` from the same `RateEstimate` instance, so they can never
 /// disagree the way the batch-size decision and the *displayed* rate
-/// diverged in the field (see `CALIBRATION_BATCH_1_WEIGHT`). `indicatif`'s own
-/// `{eta}` template token still runs its own internal estimator (see
-/// `embed_progress_style`) — that is display-only smoothing for the progress
-/// bar widget itself and is unrelated to any decision this struct feeds.
+/// diverged in the field (see `CALIBRATION_BATCH_1_WEIGHT`). This struct
+/// deliberately does NOT delegate to indicatif's own built-in `{eta}`
+/// estimator: that estimator infers rate purely from the timing of
+/// `bar.inc(1)` calls, which for this phase arrive in a burst right after
+/// each batch's response (see `format_eta`'s doc comment) — reliably wrong
+/// for bursty progress, hence this dedicated estimate.
 struct RateEstimate {
     /// Exponentially-weighted per-entry duration. `None` until the first batch
     /// lands.
@@ -295,20 +298,89 @@ impl RateEstimate {
     }
 }
 
-/// Progress style for the embed phase, including indicatif's built-in `{eta}`
-/// token. The ETA is driven by `bar.inc(1)` per embedded chunk and uses
-/// indicatif's double-exponentially-smoothed rate estimator; starting
-/// calibration with a batch of 1 (rather than a full batch) means the first
-/// data point lands almost immediately, so the ETA and the bar itself become
+/// Progress style for the embed phase. This does NOT use indicatif's
+/// built-in `{eta}` token: embedding is bursty (a batch's `bar.inc(1)` calls
+/// all land together right after its HTTP response arrives, then there's a
+/// long silent gap while the next request is in flight, with no increments
+/// at all), and indicatif's smoothed rate estimator reads that silence as
+/// "rate ≈ 0" and extrapolates a wildly inflated ETA — this is exactly the
+/// founder-observed "ETA 153y" bug (spelunk-oss^74 follow-up, PR #513). A
+/// PREVIOUS version of this doc comment claimed indicatif's smoothing
+/// "washes out" the cold-start skew across batches; that assumption is false
+/// for burst-then-silence updates like this phase's.
+///
+/// Instead, the ETA is computed from `RateEstimate` — the same measured
+/// per-chunk wall-clock rate that already drives `next_batch_size` and
+/// `batch_timeout` (see that struct's doc comment) — via `format_eta`, and
+/// rendered into `{wide_msg}` by the call sites in `run_embed_phase`. Using
+/// one rate source for sizing, timeout, AND the displayed ETA means they can
+/// never disagree.
+///
+/// Starting calibration with a batch of 1 (rather than a full batch) means
+/// the first data point lands almost immediately, so the bar itself becomes
 /// visible right away instead of only after a full batch completes
-/// (spelunk-oss^73/^74). A steady tick keeps the spinner and ETA moving even
-/// while a request is in flight, so a slow batch never looks frozen.
+/// (spelunk-oss^73/^74). A steady tick keeps the spinner moving even while a
+/// request is in flight, so a slow batch never looks frozen.
 fn embed_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  ETA {eta}  {wide_msg}",
+        "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  {wide_msg}",
     )
     .unwrap()
     .progress_chars("=>-")
+}
+
+/// Ceiling on the computed ETA duration: a single bad/degenerate sample (a
+/// huge `per_entry` from a pathological retry, or an early estimate skewed by
+/// cold-start) must never render an absurd value like "153y" — the exact
+/// founder-observed regression this fix addresses. Anything at or above this
+/// is displayed as `ETA >24h` instead of the literal computed duration.
+const ETA_DISPLAY_CAP: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Render the embed phase's displayed ETA from the measured `RateEstimate`
+/// (see that struct's doc comment) and the number of chunks remaining.
+///
+/// - `per_entry` is `None` before the first batch has landed (i.e. during
+///   calibration batch 1's in-flight request) — there is no measurement yet
+///   to derive anything from, so this shows a calibrating placeholder rather
+///   than guessing.
+/// - Otherwise the remaining wall-clock time is `per_entry * remaining`,
+///   computed with `f64` and clamped BEFORE converting back to a `Duration`
+///   (`per_entry.as_secs_f64() * remaining as f64` can overflow/produce `inf`
+///   for a pathological `per_entry`, e.g. a 408-derived sample folded in at
+///   `MAX_REQUEST_TIMEOUT`) — so a bad sample can only ever produce the
+///   `>24h` capped string, never a panic or a nonsense number of years.
+/// - The formatted duration is compact: sub-minute shows seconds, sub-hour
+///   shows minutes (+ seconds if any), and hours show hours + minutes.
+fn format_eta(remaining: usize, per_entry: Option<Duration>) -> String {
+    let Some(per_entry) = per_entry else {
+        return "ETA calibrating…".to_string();
+    };
+    if remaining == 0 {
+        return "ETA 0s".to_string();
+    }
+
+    let seconds = (per_entry.as_secs_f64() * remaining as f64).clamp(0.0, f64::MAX);
+    if !seconds.is_finite() || seconds >= ETA_DISPLAY_CAP.as_secs_f64() {
+        return "ETA >24h".to_string();
+    }
+    let remaining_duration = Duration::from_secs_f64(seconds);
+
+    let total_secs = remaining_duration.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
+    if hours > 0 {
+        format!("ETA {hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        if secs > 0 {
+            format!("ETA {minutes}m{secs}s")
+        } else {
+            format!("ETA {minutes}m")
+        }
+    } else {
+        format!("ETA {secs}s")
+    }
 }
 
 #[derive(Serialize)]
@@ -503,9 +575,14 @@ pub(super) async fn run_embed_phase(
 
             // Show which chunks are in flight so a single slow request reads as
             // progress against a known window, not a frozen bar (spelunk-oss^73).
+            // Prefix with the ETA derived from the measured `RateEstimate`
+            // (spelunk-oss^74 follow-up, PR #513) — NOT indicatif's built-in
+            // `{eta}` token, which misreads this phase's bursty increments as
+            // near-zero throughput (see `format_eta`'s doc comment).
+            let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
             bar.set_message(format!(
-                "sent {this_batch_size} chunk(s) ({embedded}/{total} done so far), \
-                 awaiting response\u{2026}",
+                "{eta_str}  \u{00b7}  sent {this_batch_size} chunk(s) ({embedded}/{total} done \
+                 so far), awaiting response\u{2026}",
             ));
 
             let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
@@ -536,10 +613,12 @@ pub(super) async fn run_embed_phase(
                     // rate rather than being fixed from a single early
                     // sample, so a rate that drifts mid-run is picked up
                     // within a couple of batches (spelunk-oss^71/^74). The
-                    // same per-chunk `bar.inc(1)` cadence below also feeds the
-                    // visible `{eta}`, which indicatif smooths across batches
-                    // so the tiny first calibration batch's cold-start skew
-                    // washes out quickly (spelunk-oss^74).
+                    // freshly-updated `rate` is also what the per-chunk
+                    // `bar.inc(1)` loop below re-derives the displayed ETA
+                    // from (via `format_eta`) — NOT indicatif's own `{eta}`
+                    // estimator, which reads this phase's bursty increments
+                    // (all landing at once, right here) as near-zero
+                    // throughput (spelunk-oss^74 follow-up, PR #513).
                     rate.update(started.elapsed(), batch.len());
                     break 'retry bytes;
                 }
@@ -635,6 +714,14 @@ pub(super) async fn run_embed_phase(
             db.insert_embedding(*row_id, &vector)?;
             embedded += 1;
             bar.inc(1);
+            // Refresh the displayed ETA from the just-updated `rate` as each
+            // chunk in this batch lands, so it visibly counts down through a
+            // batch rather than only updating once per request
+            // (spelunk-oss^74 follow-up, PR #513); recomputed fresh each time
+            // rather than cached, since `embedded`/`total.saturating_sub` and
+            // `rate` are cheap and this loop runs at most `MAX_BATCH` times.
+            let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
+            bar.set_message(format!("{eta_str}  \u{00b7}  {embedded}/{total} embedded"));
         }
 
         previous_batch_size = this_batch_size;
@@ -1029,27 +1116,101 @@ mod tests {
         assert!(r.per_entry().is_none());
     }
 
-    // ── embed_progress_style: the ETA-aware indicatif template must build ───────
+    // ── embed_progress_style: the template (message-only ETA, no indicatif
+    //    `{eta}` token) must build ──────────────────────────────────────────
     // (spelunk-oss^74)
 
     #[test]
-    fn embed_progress_style_builds_with_eta_token() {
-        // `embed_progress_style()` calls `ProgressStyle::with_template(..).unwrap()`
-        // on a template string containing `{eta}`. A malformed template (e.g. a
-        // typo'd token) would panic at that unwrap the first time the embed phase
-        // runs. Building it here proves the ETA-aware style is well-formed and
-        // wired up, and applying it to a bar exercises the same path the embed
-        // phase takes when it calls `bar.set_style(embed_progress_style())`.
+    fn embed_progress_style_builds_without_indicatif_eta_token() {
+        // `embed_progress_style()` calls `ProgressStyle::with_template(..).unwrap()`.
+        // A malformed template (e.g. a typo'd token) would panic at that unwrap the
+        // first time the embed phase runs. Building it here proves the style is
+        // well-formed and wired up, and applying it to a bar exercises the same path
+        // the embed phase takes when it calls `bar.set_style(embed_progress_style())`.
         let style = embed_progress_style();
         let bar = ProgressBar::hidden();
         bar.set_style(style);
         // Driving the bar the way the embed phase does (steady tick + per-chunk
-        // inc) must not panic with the ETA template applied.
+        // inc + message updates) must not panic.
         bar.enable_steady_tick(Duration::from_millis(120));
         bar.set_length(10);
         bar.tick();
+        bar.set_message(format_eta(9, Some(Duration::from_secs(2))));
         bar.inc(1);
         bar.finish_and_clear();
+    }
+
+    // ── format_eta: display ETA derived from the measured RateEstimate, not
+    //    indicatif's bursty built-in estimator ───────────────────────────────
+    // (spelunk-oss^74 follow-up, PR #513 — founder-observed "ETA 153y" bug)
+
+    #[test]
+    fn format_eta_shows_calibrating_when_rate_unknown() {
+        // Before the first batch has landed there is no measurement to derive
+        // an ETA from at all — show a calibrating placeholder, not a guess.
+        assert_eq!(format_eta(41, None), "ETA calibrating…");
+    }
+
+    #[test]
+    fn format_eta_shows_seconds_for_sub_minute_remaining() {
+        // 1 s/entry * 12 remaining = 12s.
+        assert_eq!(format_eta(12, Some(Duration::from_secs(1))), "ETA 12s");
+    }
+
+    #[test]
+    fn format_eta_shows_zero_seconds_when_nothing_remains() {
+        assert_eq!(format_eta(0, Some(Duration::from_secs(5))), "ETA 0s");
+    }
+
+    #[test]
+    fn format_eta_shows_minutes_and_seconds() {
+        // 2 s/entry * 100 remaining = 200s = 3m20s.
+        assert_eq!(format_eta(100, Some(Duration::from_secs(2))), "ETA 3m20s");
+    }
+
+    #[test]
+    fn format_eta_shows_bare_minutes_when_no_remainder_seconds() {
+        // 1 s/entry * 180 remaining = 180s = 3m exactly.
+        assert_eq!(format_eta(180, Some(Duration::from_secs(1))), "ETA 3m");
+    }
+
+    #[test]
+    fn format_eta_shows_hours_and_minutes() {
+        // 60 s/entry * 65 remaining = 3900s = 1h05m.
+        assert_eq!(format_eta(65, Some(Duration::from_secs(60))), "ETA 1h05m");
+    }
+
+    #[test]
+    fn format_eta_caps_pathologically_large_duration_instead_of_showing_absurd_value() {
+        // THE regression guard: this is the shape of the founder-observed
+        // "ETA 153y" bug. A pathological per_entry (e.g. folded in from a
+        // MAX_REQUEST_TIMEOUT-derived 408 sample) times a large remaining
+        // count must render the capped ">24h" string — never an overflowed,
+        // panicking, or absurdly large (years-scale) computed value.
+        let eta = format_eta(1_000_000, Some(Duration::from_secs(10_000_000)));
+        assert_eq!(eta, "ETA >24h");
+        assert!(
+            !eta.contains('y'),
+            "must never render a years-scale duration like the field-observed 153y bug: {eta}"
+        );
+    }
+
+    #[test]
+    fn format_eta_caps_at_boundary_just_above_24h() {
+        // Exactly at/above the 24h cap must show the capped string, not a
+        // literal "24h00m" or similar — the cap is a hard ceiling on what's
+        // ever displayed, not just a guard against overflow.
+        let eta = format_eta(1, Some(Duration::from_secs(24 * 60 * 60 + 1)));
+        assert_eq!(eta, "ETA >24h");
+    }
+
+    #[test]
+    fn format_eta_does_not_panic_on_overflow_prone_inputs() {
+        // Duration::MAX times a large remaining count would overflow a naive
+        // `Duration * u32`/`Duration::saturating_mul` computation; this must
+        // still return the capped string without panicking.
+        let eta = format_eta(usize::MAX, Some(Duration::MAX));
+        assert_eq!(eta, "ETA >24h");
     }
 
     // ── run_embed_phase: a mid-run batch failure must not discard earlier,
