@@ -100,6 +100,23 @@ Beyond this table, oss^60 also added a `tower_http` middleware stack (see §DoS 
 (256), plus IP-keyed rate limiting on `/explore` and `/llm/complete`, and an
 embedding-vector-length check against the configured dim.
 
+**`/index/embed` timeout carve-out (spelunk-oss^71/^73/^74, PR #513 field-failure
+follow-up):** the blanket 30s `TimeoutLayer` above made `/index/embed` unusable — a
+legitimate calibrated batch (or even a single oversized chunk on slow/CPU-only
+hardware) genuinely needs minutes, and was being killed at 30s regardless of what
+the CLI's own client-side timeout allowed. Fixed by giving `/index/embed` its own
+long-budget timeout (`EMBED_REQUEST_TIMEOUT`, 1800s, matching the CLI's
+`MAX_REQUEST_TIMEOUT` ceiling) instead of `REQUEST_TIMEOUT` — same carve-out
+pattern as the `/memory/stream` exemption above, not a blanket removal:
+`/index/embed` keeps the same `auth_middleware` + `ConcurrencyLimitLayer` +
+`RequestBodyLimitLayer` (2 MiB) + its own `MAX_EMBED_BATCH` (256 chunks) handler
+cap, so the DoS surface stays bounded (see `THREAT-MODEL.md`'s updated D-table
+row). `/v1/health` now also carries a `limits` object
+(`embed_request_timeout_secs`, `max_batch_chunks`, `embedder_token_cap`) so a
+client can detect and adapt to a server that pre-dates this fix (absent `limits`
+⇒ assume the old 30s/no-exemption profile) instead of assuming its own
+calibration always fits whatever server it happens to be talking to.
+
 ## 5. SSE stream
 
 The OSS server has one shared key with no per-key revocation and no orgs (ADR-056),

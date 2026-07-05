@@ -29,6 +29,10 @@ pub const MAX_TITLE_LEN: usize = 500;
 pub const MAX_BODY_LEN: usize = 50_000;
 /// Max length (bytes) for a `project_id` path slug (e.g. `usercise/spelunk`).
 pub const MAX_SLUG_LEN: usize = 200;
+/// Max number of chunks accepted in a single `/index/embed` request. Also
+/// advertised in `/v1/health`'s `limits.max_batch_chunks` so a client can size
+/// its calibrated batch without guessing (see `HealthResponse`).
+pub const MAX_EMBED_BATCH: usize = 256;
 
 /// Reject a title/body pair that exceeds the configured caps. Shared by every
 /// handler that accepts free-text memory content (`add_note`, `supersede`'s
@@ -294,6 +298,40 @@ pub struct EmbedderStatus {
     pub detail: Option<String>,
 }
 
+/// Server-enforced operative limits relevant to sizing an `/index/embed`
+/// request, so a client can clamp its own batching to what this particular
+/// server build actually supports instead of assuming (spelunk-oss^71/^73/^74
+/// PR #513 field-failure follow-up).
+///
+/// Added alongside the `/index/embed`-specific request timeout (see
+/// `EMBED_REQUEST_TIMEOUT` in `lib.rs`): a CLI that calibrates a batch to run
+/// for `request_timeout_secs` and gets 408'd is a **version-skew** signal — an
+/// old server (pre-dating this field, so the whole `limits` object is absent)
+/// still enforces the old blanket 30s budget. Absent `limits` therefore means
+/// "assume the legacy 30s / no-embed-exemption profile", not "unlimited".
+#[derive(Serialize, ToSchema)]
+pub struct ServerLimits {
+    /// Wall-clock budget (seconds) this server allows a single `/index/embed`
+    /// request before returning `408`. A client should keep its per-request
+    /// batch's *expected* duration comfortably under this, not just under its
+    /// own client-side timeout — the server will cut it off regardless of
+    /// what the client is willing to wait for.
+    pub embed_request_timeout_secs: u64,
+    /// Max chunks accepted in a single `/index/embed` request (`413` above
+    /// this). Mirrors `MAX_EMBED_BATCH`.
+    pub max_batch_chunks: usize,
+    /// Per-chunk token truncation cap the embedder enforces, if known (native
+    /// backend only — see `EmbeddingBackend::token_cap`). `null` when the
+    /// embedder isn't ready yet or doesn't expose one (e.g. an external
+    /// `--embedding-url` backend). Informational: a client can use it to avoid
+    /// assuming every chunk is small when estimating a batch's total token
+    /// volume, but the binding constraint in practice is wall-clock time, not
+    /// per-batch memory — sub-batches are already bounded independently of
+    /// total batch size (see `EMBED_BATCH_SIZE` / `BATCH_MAX_SEQ` in
+    /// `embedder_native.rs`).
+    pub embedder_token_cap: Option<usize>,
+}
+
 /// Server capabilities reported in the health response.
 #[derive(Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -316,6 +354,10 @@ pub struct HealthResponse {
     /// Embedder readiness. Newer clients read `embedder.state` for the finer
     /// `loading` vs `unavailable` distinction that `capabilities` cannot express.
     pub embedder: EmbedderStatus,
+    /// Server-enforced operative limits for `/index/embed` batch sizing. See
+    /// [`ServerLimits`]. Absent on servers that pre-date this field — treat
+    /// that as the legacy 30s/no-exemption profile, not "no limit".
+    pub limits: ServerLimits,
 }
 
 /// Server liveness check. No authentication required.
@@ -350,6 +392,7 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         capabilities.push("llm.complete".to_string());
     }
     let embedding_dim = ready_backend.as_ref().map_or(0, |e| e.dimension());
+    let embedder_token_cap = ready_backend.as_ref().and_then(|e| e.token_cap());
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -360,6 +403,11 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         embedder: EmbedderStatus {
             state: embedder_state,
             detail: state.embedder.detail(),
+        },
+        limits: ServerLimits {
+            embed_request_timeout_secs: super::EMBED_REQUEST_TIMEOUT.as_secs(),
+            max_batch_chunks: MAX_EMBED_BATCH,
+            embedder_token_cap,
         },
     })
 }
@@ -995,16 +1043,15 @@ pub async fn index_embed(
     Json(body): Json<EmbedRequest>,
 ) -> Result<Response, AppError> {
     validate_project_slug(&project_id)?;
-    const MAX_BATCH: usize = 256;
 
     // Check batch size first so clients get a 413 even when no embedder is configured.
-    if body.chunks.len() > MAX_BATCH {
+    if body.chunks.len() > MAX_EMBED_BATCH {
         return Ok((
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(ErrorBody::new(
                 "bad_request",
                 &format!(
-                    "Batch size {} exceeds maximum of {MAX_BATCH} chunks per request.",
+                    "Batch size {} exceeds maximum of {MAX_EMBED_BATCH} chunks per request.",
                     body.chunks.len()
                 ),
             )),
@@ -1764,6 +1811,23 @@ mod tests {
             json!("disabled"),
             "embedder.state must be 'disabled' when no embedder is configured"
         );
+        // `limits` (spelunk-oss^71/^73/^74, PR #513): always present, even
+        // with no embedder — a client needs the request-timeout/batch-count
+        // limits before it can even ask whether an embedder is ready.
+        assert_eq!(
+            json["limits"]["embed_request_timeout_secs"],
+            json!(super::super::EMBED_REQUEST_TIMEOUT.as_secs()),
+            "limits.embed_request_timeout_secs must reflect EMBED_REQUEST_TIMEOUT"
+        );
+        assert_eq!(
+            json["limits"]["max_batch_chunks"],
+            json!(super::MAX_EMBED_BATCH),
+            "limits.max_batch_chunks must reflect MAX_EMBED_BATCH"
+        );
+        assert!(
+            json["limits"]["embedder_token_cap"].is_null(),
+            "embedder_token_cap must be null with no embedder configured"
+        );
     }
 
     /// POST /v1/projects/{slug}/memory/search with no embedder should return 400.
@@ -1893,6 +1957,14 @@ mod tests {
             json["embedder"]["state"],
             json!("ready"),
             "embedder.state must be 'ready' when the embedder is loaded"
+        );
+        // `MockEmbedder` doesn't override `token_cap()`, so it gets the
+        // trait's default `None` — same as any non-native backend (e.g. an
+        // external `--embedding-url` OpenAI-compatible server). Only
+        // `NativeEmbedder` has a real, host-derived cap to report.
+        assert!(
+            json["limits"]["embedder_token_cap"].is_null(),
+            "embedder_token_cap must be null for a backend with no known cap"
         );
     }
 
@@ -2417,6 +2489,53 @@ mod tests {
         (format!("http://{addr}"), db)
     }
 
+    /// Same as [`spawn_test_server`], but with an embedder slot and the
+    /// general/`/index/embed` timeouts injected independently — exists so
+    /// tests can prove `/index/embed` survives past the *general*
+    /// `request_timeout` budget using its own, separately-injected
+    /// `embed_request_timeout` (mirroring the production
+    /// `REQUEST_TIMEOUT`/`EMBED_REQUEST_TIMEOUT` split), without waiting out
+    /// real multi-second budgets.
+    async fn spawn_test_server_with_embed(
+        embedder: super::super::EmbedderSlot,
+        request_timeout: std::time::Duration,
+        embed_request_timeout: std::time::Duration,
+    ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4)
+            .expect("failed to open in-memory server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
+        db.upsert_project("timeout-test", 4)
+            .expect("create test project");
+        let db = Arc::new(tokio::sync::Mutex::new(db));
+        let state = AppState {
+            db: db.clone(),
+            auth: Arc::new(ApiKeyAuth::new(None)),
+            conflict_threshold: 0.92,
+            embedder,
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
+            instance_id,
+            started_by: None,
+        };
+        let app = super::super::router_with_timeouts(state, request_timeout, embed_request_timeout);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("test server crashed");
+        });
+        (format!("http://{addr}"), db)
+    }
+
     /// A normal (non-exempt, non-streaming) route whose handler outlives the
     /// injected `TimeoutLayer` budget must be aborted with `408 Request
     /// Timeout`. This is the control case proving the timeout layer is live
@@ -2692,6 +2811,160 @@ mod tests {
                 // ticks); what matters is it didn't error/close above.
             }
         }
+    }
+
+    // ── TimeoutLayer / `/index/embed` exemption (spelunk-oss^71/^73/^74,
+    //    PR #513 field-failure follow-up) ───────────────────────────────────
+    //
+    // Same proof style as the `/memory/stream` exemption above: bind the real
+    // router with the general and embed timeouts injected *independently*
+    // (mirroring production's `REQUEST_TIMEOUT` vs `EMBED_REQUEST_TIMEOUT`
+    // split) and drive it with a real HTTP client, so we're proving actual
+    // wire behaviour rather than just that `/index/embed` lives in a
+    // sub-router with a different `TimeoutLayer` attached.
+
+    /// An embedder backend that sleeps for a fixed duration before returning a
+    /// zero vector per input — models a slow (e.g. CPU-only, cold-cache, or
+    /// oversized-chunk) embed call on real hardware, the case
+    /// `EMBED_REQUEST_TIMEOUT` exists to accommodate rather than kill.
+    struct SlowEmbedder {
+        delay: std::time::Duration,
+        dim: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl spelunk_core::embeddings::EmbeddingBackend for SlowEmbedder {
+        async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(texts.iter().map(|_| vec![0.0_f32; self.dim]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+    }
+
+    /// `/index/embed` must survive well past the *general* `TimeoutLayer`
+    /// budget that kills every other synchronous route (proved by
+    /// `normal_route_exceeding_timeout_returns_408` above) as long as it stays
+    /// under its own, separately-injected `embed_request_timeout` — this is
+    /// the actual proof the exemption works, not just that the two constants
+    /// exist. A slow embed call (bounded here, unbounded model inference in
+    /// production) must complete successfully instead of being cut off at the
+    /// general budget.
+    #[tokio::test]
+    async fn embed_survives_general_timeout_budget() {
+        let general_timeout = std::time::Duration::from_millis(100);
+        // Comfortably longer than `general_timeout` but still fast for a
+        // test; the embed-specific timeout injected below is longer still.
+        let embed_delay = general_timeout * 5;
+        let embed_timeout = general_timeout * 20;
+
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(SlowEmbedder {
+            delay: embed_delay,
+            dim: 4,
+        }));
+        let (base, _db) =
+            spawn_test_server_with_embed(embedder, general_timeout, embed_timeout).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({
+                "chunks": [{"chunk_id": "1", "content": "fn f() {}"}],
+            }))
+            .send()
+            .await
+            .expect("request should complete (not hang forever)");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "/index/embed must survive a slow embed call that exceeds the general \
+             TimeoutLayer budget but stays under its own EMBED_REQUEST_TIMEOUT — a 408 \
+             here would mean the exemption isn't wired up (this is the exact field \
+             failure this fix addresses: a real embed batch killed at 30s)"
+        );
+    }
+
+    /// Control case for the test above: with the embed-specific timeout
+    /// injected *shorter* than the slow embed call, `/index/embed` must still
+    /// 408 — proving the embed sub-router's `TimeoutLayer` is actually live
+    /// (not simply absent/unbounded), just configured with a different
+    /// budget than the general routes.
+    #[tokio::test]
+    async fn embed_still_times_out_within_its_own_budget() {
+        let general_timeout = std::time::Duration::from_secs(60); // effectively "not the bottleneck"
+        let embed_timeout = std::time::Duration::from_millis(100);
+        let embed_delay = embed_timeout * 5;
+
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(SlowEmbedder {
+            delay: embed_delay,
+            dim: 4,
+        }));
+        let (base, _db) =
+            spawn_test_server_with_embed(embedder, general_timeout, embed_timeout).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({
+                "chunks": [{"chunk_id": "1", "content": "fn f() {}"}],
+            }))
+            .send()
+            .await
+            .expect("request should complete (with a timeout status), not hang forever");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            408,
+            "/index/embed must still be bounded by its OWN budget — this proves the \
+             embed sub-router's TimeoutLayer is live, not that /index/embed is now \
+             unbounded"
+        );
+    }
+
+    /// A normal route (e.g. `/memory`, tested here via `add_note`) must still
+    /// 408 at the *general* budget even when `/index/embed` has been given a
+    /// much longer one — proving the split is a targeted carve-out for
+    /// `/index/embed` specifically, not an accidental widening of the general
+    /// timeout for every route.
+    #[tokio::test]
+    async fn other_routes_unaffected_by_longer_embed_budget() {
+        let general_timeout = std::time::Duration::from_millis(100);
+        let embed_timeout = std::time::Duration::from_secs(60); // deliberately much longer
+
+        let embedder = super::super::EmbedderSlot::disabled();
+        let (base, db) =
+            spawn_test_server_with_embed(embedder, general_timeout, embed_timeout).await;
+
+        let guard = db.lock_owned().await;
+        let hold_for = general_timeout * 5;
+        let release_task = tokio::spawn(async move {
+            tokio::time::sleep(hold_for).await;
+            drop(guard);
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{base}/v1/projects/timeout-test/memory"))
+            .json(&json!({
+                "kind": "note",
+                "title": "t",
+                "body": "b",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+            }))
+            .send()
+            .await
+            .expect("request should complete (with a timeout status), not hang forever");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            408,
+            "a much longer /index/embed budget must not leak into the general route group"
+        );
+
+        release_task.await.expect("release task panicked");
     }
 
     // ── ConcurrencyLimitLayer under concurrent load (spelunk-oss^60) ──────────

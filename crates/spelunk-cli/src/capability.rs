@@ -103,6 +103,27 @@ impl EmbedderState {
     }
 }
 
+/// Server-enforced operative limits relevant to sizing an `/index/embed`
+/// request, mirrored from `/v1/health`'s `limits` object (spelunk-oss^71/^73/
+/// ^74, PR #513 field-failure follow-up: `crates/spelunk-server/src/handlers.rs`
+/// `ServerLimits`).
+///
+/// `None` on a `Tier::Server` (rather than this struct being absent) means the
+/// server pre-dates this field — the embed phase treats that as "assume the
+/// legacy 30s / no-embed-exemption profile", which is exactly the
+/// version-skew case a newer CLI can hit talking to an older, long-running
+/// server (see `embed_phase.rs`'s calibration-vs-server-budget clamping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerLimits {
+    /// Wall-clock budget (seconds) the server allows a single `/index/embed`
+    /// request before returning `408`.
+    pub embed_request_timeout_secs: u64,
+    /// Max chunks accepted in a single `/index/embed` request (`413` above this).
+    pub max_batch_chunks: usize,
+    /// Per-chunk token truncation cap the embedder enforces, if known.
+    pub embedder_token_cap: Option<usize>,
+}
+
 /// Feature availability for a server-connected tier.
 #[derive(Debug, Clone, Serialize)]
 pub struct Capabilities {
@@ -184,6 +205,13 @@ pub enum Tier {
         /// but model still warming up / failed to load" from a ready server when
         /// semantic search is unavailable (task item #5; rendered by `status`).
         embedder_state: EmbedderState,
+        /// Server-enforced `/index/embed` limits, mirrored from `/v1/health`'s
+        /// `limits` object (spelunk-oss^71/^73/^74). `None` when the field is
+        /// absent — a server that pre-dates this fix and still enforces the
+        /// old blanket 30s budget with no `/index/embed` exemption. The embed
+        /// phase (`embed_phase.rs`) reads this to clamp its own calibration to
+        /// what this particular server actually supports instead of assuming.
+        server_limits: Option<ServerLimits>,
     },
 }
 
@@ -218,6 +246,18 @@ impl Tier {
     pub fn embedder_state(&self) -> Option<EmbedderState> {
         match self {
             Tier::Server { embedder_state, .. } => Some(*embedder_state),
+            Tier::Offline => None,
+        }
+    }
+
+    /// Server-enforced `/index/embed` limits for a `Server` tier, or `None`
+    /// when offline *or* when the server pre-dates the `/v1/health` `limits`
+    /// field. Used by the embed phase (`embed_phase.rs`) to clamp its own
+    /// calibration to what this particular server actually supports —
+    /// see spelunk-oss^71/^73/^74 (PR #513 field-failure follow-up).
+    pub fn server_limits(&self) -> Option<ServerLimits> {
+        match self {
+            Tier::Server { server_limits, .. } => *server_limits,
             Tier::Offline => None,
         }
     }
@@ -410,7 +450,7 @@ async fn probe_url(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let (caps, server_dim, embedder_state) = parse_health(url, resp).await;
+            let (caps, server_dim, embedder_state, server_limits) = parse_health(url, resp).await;
 
             // If the server advertises index.embed, its embedding dimension must match ours.
             if caps.index_embed && server_dim != 0 {
@@ -444,6 +484,7 @@ async fn probe_url(
                 caps,
                 auto_discovered,
                 embedder_state,
+                server_limits,
             })
         }
         Ok(resp) => {
@@ -467,7 +508,7 @@ async fn probe_url(
 }
 
 /// Parse the health response body and return `(Capabilities, embedding_dim,
-/// embedder_state)`.
+/// embedder_state, server_limits)`.
 ///
 /// `embedding_dim` is `0` when the field is absent (old server without the field)
 /// or when no embedder is loaded. A `0` dim skips the dimension check in `probe_url`
@@ -476,7 +517,16 @@ async fn probe_url(
 /// `embedder_state` mirrors the `/v1/health` `embedder.state` field shipped in
 /// spelunk-oss^50 PR A (`embedder: { state, detail }`). It is `Unknown` when the
 /// sub-object is absent (older server) or the body is legacy plain-text.
-async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usize, EmbedderState) {
+///
+/// `server_limits` mirrors `/v1/health`'s `limits` object (spelunk-oss^71/^73/
+/// ^74). `None` when absent — a server that pre-dates the field, which is
+/// exactly the version-skew case: it still enforces the old blanket 30s
+/// `/index/embed` budget with no exemption, regardless of what the CLI's own
+/// calibration would otherwise target.
+async fn parse_health(
+    url: &str,
+    resp: reqwest::Response,
+) -> (Capabilities, usize, EmbedderState, Option<ServerLimits>) {
     #[derive(serde::Deserialize)]
     struct EmbedderBody {
         #[serde(default)]
@@ -497,6 +547,10 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usiz
         /// → `embedder_state` stays `Unknown`.
         #[serde(default)]
         embedder: Option<EmbedderBody>,
+        /// Server-enforced `/index/embed` limits (spelunk-oss^71/^73/^74).
+        /// Absent on older servers → `server_limits` stays `None`.
+        #[serde(default)]
+        limits: Option<ServerLimits>,
     }
 
     match resp.json::<HealthBody>().await {
@@ -527,15 +581,17 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> (Capabilities, usiz
                 Capabilities::from_server_caps(&cap_strs),
                 body.embedding_dim,
                 embedder_state,
+                body.limits,
             )
         }
         Err(_) => {
             // Legacy server returns plain-text "ok" — conservative fallback.
-            // embedding_dim = 0 skips the dimension check; state Unknown.
+            // embedding_dim = 0 skips the dimension check; state Unknown; no limits.
             (
                 Capabilities::legacy_memory_only(),
                 0,
                 EmbedderState::Unknown,
+                None,
             )
         }
     }
@@ -688,6 +744,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         assert!(tier.is_server());
     }
@@ -705,6 +762,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         assert_eq!(tier.server_url(), Some("http://spelunk.internal:7777"));
     }
@@ -723,6 +781,7 @@ mod tests {
             caps: caps.clone(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         assert!(tier.caps().is_some());
     }
@@ -740,12 +799,14 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         let explicit = Tier::Server {
             url: "http://server.example.com:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         assert!(auto.is_auto_discovered());
         assert!(!explicit.is_auto_discovered());
@@ -765,6 +826,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         let cfg = Config::default(); // server_url = None
         let eff = tier.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
@@ -795,6 +857,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -831,6 +894,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
+            server_limits: None,
         };
         assert!(require_tier1("explore", &tier, Some("http://example.com")).is_ok());
     }
@@ -982,6 +1046,105 @@ mod tests {
             matches!(result, Ok(Tier::Server { .. })),
             "auto-discovered loopback with correct dim must return Server; got {result:?}"
         );
+    }
+
+    // ── ServerLimits parsing (spelunk-oss^71/^73/^74, PR #513 field-failure
+    //    fix: /v1/health `limits` object) ────────────────────────────────────
+
+    /// A server that DOES advertise `limits` must have it parsed into
+    /// `Tier::Server.server_limits`. This is the non-version-skew case: a
+    /// current-build server carrying the `/index/embed` timeout exemption.
+    #[tokio::test]
+    async fn probe_url_parses_server_limits_when_present() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut body = health_body(
+            &["memory", "index.embed", "search.semantic"],
+            spelunk_core::embeddings::EMBEDDING_DIM,
+        );
+        body["limits"] = serde_json::json!({
+            "embed_request_timeout_secs": 1800,
+            "max_batch_chunks": 256,
+            "embedder_token_cap": 5792,
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe must succeed");
+        let limits = result
+            .server_limits()
+            .expect("server_limits must be Some when the health body carries `limits`");
+        assert_eq!(limits.embed_request_timeout_secs, 1800);
+        assert_eq!(limits.max_batch_chunks, 256);
+        assert_eq!(limits.embedder_token_cap, Some(5792));
+    }
+
+    /// A server that does NOT advertise `limits` (pre-dates the field) must
+    /// leave `Tier::Server.server_limits` as `None` — this is the exact
+    /// version-skew case: an old server still enforcing the legacy 30s
+    /// `/index/embed` budget with no exemption. `None` must never be
+    /// confused with "no limit" by a caller.
+    #[tokio::test]
+    async fn probe_url_server_limits_none_when_absent_legacy_server() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // health_body() deliberately has no `limits` field (models a server
+        // that pre-dates this fix).
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory", "index.embed", "search.semantic"],
+                spelunk_core::embeddings::EMBEDDING_DIM,
+            )))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe must succeed");
+        assert_eq!(
+            result.server_limits(),
+            None,
+            "a server that omits `limits` must be treated as version-skewed, not unlimited"
+        );
+    }
+
+    /// `embedder_token_cap` specifically must round-trip as `None` when the
+    /// server reports it as JSON `null` (e.g. embedder not ready, or an
+    /// external non-native backend with no known cap) — distinct from the
+    /// whole `limits` object being absent.
+    #[tokio::test]
+    async fn probe_url_parses_server_limits_with_null_token_cap() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut body = health_body(&["memory"], 0);
+        body["limits"] = serde_json::json!({
+            "embed_request_timeout_secs": 1800,
+            "max_batch_chunks": 256,
+            "embedder_token_cap": null,
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+            .await
+            .expect("probe must succeed");
+        let limits = result.server_limits().expect("limits object was present");
+        assert_eq!(limits.embedder_token_cap, None);
     }
 
     /// Auto-discovered loopback server with no embedder (dim 0) → `Tier::Server`
@@ -1148,6 +1311,7 @@ mod tests {
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Loading,
+            server_limits: None,
         };
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Loading));
         assert_eq!(Tier::Offline.embedder_state(), None);

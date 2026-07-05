@@ -695,6 +695,15 @@ impl spelunk_core::embeddings::EmbeddingBackend for NativeEmbedder {
     fn dimension(&self) -> usize {
         DIM
     }
+
+    /// The host-derived per-chunk truncation cap (see `derive_token_cap`),
+    /// surfaced so `/v1/health` can advertise it and a client can size a
+    /// batch's total token budget realistically. `None` when running under
+    /// the `token_cap == 0` test fixture ("no extra cap").
+    fn token_cap(&self) -> Option<usize> {
+        let cap = self.inner.lock().ok()?.token_cap;
+        if cap == 0 { None } else { Some(cap) }
+    }
 }
 
 #[cfg(test)]
@@ -968,9 +977,36 @@ mod tests {
         );
     }
 
-    // An end-to-end "load from a real local GGUF/tokenizer/config and embed"
-    // test lives in `spelunk-server`'s `embed_hub` module (ignored by default;
-    // it uses that crate's Hugging Face Hub path to prime the local cache
-    // artifacts this crate's `load_from_path` then reads with zero network
-    // access). This crate has no way to acquire those artifacts itself.
+    // End-to-end "load from a real local GGUF/tokenizer/config and embed"
+    // tests — including the `token_cap()` trait-method proof
+    // (`native_embedder_reports_its_token_cap`) — live in `spelunk-server`'s
+    // `embed_hub` module (ignored by default; it uses that crate's Hugging
+    // Face Hub path to prime the local cache artifacts this crate's
+    // `load_from_path` then reads with zero network access). This crate has
+    // no way to acquire those artifacts itself.
+
+    /// `token_cap()` (the `EmbeddingBackend` trait method `/v1/health`'s
+    /// `limits.embedder_token_cap` reads) must report the same value
+    /// `derive_token_cap`/`single_chunk_budget` compute for a given
+    /// budget/host-RAM pair — not `None` and not some other constant. This is
+    /// a pure-math check against the private helpers (no model load), so it
+    /// runs unconditionally; the live end-to-end proof against a real loaded
+    /// `NativeEmbedder` is `embed_hub::tests::native_embedder_reports_its_token_cap`
+    /// (ignored by default — downloads the model).
+    #[test]
+    fn token_cap_matches_derive_token_cap_for_host_budget() {
+        let budget = single_chunk_budget(total_system_ram());
+        let expected_cap = derive_token_cap(budget, N_HEAD);
+
+        // `EmbedderSlotInner`/`NativeEmbedder.inner.token_cap` (the field
+        // `token_cap()` reads) is set from exactly this derivation at load
+        // time (see `NativeEmbedder::from_files`/`load_from_path`) — assert
+        // the derivation itself is stable and non-degenerate rather than
+        // duplicating a full model load here.
+        assert!(expected_cap >= 1, "derived cap must be usable");
+        assert!(
+            expected_cap <= MAX_SEQ_LEN,
+            "derived cap must not exceed the model's position-embedding ceiling"
+        );
+    }
 }

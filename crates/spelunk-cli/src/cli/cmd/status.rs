@@ -348,6 +348,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             caps,
             auto_discovered,
             embedder_state,
+            ..
         } => {
             let url_label = if *auto_discovered {
                 format!("{url}  \x1b[2m(local, auto)\x1b[0m")

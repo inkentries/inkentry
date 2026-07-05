@@ -355,4 +355,33 @@ mod tests {
         let norm: f32 = vecs[0].iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-3, "embedding must be L2-normalised");
     }
+
+    /// `token_cap()` (the `EmbeddingBackend` trait method `/v1/health`'s
+    /// `limits.embedder_token_cap` reads) must report a real, usable,
+    /// host-derived cap for a fully loaded embedder — not `None` and not a
+    /// degenerate value. This is the live end-to-end proof; the pure-math
+    /// derivation itself (`derive_token_cap`/`single_chunk_budget`) has its own
+    /// unconditional unit coverage in `spelunk_embed::embedder_native::tests`.
+    /// Ignored by default: downloads the model. Run with:
+    ///   SPELUNK_SECRET_STORE=file cargo test -p spelunk-server \
+    ///     -- --ignored native_embedder_reports_its_token_cap
+    #[test]
+    #[ignore = "downloads the F2LLM model"]
+    fn native_embedder_reports_its_token_cap() {
+        use spelunk_core::embeddings::EmbeddingBackend;
+
+        let embedder = load_from_hub().expect("load F2LLM-v2-330M");
+
+        let cap = embedder
+            .token_cap()
+            .expect("a loaded NativeEmbedder must report a host-derived token cap");
+        // Sanity bounds matching the documented derivation (~5 792 @ 2 GiB,
+        // ~8 192 @ 4 GiB budget; see `derive_token_cap`'s doc comment) without
+        // reaching into spelunk-embed's private constants from this crate.
+        assert!(cap >= 1000, "token cap implausibly small: {cap}");
+        assert!(
+            cap <= 40_960,
+            "token cap must not exceed MAX_SEQ_LEN: {cap}"
+        );
+    }
 }
