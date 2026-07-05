@@ -21,7 +21,6 @@ embed-native = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [dependencies]
-spelunk-core = { path = "../spelunk-core" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

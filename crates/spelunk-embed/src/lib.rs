@@ -14,10 +14,15 @@
 //! surface. `spelunk-server` resolves the artifacts via its own Hugging Face
 //! Hub acquisition path (`embed_hub` module) and then calls `load_from_path`.
 //!
-//! The result is a [`NativeEmbedder`], which implements
-//! [`spelunk_core::embeddings::EmbeddingBackend`]. The whole engine is gated
-//! behind the `embed-native` cargo feature (on by default); add the `metal`
-//! feature for Metal GPU acceleration on macOS.
+//! The result is a [`NativeEmbedder`], which implements the crate's own
+//! [`EmbeddingBackend`] trait (re-exported by spelunk-core at
+//! `spelunk_core::embeddings::EmbeddingBackend`). The trait compiles
+//! unconditionally so this crate is storage-free; only the candle engine is
+//! gated behind the `embed-native` cargo feature (on by default). Add the
+//! `metal` feature for Metal GPU acceleration on macOS.
+
+mod backend;
+pub use backend::EmbeddingBackend;
 
 #[cfg(feature = "embed-native")]
 mod embedder_native;
