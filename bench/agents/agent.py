@@ -548,22 +548,41 @@ def main() -> None:
                 "*.yml",
                 "*.md",
             ]
-            subprocess.run(
-                ["git", "add", "--", *SOURCE_PATHSPECS],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=True,
+            # Never hand the allowlist itself to `git add`: git treats any
+            # pathspec with zero matches across the whole repo as fatal
+            # (exit 128, "pathspec '*.rs' did not match any files") and then
+            # stages nothing at all — not even the pathspecs that did match.
+            # Since a task repo only ever contains files for a few of the 18
+            # extensions above, that made patch capture fail on essentially
+            # every run, silently saving `patch_file: null` even when a
+            # correct fix sat in the working tree. Instead, resolve the
+            # allowlist to concrete changed files first — `git diff
+            # --name-only` (tracked, modified) and `git ls-files --others`
+            # (untracked, new) both tolerate unmatched pathspecs cleanly —
+            # and stage only those. Keep in lockstep with
+            # harness_common.extract_patch, which uses the same approach.
+            def run_git(git_args: list) -> str:
+                return subprocess.run(
+                    git_args,
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=True,
+                ).stdout
+
+            modified = run_git(
+                ["git", "diff", "--name-only", "--", *SOURCE_PATHSPECS]
+            ).splitlines()
+            untracked = run_git(
+                ["git", "ls-files", "--others", "--exclude-standard", "--", *SOURCE_PATHSPECS]
+            ).splitlines()
+            changed_files = [f for f in (*modified, *untracked) if f.strip()]
+            if changed_files:
+                run_git(["git", "add", "--", *changed_files])
+            diff = run_git(
+                ["git", "diff", "--cached", "HEAD", "--", *SOURCE_PATHSPECS]
             )
-            diff = subprocess.run(
-                ["git", "diff", "--cached", "HEAD", "--", *SOURCE_PATHSPECS],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=True,
-            ).stdout
             patch_path = Path(args.save_patch)
             patch_path.parent.mkdir(parents=True, exist_ok=True)
             patch_path.write_text(diff)
