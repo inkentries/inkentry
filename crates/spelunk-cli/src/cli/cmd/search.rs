@@ -42,10 +42,6 @@ pub struct SearchArgs {
     /// Search only the primary project index, skipping all linked project DBs
     #[arg(long)]
     pub local_only: bool,
-
-    /// Search against this snapshot instead of the live index (full or short commit SHA)
-    #[arg(long, value_name = "SHA")]
-    pub as_of: Option<String>,
 }
 
 use super::helpers::{project_display_name, require_server_client};
@@ -93,33 +89,15 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let cfg = tier.effective_config(&cfg, project_root);
 
     // Apply --local-only: discard linked deps.
-    let dep_projects = if args.local_only || args.as_of.is_some() {
+    let dep_projects = if args.local_only {
         vec![]
     } else {
         dep_projects
     };
 
-    if !args.no_stale_check && args.as_of.is_none() {
+    if !args.no_stale_check {
         maybe_warn_stale(&db_path);
     }
-
-    // --as-of: resolve commit SHA to snapshot id.
-    let snapshot_id: Option<i64> = if let Some(ref sha_prefix) = args.as_of {
-        let db = Database::open(&db_path)?;
-        let snap = db
-            .list_snapshots()?
-            .into_iter()
-            .find(|s| s.commit_sha.starts_with(sha_prefix.as_str()))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No snapshot found for '{}'. Provide a full or partial commit SHA from your indexed history.",
-                    sha_prefix
-                )
-            })?;
-        Some(snap.id)
-    } else {
-        None
-    };
 
     // ── Tier-0 fall-through for explicit semantic/hybrid modes (#303-F2 / #323) ──
     //
@@ -132,8 +110,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     //
     // The `auto` mode already degrades gracefully via the embed_query_vec error
     // path below — this guard handles the explicit-mode case only.
-    // Snapshot searches are skipped: they require embeddings by definition.
-    if (mode == "semantic" || mode == "hybrid") && snapshot_id.is_none() && !tier.is_server() {
+    if (mode == "semantic" || mode == "hybrid") && !tier.is_server() {
         if cfg.server_url.is_some() {
             eprintln!("[server unreachable — using text search]");
         }
@@ -159,7 +136,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    let mut results = if mode == "text" && snapshot_id.is_none() {
+    let mut results = if mode == "text" {
         // Text mode: FTS5 only, no embedding model required.
         let sp = spinner("Searching (text)…");
         let db = Database::open(&db_path)?;
@@ -168,7 +145,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .unwrap_or_default();
         sp.finish_and_clear();
         res
-    } else if mode == "ast-grep" && snapshot_id.is_none() {
+    } else if mode == "ast-grep" {
         // Explicit ast-grep mode: skip index entirely.
         return search_live(
             &args.query,
@@ -177,7 +154,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             args.limit,
         );
     } else {
-        // semantic, hybrid, auto, or snapshot search: need an embedding via server.
+        // semantic, hybrid, or auto: need an embedding via server.
         //
         // Use the dedicated POST /v1/projects/{id}/search endpoint (#322) when a
         // server is reachable — it applies the code-retrieval prefix server-side
@@ -208,7 +185,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // still warming up), fall back to ast-grep. Print a visible, one-line
         // notice first so the degradation isn't silent and a downstream
         // "ast-grep not found" error isn't misattributed (spelunk-oss^50 #5).
-        if auto_mode && query_vec_result.is_err() && snapshot_id.is_none() {
+        if auto_mode && query_vec_result.is_err() {
             sp.finish_and_clear();
             eprint_semantic_unavailable_notice(tier, &cfg);
             return search_live(
@@ -235,18 +212,13 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         };
 
         sp.set_message("Searching…");
-        let res = if let Some(snap_id) = snapshot_id {
-            let db = Database::open(&db_path)?;
-            db.search_snapshot(snap_id, &query_vec, fetch_limit)?
-        } else {
-            search_all_dbs_linearrag(
-                &db_path,
-                &dep_projects,
-                &args.query,
-                &query_vec,
-                fetch_limit,
-            )?
-        };
+        let res = search_all_dbs_linearrag(
+            &db_path,
+            &dep_projects,
+            &args.query,
+            &query_vec,
+            fetch_limit,
+        )?;
         sp.finish_and_clear();
 
         // Auto mode: stale index + empty results → fall back to ast-grep silently.
