@@ -11,7 +11,9 @@ use spelunk_server::{ApiDoc, AppState, EmbedderSlot, default_conflict_threshold,
 use utoipa::OpenApi;
 
 #[cfg(feature = "embed-native")]
-mod embedder_native;
+use spelunk_embed::DIM as NATIVE_EMBED_DIM;
+#[cfg(feature = "embed-native")]
+use spelunk_server::embed_hub;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -147,7 +149,7 @@ async fn main() -> Result<()> {
     // The external `--embedding-url` backend is ready synchronously (it has no
     // local model to warm up), so it starts `ready`. The bundled native embedder
     // is CPU-/download-heavy, so we start the slot `loading` and defer the actual
-    // `NativeEmbedder::load()` to a background task spawned *after* the listener
+    // `embed_hub::load_from_hub()` to a background task spawned *after* the listener
     // binds (below) — that way `/v1/health` is live immediately with
     // `embedder.state = "loading"` instead of being dark for the whole first-run
     // model download. When no embedder is configured at all, the slot is
@@ -239,7 +241,7 @@ async fn main() -> Result<()> {
     tracing::info!("spelunk-server listening on http://{addr}");
 
     // Load the native embedder on a background task now that health is live.
-    // `NativeEmbedder::load()` is blocking/CPU-heavy, so run it on the blocking
+    // `embed_hub::load_from_hub()` is blocking/CPU-heavy, so run it on the blocking
     // pool; publish the backend into the slot on success (state → ready) or
     // record the failure (state → unavailable). Only the native path warms up
     // here — external/disabled slots are already in a terminal state.
@@ -247,12 +249,9 @@ async fn main() -> Result<()> {
     if load_native {
         let slot = embedder_slot.clone();
         tokio::spawn(async move {
-            match tokio::task::spawn_blocking(embedder_native::NativeEmbedder::load).await {
+            match tokio::task::spawn_blocking(embed_hub::load_from_hub).await {
                 Ok(Ok(native)) => {
-                    tracing::info!(
-                        "native embedding model loaded (dim={})",
-                        embedder_native::DIM
-                    );
+                    tracing::info!("native embedding model loaded (dim={})", NATIVE_EMBED_DIM);
                     slot.set_ready(
                         Arc::new(native) as Arc<dyn spelunk_core::embeddings::EmbeddingBackend>
                     );

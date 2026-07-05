@@ -1,7 +1,7 @@
 F2LLM-v2-330M-Q8_0-GGUF
 =======================
 
-This artifact is a modified, redistributed copy of:
+This artifact is a modified and unmodified redistributed copy of:
 
     codefuse-ai/F2LLM-v2-330M
     https://huggingface.co/codefuse-ai/F2LLM-v2-330M
@@ -10,7 +10,7 @@ This artifact is a modified, redistributed copy of:
 Source revision (pinned)
 -------------------------
     Upstream revision: 1239cdd544b24c247ed75df2ae22e5a401ac4659
-    (the commit/revision the GGUF below was quantized from)
+    (the commit/revision the files below were derived from)
 
 Modification (Apache-2.0 Section 4(b))
 --------------------------------------
@@ -23,6 +23,15 @@ packaged as a single GGUF file:
 Quantization detail: projection matmul weights and the token-embedding
 table are stored Q8_0; RMSNorm weights are kept F32. No other changes are
 made to the weights.
+
+Unmodified redistribution
+--------------------------
+The tokenizer is redistributed as-is, byte-for-byte identical to upstream:
+
+    tokenizer.json
+
+`config.json` is not hosted in this repo; it is small enough (~1 KB) that
+Spelunk vendors it directly into the spelunk-server binary instead.
 
 License
 -------

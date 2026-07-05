@@ -30,7 +30,7 @@ percent-encoding = "2.3"
 keyring = { workspace = true }
 
 toml = "1.1"
-dirs = "6"
+dirs = { workspace = true }
 # Canonicalize paths without the Windows `\\?\` verbatim prefix (std::fs::canonicalize
 # adds it), so registry paths match the plain paths the lookup side derives via gix.
 dunce = "1"

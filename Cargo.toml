@@ -2,6 +2,7 @@
 members = [
     "crates/spelunk-core",
     "crates/spelunk-cli",
+    "crates/spelunk-embed",
     "crates/spelunk-server",
 ]
 resolver = "2"
@@ -23,6 +24,14 @@ tempfile    = "3"
 pretty_assertions = "1"
 serial_test = "3"
 wiremock    = "0.6"
+dirs        = "6"
+# Native embedder stack (F2LLM-v2-330M via candle). Pulled in by the
+# `spelunk-embed` crate behind its `embed-native` feature; versions pinned here
+# so the candle trio stays on one runtime line.
+candle-core = "0.11.0"
+candle-nn   = "0.11.0"
+candle-transformers = "0.11.0"
+tokenizers  = "0.23"
 # OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
 # Service, Windows Credential Manager). `apple-native` / `windows-native` use
 # the platform store directly; `sync-secret-service` covers Linux. The `mock`
