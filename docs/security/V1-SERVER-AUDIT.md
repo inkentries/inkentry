@@ -72,6 +72,16 @@ administrator of all projects and that separate instances are the way to isolate
 Status: ☑ implemented in `main.rs::should_warn_single_trust_domain` /
 `warn_single_trust_domain`, which fire the ADR-056 notice on a keyed non-loopback bind.
 
+**Transport guardrail (applicable, ☑ implemented):** the shared key is a bearer
+credential that must not travel in cleartext (ADR-056). `main.rs::check_bind_safety`
+therefore refuses **unconditionally** to bind a non-loopback address over plaintext
+HTTP, covering both the keyless case (an open, unauthenticated server) and the keyed
+case (the bearer key would cross the network in the clear). The refusal names the
+interface/port. There is no
+override; the only supported posture for a shared server is to bind loopback.
+Covered by unit test
+`non_loopback_with_key_plaintext_is_refused_unconditionally` (oss^79).
+
 ## 4. Input validation
 
 Path params in the OSS server are **project slugs** (e.g. `usercise/spelunk`), not
@@ -120,7 +130,7 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
 
 | Check | Status |
 |---|---|
-| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard, a non-loopback bind without a key being refused (`main.rs::check_bind_safety`), is ☑ implemented. |
+| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface. Neither refusal has an opt-out (oss^79). |
 | `DATABASE_URL` never logged | N/A (cloud-only). No `DATABASE_URL`; the DB is a local SQLite file path. The applicable rule, that the bearer key is never logged, holds: ☑ `auth.rs` never logs the key or its hash. |
 | No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `SPELUNK_SERVER_KEY` is supplied by the operator at runtime |
 | `.env*` excluded from any server-side file operations | N/A. The server does not walk the filesystem or index files; only the CLI indexer reads project trees (where `.env*` exclusion applies, and is documented in the CLI program). |

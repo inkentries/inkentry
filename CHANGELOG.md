@@ -23,6 +23,36 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **`spelunk-server` now refuses a keyed non-loopback plaintext bind, with no
+  override.** Previously the startup guard only refused a *keyless* non-loopback
+  bind (an open, unauthenticated server). A *keyed* non-loopback bind over
+  plaintext HTTP was still allowed, so a shared server on a routable interface
+  sent the bearer `SPELUNK_SERVER_KEY` across the network in cleartext. The guard
+  now refuses a non-loopback plaintext bind unconditionally, whether or not a key
+  is set; the error names the interface/port. There is no opt-out. Loopback
+  binds are unchanged. See
+  [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
+  (spelunk-oss^79)
+  - **Docker Compose demoted to a local scaffold; bare-metal/systemd is now
+    the recommended team-server deployment.** The shipped `docker-compose.yml`
+    previously bound the `spelunk-server` container to `0.0.0.0` directly,
+    which now refuses to start as soon as `SPELUNK_SERVER_KEY` is set —
+    exactly the documented keyed quick-start. Rather than ship a proxy sidecar
+    to work around that, `docker-compose.yml` is stripped to just
+    `spelunk-server` (binding loopback inside its own container, the
+    Dockerfile's default) and a named volume for the SQLite database, with no
+    published port: a container's loopback lives in its own network
+    namespace, unreachable from the host or a sibling container by any of the
+    usual means (bridge port-publish, Docker Desktop host-mode, or
+    container-to-container DNS), so Docker is a poor fit for networked/team
+    serving. It remains useful as a minimal local scaffold for running the
+    server process itself. For a team-reachable instance, run the binary
+    bare-metal under systemd instead, with your own TLS terminator in front of
+    the same loopback bind on that host — see
+    [Self-hosting](docs/self-hosting.md). `docker-compose.full.yml` (Ollama
+    sidecar) and `Caddyfile` (bundled TLS sidecar) are removed; no proxy ships
+    with this repo. See [docs/server.md](docs/server.md#quick-start-docker).
+    (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).** [spelunk-oss^65]
   - `AppError::Internal` no longer inspects the error message text (previously it returned the

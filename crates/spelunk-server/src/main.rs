@@ -105,9 +105,11 @@ async fn main() -> Result<()> {
     // which must count as unauthenticated, not as a (broken, empty-token) key.
     let api_key = normalize_api_key(args.key.as_deref());
 
-    // Bind-safety: never expose an unauthenticated server off-host. Fail fast,
-    // before touching the DB or warming the embedder.
-    check_bind_safety(&args.host, api_key.is_some())?;
+    // Bind-safety: refuse to expose the server off-host over plaintext HTTP,
+    // whether that would leak an open (keyless) endpoint or the bearer key in
+    // cleartext (keyed). Fail fast, before touching the DB or warming the
+    // embedder. This refusal is unconditional — there is no opt-out.
+    check_bind_safety(&args.host, args.port, api_key.is_some())?;
 
     let db = ServerDb::open(&args.db, args.embedding_dim)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
@@ -311,21 +313,43 @@ fn normalize_api_key(key: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Refuse to expose an *unauthenticated* server off-host. Binding to any
-/// non-loopback address makes the endpoint reachable from other machines; with
-/// no API key that would be an open, unauthenticated server. Loopback binds (the
-/// default) are always allowed. Setting `--key` / `SPELUNK_SERVER_KEY` unlocks a
-/// non-loopback bind (shared/team server, the container entrypoint's `0.0.0.0`).
-fn check_bind_safety(host: &str, key_is_set: bool) -> Result<()> {
-    if !host_is_loopback(host) && !key_is_set {
+/// Refuse to expose the server off-host over plaintext HTTP. Binding to any
+/// non-loopback address makes the endpoint reachable from other machines, and
+/// the server only ever speaks plaintext HTTP. Two cases are refused,
+/// unconditionally:
+///
+/// - **keyless** non-loopback bind: an open, unauthenticated server; and
+/// - **keyed** non-loopback bind: the bearer `SPELUNK_SERVER_KEY` would cross
+///   the network in cleartext.
+///
+/// This matches the ADR-056 transport guardrail: plaintext HTTP is
+/// loopback-only. Loopback binds (the default) are always allowed. There is
+/// no opt-out. The refusal names the interface and port being refused.
+fn check_bind_safety(host: &str, port: u16, key_is_set: bool) -> Result<()> {
+    if host_is_loopback(host) {
+        return Ok(());
+    }
+
+    if !key_is_set {
+        // Keyless off-host bind: an open, unauthenticated server.
         anyhow::bail!(
-            "Refusing to bind to non-loopback address '{host}' without authentication.\n\
+            "Refusing to bind to non-loopback address '{host}:{port}' without \
+             authentication.\n\
              A server reachable from other machines must require an API key. Either:\n  \
-             • set --key / SPELUNK_SERVER_KEY to expose it on {host}, or\n  \
+             • set --key / SPELUNK_SERVER_KEY to expose it on {host}:{port}, or\n  \
              • bind to loopback (the default --host 127.0.0.1) for local-only use."
         );
     }
-    Ok(())
+
+    // Keyed off-host bind over plaintext HTTP: the bearer key would cross the
+    // network in cleartext. Refused unconditionally — there is no opt-out.
+    anyhow::bail!(
+        "Refusing to bind to non-loopback address '{host}:{port}' over plaintext HTTP: \
+         the bearer SPELUNK_SERVER_KEY would cross the network in cleartext.\n\
+         A shared server must not send its key in the clear. Bind to loopback \
+         (the default --host 127.0.0.1) instead.\n\
+         See docs/adr/056-oss-server-tenancy-model.md."
+    );
 }
 
 /// Whether a keyed, non-loopback bind is a shared/team server that should get
@@ -596,8 +620,12 @@ mod arg_tests {
     fn loopback_without_key_is_allowed() {
         for h in ["127.0.0.1", "::1", "localhost"] {
             assert!(
-                super::check_bind_safety(h, false).is_ok(),
+                super::check_bind_safety(h, 7777, false).is_ok(),
                 "{h} without a key should be allowed"
+            );
+            assert!(
+                super::check_bind_safety(h, 7777, true).is_ok(),
+                "{h} with a key should be allowed on loopback"
             );
         }
     }
@@ -608,19 +636,38 @@ mod arg_tests {
     fn non_loopback_without_key_is_refused() {
         for h in ["0.0.0.0", "::", "192.168.1.10"] {
             assert!(
-                super::check_bind_safety(h, false).is_err(),
+                super::check_bind_safety(h, 7777, false).is_err(),
                 "{h} without a key must be refused"
             );
         }
     }
 
-    /// Setting an API key unlocks a non-loopback bind (shared/team server).
+    /// A keyed non-loopback *plaintext* bind is refused unconditionally: the
+    /// bearer key would cross the network in cleartext (ADR-056 transport
+    /// guardrail). There is no opt-out. The error names the interface/port
+    /// and points at the ADR-056 guidance doc.
     #[test]
-    fn non_loopback_with_key_is_allowed() {
-        for h in ["0.0.0.0", "192.168.1.10"] {
+    fn non_loopback_with_key_plaintext_is_refused_unconditionally() {
+        for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            let err = super::check_bind_safety(h, 7777, true)
+                .expect_err(&format!("{h} with a key over plaintext must be refused"));
+            let msg = format!("{err}");
             assert!(
-                super::check_bind_safety(h, true).is_ok(),
-                "{h} with a key should be allowed"
+                msg.contains(h) && msg.contains("7777"),
+                "error must name the interface and port '{h}:7777': {msg}"
+            );
+            assert!(
+                msg.contains("cleartext"),
+                "error must mention cleartext exposure: {msg}"
+            );
+            assert!(
+                msg.contains("loopback"),
+                "error must point at binding to loopback instead: {msg}"
+            );
+            assert!(
+                msg.contains("docs/adr/056-oss-server-tenancy-model.md"),
+                "error must point at the ADR-056 guidance doc so the operator \
+                 can find the loopback-only policy: {msg}"
             );
         }
     }
