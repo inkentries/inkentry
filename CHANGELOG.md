@@ -78,6 +78,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     warning instead. This is local-indexing hardening, distinct from and complementary to the
     server-side request-body caps shipped in 0.9.2 above.
 
+### Added
+
+- **`bench/paired_stats.py` for publishing agentic benchmarks:** McNemar's exact test with paired task outcomes, bootstrap 95% CIs over per-seed means, deterministic n=1 handling, and cell-labeled output refusing to aggregate across differing model/harness/condition. Committed example fixtures in `bench/results/examples/`. Run: `python bench/paired_stats.py <baseline.json> <condition.json>`. (spelunk-oss^86)
+
 ### Features
 
 - **`spelunk index --detach-embed`: background embedding on slow hardware.** [spelunk-oss^74]

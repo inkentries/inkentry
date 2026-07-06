@@ -25,7 +25,7 @@ Baseline results (no-spelunk condition) live in `baselines/` at the repo root an
 ## Prerequisites
 
 **For Gemma benchmarks (primary):**
-- `uv` in PATH — run scripts use `uv run` and install Python deps automatically
+- `uv` in PATH (run scripts use `uv run` and install Python deps automatically)
 - Local OpenAI-compatible server at `http://127.0.0.1:1234` with `gemma-4-e2b-it` loaded
 - `spelunk` in PATH (build: `cargo build --release`)
 - Docker (SWE-bench only)
@@ -38,7 +38,7 @@ The SWE-bench local scripts expect each task's repo cloned at the pre-fix commit
 bash bench/setup_repos.sh
 ```
 
-This fetches task metadata from HuggingFace (`princeton-nlp/SWE-bench_Verified`) and clones each repo at the correct base commit. Re-running is idempotent — already-correct checkouts are skipped. Requires internet access and `uv`.
+This fetches task metadata from HuggingFace (`princeton-nlp/SWE-bench_Verified`) and clones each repo at the correct base commit. Re-running is idempotent; already-correct checkouts are skipped. Requires internet access and `uv`.
 
 Options: `--tasks N` (first N only) · `--repos-dir DIR` · `--dataset SLUG`
 
@@ -50,7 +50,7 @@ Options: `--tasks N` (first N only) · `--repos-dir DIR` · `--dataset SLUG`
 
 ## RepoBench (cross-file completion)
 
-Measures whether `spelunk_search` helps complete lines that require symbols from other files. Uses [RepoBench-Python](https://huggingface.co/datasets/tianyang/repobench_python_v1.1), `cross_file_first` split — the completion point requires a symbol introduced in another file, making it the most relevant split for measuring spelunk's retrieval benefit.
+Measures whether `spelunk_search` helps complete lines that require symbols from other files. Uses [RepoBench-Python](https://huggingface.co/datasets/tianyang/repobench_python_v1.1), `cross_file_first` split: the completion point requires a symbol introduced in another file, making it the most relevant split for measuring spelunk's retrieval benefit.
 
 ```bash
 # Spelunk condition — compares against committed baseline automatically
@@ -92,13 +92,13 @@ bash bench/agents/swebench_eval.sh \
 
 Repo checkouts are expected at `bench/repos/<task_id>/` (via `bench/setup_repos.sh`). Each directory must contain an `ISSUE.txt`. Patches are saved to `bench/patches/<condition>-<timestamp>/` during the agent run. Pass `--eval` to automatically invoke the Docker harness after all tasks complete.
 
-> **Note:** `bench/gemma/swebench_local/run.sh` is retired — it always outputs `resolved=0` because it never ran the Docker harness. Use `bench/agents/swebench_run.sh` instead.
+> **Note:** `bench/gemma/swebench_local/run.sh` is retired; it always outputs `resolved=0` because it never ran the Docker harness. Use `bench/agents/swebench_run.sh` instead.
 
 **Metrics:** `resolve_rate` (via harness), `median_tokens_per_task`, `median_wall_seconds`
 
 ---
 
-## SWE-bench (Claude) — secondary
+## SWE-bench (Claude) - secondary
 
 ```bash
 bash bench/swebench/run.sh --condition baseline --tasks 50
@@ -109,11 +109,11 @@ Requires `ANTHROPIC_API_KEY`. Results go to `bench/results/swebench-{condition}-
 
 ---
 
-## Code-graph — call graph retrieval quality
+## Code-graph - call graph retrieval quality
 
 Model-agnostic. Measures how well `spelunk graph` retrieves files containing callers/callees/implementers of a symbol, compared against `git grep` and `spelunk search` as baselines.
 
-**Repo setup** — clone the benchmark repos somewhere *outside* this repository (to avoid polluting the spelunk index), then point the evaluator at them:
+**Repo setup:** clone the benchmark repos somewhere *outside* this repository (to avoid polluting the spelunk index), then point the evaluator at them:
 
 ```bash
 mkdir -p ~/spelunk-bench/repos
@@ -143,7 +143,7 @@ export SPELUNK_BENCH_REPOS=~/spelunk-bench/repos
 python bench/graph/evaluate.py --tasks bench/graph/tasks.json --k 10
 ```
 
-**Metrics:** `precision@k`, `recall@k`, `F1` — averaged across all 42 tasks in three repos (ripgrep, django, sympy).
+**Metrics:** `precision@k`, `recall@k`, `F1` (averaged across all 42 tasks in three repos: ripgrep, django, sympy).
 
 ---
 
@@ -182,7 +182,7 @@ Example output:
 ## Paired statistics (§6 reporting standard)
 
 `report.py` gives a quick side-by-side of aggregate figures. For any *published*
-agentic comparison, use `paired_stats.py` instead — it applies the plan §6
+agentic comparison, use `paired_stats.py` instead: it applies the plan §6
 standards over per-task result files (arrays of records, or the post-harness
 `{"aggregate": ..., "tasks": [...]}` form).
 
@@ -196,15 +196,15 @@ What it computes:
 
 - **McNemar's exact test**, paired by `task_id` on the task-level binary outcome
   (`resolved`/`passed`). Discordant pairs and an exact binomial p-value are
-  reported. This is a *paired* test — not a two-proportion z-test — because both
+  reported. This is a paired test (not a two-proportion z-test) because both
   conditions run the same tasks. Multi-seed cells collapse to one outcome per
   task by majority vote before pairing.
 - **Bootstrap 95% CIs** over per-seed cell means (`mean +/- half-width [lo, hi]`),
   reproducible via a fixed RNG seed. Needs n>=3 seeds.
 - **Deterministic layers** (Track A retrieval, n=1) are stated as
   `deterministic, n=1` rather than given a fabricated CI.
-- **Cell-labeled output:** every figure names its full cell — model, harness,
-  condition, instance_filter, n. The tool **refuses (errors)** to aggregate
+- **Cell-labeled output:** every figure names its full cell (model, harness,
+  condition, instance_filter, n). The tool **refuses (errors)** to aggregate
   across records with differing model / harness / condition; pass `--filter` to
   label the instance subset.
 - **Negative results** are printed as `not significant`, never dropped.
