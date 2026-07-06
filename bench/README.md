@@ -25,7 +25,7 @@ Baseline results (no-spelunk condition) live in `baselines/` at the repo root an
 ## Prerequisites
 
 **For Gemma benchmarks (primary):**
-- `uv` in PATH (run scripts use `uv run` and install Python deps automatically)
+- `uv` in PATH - run scripts use `uv run` and install Python deps automatically
 - Local OpenAI-compatible server at `http://127.0.0.1:1234` with `gemma-4-e2b-it` loaded
 - `spelunk` in PATH (build: `cargo build --release`)
 - Docker (SWE-bench only)

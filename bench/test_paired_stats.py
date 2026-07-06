@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for bench/paired_stats.py — hand-computed fixtures.
+"""Unit tests for bench/paired_stats.py - hand-computed fixtures.
 
 Run: python bench/test_paired_stats.py
 """

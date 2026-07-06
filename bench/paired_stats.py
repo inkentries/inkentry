@@ -9,7 +9,7 @@ paired by task_id. Emits a cell-labeled table with:
   - Deterministic layers accept n=1 and are labeled "deterministic, n=1"
   - Non-significant deltas are reported as such, never dropped
 
-Pure stdlib (statistics, random, math) — no scipy/numpy.
+Pure stdlib (statistics, random, math) - no scipy/numpy.
 
 Usage:
     python bench/paired_stats.py <baseline.json> <condition.json> [--filter FILTER]
@@ -131,7 +131,7 @@ def per_seed_means(tasks: list[dict]) -> dict[int, float]:
 def bootstrap_ci(values: list[float]) -> dict:
     """95% percentile bootstrap CI over per-seed means.
 
-    Deterministic layers (n=1) get no CI — labeled instead.
+    Deterministic layers (n=1) get no CI - labeled instead.
     """
     n = len(values)
     mean = statistics.mean(values)
