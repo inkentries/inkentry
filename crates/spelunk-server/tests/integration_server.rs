@@ -325,7 +325,8 @@ async fn since_endpoint_returns_entries_after_timestamp() {
     common::register_sqlite_vec();
 
     // Build a DB and insert two notes with known timestamps.
-    let db = ServerDb::open(std::path::Path::new(":memory:"), 4).expect("open in-memory server db");
+    let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+        .expect("open in-memory server db");
 
     // Insert a project manually so we control created_at timing.
     db.conn

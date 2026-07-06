@@ -12,6 +12,7 @@ use utoipa::OpenApi;
 
 #[cfg(feature = "embed-native")]
 use spelunk_embed::DIM as NATIVE_EMBED_DIM;
+use spelunk_embed::MODEL_ID as NATIVE_MODEL_ID;
 #[cfg(feature = "embed-native")]
 use spelunk_server::embed_hub;
 
@@ -113,7 +114,7 @@ async fn main() -> Result<()> {
     // embedder. This refusal is unconditional — there is no opt-out.
     check_bind_safety(&args.host, args.port, api_key.is_some())?;
 
-    let db = ServerDb::open(&args.db, args.embedding_dim)
+    let db = ServerDb::open(&args.db, args.embedding_dim, NATIVE_MODEL_ID)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
 
     let instance_id = db

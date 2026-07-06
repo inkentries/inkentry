@@ -30,10 +30,38 @@ impl std::fmt::Display for DimensionMismatch {
 
 impl std::error::Error for DimensionMismatch {}
 
+/// Typed error for an embedding-model mismatch on a project — a same-dim
+/// successor model that would silently corrupt the KNN space. Distinct from
+/// `anyhow::Error` so the HTTP layer maps it to a 400 without message sniffing,
+/// exactly as [`DimensionMismatch`] does (`AppError::Internal` in `lib.rs`).
+#[derive(Debug)]
+pub struct ModelMismatch {
+    pub slug: String,
+    pub expected: String,
+    pub got: String,
+}
+
+impl std::fmt::Display for ModelMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "embedding model mismatch for project '{}': server expects '{}', got '{}'. \
+             All clients on the same project must use the same embedding model; \
+             a model change requires a deliberate re-index.",
+            self.slug, self.expected, self.got
+        )
+    }
+}
+
+impl std::error::Error for ModelMismatch {}
+
 /// Shared state for all DB operations on the server.
 pub struct ServerDb {
     pub conn: Connection,
     pub embedding_dim: usize,
+    /// Provenance id of the model this server embeds with; stamped onto and
+    /// validated against each project alongside `embedding_dim`.
+    pub embedding_model: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
@@ -41,6 +69,9 @@ pub struct Project {
     pub id: i64,
     pub slug: String,
     pub embedding_dim: usize,
+    /// Embedding model provenance id; None on a legacy project not yet stamped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
     /// Unix timestamp of project creation.
     pub created_at: i64,
 }
@@ -66,7 +97,11 @@ pub struct ServerNote {
 }
 
 impl ServerDb {
-    pub fn open(path: &std::path::Path, embedding_dim: usize) -> Result<Self> {
+    pub fn open(
+        path: &std::path::Path,
+        embedding_dim: usize,
+        embedding_model: &str,
+    ) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("opening server db at {}", path.display()))?;
         // WAL mode for concurrent readers.
@@ -74,6 +109,7 @@ impl ServerDb {
         let db = Self {
             conn,
             embedding_dim,
+            embedding_model: embedding_model.to_string(),
         };
         db.migrate()?;
         Ok(db)
@@ -99,6 +135,16 @@ impl ServerDb {
         self.conn
             .execute_batch(include_str!("../migrations/server_003.sql"))
             .context("server migration 003")?;
+        // Migration 005: embedding_model column. `ALTER TABLE` has no
+        // `IF NOT EXISTS`; tolerate only the already-applied error.
+        match self
+            .conn
+            .execute_batch(include_str!("../migrations/server_005.sql"))
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e).context("server migration 005"),
+        }
         Ok(())
     }
 
@@ -131,13 +177,19 @@ impl ServerDb {
     // ── Projects ──────────────────────────────────────────────────────────────
 
     /// Get or auto-create a project by slug. On first write, records the
-    /// embedding dimension for subsequent validation.
-    pub fn upsert_project(&self, slug: &str, incoming_dim: usize) -> Result<Project> {
+    /// embedding dimension and model for subsequent validation. `incoming_model`
+    /// is the provenance id of the model producing this write's vectors.
+    pub fn upsert_project(
+        &self,
+        slug: &str,
+        incoming_dim: usize,
+        incoming_model: &str,
+    ) -> Result<Project> {
         // Check if project exists.
         let existing: Option<Project> = self
             .conn
             .query_row(
-                "SELECT id, slug, embedding_dim, created_at FROM projects WHERE slug = ?1",
+                "SELECT id, slug, embedding_dim, embedding_model, created_at FROM projects WHERE slug = ?1",
                 rusqlite::params![slug],
                 row_to_project,
             )
@@ -154,6 +206,17 @@ impl ServerDb {
                 }
                 .into());
             }
+            // Validate model if already set; NULL = legacy, lazy-stamped below.
+            if let Some(recorded) = &p.embedding_model
+                && recorded != incoming_model
+            {
+                return Err(ModelMismatch {
+                    slug: slug.to_string(),
+                    expected: recorded.clone(),
+                    got: incoming_model.to_string(),
+                }
+                .into());
+            }
             // Set dimension on first note.
             if p.embedding_dim == 0 {
                 self.conn.execute(
@@ -162,18 +225,27 @@ impl ServerDb {
                 )?;
                 p.embedding_dim = incoming_dim;
             }
+            // Stamp model on first write (legacy/unstamped project).
+            if p.embedding_model.is_none() {
+                self.conn.execute(
+                    "UPDATE projects SET embedding_model = ?1 WHERE id = ?2",
+                    rusqlite::params![incoming_model, p.id],
+                )?;
+                p.embedding_model = Some(incoming_model.to_string());
+            }
             Ok(p)
         } else {
             // Auto-create.
             self.conn.execute(
-                "INSERT INTO projects (slug, embedding_dim) VALUES (?1, ?2)",
-                rusqlite::params![slug, incoming_dim as i64],
+                "INSERT INTO projects (slug, embedding_dim, embedding_model) VALUES (?1, ?2, ?3)",
+                rusqlite::params![slug, incoming_dim as i64, incoming_model],
             )?;
             let id = self.conn.last_insert_rowid();
             Ok(Project {
                 id,
                 slug: slug.to_string(),
                 embedding_dim: incoming_dim,
+                embedding_model: Some(incoming_model.to_string()),
                 created_at: now_unix(),
             })
         }
@@ -182,7 +254,7 @@ impl ServerDb {
     pub fn get_project(&self, slug: &str) -> Result<Option<Project>> {
         self.conn
             .query_row(
-                "SELECT id, slug, embedding_dim, created_at FROM projects WHERE slug = ?1",
+                "SELECT id, slug, embedding_dim, embedding_model, created_at FROM projects WHERE slug = ?1",
                 rusqlite::params![slug],
                 row_to_project,
             )
@@ -193,7 +265,7 @@ impl ServerDb {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, slug, embedding_dim, created_at FROM projects ORDER BY slug")?;
+            .prepare("SELECT id, slug, embedding_dim, embedding_model, created_at FROM projects ORDER BY slug")?;
         let projects = stmt
             .query_map([], row_to_project)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -496,7 +568,8 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         id: row.get(0)?,
         slug: row.get(1)?,
         embedding_dim: row.get::<_, i64>(2)? as usize,
-        created_at: row.get(3)?,
+        embedding_model: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 
@@ -602,7 +675,7 @@ mod tests {
         // End-to-end through the public method against a real (in-memory) DB:
         // the persisted v7 UUID is returned verbatim and is stable across calls.
         register_sqlite_vec();
-        let db = ServerDb::open(std::path::Path::new(":memory:"), 768)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 768, "test-model")
             .expect("open in-memory server db");
 
         let id1 = db.get_or_create_instance_id().expect("first instance_id");
@@ -615,5 +688,44 @@ mod tests {
         // INSERT OR IGNORE keeps the original id, so the whole value is stable.
         let id2 = db.get_or_create_instance_id().expect("second instance_id");
         assert_eq!(id1, id2, "instance_id must be stable across calls");
+    }
+
+    /// A same-dim write with a different model id returns the typed
+    /// `ModelMismatch`, which the HTTP layer maps to a 400 (see `lib.rs`).
+    #[test]
+    fn upsert_project_model_mismatch_is_typed_error() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "model-a")
+            .expect("open in-memory server db");
+        db.upsert_project("proj", 4, "model-a")
+            .expect("first upsert stamps model");
+        let err = db
+            .upsert_project("proj", 4, "model-b")
+            .expect_err("same dim, different model must error");
+        let mismatch = err
+            .downcast_ref::<ModelMismatch>()
+            .expect("error must be the typed ModelMismatch");
+        assert_eq!(mismatch.expected, "model-a");
+        assert_eq!(mismatch.got, "model-b");
+    }
+
+    /// A legacy project row with NULL `embedding_model` is lazy-stamped on the
+    /// next write rather than rejected.
+    #[test]
+    fn upsert_project_null_model_is_lazy_stamped() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "model-a")
+            .expect("open in-memory server db");
+        // Simulate a legacy row created before the embedding_model column.
+        db.conn
+            .execute(
+                "INSERT INTO projects (slug, embedding_dim, embedding_model) VALUES ('legacy', 4, NULL)",
+                [],
+            )
+            .expect("seed legacy project");
+        let p = db
+            .upsert_project("legacy", 4, "model-a")
+            .expect("null model lazy-stamps without rejecting");
+        assert_eq!(p.embedding_model.as_deref(), Some("model-a"));
     }
 }

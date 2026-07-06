@@ -24,6 +24,12 @@
 mod backend;
 pub use backend::EmbeddingBackend;
 
+/// Stable provenance id for the native embedding model, `<repo-shortname>@<dim>`.
+/// Exact-match token: never parse it. Requantization or a hardware-portability
+/// rebuild of the same model must NOT change this — only a genuine model swap
+/// (different weights / vector space) does, which forces a re-index.
+pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
+
 #[cfg(feature = "embed-native")]
 mod embedder_native;
 
