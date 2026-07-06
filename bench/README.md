@@ -179,6 +179,44 @@ Example output:
 
 ---
 
+## Paired statistics (§6 reporting standard)
+
+`report.py` gives a quick side-by-side of aggregate figures. For any *published*
+agentic comparison, use `paired_stats.py` instead — it applies the plan §6
+standards over per-task result files (arrays of records, or the post-harness
+`{"aggregate": ..., "tasks": [...]}` form).
+
+```bash
+python bench/paired_stats.py \
+    bench/results/examples/swebench-local-baseline.json \
+    bench/results/examples/swebench-local-spelunk.json
+```
+
+What it computes:
+
+- **McNemar's exact test**, paired by `task_id` on the task-level binary outcome
+  (`resolved`/`passed`). Discordant pairs and an exact binomial p-value are
+  reported. This is a *paired* test — not a two-proportion z-test — because both
+  conditions run the same tasks. Multi-seed cells collapse to one outcome per
+  task by majority vote before pairing.
+- **Bootstrap 95% CIs** over per-seed cell means (`mean +/- half-width [lo, hi]`),
+  reproducible via a fixed RNG seed. Needs n>=3 seeds.
+- **Deterministic layers** (Track A retrieval, n=1) are stated as
+  `deterministic, n=1` rather than given a fabricated CI.
+- **Cell-labeled output:** every figure names its full cell — model, harness,
+  condition, instance_filter, n. The tool **refuses (errors)** to aggregate
+  across records with differing model / harness / condition; pass `--filter` to
+  label the instance subset.
+- **Negative results** are printed as `not significant`, never dropped.
+
+**Power note:** the 50-task slice can only detect large effects (about +/-15pp).
+Headline claims must come from the filtered subset or the 150+ question set.
+
+Committed example fixtures live in `bench/results/examples/`; real runs land in
+`bench/results/` (gitignored).
+
+---
+
 ## Metrics reference
 
 | Metric | Benchmark | Meaning |
