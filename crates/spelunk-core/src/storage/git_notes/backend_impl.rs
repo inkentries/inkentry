@@ -25,12 +25,11 @@ impl MemoryBackend for GitNotesBackend {
             valid_at: input.valid_at,
             invalid_at: None,
             superseded_by: None,
+            remote_id: None,
         };
 
-        let json = serde_json::to_string(&record)?;
         let head = self.head_sha().await?;
-
-        self.add_note_stdin(&head, &json).await?;
+        self.append_record(&head, &record).await?;
 
         Ok(id)
     }
@@ -67,10 +66,10 @@ impl MemoryBackend for GitNotesBackend {
 
     async fn get(&self, id: i64) -> Result<Option<Note>> {
         for (sha, _) in self.noted_commits().await? {
-            if let Some(record) = self.read_record(&sha).await?
-                && record.id == id
-            {
-                return Ok(Some(record_to_note(record)));
+            for record in self.read_records(&sha).await? {
+                if record.id == id {
+                    return Ok(Some(record_to_note(record)));
+                }
             }
         }
         Ok(None)
@@ -82,12 +81,8 @@ impl MemoryBackend for GitNotesBackend {
 
     async fn archive(&self, id: i64) -> Result<bool> {
         for (sha, _) in self.noted_commits().await? {
-            if let Some(mut record) = self.read_record(&sha).await?
-                && record.id == id
-            {
-                record.status = "archived".to_string();
-                let json = serde_json::to_string(&record)?;
-                return Ok(self.add_note_stdin(&sha, &json).await.is_ok());
+            if self.archive_record(&sha, id).await? {
+                return Ok(true);
             }
         }
         Ok(false)

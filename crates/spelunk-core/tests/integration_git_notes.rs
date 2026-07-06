@@ -243,6 +243,7 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
         valid_at: None,
         invalid_at: None,
         superseded_by: None,
+        remote_id: None,
     }
 }
 
@@ -492,4 +493,200 @@ async fn git_notes_backend_add_with_option_like_body_round_trips() {
     );
 
     assert!(!std::path::Path::new("/tmp/should-not-exist-oss61").exists());
+}
+
+// ── JSONL canonical: permissive read / preserving write (ADR-059) ────────────
+//
+// A note blob is JSON Lines interleaved with foreign content (prose, other
+// tools' lines). Reads skip foreign lines without erroring; writes preserve
+// every foreign line and every untargeted spelunk record byte-for-byte.
+
+/// Write a raw note blob verbatim to HEAD's `refs/notes/spelunk` note, via
+/// stdin (`-F -`) so arbitrary content is delivered literally.
+fn write_raw_note(root: &std::path::Path, blob: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["-C", root.to_str().unwrap(), "rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse")
+            .stdout,
+    )
+    .expect("utf8");
+    let head = head.trim();
+    let mut child = Command::new("git")
+        .args([
+            "-C",
+            root.to_str().unwrap(),
+            "notes",
+            "--ref=spelunk",
+            "add",
+            "-f",
+            "-F",
+            "-",
+            "--",
+            head,
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn git notes add");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(blob.as_bytes())
+        .expect("write blob");
+    assert!(child.wait().expect("wait").success(), "git notes add");
+}
+
+/// Read HEAD's raw `refs/notes/spelunk` note blob.
+fn read_raw_note(root: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "-C",
+            root.to_str().unwrap(),
+            "notes",
+            "--ref=spelunk",
+            "show",
+            "HEAD",
+        ])
+        .output()
+        .expect("git notes show");
+    assert!(out.status.success(), "note should exist");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The ADR-059 conformance fixture: three real `decision` records interleaved
+/// with markdown prose and blank lines.
+fn adr_conformance_blob() -> String {
+    let rec = |id: i64, memory: &str| {
+        serde_json::to_string(&make_note_record(id, memory)).expect("serialize record")
+    };
+    format!(
+        "# Implement payment by Stripe\n\
+         \n\
+         We're implementing a payment rail, in this case Stripe...\n\
+         \n\
+         {}\n\
+         \n\
+         ## Technical details\n\
+         \n\
+         ...Axum as the http handler layer.\n\
+         \n\
+         {}\n\
+         {}\n",
+        rec(1, "use stripe for payment processing"),
+        rec(2, "rust is our language of choice"),
+        rec(3, "use axum to implement api's over restful http"),
+    )
+}
+
+/// (a) The ADR worked example round-trips: reading yields exactly the three
+/// `decision` records in order, ignoring the four prose blocks and blank lines,
+/// with no error.
+#[tokio::test]
+#[serial]
+async fn git_notes_adr_conformance_read_skips_prose() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    write_raw_note(root, &adr_conformance_blob());
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 100, false, None).await.expect("list");
+
+    assert_eq!(notes.len(), 3, "three records, prose skipped");
+    assert_eq!(notes[0].id, 1);
+    assert_eq!(notes[1].id, 2);
+    assert_eq!(notes[2].id, 3);
+    assert_eq!(notes[0].title, "use stripe for payment processing");
+    assert_eq!(
+        notes[2].title,
+        "use axum to implement api's over restful http"
+    );
+}
+
+/// (b) A blob with a foreign line and no spelunk records reads as an empty list
+/// with no error; a permissive read never fails on unparseable lines.
+#[tokio::test]
+#[serial]
+async fn git_notes_read_foreign_only_is_empty_no_error() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    // Prose, a non-object JSON value, and a malformed line: all foreign.
+    write_raw_note(
+        root,
+        "just some freeform notes from another tool\n[1, 2, 3]\n{not valid json",
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 100, true, None).await.expect("list");
+    assert!(notes.is_empty(), "no spelunk records, no error");
+}
+
+/// (c) `add` (append) preserves all prior content: the four prose blocks and the
+/// three original records are retained, and the blob now holds four records.
+#[tokio::test]
+#[serial]
+async fn git_notes_add_preserves_prose_and_siblings() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    write_raw_note(root, &adr_conformance_blob());
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    backend
+        .add(note_input("decision", "a fourth decision"))
+        .await
+        .expect("add fourth");
+
+    // Prose retained verbatim.
+    let blob = read_raw_note(root);
+    assert!(
+        blob.contains("# Implement payment by Stripe"),
+        "heading kept"
+    );
+    assert!(
+        blob.contains("...Axum as the http handler layer."),
+        "prose kept"
+    );
+
+    // Four records now readable, originals intact and in order.
+    let notes = backend.list(None, 100, false, None).await.expect("list");
+    assert_eq!(notes.len(), 4, "three original + one appended");
+    assert_eq!(notes[0].id, 1);
+    assert_eq!(notes[1].id, 2);
+    assert_eq!(notes[2].id, 3);
+    assert_eq!(notes[3].title, "a fourth decision");
+}
+
+/// (c) `archive` of the middle record sets only that record's status; the other
+/// two records and all prose lines are unchanged in content and position.
+#[tokio::test]
+#[serial]
+async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    write_raw_note(root, &adr_conformance_blob());
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let archived = backend.archive(2).await.expect("archive middle");
+    assert!(archived, "middle record archived");
+
+    // Prose retained.
+    let blob = read_raw_note(root);
+    assert!(
+        blob.contains("# Implement payment by Stripe"),
+        "heading kept"
+    );
+    assert!(blob.contains("## Technical details"), "second heading kept");
+
+    // Records 1 and 3 still active; only record 2 archived.
+    let active = backend.list(None, 100, false, None).await.expect("active");
+    let active_ids: Vec<i64> = active.iter().map(|n| n.id).collect();
+    assert_eq!(active_ids, vec![1, 3], "only the middle record is hidden");
+
+    let all = backend.list(None, 100, true, None).await.expect("all");
+    assert_eq!(all.len(), 3, "all three records still present");
+    let rec2 = all.iter().find(|n| n.id == 2).expect("record 2 present");
+    assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }

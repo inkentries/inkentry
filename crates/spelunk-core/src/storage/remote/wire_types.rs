@@ -23,6 +23,11 @@ pub(super) struct AddNoteResponse {
     pub(super) id: i64,
     #[serde(default)]
     pub(super) conflicts: Vec<ConflictInfo>,
+    /// Server-assigned cross-machine id, if the server minted one. Absent on
+    /// older servers → `None`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) remote_id: Option<String>,
 }
 
 /// Conflict information returned by the server when a new note is semantically
@@ -51,6 +56,11 @@ pub(super) struct NoteResponse {
     pub(super) valid_at: Option<i64>,
     #[serde(default)]
     pub(super) invalid_at: Option<i64>,
+    /// Canonical cross-machine id, if the server has one. Absent on older
+    /// servers → `None`. Accepted for forward-compat; not surfaced into `Note`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) remote_id: Option<String>,
     #[serde(default)]
     pub(super) distance: Option<f64>,
 }

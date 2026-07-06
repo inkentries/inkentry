@@ -27,6 +27,11 @@ pub struct NoteRecord {
     pub invalid_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<i64>,
+    /// Canonical cross-machine id (uuid), set on sync to a remote server.
+    /// Optional and additive: absent on the wire means `None`; an old blob
+    /// without this key reads as `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remote_id: Option<String>,
 }
 
 pub fn record_to_note(r: NoteRecord) -> Note {
@@ -62,4 +67,56 @@ pub fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_record() -> NoteRecord {
+        NoteRecord {
+            schema_version: 1,
+            id: 42,
+            kind: "decision".to_string(),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            tags: vec![],
+            linked_files: vec![],
+            created_at: 100,
+            status: "active".to_string(),
+            source_ref: None,
+            valid_at: None,
+            invalid_at: None,
+            superseded_by: None,
+            remote_id: None,
+        }
+    }
+
+    /// (d) A record with a `remote_id` serializes the key and round-trips.
+    #[test]
+    fn note_record_round_trips_with_remote_id() {
+        let mut rec = base_record();
+        rec.remote_id = Some("11111111-1111-7111-8111-111111111111".to_string());
+
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(json.contains("\"remote_id\""), "key present when Some");
+
+        let back: NoteRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.remote_id, rec.remote_id);
+    }
+
+    /// (d) A record without a `remote_id` omits the key, and an old blob that
+    /// never had the key still deserializes (reads as `None`).
+    #[test]
+    fn note_record_round_trips_without_remote_id() {
+        let rec = base_record();
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(!json.contains("remote_id"), "key omitted when None: {json}");
+
+        // Old blob shape: no remote_id key at all.
+        let old = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active"}"#;
+        let back: NoteRecord = serde_json::from_str(old).expect("deserialize old blob");
+        assert_eq!(back.remote_id, None, "absent key reads as None");
+        assert_eq!(back.id, 7);
+    }
 }
