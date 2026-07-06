@@ -78,6 +78,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     warning instead. This is local-indexing hardening, distinct from and complementary to the
     server-side request-body caps shipped in 0.9.2 above.
 
+### Added
+
+- **Benchmark `vanilla_rag` condition: plain embed-and-KNN control.** [spelunk-oss^87]
+  `bench/memory/decision_archaeology.py` now includes a fifth baseline condition
+  that embeds raw commit messages with the native F2LLM embedder and ranks by
+  cosine similarity, isolating the lift of `memory_search` from harvesting and LLM
+  extraction. 20 offline unit tests in `bench/memory/tests/test_vanilla_rag.py`.
+
 ### Features
 
 - **`spelunk index --detach-embed`: background embedding on slow hardware.** [spelunk-oss^74]
