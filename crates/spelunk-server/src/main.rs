@@ -12,7 +12,8 @@ use utoipa::OpenApi;
 
 #[cfg(feature = "embed-native")]
 use spelunk_embed::DIM as NATIVE_EMBED_DIM;
-use spelunk_embed::MODEL_ID as NATIVE_MODEL_ID;
+// Via spelunk-core (always linked); spelunk_embed is only present under embed-native.
+use spelunk_core::embeddings::MODEL_ID as NATIVE_MODEL_ID;
 #[cfg(feature = "embed-native")]
 use spelunk_server::embed_hub;
 
