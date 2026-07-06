@@ -144,6 +144,12 @@ search works out of the box:
 spelunk search "where do we validate auth tokens"
 ```
 
+`init` also writes `.spelunk/.gitignore` so the machine-specific SQLite
+(`index.db*`, `memory.db*`) stays out of version control. It leaves
+`.spelunk/config.toml` and `.spelunk/cloud-project-id.lock` tracked, since those
+are meant to be committed and shared. An existing `.spelunk/.gitignore` is never
+overwritten, so re-running `init` is safe.
+
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
 via candle); a pre-quantized Q8_0 GGUF (~339 MB) is downloaded once on first use

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Decision archaeology benchmark — measure spelunk memory retrieval vs grep.
 
-Four conditions compared against the same question set:
+Five conditions compared against the same question set:
 
     grep_literal    — git log --grep with the full question string (verbatim)
     grep_keywords   — git log --grep with regex-extracted keywords from question
     fts_commit_msgs — SQLite FTS5 index over all commit messages, full question
+    vanilla_rag     — plain embed-and-KNN over raw commit messages (generic
+                      "any embedding store" control: no harvest, no LLM
+                      extraction, no graph, no rerank). Deterministic, n=1.
     memory_search   — spelunk memory search (semantic over harvested entries)
 
 Usage:
@@ -27,12 +30,16 @@ See bench/memory/README.md for the authoring protocol.
 
 import argparse
 import json
+import math
 import re
 import sqlite3
 import statistics
+import struct
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -231,6 +238,117 @@ def run_fts_commit_messages(
 
 
 # ---------------------------------------------------------------------------
+# vanilla_rag — plain embed-and-KNN over raw commit messages
+#
+# Generic "any embedding store could do this" control. Embeds each raw commit
+# message (title + body, the same corpus fts_commit_messages indexes) and the
+# question with the same embedder, then ranks by cosine similarity. Deliberately
+# no harvesting, LLM extraction, graph, or reranking — those would stop it being
+# a control. Backend: spelunk-server's /index/embed endpoint (native F2LLM
+# embedder), reused so no extra model dependency is introduced.
+# ---------------------------------------------------------------------------
+
+# Server caps a batch at 256, but on a CPU embedder a full 256 batch can exceed
+# a 30s server request timeout; 64 keeps each request well under it.
+EMBED_BATCH = 64
+
+
+class VanillaRagEmbedder:
+    """POSTs raw text to spelunk-server /index/embed; parses the f32 byte blob.
+
+    No query prefix is applied (the endpoint embeds documents verbatim), so
+    commit messages and the question are embedded identically — the plainest
+    embed-and-KNN control.
+    """
+
+    def __init__(self, server_url: str, project: str, token: str | None):
+        self.url = f"{server_url.rstrip('/')}/v1/projects/{project}/index/embed"
+        self.token = token
+        self.dim: int | None = None
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), EMBED_BATCH):
+            vectors.extend(self._embed_batch(texts[start : start + EMBED_BATCH]))
+        return vectors
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        payload = {
+            "chunks": [{"chunk_id": str(i), "content": t} for i, t in enumerate(texts)]
+        }
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self.url, data=data, headers={"Content-Type": "application/json"}
+        )
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            raw = resp.read()
+        # Row-major little-endian f32, [n x dim] in request order.
+        total = len(raw) // 4
+        if len(texts) == 0:
+            return []
+        dim = total // len(texts)
+        if dim == 0 or total % len(texts) != 0:
+            raise RuntimeError(f"embed response {len(raw)}B not divisible by {len(texts)}")
+        self.dim = dim
+        floats = struct.unpack(f"<{total}f", raw)
+        return [list(floats[i * dim : (i + 1) * dim]) for i in range(len(texts))]
+
+
+def _read_all_commits(repo_path: Path) -> list[dict]:
+    proc = subprocess.run(
+        ["git", "--no-pager", "log", "--format=%H%x00%s%x00%b%x00---END---"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    commits: list[dict] = []
+    for entry in proc.stdout.split("---END---"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split("\0")
+        if len(parts) >= 2:
+            commits.append(
+                {
+                    "commit": parts[0].strip(),
+                    "title": parts[1].strip(),
+                    "body": parts[2].strip() if len(parts) > 2 else "",
+                }
+            )
+    return commits
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(y * y for y in b)) or 1.0
+    return dot / (na * nb)
+
+
+class VanillaRagIndex:
+    """Embedded commit-message corpus, built once and reused across questions."""
+
+    def __init__(self, embedder: VanillaRagEmbedder, commits: list[dict]):
+        self.embedder = embedder
+        self.commits = commits
+        texts = [f"{c['title']}\n\n{c['body']}".strip() for c in commits]
+        self.vectors = embedder.embed(texts) if texts else []
+
+    def search(self, query: str, limit: int) -> list[dict]:
+        if not self.vectors:
+            return []
+        qv = self.embedder.embed([query])[0]
+        scored = sorted(
+            zip(self.commits, self.vectors),
+            key=lambda cv: _cosine(qv, cv[1]),
+            reverse=True,
+        )
+        return [c for c, _ in scored[:limit]]
+
+
+# ---------------------------------------------------------------------------
 # Hit checking
 # ---------------------------------------------------------------------------
 
@@ -281,6 +399,21 @@ def main() -> None:
         action="store_true",
         help="Rebuild the FTS5 commit index from scratch.",
     )
+    parser.add_argument(
+        "--embed-url",
+        default="http://127.0.0.1:7777",
+        help="spelunk-server base URL for vanilla_rag embeddings.",
+    )
+    parser.add_argument(
+        "--embed-project",
+        default="bench-vanilla-rag",
+        help="Project slug in the /index/embed path (embeddings are not stored server-side).",
+    )
+    parser.add_argument(
+        "--embed-token",
+        default=None,
+        help="Bearer token for the embed endpoint (if the server requires auth).",
+    )
     args = parser.parse_args()
 
     repo_path = Path(args.repo_path).resolve()
@@ -294,10 +427,24 @@ def main() -> None:
     print(f"Questions: {len(questions)}")
     print()
 
+    # vanilla_rag: embed the whole commit-message corpus once. Deterministic, n=1.
+    vanilla_index: VanillaRagIndex | None = None
+    vanilla_error: str | None = None
+    embedder = VanillaRagEmbedder(args.embed_url, args.embed_project, args.embed_token)
+    try:
+        commits = _read_all_commits(repo_path)
+        print(f"vanilla_rag: embedding {len(commits)} commit messages...")
+        vanilla_index = VanillaRagIndex(embedder, commits)
+        print(f"vanilla_rag: index ready (dim={embedder.dim}).\n")
+    except Exception as e:
+        vanilla_error = f"{type(e).__name__}: {e}"
+        print(f"vanilla_rag: DISABLED — embed backend unavailable ({vanilla_error})\n")
+
     conditions = {
         "grep_literal": {"hits": [], "ranks": [], "wall": []},
         "grep_keywords": {"hits": [], "ranks": [], "wall": []},
         "fts_commit_messages": {"hits": [], "ranks": [], "wall": []},
+        "vanilla_rag": {"hits": [], "ranks": [], "wall": []},
         "memory_search": {"hits": [], "ranks": [], "wall": []},
     }
 
@@ -317,6 +464,8 @@ def main() -> None:
                 results = run_fts_commit_messages(
                     repo_path, question, args.limit, rebuild_fts=args.rebuild_fts
                 )
+            elif cond_name == "vanilla_rag":
+                results = vanilla_index.search(question, args.limit) if vanilla_index else []
             elif cond_name == "memory_search":
                 results = run_memory_search(repo_path, question, args.limit)
             else:
@@ -338,6 +487,15 @@ def main() -> None:
         "fts_rebuilt": args.rebuild_fts,
         "timestamp": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "num_questions": len(questions),
+        "vanilla_rag_provenance": {
+            "backend": "spelunk-server /index/embed (native F2LLM-v2-330M)",
+            "embedding_model": "codefuse-ai/F2LLM-v2-330M",
+            "embedding_dim": embedder.dim,
+            "method": "plain embed-and-KNN over raw commit messages (no harvest, no LLM extraction, no graph, no rerank)",
+            "determinism": "deterministic, n=1",
+            "corpus_commits": len(vanilla_index.commits) if vanilla_index else 0,
+            "error": vanilla_error,
+        },
     }
 
     for cond_name, cond_data in conditions.items():

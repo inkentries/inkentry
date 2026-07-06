@@ -81,6 +81,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **`bench/paired_stats.py` for publishing agentic benchmarks:** McNemar's exact test with paired task outcomes, bootstrap 95% CIs over per-seed means, deterministic n=1 handling, and cell-labeled output refusing to aggregate across differing model/harness/condition. Committed example fixtures in `bench/results/examples/`. Run: `python bench/paired_stats.py <baseline.json> <condition.json>`. (spelunk-oss^86)
+- **Benchmark `vanilla_rag` condition: plain embed-and-KNN control.** [spelunk-oss^87]
+  `bench/memory/decision_archaeology.py` now includes a fifth baseline condition
+  that embeds raw commit messages with the native F2LLM embedder and ranks by
+  cosine similarity, isolating the lift of `memory_search` from harvesting and LLM
+  extraction. 20 offline unit tests in `bench/memory/tests/test_vanilla_rag.py`.
 
 ### Features
 
