@@ -32,7 +32,7 @@ originally-drafted `src/security/injection.rs` path. It carries 12 patterns, not
 | 422 response returns `field` and `category`, never the raw regex | ☑ `handlers.rs` returns `{field, category, message}`; `security.rs` exposes only the `category` name, never the pattern |
 | OnceLock pattern compilation verified: no per-request recompilation | ☑ `security.rs::patterns()` compiles once via `OnceLock<Vec<Pattern>>` |
 | All default patterns have positive and negative unit tests | ☑ `security.rs` tests cover every pattern positively plus two clean-input negatives |
-| Audit log (`tracing::warn!`) fires on every match | ☐ **Not implemented.** `add_note` returns 422 but does not `tracing::warn!` on a match. Owner: open follow-up (no sibling fix merged for this row). |
+| Audit log (`tracing::warn!`) fires on every match | ☑ `handlers.rs::add_note` emits a `tracing::warn!` on a match recording the project slug, field, category, and title/body lengths, and never echoes the matched text |
 
 ## 2. Bearer-key authentication
 
@@ -198,7 +198,8 @@ Every **applicable** row must be ☑ (with cited evidence) before the v1.0 tag i
 created. **N/A** rows carry no obligation; they record a cloud-only item or an
 ADR-056 by-design decision, not an outstanding task.
 
-**State at retarget (2026-07-03):** the only applicable row not yet satisfied is
-the §1 injection audit-log (`tracing::warn!` on a match). Every other applicable
-row is ☑ with evidence cited above. Founder sign-off (initials + date) on this
-retarget and the remaining open row is pending review of this PR.
+**State at retarget (2026-07-03):** the only applicable row not yet satisfied was
+the §1 injection audit-log (`tracing::warn!` on a match); it is now implemented in
+`handlers.rs::add_note` and ticked above. Every applicable row is ☑ with evidence
+cited above. Founder sign-off (initials + date) on this retarget is pending review
+of this PR.
