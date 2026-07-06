@@ -115,7 +115,7 @@ export DEEPSEEK_API_KEY=sk-...
 bash bench/agents/swebench_run.sh --condition spelunk_full --seed 42
 ```
 
-## Contamination control — leakage-filtered instances
+## Contamination control: leakage-filtered instances
 
 Track-B (SWE-bench) numbers are reported on two instance sets, **always
 separately**, and every published figure names its `instance_filter`:
@@ -126,8 +126,8 @@ separately**, and every published figure names its `instance_filter`:
 | `swebench_plus_filtered`   | Verified minus SWE-Bench+ leakage/suspicious instances   |
 
 **Why.** SWE-Bench+ (arXiv:2410.06992) found ~32.67% of passing SWE-bench
-patches benefited from *solution leakage* — the fix appears in the issue report
-or comments — plus a large share of *suspicious* passes on weak tests (55.36%
+patches benefited from *solution leakage*: the fix appears in the issue report
+or comments. Also, a large share of *suspicious* passes on weak tests (55.36%
 of the Verified sample they inspected). A resolve_rate on the full set is
 inflated by these. Reporting a `swebench_plus_filtered` figure alongside `full`
 shows how much of a result survives contamination control.
@@ -156,14 +156,14 @@ pin the revision via `--labels-source`. Target survivor count is 150–300; the
 script warns if the intersection falls outside that band. `--dry-run` reports
 counts and the `tasks_50.json` overlap without writing.
 
-> **Status:** `tasks_filtered.json` is **not yet committed** — it requires the
+> **Status:** `tasks_filtered.json` is **not yet committed**. It requires the
 > SWE-Bench+ label set, which is not distributed as a fetchable file. The script
 > above generates it once that input is supplied. Do not hand-author the list.
 
 ### Overlap with `tasks_50.json`
 
 Of the 50-slice, **24** instances are in SWE-bench Verified (the other 26 come
-from the SWE-bench *full* split — see `setup_repos.sh`, issue #252). Only those
+from the SWE-bench *full* split; see `setup_repos.sh`, issue #252). Only those
 24 can ever survive the filter; the survivor subset is reported by
 `build_filtered_tasks.py --overlap-with bench/agents/tasks_50.json` once the
 label set is available.
