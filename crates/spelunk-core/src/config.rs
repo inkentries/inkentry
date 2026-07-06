@@ -268,7 +268,7 @@ pub struct Config {
     // ── spelunk-server (optional) ─────────────────────────────────────────────
     /// URL of the spelunk-server instance, e.g. `http://spelunk.internal:7777`.
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
-    /// semantic search, embedding, explore, and plan features.
+    /// semantic search, embedding, and explore.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.
     /// The old `memory_server_url` TOML key is accepted as a backward-compat alias.
     #[serde(default, alias = "memory_server_url")]
