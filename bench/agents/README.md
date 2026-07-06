@@ -115,6 +115,59 @@ export DEEPSEEK_API_KEY=sk-...
 bash bench/agents/swebench_run.sh --condition spelunk_full --seed 42
 ```
 
+## Contamination control — leakage-filtered instances
+
+Track-B (SWE-bench) numbers are reported on two instance sets, **always
+separately**, and every published figure names its `instance_filter`:
+
+| `instance_filter`          | Instance set                                              |
+|----------------------------|----------------------------------------------------------|
+| `full`                     | SWE-bench Verified, unfiltered (500 instances)           |
+| `swebench_plus_filtered`   | Verified minus SWE-Bench+ leakage/suspicious instances   |
+
+**Why.** SWE-Bench+ (arXiv:2410.06992) found ~32.67% of passing SWE-bench
+patches benefited from *solution leakage* — the fix appears in the issue report
+or comments — plus a large share of *suspicious* passes on weak tests (55.36%
+of the Verified sample they inspected). A resolve_rate on the full set is
+inflated by these. Reporting a `swebench_plus_filtered` figure alongside `full`
+shows how much of a result survives contamination control.
+
+**Reporting rule.** Never publish a single blended Track-B number. Every figure
+carries its `instance_filter`; `full` and `swebench_plus_filtered` are reported
+side by side.
+
+### Generating the filtered list
+
+`build_filtered_tasks.py` intersects Verified with a SWE-Bench+ exclude set and
+writes `tasks_filtered.json` (with a provenance header):
+
+```bash
+python bench/agents/build_filtered_tasks.py \
+    --labels swebench_plus_verified_exclude.json \
+    --labels-source "arXiv:2410.06992 replication pkg, rev <sha/date>" \
+    --out bench/agents/tasks_filtered.json
+```
+
+`--labels` is the SWE-Bench+ per-instance leakage/suspicious label set for
+Verified (list of instance_ids to exclude, or an `id -> reason` map). SWE-Bench+
+publishes a new post-cutoff dataset rather than a single filtered-Verified file,
+so a maintainer must obtain these labels from the authors' released artifact and
+pin the revision via `--labels-source`. Target survivor count is 150–300; the
+script warns if the intersection falls outside that band. `--dry-run` reports
+counts and the `tasks_50.json` overlap without writing.
+
+> **Status:** `tasks_filtered.json` is **not yet committed** — it requires the
+> SWE-Bench+ label set, which is not distributed as a fetchable file. The script
+> above generates it once that input is supplied. Do not hand-author the list.
+
+### Overlap with `tasks_50.json`
+
+Of the 50-slice, **24** instances are in SWE-bench Verified (the other 26 come
+from the SWE-bench *full* split — see `setup_repos.sh`, issue #252). Only those
+24 can ever survive the filter; the survivor subset is reported by
+`build_filtered_tasks.py --overlap-with bench/agents/tasks_50.json` once the
+label set is available.
+
 ## Notes
 
 - `resolved` is always `false` in agent output from `agent.py` — resolution
