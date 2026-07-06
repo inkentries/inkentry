@@ -248,7 +248,9 @@ def run_fts_commit_messages(
 # embedder), reused so no extra model dependency is introduced.
 # ---------------------------------------------------------------------------
 
-EMBED_BATCH = 256  # server caps a single /index/embed request at 256 chunks
+# Server caps a batch at 256, but on a CPU embedder a full 256 batch can exceed
+# a 30s server request timeout; 64 keeps each request well under it.
+EMBED_BATCH = 64
 
 
 class VanillaRagEmbedder:

@@ -100,9 +100,9 @@ python bench/memory/decision_archaeology.py \
 `vanilla_rag` is the generic "any embedding store could do this" control: it
 embeds each raw commit message and the question with the same embedder, then
 ranks by cosine similarity. No harvesting, LLM extraction, graph, or reranking
-— those would make it stop being a control and start being spelunk. It isolates
-the lift `memory_search` gets from harvesting/extraction over plain embeddings
-of the same corpus `fts_commit_messages` indexes.
+(those would make it stop being a control). It isolates the lift `memory_search`
+gets from harvesting/extraction over plain embeddings of the same corpus
+`fts_commit_messages` indexes.
 
 Embeddings come from a running `spelunk-server` via its `/index/embed` endpoint
 (the native F2LLM-v2-330M embedder; embeddings are computed, never stored
