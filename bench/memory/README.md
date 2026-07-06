@@ -38,7 +38,7 @@ database. The protocol:
 
 ```
 bench/memory/author_questions.py   — extracts git log for blind authoring
-bench/memory/decision_archaeology.py — runs four-condition comparison
+bench/memory/decision_archaeology.py — runs five-condition comparison
 ```
 
 ### Committed question sets
@@ -87,14 +87,29 @@ python bench/memory/decision_archaeology.py \
     --out bench/results/archaeology-<repo>.json
 ```
 
-### Four conditions
+### Five conditions
 
 | Condition | Query | Search target |
 |-----------|-------|---------------|
 | `grep_literal` | Full question verbatim | `git log --grep` |
 | `grep_keywords` | Regex-extracted keywords | `git log --grep` per keyword |
 | `fts_commit_messages` | Full question | SQLite FTS5 over all commit messages |
+| `vanilla_rag` | Full question | Plain embed-and-KNN over raw commit messages |
 | `memory_search` | Full question | `spelunk memory search` (semantic) |
+
+`vanilla_rag` is the generic "any embedding store could do this" control: it
+embeds each raw commit message and the question with the same embedder, then
+ranks by cosine similarity. No harvesting, LLM extraction, graph, or reranking
+— those would make it stop being a control and start being spelunk. It isolates
+the lift `memory_search` gets from harvesting/extraction over plain embeddings
+of the same corpus `fts_commit_messages` indexes.
+
+Embeddings come from a running `spelunk-server` via its `/index/embed` endpoint
+(the native F2LLM-v2-330M embedder; embeddings are computed, never stored
+server-side). The embedding model + dimension are recorded under
+`vanilla_rag_provenance` in the results JSON. This layer is deterministic (n=1).
+Start the server first (`spelunk server start`); override the endpoint with
+`--embed-url` / `--embed-token` if it is not the default loopback address.
 
 ## Cross-Session Handoff
 
