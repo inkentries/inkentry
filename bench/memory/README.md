@@ -37,8 +37,8 @@ database. The protocol:
 ### Script
 
 ```
-bench/memory/author_questions.py   — extracts git log for blind authoring
-bench/memory/decision_archaeology.py — runs five-condition comparison
+bench/memory/author_questions.py   - extracts git log for blind authoring
+bench/memory/decision_archaeology.py - runs five-condition comparison
 ```
 
 ### Committed question sets
