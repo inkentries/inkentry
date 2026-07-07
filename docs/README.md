@@ -43,10 +43,12 @@ down and write it up. The decisions a fresh repo could not yet show in stage 1
 now accumulate on their own, and every later `spelunk context` or `spelunk
 search` hands them back.
 
-The mechanism is a single git hook. Installing it adds a post-commit step that
-runs `spelunk memory harvest`, which pulls the decisions out of the commit
-messages your agent already writes. Nothing else about how you work has to
-change.
+The mechanism is the agent itself. Wired to spelunk through a skill (the Claude
+Code skill, or a drop-in `AGENT.md`), it records each decision as it makes it, so
+the why-layer accrues as a by-product of the work rather than from anyone stopping
+to document it. A git hook complements this: a post-commit step runs
+`spelunk memory harvest` to catch any reasoning left in commit messages, so
+nothing slips through. Nothing else about how you work has to change.
 
 - [Agent Guide](agent-guide.md): how a session should use spelunk, plus automatic capture and JSON output
 - [AGENT.md template](examples/AGENT.md): a drop-in file that tells your agent to reach for spelunk first
@@ -93,7 +95,8 @@ the hosted spelunk.cloud service is the managed alternative.
 Everyone on a team sets an explicit `server_url` (plus a shared server key)
 pointing at the same server, and [`spelunk sync`](commands.md#spelunk-sync) keeps
 them converged: it pushes the decisions you recorded and pulls the ones your
-teammates recorded. Code never travels; only memory does.
+teammates recorded. Code never travels; it does not need to, you already have git
+for that. Only memory does.
 
 - [Getting Started → capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live): the tier table in context
 - [Getting Started → team setup](getting-started.md#team-setup-shared-memory-with-spelunk-server): how to set `server_url` and sync
