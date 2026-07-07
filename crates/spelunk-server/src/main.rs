@@ -60,8 +60,9 @@ struct Args {
     #[arg(long, env = "SPELUNK_EMBEDDING_URL")]
     embedding_url: Option<String>,
 
-    /// Embedding model name to pass to the embedding server (e.g.
-    /// `text-embedding-embeddinggemma-300m-qat`). Overrides `SPELUNK_EMBEDDING_MODEL`.
+    /// Embedding model name to pass to the external `--embedding-url` server (e.g.
+    /// `f2llm-v2-330m`). Ignored by the bundled native embedder. Overrides
+    /// `SPELUNK_EMBEDDING_MODEL`.
     #[arg(long, env = "SPELUNK_EMBEDDING_MODEL", default_value = "")]
     embedding_model: String,
 

@@ -239,36 +239,20 @@ pub struct Config {
     #[serde(default = "Config::default_db_path")]
     pub db_path: PathBuf,
 
-    /// Directory where model weights are cached (used by backend-metal)
-    #[serde(default = "Config::default_models_dir")]
-    pub models_dir: PathBuf,
-
-    /// Model ID for embeddings.
-    /// LM Studio: the model's API key shown in the LM Studio UI
-    ///   (e.g. `text-embedding-embeddinggemma-300m-qat`).
-    /// Metal: HuggingFace repo ID (e.g. `google/embeddinggemma-300m`).
+    /// Display label for the `model:` field of `plumbing embed` JSONL output only.
+    /// The effective embedding model is owned by spelunk-server, not this key.
     #[serde(default = "Config::default_embedding_model")]
     pub embedding_model: String,
 
-    /// Model ID for the LLM used by `ask`, `memory harvest`, and `plan create`.
-    /// LM Studio: the model's API key (e.g. `google/gemma-3n-e4b`).
+    /// Chat model id, resolved by spelunk-server, for `ask` and `memory harvest`.
     /// When unset, commands that require a chat model are unavailable.
     #[serde(default)]
     pub llm_model: Option<String>,
 
-    /// Default embedding batch size
-    #[serde(default = "Config::default_batch_size")]
-    pub batch_size: usize,
-
-    /// Base URL for the OpenAI-compatible API server (e.g. LM Studio, Ollama, vLLM).
-    /// Default: `http://127.0.0.1:1234`
-    #[serde(default = "Config::default_api_base_url", alias = "lmstudio_base_url")]
-    pub api_base_url: String,
-
     // ── spelunk-server (optional) ─────────────────────────────────────────────
     /// URL of the spelunk-server instance, e.g. `http://spelunk.internal:7777`.
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
-    /// semantic search, embedding, explore, and plan features.
+    /// semantic search, embedding, and explore.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.
     /// The old `memory_server_url` TOML key is accepted as a backward-compat alias.
     #[serde(default, alias = "memory_server_url")]
@@ -310,18 +294,6 @@ pub struct Config {
     /// never diverts memory CRUD away from the project's local `memory.db`.
     #[serde(skip)]
     pub inference_url: Option<String>,
-
-    // ── Directory conventions ─────────────────────────────────────────────────
-    /// Directory (relative to project root) where `spelunk plan create` writes plan files.
-    /// Default: `docs/plans`
-    #[serde(default = "Config::default_plans_dir")]
-    pub plans_dir: PathBuf,
-
-    /// Directory (relative to project root) where spec markdown files are discovered
-    /// during `spelunk index` and where `spelunk spec` looks for spec files.
-    /// Default: `docs/specs`
-    #[serde(default = "Config::default_specs_dir")]
-    pub specs_dir: PathBuf,
 
     /// Context-window size (tokens) of the LLM used for `memory harvest` and `ask`.
     /// spelunk uses this to split harvest batches that would overflow the model's window.
@@ -394,23 +366,8 @@ impl Config {
     fn default_db_path() -> PathBuf {
         spelunk_config_dir().join("index.db")
     }
-    fn default_models_dir() -> PathBuf {
-        spelunk_config_dir().join("models")
-    }
     fn default_embedding_model() -> String {
-        "text-embedding-embeddinggemma-300m-qat".to_string()
-    }
-    fn default_api_base_url() -> String {
-        "http://127.0.0.1:1234".to_string()
-    }
-    fn default_batch_size() -> usize {
-        32
-    }
-    fn default_plans_dir() -> PathBuf {
-        PathBuf::from("docs/plans")
-    }
-    fn default_specs_dir() -> PathBuf {
-        PathBuf::from("docs/specs")
+        "f2llm-v2-330m".to_string()
     }
     fn default_llm_context_length() -> usize {
         8192
@@ -424,18 +381,13 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             db_path: Self::default_db_path(),
-            models_dir: Self::default_models_dir(),
             embedding_model: Self::default_embedding_model(),
             llm_model: None,
-            batch_size: Self::default_batch_size(),
-            api_base_url: Self::default_api_base_url(),
             server_url: None,
             server_key: None,
             project_id: None,
             mode: None,
             inference_url: None,
-            plans_dir: Self::default_plans_dir(),
-            specs_dir: Self::default_specs_dir(),
             llm_context_length: Self::default_llm_context_length(),
             store_in_git_notes: Self::default_store_in_git_notes(),
             auth: None,
