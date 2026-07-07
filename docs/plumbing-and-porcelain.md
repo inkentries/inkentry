@@ -18,7 +18,7 @@ Use plumbing commands when you are:
 
 Use porcelain commands for:
 
-- **Day-to-day developer use** — `spelunk search`, `spelunk ask`, `spelunk memory list` are readable and interactive.
+- **Day-to-day developer use:** `spelunk search`, `spelunk explore`, `spelunk memory list` are readable and interactive.
 - **Interactive exploration** — `spelunk explore` drives a multi-step agentic loop with formatted summaries.
 - **Quick status checks** — `spelunk status`, `spelunk check` give human-readable health reports.
 

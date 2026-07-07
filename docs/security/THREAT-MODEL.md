@@ -77,7 +77,7 @@ User filesystem
   │                                              └─► embed chunk text via HTTP ─► spelunk-server
   │                                                   (loopback: native, on-machine;
   │                                                    team server_url: leaves the machine)
-  ├─ spelunk ask/search
+  ├─ spelunk explore/search
   │     ├─► embed query text via HTTP ─► spelunk-server
   │     │    (chunk + query text leave the machine only if server_url is a remote
   │     │     team server, or that server proxies to a third-party --embedding-url)
@@ -193,7 +193,7 @@ unauthenticated (no bearer required or sent).
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to the team server) or a server whose operator set an external `--embedding-url` (server forwards post-secret-scan chunks to a third party). Both are explicit operator choices; users must be informed via docs. |
-| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk ask` and `memory harvest` send memory content + code context to `spelunk-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url` or a server-side `--llm-url` shim. |
+| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `spelunk-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url` or a server-side `--llm-url` shim. |
 | Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires a key — `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses without `--key` / `SPELUNK_SERVER_KEY`; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
@@ -229,7 +229,7 @@ unauthenticated (no bearer required or sent).
 | Indexed source file contains adversarial LLM instructions | A | Low | Medium | XML delimiter isolation in `ask.rs`; angle-bracket escaping of retrieved context (issue #137) |
 | Indexed source file steers the `explore` LLM into a `read_file` tool call for an arbitrary path (e.g. `/Users/me/.ssh/id_rsa`, `../../etc/passwd`), exfiltrating file contents via the answer / step log | A | Low | High | `read_file` path-boundary enforcement in `explore.rs` (`resolve_indexed_path`): reject absolute / drive / UNC / NUL inputs, lexically reject `..` escape, require index membership against the `files` allow-list (already ignore/secret-vetted by the indexer), and confirm the canonicalized target stays under the canonical project root (symlink backstop). Denial is a recoverable tool result echoing only the caller-supplied path — never a resolved path or file contents (issue #403) |
 | User query contains injection payload | A | Low | Low | Pre-flight check against known patterns (`ask.rs` lines 155–174) |
-| Memory note stored via team server contains injection payload, later retrieved in `spelunk ask` context | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db` — not via the loopback server — so this attack requires access to the user's filesystem. Same XML delimiter isolation applies when notes are included in LLM context; angle-bracket escaping must cover memory context (issue #137). |
+| Memory note stored via team server contains injection payload, later retrieved in `spelunk explore` context | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db`, not via the loopback server, so this attack requires access to the user's filesystem. Same XML delimiter isolation applies when notes are included in LLM context; angle-bracket escaping must cover memory context (issue #137). |
 
 **Residual risk:** Pre-flight only blocks known string patterns. Novel injection payloads in indexed content or memory notes could influence the LLM response.
 
@@ -349,8 +349,8 @@ an external `--embedding-url` / `--llm-url` shim (e.g. `https://api.openai.com`)
 | Data sent | Trigger | Risk |
 |-----------|---------|------|
 | Source code chunk content (post-secret-scan) | `spelunk index` | Code exfiltration to vendor |
-| User query text | `spelunk search`, `spelunk ask` | Query logging by vendor |
-| Code context + memory notes | `spelunk ask` | Combined context exfiltration |
+| User query text | `spelunk search`, `spelunk explore` | Query logging by vendor |
+| Code context + memory notes | `spelunk explore` | Combined context exfiltration |
 | Memory note bodies | `spelunk memory harvest` | Decision/requirement exfiltration |
 
 **Mitigations (documentation, not code):**

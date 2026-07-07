@@ -1,13 +1,13 @@
 # Commands Reference
 
 Every command accepts `-c, --config <path>` to override the default config file
-(`~/.config/spelunk/config.toml`). Flags and defaults below are taken from the
-v0.8.0 binary (`spelunk <command> --help`).
+(`~/.config/spelunk/config.toml`). The flags and defaults below match the
+installed binary; run `spelunk <command> --help` to confirm against your version.
 
-From v0.8.0 a local `spelunk-server` is autostarted on demand and provides
-embeddings (native, via the candle-served F2LLM-v2-330M model) and — when a chat model is configured —
-LLM inference. Commands that need semantic search or an LLM (`search` in
-semantic/auto mode, `explore`, `memory harvest`) use that server; the
+A local `spelunk-server` is autostarted on demand and provides embeddings
+(native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
+configured, LLM inference. Commands that need semantic search or an LLM (`search`
+in semantic/auto mode, `explore`, `memory harvest`) use that server; the
 always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 `context`) work with no server.
 
@@ -508,7 +508,9 @@ spelunk memory supersede <id> --title "..." # archive old, add replacement
 spelunk memory timeline <topic>
 spelunk memory graph <id>
 spelunk memory since <unix-ts>
-spelunk memory push                         # push local entries to the configured server
+spelunk memory push                         # one-way: push local entries to the configured server
+spelunk memory pull                         # one-way: pull new server entries into local memory.db
+spelunk memory sync                         # two-way: push local + pull remote (see `spelunk sync`)
 spelunk memory watch                        # stream new entries from the server (SSE)
 spelunk memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
 ```
@@ -534,16 +536,23 @@ so memory travels with the code. Outside a git repo this is a graceful no-op.
 
 ## spelunk sync
 
-Shorthand for `spelunk memory push`: sync local memory entries to the configured
-server.
+Two-way sync (shorthand for `spelunk memory sync`): push your local memory
+entries to the configured server **and** pull remote entries into the local
+`memory.db`, so a team converges on one shared memory. Code never leaves the
+machine; only memory does. Requires a configured `server_url`.
 
 ```
-spelunk sync [--project <slug>]
+spelunk sync [--project <slug>] [--source <path>] [--include-archived]
 ```
 
 | Flag | Notes |
 |------|-------|
-| `--project <slug>` | Cloud project slug to sync into. Required on first sync when no `project_id` is configured — the server lazily creates the project from this slug, and repeat syncs with the same slug reuse it. Overrides a configured `project_id` when both are present. Never auto-derived from the folder name or git remote: with neither flag nor a configured `project_id`, sync halts with an actionable message pointing at `--project`. |
+| `--project <slug>` | Project slug to sync into. Required on first sync when no `project_id` is configured: the server lazily creates the project from this slug, and repeat syncs with the same slug reuse it. Overrides a configured `project_id` when both are present. Never auto-derived from the folder name or git remote; with neither flag nor a configured `project_id`, sync halts with an actionable message pointing at `--project`. |
+| `--source <path>` | Local `memory.db` to sync (default: the auto-detected project `memory.db`). |
+| `--include-archived` | Include archived entries in the push, propagating tombstones. |
+
+For a one-directional transfer, use `spelunk memory push` (local → server) or
+`spelunk memory pull` (server → local).
 
 ---
 

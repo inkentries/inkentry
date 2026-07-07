@@ -86,7 +86,7 @@ spelunk memory add --kind decision --title "Chose sqlite-vec over pgvector" \
 spelunk memory list --kind decision --limit 10
 spelunk memory search "why did we choose this database"
 spelunk memory harvest   # auto-extract decisions from recent commits (server with LLM backend)
-spelunk sync             # push local memory entries to the configured server (alias for `memory push`)
+spelunk sync             # two-way sync of local memory with the configured server (push + pull)
 ```
 
 Memory is stored in local SQLite and written through to git notes by default
@@ -153,12 +153,15 @@ All other file types are indexed as plain text with a sliding-window chunker.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — install, configure, index your first project
-- [Commands](docs/commands.md) — full reference for every subcommand
-- [Memory](docs/memory.md) — decisions, context, and requirements across sessions
-- [Agent Guide](docs/agent-guide.md) — using spelunk with AI coding agents
-- [Architecture](docs/architecture.md) — system design for contributors
-- [Examples](docs/examples/) — real-world workflows
+Start at the **[documentation home](docs/README.md)**, which walks the path from
+the first five minutes to running a shared memory server for a team.
+
+- [Getting Started](docs/getting-started.md): install, index your first project, run your first retrieval
+- [Memory](docs/memory.md): decisions, context, and requirements across sessions
+- [Agent Guide](docs/agent-guide.md): wiring spelunk into AI coding agents
+- [Commands](docs/commands.md): full reference for every subcommand
+- [Architecture](docs/architecture.md): system design for contributors
+- [Examples](docs/examples/): real-world workflows
 
 ## Repository structure
 
