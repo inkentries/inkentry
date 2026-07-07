@@ -9,7 +9,7 @@
 # sibling container — only from inside this same network namespace, e.g. a
 # separate container started with `--network container:spelunk-server`
 # (the runtime image itself has no curl/wget to test from a bare
-# `docker compose exec` shell — see docs/server.md#quick-start-docker).
+# `docker compose exec` shell — see docs/server.md#docker-local-scaffold-only).
 #
 # For a team-reachable deployment, run the binary bare-metal under systemd
 # instead, with your own TLS terminator in front of the same loopback bind on

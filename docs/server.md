@@ -36,7 +36,7 @@ spelunk server logs      # tail the local server's logs
 ```
 
 To opt out entirely and keep spelunk fully offline, set `SPELUNK_NO_SERVER=1`
-(see [Server mode vs no-server mode](getting-started.md#server-mode-vs-no-server-mode)).
+(see [Capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live)).
 With it set, spelunk never autostarts a server and inference-only features exit
 with a clear message instead.
 
@@ -62,21 +62,26 @@ The rest of this page covers running `spelunk-server` as a **deployed, shared**
 service so a team can sync memory. This is distinct from the local-auto server
 above: it's long-lived, reachable over the network, and protected by an API key.
 
-**Recommended: bare-metal / systemd.** The server binds `127.0.0.1`
-unconditionally (see [Non-loopback plaintext binds are refused](#non-loopback-plaintext-binds-are-refused-no-override)
-below) and refuses to serve plaintext off-host. Reaching it from another
-machine therefore needs a TLS terminator on the **same host**, in front of
-that loopback bind — which is straightforward with a bare-metal/systemd
-install, and awkward with Docker, since a container's own loopback lives in
-its private network namespace and isn't reachable from the host or sibling
-containers by any of the usual means (bridge port-publish, Docker Desktop
-host-mode, container-to-container DNS all fail to reach it). See
-[Self-hosting](self-hosting.md) for the systemd unit plus Caddy/nginx
-recipes — that's the recommended path for a team-reachable instance. (A
-fuller from-scratch team-deployment guide is tracked as follow-up work; this
-page and Self-hosting are the current source of truth in the meantime.)
+**Recommended: bare-metal + systemd.** Run the binary directly on a host under
+systemd, bound to loopback, with an operator-owned TLS terminator
+(nginx/Caddy/…) in front of that same loopback bind on the same host. This is
+the one mechanically-correct shape for a team-reachable server, because the
+server binds `127.0.0.1` unconditionally (see
+[Non-loopback plaintext binds are refused](#non-loopback-plaintext-binds-are-refused-no-override)
+below) and refuses to serve plaintext off-host — so reaching it from another
+machine needs a same-host terminator in front of that loopback bind. Docker
+cannot host this: a container's own loopback lives in its private network
+namespace and isn't reachable from the host or sibling containers by any of the
+usual means (bridge port-publish, Docker Desktop host-mode, container-to-container
+DNS all fail to reach it).
 
-## Quick start (Docker)
+**[Self-hosting](self-hosting.md) is the full team-server guide** — it walks
+through the loopback bind, the first-party `spelunk-server.service` systemd unit
+(hardened, key supplied as a systemd credential), and the Caddy/nginx reference
+examples. Start there. The rest of this page covers client configuration, the
+trust model, and the CLI/flag reference that path relies on.
+
+## Docker: local scaffold only
 
 `docker-compose.yml` in this repo is a **minimal local scaffold**: it builds
 the image and runs `spelunk-server` with a persistent named volume for the
@@ -269,7 +274,7 @@ that same loopback bind on the same host and actually be reachable off-host.
 See [Self-hosting](self-hosting.md) for the systemd unit and reverse-proxy
 recipes.
 
-`docker-compose.yml` (see [Quick start (Docker)](#quick-start-docker) above)
+`docker-compose.yml` (see [Docker: local scaffold only](#docker-local-scaffold-only) above)
 is a local scaffold for running the server process itself — useful for local
 development or testing — not a substitute for the bare-metal path when the
 server needs to be reachable by a team or over a network.
@@ -305,7 +310,16 @@ cargo build --release --bin spelunk-server
 |---|---|---|---|
 | `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs a key and TLS in front (see below). |
 | `--port` | (none) | `7777` | Port to bind. |
-| `--key` | `SPELUNK_SERVER_KEY` | unset | Shared bearer API key. Leave unset only for a loopback dev server. |
+| `--key` | (none) | unset | Shared bearer API key, passed inline. Visible in the process table — prefer `--key-file` or `SPELUNK_SERVER_KEY`. Leave every key source unset only for a loopback dev server. |
+| `--key-file` | (none) | unset | Read the key from a file (whole contents, trimmed). First-class alternative to `SPELUNK_SERVER_KEY`, not a fallback. |
+| (none) | `SPELUNK_SERVER_KEY` | unset | Read the key from the environment. Fully supported alongside `--key-file`. |
+
+The key is resolved from, in precedence order: `--key` → `--key-file` →
+`SPELUNK_SERVER_KEY` → a systemd `LoadCredential=server-key` (read automatically
+from `$CREDENTIALS_DIRECTORY/server-key` when present). A blank value from any
+source is ignored and falls through to the next. Under systemd the credential
+path is preferred — it keeps the key out of the world-readable process
+environment; see [Self-hosting](self-hosting.md).
 
 ### Non-loopback plaintext binds are refused, no override
 
