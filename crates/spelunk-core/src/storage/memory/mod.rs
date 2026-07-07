@@ -60,6 +60,10 @@ pub struct Note {
     /// when two linked projects share a display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_project_path: Option<String>,
+    /// Canonical cross-machine id (uuid) when synced to a remote; None for
+    /// never-synced local rows. Carried from the remote wire (ADR-059 D2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
 }
 
 impl MemoryStore {

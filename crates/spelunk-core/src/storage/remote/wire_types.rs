@@ -26,7 +26,6 @@ pub(super) struct AddNoteResponse {
     /// Server-assigned cross-machine id, if the server minted one. Absent on
     /// older servers → `None`.
     #[serde(default)]
-    #[allow(dead_code)]
     pub(super) remote_id: Option<String>,
 }
 
@@ -57,9 +56,8 @@ pub(super) struct NoteResponse {
     #[serde(default)]
     pub(super) invalid_at: Option<i64>,
     /// Canonical cross-machine id, if the server has one. Absent on older
-    /// servers → `None`. Accepted for forward-compat; not surfaced into `Note`.
+    /// servers → `None`. Surfaced into the domain `Note` (ADR-059 D2).
     #[serde(default)]
-    #[allow(dead_code)]
     pub(super) remote_id: Option<String>,
     #[serde(default)]
     pub(super) distance: Option<f64>,
@@ -84,6 +82,7 @@ impl From<NoteResponse> for Note {
             score: None,
             source_project: None,
             source_project_path: None,
+            remote_id: r.remote_id,
         }
     }
 }

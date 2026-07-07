@@ -52,6 +52,7 @@ pub fn record_to_note(r: NoteRecord) -> Note {
         score: None,
         source_project: None,
         source_project_path: None,
+        remote_id: r.remote_id,
     }
 }
 

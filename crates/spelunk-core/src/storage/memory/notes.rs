@@ -23,6 +23,8 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         score: None,
         source_project: None,
         source_project_path: None,
+        // Not selected by the row-mapper queries; DB→Note callers don't need it.
+        remote_id: None,
     })
 }
 
@@ -44,6 +46,7 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         score: None,
         source_project: None,
         source_project_path: None,
+        remote_id: None,
     })
 }
 
