@@ -148,10 +148,11 @@ def run_opencode(
     output_tokens = 0
     parse_error = None
 
-    # --format json emits one JSON event per line (per opencode docs). We
-    # don't depend on a specific event schema beyond counting
-    # assistant-turn-shaped events and summing any token usage fields that
-    # appear, so a future opencode version that adds fields doesn't break us
+    # --format json emits one JSON event per line. opencode 1.17.13 uses:
+    #   {"type":"step_finish", ..., "part":{"tokens":{"input":N,"output":N,...}}}
+    # We don't depend on a specific event schema beyond counting
+    # turn-completion events and summing token usage from their payload, so
+    # a future opencode version that adds fields doesn't break us
     # (only a field *rename* would silently zero these out — see README).
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -161,13 +162,17 @@ def run_opencode(
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        role = event.get("role") or event.get("type")
-        if role in ("assistant", "message", "step"):
+        role = event.get("type") or event.get("role")
+        if role in ("step_finish", "step", "assistant", "message"):
             turns += 1
-        usage = event.get("usage") or event.get("tokens")
-        if isinstance(usage, dict):
-            input_tokens += usage.get("input", usage.get("prompt_tokens", 0)) or 0
-            output_tokens += usage.get("output", usage.get("completion_tokens", 0)) or 0
+        tokens = (
+            (event.get("part") or {}).get("tokens")
+            or event.get("usage")
+            or event.get("tokens")
+        )
+        if isinstance(tokens, dict):
+            input_tokens += int(tokens.get("input", tokens.get("prompt_tokens", 0)) or 0)
+            output_tokens += int(tokens.get("output", tokens.get("completion_tokens", 0)) or 0)
 
     if result.returncode != 0 and turns == 0:
         parse_error = (result.stderr or result.stdout)[:2000]
