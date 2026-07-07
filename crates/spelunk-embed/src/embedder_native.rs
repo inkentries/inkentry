@@ -9,6 +9,8 @@ use candle_transformers::models::qwen3::Config as Qwen3Config;
 use candle_transformers::utils::repeat_kv;
 use tokenizers::Tokenizer;
 
+use crate::error::EmbedError;
+
 /// Embedding dimension produced by F2LLM-v2-330M (hidden_size = 896).
 pub const DIM: usize = 896;
 
@@ -652,7 +654,7 @@ impl crate::EmbeddingBackend for NativeEmbedder {
                 let encoding = guard
                     .tokenizer
                     .encode(text.as_str(), true) // add_special_tokens=true → appends EOS
-                    .map_err(|e| anyhow::anyhow!("tokenization failed: {e}"))?;
+                    .map_err(|e| EmbedError::Tokenization(e.to_string()))?;
                 let full_len = encoding.get_ids().len();
                 let ids: Vec<u32> = encoding
                     .get_ids()
@@ -680,7 +682,10 @@ impl crate::EmbeddingBackend for NativeEmbedder {
             for sub_batch in indexed.chunks(EMBED_BATCH_SIZE) {
                 let batch_ids: Vec<&[u32]> =
                     sub_batch.iter().map(|(_, ids)| ids.as_slice()).collect();
-                let vecs = guard.weights.embed_batch(&batch_ids)?;
+                let vecs = guard
+                    .weights
+                    .embed_batch(&batch_ids)
+                    .map_err(|e| EmbedError::Inference(e.to_string()))?;
                 for ((orig_idx, _), vec) in sub_batch.iter().zip(vecs) {
                     results[*orig_idx] = vec;
                 }

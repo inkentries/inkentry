@@ -29,3 +29,9 @@ mod embedder_native;
 
 #[cfg(feature = "embed-native")]
 pub use embedder_native::{DIM, NativeEmbedder};
+
+#[cfg(feature = "embed-native")]
+mod error;
+
+#[cfg(feature = "embed-native")]
+pub use error::EmbedError;

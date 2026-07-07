@@ -13,11 +13,15 @@ pub struct GraphEdge {
 }
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
+    // Round-trip the stored `kind` through `EdgeKind::parse` so a row written
+    // by an older/foreign schema variant with an unrecognised kind string
+    // normalises to a known value instead of propagating an arbitrary string.
+    let kind: String = row.get(3)?;
     Ok(GraphEdge {
         source_file: row.get(0)?,
         source_name: row.get(1)?,
         target_name: row.get(2)?,
-        kind: row.get(3)?,
+        kind: crate::indexer::graph::EdgeKind::parse(&kind).to_string(),
         line: row.get::<_, i64>(4)? as usize,
     })
 }

@@ -41,7 +41,6 @@ pub fn vec_to_int8_blob(v: &[f32]) -> Vec<u8> {
 pub const INT8_SCALE: f32 = 127.0;
 
 /// Deserialise raw little-endian bytes back to a float vector.
-#[allow(dead_code)]
 pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))

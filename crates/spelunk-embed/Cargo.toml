@@ -16,7 +16,7 @@ default = ["embed-native"]
 # download dependency here (no hf-hub) — this crate only loads from local
 # files (`load_from_path`); the Hugging Face Hub acquisition path lives in
 # spelunk-server's `embed_hub` module.
-embed-native = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+embed-native = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:thiserror"]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
@@ -30,6 +30,7 @@ candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 
 # macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
 # /proc/meminfo, no FFI). Not in [workspace.dependencies] since spelunk-embed

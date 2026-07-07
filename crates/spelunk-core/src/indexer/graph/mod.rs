@@ -43,7 +43,6 @@ impl std::fmt::Display for EdgeKind {
 }
 
 impl EdgeKind {
-    #[allow(dead_code)]
     pub fn parse(s: &str) -> Self {
         match s {
             "calls" => Self::Calls,
