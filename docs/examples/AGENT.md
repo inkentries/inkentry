@@ -1,4 +1,4 @@
-# AGENT.md — spelunk-powered project
+# AGENT.md: spelunk-powered project
 
 > **Template for end users of spelunk.**
 > Copy this file to the root of your project (rename to `AGENT.md` or `CLAUDE.md`),
@@ -7,7 +7,7 @@
 
 ---
 
-## Context retrieval — use spelunk
+## Context retrieval with spelunk
 
 This project uses [spelunk](https://github.com/spelunk-cloud/spelunk) for code graph traversal, memory, and search.
 
@@ -18,11 +18,11 @@ spelunk graph verify_token
 # Full-text search (no server needed)
 spelunk search "error handling" --mode text
 
-# Semantic search — finds code by meaning (requires embedding server + index)
+# Semantic search: finds code by meaning (requires embedding server + index)
 spelunk search "how does authentication work"
 
-# Ask a natural language question (requires llm_model in config)
-spelunk ask "what does the retry logic do when the upstream times out?"
+# Answer an open question by iterating search + graph (requires server + LLM)
+spelunk explore "what does the retry logic do when the upstream times out?"
 ```
 
 **Rule:** run `spelunk graph <symbol>` and `spelunk search "<topic>" --mode text` before opening files you haven't read this session. Fall back to `Read`/`Grep`/`Glob` when these return nothing useful.
@@ -41,7 +41,7 @@ spelunk memory list --kind question              # open questions
 spelunk memory search "topic you care about"    # semantic search over memory
 ```
 
-Store new decisions as you make them — don't wait until the end:
+Store new decisions as you make them; don't wait until the end:
 
 ```bash
 spelunk memory add --kind decision \
@@ -90,7 +90,7 @@ spelunk index .            # index the current directory
 spelunk check              # verify the index is fresh
 ```
 
-A post-commit hook can do this automatically — see `spelunk hooks install`.
+A post-commit hook can do this automatically; see `spelunk hooks install`.
 
 ---
 
@@ -107,7 +107,7 @@ A post-commit hook can do this automatically — see `spelunk hooks install`.
 
 ## What spelunk cannot do
 
-- It cannot run your tests or build the project — use shell commands for that
+- It cannot run your tests or build the project; use shell commands for that
 - Semantic search results are only as fresh as the last `spelunk index` run
-- `spelunk ask` and `spelunk explore` require `llm_model` in `~/.config/spelunk/config.toml`
+- `spelunk explore` requires a running `spelunk-server` with an LLM backend configured
 - `spelunk search` (semantic) requires an embedding server and a built index; use `--mode text` for full-text search without either

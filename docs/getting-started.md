@@ -1,11 +1,17 @@
 # Getting Started
 
-`spelunk` is a single binary. Install it, run `spelunk init` inside a git
-repository, and you have working semantic search — no server to stand up, no
-database to provision. A local `spelunk-server` is started for you in the
-background on first use; you only think about servers when you want to *share*
-memory with a team (see [Team setup](#team-setup-shared-memory-with-spelunk-server)
-at the end).
+`spelunk` is a single binary that helps you understand an unfamiliar codebase
+fast: trace how a symbol connects across files, find the code behind a concept,
+and assemble the context around a change, all from the CLI with no infrastructure
+to stand up. Install it, run `spelunk init` inside a git repository, and the first
+`graph` / `search` / `context` already tell you how the code fits together.
+
+That is the starting point. As you keep working, `spelunk` also remembers the
+decisions behind the code, so a later session (yours or a teammate's) does not
+re-derive them. A local `spelunk-server` is started for you on first use to add
+search by meaning; you only think about a shared server when you want to share
+that memory with a team (see
+[Team setup](#team-setup-shared-memory-with-spelunk-server) at the end).
 
 ## 1. Install spelunk
 
@@ -127,7 +133,7 @@ a launchd plist (`packaging/spelunk-server.plist`) for macOS and a systemd unit
 `spelunk` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
 
-## 2. Cold start: working search in under a minute
+## 2. Cold start: index and get your first answer
 
 ```bash
 cd /path/to/your/project
@@ -223,28 +229,32 @@ spelunk hooks uninstall
 
 ---
 
-## Server mode vs no-server mode
+## Capability tiers: where inference and memory live
 
-Everything spelunk does falls into one of two tiers, decided at runtime by
-whether a `spelunk-server` is reachable. You don't choose a tier — spelunk picks
-the best one available.
+spelunk works at three tiers. You do not pick one by hand; spelunk uses the best
+one available and degrades cleanly when a server is not reachable. The
+load-bearing distinction is that a **local server does inference only and never
+stores memory**. Your memory always lives in the project's local `memory.db`
+until you *explicitly* configure a team server.
 
-| | **No-server mode** | **Server mode** |
-|---|---|---|
-| When | No server reachable (or `SPELUNK_NO_SERVER=1`) | A server is running — usually the local one started for you |
-| Search | text + AST (`--mode text`, `--mode ast-grep`) | + semantic / hybrid search by meaning (`--mode auto`/`semantic`) |
-| Memory add/list/show | git-notes + local SQLite | same (or a shared server, if configured) |
-| `spelunk explore` | unavailable | available (server runs the LLM loop) |
-| Team memory sync | — | `spelunk memory push` / `spelunk sync` to a shared server |
+| Tier | What runs it | What it adds | Where memory lives |
+|---|---|---|---|
+| **Built-in** (zero infra) | just the `spelunk` binary | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
+| **Local semantic server** | a loopback `spelunk-server`, auto-started on demand | semantic / hybrid `search`, `explore`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
+| **Team memory server** | a shared `spelunk-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server, the **only** way memory leaves your machine |
 
-In v0.8.0 the local server is **autostarted in the background** the first time
-you run a command that needs it (e.g. `spelunk init` or a semantic
-`spelunk search`), so most users are in server mode without doing anything. The
-always-available commands in section 4 work in either mode.
+Built-in works with nothing installed but the binary (the always-available
+commands in section 3). The local semantic server is auto-discovered on loopback
+(`127.0.0.1`) and started for you the first time a command needs it; it embeds
+queries and runs LLM calls, but a project's memory stays in `memory.db`
+regardless of whether it is running. Memory moves off the local machine only when
+you set an explicit team `server_url` (see
+[Team setup](#team-setup-shared-memory-with-spelunk-server)); each developer's
+code still stays local.
 
 To stay fully offline (CI, air-gapped, or you just don't want a background
-process), set `SPELUNK_NO_SERVER=1` — spelunk then runs in no-server mode and
-locked features exit with a clear message instead of starting anything.
+process), set `SPELUNK_NO_SERVER=1`: spelunk then runs built-in only, and
+inference-only commands exit with a clear message instead of starting anything.
 
 For how discovery works and how to point the CLI at a remote server, see
 **[Server setup](server.md)** and
@@ -267,10 +277,10 @@ api_base_url = "http://127.0.0.1:1234"
 
 # Must match your endpoint's model identifier
 embedding_model = "text-embedding-embeddinggemma-300m-qat"
-
-# Embedding batch size (tune if you run out of memory)
-batch_size = 32
 ```
+
+Tune the per-request embedding batch size at index time with
+`spelunk index --batch-size <n>` when a slow endpoint runs out of memory.
 
 This is an advanced override; most users never set it — the native embedder in
 `spelunk-server` handles embeddings with no extra configuration.
@@ -389,9 +399,9 @@ Secret Service, Windows Credential Manager) rather than in plaintext. If you
 have an old personal `~/.config/spelunk/config.toml` with a bare
 `server_key = "…"`, it is migrated into the keychain and stripped from the file
 automatically on the next run. On a host with no keychain, spelunk falls back to
-an owner-only `~/.config/spelunk/secrets.toml`. See
-[`spelunk login`](commands.md#spelunk-login) for the full storage rules and the
-`SPELUNK_SECRET_STORE` override.
+an owner-only `~/.config/spelunk/secrets.toml`. For the full credential-storage
+rules and the `SPELUNK_SECRET_STORE` override, see the
+[Commands reference](commands.md#spelunk-login).
 
 > The older `memory_server_url` / `memory_server_key` keys are still accepted as
 > deprecated aliases for `server_url` / `server_key`.
@@ -401,11 +411,18 @@ internal UUID (as a team/cloud memory server does), the CLI resolves the slug
 for you on first use and caches the result locally, so no manual UUID lookup is
 needed. See [Server setup](server.md#client-configuration) for details.
 
-After setup, all `spelunk memory` commands transparently use the server. To migrate existing local memories:
+After setup, all `spelunk memory` commands transparently use the server. Seed it
+with your existing local memory, then keep the two in step as you and your
+teammates record decisions:
 
 ```bash
-spelunk memory push
+spelunk memory push    # one-way: send your local entries up to the server
+spelunk sync           # two-way: push local entries and pull teammates' entries down
 ```
+
+`spelunk sync` is the day-to-day command for a shared server: it pushes what you
+recorded and pulls what everyone else did, so the team reads and writes one
+shared memory. Code never travels; only memory does.
 
 For full setup and deployment guide: **[Server setup](server.md)** — Docker, configuration, API reference.
 

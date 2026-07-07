@@ -161,7 +161,7 @@ Key points:
      (PRs #329/#333). -->
 
 User-facing behaviour for these tiers is documented in
-[getting-started.md → Server mode vs no-server mode](../getting-started.md#server-mode-vs-no-server-mode)
+[getting-started.md → Capability tiers](../getting-started.md#capability-tiers-where-inference-and-memory-live)
 and [server.md → Local server](../server.md#local-server-automatic--no-setup).
 
 ---

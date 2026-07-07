@@ -178,6 +178,37 @@ spelunk memory search "why did we choose sqlite-vec"
 so decisions travel with the code through clone/fetch. It is a graceful no-op
 outside a git repository. Set `store_in_git_notes = false` to disable.
 
+## Automatic capture (no authoring tax)
+
+Recording decisions by hand is the part that never happens under deadline. The
+payoff of wiring an agent to spelunk is that the why-layer fills itself as a
+by-product of normal work, with no separate step to sit down and write docs.
+
+Install the git hook once:
+
+```bash
+spelunk hooks install
+```
+
+The post-commit hook then runs `spelunk memory harvest` after every commit,
+using the LLM to extract decisions, requirements, and context from the commit
+messages your agent already writes. Teammates without spelunk installed are
+unaffected (the hook is a no-op when `spelunk` is not on `PATH`).
+
+You can also harvest on demand, over a range of history or straight from an
+agent's own session log:
+
+```bash
+spelunk memory harvest --git-range HEAD~20..HEAD    # from commit messages (default source)
+spelunk memory harvest --source claude-code --confirm   # from Claude Code session history (reads ~/.claude/history.jsonl)
+```
+
+Harvesting needs a server with an LLM backend (the local one autostarts). The
+result: every later `spelunk context` / `spelunk search` starts returning the
+reasoning behind the code, not just the code, without anyone stopping to author
+it. Harvest is additive and idempotent, so re-running it does not duplicate
+entries.
+
 ## Storing questions for async resolution
 
 When you hit a decision point mid-task:
