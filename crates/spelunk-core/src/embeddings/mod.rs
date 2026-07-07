@@ -2,6 +2,10 @@
 /// that crate stays storage-free); re-exported here at the historical path.
 pub use spelunk_embed::EmbeddingBackend;
 
+/// Stable provenance id for the native embedding model. Single source of truth
+/// is `spelunk_embed::MODEL_ID`; re-exported here so server and CLI share it.
+pub use spelunk_embed::MODEL_ID;
+
 /// The embedding vector dimension produced by the default native model (F2LLM-v2-330M, 896-dim).
 pub const EMBEDDING_DIM: usize = 896;
 

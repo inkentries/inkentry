@@ -40,7 +40,7 @@ pub fn open_test_db() -> spelunk_core::storage::Database {
 /// Calls `register_sqlite_vec()` automatically.
 pub fn open_test_server_db(dim: usize) -> spelunk_server::db::ServerDb {
     register_sqlite_vec();
-    spelunk_server::db::ServerDb::open(std::path::Path::new(":memory:"), dim)
+    spelunk_server::db::ServerDb::open(std::path::Path::new(":memory:"), dim, "test-model")
         .expect("failed to open in-memory server database")
 }
 

@@ -1650,6 +1650,13 @@
             "type": "integer",
             "minimum": 0
           },
+          "embedding_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Embedding model provenance id; None on a legacy project not yet stamped."
+          },
           "id": {
             "type": "integer",
             "format": "int64"

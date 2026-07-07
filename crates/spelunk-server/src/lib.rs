@@ -681,6 +681,12 @@ impl IntoResponse for AppError {
                         Json(ErrorBody::new("bad_request", &mismatch.to_string())),
                     )
                         .into_response()
+                } else if let Some(mismatch) = e.downcast_ref::<crate::db::ModelMismatch>() {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorBody::new("bad_request", &mismatch.to_string())),
+                    )
+                        .into_response()
                 } else {
                     tracing::error!("internal error: {e:#}");
                     (

@@ -559,7 +559,8 @@ pub async fn add_note(
     let dim = embedding.map(|v| v.len()).unwrap_or(0);
 
     let db = state.db.lock().await;
-    let project = db.upsert_project(&project_id, dim)?;
+    let model = db.embedding_model.clone();
+    let project = db.upsert_project(&project_id, dim, &model)?;
 
     let id = db.add_note(
         project.id,
@@ -1580,7 +1581,7 @@ mod tests {
     fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
         register_sqlite_vec();
         let dim: usize = 4;
-        let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), dim, "test-model")
             .expect("failed to open in-memory server db");
         let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         let state = AppState {
@@ -1749,7 +1750,7 @@ mod tests {
     /// Build an app with the given embedder slot (dim used only to size the DB).
     fn make_app_with_slot(dim: usize, embedder: super::super::EmbedderSlot) -> axum::Router {
         register_sqlite_vec();
-        let db = ServerDb::open(std::path::Path::new(":memory:"), dim)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), dim, "test-model")
             .expect("failed to open in-memory server db");
         let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         let state = AppState {
@@ -2230,11 +2231,12 @@ mod tests {
     #[test]
     fn upsert_project_dimension_mismatch_is_typed_error() {
         register_sqlite_vec();
-        let db =
-            ServerDb::open(std::path::Path::new(":memory:"), 4).expect("open in-memory server db");
-        db.upsert_project("proj", 4).expect("first upsert sets dim");
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        db.upsert_project("proj", 4, "test-model")
+            .expect("first upsert sets dim");
         let err = db
-            .upsert_project("proj", 7)
+            .upsert_project("proj", 7, "test-model")
             .expect_err("second upsert with different dim must error");
         let mismatch = err
             .downcast_ref::<super::super::db::DimensionMismatch>()
@@ -2303,7 +2305,7 @@ mod tests {
     /// exercising `/explore` and `/llm/complete` rate limiting.
     fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
         register_sqlite_vec();
-        let db = ServerDb::open(std::path::Path::new(":memory:"), 4)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
             .expect("failed to open in-memory server db");
         let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         let state = AppState {
@@ -2484,12 +2486,12 @@ mod tests {
         request_timeout: std::time::Duration,
     ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
         register_sqlite_vec();
-        let db = ServerDb::open(std::path::Path::new(":memory:"), 4)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
             .expect("failed to open in-memory server db");
         let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
         // Create the project up front so `/memory/stream` (which 404s on an
         // unknown project) has something valid to stream from.
-        db.upsert_project("timeout-test", 4)
+        db.upsert_project("timeout-test", 4, "test-model")
             .expect("create test project");
         let db = Arc::new(tokio::sync::Mutex::new(db));
         let state = AppState {
@@ -2533,10 +2535,10 @@ mod tests {
         embed_request_timeout: std::time::Duration,
     ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
         register_sqlite_vec();
-        let db = ServerDb::open(std::path::Path::new(":memory:"), 4)
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
             .expect("failed to open in-memory server db");
         let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
-        db.upsert_project("timeout-test", 4)
+        db.upsert_project("timeout-test", 4, "test-model")
             .expect("create test project");
         let db = Arc::new(tokio::sync::Mutex::new(db));
         let state = AppState {

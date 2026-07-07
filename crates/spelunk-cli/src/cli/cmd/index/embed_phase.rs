@@ -449,6 +449,9 @@ pub(super) async fn run_embed_phase(
         Tier::Server { url, .. } => (url.clone(), cfg.server_key.clone()),
         Tier::Offline => return Ok(0),
     };
+    // Refuse to append vectors from a different model into an existing index;
+    // stamps provenance on a fresh/legacy DB.
+    db.ensure_embedding_model(spelunk_core::embeddings::MODEL_ID)?;
     let server_limits = tier.server_limits();
 
     // Ceiling the calibrated batch size may grow to. Unlike the old scheme,
