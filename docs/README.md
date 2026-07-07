@@ -23,27 +23,33 @@ where, what), not a faster grep, and it needs no server.
 
 ## 2. Getting started (the happy path)
 
-Make that understanding stick. Run the core loop end to end on built-in storage
-(git-notes memory, full-text and code graph, no daemon), record your first
-decision by hand, and watch a later `spelunk context` hand it back. Then take one
-step up to the local semantic server for search by meaning. That local server is
-an inference backend only: it embeds queries and runs summaries, and it never
-stores memory. Your memory always lives in the project's local `memory.db`.
+Next, make that understanding stick. The core loop runs end to end on built-in
+storage (git-notes memory, full-text and code graph, no daemon): you record your
+first decision by hand, and a later `spelunk context` hands it back, so the same
+context is not re-derived next time. From there, one step up brings in the local
+semantic server for search by meaning. That server is an inference backend only:
+it embeds queries and runs summaries, and it never stores memory. Your memory
+always lives in the project's local `memory.db`.
 
 - [Getting Started](getting-started.md): the core loop and the local semantic tier
 - [Memory](memory.md): decisions, requirements, and context; supersede, do not delete
 
 ## 3. Configure your agent
 
-Wire an AI coding agent to spelunk so it pulls context before it edits and
-records decisions as it works. The payoff is that the why-layer fills itself:
-install the git hook and every commit runs `spelunk memory harvest`, so the
-reasoning behind the code is captured automatically, with no separate step to
-sit down and write docs. This is what completes the how-to-why arc: the decisions
-stage 1 could not yet show now accumulate on their own.
+This is where the payoff lands. If you code with an AI agent, you connect it to
+spelunk once and the why-layer starts filling itself: as the agent works, the
+reasoning behind each change is captured for you, with no time set aside to sit
+down and write it up. The decisions a fresh repo could not yet show in stage 1
+now accumulate on their own, and every later `spelunk context` or `spelunk
+search` hands them back.
 
-- [Agent Guide](agent-guide.md): the session pattern, automatic capture, and machine-readable output
-- [AGENT.md template](examples/AGENT.md): drop-in instructions telling an agent to use spelunk
+The mechanism is a single git hook. Installing it adds a post-commit step that
+runs `spelunk memory harvest`, which pulls the decisions out of the commit
+messages your agent already writes. Nothing else about how you work has to
+change.
+
+- [Agent Guide](agent-guide.md): how a session should use spelunk, plus automatic capture and JSON output
+- [AGENT.md template](examples/AGENT.md): a drop-in file that tells your agent to reach for spelunk first
 - [Claude Code skill](../SKILL.md): spelunk packaged as an agent skill
 - Automatic capture: [`spelunk hooks install`](commands.md#spelunk-hooks) plus [`spelunk memory harvest`](commands.md#spelunk-memory)
 
@@ -61,28 +67,38 @@ before it.
 
 ## 5. Local vs server vs team-server
 
-The three tiers, stated once. A local server does inference only; an explicit
-team `server_url` is the only thing that moves memory off your machine.
+Three tiers, and it helps to understand why each one exists.
+
+Everything works with just the binary. The **local server** is a convenience on
+top of that: it keeps the embedding model loaded and running in the background,
+so each semantic `search` or `explore` is fast instead of reloading a few hundred
+megabytes of model on every command, and your context is ready every time rather
+than being rebuilt on each invocation. That is all it does. It stores no memory
+of its own, and it listens only on your own machine (loopback), so it is not
+reachable from anywhere else.
+
+Sharing memory is a separate, deliberate step. To give a whole team one source of
+truth, you run a **team server** and point everyone at it. The team server shares
+your memory index, the decisions and requirements behind the code, not the code
+itself; each person's code stays on their own machine. It is the same
+open-source server, free to self-host. If you would rather not run one yourself,
+the hosted spelunk.cloud service is the managed alternative.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|
 | Built-in (zero infra) | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
-| Local semantic server (auto-started on loopback) | semantic search, `explore`, summaries | still local `memory.db`: inference only, never a memory store |
-| Team memory server (explicit `server_url`) | shared memory across a team | the shared server: the only path off the local machine |
+| Local semantic server (auto-started on loopback) | faster semantic search, `explore`, summaries | still local `memory.db`: inference only, never a memory store |
+| Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 
-Point a team at a self-hosted spelunk server with an explicit `server_url` and a
-shared server key, then use [`spelunk sync`](commands.md#spelunk-sync) to push
-your decisions up and pull teammates' decisions down. Each developer's code stays
-local.
+Everyone on a team sets an explicit `server_url` (plus a shared server key)
+pointing at the same server, and [`spelunk sync`](commands.md#spelunk-sync) keeps
+them converged: it pushes the decisions you recorded and pulls the ones your
+teammates recorded. Code never travels; only memory does.
 
 - [Getting Started → capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live): the tier table in context
 - [Getting Started → team setup](getting-started.md#team-setup-shared-memory-with-spelunk-server): how to set `server_url` and sync
 - [Server setup](server.md) and [Self-hosting](self-hosting.md): deploy and expose a team server
 - [Remote agents](remote-agents.md): run an agent in a container against your server
-
-Running spelunk against the hosted spelunk.cloud service is the next step for
-teams that would rather not operate a server; it is covered in the cloud
-documentation, not here.
 
 ---
 
