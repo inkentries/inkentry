@@ -1,0 +1,63 @@
+# spelunk-server — TEAM MEMORY server, DynamicUser= variant (alternative)
+#
+# Same deployment as spelunk-server-team.service, but systemd manages the
+# identity and the state dir: a per-boot UID (DynamicUser=) plus a
+# StateDirectory= that systemd creates and chowns to that UID. No `useradd` and
+# no manual `install -d` for the data dir. Choose this when you prefer
+# systemd-managed identity/ownership over a fixed-owner data dir.
+#
+# Trade-off: the data dir owner changes across boots, so out-of-band backup
+# tooling must not assume a fixed UID. If you need a stable owner for backup /
+# inspection or a stable started_by UID, use the static-user default
+# (spelunk-server-team.service) instead.
+#
+# Install:
+#   sudo install -d -m 0755 /etc/spelunk
+#   openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
+#   sudo chmod 0600 /etc/spelunk/server-key   # root:root
+#   sudo install -m 0644 packaging/spelunk-server-team-dynamicuser.service \
+#        /etc/systemd/system/spelunk-server.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spelunk-server
+
+[Unit]
+Description=spelunk-server (team memory)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# systemd allocates a transient, unprivileged UID per boot and creates
+# /var/lib/spelunk (StateDirectory=), chowned to that UID, exposed as
+# $STATE_DIRECTORY. No static user or manual data-dir provisioning needed.
+DynamicUser=yes
+StateDirectory=spelunk
+
+# See the static-user unit for why the key is a credential, not Environment=.
+LoadCredential=server-key:/etc/spelunk/server-key
+ExecStart=/usr/local/bin/spelunk-server \
+  --host 127.0.0.1 --port 7777 \
+  --db /var/lib/spelunk/spelunk.db
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening — the server needs only its state dir (StateDirectory=) and loopback.
+# DynamicUser=yes already implies ProtectSystem=strict, ProtectHome=read-only,
+# PrivateTmp, and RemoveIPC; the directives below narrow it further.
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# See the static-user unit before enabling MemoryDenyWriteExecute=.
+# MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
