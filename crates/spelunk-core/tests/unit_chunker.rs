@@ -1,6 +1,8 @@
 //! Unit tests for the chunker module (no I/O, no SQLite).
 
-use spelunk_core::indexer::{Chunk, ChunkKind};
+use spelunk_core::indexer::chunker::MAX_CHUNK_TOKENS;
+use spelunk_core::indexer::{Chunk, ChunkKind, SourceParser};
+use spelunk_core::search::tokens::estimate_tokens;
 
 // ── sliding_window ───────────────────────────────────────────────────────────
 
@@ -81,4 +83,83 @@ fn embedding_text_prepends_docstring() {
         c.embedding_text(),
         "title: foo | text: /// Does foo.\nfn foo() {}"
     );
+}
+
+// ── MAX_CHUNK_TOKENS ceiling (oss^114) ───────────────────────────────────────
+
+/// A Rust function with `body_lines` short statements, guaranteed short enough
+/// per line that any 120-line window stays under the cap.
+fn big_rust_fn(name: &str, body_lines: usize) -> String {
+    let mut s = format!("fn {name}() {{\n");
+    for i in 0..body_lines {
+        s.push_str(&format!("    let v{i} = {i};\n"));
+    }
+    s.push_str("}\n");
+    s
+}
+
+#[test]
+fn oversized_leaf_splits_into_capped_subchunks() {
+    // 600 short lines ≈ 2.4k tokens for the function — over the cap.
+    let src = big_rust_fn("huge", 600);
+    assert!(
+        estimate_tokens(&src) > MAX_CHUNK_TOKENS,
+        "fixture must exceed cap"
+    );
+
+    let chunks = SourceParser::parse(&src, "huge.rs", "rust").unwrap();
+
+    // No single whole-function chunk survives; it is re-windowed.
+    assert!(
+        chunks.len() > 1,
+        "oversized leaf should split into >1 chunk"
+    );
+    assert!(
+        chunks.iter().all(|c| matches!(c.kind, ChunkKind::Verbatim)),
+        "re-windowed sub-chunks are Verbatim"
+    );
+    for c in &chunks {
+        assert!(
+            estimate_tokens(&c.content) <= MAX_CHUNK_TOKENS,
+            "sub-chunk {}-{} over cap: {} tok",
+            c.start_line,
+            c.end_line,
+            estimate_tokens(&c.content)
+        );
+    }
+    // Line offset preserved: the function starts at file line 1.
+    assert_eq!(chunks[0].start_line, 1);
+}
+
+#[test]
+fn oversized_container_suppresses_own_chunk_keeps_children() {
+    // A module whose whole text is over the cap, but each child fn is under it.
+    let mut src = String::from("mod tests {\n");
+    for i in 0..5 {
+        src.push_str(&big_rust_fn(&format!("f{i}"), 120));
+    }
+    src.push_str("}\n");
+    assert!(
+        estimate_tokens(&src) > MAX_CHUNK_TOKENS,
+        "module fixture must exceed cap"
+    );
+
+    let chunks = SourceParser::parse(&src, "container.rs", "rust").unwrap();
+
+    // Container's own Module chunk is suppressed.
+    assert!(
+        !chunks.iter().any(|c| matches!(c.kind, ChunkKind::Module)),
+        "oversized container must not emit its own chunk"
+    );
+    // But per-fn child chunks are still emitted, each under the cap.
+    let fns: Vec<&Chunk> = chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Function))
+        .collect();
+    assert_eq!(fns.len(), 5, "each child function should yield a chunk");
+    for c in &fns {
+        assert!(estimate_tokens(&c.content) <= MAX_CHUNK_TOKENS);
+    }
+    let names: Vec<&str> = fns.iter().filter_map(|c| c.name.as_deref()).collect();
+    assert!(names.contains(&"f0") && names.contains(&"f4"));
 }

@@ -1,5 +1,6 @@
-use super::super::chunker::{Chunk, ChunkKind};
+use super::super::chunker::{Chunk, ChunkKind, MAX_CHUNK_TOKENS, sliding_window};
 use crate::error::IndexError;
+use crate::search::tokens::estimate_tokens;
 use anyhow::Result;
 
 pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
@@ -271,12 +272,47 @@ fn walk_node_inner(
             _ => parent_scope.map(str::to_owned),
         };
 
+        let start_row = node.start_position().row;
+        let is_container = matches!(
+            spec.chunk_kind,
+            ChunkKind::Module
+                | ChunkKind::Impl
+                | ChunkKind::Class
+                | ChunkKind::Trait
+                | ChunkKind::Interface
+        );
+
+        if estimate_tokens(&content) > MAX_CHUNK_TOKENS {
+            if is_container {
+                // Suppress the container's own chunk; its children already carry
+                // fine-grained chunks framed by parent_scope. Re-window only if the
+                // container matched no children.
+                let before = out.len();
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i as u32) {
+                        walk_node_inner(child, ctx, scope_label.as_deref(), out, depth + 1);
+                    }
+                }
+                if out.len() == before {
+                    push_windowed(&content, ctx, start_row, out);
+                }
+            } else {
+                push_windowed(&content, ctx, start_row, out);
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i as u32) {
+                        walk_node_inner(child, ctx, scope_label.as_deref(), out, depth + 1);
+                    }
+                }
+            }
+            return;
+        }
+
         out.push(Chunk {
             file_path: ctx.file_path.to_owned(),
             language: ctx.language.to_owned(),
             kind: spec.chunk_kind.clone(),
             name,
-            start_line: node.start_position().row + 1,
+            start_line: start_row + 1,
             end_line: node.end_position().row + 1,
             content,
             docstring,
@@ -297,6 +333,16 @@ fn walk_node_inner(
                 walk_node_inner(child, ctx, parent_scope, out, depth + 1);
             }
         }
+    }
+}
+
+/// Re-window an oversized node's text into sliding-window sub-chunks, offsetting
+/// each sub-chunk's line span by the node's 0-based `start_row`.
+fn push_windowed(content: &str, ctx: &WalkCtx<'_>, start_row: usize, out: &mut Vec<Chunk>) {
+    for mut sub in sliding_window(content, ctx.file_path, ctx.language, 120, 15) {
+        sub.start_line += start_row;
+        sub.end_line += start_row;
+        out.push(sub);
     }
 }
 
