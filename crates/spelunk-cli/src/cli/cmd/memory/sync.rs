@@ -409,4 +409,93 @@ mod tests {
             .expect("push to the lazily-created project must succeed");
         assert_eq!(res.created, 1);
     }
+
+    // ── push_local end-to-end: remote_id stamping + idempotent re-sync ─────
+    // spelunk-oss^112: the local-first push path is where the server-minted
+    // cross-machine id is PERSISTED — stamped onto `notes.remote_id` from the
+    // 207 batch result — not the `RemoteMemoryBackend::add` debug-log path
+    // (which is the cloud-first, remote-is-store-of-record case with no local
+    // row). Locks in that a push stamps `remote_id` and a re-push sends nothing
+    // (no duplicate cloud writes, no local dupes).
+
+    fn register_sqlite_vec() {
+        use std::sync::OnceLock;
+        // `MemoryStore::open` creates a vec0 table, so the extension must be
+        // registered before any connection opens.
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+        store
+            .add_note("note", "Two", "second", &[], &[], None, None)
+            .unwrap();
+
+        // Learn the lazily-minted external_ids up front so the mock can echo
+        // them back with distinct cloud ids; `ensure_uuid` is idempotent, so the
+        // push below re-derives the same uuids.
+        let rows = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows.len(), 2);
+        let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+        let cloud_a = "01890000-0000-7000-8000-0000000000a1";
+        let cloud_b = "01890000-0000-7000-8000-0000000000a2";
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 2, "skipped": 0, "failed": 0,
+                "results": [
+                    {"status": "created", "external_id": ext_a, "id": cloud_a},
+                    {"status": "created", "external_id": ext_b, "id": cloud_b},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+
+        // First push: creates both, persists the server-minted id on each row.
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!((s1.attempted, s1.created, s1.skipped), (2, 2, 0));
+        assert_eq!(
+            store.note_id_for_remote_id(cloud_a).unwrap(),
+            Some(rows[0].local_id)
+        );
+        assert_eq!(
+            store.note_id_for_remote_id(cloud_b).unwrap(),
+            Some(rows[1].local_id)
+        );
+        // The pull cursor is now the newest stamped id.
+        assert_eq!(store.max_remote_id().unwrap().as_deref(), Some(cloud_b));
+
+        // Second push: every row carries a `remote_id`, so the live set is empty
+        // and no batch request is sent — the re-sync is a no-op.
+        let s2 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!(s2.created, 0);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "re-push must not hit the batch endpoint again"
+        );
+        // No duplicate local rows introduced by the round trip.
+        assert_eq!(store.count().unwrap(), 2);
+    }
 }
