@@ -404,7 +404,7 @@ impl GitNotesBackend {
     }
 }
 
-/// Classify one line of a note blob: `Some(record)` iff it parses as a JSON
+/// Classify one line of a note blob: `Some(record)` if it parses as a JSON
 /// *object* deserializing into `NoteRecord`. Non-JSON, non-object JSON, blank,
 /// and prose lines are foreign (`None`).
 fn parse_spelunk_line(line: &str) -> Option<NoteRecord> {
