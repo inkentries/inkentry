@@ -64,8 +64,14 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // ast-grep — mirroring the `graph --live` pattern.
     if auto_mode {
         let db_result = resolve_project_and_deps(args.db.as_ref(), &cfg);
-        if db_result.is_err() {
-            // No index found — fall back to ast-grep silently.
+        let is_empty = db_result
+            .as_ref()
+            .ok()
+            .and_then(|(db_path, _)| Database::open(db_path).and_then(|db| db.stats()).ok())
+            .is_some_and(|s| s.chunk_count == 0);
+        if db_result.is_err() || is_empty {
+            // No index found (or the index has zero chunks) — fall back to
+            // ast-grep silently, mirroring the missing-index case.
             return search_live(
                 &args.query,
                 &args.format,
@@ -79,6 +85,18 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
 
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
+
+    // Explicit (non-auto, non-ast-grep) modes surface an empty index as an
+    // actionable error instead of a silent "No results found." — the ast-grep
+    // mode never touches the index, and auto mode already degraded above.
+    if !auto_mode
+        && mode != "ast-grep"
+        && Database::open(&db_path)
+            .and_then(|db| db.stats())
+            .is_ok_and(|s| s.chunk_count == 0)
+    {
+        return Err(crate::error::SearchError::EmptyIndex.into());
+    }
 
     // Honor the capability tier: when the server was auto-discovered via the
     // loopback probe, `cfg.server_url` is unset; fill it in from the tier so

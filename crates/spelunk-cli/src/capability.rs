@@ -169,7 +169,7 @@ impl Capabilities {
     }
 
     /// Full set for a fully-featured server.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn all() -> Self {
         Self {
             search_semantic: true,
@@ -197,7 +197,6 @@ pub enum Tier {
         /// `false` when it was set explicitly via config / env var.
         /// Used to annotate UX output (e.g. `(local, auto)` in `spelunk status`).
         /// Consumed by `is_auto_discovered()` and sub-issue #324 UX wiring.
-        #[allow(dead_code)]
         auto_discovered: bool,
         /// Server-side embedder readiness, mirrored from the `/v1/health`
         /// `embedder.state` field (spelunk-oss^50). `Unknown` when the field is
@@ -222,7 +221,7 @@ impl Tier {
 
     // Used by check.rs / status.rs via pattern matching on the enum variant;
     // also consumed by sub-issues #323/#324 UX wiring.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn server_url(&self) -> Option<&str> {
         match self {
             Tier::Server { url, .. } => Some(url),
@@ -230,7 +229,6 @@ impl Tier {
         }
     }
 
-    #[allow(dead_code)]
     pub fn caps(&self) -> Option<&Capabilities> {
         match self {
             Tier::Server { caps, .. } => Some(caps),
@@ -265,7 +263,7 @@ impl Tier {
     /// Returns `true` when the server URL was discovered automatically via
     /// the loopback probe rather than set explicitly in config or environment.
     /// Used by `spelunk status` (sub-issue #324) to annotate the URL with `(local, auto)`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_auto_discovered(&self) -> bool {
         matches!(
             self,

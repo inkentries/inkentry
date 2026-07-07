@@ -1,5 +1,6 @@
 use super::super::chunker::{Chunk, ChunkKind};
-use anyhow::{Result, bail};
+use crate::error::IndexError;
+use anyhow::Result;
 
 pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
     use ast_grep_language::{LanguageExt, SupportLang};
@@ -31,7 +32,7 @@ pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
         "swift" => SupportLang::Swift,
         "sql" => return Ok(tree_sitter_sequel::LANGUAGE.into()),
         "proto" => return Ok(tree_sitter_proto::LANGUAGE.into()),
-        other => bail!("unsupported language: {other}"),
+        other => return Err(IndexError::UnsupportedLanguage(other.to_string()).into()),
     };
     Ok(support.get_ts_language())
 }

@@ -21,7 +21,6 @@ pub struct Project {
     pub id: i64,
     pub root_path: PathBuf,
     pub db_path: PathBuf,
-    #[allow(dead_code)]
     pub registered_at: i64,
 }
 

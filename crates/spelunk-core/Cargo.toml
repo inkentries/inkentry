@@ -27,7 +27,7 @@ tracing-subscriber = { workspace = true }
 rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 reqwest = { workspace = true }
-thiserror = "2"
+thiserror = { workspace = true }
 percent-encoding = "2.3"
 keyring = { workspace = true }
 

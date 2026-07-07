@@ -179,8 +179,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         if args.list {
             // Brief table: one line per project
             println!(
-                "{:<6}  {:<8}  {:<10}  Root",
-                "Files", "Chunks", "Embeddings"
+                "{:<6}  {:<8}  {:<10}  {:<10}  Root",
+                "Files", "Chunks", "Embeddings", "Registered"
             );
             println!("{}", "─".repeat(70));
             for p in &projects {
@@ -194,10 +194,11 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                     " [missing]"
                 };
                 println!(
-                    "{:<6}  {:<8}  {:<10}  {}{}",
+                    "{:<6}  {:<8}  {:<10}  {:<10}  {}{}",
                     files,
                     chunks,
                     embeddings,
+                    format_age(p.registered_at),
                     p.root_path.display(),
                     exists
                 );
@@ -210,6 +211,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                     println!("  \x1b[31m[root path missing from disk]\x1b[0m");
                 }
                 println!("  DB: {}", p.db_path.display());
+                println!("  Registered: {}", format_age(p.registered_at));
                 match Database::open(&p.db_path).and_then(|db| db.stats()) {
                     Ok(s) => {
                         println!(
