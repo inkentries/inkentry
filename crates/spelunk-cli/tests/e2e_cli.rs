@@ -536,7 +536,10 @@ async fn test_status_json_includes_tier_fields() {
     assert!(body["capabilities"].is_object());
     assert!(body["capabilities"]["search_semantic"].as_bool().unwrap());
     assert!(body["capabilities"]["index_embed"].as_bool().unwrap());
-    assert!(body["capabilities"]["plan"].as_bool().unwrap());
+    // `plan` is a reserved protocol field (ADR-002) with no `spelunk plan`
+    // command yet: even though this mock server advertises "plan", it must
+    // never surface in user-facing status JSON.
+    assert!(body["capabilities"]["plan"].is_null());
     assert!(!body["capabilities"]["explore"].as_bool().unwrap());
 }
 

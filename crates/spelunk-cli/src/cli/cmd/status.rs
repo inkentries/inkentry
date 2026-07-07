@@ -343,7 +343,6 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             println!("  search          ast-grep + text{server_hint}");
             println!("  memory          git-notes (local)");
             println!("  explore         unavailable  [set server_url to enable]");
-            println!("  plan            unavailable  [set server_url to enable]");
         }
         Tier::Server {
             url,
@@ -381,12 +380,6 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
                 "unavailable"
             };
             println!("  explore         {explore_label}");
-            let plan_label = if caps.plan {
-                "available"
-            } else {
-                "unavailable"
-            };
-            println!("  plan            {plan_label}");
         }
     }
     println!();

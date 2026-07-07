@@ -134,6 +134,10 @@ pub struct Capabilities {
     pub memory_search: bool,
     pub memory_harvest: bool,
     pub explore: bool,
+    /// Reserved (ADR-002 `/plan`): parsed from server caps but hidden from all
+    /// user-facing output until a `spelunk plan` command ships.
+    #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub plan: bool,
 }
 
