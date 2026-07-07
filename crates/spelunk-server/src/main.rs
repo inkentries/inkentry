@@ -92,6 +92,13 @@ struct Args {
     /// Print the OpenAPI spec as JSON and exit (for Postman / Newman import).
     #[arg(long)]
     print_openapi: bool,
+
+    /// Probe this server's own `/v1/health` on the configured `--host`/`--port`,
+    /// then exit 0 if live or non-zero otherwise. Self-contained container
+    /// HEALTHCHECK that needs no curl/wget in the runtime image. A wildcard
+    /// `--host` is probed over loopback.
+    #[arg(long)]
+    health_check: bool,
 }
 
 #[tokio::main]
@@ -114,6 +121,10 @@ async fn main() -> Result<()> {
     if args.print_openapi {
         println!("{}", ApiDoc::openapi().to_pretty_json()?);
         return Ok(());
+    }
+
+    if args.health_check {
+        return run_health_check(&args.host, args.port).await;
     }
 
     // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
@@ -452,6 +463,51 @@ fn warn_single_trust_domain(host: &str, key_is_set: bool) {
              teams or projects. See docs/adr/056-oss-server-tenancy-model.md."
         );
     }
+}
+
+// ── Self-contained health probe ───────────────────────────────────────────────
+
+/// Host to aim the health probe at. A wildcard bind (`0.0.0.0` / `::` / empty)
+/// is not itself connectable, so probe over loopback; any other host is probed
+/// as-is.
+fn health_probe_host(host: &str) -> &str {
+    match host.trim() {
+        "0.0.0.0" | "" => "127.0.0.1",
+        "::" => "::1",
+        h => h,
+    }
+}
+
+/// Build the `/v1/health` URL for the probe, bracketing IPv6 literals.
+fn health_probe_url(host: &str, port: u16) -> String {
+    let h = health_probe_host(host);
+    if h.contains(':') {
+        format!("http://[{h}]:{port}/v1/health")
+    } else {
+        format!("http://{h}:{port}/v1/health")
+    }
+}
+
+/// Probe `/v1/health` and return `Ok` iff the server answers `2xx`. Backs the
+/// container HEALTHCHECK so the runtime image needs no curl/wget; a non-`Ok`
+/// return propagates to a non-zero process exit.
+async fn run_health_check(host: &str, port: u16) -> Result<()> {
+    let url = health_probe_url(host, port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .context("building health-check HTTP client")?;
+    let status = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("health probe request to {url} failed"))?
+        .status();
+    anyhow::ensure!(
+        status.is_success(),
+        "health probe to {url} returned HTTP {status}"
+    );
+    Ok(())
 }
 
 // ── Effective UID helper ──────────────────────────────────────────────────────
@@ -935,5 +991,73 @@ mod arg_tests {
             args.key_file.as_deref(),
             Some(std::path::Path::new("/etc/spelunk/server-key"))
         );
+    }
+
+    // ── Self-contained health probe ──────────────────────────────────────────
+
+    /// Wildcard binds are probed over loopback (a wildcard is not itself
+    /// connectable); a concrete host is probed as-is. IPv6 literals are
+    /// bracketed in the URL.
+    #[test]
+    fn health_probe_url_maps_wildcard_and_brackets_ipv6() {
+        assert_eq!(
+            super::health_probe_url("127.0.0.1", 7777),
+            "http://127.0.0.1:7777/v1/health"
+        );
+        assert_eq!(
+            super::health_probe_url("0.0.0.0", 7777),
+            "http://127.0.0.1:7777/v1/health"
+        );
+        assert_eq!(
+            super::health_probe_url("", 7777),
+            "http://127.0.0.1:7777/v1/health"
+        );
+        assert_eq!(
+            super::health_probe_url("::", 9000),
+            "http://[::1]:9000/v1/health"
+        );
+        assert_eq!(
+            super::health_probe_url("::1", 9000),
+            "http://[::1]:9000/v1/health"
+        );
+        assert_eq!(
+            super::health_probe_url("example.com", 8080),
+            "http://example.com:8080/v1/health"
+        );
+    }
+
+    /// The probe returns `Ok` when `/v1/health` answers `2xx`.
+    #[tokio::test]
+    async fn health_probe_ok_on_2xx() {
+        use axum::{Router, routing::get};
+        let app = Router::new().route("/v1/health", get(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        assert!(super::run_health_check("127.0.0.1", port).await.is_ok());
+    }
+
+    /// A non-`2xx` response is a failed probe (non-zero exit).
+    #[tokio::test]
+    async fn health_probe_err_on_5xx() {
+        use axum::{Router, http::StatusCode, routing::get};
+        let app = Router::new().route(
+            "/v1/health",
+            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        assert!(super::run_health_check("127.0.0.1", port).await.is_err());
+    }
+
+    /// No listener → the probe fails (connection refused), not hangs.
+    #[tokio::test]
+    async fn health_probe_err_when_unreachable() {
+        // Bind then drop to claim a definitely-free port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(super::run_health_check("127.0.0.1", port).await.is_err());
     }
 }
