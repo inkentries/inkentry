@@ -308,6 +308,11 @@ impl MemoryBackend for RemoteMemoryBackend {
             .json::<AddNoteResponse>()
             .await
             .context("parsing POST /memory response")?;
+        // Server-minted cross-machine id (ADR-059 D2). No local store to persist
+        // into on this backend; surface it for diagnostics.
+        if let Some(remote_id) = &resp.remote_id {
+            tracing::debug!(remote_id, "server assigned remote_id for new memory entry");
+        }
         Ok(resp.id)
     }
 

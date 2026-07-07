@@ -23,6 +23,10 @@ pub(super) struct AddNoteResponse {
     pub(super) id: i64,
     #[serde(default)]
     pub(super) conflicts: Vec<ConflictInfo>,
+    /// Server-assigned cross-machine id, if the server minted one. Absent on
+    /// older servers → `None`.
+    #[serde(default)]
+    pub(super) remote_id: Option<String>,
 }
 
 /// Conflict information returned by the server when a new note is semantically
@@ -51,6 +55,10 @@ pub(super) struct NoteResponse {
     pub(super) valid_at: Option<i64>,
     #[serde(default)]
     pub(super) invalid_at: Option<i64>,
+    /// Canonical cross-machine id, if the server has one. Absent on older
+    /// servers → `None`. Surfaced into the domain `Note` (ADR-059 D2).
+    #[serde(default)]
+    pub(super) remote_id: Option<String>,
     #[serde(default)]
     pub(super) distance: Option<f64>,
 }
@@ -74,6 +82,7 @@ impl From<NoteResponse> for Note {
             score: None,
             source_project: None,
             source_project_path: None,
+            remote_id: r.remote_id,
         }
     }
 }

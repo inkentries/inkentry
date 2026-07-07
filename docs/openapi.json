@@ -1772,6 +1772,13 @@
               "type": "string"
             }
           },
+          "remote_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical cross-machine id (uuid). Optional and additive; `None` for\nrows never assigned one. Absent on the wire when `None`."
+          },
           "status": {
             "type": "string",
             "description": "`active` or `archived`."

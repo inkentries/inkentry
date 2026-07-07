@@ -60,6 +60,10 @@ pub struct ServerNote {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<i64>,
+    /// Canonical cross-machine id (uuid). Optional and additive; `None` for
+    /// rows never assigned one. Absent on the wire when `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub remote_id: Option<String>,
     /// Cosine distance from query (only present in search results).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance: Option<f64>,
@@ -99,6 +103,13 @@ impl ServerDb {
         self.conn
             .execute_batch(include_str!("../migrations/server_003.sql"))
             .context("server migration 003")?;
+        // 004 adds `notes.remote_id`. `ALTER TABLE ADD COLUMN` is not idempotent
+        // in SQLite (errors if the column exists); swallow the error so re-open
+        // is a no-op. The partial UNIQUE index in the same batch is created on
+        // the first run and persists thereafter.
+        let _ = self
+            .conn
+            .execute_batch(include_str!("../migrations/server_004.sql"));
         Ok(())
     }
 
@@ -243,7 +254,7 @@ impl ServerDb {
     pub fn get_note(&self, project_id: i64, note_id: i64) -> Result<Option<ServerNote>> {
         self.conn
             .query_row(
-                "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by
+                "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
                  FROM notes WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![note_id, project_id],
                 row_to_note,
@@ -270,7 +281,7 @@ impl ServerDb {
         {
             (
                     format!(
-                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by
+                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
                          FROM notes WHERE project_id = ?1 AND kind = ?2 {status_clause}
                          ORDER BY created_at DESC LIMIT {limit}"
                     ),
@@ -279,7 +290,7 @@ impl ServerDb {
         } else {
             (
                     format!(
-                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by
+                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
                          FROM notes WHERE project_id = ?1 {status_clause}
                          ORDER BY created_at DESC LIMIT {limit}"
                     ),
@@ -309,7 +320,7 @@ impl ServerDb {
                  WHERE  embedding MATCH ?1 AND k = {limit}
              )
              SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
-                    n.created_at, n.status, n.superseded_by, CAST(k.distance AS REAL)
+                    n.created_at, n.status, n.superseded_by, n.remote_id, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
              WHERE  n.project_id = ?2 AND n.status = 'active'
@@ -347,7 +358,7 @@ impl ServerDb {
                  WHERE  embedding MATCH ?1 AND k = {search_limit}
              )
              SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
-                    n.created_at, n.status, n.superseded_by, CAST(k.distance AS REAL)
+                    n.created_at, n.status, n.superseded_by, n.remote_id, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
              WHERE  n.project_id = ?2
@@ -434,7 +445,7 @@ impl ServerDb {
     ) -> Result<Vec<ServerNote>> {
         let limit = limit.clamp(1, 500);
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by
+            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
              FROM notes
              WHERE project_id = ?1 AND created_at > ?2 AND status != 'archived'
              ORDER BY created_at ASC
@@ -520,6 +531,7 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerNote> {
         created_at: row.get(6)?,
         status: row.get(7)?,
         superseded_by: row.get(8)?,
+        remote_id: row.get(9)?,
         distance: None,
     })
 }
@@ -535,7 +547,8 @@ fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server
         created_at: row.get(6)?,
         status: row.get(7)?,
         superseded_by: row.get(8)?,
-        distance: Some(row.get(9)?),
+        remote_id: row.get(9)?,
+        distance: Some(row.get(10)?),
     })
 }
 
@@ -595,6 +608,33 @@ mod tests {
                 "all chars must be lowercase hex: {id}"
             );
         }
+    }
+
+    /// Re-opening a persistent DB re-runs `migrate()`; migration 004's
+    /// `ALTER TABLE ADD COLUMN remote_id` is not idempotent in SQLite, so the
+    /// second open must not fail. Also confirms `remote_id` is queryable and
+    /// defaults to NULL on existing rows.
+    #[test]
+    fn reopen_is_idempotent_and_remote_id_defaults_null() {
+        register_sqlite_vec();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("server.db");
+
+        // First open creates the schema and inserts a note.
+        {
+            let db = ServerDb::open(&path, 768).expect("first open");
+            let project = db.upsert_project("acme/widget", 768).expect("project");
+            db.add_note(project.id, "note", "t", "b", &[], &[], None)
+                .expect("add note");
+        }
+
+        // Second open re-runs every migration, including the non-idempotent
+        // ALTER; it must succeed and the row must read back with remote_id NULL.
+        let db = ServerDb::open(&path, 768).expect("reopen must not fail");
+        let project = db.get_project("acme/widget").expect("get").expect("exists");
+        let notes = db.list_notes(project.id, None, 10, true).expect("list");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].remote_id, None, "existing row defaults to NULL");
     }
 
     #[test]

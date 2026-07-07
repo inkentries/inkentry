@@ -278,18 +278,22 @@ as a JSON line appended to `refs/notes/spelunk` on HEAD when `store_in_git_notes
 
 ### What is stored
 
-Each note is a single-line JSON object (`NoteRecord`) containing: `id`,
-`kind`, `title`, `body`, `tags`, `linked_files`, `created_at`, `status`,
-`source_ref`, and schema metadata. The `body` field is the raw user-supplied
-text from `--body` or `$EDITOR`.
+A commit's note is JSON Lines: one `NoteRecord` per line (canonical spelunk
+format), possibly interleaved with foreign content (prose, other tools' lines).
+Each record contains: `id`, `kind`, `title`, `body`, `tags`, `linked_files`,
+`created_at`, `status`, `source_ref`, an optional `remote_id` (the canonical
+cross-machine id, present only once an entry is synced to a remote server), and
+schema metadata. The `body` field is the raw user-supplied text from `--body`
+or `$EDITOR`. Reads skip foreign lines without erroring; writes preserve every
+foreign line and every untargeted record verbatim.
 
 ### How notes propagate
 
 ```
 spelunk memory add
   └─► append_to_git_notes() in storage/git_notes.rs
-        ├─► git notes --ref=spelunk show HEAD   (read existing)
-        ├─► combine old + new JSON line
+        ├─► git notes --ref=spelunk show HEAD   (read existing blob)
+        ├─► append the new record as one JSON line, keeping all prior lines
         └─► git notes --ref=spelunk add -f HEAD (write back)
 
 git push [with refs/notes/spelunk in refspec or push.followTags / notes config]
