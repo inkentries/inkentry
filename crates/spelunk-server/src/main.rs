@@ -40,9 +40,21 @@ struct Args {
     #[arg(long, default_value = "spelunk.db")]
     db: PathBuf,
 
-    /// Shared API key (Bearer token). Leave unset to disable auth (dev only).
-    #[arg(long, env = "SPELUNK_SERVER_KEY")]
+    /// Shared API key (Bearer token) passed inline. Visible in the process
+    /// table and `systemctl show`, so prefer --key-file or SPELUNK_SERVER_KEY
+    /// for real deployments. Leave all key sources unset to disable auth
+    /// (loopback dev only). Overrides every other key source.
+    #[arg(long)]
     key: Option<String>,
+
+    /// Read the shared API key from a file (its whole trimmed contents). A
+    /// first-class alternative to SPELUNK_SERVER_KEY, not a fallback: point it
+    /// at a `0600` file, or at `$CREDENTIALS_DIRECTORY/server-key` when run
+    /// under systemd `LoadCredential=`. When run under systemd, a
+    /// `server-key` credential is picked up automatically even without this
+    /// flag. Read failure is fatal.
+    #[arg(long, value_name = "PATH")]
+    key_file: Option<PathBuf>,
 
     /// Embedding dimension expected from clients (must match the team's model).
     /// Default: 896 (F2LLM-v2-330M).
@@ -104,11 +116,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Normalise the API key: treat a blank/whitespace value as "no key". This
-    // matters because clap reads a *set-but-empty* env var as `Some("")` — e.g.
-    // docker-compose's `SPELUNK_SERVER_KEY=${SPELUNK_SERVER_KEY:-}` default —
-    // which must count as unauthenticated, not as a (broken, empty-token) key.
-    let api_key = normalize_api_key(args.key.as_deref());
+    // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
+    // systemd LoadCredential (see resolve_api_key for precedence). A blank
+    // value from any source counts as "no key" — a set-but-empty
+    // `SPELUNK_SERVER_KEY` (docker-compose's `${SPELUNK_SERVER_KEY:-}` default)
+    // must read as unauthenticated, not as a broken empty-token key.
+    let env_key = std::env::var("SPELUNK_SERVER_KEY").ok();
+    let credentials_dir = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+    let api_key = resolve_api_key(
+        args.key.as_deref(),
+        args.key_file.as_deref(),
+        env_key.as_deref(),
+        credentials_dir.as_deref(),
+    )?;
 
     // Bind-safety: refuse to expose the server off-host over plaintext HTTP,
     // whether that would leak an open (keyless) endpoint or the bearer key in
@@ -129,7 +149,7 @@ async fn main() -> Result<()> {
     if api_key.is_none() {
         tracing::warn!(
             "No API key configured — server is running without authentication. \
-             Set --key or SPELUNK_SERVER_KEY for production use."
+             Set --key-file, SPELUNK_SERVER_KEY, or --key for production use."
         );
     }
 
@@ -305,14 +325,69 @@ fn host_is_loopback(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Normalise a configured API key: a blank/whitespace value (including the
-/// `Some("")` that clap yields for a set-but-empty `SPELUNK_SERVER_KEY`) becomes
+/// Normalise a configured API key: a blank/whitespace value (e.g. a
+/// set-but-empty `SPELUNK_SERVER_KEY`, or an empty credential file) becomes
 /// `None`, so "empty key" is treated as "no key" everywhere — both by the
 /// bind-safety guard and by the auth provider.
 fn normalize_api_key(key: Option<&str>) -> Option<String> {
     key.map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned)
+}
+
+/// Filename systemd exposes for `LoadCredential=server-key:...` under
+/// `$CREDENTIALS_DIRECTORY`.
+const SERVER_KEY_CREDENTIAL: &str = "server-key";
+
+/// Resolve the shared API key from all supported sources, in precedence order
+/// (a blank value at any level is ignored and falls through to the next):
+///
+/// 1. `--key <value>` — inline flag (most explicit).
+/// 2. `--key-file <path>` — explicit file; a read failure is fatal.
+/// 3. `SPELUNK_SERVER_KEY` — environment variable.
+/// 4. `$CREDENTIALS_DIRECTORY/server-key` — systemd `LoadCredential=`, used
+///    automatically when the credential is present.
+///
+/// The credential file (3/4) and the env var are equal first-class sources, not
+/// fallbacks: a systemd deployment sets only the credential and gets it; an
+/// operator outside systemd sets only the env var and gets it.
+fn resolve_api_key(
+    key: Option<&str>,
+    key_file: Option<&std::path::Path>,
+    env_key: Option<&str>,
+    credentials_dir: Option<&std::path::Path>,
+) -> Result<Option<String>> {
+    if let Some(k) = normalize_api_key(key) {
+        return Ok(Some(k));
+    }
+    if let Some(path) = key_file {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("reading --key-file {}", path.display()))?;
+        if let Some(k) = normalize_api_key(Some(&raw)) {
+            return Ok(Some(k));
+        }
+    }
+    if let Some(k) = normalize_api_key(env_key) {
+        return Ok(Some(k));
+    }
+    if let Some(dir) = credentials_dir {
+        let path = dir.join(SERVER_KEY_CREDENTIAL);
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => {
+                if let Some(k) = normalize_api_key(Some(&raw)) {
+                    return Ok(Some(k));
+                }
+            }
+            // A credentials dir without our credential is normal (systemd may
+            // be exporting other credentials); only a real read error is fatal.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading systemd credential {}", path.display())));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Refuse to expose the server off-host over plaintext HTTP. Binding to any
@@ -736,5 +811,129 @@ mod arg_tests {
     #[test]
     fn trust_domain_warning_suppressed_without_key() {
         assert!(!super::should_warn_single_trust_domain("0.0.0.0", false));
+    }
+
+    // ── API key resolution (--key / --key-file / env / systemd credential) ──
+
+    use std::io::Write as _;
+
+    /// Write `contents` to a fresh file in `dir` and return its path.
+    fn write_key_file(dir: &tempfile::TempDir, name: &str, contents: &str) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(contents.as_bytes()).unwrap();
+        path
+    }
+
+    /// `--key-file` reads the whole file, trimmed — the systemd credential /
+    /// `0600`-file path is a first-class source, not a shim.
+    #[test]
+    fn key_file_is_read_and_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_key_file(&dir, "server-key", "  file-secret\n");
+        let key = super::resolve_api_key(None, Some(&path), None, None).unwrap();
+        assert_eq!(key.as_deref(), Some("file-secret"));
+    }
+
+    /// systemd `LoadCredential=server-key` exposes `$CREDENTIALS_DIRECTORY/server-key`;
+    /// the binary picks it up automatically with no flag.
+    #[test]
+    fn systemd_credential_dir_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        write_key_file(&dir, "server-key", "cred-secret\n");
+        let key = super::resolve_api_key(None, None, None, Some(dir.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("cred-secret"));
+    }
+
+    /// Precedence: inline `--key` > `--key-file` > `SPELUNK_SERVER_KEY` >
+    /// systemd credential. Each non-blank source wins over the ones below it.
+    #[test]
+    fn key_source_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_key_file(&dir, "kf", "from-file");
+        write_key_file(&dir, "server-key", "from-cred");
+
+        // Inline --key beats everything.
+        assert_eq!(
+            super::resolve_api_key(
+                Some("inline"),
+                Some(&file),
+                Some("from-env"),
+                Some(dir.path())
+            )
+            .unwrap()
+            .as_deref(),
+            Some("inline")
+        );
+        // --key-file beats env + credential.
+        assert_eq!(
+            super::resolve_api_key(None, Some(&file), Some("from-env"), Some(dir.path()))
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+        // env beats the systemd credential.
+        assert_eq!(
+            super::resolve_api_key(None, None, Some("from-env"), Some(dir.path()))
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+        // credential is the last resort.
+        assert_eq!(
+            super::resolve_api_key(None, None, None, Some(dir.path()))
+                .unwrap()
+                .as_deref(),
+            Some("from-cred")
+        );
+    }
+
+    /// A blank source is ignored and resolution falls through to the next one —
+    /// e.g. a set-but-empty `SPELUNK_SERVER_KEY` must not mask a real credential.
+    #[test]
+    fn blank_source_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        write_key_file(&dir, "server-key", "cred-secret");
+        let key = super::resolve_api_key(Some("   "), None, Some(""), Some(dir.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("cred-secret"));
+    }
+
+    /// No source set at all → unauthenticated (loopback dev server).
+    #[test]
+    fn no_key_source_resolves_to_none() {
+        assert_eq!(
+            super::resolve_api_key(None, None, None, None).unwrap(),
+            None
+        );
+    }
+
+    /// A credentials dir without our `server-key` file is not an error — systemd
+    /// may export other credentials.
+    #[test]
+    fn credentials_dir_without_server_key_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::resolve_api_key(None, None, None, Some(dir.path())).unwrap(),
+            None
+        );
+    }
+
+    /// An explicit `--key-file` that cannot be read is a fatal error — the
+    /// operator asked for that file, so a missing/unreadable one must not
+    /// silently degrade to no-auth.
+    #[test]
+    fn missing_key_file_is_fatal() {
+        let path = std::path::Path::new("/nonexistent/spelunk/server-key");
+        assert!(super::resolve_api_key(None, Some(path), None, None).is_err());
+    }
+
+    /// `--key-file` parses as a path arg.
+    #[test]
+    fn key_file_flag_parses() {
+        let args = Args::parse_from(["spelunk-server", "--key-file", "/etc/spelunk/server-key"]);
+        assert_eq!(
+            args.key_file.as_deref(),
+            Some(std::path::Path::new("/etc/spelunk/server-key"))
+        );
     }
 }
