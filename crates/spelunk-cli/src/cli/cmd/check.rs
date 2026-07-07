@@ -137,7 +137,6 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                     let features: Vec<&str> = [
                         caps.search_semantic.then_some("semantic search"),
                         caps.explore.then_some("explore"),
-                        caps.plan.then_some("plan"),
                     ]
                     .into_iter()
                     .flatten()
