@@ -113,8 +113,11 @@ jobs:
       - name: Install ast-grep
         run: npm install --global @ast-grep/cli
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        run: cargo binstall cargo-nextest --secure --no-confirm
 
       - name: Run tests
         run: cargo nextest run ${{ matrix.test-flags }}
