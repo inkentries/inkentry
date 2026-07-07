@@ -112,6 +112,8 @@ pub(super) async fn memory_add(
             valid_at,
             invalid_at: None,
             superseded_by: None,
+            // Never-synced local row: no cross-machine id yet.
+            remote_id: None,
         };
         // Use process CWD (None) — the CLI is always run from the project root.
         // Secret scan already ran above; no second check needed here.

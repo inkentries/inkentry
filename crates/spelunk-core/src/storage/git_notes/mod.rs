@@ -13,11 +13,10 @@ mod backend_impl;
 
 /// Append a `NoteRecord` as a JSON line to `refs/notes/spelunk` on HEAD.
 ///
-/// Implements read-modify-write with append semantics:
-/// 1. Read the existing note blob for HEAD (may be absent).
-/// 2. Parse each line as a JSON `NoteRecord` — ignore malformed lines.
-/// 3. Append the new record as a new JSON line.
-/// 4. Write the combined text back with `git notes add -f`.
+/// Read-modify-write with append semantics: the existing blob is read and its
+/// lines (spelunk records and foreign content alike) are preserved verbatim;
+/// the new record is appended as one JSON line; the combined text is written
+/// back with `git notes add -f`.
 ///
 /// Errors are intentionally non-fatal: the caller should log `tracing::warn!`
 /// and continue.  This function returns `Ok(())` on success or propagates
@@ -142,13 +141,16 @@ const GIT_NOTES_MAX_LIST: usize = 500;
 
 /// Memory backend backed by `git notes` in the `refs/notes/spelunk` namespace.
 ///
-/// Each memory entry is attached to the `HEAD` commit at write time as a single
-/// JSON object.  Multiple entries accumulate across commits as the user works.
+/// The note on a commit is JSON Lines: one `NoteRecord` per line, possibly
+/// interleaved with foreign content (prose, other tools' lines). Reads skip
+/// foreign lines; writes preserve them and every sibling record verbatim.
+/// Multiple entries accumulate within a commit's note and across commits.
 ///
 /// # Concurrency warning
-/// `add` uses `git notes add -f` (force-replace).  If two processes add a note
-/// to the same `HEAD` simultaneously the second write silently overwrites the
-/// first.  For multi-agent workflows use the sqlite backend (the default).
+/// `add`/`archive` do read-modify-write and rewrite the note with
+/// `git notes add -f`. If two processes mutate the same `HEAD` note
+/// simultaneously the second write can silently overwrite the first's edit.
+/// For multi-agent workflows use the sqlite backend (the default).
 /// See issue #185 for the full analysis.
 ///
 /// # Unsupported methods
@@ -285,29 +287,83 @@ impl GitNotesBackend {
         Ok(pairs)
     }
 
-    async fn read_record(&self, commit_sha: &str) -> Result<Option<NoteRecord>> {
+    /// Read the raw note blob for `commit_sha` (empty string if no note).
+    async fn read_note_blob(&self, commit_sha: &str) -> Result<String> {
         let out = self
             .git()
             .args(["notes", "--ref=spelunk", "show", "--", commit_sha])
             .output()
             .await?;
-
         if !out.status.success() {
-            return Ok(None);
+            return Ok(String::new());
         }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
 
-        let json = String::from_utf8_lossy(&out.stdout);
-        let record: NoteRecord = serde_json::from_str(json.trim())
-            .map_err(|e| anyhow!("parsing spelunk note on {commit_sha}: {e}"))?;
-        if record.schema_version > 1 {
-            return Err(anyhow::Error::new(
-                crate::error::SpelunkError::SchemaMismatch {
-                    found: record.schema_version,
-                    max_known: 1,
-                },
-            ));
+    /// Permissively parse the spelunk records from a commit's note blob.
+    ///
+    /// The blob is JSON Lines interleaved with foreign content (prose, other
+    /// tools' lines). Foreign lines are skipped without error; only a record
+    /// from a newer, incompatible `schema_version` returns an error.
+    async fn read_records(&self, commit_sha: &str) -> Result<Vec<NoteRecord>> {
+        let blob = self.read_note_blob(commit_sha).await?;
+        let mut records = Vec::new();
+        for line in blob.lines() {
+            match parse_spelunk_line(line) {
+                Some(record) => {
+                    if record.schema_version > 1 {
+                        return Err(anyhow::Error::new(
+                            crate::error::SpelunkError::SchemaMismatch {
+                                found: record.schema_version,
+                                max_known: 1,
+                            },
+                        ));
+                    }
+                    records.push(record);
+                }
+                None => continue, // foreign line: skip, never error
+            }
         }
-        Ok(Some(record))
+        Ok(records)
+    }
+
+    /// Append `record` as a new JSON line to `object`'s note, preserving every
+    /// existing line (spelunk records and foreign content) byte-for-byte.
+    async fn append_record(&self, object: &str, record: &NoteRecord) -> Result<()> {
+        let existing = self.read_note_blob(object).await?;
+        let new_line = serde_json::to_string(record)?;
+        let combined = if existing.trim().is_empty() {
+            new_line
+        } else {
+            format!("{}\n{}", existing.trim_end_matches('\n'), new_line)
+        };
+        self.add_note_stdin(object, &combined).await
+    }
+
+    /// Set `status = "archived"` on the single spelunk record whose `id` matches
+    /// `id` within `object`'s note. Every other line (sibling records and
+    /// foreign content) is re-emitted unchanged in its original position; only
+    /// the matched record's line is re-serialized. Returns whether a match was
+    /// rewritten.
+    async fn archive_record(&self, object: &str, id: i64) -> Result<bool> {
+        let blob = self.read_note_blob(object).await?;
+        let mut out_lines: Vec<String> = Vec::new();
+        let mut changed = false;
+        for line in blob.lines() {
+            match parse_spelunk_line(line) {
+                Some(mut record) if !changed && record.id == id => {
+                    record.status = "archived".to_string();
+                    out_lines.push(serde_json::to_string(&record)?);
+                    changed = true;
+                }
+                // Foreign lines and untargeted records: re-emit verbatim.
+                _ => out_lines.push(line.to_string()),
+            }
+        }
+        if changed {
+            self.add_note_stdin(object, &out_lines.join("\n")).await?;
+        }
+        Ok(changed)
     }
 
     async fn collect(
@@ -320,11 +376,11 @@ impl GitNotesBackend {
         let commits = self.noted_commits().await?;
         let mut notes = Vec::new();
 
-        for (sha, _) in commits {
-            if notes.len() >= limit {
-                break;
-            }
-            if let Some(record) = self.read_record(&sha).await? {
+        'outer: for (sha, _) in commits {
+            for record in self.read_records(&sha).await? {
+                if notes.len() >= limit {
+                    break 'outer;
+                }
                 if kind_filter.is_some_and(|k| record.kind != k) {
                     continue;
                 }
@@ -346,4 +402,20 @@ impl GitNotesBackend {
 
         Ok(notes)
     }
+}
+
+/// Classify one line of a note blob: `Some(record)` if it parses as a JSON
+/// *object* deserializing into `NoteRecord`. Non-JSON, non-object JSON, blank,
+/// and prose lines are foreign (`None`).
+fn parse_spelunk_line(line: &str) -> Option<NoteRecord> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Must be a JSON object; arrays/strings/numbers/null are foreign.
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    serde_json::from_value(value).ok()
 }

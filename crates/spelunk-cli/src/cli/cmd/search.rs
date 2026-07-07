@@ -158,8 +158,8 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         //
         // Use the dedicated POST /v1/projects/{id}/search endpoint (#322) when a
         // server is reachable — it applies the code-retrieval prefix server-side
-        // and returns the query vector for CLI-side KNN.  This eliminates the
-        // need for a local api_base_url / embedder in Tier-1 mode.
+        // and returns the query vector for CLI-side KNN.  The server owns the
+        // embedder; the CLI never embeds locally in Tier-1 mode.
         let client_result = require_server_client(&cfg, "search");
 
         // Map auto/hybrid/semantic → server-side mode string.

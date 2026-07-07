@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** July 2026 (server reconciliation: ADR-056 single-trust-domain tenancy)  
+**Last reviewed:** July 2026 (egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -13,9 +13,9 @@ spelunk has two distinct operational modes with different attack surfaces:
 
 ### Mode A — Local CLI (default)
 1. Walks source trees, parses files with tree-sitter, stores chunks in SQLite
-2. Embeds chunks by calling an OpenAI-compatible HTTP endpoint (`api_base_url`, default `http://127.0.0.1:1234`)
+2. Embeds chunks by sending chunk text to a `spelunk-server` over HTTP (ADR-002; the CLI never embeds in-process). The default auto-discovered loopback server embeds natively in-process (bundled F2LLM), so chunk text does **not** leave the machine.
 3. Runs KNN search over stored embeddings via sqlite-vec
-4. Optionally sends context + a user question to an LLM endpoint (`llm_model` / same base URL)
+4. Optionally sends context + a user question to the same `spelunk-server`'s LLM endpoint
 5. Maintains a `memory.db` of structured notes with semantic search. **`memory.db` is the single authoritative memory store at the CLI tier** (ADR-004). All `spelunk memory` operations (add, list, search, timeline, harvest) read from and write to `memory.db`.
 6. **When `store_in_git_notes = true` (the default):** each `spelunk memory add` also appends the note as a JSON line to `refs/notes/spelunk` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-notespelunk) below.
 
@@ -30,10 +30,21 @@ An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search ov
 - Exposes: `POST /v1/projects/{id}/memory`, `POST /v1/projects/{id}/memory/search`, DELETE, archive, supersede
 
 ### Backend configurability
-Both the embedding endpoint and LLM endpoint are configurable via `api_base_url` in
-`~/.config/spelunk/config.toml`. **This is not restricted to localhost.** Users may
-configure third-party cloud services (OpenAI, Anthropic, Cohere, etc.), which changes
-the data-egress threat profile significantly.
+All inference goes through `spelunk-server` (ADR-002); the CLI has no direct
+embedding/LLM endpoint of its own. Egress off the local machine happens in two
+cases, both of which change the data-egress threat profile:
+
+- **Explicit team `server_url`** in config points the CLI at a remote
+  `spelunk-server`. Chunk text and query text then cross the network to that
+  server (which may itself embed natively or proxy to a third party).
+- **Server-side external shim:** a `spelunk-server` operator may set
+  `--embedding-url` / `--llm-url` (`SPELUNK_EMBEDDING_URL` / `SPELUNK_LLM_URL`)
+  so the server forwards to a third-party OpenAI-compatible service (OpenAI,
+  Anthropic, Cohere, etc.) instead of embedding natively. This is configured on
+  the server, not by the client.
+
+The default auto-discovered loopback server embeds natively in-process with no
+external egress.
 
 ---
 
@@ -63,13 +74,15 @@ User filesystem
   │
   ├─ spelunk index ─► [secret scanner] ─► SQLite index.db (chunks + vectors)
   │                                              │
-  │                                              └─► embed via HTTP ─► api_base_url
-  │                                                   (local OR third-party cloud)
+  │                                              └─► embed chunk text via HTTP ─► spelunk-server
+  │                                                   (loopback: native, on-machine;
+  │                                                    team server_url: leaves the machine)
   ├─ spelunk ask/search
-  │     ├─► embed query via HTTP ─► api_base_url
-  │     │    (source code chunks + user query leave the machine if api_base_url is remote)
-  │     ├─► KNN search ─► index.db
-  │     └─► LLM prompt ─► api_base_url
+  │     ├─► embed query text via HTTP ─► spelunk-server
+  │     │    (chunk + query text leave the machine only if server_url is a remote
+  │     │     team server, or that server proxies to a third-party --embedding-url)
+  │     ├─► KNN search ─► index.db  (always local sqlite-vec)
+  │     └─► LLM prompt ─► spelunk-server
   │           └─ context: code chunks + spec files + memory notes
   │
   ├─ spelunk memory add ─► memory.db (SQLite, local)  ← single canonical store (ADR-004)
@@ -156,7 +169,7 @@ unauthenticated (no bearer required or sent).
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
 | Client impersonates a legitimate spelunk user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--key` / `SPELUNK_SERVER_KEY`. |
-| Attacker spoofs the embedding/LLM backend to return adversarial responses | A | Low | Medium | No server certificate validation is documented; if `api_base_url` is remote and HTTP (not HTTPS), responses can be intercepted. Recommend HTTPS for any non-localhost backend. |
+| Attacker spoofs the embedding/LLM backend to return adversarial responses | A | Low | Medium | The loopback server is on-machine, so this only applies when a remote team `server_url` (or a server's external `--embedding-url`/`--llm-url`) is used over plaintext HTTP. `validate_transport_url` rejects a non-loopback `http://` `server_url` (loopback-only plaintext; https required otherwise), so a remote backend must be HTTPS. |
 
 ### T — Tampering
 
@@ -179,8 +192,8 @@ unauthenticated (no bearer required or sent).
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
-| **Source code sent to third-party embedding service** | A | **High** | **High** | **No mitigation in spelunk itself.** If `api_base_url` points to a cloud service, every indexed chunk (post-secret-scan) is transmitted. Users must be informed via docs. |
-| **Memory notes sent to third-party LLM** | A | **Medium** | **High** | **No mitigation in spelunk itself.** `spelunk ask` and `memory harvest` send memory content + code context to the configured LLM endpoint. |
+| **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to the team server) or a server whose operator set an external `--embedding-url` (server forwards post-secret-scan chunks to a third party). Both are explicit operator choices; users must be informed via docs. |
+| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk ask` and `memory harvest` send memory content + code context to `spelunk-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url` or a server-side `--llm-url` shim. |
 | Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires a key — `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses without `--key` / `SPELUNK_SERVER_KEY`; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
@@ -265,18 +278,22 @@ as a JSON line appended to `refs/notes/spelunk` on HEAD when `store_in_git_notes
 
 ### What is stored
 
-Each note is a single-line JSON object (`NoteRecord`) containing: `id`,
-`kind`, `title`, `body`, `tags`, `linked_files`, `created_at`, `status`,
-`source_ref`, and schema metadata. The `body` field is the raw user-supplied
-text from `--body` or `$EDITOR`.
+A commit's note is JSON Lines: one `NoteRecord` per line (canonical spelunk
+format), possibly interleaved with foreign content (prose, other tools' lines).
+Each record contains: `id`, `kind`, `title`, `body`, `tags`, `linked_files`,
+`created_at`, `status`, `source_ref`, an optional `remote_id` (the canonical
+cross-machine id, present only once an entry is synced to a remote server), and
+schema metadata. The `body` field is the raw user-supplied text from `--body`
+or `$EDITOR`. Reads skip foreign lines without erroring; writes preserve every
+foreign line and every untargeted record verbatim.
 
 ### How notes propagate
 
 ```
 spelunk memory add
   └─► append_to_git_notes() in storage/git_notes.rs
-        ├─► git notes --ref=spelunk show HEAD   (read existing)
-        ├─► combine old + new JSON line
+        ├─► git notes --ref=spelunk show HEAD   (read existing blob)
+        ├─► append the new record as one JSON line, keeping all prior lines
         └─► git notes --ref=spelunk add -f HEAD (write back)
 
 git push [with refs/notes/spelunk in refspec or push.followTags / notes config]
@@ -322,9 +339,12 @@ pushed with notes, the credential is exfiltrated.
 
 ## Third-Party Backend Risk (all modes)
 
-This section is elevated because the original model assumed local-only backends.
+The default backend is on-machine (loopback `spelunk-server`, native F2LLM
+embedder), so by default no code or memory content leaves the machine. This
+section covers the two paths that reach a third party.
 
-**When `api_base_url` is a third-party service (e.g. `https://api.openai.com`):**
+**When a remote team `server_url` is set, or a `spelunk-server` operator has set
+an external `--embedding-url` / `--llm-url` shim (e.g. `https://api.openai.com`):**
 
 | Data sent | Trigger | Risk |
 |-----------|---------|------|
@@ -335,10 +355,10 @@ This section is elevated because the original model assumed local-only backends.
 
 **Mitigations (documentation, not code):**
 - Document the data-egress implications prominently in `docs/getting-started.md` and the `config.toml` comments
-- Recommend users set `api_base_url = "http://127.0.0.1:1234"` (local model) in the default config
+- The default (no `server_url`, auto loopback server, native embedder) keeps all code and memory on-machine; reaching a third party is an explicit operator choice
 - Secret scanning reduces but does not eliminate the risk — it only drops chunks matching known credential patterns
 
-**Recommended future control:** Add a `data_classification = "local-only"` config flag that refuses to connect to non-loopback addresses, with an explicit opt-in override.
+**Recommended future control:** Add a `data_classification = "local-only"` config flag that refuses to configure a non-loopback `server_url`, with an explicit opt-in override.
 
 ---
 
@@ -359,5 +379,5 @@ From this threat model, the following requirements are binding:
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
 6. **spelunk-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `SPELUNK_SERVER_KEY` is set.
-7. **Config documentation must warn** that setting `api_base_url` to a non-local address transmits source code and memory content to that endpoint.
+7. **Config documentation must warn** that setting a remote team `server_url` (or running a `spelunk-server` with an external `--embedding-url` / `--llm-url` shim) transmits source code and memory content off the machine.
 8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-notespelunk) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**
