@@ -55,19 +55,10 @@ fn single_chunk_budget(total_ram_bytes: u64) -> u64 {
 }
 
 /// Derive the maximum single-chunk token count that keeps the attention scratch
-/// within `budget_bytes`.
-///
-/// In `forward_one` (batch = 1) the dominant allocation is the attention score
-/// tensor `[1, n_head, seq, seq]` in f32 — and the softmax produces a second
-/// tensor of the same shape — so peak scratch is bounded by
-/// `n_head × seq² × 4 bytes`. (Anchor: at seq = 40 960, 16 × 40960² × 4 ≈ 100
-/// GiB, matching the observed ~107 GB OOM on a full-length 40 k-token chunk.)
-///
-/// Solving `n_head × seq² × 4 ≤ budget` for `seq` gives the cap. We also clamp
-/// to `MAX_SEQ_LEN` (the model's position-embedding ceiling) so the result is
-/// never larger than the model can attend over anyway.
-///
-/// At 2 GiB → ~5 792 tokens; at 4 GiB → ~8 192 tokens.
+/// within `budget_bytes`. In `forward_one` (batch = 1) the dominant allocation
+/// is the attention score tensor `[1, n_head, seq, seq]` in f32, so peak scratch
+/// is `n_head × seq² × 4 bytes`. Solving for `seq` gives the cap, clamped to
+/// `MAX_SEQ_LEN`. At 2 GiB → ~5 792 tokens; at 4 GiB → ~8 192.
 fn derive_token_cap(budget_bytes: u64, n_head: usize) -> usize {
     let bytes_per_seq_sq = (n_head as u64) * 4;
     // seq <= sqrt(budget / (n_head * 4))
@@ -306,25 +297,22 @@ impl Qwen3EmbedWeights {
         Ok(self.final_norm.forward(&h)?)
     }
 
-    /// Padded batch forward pass: all sequences in `batch_ids` are right-padded
-    /// to the longest sequence in the batch.  Returns one L2-normalised
-    /// embedding vector per input sequence in the same order.
+    /// Padded batch forward pass: sequences right-padded to the longest in the
+    /// batch. Returns one L2-normalised embedding per input, in order.
     ///
-    /// On CPU, sequences are forwarded together as a single BLAS call (batch
-    /// dim > 1), amortising per-call overhead.  On Metal/GPU the sequential
-    /// path is used instead: Metal's buffer pool grows unboundedly with batched
-    /// inference because `(b × n_head × seq²)` attention tensors are never
-    /// compacted between forward passes, causing OOM for large codebases.
-    /// Sequential GPU inference was the pre-batching baseline and is still fast.
+    /// CPU forwards the batch as a single BLAS call (batch dim > 1). Metal/GPU
+    /// uses the sequential path instead: its buffer pool grows unboundedly with
+    /// batched inference because `(b × n_head × seq²)` attention tensors are
+    /// never compacted between passes → OOM.
     fn embed_batch(&self, batch_ids: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
         let b = batch_ids.len();
         assert!(b > 0);
 
         let max_seq = batch_ids.iter().map(|ids| ids.len()).max().unwrap_or(0);
 
-        // Sequential path: single sequences, GPU/Metal devices (buffer pool grows
-        // unboundedly with batching), or long sequences where the attention tensor
-        // (b × n_head × max_seq²) would exceed BATCH_MAX_SEQ and cause OOM.
+        // Sequential path: single sequences, GPU/Metal (buffer pool grows
+        // unboundedly with batching), or sequences past BATCH_MAX_SEQ (batched
+        // attention tensor would OOM).
         if b == 1 || !matches!(self.device, Device::Cpu) || max_seq > BATCH_MAX_SEQ {
             let mut out = Vec::with_capacity(b);
             for ids in batch_ids {
@@ -413,12 +401,11 @@ impl Qwen3EmbedWeights {
         let k = rope(&k.contiguous()?, &cos, &sin)?;
 
         // Grouped query attention: expand K, V from n_kv_heads to n_heads.
-        // MUST repeat-interleave (each kv head duplicated n_rep times contiguously,
-        // [kv0,kv0,kv1,kv1,…]) so query head j attends through kv head j/n_rep —
-        // matching HF's repeat_kv. `Tensor::repeat` instead *tiles* the kv dim
-        // ([kv0,…,kvN, kv0,…,kvN]), silently pairing most query heads with the
-        // wrong K/V projection and collapsing retrieval quality (spelunk-oss#19).
-        // candle's repeat_kv returns the correct interleaved order, contiguous.
+        // MUST repeat-interleave (each kv head duplicated n_rep times
+        // contiguously, [kv0,kv0,kv1,kv1,…]) so query head j attends through kv
+        // head j/n_rep. `Tensor::repeat` instead *tiles* ([kv0,…,kvN,kv0,…,kvN]),
+        // silently pairing most query heads with the wrong K/V. `repeat_kv`
+        // returns the correct interleaved order, contiguous.
         let n_rep = self.n_head / self.n_kv_head;
         let k = repeat_kv(k, n_rep)?;
         let v = repeat_kv(v, n_rep)?;
@@ -494,23 +481,13 @@ fn causal_mask(seq: usize, dtype: DType, device: &Device) -> Result<Tensor> {
 
 impl NativeEmbedder {
     /// Load the F2LLM-v2-330M embedder from local files already on disk, with
-    /// **zero network access**.
+    /// zero network access — this crate carries no download dependency
+    /// (`spelunk-server` resolves the artifacts via Hugging Face Hub first).
     ///
-    /// This is the entry point for callers that fetch the model artifacts
-    /// themselves — this crate carries no download/fetch dependency of its own.
-    /// (`spelunk-server` resolves the artifacts via its own Hugging Face Hub
-    /// acquisition path and then calls this.) All three inputs must be present
-    /// locally:
-    ///
-    /// * `gguf_path` points at the Q8_0-quantized GGUF
-    ///   (`f2llm-v2-330m-q8_0.gguf`).
-    /// * `tokenizer_path` points at the model's `tokenizer.json`.
-    /// * `config_path` points at the model's `config.json` (a Qwen3 config).
-    ///
-    /// The GGUF, tokenizer, and config must all come from the same F2LLM-v2-330M
-    /// revision so the weight keys and tensor shapes line up. Uses Metal/GPU on
-    /// macOS when built with the `metal` cargo feature, CPU otherwise. No files
-    /// are downloaded, written, or deleted.
+    /// All three must be present locally and from the same model revision so the
+    /// weight keys and tensor shapes line up: `gguf_path` (Q8_0 GGUF),
+    /// `tokenizer_path` (`tokenizer.json`), `config_path` (Qwen3 `config.json`).
+    /// Uses Metal/GPU on macOS with the `metal` feature, CPU otherwise.
     pub fn load_from_path(
         gguf_path: &Path,
         tokenizer_path: &Path,
@@ -633,17 +610,12 @@ impl crate::EmbeddingBackend for NativeEmbedder {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("native embedder lock poisoned"))?;
 
-            // 1. Tokenize all texts upfront.
-            //
-            // Cap each sequence to `effective_cap` tokens. `MAX_SEQ_LEN` is the
-            // model's position-embedding ceiling; `token_cap` is the smaller,
-            // memory-budget-derived bound that keeps the single-chunk attention
-            // scratch (`[1, n_head, seq, seq]` f32) within the RAM budget. A
-            // single ~40 k-token chunk (e.g. a lock/data/minified file) would
-            // otherwise allocate ~100 GB of attention scores and OOM/abort the
-            // whole index — so we *truncate* oversized chunks here, preserving
-            // the leading (partial) signal rather than aborting. (token_cap == 0
-            // in unit-test fixtures means "no extra cap".)
+            // 1. Tokenize all texts upfront, capping each to `effective_cap`.
+            // `token_cap` is the memory-budget-derived bound that keeps the
+            // single-chunk attention scratch (`[1, n_head, seq, seq]` f32) within
+            // RAM; a ~40 k-token chunk would otherwise allocate ~100 GB and OOM
+            // the whole index, so truncate (preserving the leading signal).
+            // (token_cap == 0 in unit-test fixtures means "no extra cap".)
             let effective_cap = if guard.token_cap == 0 {
                 MAX_SEQ_LEN
             } else {
@@ -732,19 +704,18 @@ mod tests {
         (0..n_head).map(|h| flat[h * per_head] as usize).collect()
     }
 
-    /// Regression test for spelunk-oss#19: grouped-query-attention K/V expansion
-    /// must **repeat-interleave** the kv-head dim (`[kv0,kv0,kv1,kv1,…]`) so query
-    /// head `j` attends through kv head `j / n_rep`. The original bug used
-    /// `Tensor::repeat`, which *tiles* (`[kv0..kvN, kv0..kvN]`) and silently paired
-    /// 15 of 16 query heads with the wrong K/V projection, collapsing retrieval.
-    /// This guards the `repeat_kv` call in `Qwen3EmbedWeights::attn`.
+    /// Grouped-query-attention K/V expansion must repeat-interleave the kv-head
+    /// dim (`[kv0,kv0,kv1,kv1,…]`) so query head `j` attends through kv head
+    /// `j / n_rep`. `Tensor::repeat` tiles instead (`[kv0..kvN, kv0..kvN]`),
+    /// silently pairing 15 of 16 query heads with the wrong K/V. Guards the
+    /// `repeat_kv` call in `Qwen3EmbedWeights::attn`.
     #[test]
     fn repeat_kv_interleaves_gqa_heads_not_tiles() {
         // F2LLM-v2-330M: 16 attention heads / 8 kv heads → n_rep = 2.
         let (n_kv, n_rep, seq, head_dim) = (8usize, 2usize, 3usize, 4usize);
         let kv = headed_kv(n_kv, seq, head_dim);
 
-        // Production path (the #19 fix).
+        // Production path.
         let expanded = repeat_kv(kv.clone(), n_rep).unwrap();
         assert_eq!(expanded.dims4().unwrap(), (1, n_kv * n_rep, seq, head_dim));
 
@@ -756,7 +727,7 @@ mod tests {
             "repeat_kv must repeat-interleave kv heads (spelunk-oss#19)"
         );
 
-        // The #19 bug: `Tensor::repeat` tiles instead — [kv0..kv7, kv0..kv7].
+        // Tiling bug: `Tensor::repeat` → [kv0..kv7, kv0..kv7].
         let tiled = kv.repeat(&[1, n_rep, 1, 1]).unwrap();
         let tiled_order: Vec<usize> = (0..n_kv).chain(0..n_kv).collect();
         assert_eq!(head_sources(&tiled), tiled_order);
@@ -782,7 +753,7 @@ mod tests {
         );
     }
 
-    // ── single-chunk memory-budget cap (spelunk-oss#17) ───────────────────────
+    // ── single-chunk memory-budget cap ────────────────────────────────────────
 
     /// Budget selection keys off total system RAM: 2 GiB at/below the 16 GiB
     /// threshold, 4 GiB above it.
@@ -822,10 +793,8 @@ mod tests {
         assert!(cap_4g > cap_2g);
     }
 
-    /// A 40 k-token chunk under the old (uncapped) path would allocate the
-    /// attention scratch that caused the ~107 GB OOM; the cap brings it to a
-    /// bounded size. Document the before/after scratch sizes here so the
-    /// regression is captured in code, not just the PR body.
+    /// A 40 k-token chunk uncapped would allocate ~100 GiB of attention scratch;
+    /// the cap brings it within budget.
     #[test]
     fn oversized_chunk_scratch_drops_below_budget() {
         let scratch = |seq: usize| (N_HEAD as u64) * (seq as u64) * (seq as u64) * 4;
@@ -869,16 +838,12 @@ mod tests {
 
     // ── L2 normalisation invariant ────────────────────────────────────────────
     //
-    // The public embedding contract is "896-dim, L2-normalised". The end-to-end
-    // proof of that runs through the ignored network tests in spelunk-server's
-    // `embed_hub`; these pin the normalisation step itself (the last thing each
-    // embedding passes through) without needing the model on disk, so a
-    // regression in `l2_normalise` is caught by the fast, offline suite too.
+    // Contract: "896-dim, L2-normalised". These pin the normalisation step
+    // without needing the model on disk; the end-to-end proof runs through the
+    // ignored network tests in spelunk-server's `embed_hub`.
 
-    /// A non-zero vector must come out with unit L2 norm, and its direction must
-    /// be preserved (each component scaled by the same factor). This is the
-    /// invariant the ignored `*_896_dim` / `embeddings_discriminate` tests assert
-    /// end-to-end (`norm ≈ 1.0`), pinned here directly on the normaliser.
+    /// A non-zero vector must come out with unit L2 norm and preserved direction
+    /// (each component scaled by the same factor).
     #[test]
     fn l2_normalise_yields_unit_norm_and_preserves_direction() {
         let original = [3.0f32, 0.0, 4.0]; // norm 5
@@ -896,10 +861,8 @@ mod tests {
         }
     }
 
-    /// The zero vector has no direction, so `l2_normalise` must leave it untouched
-    /// rather than divide by zero and produce NaNs. (A padded/empty forward pass
-    /// could in principle yield an all-zero hidden state; the normaliser must not
-    /// turn that into NaNs that would poison the int8 index.)
+    /// The zero vector must be left untouched, not divide-by-zero into NaNs that
+    /// would poison the int8 index.
     #[test]
     fn l2_normalise_leaves_zero_vector_finite() {
         let mut v = [0.0f32; 4];
@@ -910,10 +873,8 @@ mod tests {
         );
     }
 
-    /// The advertised embedding dimension is the F2LLM-v2-330M hidden size (896).
-    /// Pin the public `DIM` constant so an accidental change to the exported
-    /// contract (which the int8 vec0 index and every consumer depend on) fails a
-    /// cheap, offline test rather than only surfacing under the ignored model run.
+    /// Pin the public `DIM` constant (896, F2LLM-v2-330M hidden size) so an
+    /// accidental change to the exported contract fails a cheap offline test.
     #[test]
     fn dim_is_f2llm_hidden_size() {
         assert_eq!(
@@ -922,14 +883,8 @@ mod tests {
         );
     }
 
-    /// End-to-end semantic-discrimination check over the real model. Ignored by
-    /// default: it downloads ~650 MB of weights and runs inference. Run with
-    /// `cargo test -p spelunk-embed -- --ignored embeddings_discriminate`.
-    ///
     /// `load_from_path` must do no network access: with a missing GGUF it fails
-    /// fast on the local-file check rather than reaching out to the Hub. This is
-    /// the offline-load contract for callers that supply the model artifacts
-    /// themselves, and runs without downloading anything.
+    /// fast on the local-file check rather than reaching out to the Hub.
     #[test]
     fn load_from_path_missing_gguf_errors_without_network() {
         let dir = tempfile::tempdir().unwrap();
@@ -947,13 +902,9 @@ mod tests {
         );
     }
 
-    /// Stronger offline guarantee: even when the GGUF *exists* (so the fail-fast
-    /// existence check passes), `load_from_path` must resolve the tokenizer and
-    /// config from the local paths it was handed and error locally — never fall
-    /// back to a Hub download for a missing/invalid artifact. Here the GGUF is
-    /// present but the tokenizer file is absent, so the load must fail on the
-    /// local tokenizer read (`loading tokenizer from ...`), proving the code
-    /// past the existence guard also stays on disk. Runs with no network.
+    /// Stronger offline guarantee: even when the GGUF exists (existence check
+    /// passes), a missing tokenizer must fail on the local read, never a Hub
+    /// download — proving the code past the existence guard stays on disk.
     #[test]
     fn load_from_path_present_gguf_missing_tokenizer_errors_locally() {
         let dir = tempfile::tempdir().unwrap();
@@ -968,9 +919,7 @@ mod tests {
             Ok(_) => panic!("an empty GGUF with no tokenizer must be a load error"),
             Err(e) => format!("{e:#}"),
         };
-        // The error must name the local tokenizer path (a filesystem read),
-        // never a Hub URL / download. This is the regression guard against a
-        // future Hub fallback slipping into the post-existence-check path.
+        // The error must name the local tokenizer path, never a Hub URL/download.
         assert!(
             msg.contains("loading tokenizer from")
                 && msg.contains(&tokenizer.display().to_string()),
@@ -982,32 +931,21 @@ mod tests {
         );
     }
 
-    // End-to-end "load from a real local GGUF/tokenizer/config and embed"
-    // tests — including the `token_cap()` trait-method proof
-    // (`native_embedder_reports_its_token_cap`) — live in `spelunk-server`'s
-    // `embed_hub` module (ignored by default; it uses that crate's Hugging
-    // Face Hub path to prime the local cache artifacts this crate's
-    // `load_from_path` then reads with zero network access). This crate has
-    // no way to acquire those artifacts itself.
+    // End-to-end "load a real GGUF/tokenizer/config and embed" tests (including
+    // the `token_cap()` proof) live in spelunk-server's `embed_hub`, which can
+    // acquire the model artifacts this crate can't.
 
-    /// `token_cap()` (the `EmbeddingBackend` trait method `/v1/health`'s
-    /// `limits.embedder_token_cap` reads) must report the same value
-    /// `derive_token_cap`/`single_chunk_budget` compute for a given
-    /// budget/host-RAM pair — not `None` and not some other constant. This is
-    /// a pure-math check against the private helpers (no model load), so it
-    /// runs unconditionally; the live end-to-end proof against a real loaded
-    /// `NativeEmbedder` is `embed_hub::tests::native_embedder_reports_its_token_cap`
-    /// (ignored by default — downloads the model).
+    /// The `token_cap()` derivation (`derive_token_cap`/`single_chunk_budget`)
+    /// must be stable and non-degenerate for the host's budget. Pure-math check
+    /// against the private helpers; the live proof against a loaded embedder is
+    /// `embed_hub::tests::native_embedder_reports_its_token_cap`.
     #[test]
     fn token_cap_matches_derive_token_cap_for_host_budget() {
         let budget = single_chunk_budget(total_system_ram());
         let expected_cap = derive_token_cap(budget, N_HEAD);
 
-        // `EmbedderSlotInner`/`NativeEmbedder.inner.token_cap` (the field
-        // `token_cap()` reads) is set from exactly this derivation at load
-        // time (see `NativeEmbedder::from_files`/`load_from_path`) — assert
-        // the derivation itself is stable and non-degenerate rather than
-        // duplicating a full model load here.
+        // `token_cap` is set from this derivation at load time (see
+        // `from_files`); assert the derivation is stable rather than loading a model.
         assert!(expected_cap >= 1, "derived cap must be usable");
         assert!(
             expected_cap <= MAX_SEQ_LEN,

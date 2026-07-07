@@ -21,7 +21,7 @@ use utoipa::ToSchema;
 use super::auth::AuthContext;
 use super::{AppError, AppState, EmbedderState, ErrorBody};
 
-// ── Input validation caps (V1-SERVER-AUDIT §4 / spelunk-oss^60) ────────────────
+// ── Input validation caps ─────────────────────────────────────────────────────
 
 /// Max length (chars) for a memory entry's `title`.
 pub const MAX_TITLE_LEN: usize = 500;
@@ -88,12 +88,10 @@ fn validate_project_slug(slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Resolve the client's IP address for rate-limiting: prefer the leftmost
-/// `X-Forwarded-For` entry when present (the server is expected to sit behind
-/// a trusted proxy in shared/team deployments — see ADR-056 tenancy model),
-/// falling back to the TCP peer address from `ConnectInfo`. Returns a stable
-/// string key; when neither is available, falls back to a constant so all
-/// such requests share one bucket rather than bypassing rate limiting.
+/// Resolve the client's IP for rate-limiting: prefer the leftmost
+/// `X-Forwarded-For` entry (the server sits behind a trusted proxy in team
+/// deployments — see ADR-056), else the TCP peer. Falls back to a constant so
+/// keyless requests share one bucket rather than bypassing the limit.
 fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let first = xff.split(',').next().unwrap_or("").trim();
@@ -108,11 +106,8 @@ fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
 }
 
 /// Test-only override for the generation budget `llm_generate_with_timeout`
-/// enforces. Production code always uses `super::REQUEST_TIMEOUT` (30s); this
-/// lets tests inject a millisecond-scale budget so a genuinely-hanging LLM
-/// backend can be proven cut off without the test itself waiting 30+ real
-/// seconds. `#[cfg(test)]`-gated: compiled out of (and inert in) the release
-/// binary. See `handlers::tests::explore_cuts_off_hanging_llm_backend`.
+/// enforces (production uses `super::REQUEST_TIMEOUT`). Lets tests inject a
+/// millisecond-scale budget. `#[cfg(test)]`-gated, inert in the release binary.
 #[cfg(test)]
 static GENERATION_TIMEOUT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<Duration>>> =
     std::sync::OnceLock::new();
@@ -144,25 +139,14 @@ fn generation_timeout() -> Duration {
     super::REQUEST_TIMEOUT
 }
 
-/// Run an LLM backend's `generate` call with a wall-clock budget, so a
-/// hung/slow backend can't hold the spawned generation task (and the SSE
-/// connection + channel it feeds) open forever.
+/// Run an LLM backend's `generate` call with a wall-clock budget, so a hung/slow
+/// backend can't hold the spawned generation task (and the SSE connection it
+/// feeds) open forever.
 ///
-/// **Why this exists (spelunk-oss^60 follow-up):** `/explore` and
-/// `/llm/complete` construct their SSE `Response` and return it as soon as
-/// the stream is built, handing the actual generation off to a detached
-/// `tokio::spawn`. The handler `Future` that `TimeoutLayer` wraps therefore
-/// resolves immediately — the layer never sees the generation work at all, so
-/// the router-level 30s timeout does not bound these two endpoints the way it
-/// bounds every synchronous handler. This wraps the generation call itself
-/// with the same budget so a hung backend still can't hold the connection
-/// open indefinitely, closing that gap without changing the SSE framing.
-/// (Verified failing without this wrapper by
-/// `handlers::tests::normal_route_exceeding_timeout_returns_408`, which drove
-/// `/explore` against a backend that never returns. The wrapper's own
-/// effectiveness — that it actually cuts off a hung backend within budget —
-/// is proved directly by
-/// `handlers::tests::explore_cuts_off_hanging_llm_backend`.)
+/// `/explore` and `/llm/complete` return their SSE `Response` as soon as the
+/// stream is built and hand generation to a detached `tokio::spawn`, so the
+/// router-level `TimeoutLayer` never sees this work. This wraps the generation
+/// call with the same budget to close that gap without changing the SSE framing.
 async fn llm_generate_with_timeout(
     llm: Arc<dyn spelunk_core::llm::LlmBackend>,
     messages: Vec<spelunk_core::llm::Message>,
@@ -298,17 +282,11 @@ pub struct EmbedderStatus {
     pub detail: Option<String>,
 }
 
-/// Server-enforced operative limits relevant to sizing an `/index/embed`
-/// request, so a client can clamp its own batching to what this particular
-/// server build actually supports instead of assuming (spelunk-oss^71/^73/^74
-/// PR #513 field-failure follow-up).
+/// Server-enforced limits relevant to sizing an `/index/embed` request, so a
+/// client can clamp its batching to what this server build supports.
 ///
-/// Added alongside the `/index/embed`-specific request timeout (see
-/// `EMBED_REQUEST_TIMEOUT` in `lib.rs`): a CLI that calibrates a batch to run
-/// for `request_timeout_secs` and gets 408'd is a **version-skew** signal — an
-/// old server (pre-dating this field, so the whole `limits` object is absent)
-/// still enforces the old blanket 30s budget. Absent `limits` therefore means
-/// "assume the legacy 30s / no-embed-exemption profile", not "unlimited".
+/// Absent `limits` (an older server pre-dating this field) means "assume the
+/// legacy 30s / no-embed-exemption profile", not "unlimited".
 #[derive(Serialize, ToSchema)]
 pub struct ServerLimits {
     /// Wall-clock budget (seconds) this server allows a single `/index/embed`
@@ -322,13 +300,9 @@ pub struct ServerLimits {
     pub max_batch_chunks: usize,
     /// Per-chunk token truncation cap the embedder enforces, if known (native
     /// backend only — see `EmbeddingBackend::token_cap`). `null` when the
-    /// embedder isn't ready yet or doesn't expose one (e.g. an external
-    /// `--embedding-url` backend). Informational: a client can use it to avoid
-    /// assuming every chunk is small when estimating a batch's total token
-    /// volume, but the binding constraint in practice is wall-clock time, not
-    /// per-batch memory — sub-batches are already bounded independently of
-    /// total batch size (see `EMBED_BATCH_SIZE` / `BATCH_MAX_SEQ` in
-    /// `embedder_native.rs`).
+    /// embedder isn't ready or exposes none (e.g. an external `--embedding-url`).
+    /// Informational — the binding constraint in practice is wall-clock time,
+    /// not per-batch memory.
     pub embedder_token_cap: Option<usize>,
 }
 
@@ -1090,10 +1064,9 @@ pub async fn index_embed(
     }
 
     // Serialise as raw little-endian f32 bytes, one vector after another in
-    // request order. Avoids the per-element JSON float-array cost on both
-    // serialize (here) and parse (CLI); the client maps response[i] → request
-    // chunk[i] by position, so no chunk_id framing is needed.
-    // (Snowflake "byte serialization" optimisation.)
+    // request order. Avoids the per-element JSON float cost on both ends; the
+    // client maps response[i] → request chunk[i] by position, so no chunk_id
+    // framing is needed.
     let dim = vectors.first().map_or(0, Vec::len);
     let mut body_bytes = Vec::with_capacity(vectors.len() * dim * 4);
     for v in &vectors {
@@ -1114,7 +1087,7 @@ fn octet_stream(bytes: Vec<u8>) -> Response {
         .into_response()
 }
 
-// ── Code search (query embedding proxy, spelunk#322) ─────────────────────────
+// ── Code search (query embedding proxy) ───────────────────────────────────────
 
 /// Request body for `POST /v1/projects/{project_id}/search`.
 #[derive(Deserialize, ToSchema)]
@@ -1801,7 +1774,6 @@ mod tests {
             caps.iter().any(|c| c == "memory"),
             "capabilities must include 'memory'"
         );
-        // New fields from #321.
         let id = json["instance_id"]
             .as_str()
             .expect("instance_id must be a string");
@@ -1820,9 +1792,8 @@ mod tests {
             json!("disabled"),
             "embedder.state must be 'disabled' when no embedder is configured"
         );
-        // `limits` (spelunk-oss^71/^73/^74, PR #513): always present, even
-        // with no embedder — a client needs the request-timeout/batch-count
-        // limits before it can even ask whether an embedder is ready.
+        // `limits` is always present, even with no embedder — a client needs
+        // the request-timeout/batch-count limits before asking if one is ready.
         assert_eq!(
             json["limits"]["embed_request_timeout_secs"],
             json!(super::super::EMBED_REQUEST_TIMEOUT.as_secs()),
@@ -1999,7 +1970,7 @@ mod tests {
         );
     }
 
-    // ── Readiness / warm-up contract (oss^50) ────────────────────────────────
+    // ── Readiness / warm-up contract ─────────────────────────────────────────
 
     async fn get_health_json(app: axum::Router) -> Value {
         let req = Request::builder()
@@ -2163,7 +2134,7 @@ mod tests {
         );
     }
 
-    // ── Input-length caps (spelunk-oss^60 / V1-SERVER-AUDIT §4) ───────────────
+    // ── Input-length caps ────────────────────────────────────────────────────
 
     /// POST /v1/projects/{slug}/memory with a title over `MAX_TITLE_LEN` chars
     /// must be rejected with 400, not silently truncated or stored.
@@ -2282,7 +2253,7 @@ mod tests {
         );
     }
 
-    // ── /explore rate limiting (spelunk-oss^60) ────────────────────────────────
+    // ── /explore rate limiting ─────────────────────────────────────────────────
 
     /// An LLM backend that immediately closes the token channel — enough to
     /// exercise routing/rate-limiting without generating real content.
@@ -2336,10 +2307,8 @@ mod tests {
         app.clone().oneshot(req).await.unwrap().status()
     }
 
-    /// `/explore` must be rate-limited the same way `/llm/complete` is: once
-    /// the per-bucket budget is exhausted, further calls get 429, not a normal
-    /// (SSE 200) response. This closes the "unmetered token-burn proxy" hole
-    /// from V1-SERVER-AUDIT §4 — previously `/explore` had no rate check at all.
+    /// `/explore` must be rate-limited like `/llm/complete`: once the per-bucket
+    /// budget is exhausted, further calls get 429, not a normal (SSE 200) response.
     #[tokio::test]
     async fn explore_returns_429_past_rate_limit() {
         let app = make_app_with_llm_and_limit(2);
@@ -2358,8 +2327,8 @@ mod tests {
     }
 
     /// Two different client IPs (via `X-Forwarded-For`) must not share one
-    /// rate-limit bucket — each gets its own budget. Guards the "single shared
-    /// key = single global bucket" hole from V1-SERVER-AUDIT §4.
+    /// rate-limit bucket — each gets its own budget, so a shared key can't
+    /// collapse every caller onto one global bucket.
     #[tokio::test]
     async fn explore_rate_limit_keyed_per_client_ip() {
         let app = make_app_with_llm_and_limit(1);
@@ -2392,13 +2361,11 @@ mod tests {
         );
     }
 
-    // ── Exact-boundary input-cap tests (spelunk-oss^60 / V1-SERVER-AUDIT §4) ──
+    // ── Exact-boundary input-cap tests ───────────────────────────────────────
     //
-    // `add_note_within_caps_returns_201` (above) already checks a title at
-    // exactly MAX_TITLE_LEN. These fill the remaining boundary combinations:
-    // body at exactly the cap, and title/body one char *under* the cap (so we
-    // have off-by-one coverage on both sides of both fields, not just "way
-    // over" vs. "exactly at" for title alone).
+    // `add_note_within_caps_returns_201` already checks a title at exactly
+    // MAX_TITLE_LEN. These fill the remaining boundary combinations: body at the
+    // cap, and title/body one char under, for off-by-one coverage on both sides.
 
     /// A body at exactly `MAX_BODY_LEN` chars must be accepted (boundary,
     /// mirrors the existing exact-title-cap test).
@@ -2468,14 +2435,12 @@ mod tests {
         );
     }
 
-    // ── TimeoutLayer / SSE exemption (spelunk-oss^60) ──────────────────────────
+    // ── TimeoutLayer / SSE exemption ──────────────────────────────────────────
     //
-    // These bind the *real* router (via `router_with_timeout`, injecting a
-    // short millisecond-scale budget instead of the production 30s) to a real
-    // TCP listener and drive it with a real HTTP client, so we're proving
-    // actual wire behaviour — a connection that is genuinely held open past
-    // the timeout window — not just that `/memory/stream` lives in a
-    // sub-router without a `TimeoutLayer` attached.
+    // These bind the real router (via `router_with_timeout`, injecting a short
+    // millisecond-scale budget) to a real TCP listener and drive it with a real
+    // HTTP client, so they prove actual wire behaviour — a connection genuinely
+    // held open past the timeout window — not just router wiring.
 
     /// Bind a real router (with the given injected timeout) to an ephemeral
     /// TCP port and start serving it in the background. Returns the base URL
@@ -2570,20 +2535,13 @@ mod tests {
     }
 
     /// A normal (non-exempt, non-streaming) route whose handler outlives the
-    /// injected `TimeoutLayer` budget must be aborted with `408 Request
-    /// Timeout`. This is the control case proving the timeout layer is live
-    /// and actually enforced on the wire — not merely configured.
+    /// injected `TimeoutLayer` budget must be aborted with `408`. Control case
+    /// proving the layer is enforced on the wire, not merely configured.
     ///
-    /// Uses `add_note`, which synchronously awaits the DB lock and returns a
-    /// JSON `Response`, rather than `/explore`/`/llm/complete` — those two
-    /// construct their SSE `Response` and return immediately regardless of
-    /// how long generation takes, so `TimeoutLayer` structurally can't bound
-    /// them (see `llm_generate_with_timeout` in this module and its doc
-    /// comment on `REQUEST_TIMEOUT` in `lib.rs` for that separate gap and how
-    /// it's closed). `add_note` is representative of the synchronous handler
-    /// class the router-level `TimeoutLayer` is actually meant to protect: we
-    /// hold its DB mutex externally so `add_note`'s `state.db.lock().await`
-    /// legitimately blocks past the injected budget.
+    /// Uses `add_note` (a synchronous handler awaiting the DB lock) rather than
+    /// `/explore`/`/llm/complete`, which return their SSE `Response` immediately
+    /// and so can't be bound by `TimeoutLayer`. Its DB mutex is held externally
+    /// so `state.db.lock().await` blocks past the injected budget.
     #[tokio::test]
     async fn normal_route_exceeding_timeout_returns_408() {
         let request_timeout = std::time::Duration::from_millis(200);
@@ -2622,30 +2580,20 @@ mod tests {
         release_task.await.expect("release task panicked");
     }
 
-    // ── Generation-side timeout on `/explore` and `/llm/complete` (spelunk-oss^60,
-    //    QA follow-up) ──────────────────────────────────────────────────────────
+    // ── Generation-side timeout on `/explore` and `/llm/complete` ─────────────
     //
-    // `normal_route_exceeding_timeout_returns_408` above proves the *router's*
-    // `TimeoutLayer` doesn't (and structurally can't) bound `/explore` or
-    // `/llm/complete` — those handlers return their SSE `Response` immediately
-    // and hand generation to a detached `tokio::spawn`. This is the missing
-    // other half: proving `llm_generate_with_timeout` — the generation-side
-    // wrapper added to close that gap — actually cuts a hung backend off
-    // within budget, rather than just reading correct on inspection. Without
-    // this test, deleting the `tokio::time::timeout(...)` wrapper around
-    // `llm.generate(...)` in `llm_generate_with_timeout` would compile and
-    // pass every other test in this suite.
+    // `normal_route_exceeding_timeout_returns_408` proves the router's
+    // `TimeoutLayer` can't bound these two endpoints. This is the other half:
+    // proving `llm_generate_with_timeout` actually cuts a hung backend off
+    // within budget — without it, deleting the `tokio::time::timeout(...)`
+    // wrapper would compile and pass every other test.
 
-    /// An LLM backend whose `generate()` never returns and never sends a
-    /// token — models a genuinely hung inference backend (wedged HTTP call,
-    /// deadlocked model runtime, etc.), the case `llm_generate_with_timeout`
-    /// exists to bound. Awaits a `Notify` that the test never fires, rather
-    /// than e.g. `std::future::pending()`, purely so it's unmistakable in a
-    /// stack trace / debugger what's being awaited if this ever fails.
+    /// An LLM backend whose `generate()` never returns and never sends a token —
+    /// models a hung inference backend, the case `llm_generate_with_timeout`
+    /// exists to bound.
     struct HangingLlm {
-        /// Bumped once `generate()` is actually entered, so tests can assert
-        /// generation genuinely started (and wasn't e.g. skipped by a
-        /// short-circuit) before checking it gets cut off.
+        /// Bumped once `generate()` is entered, so tests can assert generation
+        /// genuinely started before checking it gets cut off.
         entered: Arc<std::sync::atomic::AtomicUsize>,
     }
 
@@ -2660,10 +2608,8 @@ mod tests {
         ) -> anyhow::Result<()> {
             self.entered
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            // Never returns, never sends anything, never drops `_tx` on its
-            // own — the only way this future completes is by being dropped
-            // from outside (i.e. by `tokio::time::timeout` in
-            // `llm_generate_with_timeout` firing).
+            // Never returns or drops `_tx` on its own — the only way it
+            // completes is by being dropped from outside (the timeout firing).
             std::future::pending::<()>().await;
             unreachable!("pending() never resolves");
         }
@@ -2671,37 +2617,24 @@ mod tests {
 
     /// `/explore` backed by a `HangingLlm` must still have its connection cut
     /// off within the generation budget — proving `llm_generate_with_timeout`
-    /// actually bounds a hung backend, not just that the code compiles.
+    /// bounds a hung backend, not just that the code compiles.
     ///
-    /// Without the `tokio::time::timeout` wrapper in `llm_generate_with_timeout`
-    /// (i.e. reverting to a bare `llm.generate(...).await`), this test hangs
-    /// until the outer `#[tokio::test]` runtime / CI timeout kills it — this
-    /// was confirmed manually while writing this test (temporarily replacing
-    /// the wrapped call with the bare `.await` reproduces exactly the "200
-    /// immediately, then the SSE stream never ends" symptom QA's review
-    /// flagged) and is *not* re-verified on every run, since a test that
-    /// hangs on regression instead of failing fast would be a worse failure
-    /// mode than the gap this closes.
+    /// GOTCHA: without the `tokio::time::timeout` wrapper this test hangs until
+    /// the CI timeout rather than failing fast — a worse failure mode, but
+    /// accepted since the alternative doesn't exercise the wrapper.
     #[tokio::test]
     async fn explore_cuts_off_hanging_llm_backend() {
-        // Millisecond-scale budget via the test-only override, so this test
-        // doesn't need to wait out the real 30s `REQUEST_TIMEOUT`. Global
-        // (process-wide) by construction, so this test must not run
-        // concurrently with anything else that spawns `llm_generate_with_timeout`
-        // under a *different* intended budget; `#[tokio::test]` gives each
-        // test its own runtime but they still share this process, so guard
-        // with a lock rather than relying on test-harness serialization.
+        // Millisecond-scale budget via the test-only override. The override is
+        // process-wide, so guard with a lock: this test must not run
+        // concurrently with anything else spawning `llm_generate_with_timeout`
+        // under a different budget.
         static OVERRIDE_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = OVERRIDE_GUARD.lock().await;
 
         let generation_budget = std::time::Duration::from_millis(150);
         set_generation_timeout_override(generation_budget);
-        // Router-level TimeoutLayer is set generously long (well past the
-        // generation budget) so it's structurally impossible for it to be
-        // what cuts the connection off — isolates this test to proving the
-        // generation-side wrapper alone does the job, per
-        // `normal_route_exceeding_timeout_returns_408`'s finding that the
-        // router layer can't see this endpoint's spawned work at all.
+        // Router-level TimeoutLayer set generously long so it can't be what cuts
+        // the connection off — isolates the generation-side wrapper.
         let router_timeout = generation_budget * 20;
 
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2725,12 +2658,9 @@ mod tests {
              TimeoutLayer can't bound this endpoint (see normal_route_exceeding_timeout_returns_408)"
         );
 
-        // Read the stream until it ends (or errors), bounded by a deadline
-        // well past the generation budget but far short of what "never cut
-        // off" (i.e. the pre-fix bug) would need — if the wrapper weren't
-        // doing its job, `stream.next()` would still be pending when this
-        // deadline hits and `tokio::time::timeout` below would fire instead
-        // of the stream ending on its own, which the assertion distinguishes.
+        // Read the stream until it ends, bounded by a deadline past the
+        // generation budget: if the wrapper weren't cutting the backend off,
+        // the stream would still be pending when this deadline fires.
         use futures_util::StreamExt;
         let mut stream = resp.bytes_stream();
         let overall_deadline = generation_budget * 10;
@@ -2846,15 +2776,12 @@ mod tests {
         }
     }
 
-    // ── TimeoutLayer / `/index/embed` exemption (spelunk-oss^71/^73/^74,
-    //    PR #513 field-failure follow-up) ───────────────────────────────────
+    // ── TimeoutLayer / `/index/embed` exemption ───────────────────────────────
     //
     // Same proof style as the `/memory/stream` exemption above: bind the real
-    // router with the general and embed timeouts injected *independently*
-    // (mirroring production's `REQUEST_TIMEOUT` vs `EMBED_REQUEST_TIMEOUT`
-    // split) and drive it with a real HTTP client, so we're proving actual
-    // wire behaviour rather than just that `/index/embed` lives in a
-    // sub-router with a different `TimeoutLayer` attached.
+    // router with the general and embed timeouts injected independently
+    // (mirroring the `REQUEST_TIMEOUT` vs `EMBED_REQUEST_TIMEOUT` split) and
+    // drive it with a real HTTP client.
 
     /// An embedder backend that sleeps for a fixed duration before returning a
     /// zero vector per input — models a slow (e.g. CPU-only, cold-cache, or
@@ -3000,42 +2927,27 @@ mod tests {
         release_task.await.expect("release task panicked");
     }
 
-    // ── ConcurrencyLimitLayer under concurrent load (spelunk-oss^60) ──────────
+    // ── ConcurrencyLimitLayer under concurrent load ───────────────────────────
 
-    /// Proves `tower::limit::ConcurrencyLimitLayer` itself backpressures
-    /// concurrent requests beyond its cap — i.e. the layer type used by
-    /// `router_with_limits`/`router` behaves as intended in this axum/tower
-    /// version, under real concurrent load (multiple in-flight requests
-    /// racing through `tower::limit`), not just "the layer is attached".
+    /// Proves `tower::limit::ConcurrencyLimitLayer` backpressures concurrent
+    /// requests beyond its cap under real concurrent load, not just that the
+    /// layer is attached.
     ///
-    /// This deliberately does **not** route through `/explore` or
-    /// `/llm/complete`: those handlers construct their `Response` and return
-    /// immediately (generation happens in a detached `tokio::spawn`), so the
-    /// concurrency permit — like the `TimeoutLayer` budget — is released as
-    /// soon as the SSE stream is constructed, not when the stream finishes.
-    /// A same-shaped test against `/explore` (verified while writing this)
-    /// shows all 5 concurrent requests admitted immediately regardless of the
-    /// cap, which is *not* a bug in `ConcurrencyLimitLayer` — it's that these
-    /// two SSE-streaming endpoints structurally sit outside what
-    /// `ConcurrencyLimitLayer` can bound, the same gap
-    /// `llm_generate_with_timeout` (see `lib.rs`) closes for `TimeoutLayer`.
-    /// `ConcurrencyLimitLayer` has no per-endpoint override to fix this the
-    /// same way; bounding concurrent *streaming sessions* (as opposed to
-    /// concurrent handler invocations) would need a dedicated semaphore held
-    /// for the stream's lifetime — filed as a follow-up, out of scope here.
+    /// Deliberately does NOT route through `/explore` or `/llm/complete`: those
+    /// release the concurrency permit as soon as the SSE stream is constructed
+    /// (generation is a detached `tokio::spawn`), so they sit outside what
+    /// `ConcurrencyLimitLayer` can bound — the same gap `llm_generate_with_timeout`
+    /// closes for `TimeoutLayer`.
     #[tokio::test]
     async fn concurrency_limit_layer_queues_requests_beyond_the_cap() {
         use axum::{Router, routing::get};
 
-        // A trivial handler that blocks until released, wrapped in the exact
-        // same `ConcurrencyLimitLayer` type used by `router`/`router_with_limits`.
+        // A trivial handler that blocks until released, wrapped in the same
+        // `ConcurrencyLimitLayer` type used by `router`.
         //
-        // Uses a `watch` channel (not `Notify`) as the gate: `Notify::notify_waiters`
-        // only wakes tasks *already* waiting at the moment it's called, so any
-        // handler invocation admitted *after* the gate is released would hang
-        // forever — exactly the requests queued behind the concurrency cap here.
-        // `watch` retains the last-sent value, so a late subscriber that calls
-        // `wait_for` after the release still observes it immediately.
+        // Uses a `watch` channel (not `Notify`) as the gate: `Notify` only wakes
+        // tasks already waiting when fired, so a handler admitted after release
+        // would hang; `watch` retains the value for late subscribers.
         let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 

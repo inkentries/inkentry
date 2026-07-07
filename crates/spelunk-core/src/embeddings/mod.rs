@@ -10,29 +10,20 @@ pub use spelunk_embed::MODEL_ID;
 pub const EMBEDDING_DIM: usize = 896;
 
 /// Serialise a float vector to raw little-endian f32 bytes for a sqlite-vec
-/// `float[N]` column.
-///
-/// Used for the memory-note vector table (`note_embeddings`, `FLOAT[896]`),
-/// which stays full-precision: the table is small, so the int8 footprint win
-/// that justifies [`vec_to_int8_blob`] for the large chunk/snapshot index does
-/// not apply, and float keeps the memory search path free of the int8
-/// distance-rescale (`INT8_SCALE`). See `docs/architecture.md` ("Why two
+/// `float[N]` column. Used for the full-precision memory-note vector table
+/// (`note_embeddings`, `FLOAT[896]`). See `docs/architecture.md` ("Why two
 /// vector-storage formats").
 pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 /// Quantise an L2-normalised float vector to `int8` bytes for a sqlite-vec
-/// `int8[N]` column. Embeddings produced by F2LLM are unit vectors (components
-/// in `[-1, 1]`), so each component maps to `round(x * 127)` clamped to
-/// `[-127, 127]`. This is 4× smaller than f32 storage; because the scaling is
-/// uniform, L2 distance ranking is preserved (a sqlite-vec int8 L2 distance is
-/// ~127× the corresponding f32 distance — callers rescale by `INT8_SCALE`).
-///
-/// Used only for the chunk/snapshot vector tables (`embeddings`,
-/// `snapshot_embeddings`); memory note vectors keep full-precision f32 storage
-/// via [`vec_to_blob`]. See `docs/architecture.md` ("Why two vector-storage
-/// formats") for why the split is deliberate.
+/// `int8[N]` column. F2LLM vectors are unit vectors, so each component maps to
+/// `round(x * 127)` clamped to `[-127, 127]` — 4× smaller than f32, and since
+/// the scaling is uniform L2 ranking is preserved (callers rescale by
+/// `INT8_SCALE`). Used only for the chunk/snapshot tables (`embeddings`,
+/// `snapshot_embeddings`). See `docs/architecture.md` ("Why two vector-storage
+/// formats").
 pub fn vec_to_int8_blob(v: &[f32]) -> Vec<u8> {
     v.iter()
         .map(|&x| ((x * 127.0).round().clamp(-127.0, 127.0) as i8) as u8)

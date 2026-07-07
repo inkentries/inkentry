@@ -27,68 +27,40 @@ use auth::{AuthError, AuthProvider};
 use db::ServerDb;
 use rate_limiter::RateLimiter;
 
-/// Wall-clock budget for a single request before the server aborts it and
-/// returns `408 Request Timeout`. `/memory/stream` is exempt (long-lived SSE
-/// connection by design; see [`GLOBAL_CONCURRENCY_LIMIT`] for its own bound).
-/// `/index/embed` is also exempt — see [`EMBED_REQUEST_TIMEOUT`] — because a
-/// legitimate embed batch can genuinely run for minutes on slow hardware.
+/// Wall-clock budget for a single request before the server aborts it with
+/// `408`. `/memory/stream` (SSE) and `/index/embed` (see
+/// [`EMBED_REQUEST_TIMEOUT`]) are exempt.
 ///
-/// **Does not bound `/explore` or `/llm/complete`.** Both return their SSE
-/// `Response` as soon as the stream is constructed and hand the actual
-/// generation off to a detached `tokio::spawn` — the handler `Future` this
-/// layer wraps resolves immediately, well before the LLM backend finishes (or
-/// hangs). `TimeoutLayer` therefore can't see that work at all (proved by
-/// `handlers::tests::normal_route_exceeding_timeout_returns_408`, which fails
-/// against `/explore` without the generation-side timeout in
-/// `handlers::llm_generate_with_timeout`). Those two handlers bound the
-/// spawned generation directly with this same constant instead.
+/// Does NOT bound `/explore` or `/llm/complete`: both return their SSE
+/// `Response` immediately and run generation in a detached `tokio::spawn`, which
+/// this layer can't see. Those handlers bound the spawned generation directly
+/// with this same constant (see `handlers::llm_generate_with_timeout`).
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Wall-clock budget for a single `/index/embed` request before the server
-/// aborts it and returns `408 Request Timeout`. Deliberately much larger than
-/// [`REQUEST_TIMEOUT`] and sized to match the CLI's own `MAX_REQUEST_TIMEOUT`
-/// (`crates/spelunk-cli/src/cli/cmd/index/embed_phase.rs`): the CLI calibrates
-/// batch size to target a ~240s round trip on the *measured* hardware, and
-/// clamps its own per-request timeout up to 1800s to absorb slow-hardware
-/// outliers. A 30s server-side budget made that calibration impossible to
-/// satisfy — any batch sized for a 240s target, or even a single oversized
-/// chunk on slow/CPU-only hardware, was killed by the router before the CLI's
-/// own (much longer) client-side timeout ever had a chance to apply. This is
-/// the fix for the field failure captured in the CHANGELOG entry for this
-/// change (408 on `index/embed` batch 1).
+/// Wall-clock budget for a single `/index/embed` request before `408`. Much
+/// larger than [`REQUEST_TIMEOUT`] and matched to the CLI's `MAX_REQUEST_TIMEOUT`:
+/// a legitimate embed batch can run for minutes on slow/CPU-only hardware, which
+/// a 30s budget would kill.
 ///
-/// This does **not** reopen the DoS gap `REQUEST_TIMEOUT` closes:
-/// `/index/embed` is still auth-gated (same `auth_middleware` as every other
-/// protected route) and still behind `ConcurrencyLimitLayer` and
-/// `RequestBodyLimitLayer`, so a hostile or misbehaving caller can hold open
-/// at most `GLOBAL_CONCURRENCY_LIMIT` embed requests, each bounded in size by
-/// `MAX_BATCH` (256 chunks) and `DEFAULT_BODY_LIMIT_BYTES` — not an unbounded
-/// number of unauthenticated, unbounded-duration connections. A slow legitimate
-/// batch and a held-open attack connection are indistinguishable to a generic
-/// wall-clock timeout; bounding the *count* and *size* of concurrent embed
-/// requests is what actually defends this endpoint, same as it always was.
+/// Not a DoS gap: `/index/embed` is still auth-gated and behind
+/// `ConcurrencyLimitLayer` + `RequestBodyLimitLayer`, so the count and size of
+/// concurrent embed requests stay bounded.
 pub(crate) const EMBED_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Cap on the JSON request body size accepted by the general API surface.
-/// Generous enough for the largest legitimate payload (an `index/embed` batch
-/// of up to 256 chunks) while still bounding memory use per request.
-/// `title` (≤500) + `body` (≤50 000) caps are enforced in the handlers on top
-/// of this — this layer is the outer, cheap-to-check net.
+/// Cap on the JSON request body size. Generous enough for the largest legitimate
+/// payload (a 256-chunk `index/embed` batch); per-field caps (title/body) are
+/// enforced in the handlers on top of this.
 const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
-/// Global cap on requests being processed concurrently across the whole
-/// server. Bounds worst-case resource usage (including the SSE poll loop on
-/// `/memory/stream`, which otherwise has no other backpressure now that the
-/// single-mutex → read-pool refactor is out of scope for this change — see
-/// the follow-up note in the task).
+/// Global cap on requests processed concurrently across the whole server,
+/// including the `/memory/stream` SSE poll loop.
 const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
 /// Readiness state of the server-side embedder.
 ///
-/// The native (in-process) embedder is loaded on a background task *after* the
-/// listener binds, so `/v1/health` is live immediately while the model is still
-/// warming up. This enum is the single source of truth for that readiness; the
-/// health body carries it and the embed endpoints branch on it.
+/// The native embedder loads on a background task after the listener binds, so
+/// `/v1/health` is live while the model warms up. Single source of truth for
+/// that readiness; the health body carries it and the embed endpoints branch on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbedderState {
@@ -333,35 +305,24 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Build the axum router with all routes.
 ///
-/// Protective middleware (see V1-SERVER-AUDIT §4 / spelunk-oss^60):
-/// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route,
-///   including `/memory/stream` and `/index/embed`.
-/// - `TimeoutLayer` (30s) applies to everything **except** `/memory/stream`
-///   (long-lived SSE connection by design) and `/index/embed` (its own, much
-///   larger [`EMBED_REQUEST_TIMEOUT`] budget — see that constant's doc comment
-///   for why: a 30s budget cannot fit a legitimate embed batch on slow
-///   hardware, which is the root cause of the 408 this timeout split fixes).
-/// - Per-handler input caps (title/body/vector length, batch chunk count,
-///   etc.) are enforced in `handlers.rs`, not here.
+/// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route.
+/// - `TimeoutLayer` (30s) applies to everything except `/memory/stream` (SSE)
+///   and `/index/embed` (its own [`EMBED_REQUEST_TIMEOUT`]).
+/// - Per-handler input caps are enforced in `handlers.rs`.
 pub fn router(state: AppState) -> Router {
     router_with_timeouts(state, REQUEST_TIMEOUT, EMBED_REQUEST_TIMEOUT)
 }
 
-/// Same as [`router`], but with an injectable request timeout applied to both
-/// the general route group and `/index/embed`. Exists so tests can prove the
-/// `/memory/stream` timeout exemption against a short (millisecond-scale)
-/// budget instead of waiting out the real 30s [`REQUEST_TIMEOUT`] — see
-/// `handlers::tests::*timeout*`.
+/// Same as [`router`], but with an injectable request timeout for both the
+/// general route group and `/index/embed`. Lets tests exercise the timeout
+/// exemptions on a millisecond-scale budget.
 pub fn router_with_timeout(state: AppState, request_timeout: Duration) -> Router {
     router_with_timeouts(state, request_timeout, request_timeout)
 }
 
-/// Same as [`router`], but with the general-route timeout, the `/index/embed`
-/// timeout, and the global concurrency cap all injectable. Exists so tests can
-/// prove `/index/embed` survives past the general [`REQUEST_TIMEOUT`] budget
-/// (mirroring the `/memory/stream` SSE-exemption tests) without waiting out
-/// the real 1800s [`EMBED_REQUEST_TIMEOUT`] — see
-/// `handlers::tests::embed_survives_general_timeout_budget`.
+/// Same as [`router`], but with the general timeout, `/index/embed` timeout, and
+/// global concurrency cap all injectable. Lets tests prove `/index/embed`
+/// survives past the general budget without waiting out the real 1800s.
 pub fn router_with_timeouts(
     state: AppState,
     request_timeout: Duration,
@@ -375,11 +336,9 @@ pub fn router_with_timeouts(
     )
 }
 
-/// Same as [`router`], but with the request timeout, `/index/embed` timeout,
-/// and the global concurrency cap all injectable. Exists so tests can prove
-/// `ConcurrencyLimitLayer` actually backpressures concurrent requests using a
-/// small limit (e.g. 2) instead of needing 257 real concurrent connections to
-/// exercise the production [`GLOBAL_CONCURRENCY_LIMIT`].
+/// Same as [`router`], but with the request timeout, `/index/embed` timeout, and
+/// global concurrency cap all injectable. Lets tests exercise
+/// `ConcurrencyLimitLayer` backpressure with a small limit.
 pub fn router_with_limits(
     state: AppState,
     request_timeout: Duration,
@@ -399,10 +358,8 @@ pub fn router_with_limits(
         .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
     // `/index/embed` gets its own long-budget timeout instead of the general
-    // `REQUEST_TIMEOUT` (30s) — see [`EMBED_REQUEST_TIMEOUT`]. Auth,
-    // concurrency, and body-size limits are identical to `protected` below;
-    // only the wall-clock budget differs, same pattern as the `stream_route`
-    // carve-out above.
+    // `REQUEST_TIMEOUT` — see [`EMBED_REQUEST_TIMEOUT`]. Auth/concurrency/body
+    // limits match `protected` below.
     let embed_route = Router::new()
         .route(
             "/v1/projects/{project_id}/index/embed",
@@ -520,13 +477,10 @@ mod app_error_tests {
         assert!(body.contains("proj"));
     }
 
-    /// Any other error — even one whose `Display` text happens to contain the
-    /// words "mismatch" or "required" — must NEVER have its raw text reach the
-    /// client body. Only the fixed, generic "Internal server error" message is
-    /// allowed through for `AppError::Internal` errors that aren't the one
-    /// explicitly-typed, known-safe variant. This is the regression test for
-    /// the substring-sniffing leak: the old code matched on `msg.contains(...)`
-    /// and echoed the raw error string back to the client.
+    /// Any other error — even one whose text contains "mismatch"/"required" —
+    /// must NEVER have its raw text reach the client body; only the generic
+    /// "Internal server error" message is allowed through. Regression guard
+    /// against substring-sniffing the error message.
     #[tokio::test]
     async fn generic_internal_error_never_leaks_raw_text_even_with_trigger_words() {
         let secret_path = "/Users/johan/.ssh/id_ed25519";
