@@ -113,6 +113,12 @@ impl CloudSyncClient {
     /// (a UUID for cloud-api, or a slug for an OSS spelunk-server); it is
     /// percent-encoded into a single path segment either way.
     pub fn new(base_url: &str, project_id: &str, api_key: Option<&str>) -> Result<Self> {
+        // Fail closed before building the client: a bearer must never travel over
+        // plaintext http to a non-loopback host (spelunk-oss^63). Keyless
+        // loopback-dev construction is unaffected — nothing to leak.
+        if api_key.is_some() {
+            crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
+        }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -379,6 +385,32 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "acme/new-app", None).unwrap();
         let res = client.push_batch(vec![item("e1")]).await.unwrap();
         assert_eq!(res.created, 1);
+    }
+
+    // ── transport-scheme guard at construction (spelunk-oss^78) ──────────────
+    // A bearer must never travel over plaintext http to a non-loopback host;
+    // keyless construction is unaffected. Mirrors config::validate_transport_url_*.
+
+    #[test]
+    fn new_with_key_rejects_non_loopback_http() {
+        let err = match CloudSyncClient::new("http://team-server:7777", "proj", Some("secret")) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected non-loopback plaintext http to be rejected"),
+        };
+        assert!(err.contains("plaintext http"), "err: {err}");
+    }
+
+    #[test]
+    fn new_with_key_accepts_https_and_loopback_http() {
+        assert!(CloudSyncClient::new("https://team-server:7777", "proj", Some("secret")).is_ok());
+        assert!(CloudSyncClient::new("http://127.0.0.1:7777", "proj", Some("secret")).is_ok());
+        assert!(CloudSyncClient::new("http://localhost:7777", "proj", Some("secret")).is_ok());
+    }
+
+    #[test]
+    fn new_keyless_construction_unaffected_by_transport() {
+        // No bearer to leak, so even a non-loopback plaintext dev server is fine.
+        assert!(CloudSyncClient::new("http://team-server:7777", "proj", None).is_ok());
     }
 
     #[tokio::test]
