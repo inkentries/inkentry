@@ -321,6 +321,22 @@ source is ignored and falls through to the next. Under systemd the credential
 path is preferred — it keeps the key out of the world-readable process
 environment; see [Self-hosting](self-hosting.md).
 
+### Embedding CPU thread budget
+
+On a CPU-only host the bundled native embedder (candle) would otherwise fan a
+single embed batch across every core, briefly starving the server's own request
+handling (`/v1/health` can go unresponsive during a large index). To leave
+headroom, the server caps candle's thread count at startup.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `SPELUNK_EMBED_THREADS` | `max(1, physical cores − 2)` | CPU threads the native embedder may use. Reserves ~2 cores for request serving. |
+
+Precedence: `SPELUNK_EMBED_THREADS` > an already-set `RAYON_NUM_THREADS` >
+the bounded default. A pre-set `RAYON_NUM_THREADS` is respected and never
+overridden. The resolved value and its source are logged at startup
+(`embed CPU thread budget resolved`). GPU (Metal/CUDA) builds are unaffected.
+
 ### Non-loopback plaintext binds are refused, no override
 
 `spelunk-server` refuses to bind a non-loopback address over plaintext HTTP,
