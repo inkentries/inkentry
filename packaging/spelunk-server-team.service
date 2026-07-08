@@ -1,0 +1,74 @@
+# spelunk-server — TEAM MEMORY server, static-user system unit (recommended)
+#
+# This is the first-party unit for a deployed, shared spelunk-server (a team
+# memory store), NOT the local per-developer inference server — for that see the
+# user unit `spelunk-server.service` in this directory. Do not confuse the two.
+#
+# The server binds loopback only and terminates plaintext HTTP; a shared
+# deployment puts an operator-owned TLS terminator (nginx/Caddy/…) on the SAME
+# host in front of this loopback bind. See docs/self-hosting.md.
+#
+# Install:
+#   sudo useradd --system --home-dir /var/lib/spelunk --shell /usr/sbin/nologin spelunk
+#   sudo install -d -o spelunk -g spelunk -m 0750 /var/lib/spelunk
+#   sudo install -d -m 0755 /etc/spelunk
+#   openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
+#   sudo chmod 0600 /etc/spelunk/server-key   # root:root
+#   sudo install -m 0644 packaging/spelunk-server-team.service \
+#        /etc/systemd/system/spelunk-server.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spelunk-server
+#
+# A DynamicUser= variant (no manual user/dir setup) is in
+# spelunk-server-team-dynamicuser.service.
+
+[Unit]
+Description=spelunk-server (team memory)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Dedicated, unprivileged identity. A static user (rather than DynamicUser=)
+# keeps a fixed owner on the persistent SQLite data dir for operator
+# backup/inspection and a stable started_by UID.
+User=spelunk
+Group=spelunk
+
+# Key supplied as a systemd credential, not an Environment= line (which is
+# world-readable via `systemctl show` / /proc). The 0600 root-only source file
+# is exposed at $CREDENTIALS_DIRECTORY/server-key, readable only by this unit;
+# the binary reads it from there automatically. SPELUNK_SERVER_KEY as an
+# Environment=/EnvironmentFile= value is equally supported for operators who
+# prefer it (use a 0600 root-owned EnvironmentFile, never an inline Environment=).
+LoadCredential=server-key:/etc/spelunk/server-key
+ExecStart=/usr/local/bin/spelunk-server \
+  --host 127.0.0.1 --port 7777 \
+  --db /var/lib/spelunk/spelunk.db
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening — the server needs only its data dir and loopback.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/spelunk
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# MemoryDenyWriteExecute=true blocks W+X mappings. The native embedder mmaps
+# model weights and, on CUDA/BLAS backends, may need writable-executable pages;
+# validate against your embedder backend before enabling.
+# MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

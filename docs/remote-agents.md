@@ -16,7 +16,7 @@ The shapes we distinguish:
 | Shape | Where the agent runs | `SPELUNK_SERVER_URL` |
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
-| **Local Docker (R1)** | A container on your machine | `http://host.docker.internal:7777` |
+| **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) — or `http://host.docker.internal:7777` on Docker Desktop only |
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.spelunk.cloud` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://spelunk.your-domain` — see [Self-hosting](self-hosting.md) |
 
@@ -26,18 +26,60 @@ documented separately when it ships. R3 (self-hosted over the network) is
 
 ## R1 — an agent in a local Docker container
 
-The whole story is three things: an env var pointing the container's CLI at the
-host's server, a bind-mount of the repo, and a bind-mount of your spelunk config
-so the container knows which project it's talking to.
+A containerized agent needs three things: an env var pointing its CLI at a
+`spelunk-server`, a bind-mount of the repo, and a bind-mount of your spelunk
+config so it resolves the same project.
 
-The local `spelunk-server` runs on the **host** (it is autostarted for you on
-first use — see [Getting started](getting-started.md)). The container reaches it
-across the Docker network.
+The one detail that trips people up is **which URL** the container uses. A
+`spelunk-server` binds the host's loopback (`127.0.0.1`), and a container's
+network namespace cannot reach the host's loopback by any portable means — so
+the reliable answer is to point the container at the server's **TLS endpoint**,
+the same `https://` URL any other client uses, not at a Docker bridge address.
 
-### macOS / Windows (Docker Desktop)
+### Recommended: point at the operator's TLS endpoint (portable)
 
-Docker Desktop exposes the host on the special DNS name
-`host.docker.internal`:
+Stand up the team server the [Self-hosting](self-hosting.md) way — bare-metal on
+loopback with a same-host TLS terminator — and point the container at its
+`https://` hostname. This works identically on Docker Desktop and native Linux,
+because it's a routable HTTPS URL, not a host-loopback address:
+
+```bash
+docker run --rm -it \
+  -e SPELUNK_SERVER_URL=https://spelunk.example.com \
+  -e SPELUNK_SERVER_KEY=your-shared-api-key \
+  -v "$PWD":/work \
+  -v "$HOME/.config/spelunk":/root/.config/spelunk \
+  -w /work \
+  your-agent-image
+```
+
+- `SPELUNK_SERVER_URL` points the in-container CLI at the operator's TLS
+  terminator, which forwards to the loopback-bound server on the host.
+- `SPELUNK_SERVER_KEY` is the shared API key (required — a networked server is
+  always keyed; see [Self-hosting](self-hosting.md)).
+- `-v "$PWD":/work` bind-mounts the repository so file paths recorded in memory
+  entries mean the same thing inside the container and on the host.
+- `-v "$HOME/.config/spelunk":/root/.config/spelunk` bind-mounts your spelunk
+  config so the container CLI resolves the same project. (Adjust the in-container
+  path if your agent image runs as a non-root user — match its `$HOME`.)
+- `-w /work` runs the agent in the mounted repo.
+
+Inside the container, the CLI behaves exactly as it would on the host:
+
+```bash
+spelunk check                 # should report the server reachable over TLS
+spelunk search "auth tokens"  # semantic search via the server
+```
+
+The **server side** of this — the loopback bind, the systemd unit, and the TLS
+terminator — is the bare-metal path in [Self-hosting](self-hosting.md).
+
+### Docker Desktop convenience (solo, non-portable)
+
+If you're a solo developer with only the auto-started local loopback server (no
+team server) and you're on **Docker Desktop** (macOS/Windows), Docker Desktop
+special-cases the DNS name `host.docker.internal` to reach the host's loopback,
+so you can skip the TLS endpoint and point straight at the host server:
 
 ```bash
 docker run --rm -it \
@@ -48,70 +90,28 @@ docker run --rm -it \
   your-agent-image
 ```
 
-- `SPELUNK_SERVER_URL` points the in-container CLI at the server running on your
-  host's loopback `:7777`.
-- `-v "$PWD":/work` bind-mounts the repository so file paths recorded in memory
-  entries mean the same thing inside the container and on the host.
-- `-v "$HOME/.config/spelunk":/root/.config/spelunk` bind-mounts your spelunk
-  config so the container CLI resolves the same project. (Adjust the in-container
-  path if your agent image runs as a non-root user — match its `$HOME`.)
-- `-w /work` runs the agent in the mounted repo.
+This is a **Docker Desktop-only** convenience. It does not work on native Linux
+Docker (see below), so don't bake it into anything you also run on Linux.
 
-If your host server requires authentication, also pass the key:
+### Native Linux: no loopback shortcut
 
-```bash
-  -e SPELUNK_SERVER_KEY=your-shared-api-key \
-```
+Plain Linux Docker (not Docker Desktop) has **no** way to reach a
+host-loopback-bound server from a container:
 
-Inside the container, the CLI now behaves exactly as it would on the host:
+- The default bridge gateway (`172.17.0.1`) and
+  `--add-host=host.docker.internal:host-gateway` both resolve to the host's
+  **routable** interface, not its loopback — so a server bound to `127.0.0.1` is
+  not listening where the container can reach it.
+- Binding the server to the bridge address instead is a **non-loopback plaintext
+  bind, which `spelunk-server` refuses unconditionally** — there is no override.
 
-```bash
-spelunk check                 # should report the server is reachable
-spelunk search "auth tokens"  # semantic search via the host server
-```
-
-### Linux (default Docker bridge)
-
-Plain Linux Docker (not Docker Desktop) usually has no `host.docker.internal`.
-The host is reachable on the default bridge gateway, normally `172.17.0.1`:
-
-```bash
-docker run --rm -it \
-  -e SPELUNK_SERVER_URL=http://172.17.0.1:7777 \
-  -v "$PWD":/work \
-  -v "$HOME/.config/spelunk":/root/.config/spelunk \
-  -w /work \
-  your-agent-image
-```
-
-If your daemon uses a custom bridge subnet, find the gateway with:
-
-```bash
-docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
-```
-
-<!-- TODO: confirm with Implementer — newer Docker Engine supports
-     `--add-host=host.docker.internal:host-gateway` on Linux, which lets the
-     macOS recipe work unchanged. Confirm the minimum Docker Engine version we
-     want to recommend before promoting that form over the 172.17.0.1 fallback. -->
+So on native Linux there is no bridge shortcut: use the recommended TLS-endpoint
+path above. Terminating TLS on the host (per [Self-hosting](self-hosting.md)) is
+what makes the server reachable from a container, and it does so the same way on
+every platform.
 
 ### Notes
 
-- **Bind the server only to loopback.** The host server listens on
-  `127.0.0.1:7777`; the Docker bridge can reach it without exposing it to your
-  LAN. Do not bind the OSS server to a public interface in plain HTTP — for
-  remote access over a network, terminate TLS in front of it (see
-  [Self-hosting](self-hosting.md)).
-- **If a Linux container needs to reach the bridge gateway (`172.17.0.1`)
-  instead of loopback**, binding the server to that address is a non-loopback
-  plaintext bind, which `spelunk-server` refuses unconditionally — there is no
-  override. On
-  Docker Desktop the `host.docker.internal` recipe reaches a loopback-bound
-  server directly.
 - **Project identity.** Bind-mounting `~/.config/spelunk/` is the simplest way
   to share project identity. Alternatively set `SPELUNK_PROJECT_ID` explicitly
   in the container's environment.
-
-<!-- TODO: confirm with Implementer — confirm whether `spelunk check` already
-     suggests `host.docker.internal` in its unreachable-server error message
-     (scope doc §3.2 calls for this hint). -->
