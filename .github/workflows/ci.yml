@@ -114,7 +114,9 @@ jobs:
         run: npm install --global @ast-grep/cli
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Run tests
         run: cargo nextest run ${{ matrix.test-flags }}
