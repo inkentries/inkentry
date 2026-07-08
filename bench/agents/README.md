@@ -443,6 +443,58 @@ Tests are fully offline — no API keys, network, or external harness binaries
 - `test_swebench_run_args.py`: argument validation (`--harness` enum, `--endpoint-kind`, `--no-deepseek`)
 - `test_provenance_contract.py`: harness-matrix provenance fields (additive-only contract verification), exercised against all three harnesses — `agent.py` (harness=none, via a stubbed `openai`/`dotenv` import — no real dependency required), `harness_opencode.py`, and `harness_claude_code.py` (both via a fake binary shimmed onto `PATH`)
 
+## aggregate_telemetry.py — per-cell token/cost table
+
+Turns the raw result JSONs in `bench/results/` into a per-cell telemetry and
+cost table. Pure Python, stdlib only — no API keys, no DB, no network.
+
+```bash
+python bench/agents/aggregate_telemetry.py            # prints the markdown table
+python bench/agents/aggregate_telemetry.py \
+    --results-dir bench/results \
+    --prices bench/agents/pricing.json \
+    --json-out telemetry.json --md-out telemetry.md
+```
+
+A **cell** is `(model, harness, condition, instance_filter)`. Result rows are
+grouped by cell; legacy rows with no `harness` field (pre-harness-matrix) are
+treated as `harness: none`, so `agent.py` output and the harness-adapter output
+aggregate side by side without conflating harnesses. Per cell it reports task
+count and mean/median input tokens, output tokens, turns, and wall seconds —
+per-harness numbers stay separate.
+
+Framed as tokens-to-outcome, never a headline "tokens saved" (binding P8).
+
+### Cost extrapolation and pricing
+
+Prices live in a committed config (`bench/agents/pricing.json`, override with
+`--prices`). Every price carries a `verified_on` date; a `null` price is a
+placeholder that yields **no** cost estimate (the cell is marked `Priced: no`)
+rather than a silent zero — prices are never hardcoded in the script. The
+shipped config carries Sonnet 5 and Opus 4.8 list prices (Sonnet 5 also notes
+its intro pricing through 2026-08-31) and DeepSeek placeholders.
+
+Per cell, `raw $` = `Σ_rows (input_tokens × P_in + output_tokens × P_out)`.
+Rows already span every seed present, so there is no `n_seeds` multiplier here.
+
+**Cache-aware effective rate:** where a row carries `cache_read_input_tokens`,
+that portion of the input is re-billed at the cache-read rate (~0.1× the input
+price, or a per-model `cache_read_per_mtok`); both raw and effective cost are
+reported. Rows without the field bill effective == raw.
+
+**Projections** for prospective (not-yet-run) cells live in the `projections`
+list of the price config: `cost ≈ tasks × conditions × seeds ×
+(input_tokens_per_task × P_in + output_tokens_per_task × P_out)`. The shipped
+config includes `Sonnet-5 × 50-slice × 2 conditions × 3 seeds`. Per-task token
+counts there are **estimates** — replace with measured means from a pilot cell
+before quoting a figure.
+
+Tests: `uv run --with pytest pytest bench/agents/tests/ -v` (offline; covers
+grouping, legacy-none handling, cost/cache math, and projection). The committed
+`bench/results/examples/swebench-harness-matrix-fixture.json` carries the
+harness-matrix provenance fields so aggregation over a harness-carrying file is
+exercised end to end.
+
 ## Notes
 
 - `resolved` is always `false` in agent output from every runner — resolution
