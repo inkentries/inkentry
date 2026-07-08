@@ -245,13 +245,18 @@ says so explicitly so no one has to infer it from behaviour.
 
 ## Embedding dimension
 
-All clients writing to the same project must use the same embedding model.
-The server records the embedding dimension on the first write and rejects
-subsequent writes with a different dimension.
+All clients writing to the same project must use the same embedding model. The
+embedding model is fixed product-wide to codefuse-ai/F2LLM-v2-330M (896-dim) and
+cannot be selected — a mismatched model silently corrupts semantic search. The
+server records the embedding dimension on the first write and rejects subsequent
+writes with a different dimension.
 
 Default: 896 dimensions (codefuse-ai/F2LLM-v2-330M, the bundled native embedder).
 
-If your team uses a different model, configure the server at startup:
+`--embedding-dim` sets the dimension the server enforces. Change it only to match
+an external endpoint whose vectors differ in size — doing so means you are
+running a different model at your own risk (the one-model-per-vector-space
+invariant no longer holds), not a supported way to swap embedding models:
 
 ```bash
 docker compose run spelunk-server --embedding-dim 1024
