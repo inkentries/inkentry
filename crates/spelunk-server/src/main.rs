@@ -126,6 +126,15 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         )));
     }
 
+    // Parse args and handle --print-openapi before any subscriber/log init, so
+    // the emitted document is pure JSON on stdout (CI diffs it byte-for-byte).
+    let args = Args::parse();
+
+    if args.print_openapi {
+        println!("{}", ApiDoc::openapi().to_pretty_json()?);
+        return Ok(());
+    }
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with(fmt::layer())
@@ -136,13 +145,6 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         source = budget.source,
         "embed CPU thread budget resolved"
     );
-
-    let args = Args::parse();
-
-    if args.print_openapi {
-        println!("{}", ApiDoc::openapi().to_pretty_json()?);
-        return Ok(());
-    }
 
     // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
