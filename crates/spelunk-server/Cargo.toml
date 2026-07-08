@@ -20,15 +20,16 @@ default = ["embed-native"]
 # inference engine lives in the `spelunk-embed` crate (local-path load only);
 # this crate additionally owns the Hugging Face Hub acquisition path
 # (`embed_hub` module) that resolves the model artifacts before handing them
-# to `spelunk-embed`'s `load_from_path`. Forwards to `spelunk-embed`'s feature.
-embed-native = ["spelunk-embed/embed-native", "dep:candle-core", "dep:hf-hub", "dep:dirs"]
+# to `spelunk-embed`'s `load_from_path`. Enables the optional `spelunk-embed`
+# dep; disable this feature for an external-endpoint-only server (no candle).
+embed-native = ["dep:spelunk-embed", "dep:candle-core", "dep:hf-hub", "dep:dirs"]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the
 # macOS binary. Forwards to `spelunk-embed`'s `metal` feature.
 metal = ["spelunk-embed/metal"]
 
 [dependencies]
 spelunk-core = { path = "../spelunk-core" }
-spelunk-embed = { path = "../spelunk-embed", default-features = false, optional = true }
+spelunk-embed = { path = "../spelunk-embed", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

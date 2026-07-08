@@ -16,10 +16,10 @@
 //!
 //! The result is a [`NativeEmbedder`], which implements the crate's own
 //! [`EmbeddingBackend`] trait (re-exported by spelunk-core at
-//! `spelunk_core::embeddings::EmbeddingBackend`). The trait compiles
-//! unconditionally so this crate is storage-free; only the candle engine is
-//! gated behind the `embed-native` cargo feature (on by default). Add the
-//! `metal` feature for Metal GPU acceleration on macOS.
+//! `spelunk_core::embeddings::EmbeddingBackend`). candle is an unconditional
+//! dependency: depending on this crate means you want its native embedder, so
+//! there is no feature gate to opt out of candle. Add the `metal` feature for
+//! Metal GPU acceleration on macOS.
 
 mod backend;
 pub use backend::EmbeddingBackend;
@@ -30,14 +30,8 @@ pub use backend::EmbeddingBackend;
 /// (different weights / vector space) does, which forces a re-index.
 pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
 
-#[cfg(feature = "embed-native")]
 mod embedder_native;
-
-#[cfg(feature = "embed-native")]
 pub use embedder_native::{DIM, NativeEmbedder};
 
-#[cfg(feature = "embed-native")]
 mod error;
-
-#[cfg(feature = "embed-native")]
 pub use error::EmbedError;

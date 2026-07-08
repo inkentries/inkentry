@@ -75,9 +75,12 @@ jobs:
             # `embed-native` path stays under test on at least one platform.
             test-flags: ""
           - os: macos-latest
-            # macOS drops `embed-native` to keep this leg fast: the candle
-            # native-embedder stack is heavy to compile and is already covered
-            # on the Linux leg. The embedder is EXPERIMENTAL / NOT RECOMMENDED.
+            # macOS drops the server's `embed-native` feature: this builds the
+            # external-endpoint-only server (no hf-hub download path, no candle
+            # in spelunk-server) and keeps that config under test. Note candle is
+            # now an unconditional dep of the spelunk-embed crate, so its native
+            # embedder still compiles here as a workspace member. The embedder is
+            # EXPERIMENTAL / NOT RECOMMENDED.
             test-flags: "--no-default-features"
           - os: windows-latest
             # Windows keeps default features: the embed-native default builds
