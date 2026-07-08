@@ -1010,6 +1010,35 @@ mod tests {
         assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
     }
 
+    #[test]
+    #[serial_test::serial]
+    fn config_with_pruned_keys_still_parses() {
+        // Guards the forward-compat contract for pre-0.9 config.toml files:
+        // `Config` carries no `deny_unknown_fields`, so keys pruned as dead
+        // (batch_size, models_dir, api_base_url, plans_dir, specs_dir) are
+        // ignored rather than rejected. Adding `deny_unknown_fields` would
+        // break every existing user config, so this must stay green.
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+mode = "local_first"
+batch_size = 32
+models_dir = "/opt/models"
+api_base_url = "http://inference.internal:1234"
+plans_dir = "docs/plans"
+specs_dir = "docs/specs"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_hermetic(&config_path).unwrap();
+        // Live keys still resolve; the removed keys are simply dropped.
+        assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
+    }
+
     // ── serde alias: memory_server_url → server_url ─────────────────────────
 
     #[test]

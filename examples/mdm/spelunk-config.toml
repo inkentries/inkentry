@@ -40,7 +40,6 @@ mode = "local_first"
 # api_base_url    = "http://inference.internal:1234"
 # embedding_model = "text-embedding-embeddinggemma-300m-qat"
 # llm_model       = "google/gemma-3n-e4b"
-# batch_size      = 32
 
 # --- Optional: directory conventions -----------------------------------------
 # Where `spelunk plan create` and spec discovery look (relative to project root).
