@@ -37,15 +37,8 @@ mode = "local_first"
 # By default spelunk-server bundles a native embedder, so most fleets leave
 # these unset. Set them only if you run a shared OpenAI-compatible endpoint
 # (LM Studio, Ollama, vLLM, ...) for embeddings/LLM.
-# api_base_url    = "http://inference.internal:1234"
 # embedding_model = "text-embedding-embeddinggemma-300m-qat"
 # llm_model       = "google/gemma-3n-e4b"
-# batch_size      = 32
-
-# --- Optional: directory conventions -----------------------------------------
-# Where `spelunk plan create` and spec discovery look (relative to project root).
-# plans_dir = "docs/plans"
-# specs_dir = "docs/specs"
 
 # --- Optional: git-notes memory ----------------------------------------------
 # `spelunk memory add` also appends entries to refs/notes/spelunk by default.
