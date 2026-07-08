@@ -101,8 +101,30 @@ struct Args {
     health_check: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Bound candle's CPU threads BEFORE the runtime / first candle op: candle
+    // reads RAYON_NUM_THREADS live for gemm and caches its private rayon pool in
+    // a OnceLock on first use, so the env must be set while still single-threaded
+    // (set_var is unsafe in edition 2024 for that reason). Setting only an
+    // already-unset var keeps a user's RAYON_NUM_THREADS authoritative.
+    let budget = resolve_embed_thread_budget();
+    unsafe {
+        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+            std::env::set_var("RAYON_NUM_THREADS", budget.threads.to_string());
+        }
+        if std::env::var_os("CANDLE_NUM_THREADS").is_none() {
+            std::env::set_var("CANDLE_NUM_THREADS", budget.threads.to_string());
+        }
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime")?
+        .block_on(run(budget))
+}
+
+async fn run(budget: ThreadBudget) -> Result<()> {
     // Register sqlite-vec extension for every connection in this process.
     #[allow(clippy::missing_transmute_annotations)]
     unsafe {
@@ -111,11 +133,8 @@ async fn main() -> Result<()> {
         )));
     }
 
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(fmt::layer())
-        .init();
-
+    // Parse args and handle --print-openapi before any subscriber/log init, so
+    // the emitted document is pure JSON on stdout (CI diffs it byte-for-byte).
     let args = Args::parse();
 
     if args.print_openapi {
@@ -126,6 +145,17 @@ async fn main() -> Result<()> {
     if args.health_check {
         return run_health_check(&args.host, args.port).await;
     }
+
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(fmt::layer())
+        .init();
+
+    tracing::info!(
+        threads = budget.threads,
+        source = budget.source,
+        "embed CPU thread budget resolved"
+    );
 
     // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
@@ -317,6 +347,52 @@ async fn main() -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+// ── Embed CPU thread budget ───────────────────────────────────────────────────
+
+/// Resolved candle CPU-thread budget plus the source it came from, for the
+/// startup log line.
+struct ThreadBudget {
+    threads: usize,
+    source: &'static str,
+}
+
+/// CPU threads candle may use for a forward pass, so a running embed leaves
+/// cores free to serve requests. Precedence: `SPELUNK_EMBED_THREADS` > an
+/// already-set `RAYON_NUM_THREADS` > `max(1, physical - 2)`. A zero or
+/// unparseable override is `None`/`Some(0)` here and falls through.
+fn embed_thread_budget(
+    physical: usize,
+    rayon_override: Option<usize>,
+    spelunk_override: Option<usize>,
+) -> usize {
+    if let Some(n) = spelunk_override.filter(|&n| n > 0) {
+        return n;
+    }
+    if let Some(n) = rayon_override.filter(|&n| n > 0) {
+        return n;
+    }
+    physical.saturating_sub(2).max(1)
+}
+
+/// Read the physical core count and env overrides, then resolve the budget and
+/// which source won (for the startup log).
+fn resolve_embed_thread_budget() -> ThreadBudget {
+    fn env_threads(key: &str) -> Option<usize> {
+        std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
+    }
+    let rayon = env_threads("RAYON_NUM_THREADS");
+    let spelunk = env_threads("SPELUNK_EMBED_THREADS");
+    let threads = embed_thread_budget(num_cpus::get_physical(), rayon, spelunk);
+    let source = if spelunk.filter(|&n| n > 0).is_some() {
+        "SPELUNK_EMBED_THREADS"
+    } else if rayon.filter(|&n| n > 0).is_some() {
+        "RAYON_NUM_THREADS"
+    } else {
+        "default"
+    };
+    ThreadBudget { threads, source }
 }
 
 // ── Bind-safety guard ─────────────────────────────────────────────────────────
@@ -1059,5 +1135,51 @@ mod arg_tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(super::run_health_check("127.0.0.1", port).await.is_err());
+    }
+}
+
+// ── Embed CPU thread budget ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod thread_budget_tests {
+    use super::embed_thread_budget;
+
+    /// No overrides: reserve 2 cores for the async runtime + OS.
+    #[test]
+    fn default_reserves_two_cores() {
+        assert_eq!(embed_thread_budget(10, None, None), 8);
+        assert_eq!(embed_thread_budget(4, None, None), 2);
+    }
+
+    /// Tiny hosts must never yield 0 threads.
+    #[test]
+    fn tiny_hosts_clamp_to_one() {
+        assert_eq!(embed_thread_budget(1, None, None), 1);
+        assert_eq!(embed_thread_budget(2, None, None), 1);
+        assert_eq!(embed_thread_budget(3, None, None), 1);
+    }
+
+    /// `SPELUNK_EMBED_THREADS` wins over both the default and a set
+    /// `RAYON_NUM_THREADS`.
+    #[test]
+    fn spelunk_override_wins() {
+        assert_eq!(embed_thread_budget(10, None, Some(3)), 3);
+        assert_eq!(embed_thread_budget(10, Some(6), Some(3)), 3);
+    }
+
+    /// A user-set `RAYON_NUM_THREADS` is respected when there is no spelunk
+    /// override — don't override CI / power users.
+    #[test]
+    fn rayon_override_respected_without_spelunk() {
+        assert_eq!(embed_thread_budget(10, Some(4), None), 4);
+    }
+
+    /// Zero (and, upstream, unparseable) overrides are ignored and fall through
+    /// to the next source.
+    #[test]
+    fn zero_overrides_fall_through() {
+        assert_eq!(embed_thread_budget(10, Some(0), Some(0)), 8);
+        assert_eq!(embed_thread_budget(10, Some(0), None), 8);
+        assert_eq!(embed_thread_budget(10, Some(4), Some(0)), 4);
     }
 }
