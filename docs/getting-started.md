@@ -264,23 +264,52 @@ For how discovery works and how to point the CLI at a remote server, see
 
 By default the bundled `spelunk-server` provides embeddings (native, via the
 candle-served F2LLM-v2-330M model) and — when a chat model is configured — LLM
-inference. If you'd
-rather have spelunk talk directly to your own OpenAI-compatible endpoint (e.g.
-LM Studio on port `1234`, Ollama on `11434`, or a vLLM proxy) instead of the
-native embedder, point it there in `~/.config/spelunk/config.toml`:
+inference. If you'd rather have it call your own OpenAI-compatible endpoint
+(e.g. LM Studio on port `1234`, Ollama on `11434`, or a vLLM proxy) instead of
+the native embedder, configure **the server** — this is not a CLI
+`config.toml` key. `spelunk-server` reads these environment variables (each has
+an equivalent flag):
 
-```toml
-# ~/.config/spelunk/config.toml
+| Variable | Flag | Purpose |
+|---|---|---|
+| `SPELUNK_EMBEDDING_URL` | `--embedding-url` | Base URL of an OpenAI-compatible embedding endpoint. When set, the server embeds through it instead of the native model. |
+| `SPELUNK_EMBEDDING_MODEL` | `--embedding-model` | Model id to send to that endpoint (must match what it serves). |
+| `SPELUNK_LLM_URL` | `--llm-url` | Base URL of an OpenAI-compatible chat-completions endpoint for LLM features (`explore`, summaries, `memory harvest`). |
+| `SPELUNK_LLM_MODEL` | `--llm-model` | Chat model id to send to that endpoint. |
 
-# OpenAI-compatible endpoint (default: http://127.0.0.1:1234)
-api_base_url = "http://127.0.0.1:1234"
+For the auto-started local daemon, export the variables and then restart the
+server so it picks them up. The daemon inherits your shell environment, but a
+daemon that is already running keeps its old configuration until restarted:
 
-# Must match your endpoint's model identifier
-embedding_model = "text-embedding-embeddinggemma-300m-qat"
+```bash
+export SPELUNK_EMBEDDING_URL="http://127.0.0.1:1234"
+export SPELUNK_EMBEDDING_MODEL="your-endpoint-model-id"
+# optional, for LLM features (explore, summaries, harvest):
+export SPELUNK_LLM_URL="http://127.0.0.1:1234"
+export SPELUNK_LLM_MODEL="your-chat-model-id"
+
+spelunk server stop     # if one is already running
+spelunk server start    # starts with the endpoint configured above
 ```
 
-Tune the per-request embedding batch size at index time with
-`spelunk index --batch-size <n>` when a slow endpoint runs out of memory.
+Or, if you run `spelunk-server` yourself, pass the flags directly:
+
+```bash
+spelunk-server --embedding-url http://127.0.0.1:1234 \
+               --embedding-model your-endpoint-model-id
+```
+
+A non-native embedder almost certainly produces a different vector dimension
+than the native model's 896. Set `--embedding-dim` to match your endpoint and
+start from a fresh index — the server records the dimension on the first write
+and rejects later writes that disagree (see
+[Embedding dimension](server.md#embedding-dimension)). Even when the dimension
+matches, re-embedding an existing index through the new endpoint needs a full
+re-index (`spelunk index --force`), since unchanged files are otherwise skipped.
+
+Tune the per-request embedding batch ceiling at index time with
+`spelunk index --batch-size <n>` if a slow or memory-constrained endpoint
+struggles with the default.
 
 This is an advanced override; most users never set it — the native embedder in
 `spelunk-server` handles embeddings with no extra configuration.
@@ -288,8 +317,8 @@ This is an advanced override; most users never set it — the native embedder in
 ### Index your project for semantic search
 
 `spelunk init` (section 2) already indexes and embeds your project against the
-local server. If you've pointed spelunk at your own inference server above, run
-it again so embeddings are generated through that endpoint:
+local server. If you've configured a custom embedding endpoint above, restart
+the server and run `init` again so chunks are embedded through that endpoint:
 
 ```bash
 cd /path/to/your/project
