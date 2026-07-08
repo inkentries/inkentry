@@ -72,6 +72,11 @@ impl Chunk {
     }
 }
 
+/// Soft ceiling for one chunk (tokens, chars/4 estimate). Oversized leaves are
+/// re-windowed and oversized containers suppressed in favour of their children.
+/// Distinct from the embedder's hard `token_cap` OOM guard.
+pub const MAX_CHUNK_TOKENS: usize = 2048;
+
 /// Split `source` into chunks using a sliding window (fallback for
 /// languages without a tree-sitter grammar or for files that failed parsing).
 pub fn sliding_window(
