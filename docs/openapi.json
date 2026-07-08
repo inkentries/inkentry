@@ -1408,7 +1408,7 @@
       },
       "EmbedderState": {
         "type": "string",
-        "description": "Readiness state of the server-side embedder.\n\nThe native (in-process) embedder is loaded on a background task *after* the\nlistener binds, so `/v1/health` is live immediately while the model is still\nwarming up. This enum is the single source of truth for that readiness; the\nhealth body carries it and the embed endpoints branch on it.",
+        "description": "Readiness state of the server-side embedder.\n\nThe native embedder loads on a background task after the listener binds, so\n`/v1/health` is live while the model warms up. Single source of truth for\nthat readiness; the health body carries it and the embed endpoints branch on it.",
         "enum": [
           "loading",
           "ready",
@@ -1709,7 +1709,7 @@
       },
       "ServerLimits": {
         "type": "object",
-        "description": "Server-enforced operative limits relevant to sizing an `/index/embed`\nrequest, so a client can clamp its own batching to what this particular\nserver build actually supports instead of assuming (spelunk-oss^71/^73/^74\nPR #513 field-failure follow-up).\n\nAdded alongside the `/index/embed`-specific request timeout (see\n`EMBED_REQUEST_TIMEOUT` in `lib.rs`): a CLI that calibrates a batch to run\nfor `request_timeout_secs` and gets 408'd is a **version-skew** signal — an\nold server (pre-dating this field, so the whole `limits` object is absent)\nstill enforces the old blanket 30s budget. Absent `limits` therefore means\n\"assume the legacy 30s / no-embed-exemption profile\", not \"unlimited\".",
+        "description": "Server-enforced limits relevant to sizing an `/index/embed` request, so a\nclient can clamp its batching to what this server build supports.\n\nAbsent `limits` (an older server pre-dating this field) means \"assume the\nlegacy 30s / no-embed-exemption profile\", not \"unlimited\".",
         "required": [
           "embed_request_timeout_secs",
           "max_batch_chunks"
@@ -1726,7 +1726,7 @@
               "integer",
               "null"
             ],
-            "description": "Per-chunk token truncation cap the embedder enforces, if known (native\nbackend only — see `EmbeddingBackend::token_cap`). `null` when the\nembedder isn't ready yet or doesn't expose one (e.g. an external\n`--embedding-url` backend). Informational: a client can use it to avoid\nassuming every chunk is small when estimating a batch's total token\nvolume, but the binding constraint in practice is wall-clock time, not\nper-batch memory — sub-batches are already bounded independently of\ntotal batch size (see `EMBED_BATCH_SIZE` / `BATCH_MAX_SEQ` in\n`embedder_native.rs`).",
+            "description": "Per-chunk token truncation cap the embedder enforces, if known (native\nbackend only — see `EmbeddingBackend::token_cap`). `null` when the\nembedder isn't ready or exposes none (e.g. an external `--embedding-url`).\nInformational — the binding constraint in practice is wall-clock time,\nnot per-batch memory.",
             "minimum": 0
           },
           "max_batch_chunks": {

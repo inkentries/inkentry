@@ -11,71 +11,40 @@ use crate::{
     storage::Database,
 };
 
-/// Hard ceiling on chunks per request — the server enforces 256 (returns 413 if
-/// exceeded), so both the user-supplied `--batch-size` and the calibrated batch
-/// size are clamped to this. The server's candle embedder (F2LLM-v2-330M) runs
-/// inference in padded sub-batches of EMBED_BATCH_SIZE=8, so e.g. 64 chunks = 8
-/// forward passes.
+/// Hard ceiling on chunks per request; the server returns 413 above this.
 const MAX_BATCH: usize = 256;
 
-/// Default ceiling on the calibrated batch size when the user has not set
-/// `--batch-size` (i.e. it is still 0): the server's own hard limit, so
-/// calibration is free to grow the batch as large as the measured throughput
-/// justifies. `--batch-size` exists to let a user *lower* this ceiling (e.g.
-/// memory-constrained hardware), not to hand-pick a fixed size (see
-/// `resolve_batch_ceiling`).
+/// Calibration ceiling when `--batch-size` is unset (0): the server's hard
+/// limit. `--batch-size` only lowers this ceiling, never picks a fixed size
+/// (see `resolve_batch_ceiling`).
 const DEFAULT_BATCH_CEILING: usize = MAX_BATCH;
 
-/// Size of the very first request: a single chunk. We deliberately do not
-/// guess a batch size before we have ANY timing data — a full batch's cold
-/// start (model load, first-request JIT, etc.) used to be exactly what made
-/// the old fixed-timeout approach unsafe on slow hardware. A batch of 1 gives
-/// an initial per-entry estimate almost immediately, and also makes the
-/// progress bar move right away (spelunk-oss^73) instead of only after a full
-/// batch round-trips.
+/// First request is a single chunk: yields an initial per-entry estimate almost
+/// immediately and gets the progress bar moving before any full batch lands.
 const CALIBRATION_BATCH_1: usize = 1;
 
-/// Size of the second request, used to refine the estimate from
-/// `CALIBRATION_BATCH_1` (which is dominated by one-off cold-start costs: model
-/// warm-up, first-connection overhead, etc.) before committing to a steady-
-/// state batch size. Only run when enough chunks remain (see
-/// `next_batch_size` / calibration bookkeeping in `run_embed_phase`).
+/// Second request: refines the estimate from `CALIBRATION_BATCH_1` (dominated by
+/// one-off cold-start) before committing to a steady-state size.
 const CALIBRATION_BATCH_2: usize = 4;
 
-/// Target wall-clock time we aim to keep each *steady-state* (post-calibration)
-/// batch under. Batch size is derived by dividing this budget by the measured
-/// per-entry rate: slow hardware (e.g. ~60 s/entry) gets a small batch (~4), fast
-/// hardware (e.g. ~1 s/entry) gets a large one (up to `MAX_BATCH`), per the
-/// founder's calibration approach for spelunk-oss^74/^71 — we time a couple of
-/// small batches up front and size subsequent ones from the observed rate,
-/// rather than always sending a fixed-size batch and reacting after the fact.
+/// Wall-clock time each steady-state batch aims to stay under; batch size is
+/// this budget divided by the measured per-entry rate.
 const TARGET_BATCH_SECONDS: u64 = 240;
 
-/// Floor for a calibrated per-request timeout. Even on very fast hardware we
-/// never drop below this, to absorb transient latency spikes (a slow DNS
-/// lookup, a GC pause on the server, etc.).
+/// Floor for a calibrated per-request timeout, to absorb transient latency spikes.
 const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Ceiling for a calibrated per-request timeout, so a pathologically slow
-/// sample can't derive an effectively unbounded deadline.
+/// Ceiling for a calibrated per-request timeout, so a pathologically slow sample
+/// can't derive an unbounded deadline.
 const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Safety multiple applied to a batch's *expected* duration (at the current
-/// measured per-entry rate) when deriving that batch's request timeout: give
-/// it this much headroom over the estimate so normal jitter never trips it.
+/// Headroom multiple over a batch's expected duration when deriving its timeout.
 const TIMEOUT_SAFETY_FACTOR: u32 = 4;
 
-/// Resolve the effective ceiling the calibrated batch size may grow to, from
-/// the user-supplied `--batch-size` flag: 0 falls back to the default ceiling,
-/// and anything above the server ceiling is clamped to `MAX_BATCH`. Unlike the
-/// old fixed batch size, this is now only an upper bound — the actual
-/// per-request size is calibrated from measured throughput and may end up
-/// smaller (see `next_batch_size`).
-///
-/// `server_max_batch_chunks` (from `ServerLimits::max_batch_chunks`, when the
-/// server advertises it) additionally clamps the ceiling — a client should
-/// never plan around a batch count the specific server it's talking to won't
-/// even accept (`413`), independent of the client's own `MAX_BATCH` guess.
+/// Effective ceiling the calibrated batch size may grow to: `--batch-size`
+/// (0 → `DEFAULT_BATCH_CEILING`) clamped to `MAX_BATCH` and, when advertised,
+/// the server's own `max_batch_chunks` (413 above it). Only an upper bound —
+/// actual size is calibrated (see `next_batch_size`).
 fn resolve_batch_ceiling(requested: usize, server_max_batch_chunks: Option<usize>) -> usize {
     let ceiling = if requested == 0 {
         DEFAULT_BATCH_CEILING
@@ -88,40 +57,19 @@ fn resolve_batch_ceiling(requested: usize, server_max_batch_chunks: Option<usize
     }
 }
 
-/// Legacy per-request budget assumed when talking to a server that pre-dates
-/// the `/v1/health` `limits` field (spelunk-oss^71/^73/^74) — i.e. the old
-/// blanket `TimeoutLayer` budget with no `/index/embed` exemption. This is
-/// the exact version-skew case that produced the field failure this fix
-/// addresses: a CLI calibrating toward `TARGET_BATCH_SECONDS` (240s) talking
-/// to an old server that kills every request at 30s regardless.
+/// Per-request budget assumed for a server that pre-dates the `/v1/health`
+/// `limits` field: the old blanket 30s `TimeoutLayer` with no `/index/embed`
+/// exemption.
 const LEGACY_SERVER_REQUEST_BUDGET_SECS: u64 = 30;
 
-/// Fraction of the server's advertised (or assumed-legacy) per-request budget
-/// that a calibrated batch should target, leaving headroom for jitter/variance
-/// between the calibration sample and the batch actually sent — the server
-/// will 408 at the hard budget regardless of how well-intentioned the
-/// client's estimate was.
+/// Fraction of the server's per-request budget a calibrated batch targets,
+/// leaving headroom for jitter between the calibration sample and the batch sent.
 const SERVER_BUDGET_TARGET_FRACTION: f64 = 2.0 / 3.0;
 
-/// Resolve the effective target batch duration (seconds), clamped to fit
-/// comfortably inside the server's own advertised `/index/embed` request
-/// budget when known — this REPLACES the fixed `TARGET_BATCH_SECONDS` as the
-/// primary mechanism for staying under the server's actual budget (the
-/// 408-triggered shrink in `run_embed_phase` is the fallback, for a server
-/// that misreports or whose effective budget changes under load).
-///
-/// - Server advertises `limits` (current build, carries the
-///   `/index/embed`-specific exemption from this same fix): target is
-///   `TARGET_BATCH_SECONDS`, clamped down to `SERVER_BUDGET_TARGET_FRACTION ×
-///   embed_request_timeout_secs` if that's smaller (a self-hosted deployment
-///   could in principle configure a smaller budget than the CLI's default
-///   target).
-/// - Server does NOT advertise `limits` (pre-dates this fix, still enforces
-///   the old blanket 30s budget with no exemption): target is
-///   `SERVER_BUDGET_TARGET_FRACTION × LEGACY_SERVER_REQUEST_BUDGET_SECS` —
-///   the version-skew case (instruction 5 / founder directive): a new CLI
-///   talking to an old, long-running server must still make progress, just
-///   with smaller batches and (at the call site) a warning.
+/// Effective target batch duration (seconds), clamped to fit the server's
+/// advertised `/index/embed` budget. Absent `limits` (older server) falls back
+/// to `SERVER_BUDGET_TARGET_FRACTION × LEGACY_SERVER_REQUEST_BUDGET_SECS`. The
+/// 408-triggered shrink in `run_embed_phase` is the fallback.
 fn resolve_target_batch_seconds(server_limits: Option<ServerLimits>) -> u64 {
     let budget_secs = server_limits
         .map(|l| l.embed_request_timeout_secs)
@@ -130,36 +78,13 @@ fn resolve_target_batch_seconds(server_limits: Option<ServerLimits>) -> u64 {
     TARGET_BATCH_SECONDS.min(safe_budget.max(1))
 }
 
-/// Max multiple of the *previous* batch's size that the next calibrated batch
-/// is allowed to grow to in one step (spelunk-oss^71/^73/^74 field-failure
-/// follow-up, PR #513 review). Without this, a single fast sample right after
-/// a slow one could derive a batch many times larger than anything actually
-/// measured — e.g. observed in the field: calibration batch 2 (4 chunks)
-/// landing unusually fast produced a *raw* per-entry rate that alone implied a
-/// batch of 200, an ~50x jump from the 4-chunk sample that produced it, with
-/// no batch of intermediate size ever having been measured. Capping growth to
-/// `GROWTH_FACTOR`x per step means the size ramps up over a few batches
-/// instead of leaping straight to a value nothing has verified is safe.
+/// Max multiple of the previous batch's size the next calibrated batch may grow
+/// to in one step, so one fast sample can't leap to a size nothing has measured.
 const GROWTH_FACTOR: usize = 8;
 
-/// Choose the next steady-state batch size from the measured per-entry
-/// duration, so a batch takes roughly `target_seconds` wall-clock: slow
-/// hardware (large `per_entry`) gets a small batch, fast hardware gets a large
-/// one. Clamped to `[1, ceiling]` — `ceiling` is the smaller of `MAX_BATCH` (the
-/// server's hard 413 limit), the user's `--batch-size` (if they set one), and
-/// the server's own advertised `max_batch_chunks` (if known) — and
-/// additionally clamped to at most `GROWTH_FACTOR × previous_batch_size`,
-/// so one sample can never produce a many-times-larger leap in a single step
-/// (see `GROWTH_FACTOR`).
-///
-/// `target_seconds` is normally `TARGET_BATCH_SECONDS`, but is clamped down by
-/// `resolve_target_batch_seconds` to fit the server's advertised (or
-/// assumed-legacy) `/index/embed` request budget — see that function.
-///
-/// Examples from the calibration this replaces the old "time a fixed 64-batch"
-/// approach with: ~60 s/entry ⇒ batch 4; ~1 s/entry ⇒ batch up to
-/// `GROWTH_FACTOR × previous_batch_size` (not necessarily the full 256 ceiling
-/// — growth is capped per step, see `GROWTH_FACTOR`).
+/// Choose the next steady-state batch size so a batch takes ~`target_seconds` at
+/// the measured `per_entry` rate. Clamped to `[1, ceiling]` and to at most
+/// `GROWTH_FACTOR × previous_batch_size`.
 fn next_batch_size(
     per_entry: Duration,
     ceiling: usize,
@@ -185,67 +110,38 @@ fn next_batch_size(
     }
 }
 
-/// Derive the per-request timeout for a batch of `batch_size` entries from the
-/// current measured per-entry rate: `TIMEOUT_SAFETY_FACTOR ×` the batch's
-/// expected duration at that rate, clamped into
-/// `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`. Because batch size itself is
-/// derived from the same rate to target `TARGET_BATCH_SECONDS`, this timeout
-/// tracks the batch size rather than a single fixed deadline — a genuinely
-/// slow-but-progressing request is not killed mid-flight and its whole batch
-/// discarded (spelunk-oss^71).
+/// Per-request timeout for a batch: `TIMEOUT_SAFETY_FACTOR ×` its expected
+/// duration at `per_entry`, clamped to `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`.
 fn batch_timeout(per_entry: Duration, batch_size: usize) -> Duration {
     let expected = per_entry.saturating_mul(batch_size.max(1) as u32);
     let budget = expected.saturating_mul(TIMEOUT_SAFETY_FACTOR);
     budget.clamp(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT)
 }
 
-/// Timeout used for the very first request (a single chunk), before we have
-/// any measurement of this machine's embedding speed at all. Pessimistic
-/// because it must also absorb one-off model cold-start.
+/// Timeout for the very first (single-chunk) request, before any rate is known.
+/// Pessimistic to absorb one-off model cold-start.
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Blend weight given to `CALIBRATION_BATCH_1`'s sample (a single chunk) the
-/// moment a second, larger sample arrives. Deliberately small: batch 1 exists
-/// only to get the progress bar moving and produce *some* number before batch
-/// 2 lands (spelunk-oss^73) — its 1-entry sample is dominated by one-off
-/// per-request overhead (connection setup, first-request scheduling, and on
-/// some hardware genuine model warm-up) that does not repeat on every
-/// subsequent batch, so it must not carry the same weight as a real,
-/// multi-entry measurement. A founder field report (2026-07-05, PR #513)
-/// showed a 50/50 blend of a cold ~25s batch-1 sample with a warm ~1.2s/entry
-/// batch-2 sample producing a ~13s/entry *displayed* rate while the batch-size
-/// decision (see `next_batch_size`) used a *different*, unblended sample —
-/// two disagreeing estimates from what should be one authoritative number.
-/// De-weighting the batch-1 sample here (instead of a straight 50/50) means
-/// the blended estimate — the single source both the batch-size/timeout
-/// decision AND the displayed rate now read from — converges to the real,
-/// measured rate almost immediately rather than staying skewed by a sample
-/// that was never representative of steady state.
+/// Weight given to `CALIBRATION_BATCH_1`'s 1-entry sample when the second sample
+/// arrives. Small: that sample is dominated by one-off per-request overhead that
+/// doesn't repeat, so it must not carry the weight of a real multi-entry
+/// measurement. Both the sizing decision and the displayed rate read the same
+/// blended estimate.
 const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 
 /// Running estimate of this run's embedding throughput, refined after every
-/// batch so a rate that drifts mid-run (e.g. thermal throttling, another
-/// process contending for the GPU) is picked up rather than locked in from the
-/// first sample alone.
+/// batch so mid-run drift (thermal throttling, GPU contention) is picked up.
 ///
-/// This is the SINGLE authoritative rate source: `next_batch_size`,
-/// `batch_timeout`, and the progress-bar's displayed ETA (via `format_eta`,
-/// rendered into the status message — see `embed_progress_style`) all read
-/// `per_entry()` from the same `RateEstimate` instance, so they can never
-/// disagree the way the batch-size decision and the *displayed* rate
-/// diverged in the field (see `CALIBRATION_BATCH_1_WEIGHT`). This struct
-/// deliberately does NOT delegate to indicatif's own built-in `{eta}`
-/// estimator: that estimator infers rate purely from the timing of
-/// `bar.inc(1)` calls, which for this phase arrive in a burst right after
-/// each batch's response (see `format_eta`'s doc comment) — reliably wrong
-/// for bursty progress, hence this dedicated estimate.
+/// Single authoritative rate source: `next_batch_size`, `batch_timeout`, and the
+/// displayed ETA (`format_eta`) all read `per_entry()` from the same instance so
+/// they can't disagree. Deliberately not indicatif's `{eta}`, which infers rate
+/// from `bar.inc(1)` timing — wrong for this phase's bursty increments (see
+/// `format_eta`).
 struct RateEstimate {
-    /// Exponentially-weighted per-entry duration. `None` until the first batch
-    /// lands.
+    /// Exponentially-weighted per-entry duration. `None` until the first batch.
     per_entry: Option<Duration>,
-    /// Number of batches folded in so far, so `update` can tell "this is the
-    /// batch-1 cold sample being immediately superseded" (samples_seen == 1)
-    /// apart from every later, steady-state blend (50/50, same as before).
+    /// Batches folded in so far, so `update` can tell the batch-1 cold sample
+    /// (== 1) from later steady-state blends.
     samples_seen: u32,
 }
 
@@ -257,17 +153,10 @@ impl RateEstimate {
         }
     }
 
-    /// Fold in a newly-observed batch: `elapsed` wall-clock time for
-    /// `entries` chunks. The first observation seeds the estimate outright;
-    /// the second observation (superseding the batch-1 cold sample) blends
-    /// with only `CALIBRATION_BATCH_1_WEIGHT` given to that first sample
-    /// instead of an even split, since it is dominated by one-off overhead
-    /// that isn't representative of steady state (see
-    /// `CALIBRATION_BATCH_1_WEIGHT`). From the third observation onward,
-    /// later samples are blended 50/50 with the running estimate — recent
-    /// batches matter more than stale ones, so a hardware/network rate change
-    /// mid-run (thermal throttling, contention) is reflected within a couple
-    /// of batches instead of being permanently anchored to an early sample.
+    /// Fold in a batch: `elapsed` for `entries` chunks. First observation seeds
+    /// the estimate; the second de-weights the batch-1 cold sample
+    /// (`CALIBRATION_BATCH_1_WEIGHT`); from the third onward, a 50/50 EMA so
+    /// mid-run rate changes are reflected within a couple of batches.
     fn update(&mut self, elapsed: Duration, entries: usize) {
         if entries == 0 {
             return;
@@ -276,15 +165,13 @@ impl RateEstimate {
         self.per_entry = Some(match self.per_entry {
             None => sample,
             Some(prev) if self.samples_seen == 1 => {
-                // Superseding the batch-1 cold sample: give it only
-                // `CALIBRATION_BATCH_1_WEIGHT` instead of 50/50.
+                // Superseding the batch-1 cold sample: de-weight it.
                 let w = CALIBRATION_BATCH_1_WEIGHT;
                 let blended = prev.as_secs_f64() * w + sample.as_secs_f64() * (1.0 - w);
                 Duration::from_secs_f64(blended)
             }
             Some(prev) => {
-                // Steady-state blend: a simple 50/50 exponential moving
-                // average.
+                // Steady-state 50/50 EMA.
                 let blended = (prev.as_secs_f64() + sample.as_secs_f64()) / 2.0;
                 Duration::from_secs_f64(blended)
             }
@@ -298,29 +185,11 @@ impl RateEstimate {
     }
 }
 
-/// Progress style for the embed phase. This does NOT use indicatif's
-/// built-in `{eta}` token: embedding is bursty (a batch's `bar.inc(1)` calls
-/// all land together right after its HTTP response arrives, then there's a
-/// long silent gap while the next request is in flight, with no increments
-/// at all), and indicatif's smoothed rate estimator reads that silence as
-/// "rate ≈ 0" and extrapolates a wildly inflated ETA — this is exactly the
-/// founder-observed "ETA 153y" bug (spelunk-oss^74 follow-up, PR #513). A
-/// PREVIOUS version of this doc comment claimed indicatif's smoothing
-/// "washes out" the cold-start skew across batches; that assumption is false
-/// for burst-then-silence updates like this phase's.
-///
-/// Instead, the ETA is computed from `RateEstimate` — the same measured
-/// per-chunk wall-clock rate that already drives `next_batch_size` and
-/// `batch_timeout` (see that struct's doc comment) — via `format_eta`, and
-/// rendered into `{wide_msg}` by the call sites in `run_embed_phase`. Using
-/// one rate source for sizing, timeout, AND the displayed ETA means they can
-/// never disagree.
-///
-/// Starting calibration with a batch of 1 (rather than a full batch) means
-/// the first data point lands almost immediately, so the bar itself becomes
-/// visible right away instead of only after a full batch completes
-/// (spelunk-oss^73/^74). A steady tick keeps the spinner moving even while a
-/// request is in flight, so a slow batch never looks frozen.
+/// Progress style for the embed phase. Does NOT use indicatif's `{eta}`:
+/// embedding is bursty (a batch's `bar.inc(1)` calls land together, then a long
+/// silent gap), which indicatif reads as rate ≈ 0 and extrapolates absurd ETAs.
+/// The ETA is computed from `RateEstimate` via `format_eta` and rendered into
+/// `{wide_msg}` by `run_embed_phase` instead.
 fn embed_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  {wide_msg}",
@@ -329,28 +198,17 @@ fn embed_progress_style() -> ProgressStyle {
     .progress_chars("=>-")
 }
 
-/// Ceiling on the computed ETA duration: a single bad/degenerate sample (a
-/// huge `per_entry` from a pathological retry, or an early estimate skewed by
-/// cold-start) must never render an absurd value like "153y" — the exact
-/// founder-observed regression this fix addresses. Anything at or above this
-/// is displayed as `ETA >24h` instead of the literal computed duration.
+/// Ceiling on the displayed ETA: anything at or above shows `ETA >24h` rather
+/// than a literal (possibly absurd) computed duration.
 const ETA_DISPLAY_CAP: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Render the embed phase's displayed ETA from the measured `RateEstimate`
-/// (see that struct's doc comment) and the number of chunks remaining.
+/// Render the displayed ETA from the measured `RateEstimate` and chunks remaining.
 ///
-/// - `per_entry` is `None` before the first batch has landed (i.e. during
-///   calibration batch 1's in-flight request) — there is no measurement yet
-///   to derive anything from, so this shows a calibrating placeholder rather
-///   than guessing.
-/// - Otherwise the remaining wall-clock time is `per_entry * remaining`,
-///   computed with `f64` and clamped BEFORE converting back to a `Duration`
-///   (`per_entry.as_secs_f64() * remaining as f64` can overflow/produce `inf`
-///   for a pathological `per_entry`, e.g. a 408-derived sample folded in at
-///   `MAX_REQUEST_TIMEOUT`) — so a bad sample can only ever produce the
-///   `>24h` capped string, never a panic or a nonsense number of years.
-/// - The formatted duration is compact: sub-minute shows seconds, sub-hour
-///   shows minutes (+ seconds if any), and hours show hours + minutes.
+/// - `None` per_entry (pre-first-batch): a calibrating placeholder, not a guess.
+/// - Else `per_entry * remaining`, computed in f64 and clamped BEFORE converting
+///   back to `Duration` (a pathological `per_entry` can overflow/produce `inf`),
+///   so a bad sample yields the `>24h` string, never a panic.
+/// - Compact format: seconds / minutes(+seconds) / hours+minutes.
 fn format_eta(remaining: usize, per_entry: Option<Duration>) -> String {
     let Some(per_entry) = per_entry else {
         return "ETA calibrating…".to_string();
@@ -394,18 +252,10 @@ struct ReqChunk {
     content: String,
 }
 
-/// Report an unrecoverable embed-phase failure: abandon the progress bar with
-/// a summary, and print an actionable message to stderr. Does NOT return an
-/// `Err` — callers report the count embedded so far via `Ok(embedded)` (see
-/// `run_embed_phase`'s doc comment on why an `Err` here would be wrong).
-///
-/// The message names the server request budget and a possible server-version
-/// mismatch as likely causes when the error text itself doesn't already make
-/// that obvious (a 408/timeout error already says "request budget" — see
-/// `embed_one_batch`'s `EmbedBatchError::BudgetExceeded` construction — but a
-/// user may not connect that to "maybe my server is out of date", especially
-/// since a modern server importing this same fix should never actually reach
-/// this path for a reasonably-sized batch).
+/// Report an unrecoverable embed-phase failure: abandon the progress bar and
+/// print an actionable message to stderr (naming the server request budget and a
+/// possible server-version mismatch). Does NOT return `Err` — callers report the
+/// count embedded so far via `Ok(embedded)`.
 fn report_embed_failure(
     bar: &ProgressBar,
     embedded: u64,
@@ -454,28 +304,18 @@ pub(super) async fn run_embed_phase(
     db.ensure_embedding_model(spelunk_core::embeddings::MODEL_ID)?;
     let server_limits = tier.server_limits();
 
-    // Ceiling the calibrated batch size may grow to. Unlike the old scheme,
-    // this is no longer the size we always send — see `next_batch_size`. Also
-    // clamped to what the server itself advertises (`max_batch_chunks`), when
-    // known, so the client never plans around a batch count the specific
-    // server it's talking to won't accept.
+    // Ceiling the calibrated batch size may grow to (see `next_batch_size`),
+    // clamped to the server's advertised `max_batch_chunks` when known.
     let server_max_batch_chunks = server_limits.map(|l| l.max_batch_chunks);
     let ceiling = resolve_batch_ceiling(batch_size, server_max_batch_chunks);
 
-    // Target batch duration, clamped to fit the server's advertised (or
-    // assumed-legacy) `/index/embed` request budget — see
-    // `resolve_target_batch_seconds`. This is the PRIMARY mechanism for
-    // staying under the server's budget; the steady-state 408-triggered
-    // shrink below is the fallback for a server that misreports or changes
-    // its effective budget under load (spelunk-oss^71/^73/^74).
+    // Target batch duration, clamped to the server's advertised (or legacy)
+    // `/index/embed` budget — see `resolve_target_batch_seconds`. The 408
+    // shrink below is the fallback.
     let target_batch_seconds = resolve_target_batch_seconds(server_limits);
     if server_limits.is_none() {
-        // Version-skew notice: this server pre-dates the `/v1/health`
-        // `limits` field, so it may still enforce the old blanket 30s
-        // `/index/embed` budget with no exemption (the exact field failure
-        // this fix addresses). Calibrating toward a smaller target keeps the
-        // run working — just with smaller, more frequent batches — instead of
-        // repeatedly hitting 408 against an old server.
+        // Older server: no `limits` field, so it may still enforce the blanket
+        // 30s budget. Target smaller batches to keep the run working.
         eprintln!(
             "Note: spelunk-server at {server_url} did not report its /index/embed request \
              budget (older server build) — assuming a conservative {LEGACY_SERVER_REQUEST_BUDGET_SECS}s \
@@ -484,17 +324,14 @@ pub(super) async fn run_embed_phase(
         );
     }
 
-    // Use `resolve_project_id` so that loopback auto-discovered servers (where
-    // `cfg.project_id` may be absent) derive the id from the project root path,
-    // matching `Config::resolve_project_id` behaviour (see spelunk#307).
+    // Loopback auto-discovered servers may lack `cfg.project_id`; derive it from
+    // the project root, matching `Config::resolve_project_id`.
     let project_id_owned = cfg.resolve_project_id(project_root);
     let project_id = project_id_owned.as_str();
 
-    // No client-wide timeout: we apply a PER-REQUEST timeout below, derived
-    // from the measured rate once we have one (starting pessimistic for the
-    // very first, single-chunk request). A single fixed client deadline is
-    // what let a slow first batch expire with nothing persisted
-    // (spelunk-oss^71).
+    // No client-wide timeout: a PER-REQUEST timeout is applied below, derived
+    // from the measured rate (pessimistic for the first, single-chunk request).
+    // A single fixed deadline let a slow first batch expire with nothing saved.
     let client = reqwest::Client::builder()
         .build()
         .context("building HTTP client for embed phase")?;
@@ -508,11 +345,9 @@ pub(super) async fn run_embed_phase(
         ProgressBar::hidden()
     };
 
-    // Draw the bar immediately, before the first (small, fast) request even
-    // fires, so the embedding phase shows visible movement within ~1 s of
-    // parsing finishing instead of only after a full batch round-trip returns
-    // (spelunk-oss^73). The steady tick animates the spinner while a request
-    // is in flight so a single slow batch never looks frozen.
+    // Draw the bar before the first request fires so the phase shows movement
+    // immediately; the steady tick animates the spinner while a request is in
+    // flight so a slow batch never looks frozen.
     bar.set_message("calibrating batch size\u{2026}");
     bar.enable_steady_tick(std::time::Duration::from_millis(120));
     bar.tick();
@@ -523,9 +358,9 @@ pub(super) async fn run_embed_phase(
     let mut batch_num = 0u64;
     let mut previous_batch_size = 1usize;
     let remaining = chunk_ids_and_texts.len();
-    // Percent-encode the project_id path segment: slugs contain `/`
-    // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split
-    // the segment and break axum routing → 404. See spelunk decision #106.
+    // Percent-encode the project_id segment: slugs contain `/`
+    // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split the
+    // segment and break axum routing → 404.
     let url = format!(
         "{}/v1/projects/{}/index/embed",
         server_url.trim_end_matches('/'),
@@ -536,12 +371,8 @@ pub(super) async fn run_embed_phase(
         batch_num += 1;
         let left = remaining - cursor;
 
-        // Calibration phase: the first request is a single chunk, the second
-        // is a small 4-chunk sample (both clamped to what's actually left, for
-        // small indexes). Both exist purely to get real timing data before
-        // committing to a steady-state batch size, per the founder's feedback
-        // on spelunk-oss^71/^74 — we no longer time a full default-sized batch
-        // and adapt afterward.
+        // Calibration: first request 1 chunk, second 4 chunks (both clamped to
+        // what's left), to gather timing before committing to a steady-state size.
         let mut this_batch_size = match batch_num {
             1 => CALIBRATION_BATCH_1,
             2 => CALIBRATION_BATCH_2,
@@ -559,15 +390,9 @@ pub(super) async fn run_embed_phase(
         }
         .clamp(1, left);
 
-        // Retry loop for THIS batch: a 408/timeout ("budget exceeded") is
-        // treated as recoverable — either escalate patience (calibration
-        // batch 1 only, where we have no rate estimate yet to size a smaller
-        // request from) or shrink the batch and retry, rather than aborting
-        // the whole run at 0 embedded (spelunk-oss^71/^73/^74 field-failure
-        // follow-up). Any other failure (network error, 5xx, malformed
-        // response) still aborts immediately as before — shrinking/retrying
-        // is specifically a response to "the request was too big/slow for
-        // the budget", not a generic retry-everything policy.
+        // Retry loop for THIS batch: a 408/timeout is recoverable — escalate
+        // patience (calibration batch 1, no rate estimate yet) or shrink and
+        // retry, rather than aborting at 0 embedded. Any other failure aborts.
         let mut escalated_calibration_once = false;
         let bytes = 'retry: loop {
             let request_timeout = match rate.per_entry() {
@@ -576,12 +401,8 @@ pub(super) async fn run_embed_phase(
                 None => FIRST_REQUEST_TIMEOUT,
             };
 
-            // Show which chunks are in flight so a single slow request reads as
-            // progress against a known window, not a frozen bar (spelunk-oss^73).
-            // Prefix with the ETA derived from the measured `RateEstimate`
-            // (spelunk-oss^74 follow-up, PR #513) — NOT indicatif's built-in
-            // `{eta}` token, which misreads this phase's bursty increments as
-            // near-zero throughput (see `format_eta`'s doc comment).
+            // Show which chunks are in flight, prefixed with the `RateEstimate`
+            // ETA (not indicatif's `{eta}` — see `format_eta`).
             let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
             bar.set_message(format!(
                 "{eta_str}  \u{00b7}  sent {this_batch_size} chunk(s) ({embedded}/{total} done \
@@ -611,34 +432,18 @@ pub(super) async fn run_embed_phase(
 
             match outcome {
                 Ok(bytes) => {
-                    // Fold this batch's measured rate in and re-estimate:
-                    // later batches' sizes (and timeouts) track the current
-                    // rate rather than being fixed from a single early
-                    // sample, so a rate that drifts mid-run is picked up
-                    // within a couple of batches (spelunk-oss^71/^74). The
-                    // freshly-updated `rate` is also what the per-chunk
-                    // `bar.inc(1)` loop below re-derives the displayed ETA
-                    // from (via `format_eta`) — NOT indicatif's own `{eta}`
-                    // estimator, which reads this phase's bursty increments
-                    // (all landing at once, right here) as near-zero
-                    // throughput (spelunk-oss^74 follow-up, PR #513).
+                    // Fold this batch's rate in so later sizes/timeouts track
+                    // the current rate. Also what the `bar.inc(1)` loop below
+                    // reads for the displayed ETA (via `format_eta`).
                     rate.update(started.elapsed(), batch.len());
                     break 'retry bytes;
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) if this_batch_size == 1 => {
-                    // Can't shrink below 1 chunk. For calibration batch 1
-                    // specifically (no rate estimate yet), escalate patience
-                    // once (FIRST_REQUEST_TIMEOUT → MAX_REQUEST_TIMEOUT) —
-                    // this is the "retry the calibration batch once with
-                    // escalated patience" behaviour: a single chunk that took
-                    // >FIRST_REQUEST_TIMEOUT might still legitimately finish
-                    // given the full 1800s ceiling (e.g. genuine cold-start
-                    // cost on very slow hardware), and giving up at 0/total
-                    // embedded on the very first request is the worst
-                    // possible failure mode. Only escalate once; if it still
-                    // fails at the max budget, this really is unrecoverable
-                    // (or a persistently mis-configured/underpowered server)
-                    // and we must stop.
+                    // Can't shrink below 1 chunk. On calibration batch 1 (no
+                    // rate estimate yet), escalate patience once
+                    // (FIRST_REQUEST_TIMEOUT → MAX_REQUEST_TIMEOUT) before
+                    // giving up: a cold single chunk on slow hardware may still
+                    // finish given the full budget.
                     if !escalated_calibration_once && rate.per_entry().is_none() {
                         escalated_calibration_once = true;
                         eprintln!(
@@ -648,32 +453,21 @@ pub(super) async fn run_embed_phase(
                         );
                         continue 'retry;
                     }
-                    // A batch failing (even after the calibration escalation
-                    // above) must NOT abort the whole run with an `Err`:
-                    // embeddings already committed from prior batches stay in
-                    // the DB, and a re-run picks up the rest via the
-                    // missing-embedding backfill (spelunk-oss^72). Report and
-                    // return the count embedded so far — propagating an `Err`
-                    // here would unwind the command before `stats()` runs and
-                    // discard the visible progress (spelunk-oss^71).
+                    // Don't abort the whole run: prior batches stay committed
+                    // and a re-run backfills the rest. Return the count so far —
+                    // an `Err` would unwind before `stats()` and discard the
+                    // visible progress.
                     report_embed_failure(&bar, embedded, total, &server_url, e);
                     return Ok(embedded);
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) => {
-                    // Steady-state (or post-calibration) batch exceeded the
-                    // server's request budget: treat this as "the server's
-                    // effective budget is smaller than this batch", not as a
-                    // fatal error — shrink and retry rather than discarding
-                    // all subsequent progress. Halve (floor 1) and also fold
-                    // a pessimistic sample into the rate estimate so
-                    // subsequent `next_batch_size` calls don't immediately
-                    // re-derive the same too-large size.
+                    // Steady-state batch exceeded the server's budget: shrink
+                    // (halve, floor 1) and retry rather than discarding progress.
                     let shrunk = (this_batch_size / 2).max(1);
                     if shrunk == this_batch_size {
-                        // Already at the floor and still failing — no smaller
-                        // batch to try; this is the batch-of-1 branch above,
-                        // so unreachable in practice, but guards against an
-                        // infinite loop if reached some other way.
+                        // Already at the floor and still failing (the batch-of-1
+                        // branch above handles this; guards against an infinite
+                        // loop otherwise).
                         report_embed_failure(&bar, embedded, total, &server_url, e);
                         return Ok(embedded);
                     }
@@ -681,26 +475,17 @@ pub(super) async fn run_embed_phase(
                         "index/embed batch of {this_batch_size} chunks exceeded the server's \
                          request budget (408) — shrinking to {shrunk} chunk(s) and retrying: {e:#}",
                     );
-                    // A 408 tells us this batch's *expected* duration exceeded
-                    // the server's budget: fold in a pessimistic per-entry
-                    // sample (the request_timeout that just failed, spread
-                    // over the batch) so the rate estimate reflects "at least
-                    // this slow", pulling future `next_batch_size` calls down
-                    // rather than immediately re-deriving the same too-large
-                    // batch from a stale, too-optimistic estimate.
+                    // Fold in a pessimistic per-entry sample (the failed timeout
+                    // over the batch) so future `next_batch_size` calls don't
+                    // re-derive the same too-large batch.
                     rate.update(request_timeout, this_batch_size);
                     this_batch_size = shrunk;
                     continue 'retry;
                 }
                 Err(EmbedBatchError::Other(e)) => {
-                    // A batch failing for any other reason (connection reset,
-                    // non-408 non-2xx, malformed response, …) must NOT abort
-                    // the whole run: embeddings already committed from prior
-                    // batches stay in the DB, and a re-run picks up the rest
-                    // via the missing-embedding backfill (spelunk-oss^72).
-                    // Report and stop rather than propagating an Err that
-                    // would unwind the command before `stats()` and discard
-                    // the visible progress (spelunk-oss^71).
+                    // Any other failure: prior batches stay committed and a
+                    // re-run backfills the rest. Report and stop rather than
+                    // propagating an `Err` that would discard the visible progress.
                     report_embed_failure(&bar, embedded, total, &server_url, e);
                     return Ok(embedded);
                 }
@@ -717,12 +502,8 @@ pub(super) async fn run_embed_phase(
             db.insert_embedding(*row_id, &vector)?;
             embedded += 1;
             bar.inc(1);
-            // Refresh the displayed ETA from the just-updated `rate` as each
-            // chunk in this batch lands, so it visibly counts down through a
-            // batch rather than only updating once per request
-            // (spelunk-oss^74 follow-up, PR #513); recomputed fresh each time
-            // rather than cached, since `embedded`/`total.saturating_sub` and
-            // `rate` are cheap and this loop runs at most `MAX_BATCH` times.
+            // Refresh the displayed ETA from the updated `rate` as each chunk
+            // lands, so it counts down through a batch, not once per request.
             let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
             bar.set_message(format!("{eta_str}  \u{00b7}  {embedded}/{total} embedded"));
         }
@@ -736,29 +517,20 @@ pub(super) async fn run_embed_phase(
 }
 
 /// An `embed_one_batch` failure, distinguishing "the request budget was too
-/// small for this batch" (HTTP 408 from the server's `TimeoutLayer`, or a
-/// client-side `reqwest` timeout expiring first) from every other failure
-/// (connection refused, 5xx, malformed response, …). The distinction matters:
-/// a 408/timeout is actionable and often recoverable by shrinking the batch
-/// and/or escalating patience and retrying (see `run_embed_phase`'s
-/// calibration retry and steady-state shrink-on-408 handling); other failures
-/// are not something retrying the same batch smaller is expected to fix.
+/// small for this batch" (408, or a client-side timeout expiring first) from
+/// every other failure — only the former is worth shrinking and retrying (see
+/// `run_embed_phase`).
 enum EmbedBatchError {
-    /// Server returned `408 Request Timeout`, or the client-side `timeout`
-    /// passed to this call elapsed first (`reqwest::Error::is_timeout()`).
+    /// Server returned 408, or the client-side `timeout` elapsed first.
     BudgetExceeded(anyhow::Error),
-    /// Any other failure (network error, non-408 non-2xx status, malformed
-    /// response body, …).
+    /// Any other failure (network error, non-408 status, malformed body).
     Other(anyhow::Error),
 }
 
-/// Send one embed batch and return the raw little-endian f32 response bytes:
-/// one `EMBEDDING_DIM`-float vector per request chunk, in request order.
-///
-/// Applies a per-request `timeout` (see `batch_timeout`) and validates the
-/// response length before returning, so callers get a single fallible unit they
-/// can treat as all-or-nothing for that batch (spelunk-oss^71). Distinguishes
-/// a 408/timeout failure from every other kind — see [`EmbedBatchError`].
+/// Send one embed batch and return the raw little-endian f32 response bytes: one
+/// `EMBEDDING_DIM`-float vector per chunk, in request order. Applies a
+/// per-request `timeout` (see `batch_timeout`) and validates the response length.
+/// Distinguishes a 408/timeout from other failures — see [`EmbedBatchError`].
 async fn embed_one_batch(
     client: &reqwest::Client,
     url: &str,
@@ -854,10 +626,8 @@ mod tests {
 
     #[test]
     fn resolve_batch_ceiling_clamps_to_server_advertised_max() {
-        // A server that advertises a smaller max_batch_chunks than our own
-        // MAX_BATCH guess must win — the client should never plan around a
-        // batch count the specific server it's talking to won't accept
-        // (spelunk-oss^71/^73/^74, founder directive on server-limits surface).
+        // A server advertising a smaller max_batch_chunks than our MAX_BATCH
+        // guess must win — never plan around a count the server won't accept.
         assert_eq!(resolve_batch_ceiling(0, Some(32)), 32);
         assert_eq!(resolve_batch_ceiling(200, Some(32)), 32);
         // A server-advertised max ABOVE the user's/default ceiling doesn't
@@ -866,7 +636,6 @@ mod tests {
     }
 
     // ── resolve_target_batch_seconds: server-limits-aware target clamping ───
-    // (spelunk-oss^71/^73/^74, founder directive on version-skew handling)
 
     #[test]
     fn resolve_target_batch_seconds_uses_default_when_server_budget_is_generous() {
@@ -909,12 +678,10 @@ mod tests {
     }
 
     // ── next_batch_size: calibration-driven batch sizing ────────────────────
-    // (spelunk-oss^71/^74, founder review on PR #513)
 
     #[test]
     fn next_batch_size_shrinks_for_slow_hardware() {
-        // ~60 s/entry ⇒ a 4-min (240 s) budget fits ~4 entries per batch —
-        // this is the founder's own worked example from the PR review.
+        // ~60 s/entry ⇒ a 240 s budget fits ~4 entries per batch.
         // previous_batch_size=256 so the growth cap doesn't bind here.
         assert_eq!(
             next_batch_size(Duration::from_secs(60), 256, 256, TARGET_BATCH_SECONDS),
@@ -925,9 +692,7 @@ mod tests {
     #[test]
     fn next_batch_size_grows_for_fast_hardware_but_respects_growth_cap() {
         // ~1 s/entry ⇒ a 240 s budget fits 240 entries, but growth from a
-        // previous batch of 4 is capped to GROWTH_FACTOR (8) × 4 = 32 — this
-        // is the fix for the field failure where a single fast sample after a
-        // small calibration batch derived a ~50x-larger batch in one step.
+        // previous batch of 4 is capped to GROWTH_FACTOR (8) × 4 = 32.
         assert_eq!(
             next_batch_size(Duration::from_secs(1), 256, 4, TARGET_BATCH_SECONDS),
             32
@@ -948,10 +713,8 @@ mod tests {
 
     #[test]
     fn next_batch_size_clamps_to_ceiling() {
-        // A very fast rate would derive a batch far above the ceiling (e.g.
-        // the server's hard 256-chunk / 413 limit, or a user-supplied
-        // `--batch-size`); the ceiling wins even when the growth cap (from a
-        // large previous batch) would otherwise allow more.
+        // A very fast rate would derive a batch above the ceiling; the ceiling
+        // wins even when the growth cap would otherwise allow more.
         let t = next_batch_size(Duration::from_millis(1), 256, 256, TARGET_BATCH_SECONDS);
         assert_eq!(t, 256);
         let t = next_batch_size(Duration::from_millis(1), 32, 32, TARGET_BATCH_SECONDS);
@@ -987,7 +750,6 @@ mod tests {
     }
 
     // ── batch_timeout: derive a per-request deadline from the measured rate ──
-    // (spelunk-oss^71)
 
     #[test]
     fn batch_timeout_scales_with_expected_batch_duration() {
@@ -1019,7 +781,6 @@ mod tests {
     }
 
     // ── RateEstimate: continuously re-estimate the per-entry rate ───────────
-    // (spelunk-oss^74 — "keep re-estimating the rate as batches complete")
 
     #[test]
     fn rate_estimate_seeds_from_first_observation() {
@@ -1031,11 +792,9 @@ mod tests {
 
     #[test]
     fn rate_estimate_deweights_the_batch_1_cold_sample_on_second_observation() {
-        // First (calibration batch 1) sample: 1 entry in 10 s ⇒ 10 s/entry,
-        // skewed by one-off cold start. The second sample (calibration batch
-        // 2, at 1 s/entry) must dominate the blend — only
-        // CALIBRATION_BATCH_1_WEIGHT (0.1) of the cold sample survives, not an
-        // even 50/50 split.
+        // Batch 1: 1 entry in 10 s ⇒ 10 s/entry (cold). Batch 2 (1 s/entry) must
+        // dominate — only CALIBRATION_BATCH_1_WEIGHT (0.1) of the cold sample
+        // survives, not a 50/50 split.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1);
         r.update(Duration::from_secs(4), 4); // 1 s/entry
@@ -1053,9 +812,8 @@ mod tests {
 
     #[test]
     fn rate_estimate_third_sample_onward_blends_50_50() {
-        // From the THIRD observation onward (i.e. once the batch-1 cold
-        // sample has already been superseded), later samples blend evenly
-        // with the running estimate — same behaviour as before this fix.
+        // From the third observation onward (batch-1 cold sample already
+        // superseded), later samples blend evenly with the running estimate.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/entry
         r.update(Duration::from_secs(4), 4); // batch 2: 1s/entry -> blended 1.9s/entry
@@ -1070,16 +828,10 @@ mod tests {
 
     #[test]
     fn rate_estimate_reproduces_field_failure_scenario_with_fix() {
-        // Reproduces the founder's field-report numbers (PR #513 review,
-        // 2026-07-05): calibration batch 1 (1 chunk) took ~25s (cold);
-        // calibration batch 2 (4 chunks) took ~4.8s (~1.2s/entry, warm).
-        // Pre-fix, a straight 50/50 blend gave ~13.1s/entry, but
-        // next_batch_size used a DIFFERENT (raw, unblended) sample and
-        // derived a batch of 200 — an inconsistency between the displayed
-        // rate and the batch-size decision, and a batch sized to run for
-        // ~240s against a 30s server budget. Post-fix, the single shared
-        // estimate (de-weighted + growth-capped) must derive something far
-        // smaller and internally consistent.
+        // Batch 1 (1 chunk) ~25s cold; batch 2 (4 chunks) ~4.8s (~1.2s/entry
+        // warm). The single shared estimate (de-weighted + growth-capped) must
+        // derive a small, internally consistent batch — not the unblended
+        // ~50x leap an earlier build produced.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(25), 1); // batch 1: cold
         r.update(Duration::from_millis(4800), 4); // batch 2: 1.2s/entry warm
@@ -1089,9 +841,8 @@ mod tests {
             (per_entry.as_secs_f64() - 3.58).abs() < 1e-9,
             "expected 3.58s/entry, got {per_entry:?}"
         );
-        // The SAME estimate feeds next_batch_size (growth-capped from the
-        // previous batch of 4) — this must land far below the old field
-        // failure's 200-chunk leap.
+        // The same estimate feeds next_batch_size, growth-capped from the
+        // previous batch of 4.
         let batch_3_size = next_batch_size(per_entry, 256, 4, TARGET_BATCH_SECONDS);
         assert_eq!(
             batch_3_size, 32,
@@ -1099,11 +850,8 @@ mod tests {
              240/3.58≈67 the estimate alone would suggest, and nowhere near the field \
              failure's 200"
         );
-        // And the resulting batch's expected duration must be far below the
-        // field failure's ~240s (the old, un-capped 200-chunk batch's target
-        // duration) — this test uses the uncapped TARGET_BATCH_SECONDS
-        // directly (not `resolve_target_batch_seconds`, covered separately
-        // above) so the growth cap alone is what's under test here.
+        // The resulting batch's expected duration must stay well under ~240s;
+        // uses the uncapped TARGET_BATCH_SECONDS so the growth cap alone is under test.
         let expected_duration = per_entry.as_secs_f64() * batch_3_size as f64;
         assert!(
             expected_duration < 150.0,
@@ -1119,22 +867,16 @@ mod tests {
         assert!(r.per_entry().is_none());
     }
 
-    // ── embed_progress_style: the template (message-only ETA, no indicatif
-    //    `{eta}` token) must build ──────────────────────────────────────────
-    // (spelunk-oss^74)
+    // ── embed_progress_style: the message-only-ETA template must build ──────
 
     #[test]
     fn embed_progress_style_builds_without_indicatif_eta_token() {
-        // `embed_progress_style()` calls `ProgressStyle::with_template(..).unwrap()`.
-        // A malformed template (e.g. a typo'd token) would panic at that unwrap the
-        // first time the embed phase runs. Building it here proves the style is
-        // well-formed and wired up, and applying it to a bar exercises the same path
-        // the embed phase takes when it calls `bar.set_style(embed_progress_style())`.
+        // A malformed template would panic at the `.unwrap()` the first time the
+        // embed phase runs; building and applying it here proves it's well-formed.
         let style = embed_progress_style();
         let bar = ProgressBar::hidden();
         bar.set_style(style);
-        // Driving the bar the way the embed phase does (steady tick + per-chunk
-        // inc + message updates) must not panic.
+        // Driving the bar the way the embed phase does must not panic.
         bar.enable_steady_tick(Duration::from_millis(120));
         bar.set_length(10);
         bar.tick();
@@ -1143,9 +885,7 @@ mod tests {
         bar.finish_and_clear();
     }
 
-    // ── format_eta: display ETA derived from the measured RateEstimate, not
-    //    indicatif's bursty built-in estimator ───────────────────────────────
-    // (spelunk-oss^74 follow-up, PR #513 — founder-observed "ETA 153y" bug)
+    // ── format_eta: display ETA derived from the measured RateEstimate ──────
 
     #[test]
     fn format_eta_shows_calibrating_when_rate_unknown() {
@@ -1185,11 +925,8 @@ mod tests {
 
     #[test]
     fn format_eta_caps_pathologically_large_duration_instead_of_showing_absurd_value() {
-        // THE regression guard: this is the shape of the founder-observed
-        // "ETA 153y" bug. A pathological per_entry (e.g. folded in from a
-        // MAX_REQUEST_TIMEOUT-derived 408 sample) times a large remaining
-        // count must render the capped ">24h" string — never an overflowed,
-        // panicking, or absurdly large (years-scale) computed value.
+        // A pathological per_entry times a large remaining count must render the
+        // capped ">24h" string — never an overflowed, panicking, or years-scale value.
         let eta = format_eta(1_000_000, Some(Duration::from_secs(10_000_000)));
         assert_eq!(eta, "ETA >24h");
         assert!(
@@ -1200,9 +937,8 @@ mod tests {
 
     #[test]
     fn format_eta_caps_at_boundary_just_above_24h() {
-        // Exactly at/above the 24h cap must show the capped string, not a
-        // literal "24h00m" or similar — the cap is a hard ceiling on what's
-        // ever displayed, not just a guard against overflow.
+        // At/above the 24h cap must show the capped string, not a literal
+        // "24h00m" — the cap is a hard display ceiling, not just an overflow guard.
         let eta = format_eta(1, Some(Duration::from_secs(24 * 60 * 60 + 1)));
         assert_eq!(eta, "ETA >24h");
     }
@@ -1217,7 +953,7 @@ mod tests {
     }
 
     // ── run_embed_phase: a mid-run batch failure must not discard earlier,
-    //    already-committed embeddings (spelunk-oss^71) ─────────────────────────
+    //    already-committed embeddings ──────────────────────────────────────────
 
     use std::sync::OnceLock;
 
@@ -1291,8 +1027,8 @@ mod tests {
         server_tier_with_limits(url, None)
     }
 
-    /// Same as [`server_tier`], but with `server_limits` set — used by tests
-    /// that exercise the version-skew clamping (spelunk-oss^71/^73/^74).
+    /// Same as [`server_tier`], but with `server_limits` set — for tests that
+    /// exercise the version-skew clamping.
     fn server_tier_with_limits(url: String, server_limits: Option<ServerLimits>) -> Tier {
         Tier::Server {
             url,
@@ -1305,12 +1041,9 @@ mod tests {
 
     #[tokio::test]
     async fn batch_failure_keeps_prior_batches_and_stops_gracefully() {
-        // 6 chunks with a small ceiling so calibration quickly ramps toward a
-        // multi-chunk steady-state batch; the mock server's third response
-        // (whichever batch it lands on) fails with 500. The run must persist
-        // every chunk embedded before the failure, NOT error, and report only
-        // the successfully-embedded count — proving a mid-run failure never
-        // discards batches the server already computed (spelunk-oss^71).
+        // 6 chunks, small ceiling; the mock's third response fails with 500.
+        // The run must persist every chunk embedded before the failure, NOT
+        // error, and report only the successfully-embedded count.
         let mock = MockServer::start().await;
         // The first two requests (calibration: 1 chunk, then up to 4 chunks)
         // succeed; everything after that fails, so the run stops partway
@@ -1469,16 +1202,12 @@ mod tests {
         assert_eq!(embedded, 0);
     }
 
-    // ── 408/timeout retry-then-shrink behaviour (spelunk-oss^71/^73/^74,
-    //    PR #513 field-failure fix) ──────────────────────────────────────────
+    // ── 408/timeout retry-then-shrink behaviour ────────────────────────────
 
     #[tokio::test]
     async fn calibration_batch_1_408_is_retried_and_succeeds() {
-        // The very first request (calibration batch of 1) 408s once, then
-        // succeeds on retry. This must NOT be treated as a fatal failure at
-        // 0/total embedded — the whole point of the escalated-patience retry
-        // is that a single calibration request timing out must not kill the
-        // phase outright (the exact founder-reported field failure).
+        // The first request (calibration batch of 1) 408s once, then succeeds
+        // on retry — must not be fatal at 0/total embedded.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
