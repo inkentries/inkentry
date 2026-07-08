@@ -26,9 +26,9 @@ pretty_assertions = "1"
 serial_test = "3"
 wiremock    = "0.6"
 dirs        = "6"
-# Native embedder stack (F2LLM-v2-330M via candle). Pulled in by the
-# `spelunk-embed` crate behind its `embed-native` feature; versions pinned here
-# so the candle trio stays on one runtime line.
+# Native embedder stack (F2LLM-v2-330M via candle). Depended on unconditionally
+# by the `spelunk-embed` crate; versions pinned here so the candle trio stays on
+# one runtime line.
 candle-core = "0.11.0"
 candle-nn   = "0.11.0"
 candle-transformers = "0.11.0"

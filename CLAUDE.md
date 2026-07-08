@@ -230,13 +230,17 @@ migrations/  (crates/spelunk-server/migrations/)
   server_002.sql — server memory FTS
 ```
 
-The native embedder engine lives in the `spelunk-embed` crate (below); the
-server depends on it and forwards its `embed-native` / `metal` cargo features.
+The native embedder engine lives in the `spelunk-embed` crate (below). The
+server's `embed-native` feature enables the optional `spelunk-embed` dep (and
+the server's own hf-hub download path); `metal` forwards to `spelunk-embed`'s
+`metal` feature. `spelunk-embed` depends on candle unconditionally — the crate
+is only worth depending on for its native embedder, so there is no feature to
+gate candle out. Its only remaining feature is `metal` (macOS GPU accel).
 
 ### spelunk-embed (`crates/spelunk-embed/src/`)
 
 ```
-lib.rs             — crate root; re-exports NativeEmbedder + DIM (gated by `embed-native`)
+lib.rs             — crate root; re-exports NativeEmbedder + DIM (candle is unconditional)
 embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal/GPU on macOS).
                      NativeEmbedder::load_from_path(gguf, tokenizer, config) loads local files
                      already on disk with zero network access — the crate's only load entry

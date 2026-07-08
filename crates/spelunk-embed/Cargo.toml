@@ -11,12 +11,6 @@ name = "spelunk_embed"
 path = "src/lib.rs"
 
 [features]
-default = ["embed-native"]
-# embed-native: bundle the F2LLM-v2-330M Qwen3 embedder via candle (CPU). No
-# download dependency here (no hf-hub) — this crate only loads from local
-# files (`load_from_path`); the Hugging Face Hub acquisition path lives in
-# spelunk-server's `embed_hub` module.
-embed-native = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:thiserror"]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
@@ -26,11 +20,16 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-candle-core = { workspace = true, optional = true }
-candle-nn = { workspace = true, optional = true }
-candle-transformers = { workspace = true, optional = true }
-tokenizers = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+# candle is an unconditional dep: depending on this crate at all means you want
+# its native embedder, so gating candle behind a feature bought nothing. This
+# crate still carries no download dep (no hf-hub) — it loads local files only
+# via `load_from_path`; the HF-Hub acquisition path lives in spelunk-server's
+# `embed_hub` module.
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+tokenizers = { workspace = true }
+thiserror = { workspace = true }
 
 # macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
 # /proc/meminfo, no FFI). Not in [workspace.dependencies] since spelunk-embed
