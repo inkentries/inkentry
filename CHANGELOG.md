@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-07-08
+
 ### Removed
 
 - **`spelunk search --as-of <sha>` (snapshot-based temporal search).** The snapshot
@@ -20,6 +22,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   continues to work unchanged. Note: `spelunk memory list/search --as-of <date>` for
   point-in-time memory archaeology remains available and unaffected. (#517,
   spelunk-oss^67)
+- **Retired the `api_base_url` client egress path and pruned the remaining dead
+  config keys** (`plans_dir`, `specs_dir`, `batch_size`, …) from the config surface
+  and the shipped `examples/mdm/spelunk-config.toml`. Existing config files that
+  still carry these keys continue to parse unchanged (forward-compat locked by a
+  regression test). (#532, #551, spelunk-oss^109/^118)
 
 ### Security
 
@@ -77,6 +84,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     format could still be read fully into memory first. Oversized files are now skipped with a
     warning instead. This is local-indexing hardening, distinct from and complementary to the
     server-side request-body caps shipped in 0.9.2 above.
+- **`CloudSyncClient` refuses to attach a bearer token to a non-HTTPS `server_url`
+  at construction.** A team `server_url` set to plaintext `http://` no longer sends
+  the bearer `SPELUNK_SERVER_KEY` in cleartext — the client fails fast at
+  construction, closing the CLI-side gap adjacent to the server bind-safety work
+  above. (#549, spelunk-oss^78)
+- **`add_note` now audit-logs notes rejected by injection-pattern detection**, so a
+  rejected write leaves a trail instead of failing silently.
+- **Bumped `crossbeam-epoch` to 0.9.20** for RUSTSEC-2026-0204. (#535)
 
 ### Added
 
@@ -100,9 +115,27 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **Embedding progress bar displayed immediately during indexing.** [spelunk-oss^73]
   The ETA-aware embedding progress bar now appears as soon as the embed phase begins, instead of
   waiting for the first batch to complete.
+- **`spelunk-server --health-check`: a self-contained container health probe.** [spelunk-oss^99]
+  It probes the server's own `/v1/health` on the configured `--host`/`--port` and exits `0`
+  (live) or non-zero, so a container `HEALTHCHECK` needs no `curl`/`wget` in the runtime image.
+- **First-party systemd units + credential-based API keys for the team server.** `spelunk-server`
+  can now read its shared API key from `--key-file` or a systemd `LoadCredential` credential — a
+  first-class alternative to `SPELUNK_SERVER_KEY` that keeps the key out of the process table —
+  and the repo ships packaged systemd units for running the bare-metal team server.
 
 ### Fixes
 
+- **`spelunk-server` bounds candle's CPU embedding threads so embeds no longer starve request
+  serving.** [spelunk-oss^97] On CPU-only hosts a single embed batch previously fanned candle's
+  gemm across every core, pinning the machine and briefly hanging `/v1/health`. The server now
+  caps the embedder's CPU thread budget to `max(1, cores − 2)` by default (override with
+  `SPELUNK_EMBED_THREADS`, or a pre-set `RAYON_NUM_THREADS`), leaving headroom to keep serving
+  requests during indexing.
+- **The chunker caps oversized semantic and Markdown chunks** so a single very large unit no
+  longer stalls the embed phase. [spelunk-oss^114]
+- **`spelunk init` writes `.spelunk/.gitignore`** so machine-specific SQLite files aren't
+  accidentally committed.
+- **The CLI no longer surfaces a phantom `plan` capability** it never implemented. (#540)
 - **`spelunk index` no longer loses computed embeddings when a batch times out on slow hardware.**
   [spelunk-oss^71] The embed phase now calibrates against real timing before committing to a
   batch size: it sends a 1-chunk request, then a 4-chunk request, and derives the per-request
