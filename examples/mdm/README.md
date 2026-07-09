@@ -5,6 +5,11 @@ This directory shows how an administrator can deploy and pre-configure
 Management (MDM). It is example configuration and documentation only; nothing
 here changes how spelunk behaves at runtime.
 
+The shared config templates and this overview are cross-platform. The
+platform-specific server deployment lives in per-OS subdirectories: macOS in
+[`macos/`](macos/), Windows (Intune/GPO + Windows Service) in
+[`windows/`](windows/README.md).
+
 > These templates are community examples. Test them on a single device before
 > rolling out to a fleet, and adapt the paths, ports, and credentials to your
 > environment.
@@ -51,6 +56,7 @@ spelunk's own settings.
 | `spelunk-config.toml` | Example global config to push to `~/.config/spelunk/config.toml`. Every key is a real field read by `spelunk`. |
 | `spelunk.env.example` | Example managed environment (shared API key, server URL, fleet policy) to deliver via launchd, a profile script, or Group Policy. |
 | `macos/cloud.spelunk.server.mobileconfig` | macOS configuration profile that installs a managed `spelunk-server` LaunchDaemon on a shared or always-on host. |
+| `windows/` | Windows fleet guide: Intune/GPO config delivery + a PowerShell script that runs `spelunk-server` as a Windows Service. See [`windows/README.md`](windows/README.md). |
 
 ## Two deployment shapes
 
@@ -97,8 +103,10 @@ Steps:
 2. **Run the managed server.** On a macOS server host, install
    `macos/cloud.spelunk.server.mobileconfig` (it installs a system-scoped
    LaunchDaemon). On Linux, deploy the systemd unit from
-   `packaging/spelunk-server.service`. Set a real `SPELUNK_SERVER_KEY` on the
-   server.
+   `packaging/spelunk-server.service`. On Windows, run it as a Windows Service
+   with `windows/Install-SpelunkServerService.ps1` (see
+   [`windows/README.md`](windows/README.md)). Set a real `SPELUNK_SERVER_KEY` on
+   the server.
 3. **Pre-configure the laptops** so users do not have to. Push
    `spelunk-config.toml` to `~/.config/spelunk/config.toml` (server URL, project
    slug, sync mode) and deliver the shared `SPELUNK_SERVER_KEY` via the managed
@@ -123,8 +131,9 @@ Write `spelunk-config.toml` (edited for your environment) to each user's
   copies the file in for each managed user. Keep the file readable only by its
   owner if it contains anything sensitive (it should not; keep secrets in the
   environment).
-- **Windows:** the equivalent path resolves under the user profile; deploy the
-  file with a managed script or login script.
+- **Windows:** the same `~/.config` path resolves to
+  `%USERPROFILE%\.config\spelunk\config.toml` (not `%APPDATA%`); deploy the file
+  with a managed script or login script. See [`windows/README.md`](windows/README.md).
 
 A team-wide subset can instead live in a committed `.spelunk/config.toml` at the
 repository root (`server_url`, `project_id`), which needs no MDM at all. Use the
@@ -174,6 +183,8 @@ report that they are unavailable instead of starting anything.
 
 ## Further reading
 
+- [`windows/README.md`](windows/README.md) - the Windows fleet guide (Intune/GPO
+  config delivery + running `spelunk-server` as a Windows Service).
 - [Getting started](../../docs/getting-started.md) - install paths and the team
   setup walkthrough.
 - [Self-hosting](../../docs/self-hosting.md) - exposing `spelunk-server` to
