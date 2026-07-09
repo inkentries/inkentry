@@ -19,6 +19,14 @@
   deploy the config file and/or environment via an MDM file or script payload
   see ../README.md ("Pushing spelunk configuration").
 
+  REACHING IT OFF-HOST
+  This job binds loopback (--host 127.0.0.1). spelunk-server refuses a
+  non-loopback plaintext bind with no override, so do NOT change --host to
+  0.0.0.0 (the daemon would fail to start). To serve other machines, run an
+  operator-owned TLS reverse proxy (Caddy, nginx) on this host forwarding
+  HTTPS to 127.0.0.1:7777, exactly like the Windows example and the
+  bare-metal shape in ../../../docs/self-hosting.md.
+
   BEFORE YOU DEPLOY
   1. Regenerate every PayloadUUID below (`uuidgen`) so this profile does not
      collide with another org's profile.
@@ -81,8 +89,14 @@
 								<array>
 									<!-- Path the install script uses when run as root. -->
 									<string>/usr/local/bin/spelunk-server</string>
+									<!--
+									  Loopback bind. spelunk-server refuses a non-loopback plaintext
+									  bind (no override); reach it off-host via an operator-owned TLS
+									  reverse proxy forwarding to 127.0.0.1:7777. See the header note
+									  and ../../../docs/self-hosting.md.
+									-->
 									<string>--host</string>
-									<string>0.0.0.0</string>
+									<string>127.0.0.1</string>
 									<string>--port</string>
 									<string>7777</string>
 									<!-- Persistent DB path for a shared/always-on host. -->
