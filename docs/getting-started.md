@@ -264,16 +264,17 @@ For how discovery works and how to point the CLI at a remote server, see
 
 By default the bundled `spelunk-server` provides embeddings (native, via the
 candle-served F2LLM-v2-330M model) and — when a chat model is configured — LLM
-inference. If you'd rather have it call your own OpenAI-compatible endpoint
-(e.g. LM Studio on port `1234`, Ollama on `11434`, or a vLLM proxy) instead of
-the native embedder, configure **the server** — this is not a CLI
-`config.toml` key. `spelunk-server` reads these environment variables (each has
-an equivalent flag):
+inference. The embedding **model is fixed** to F2LLM-v2-330M (896-dim) product-wide
+and can no longer be selected: a mismatched embedding model silently corrupts
+semantic search. You *can* relocate **where** embeddings are computed — point the
+server at your own OpenAI-compatible endpoint that serves that same model (e.g. a
+shared GPU host) — but the model itself stays fixed. Configure **the server** —
+this is not a CLI `config.toml` key. `spelunk-server` reads these environment
+variables (each has an equivalent flag):
 
 | Variable | Flag | Purpose |
 |---|---|---|
-| `SPELUNK_EMBEDDING_URL` | `--embedding-url` | Base URL of an OpenAI-compatible embedding endpoint. When set, the server embeds through it instead of the native model. |
-| `SPELUNK_EMBEDDING_MODEL` | `--embedding-model` | Model id to send to that endpoint (must match what it serves). |
+| `SPELUNK_EMBEDDING_URL` | `--embedding-url` | Base URL of an OpenAI-compatible embedding endpoint serving F2LLM-v2-330M. When set, the server embeds through it instead of computing embeddings itself. |
 | `SPELUNK_LLM_URL` | `--llm-url` | Base URL of an OpenAI-compatible chat-completions endpoint for LLM features (`explore`, summaries, `memory harvest`). |
 | `SPELUNK_LLM_MODEL` | `--llm-model` | Chat model id to send to that endpoint. |
 
@@ -283,7 +284,6 @@ daemon that is already running keeps its old configuration until restarted:
 
 ```bash
 export SPELUNK_EMBEDDING_URL="http://127.0.0.1:1234"
-export SPELUNK_EMBEDDING_MODEL="your-endpoint-model-id"
 # optional, for LLM features (explore, summaries, harvest):
 export SPELUNK_LLM_URL="http://127.0.0.1:1234"
 export SPELUNK_LLM_MODEL="your-chat-model-id"
@@ -292,20 +292,22 @@ spelunk server stop     # if one is already running
 spelunk server start    # starts with the endpoint configured above
 ```
 
-Or, if you run `spelunk-server` yourself, pass the flags directly:
+Or, if you run `spelunk-server` yourself, pass the flag directly:
 
 ```bash
-spelunk-server --embedding-url http://127.0.0.1:1234 \
-               --embedding-model your-endpoint-model-id
+spelunk-server --embedding-url http://127.0.0.1:1234
 ```
 
-A non-native embedder almost certainly produces a different vector dimension
-than the native model's 896. Set `--embedding-dim` to match your endpoint and
-start from a fresh index — the server records the dimension on the first write
-and rejects later writes that disagree (see
-[Embedding dimension](server.md#embedding-dimension)). Even when the dimension
-matches, re-embedding an existing index through the new endpoint needs a full
-re-index (`spelunk index --force`), since unchanged files are otherwise skipped.
+There is no embedding-model flag: `spelunk` always computes 896-dim
+F2LLM-v2-330M vectors, and your endpoint must serve that model. (A legacy
+`SPELUNK_EMBEDDING_MODEL` / `--embedding-model` is ignored, with a startup
+warning, rather than honoured.) `--embedding-dim` still exists so an endpoint
+whose vectors differ in dimension can be matched, but changing it means you are
+running a different model at your own risk — the server records the dimension on
+the first write and rejects later writes that disagree (see
+[Embedding dimension](server.md#embedding-dimension)). Re-embedding an existing
+index through a new endpoint needs a full re-index (`spelunk index --force`),
+since unchanged files are otherwise skipped.
 
 Tune the per-request embedding batch ceiling at index time with
 `spelunk index --batch-size <n>` if a slow or memory-constrained endpoint

@@ -69,16 +69,20 @@ struct Args {
 
     /// Base URL of an OpenAI-compatible embedding server for server-side embedding
     /// (e.g. `http://127.0.0.1:1234`). Overrides `SPELUNK_EMBEDDING_URL`.
-    /// When set, entries posted without a pre-computed `embedding` field are embedded
-    /// by the server before storage.
+    /// Relocates *where* embeddings are computed only; the model stays fixed to
+    /// F2LLM-v2-330M@896 — the endpoint must serve that model. When set, entries
+    /// posted without a pre-computed `embedding` field are embedded by the server
+    /// before storage.
     #[arg(long, env = "SPELUNK_EMBEDDING_URL")]
     embedding_url: Option<String>,
 
-    /// Embedding model name to pass to the external `--embedding-url` server (e.g.
-    /// `f2llm-v2-330m`). Ignored by the bundled native embedder. Overrides
-    /// `SPELUNK_EMBEDDING_MODEL`.
-    #[arg(long, env = "SPELUNK_EMBEDDING_MODEL", default_value = "")]
-    embedding_model: String,
+    /// Deprecated and ignored. The embedding model is fixed to F2LLM-v2-330M@896
+    /// product-wide (ADR-053); a mismatched model silently corrupts the shared
+    /// vector space (ADR-010). Retained hidden only so a legacy
+    /// `SPELUNK_EMBEDDING_MODEL` / `--embedding-model` warns and is ignored
+    /// instead of hard-failing an old deployment on upgrade. Never selects a model.
+    #[arg(long, env = "SPELUNK_EMBEDDING_MODEL", hide = true)]
+    embedding_model: Option<String>,
 
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
     /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
@@ -157,6 +161,12 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         "embed CPU thread budget resolved"
     );
 
+    // Legacy embedding-model override is ignored, not honoured (the model is
+    // fixed product-wide). Warn instead of hard-failing an old deployment.
+    if let Some(msg) = legacy_embedding_model_warning(args.embedding_model.as_deref()) {
+        tracing::warn!("{msg}");
+    }
+
     // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
     // value from any source counts as "no key" — a set-but-empty
@@ -219,12 +229,8 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // model download. When no embedder is configured at all, the slot is
     // `disabled` (embed endpoints return a permanent 400).
     let (embedder, load_native): (EmbedderSlot, bool) = if let Some(base_url) = args.embedding_url {
-        let model = if args.embedding_model.is_empty() {
-            "default".to_string()
-        } else {
-            args.embedding_model.clone()
-        };
-        tracing::info!("server-side embedding enabled: {base_url} model={model}");
+        // Model is fixed product-wide; the URL relocates compute only.
+        tracing::info!("server-side embedding enabled: {base_url} model={NATIVE_MODEL_ID}");
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
@@ -233,7 +239,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
             Arc::new(ServerEmbedder {
                 client,
                 base_url,
-                model,
+                model: NATIVE_MODEL_ID.to_string(),
             });
         (EmbedderSlot::ready(backend), false)
     } else {
@@ -393,6 +399,21 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
         "default"
     };
     ThreadBudget { threads, source }
+}
+
+// ── Legacy embedding-model override ───────────────────────────────────────────
+
+/// Warning to emit when a legacy `SPELUNK_EMBEDDING_MODEL` / `--embedding-model`
+/// is set. The embedding model is fixed to `NATIVE_MODEL_ID` product-wide
+/// (ADR-053) and can no longer be selected; a non-blank value is ignored, not
+/// honoured. Returns `None` when unset/blank so upgrades stay quiet.
+fn legacy_embedding_model_warning(model: Option<&str>) -> Option<String> {
+    let value = model.map(str::trim).filter(|m| !m.is_empty())?;
+    Some(format!(
+        "Ignoring embedding model override '{value}': the embedding model is fixed to \
+         {NATIVE_MODEL_ID} product-wide and can no longer be selected. Remove \
+         SPELUNK_EMBEDDING_MODEL / --embedding-model."
+    ))
 }
 
 // ── Bind-safety guard ─────────────────────────────────────────────────────────
@@ -1067,6 +1088,42 @@ mod arg_tests {
             args.key_file.as_deref(),
             Some(std::path::Path::new("/etc/spelunk/server-key"))
         );
+    }
+
+    // ── Legacy embedding-model override ──────────────────────────────────────
+
+    /// A legacy `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` still parses
+    /// (hidden, not removed) so an old deployment doesn't hard-fail clap on
+    /// upgrade — but it never selects a model.
+    #[test]
+    fn legacy_embedding_model_flag_still_parses() {
+        let args = Args::parse_from(["spelunk-server", "--embedding-model", "some-model"]);
+        assert_eq!(args.embedding_model.as_deref(), Some("some-model"));
+    }
+
+    /// A set (non-blank) legacy value yields a visible warning that names the
+    /// value and the fixed model, and tells the operator to remove it.
+    #[test]
+    fn legacy_embedding_model_value_warns() {
+        let msg = super::legacy_embedding_model_warning(Some("gemma-300m"))
+            .expect("a non-blank legacy value must warn");
+        assert!(msg.contains("gemma-300m"), "warning names the value: {msg}");
+        assert!(
+            msg.contains(super::NATIVE_MODEL_ID),
+            "warning names the fixed model: {msg}"
+        );
+        assert!(
+            msg.contains("SPELUNK_EMBEDDING_MODEL"),
+            "warning tells the operator which key to remove: {msg}"
+        );
+    }
+
+    /// Unset or blank → no warning, so a clean upgrade stays quiet.
+    #[test]
+    fn legacy_embedding_model_unset_or_blank_is_silent() {
+        assert!(super::legacy_embedding_model_warning(None).is_none());
+        assert!(super::legacy_embedding_model_warning(Some("")).is_none());
+        assert!(super::legacy_embedding_model_warning(Some("   ")).is_none());
     }
 
     // ── Self-contained health probe ──────────────────────────────────────────
