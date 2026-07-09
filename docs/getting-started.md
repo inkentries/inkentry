@@ -37,6 +37,18 @@ Preview what it would do without writing anything:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1))) -DryRun
 ```
 
+#### Scoop
+
+The repo doubles as a [Scoop](https://scoop.sh) bucket, so `scoop` installs and
+updates `spelunk.exe` and `spelunk-server.exe` from the release `.zip` and keeps
+them current with `scoop update`:
+
+```powershell
+scoop bucket add spelunk https://github.com/spelunk-cloud/spelunk
+scoop install spelunk
+spelunk --version
+```
+
 #### Manual `.zip` download
 
 Download the `.zip` for your platform from the
@@ -45,11 +57,9 @@ archive is named `spelunk-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
 place `spelunk.exe` and `spelunk-server.exe` anywhere on your `PATH`
 (e.g. `C:\Users\<you>\bin\`).
 
-> **Windows package managers (winget, Scoop):** a winget manifest is planned as
-> the primary managed install path for Windows; submission is pending a decision
-> on which managed channel to support. Follow the
-> [releases page](https://github.com/spelunk-cloud/spelunk/releases) or the
-> repo for updates.
+> **winget:** deferred, available on request. Track the
+> [releases page](https://github.com/spelunk-cloud/spelunk/releases) or the repo
+> for updates.
 
 ---
 

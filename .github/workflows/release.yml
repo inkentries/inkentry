@@ -310,3 +310,57 @@ jobs:
           git add Formula/spelunk.rb
           git commit -m "spelunk ${{ github.ref_name }}"
           git push origin main
+
+  update-scoop-manifest:
+    name: Update Scoop bucket (bucket/spelunk.json)
+    needs: release
+    # Skip pre-release tags (rc/beta/alpha) — the bucket only tracks stable releases.
+    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # Commit lands on main, not the tag ref.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Read Windows sha256 digest from the GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          VER="${VERSION#v}"
+          ASSET="spelunk-${VERSION}-x86_64-pc-windows-msvc.zip"
+          # The release asset's `digest` field is "sha256:<hex>".
+          SHA_X86_64_WINDOWS="$(gh release view "${VERSION}" --json assets \
+            --jq ".assets[] | select(.name == \"${ASSET}\") | .digest" \
+            | sed 's/^sha256://')"
+          echo "SHA_X86_64_WINDOWS=${SHA_X86_64_WINDOWS}" >> "$GITHUB_ENV"
+          echo "VER=${VER}"                               >> "$GITHUB_ENV"
+
+      - name: Regenerate bucket/spelunk.json
+        run: |
+          node .github/scripts/update-scoop-manifest.js \
+            --version "$VER" \
+            --sha-x86_64-windows "$SHA_X86_64_WINDOWS" \
+            --out bucket/spelunk.json
+
+          cat bucket/spelunk.json
+
+      - name: Commit and push bucket/spelunk.json
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- bucket/spelunk.json; then
+            echo "No changes to bucket/spelunk.json — skipping push."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/spelunk.json
+          git commit -m "scoop: spelunk ${{ github.ref_name }}"
+          git push origin main
