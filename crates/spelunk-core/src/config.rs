@@ -187,6 +187,54 @@ pub fn find_project_db(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Walk up from `start` for a `.spelunk/` **directory** (worktree-aware).
+/// Returns the `.spelunk` dir path, or `None` if none is found before the root.
+///
+/// Keys on the directory, not `index.db`: `spelunk init --no-index` writes a
+/// `.spelunk/config.toml` with no index, and memory needs no index. Linked
+/// worktrees resolve to the main worktree's `.spelunk/` (mirrors
+/// [`find_project_db`]).
+pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = crate::utils::resolve_main_worktree_root(start);
+    loop {
+        let candidate = dir.join(".spelunk");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// ADR-067: resolve the local project's `.spelunk/index.db` base path anchored at
+/// `start`, failing closed when `start` has no `.spelunk/` project instead of
+/// silently falling back to the global `~/.config/spelunk/` store.
+///
+/// Explicit `--db` / index-path callers bypass this (an explicit store is always
+/// honored). Memory callers apply `.with_file_name("memory.db")` to the result.
+/// `allow_global` restores the legacy global fallback and is reserved for a
+/// future `--global` flag (ADR-067 D2); no caller sets it today.
+pub fn require_project_db_at(
+    start: &Path,
+    cfg_default: &Path,
+    allow_global: bool,
+) -> Result<PathBuf> {
+    if let Some(spelunk_dir) = find_project_dir(start) {
+        return Ok(spelunk_dir.join("index.db"));
+    }
+    if allow_global {
+        return Ok(cfg_default.to_path_buf());
+    }
+    anyhow::bail!("no spelunk project here \u{2014} run 'spelunk init' first")
+}
+
+/// [`require_project_db_at`] anchored at the current working directory.
+pub fn require_project_db(cfg_default: &Path, allow_global: bool) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("resolving current directory")?;
+    require_project_db_at(&cwd, cfg_default, allow_global)
+}
+
 /// Walk up from `start` looking for `.spelunk/config.toml` (project-level config).
 /// Stops at the filesystem root. Returns the path if found.
 fn find_project_config(start: &Path) -> Option<PathBuf> {
@@ -2125,5 +2173,81 @@ project_id = "team/old"
         let store = MemoryStore::default();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert_eq!(cfg.server_key, None);
+    }
+
+    // ── find_project_dir / require_project_db_at (ADR-067) ───────────────────
+
+    /// Exact fail-closed error text mandated by ADR-067 (em dash, single quotes).
+    const NO_PROJECT_ERR: &str = "no spelunk project here \u{2014} run 'spelunk init' first";
+
+    #[test]
+    fn find_project_dir_finds_dot_spelunk_at_start() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        assert_eq!(
+            find_project_dir(tmp.path()),
+            Some(tmp.path().join(".spelunk"))
+        );
+    }
+
+    #[test]
+    fn find_project_dir_walks_up_from_subdir() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        let sub = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_project_dir(&sub), Some(tmp.path().join(".spelunk")));
+    }
+
+    #[test]
+    fn find_project_dir_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(find_project_dir(tmp.path()), None);
+    }
+
+    #[test]
+    fn find_project_dir_ignores_dot_spelunk_file() {
+        // A regular file named `.spelunk` is not a project dir.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".spelunk"), "not a dir").unwrap();
+        assert_eq!(find_project_dir(tmp.path()), None);
+    }
+
+    #[test]
+    fn require_project_db_at_returns_scoped_index_db_with_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        let global = PathBuf::from("/nonexistent/global/index.db");
+        let got = require_project_db_at(tmp.path(), &global, false).unwrap();
+        assert_eq!(got, tmp.path().join(".spelunk").join("index.db"));
+    }
+
+    #[test]
+    fn require_project_db_at_walks_up_to_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        let sub = tmp.path().join("crates").join("x");
+        std::fs::create_dir_all(&sub).unwrap();
+        let global = PathBuf::from("/nonexistent/global/index.db");
+        let got = require_project_db_at(&sub, &global, false).unwrap();
+        assert_eq!(got, tmp.path().join(".spelunk").join("index.db"));
+    }
+
+    #[test]
+    fn require_project_db_at_errors_without_project() {
+        let tmp = TempDir::new().unwrap();
+        let global = PathBuf::from("/nonexistent/global/index.db");
+        let err = require_project_db_at(tmp.path(), &global, false).unwrap_err();
+        assert_eq!(err.to_string(), NO_PROJECT_ERR);
+    }
+
+    #[test]
+    fn require_project_db_at_allow_global_returns_default_when_no_project() {
+        // The reserved --global opt-in path (ADR-067 D2) restores the legacy
+        // global fallback instead of failing closed.
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("global-index.db");
+        let got = require_project_db_at(tmp.path(), &global, true).unwrap();
+        assert_eq!(got, global);
     }
 }

@@ -10,6 +10,13 @@ database or server is required. (You can make git-notes the primary backend with
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
+Memory is scoped to a local project. Run `spelunk init` once per repository to
+create its `.spelunk/` store. In a directory with no local `.spelunk/`,
+`memory add/list/search` and `context` fail closed with a `no spelunk project
+here` error rather than reading or writing a machine-global store (see
+[ADR-067](adr/067-fail-closed-no-local-project.md)). An explicit `--db <path>`
+still overrides this.
+
 ## Why memory?
 
 Code tells you *what* the system does. Memory tells you *why* it was built that way.

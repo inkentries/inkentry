@@ -175,17 +175,22 @@ and [server.md → Local server](../server.md#local-server-automatic--no-setup).
 ```
 Capability tier:  Offline
   search          ast-grep + text
-  memory          git-notes (local)
+  memory          sqlite (local)
   explore         unavailable  [set server_url to enable]
   plan            unavailable  [set server_url to enable]
 ```
+
+The `memory` line reflects the resolved backend (`sqlite` / `git-notes` /
+`remote`), not the capability tier. In a directory with no local `.spelunk/`
+project, `spelunk status` reports `No spelunk project here` instead (see
+[fail-closed, ADR-067](../adr/067-fail-closed-no-local-project.md)).
 
 **Text output (Tier 1 — server connected):**
 
 ```
 Capability tier:  Server  (http://spelunk.internal:7777)
   search          ast-grep + text + semantic
-  memory          git-notes + server sync
+  memory          sqlite (local)
   explore         available
   plan            available
 ```

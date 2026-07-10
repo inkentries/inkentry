@@ -191,9 +191,13 @@ In non-interactive contexts (CI, agent harnesses) `spelunk init` does **not**
 auto-spawn the server — run `spelunk server start` first if you want semantic
 search there, or set `SPELUNK_NO_SERVER=1` to stay fully offline.
 
-## 3. Start using it immediately — no setup required
+## 3. Start using it inside your project
 
-No configuration needed. From inside any git repository, you can immediately:
+`graph` and `search --mode ast-grep` need no index and run in any repository.
+Memory and `context` operate on the local project you created with `spelunk init`
+(step 2); in an un-initialized directory they fail closed with a `no spelunk
+project here` error instead of using a machine-global store. From inside your
+project you can:
 
 ```bash
 # Trace callers and callees for any symbol
@@ -211,7 +215,9 @@ spelunk memory add --kind decision \
 spelunk memory list --kind decision
 ```
 
-Memory is stored in git notes — no server, no database, no configuration.
+Memory is stored locally in the project's `.spelunk/memory.db` (and mirrored to
+git notes by default), so it travels with the repo. No server or database
+service to run.
 
 ## 4. Start an agent session
 

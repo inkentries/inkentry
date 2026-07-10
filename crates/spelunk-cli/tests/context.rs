@@ -23,7 +23,11 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let tmp = TempDir::new().expect("create temp dir");
-    let db_path = tmp.path().join("spelunk.db");
+    // ADR-067: `context` fails closed without a local `.spelunk/` project, so
+    // make the temp dir a real project. The memory store then resolves to
+    // `<tmp>/.spelunk/memory.db` (where the entries below are seeded).
+    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
+    let db_path = tmp.path().join(".spelunk").join("index.db");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mock_server = rt.block_on(async {
@@ -373,7 +377,9 @@ fn context_default_limits_respected() {
 fn context_empty_memory_exits_zero_with_no_output() {
     // Fresh project with no memory entries at all.
     let tmp = TempDir::new().expect("create temp dir");
-    let db_path = tmp.path().join("spelunk.db");
+    // ADR-067: a local `.spelunk/` makes this a real (empty) project.
+    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
+    let db_path = tmp.path().join(".spelunk").join("index.db");
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
 
     // Write a valid but empty memory.db so the backend can open.

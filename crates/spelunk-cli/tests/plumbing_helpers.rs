@@ -173,7 +173,12 @@ pub fn index_fixture_project() -> (TempDir, PathBuf, PathBuf) {
 /// alive for the duration of the test.
 pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
-    let db_path = tmp.path().join("spelunk.db");
+    // Keep the index under `<tmp>/.spelunk/` so `<tmp>` is a real project that a
+    // bare (no `--db`) command run from that CWD discovers (ADR-067). Plumbing
+    // callers pass the returned `db_path` via `--db`, so the location is
+    // transparent to them.
+    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
+    let db_path = tmp.path().join(".spelunk").join("index.db");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _mock_server = rt.block_on(async {

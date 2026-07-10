@@ -148,7 +148,9 @@ fn check_json_includes_memory_backend_field() {
 // ── `spelunk status` text output ─────────────────────────────────────────────
 
 /// `spelunk status` text output (no --format json) must mention the active
-/// memory backend so humans can see which store is in use (issue #308).
+/// memory backend so humans can see which store is in use (issue #308). Since
+/// ADR-067 D3 the line reflects the resolved backend (sqlite by default), sourced
+/// from `backend_kind()` rather than the capability tier.
 #[test]
 fn status_text_mentions_memory_backend() {
     let (_temp, project_dir, config_path) = setup_offline_project();
@@ -162,5 +164,5 @@ fn status_text_mentions_memory_backend() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Memory backend:"));
+        .stdout(predicate::str::contains("sqlite (local)"));
 }

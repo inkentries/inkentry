@@ -383,13 +383,22 @@ pub(crate) fn resolve_project_and_deps(
     explicit_db: Option<&std::path::PathBuf>,
     cfg: &Config,
 ) -> Result<(std::path::PathBuf, Vec<Project>)> {
-    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+    // ADR-067: without an explicit --db, refuse when there is no local
+    // `.spelunk/` project rather than silently searching the global store. The
+    // scoped path also wins over any stray global `index.db`.
+    let project_db = match explicit_db {
+        Some(_) => None,
+        None => Some(crate::config::require_project_db(&cfg.db_path, false)?),
+    };
 
-    if !resolved.db_path.exists() {
+    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+    let db_path = project_db.unwrap_or(resolved.db_path);
+
+    if !db_path.exists() {
         if explicit_db.is_some() {
             anyhow::bail!(
                 "Database not found at '{}'. Run `spelunk index <path>` first.",
-                resolved.db_path.display()
+                db_path.display()
             );
         }
         anyhow::bail!(
@@ -399,8 +408,8 @@ pub(crate) fn resolve_project_and_deps(
     }
 
     // If the registry returned a project whose DB no longer exists, the
-    // existence check above would have caught it via resolved.db_path.
-    Ok((resolved.db_path, resolved.deps))
+    // existence check above would have caught it via db_path.
+    Ok((db_path, resolved.deps))
 }
 
 /// Annotate results with governing specs from the primary DB, and set
