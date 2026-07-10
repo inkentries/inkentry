@@ -222,3 +222,200 @@ fn status_labels_resolved_backend_as_sqlite_not_git_notes() {
         .stdout(predicate::str::contains("sqlite (local)"))
         .stdout(predicate::str::contains("git-notes").not());
 }
+
+// ── gap: the top-level `Sync` arm (main.rs), distinct from memory-dispatch ─────
+
+#[test]
+fn sync_arm_refuses_without_local_project() {
+    // `spelunk sync` is a top-level command whose guard lives in `main.rs`, not in
+    // the `memory` dispatch. With no `server_url` configured, `validate_with_project`
+    // passes, so the fail-closed guard is what must fire (not a config error).
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert!(
+        !global_memory_db(home.path()).exists(),
+        "refused sync must not create the global store"
+    );
+}
+
+// ── gap: a memory subcommand past add/list/search proves the shared funnel ─────
+
+#[test]
+fn memory_timeline_refuses_without_local_project() {
+    // Every `memory` subcommand resolves its store through the same
+    // `require_project_db` line before dispatch; `timeline` (needs no server)
+    // confirms the guard is not specific to add/list/search.
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["memory", "timeline", "anything"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert!(!global_memory_db(home.path()).exists());
+}
+
+// ── security invariant: a refused command must not MUTATE a pre-existing global ──
+//
+// The other refuse tests assert the global store is not *created*. These assert
+// the other half of ADR-067's "not created or mutated": a global store left over
+// from the pre-fix silent-fallback era is left byte-for-byte untouched.
+
+#[test]
+fn refused_memory_add_does_not_mutate_preexisting_global_store() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    let global = global_memory_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global memory store sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
+    bin(home.path(), proj.path())
+        .args([
+            "memory", "add", "--kind", "note", "--title", "t", "--body", "b",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "refused memory add must not open or mutate the pre-existing global store"
+    );
+}
+
+#[test]
+fn refused_index_search_does_not_touch_preexisting_global_index() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    let global_index = home.path().join(".config").join("spelunk").join("index.db");
+    std::fs::create_dir_all(global_index.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global_index, sentinel).unwrap();
+
+    // Index-backed search fails closed before opening any DB, so even a stray
+    // global index.db is never read or written.
+    bin(home.path(), proj.path())
+        .args(["search", "anything", "--mode", "text"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert_eq!(
+        std::fs::read(&global_index).unwrap(),
+        sentinel,
+        "refused index-backed search must not touch the pre-existing global index"
+    );
+}
+
+// ── walk-up: memory resolves the ancestor project from a deep subdir ───────────
+
+#[test]
+fn memory_add_works_from_deep_nested_subdir() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join(".spelunk")).unwrap();
+    let deep = proj.path().join("a").join("b").join("c");
+    std::fs::create_dir_all(&deep).unwrap();
+
+    // Run several levels below the `.spelunk/` project root; the guard walks up
+    // and resolves the ancestor's store, not the global one.
+    bin(home.path(), &deep)
+        .args([
+            "memory", "add", "--kind", "note", "--title", "t", "--body", "b",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored [note]"));
+
+    assert!(
+        proj.path().join(".spelunk").join("memory.db").exists(),
+        "note must land in the ancestor project's .spelunk/memory.db"
+    );
+    assert!(!global_memory_db(home.path()).exists());
+}
+
+// ── worktree-awareness: a linked worktree resolves to the main worktree's store ──
+
+/// Run `git args` in `dir`, asserting success. Isolated identity so it works on a
+/// machine with no global git config.
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("spawn git");
+    assert!(status.status.success(), "git {args:?} failed");
+}
+
+#[test]
+fn memory_resolves_main_worktree_dot_spelunk_from_linked_worktree() {
+    let home = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let main_root = tmp.path().join("main");
+    std::fs::create_dir_all(&main_root).unwrap();
+
+    git(&main_root, &["init", "-q", "-b", "main"]);
+    std::fs::write(main_root.join("f.txt"), "x\n").unwrap();
+    git(&main_root, &["add", "."]);
+    git(&main_root, &["commit", "-q", "-m", "init"]);
+
+    // Only the main worktree is a real project (has `.spelunk/`).
+    std::fs::create_dir_all(main_root.join(".spelunk")).unwrap();
+
+    // Add a linked worktree with no `.spelunk/` of its own.
+    let linked = tmp.path().join("linked");
+    git(
+        &main_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            linked.to_str().unwrap(),
+            "-b",
+            "feat",
+        ],
+    );
+    assert!(
+        !linked.join(".spelunk").exists(),
+        "precondition: linked worktree has no .spelunk/"
+    );
+
+    // ADR-067 worktree-awareness: memory run from the linked worktree must resolve
+    // to the MAIN worktree's `.spelunk/` store, not fail closed and not go global.
+    bin(home.path(), &linked)
+        .args([
+            "memory", "add", "--kind", "note", "--title", "t", "--body", "b",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored [note]"));
+
+    assert!(
+        main_root.join(".spelunk").join("memory.db").exists(),
+        "note must land in the main worktree's .spelunk/memory.db"
+    );
+    assert!(
+        !linked.join(".spelunk").exists(),
+        "the linked worktree must not get its own .spelunk/"
+    );
+    assert!(!global_memory_db(home.path()).exists());
+}
