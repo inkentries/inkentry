@@ -95,9 +95,12 @@ def extract_patch(repo_path: Path, save_patch: str | None) -> Path | None:
     --name-only` (tracked, modified) and `git ls-files --others
     --exclude-standard` (untracked, new) which allowlisted files actually
     changed — both tolerate unmatched pathspecs cleanly — then `git add --`
-    only that concrete file list. (The same unfixed pattern also exists in
-    agent.py's own --save-patch handler — out of scope to touch here per
-    spec point 2, "existing agent.py flow unchanged"; flagged separately.)
+    only that concrete file list. (agent.py's own --save-patch handler
+    already carries this identical fix inline — its comment explicitly
+    keeps itself "in lockstep" with this function. It isn't deduplicated
+    into a shared import here because touching agent.py's tool-calling loop
+    is out of scope per spec point 2, "existing agent.py flow unchanged" —
+    if this logic ever changes again, update both call sites.)
     """
     if not save_patch:
         return None

@@ -201,6 +201,46 @@ class TestProvenanceAdditiveContract:
         assert payload["resolved"] is False
         # --no-deepseek path: no live DeepSeek key/base-url involved.
         assert payload["endpoint_kind"] == "native"
+        # condition defaults to "baseline" (not a harness-specific hardcoded
+        # string like the old "claude_code_native"/"claude_code_deepseek") --
+        # see README "Conditions": claude-code is generic, not
+        # spelunk-instrumented, so condition is always baseline in practice.
+        assert payload["condition"] == "baseline"
+
+    def test_condition_flows_from_flag_not_hardcoded(
+        self, fake_claude_on_path, throwaway_repo, tmp_path
+    ):
+        # Pass a value that's neither the old hardcoded strings
+        # ("claude_code_deepseek"/"claude_code_native") nor the new default
+        # ("baseline"), to prove the output really tracks --condition rather
+        # than a fixed per-harness string.
+        issue_file = tmp_path / "ISSUE.txt"
+        issue_file.write_text("Fix the bug.")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS_CLAUDE_CODE),
+                "--task-id",
+                "fake__task-1b",
+                "--repo-path",
+                str(throwaway_repo),
+                "--issue",
+                str(issue_file),
+                "--no-deepseek",
+                "--condition",
+                "condition_passthrough_probe",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=fake_claude_on_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        line = [l for l in result.stdout.splitlines() if l.startswith("{")][-1]
+        payload = json.loads(line)
+        assert payload["condition"] == "condition_passthrough_probe"
 
 
 class TestOpencodeProvenanceAdditiveContract:
@@ -250,6 +290,9 @@ class TestOpencodeProvenanceAdditiveContract:
         assert payload["input_tokens"] == 35
         assert payload["output_tokens"] == 14
         assert payload["resolved"] is False
+        # condition defaults to "baseline" (not the old hardcoded
+        # "opencode_deepseek") -- see README "Conditions".
+        assert payload["condition"] == "baseline"
         # opencode has no claude-code effort/thinking concept -- always null
         # (README "Reproducibility / provenance contract").
         assert payload["effort"] is None

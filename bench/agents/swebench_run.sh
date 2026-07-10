@@ -18,7 +18,11 @@
 #       [--tasks 50] [--max-turns 20] [--seed 42] [--eval]
 #
 # Options:
-#   --condition     baseline|spelunk_search|spelunk_full   (required)
+#   --condition     baseline|spelunk_search|spelunk_full   (required; must be
+#                           "baseline" for --harness opencode|claude-code —
+#                           those harnesses are generic coding agents, not
+#                           spelunk-instrumented, so spelunk_search/spelunk_full
+#                           don't apply to them)
 #   --harness       none|opencode|claude-code               (default: none)
 #                   none:        agent.py's own tool-calling loop (component-clean cell)
 #                   opencode:    headless `opencode run`, DeepSeek via a generated
@@ -137,6 +141,18 @@ case "$HARNESS" in
     none|opencode|claude-code) ;;
     *) echo "Error: --harness must be one of none|opencode|claude-code (got: ${HARNESS})" >&2; exit 1 ;;
 esac
+
+# opencode/claude-code are generic coding agents, not spelunk-instrumented —
+# spelunk_search/spelunk_full only mean something for --harness none (they
+# vary spelunk tool access, which these two harnesses never have). Enforcing
+# this here (rather than just documenting it) keeps the per-task result
+# JSON's own "condition" field — which each harness script now sets from
+# --condition, see harness_opencode.py/harness_claude_code.py — from ever
+# disagreeing with what --condition claimed to request.
+if [[ "$HARNESS" != "none" && "$CONDITION" != "baseline" ]]; then
+    echo "Error: --condition must be baseline for --harness ${HARNESS} (got: ${CONDITION})." >&2
+    exit 1
+fi
 
 if [[ "$HARNESS" == "claude-code" && "$ENDPOINT_KIND" == "shim" && -z "$SHIM_BASE_URL" ]]; then
     echo "Error: --shim-base-url is required with --harness claude-code --endpoint-kind shim." >&2
@@ -277,6 +293,7 @@ for TASK_ID in $ALL_TASK_IDS; do
             ;;
         opencode)
             RUNNER_ARGS=(
+                --condition "$CONDITION"
                 --task-id "$TASK_ID"
                 --repo-path "$TASK_REPO"
                 --issue "$ISSUE_FILE"
@@ -291,6 +308,7 @@ for TASK_ID in $ALL_TASK_IDS; do
             ;;
         claude-code)
             RUNNER_ARGS=(
+                --condition "$CONDITION"
                 --task-id "$TASK_ID"
                 --repo-path "$TASK_REPO"
                 --issue "$ISSUE_FILE"

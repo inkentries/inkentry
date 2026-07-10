@@ -52,7 +52,13 @@ runs; it is kept only so old invocations in scrollback don't 404.
 at a time between comparisons (bench/AGENTS.md principle #1). `spelunk_search`
 / `spelunk_full` are meaningful only for `--harness none` (see "Harnesses"
 below); opencode and claude-code are generic coding agents, not
-spelunk-instrumented, so they only ever run as `baseline`.
+spelunk-instrumented, so they only ever run as `baseline` —
+`swebench_run.sh` errors if `--condition` isn't `baseline` for those two
+harnesses, and each harness's own result JSON records `condition` from
+`--condition` (default `baseline`) rather than a hardcoded per-harness
+string, so the value in the JSON always matches what was requested. (The
+DeepSeek-vs-native-Claude distinction for the claude-code harness lives in
+`endpoint_kind`, not `condition` — see the provenance table below.)
 
 ## Harnesses
 
@@ -197,6 +203,10 @@ without a separate schema change.
   environment) and skips all DeepSeek env overrides — this is the escape
   hatch for exercising the harness plumbing without a DeepSeek key, and the
   intended path for future native-Claude-model cells.
+- Like the opencode harness, `--max-turns` is accepted and recorded in
+  provenance for CLI-contract parity across harnesses, but is **not
+  enforced** — it is never passed to the `claude -p` subprocess. Don't read
+  it as an enforced ceiling for this harness either.
 
 ## swebench_run.sh — Batch orchestrator
 

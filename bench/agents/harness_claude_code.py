@@ -180,6 +180,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="SWE-bench single-task runner — claude-code harness (headless)."
     )
+    parser.add_argument(
+        "--condition",
+        default="baseline",
+        help=(
+            "Recorded verbatim in provenance as condition. claude-code is a "
+            "generic coding agent, not spelunk-instrumented, so this is "
+            "always baseline in practice — see bench/agents/README.md. The "
+            "deepseek-vs-native distinction lives in endpoint_kind, not here."
+        ),
+    )
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--repo-path", required=True)
     parser.add_argument("--issue", required=True)
@@ -291,7 +301,7 @@ def main() -> None:
 
     output = {
         "benchmark": "swebench-verified",
-        "condition": "claude_code_deepseek" if not args.no_deepseek else "claude_code_native",
+        "condition": args.condition,
         "harness": "claude-code",
         "harness_version": claude_version,
         "endpoint_kind": endpoint_kind,
