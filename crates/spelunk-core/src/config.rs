@@ -226,7 +226,7 @@ pub fn require_project_db_at(
     if allow_global {
         return Ok(cfg_default.to_path_buf());
     }
-    anyhow::bail!("no spelunk project here \u{2014} run 'spelunk init' first")
+    anyhow::bail!("no spelunk project here. Run 'spelunk init' first")
 }
 
 /// [`require_project_db_at`] anchored at the current working directory.
@@ -2177,8 +2177,9 @@ project_id = "team/old"
 
     // ── find_project_dir / require_project_db_at (ADR-067) ───────────────────
 
-    /// Exact fail-closed error text mandated by ADR-067 (em dash, single quotes).
-    const NO_PROJECT_ERR: &str = "no spelunk project here \u{2014} run 'spelunk init' first";
+    /// Exact fail-closed error text (ADR-067; em dash restructured out per the
+    /// no-em-dash house rule for user-facing copy).
+    const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
 
     #[test]
     fn find_project_dir_finds_dot_spelunk_at_start() {

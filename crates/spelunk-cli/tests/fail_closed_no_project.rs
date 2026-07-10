@@ -14,8 +14,9 @@ use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Exact fail-closed error text mandated by ADR-067 (em dash, single quotes).
-const NO_PROJECT_ERR: &str = "no spelunk project here \u{2014} run 'spelunk init' first";
+/// Exact fail-closed error text (ADR-067; em dash restructured out per the
+/// no-em-dash house rule for user-facing copy).
+const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
 
 /// A `spelunk` command with an isolated HOME (so the "global" store lives under
 /// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
