@@ -255,5 +255,3 @@ bearer key in ADR-058:
 - rustls with the `ring` provider and safe protocol defaults (TLS 1.2+/1.3)
   keeps the added stack memory-safe and conservatively configured; no
   operator-tunable cipher policy is exposed in this iteration.
-</content>
-</invoke>
