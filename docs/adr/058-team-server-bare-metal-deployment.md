@@ -1,5 +1,12 @@
 # ADR-058: Recommended team-server deployment is bare-metal + systemd; Docker is a local scaffold
 
+> **Partially superseded by [ADR-066](066-native-tls-in-spelunk-server.md) (2026-07-10).**
+> ADR-066 adds in-process HTTPS to `spelunk-server`, reversing the "Native TLS in
+> spelunk-server" Non-goal below and revisiting the Docker-vs-bare-metal reasoning
+> (a routable TLS bind makes a container reachable, so Docker is no longer
+> mechanically excluded). The systemd unit, dedicated user, credential handling,
+> and sandboxing decisions in this ADR remain in force.
+
 **Date:** 2026-07-05
 **Deciders:** founder (Johan), architect
 **Trigger:** founder review on PR #516 (spelunk-oss^79). The pre-v1.0 server
@@ -271,11 +278,12 @@ ADR does not depend on that field existing.
 
 ## Non-goals
 
-- **Native TLS in `spelunk-server`.** Adding `--tls`/`--cert` and an in-process
-  TLS stack is explicitly **out of scope**. It is a larger decision (certificate
-  lifecycle, renewal, ACME, cipher policy — all things a mature proxy already
-  does well) and would be its own ADR if ever pursued. Today, TLS is the
-  operator's terminator's job.
+- **Native TLS in `spelunk-server`.** ~~Adding `--tls`/`--cert` and an in-process
+  TLS stack is explicitly **out of scope**.~~ **Superseded by
+  [ADR-066](066-native-tls-in-spelunk-server.md):** the server now terminates
+  HTTPS itself via `--tls-cert`/`--tls-key`. ADR-058's caveat that this "would be
+  its own ADR if ever pursued" is exactly what ADR-066 is. Certificate lifecycle
+  automation (ACME) remains deferred there.
 - **Reopening the Docker-vs-bare-metal or the bundled-proxy question.** Both are
   settled (founder, PR #516). This ADR designs the bare-metal path; it does not
   re-litigate the choice.
