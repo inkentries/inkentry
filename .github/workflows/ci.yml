@@ -113,9 +113,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-v2-
 
-      - name: Install ast-grep
-        run: npm install --global @ast-grep/cli
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
