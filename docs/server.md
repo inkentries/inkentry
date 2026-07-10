@@ -23,8 +23,8 @@ When you run a command that needs inference — `spelunk init`, a semantic
 address `127.0.0.1:7777`. If none is running, it starts the bundled
 `spelunk-server` in the background, owned by your user, and reuses it for the
 rest of the session and future runs. You don't configure anything, and you don't
-manage a process. Memory still lives in local git-notes; the local server only
-provides inference.
+manage a process. Memory still lives in the local project's `memory.db`; the
+local server only provides inference.
 
 If you ever need to manage it explicitly:
 

@@ -16,7 +16,7 @@ used; the binary is the same in both tiers.
 | **Condition** | No `server_url` configured, or server unreachable | `server_url` set and health probe succeeds |
 | **Search** | ast-grep + BM25 text | + semantic KNN (server encodes query, CLI does local KNN) |
 | **Index** | Parse + AST chunk + graph (no embeddings) | + embedding phase: server generates vectors, CLI stores in local DB |
-| **Memory add/list/show/archive** | git-notes (local) | Same |
+| **Memory add/list/show/archive** | sqlite (local) | Same |
 | **Memory push/pull** | Not available | Sync git-notes entries to/from server DB |
 | **Memory search** | Not available | Server encodes query, does KNN over server-side memory DB |
 | **Memory harvest** | Not available | LLM extraction via server |
