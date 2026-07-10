@@ -20,12 +20,11 @@
   see ../README.md ("Pushing spelunk configuration").
 
   REACHING IT OFF-HOST
-  This job binds loopback (--host 127.0.0.1). spelunk-server refuses a
-  non-loopback plaintext bind with no override, so do NOT change --host to
-  0.0.0.0 (the daemon would fail to start). To serve other machines, run an
-  operator-owned TLS reverse proxy (Caddy, nginx) on this host forwarding
-  HTTPS to 127.0.0.1:7777, exactly like the Windows example and the
-  bare-metal shape in ../../../docs/self-hosting.md.
+  This job binds loopback (--host 127.0.0.1) only, and this profile is scoped
+  to local, on-host use. spelunk-server refuses a non-loopback plaintext bind
+  with no override, so do NOT change --host to 0.0.0.0 (the daemon would fail
+  to start). This profile does not expose the server to other machines;
+  reaching it off-host is a separate deployment decision, out of scope here.
 
   BEFORE YOU DEPLOY
   1. Regenerate every PayloadUUID below (`uuidgen`) so this profile does not
@@ -90,10 +89,8 @@
 									<!-- Path the install script uses when run as root. -->
 									<string>/usr/local/bin/spelunk-server</string>
 									<!--
-									  Loopback bind. spelunk-server refuses a non-loopback plaintext
-									  bind (no override); reach it off-host via an operator-owned TLS
-									  reverse proxy forwarding to 127.0.0.1:7777. See the header note
-									  and ../../../docs/self-hosting.md.
+									  Loopback bind only. spelunk-server refuses a non-loopback
+									  plaintext bind (no override); see the header note.
 									-->
 									<string>--host</string>
 									<string>127.0.0.1</string>

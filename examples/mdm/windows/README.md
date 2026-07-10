@@ -79,14 +79,13 @@ Run one long-lived `spelunk-server` and point every laptop at it.
    Service Control Manager protocol, so `sc.exe create` / `New-Service` pointed
    directly at it will fail to start (error 1053). A wrapper is required; the
    script uses NSSM, and WinSW or a startup Task Scheduler task work equally.
-3. **Terminate TLS in front of it.** `spelunk-server` refuses a non-loopback
-   plaintext bind with no override, so it is not reachable off-host by itself.
-   Put an operator-owned TLS reverse proxy (IIS with ARR, nginx, or Caddy) on the
-   same host, forwarding HTTPS to `127.0.0.1:7777`. This mirrors the bare-metal
-   shape in [`../../../docs/self-hosting.md`](../../../docs/self-hosting.md).
+3. **This installs a loopback-only server.** `spelunk-server` refuses a
+   non-loopback plaintext bind with no override, so the service from step 2 is
+   not reachable off-host by itself. Exposing it to other machines is a
+   separate deployment decision, out of scope for this script and README.
 4. **Pre-configure the laptops.** Push [`../spelunk-config.toml`](../spelunk-config.toml)
    to each user's `%USERPROFILE%\.config\spelunk\config.toml` with `server_url`
-   set to the **proxy's HTTPS URL** (e.g. `https://spelunk.internal`), and deliver
+   set to wherever your own deployment makes the server reachable, and deliver
    the shared `SPELUNK_SERVER_KEY` via the environment mechanism below.
 
 ## Pushing spelunk configuration on Windows
