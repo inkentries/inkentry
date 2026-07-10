@@ -111,6 +111,49 @@ fn index_backed_search_refuses_without_local_project() {
         .stderr(predicate::str::contains(NO_PROJECT_ERR));
 }
 
+// ── exempt: index-free ast-grep search (ADR-067 D1) ────────────────────────────
+
+#[test]
+fn ast_grep_search_works_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    // `--mode ast-grep` touches no index and no global store, so it must run live
+    // over the working tree in an un-init'd dir rather than fail closed. The
+    // `greet($$$ARGS)` call pattern matches the call site in `caller`.
+    bin(home.path(), proj.path())
+        .args([
+            "search",
+            "greet($$$ARGS)",
+            "--mode",
+            "ast-grep",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"file_path\""))
+        .stdout(predicate::str::contains("lib.rs"));
+
+    // Index-free search must never create or read the machine-global store.
+    assert!(
+        !home
+            .path()
+            .join(".config")
+            .join("spelunk")
+            .join("index.db")
+            .exists(),
+        "ast-grep search must not create the global index"
+    );
+    assert!(!global_memory_db(home.path()).exists());
+}
+
 // ── exempt: a real local project, an explicit --db, and `spelunk index` ────────
 
 #[test]

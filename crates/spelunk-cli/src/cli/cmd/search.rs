@@ -83,14 +83,24 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // after attempting to load it; for now, fall through to normal path.
     }
 
+    // ADR-067 D1: index-free ast-grep touches no index and no global store, so
+    // it is never project-gated — run it live before the fail-closed resolve.
+    if mode == "ast-grep" {
+        return search_live(
+            &args.query,
+            &args.format,
+            std::path::Path::new("."),
+            args.limit,
+        );
+    }
+
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
 
-    // Explicit (non-auto, non-ast-grep) modes surface an empty index as an
-    // actionable error instead of a silent "No results found." — the ast-grep
-    // mode never touches the index, and auto mode already degraded above.
+    // Explicit (non-auto) index-backed modes surface an empty index as an
+    // actionable error instead of a silent "No results found." — ast-grep
+    // returned above, and auto mode already degraded above.
     if !auto_mode
-        && mode != "ast-grep"
         && Database::open(&db_path)
             .and_then(|db| db.stats())
             .is_ok_and(|s| s.chunk_count == 0)
@@ -163,14 +173,6 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .unwrap_or_default();
         sp.finish_and_clear();
         res
-    } else if mode == "ast-grep" {
-        // Explicit ast-grep mode: skip index entirely.
-        return search_live(
-            &args.query,
-            &args.format,
-            std::path::Path::new("."),
-            args.limit,
-        );
     } else {
         // semantic, hybrid, or auto: need an embedding via server.
         //
