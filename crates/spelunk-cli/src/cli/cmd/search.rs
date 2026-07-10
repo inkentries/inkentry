@@ -83,14 +83,24 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // after attempting to load it; for now, fall through to normal path.
     }
 
+    // ADR-067 D1: index-free ast-grep touches no index and no global store, so
+    // it is never project-gated — run it live before the fail-closed resolve.
+    if mode == "ast-grep" {
+        return search_live(
+            &args.query,
+            &args.format,
+            std::path::Path::new("."),
+            args.limit,
+        );
+    }
+
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg)?;
     crate::storage::record_usage_at(&db_path, "search");
 
-    // Explicit (non-auto, non-ast-grep) modes surface an empty index as an
-    // actionable error instead of a silent "No results found." — the ast-grep
-    // mode never touches the index, and auto mode already degraded above.
+    // Explicit (non-auto) index-backed modes surface an empty index as an
+    // actionable error instead of a silent "No results found." — ast-grep
+    // returned above, and auto mode already degraded above.
     if !auto_mode
-        && mode != "ast-grep"
         && Database::open(&db_path)
             .and_then(|db| db.stats())
             .is_ok_and(|s| s.chunk_count == 0)
@@ -163,14 +173,6 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .unwrap_or_default();
         sp.finish_and_clear();
         res
-    } else if mode == "ast-grep" {
-        // Explicit ast-grep mode: skip index entirely.
-        return search_live(
-            &args.query,
-            &args.format,
-            std::path::Path::new("."),
-            args.limit,
-        );
     } else {
         // semantic, hybrid, or auto: need an embedding via server.
         //
@@ -383,13 +385,22 @@ pub(crate) fn resolve_project_and_deps(
     explicit_db: Option<&std::path::PathBuf>,
     cfg: &Config,
 ) -> Result<(std::path::PathBuf, Vec<Project>)> {
-    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+    // ADR-067: without an explicit --db, refuse when there is no local
+    // `.spelunk/` project rather than silently searching the global store. The
+    // scoped path also wins over any stray global `index.db`.
+    let project_db = match explicit_db {
+        Some(_) => None,
+        None => Some(crate::config::require_project_db(&cfg.db_path, false)?),
+    };
 
-    if !resolved.db_path.exists() {
+    let resolved = resolve_project_context(explicit_db.map(|p| p.as_path()), &cfg.db_path)?;
+    let db_path = project_db.unwrap_or(resolved.db_path);
+
+    if !db_path.exists() {
         if explicit_db.is_some() {
             anyhow::bail!(
                 "Database not found at '{}'. Run `spelunk index <path>` first.",
-                resolved.db_path.display()
+                db_path.display()
             );
         }
         anyhow::bail!(
@@ -399,8 +410,8 @@ pub(crate) fn resolve_project_and_deps(
     }
 
     // If the registry returned a project whose DB no longer exists, the
-    // existence check above would have caught it via resolved.db_path.
-    Ok((resolved.db_path, resolved.deps))
+    // existence check above would have caught it via db_path.
+    Ok((db_path, resolved.deps))
 }
 
 /// Annotate results with governing specs from the primary DB, and set

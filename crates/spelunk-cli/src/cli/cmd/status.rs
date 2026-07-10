@@ -18,7 +18,7 @@ pub struct StatusArgs {
 
 use crate::{
     capability::{self, Tier},
-    config::{Config, resolve_db},
+    config::Config,
     registry::{Registry, resolve_project_context},
     storage::{Database, open_memory_backend},
 };
@@ -56,6 +56,10 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
     // JSON mode: current project stats only
     if fmt == "json" {
+        // ADR-067: fail closed when there is no local `.spelunk/` project rather
+        // than reporting the global store as if it were this project's. The
+        // scoped path also wins over any stray global `index.db`.
+        let db_path = crate::config::require_project_db(&cfg.db_path, false)?;
         let tier = capability::get_tier(&cfg).await;
 
         let resolved = resolve_project_context(None, &cfg.db_path)?;
@@ -63,14 +67,13 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             .project
             .as_ref()
             .map(|p| p.root_path.display().to_string());
-        let db_path = resolved.db_path;
 
         let db = Database::open(&db_path)?;
         let stats = db.stats()?;
         let languages = db.language_stats().unwrap_or_default();
         let drift = db.drift_candidates(30, 10).unwrap_or_default();
         let usage = db.usage_last_7_days().unwrap_or_default();
-        let mem_path = resolve_db(None, &cfg.db_path).with_file_name("memory.db");
+        let mem_path = db_path.with_file_name("memory.db");
         let (memory_count, memory_backend_kind) =
             match open_memory_backend(&cfg, &mem_path, None).await.ok() {
                 Some(b) => {
@@ -237,11 +240,20 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    // Current project only
+    // Current project only.
+    // ADR-067: fail closed when there is no local `.spelunk/` project rather than
+    // describing the global store. The scoped path also wins over a stray global
+    // `index.db`.
+    let db_path = match crate::config::require_project_db(&cfg.db_path, false) {
+        Ok(p) => p,
+        Err(_) => {
+            println!("No spelunk project here. Run `spelunk init` first.");
+            return Ok(());
+        }
+    };
     let tier = capability::get_tier(&cfg).await;
 
     let resolved = resolve_project_context(None, &cfg.db_path)?;
-    let db_path = &resolved.db_path;
 
     if !db_path.exists() {
         println!("No index found for the current directory (checked parents too).");
@@ -249,17 +261,18 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    let db = Database::open(db_path)?;
+    let db = Database::open(&db_path)?;
     let s = db.stats()?;
 
-    // ── Memory backend ────────────────────────────────────────────────────────
-    let mem_path_text = resolve_db(None, &cfg.db_path).with_file_name("memory.db");
-    if let Ok(b) = open_memory_backend(&cfg, &mem_path_text, None).await {
-        println!("Memory backend: {}", b.backend_kind());
-    }
+    // ── Memory backend (single truthful line from the resolved backend, ADR-067 D3) ──
+    let mem_path_text = db_path.with_file_name("memory.db");
+    let mem_label = match open_memory_backend(&cfg, &mem_path_text, None).await {
+        Ok(b) => memory_backend_label(b.backend_kind()).to_string(),
+        Err(_) => "unavailable".to_string(),
+    };
 
     // ── Capability tier section ───────────────────────────────────────────────
-    print_tier_section(tier, &cfg);
+    print_tier_section(tier, &cfg, &mem_label);
 
     if let Some(p) = &resolved.project {
         println!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
@@ -331,7 +344,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
-fn print_tier_section(tier: &Tier, cfg: &Config) {
+/// `mem_label` is the resolved memory line (ADR-067 D3): derived from the opened
+/// backend's `backend_kind()`, never inferred from the capability tier.
+fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
     match tier {
         Tier::Offline => {
             let server_hint = if cfg.server_url.is_some() {
@@ -341,7 +356,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             };
             println!("Capability tier:  \x1b[33mOffline\x1b[0m");
             println!("  search          ast-grep + text{server_hint}");
-            println!("  memory          git-notes (local)");
+            println!("  memory          {mem_label}");
             println!("  explore         unavailable  [set server_url to enable]");
         }
         Tier::Server {
@@ -368,11 +383,6 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
             if let Some(line) = embedder_status_line(embedder_state) {
                 println!("{line}");
             }
-            let mem_label = if caps.memory_push {
-                "git-notes + server sync"
-            } else {
-                "git-notes (local)"
-            };
             println!("  memory          {mem_label}");
             let explore_label = if caps.explore {
                 "available"
@@ -383,6 +393,17 @@ fn print_tier_section(tier: &Tier, cfg: &Config) {
         }
     }
     println!();
+}
+
+/// Human-readable label for a resolved memory `backend_kind()` (ADR-067 D3).
+/// The parenthetical is derived from the backend kind, not the capability tier.
+fn memory_backend_label(kind: &str) -> &str {
+    match kind {
+        "sqlite" => "sqlite (local)",
+        "git-notes" => "git-notes (local)",
+        "remote" => "remote (server)",
+        other => other,
+    }
 }
 
 /// Render the `embedder` line for `spelunk status` (text mode) from the
@@ -510,5 +531,21 @@ mod tests {
     #[test]
     fn embedding_progress_hidden_for_empty_index() {
         assert!(embedding_progress_line(0, 0).is_none());
+    }
+
+    // ── memory_backend_label: resolved-backend memory line (ADR-067 D3) ─────────
+
+    #[test]
+    fn memory_backend_label_maps_resolved_kinds() {
+        // The label reflects the resolved backend_kind(), never the tier. Default
+        // resolved backend is sqlite, so an offline repo must not read git-notes.
+        assert_eq!(memory_backend_label("sqlite"), "sqlite (local)");
+        assert_eq!(memory_backend_label("git-notes"), "git-notes (local)");
+        assert_eq!(memory_backend_label("remote"), "remote (server)");
+    }
+
+    #[test]
+    fn memory_backend_label_passes_through_unknown() {
+        assert_eq!(memory_backend_label("future-kind"), "future-kind");
     }
 }

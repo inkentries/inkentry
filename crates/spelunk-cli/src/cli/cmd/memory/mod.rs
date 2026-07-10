@@ -372,9 +372,12 @@ mod watch;
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
-    let mem_path = args.db.clone().unwrap_or_else(|| {
-        crate::config::resolve_db(None, &cfg.db_path).with_file_name("memory.db")
-    });
+    // ADR-067: fail closed when there is no local `.spelunk/` project instead of
+    // silently using the global store. `--db` is an explicit override, exempt.
+    let mem_path = match args.db.clone() {
+        Some(p) => p,
+        None => crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db"),
+    };
     let be = backend_override(&args.backend);
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be).await,

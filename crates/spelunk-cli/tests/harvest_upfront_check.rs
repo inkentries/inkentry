@@ -20,6 +20,9 @@ const SERVER_REQUIRED: &str = "'spelunk memory harvest' requires spelunk-server"
 
 /// Write a minimal config file under `dir`.  `extra` is appended verbatim.
 fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
+    // ADR-067: harvest fails closed without a local `.spelunk/` project, which
+    // would pre-empt the server-gate check under test. Make `dir` a real project.
+    fs::create_dir_all(dir.join(".spelunk")).expect("create .spelunk");
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");
     let content = format!(

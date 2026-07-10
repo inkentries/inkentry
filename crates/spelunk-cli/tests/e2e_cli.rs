@@ -131,9 +131,9 @@ fn test_status_empty_project() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "No index found for the current directory",
-        ));
+        // ADR-067: an un-init'd dir fails closed and reports no project rather
+        // than describing the global store.
+        .stdout(predicate::str::contains("No spelunk project here"));
 }
 
 use wiremock::matchers::{method, path, path_regex};
@@ -415,7 +415,9 @@ async fn test_status_shows_offline_tier() {
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Offline"))
         .stdout(predicate::str::contains("ast-grep + text"))
-        .stdout(predicate::str::contains("git-notes (local)"))
+        // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
+        // default), not a tier-derived git-notes label.
+        .stdout(predicate::str::contains("sqlite (local)"))
         .stdout(predicate::str::contains("set server_url to enable"));
 }
 
@@ -470,7 +472,10 @@ async fn test_status_shows_server_tier() {
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Server"))
         .stdout(predicate::str::contains("semantic"))
-        .stdout(predicate::str::contains("server sync"));
+        // ADR-067 D3: memory line reflects the resolved backend. With an explicit
+        // team server_url the mode is local_first, so the store is local sqlite
+        // (converged by `spelunk sync`), not a tier-inferred "server sync" label.
+        .stdout(predicate::str::contains("sqlite (local)"));
 }
 
 #[tokio::test]

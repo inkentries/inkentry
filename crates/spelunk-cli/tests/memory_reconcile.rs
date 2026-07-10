@@ -41,32 +41,36 @@ fn ensure_sqlite_vec() {
     });
 }
 
-/// Write a minimal spelunk config file.
+/// Write a minimal spelunk config file and make `dir` a real project.
 ///
-/// `db_path` is the `db_path` config value (the index database).  The memory
-/// database defaults to a sibling `memory.db` next to `db_path` when no
-/// explicit `--db` flag is passed to `spelunk memory`.
+/// ADR-067: `memory reconcile` (a memory subcommand) fails closed without a
+/// local `.spelunk/` project, so we create `<dir>/.spelunk/`. Memory is now
+/// project-scoped: the CLI resolves it to `<dir>/.spelunk/memory.db` regardless
+/// of the config `db_path`. The incoming `db_path` argument is ignored (kept for
+/// call-site compatibility).
 ///
 /// We deliberately do NOT pass `memory --db` in `reconcile_cmd` because the
 /// `MemoryArgs.db` arg is `global = true` in clap, which means a second `--db`
 /// on the `reconcile` subcommand would override the memory path rather than
-/// setting the reconcile source path.  Instead we control the memory.db
-/// location via `db_path` in the config.
+/// setting the reconcile source path.
 ///
 /// Returns `(config_path, mem_path)` where `mem_path` is where the CLI will
 /// write `memory.db`.
-fn write_config(dir: &Path, db_path: &Path) -> (PathBuf, PathBuf) {
+fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
+    let spelunk_dir = dir.join(".spelunk");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk");
+    let index_db = spelunk_dir.join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
         format!(
             "db_path = {:?}\nllm_model = \"test-model\"\n",
-            db_path.display().to_string()
+            index_db.display().to_string()
         ),
     )
     .expect("write config");
-    // The CLI resolves memory.db as a sibling of db_path.
-    let mem_path = db_path.with_file_name("memory.db");
+    // Project-scoped memory store lives next to the index inside `.spelunk/`.
+    let mem_path = index_db.with_file_name("memory.db");
     (config_path, mem_path)
 }
 

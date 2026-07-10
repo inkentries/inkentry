@@ -42,6 +42,10 @@ fn init_repo(dir: &std::path::Path) {
     fs::write(dir.join("README.md"), "hello\n").unwrap();
     run(&["add", "."]);
     run(&["commit", "-q", "-m", "initial commit"]);
+    // ADR-067: `memory harvest` fails closed without a local `.spelunk/` project,
+    // so make this repo a real project — otherwise the guard fires before the
+    // ref-injection check under test is reached.
+    fs::create_dir_all(dir.join(".spelunk")).expect("create .spelunk");
 }
 
 #[test]
