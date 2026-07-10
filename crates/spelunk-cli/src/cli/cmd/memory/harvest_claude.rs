@@ -47,7 +47,7 @@ pub(super) async fn harvest_claude_code(
 ) -> Result<()> {
     // Tier-0 gate: harvest requires server inference.
     let server = ServerInferenceClient::from_config(cfg)
-        .ok_or_else(|| harvest_requires_server(cfg.resolve_inference_url()))?;
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     // 1. Require explicit confirmation.
     if !args.confirm {
