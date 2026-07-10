@@ -17,10 +17,10 @@
   user is logged on, with restart-on-failure. Pick one; don't stack them.
 
   This binds loopback (127.0.0.1) only. spelunk-server refuses a non-loopback
-  plaintext bind unconditionally, so a team-reachable server is loopback + an
-  operator-owned TLS reverse proxy (IIS ARR, nginx, Caddy) on the same host.
-  Point laptops at the proxy's HTTPS URL, not at this port. See
-  ../../../docs/self-hosting.md and ../../../docs/adr/056-oss-server-tenancy-model.md.
+  plaintext bind unconditionally, so this service is not reachable off-host by
+  itself. Exposing it to other machines is a separate deployment decision, out
+  of scope for this script. See ../../../docs/adr/056-oss-server-tenancy-model.md
+  for the trust model once you have a reachability plan.
 
 .NOTES
   Run as Administrator. Verify NSSM argument names against your NSSM version;
@@ -44,8 +44,8 @@ param(
     # Persistent DB + logs for an always-on host.
     [string]$DataDir = "$env:ProgramData\spelunk",
 
-    # Shared API key. REQUIRED for any server other teammates reach (via the
-    # TLS proxy). Prefer passing it out-of-band over hardcoding it here.
+    # Shared API key. REQUIRED for any server other teammates reach. Prefer
+    # passing it out-of-band over hardcoding it here.
     [Parameter(Mandatory = $true)]
     [string]$ServerKey
 )
