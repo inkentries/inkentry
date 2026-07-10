@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Batch run agent.py across tasks, writing results incrementally.
 
+RETIRED: swebench_run.sh is the canonical batch orchestrator for
+bench/agents/ (it also supports the --harness none|opencode|claude-code
+dimension — see bench/agents/README.md). This script hardcodes
+REPOS_DIR = ~/opensource/spelunk-bench/repos with no fallback/override and
+has drifted out of sync with setup_repos.sh's repo-dir convention. Kept only
+so old invocations in scrollback don't 404 — do not use it for new runs.
+
 Usage:
     python3 bench/agents/batch_run.py \\
         --condition spelunk_search \\

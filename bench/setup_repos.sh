@@ -67,11 +67,10 @@ retry() {
 
     local attempt=1
     local delay=5
+    local rc=0
     while [[ $attempt -le $attempts ]]; do
-        if "$@" 2>/tmp/spelunk-setup-git-stderr.$$; then
-            return 0
-        fi
-        local rc=$?
+        "$@" 2>/tmp/spelunk-setup-git-stderr.$$ && return 0
+        rc=$?
         if [[ $attempt -lt $attempts ]]; then
             echo "    Retry ${attempt}/${attempts}: ${desc} failed (exit ${rc}), retrying in ${delay}s..." >&2
             sleep "$delay"
