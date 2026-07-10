@@ -472,7 +472,8 @@ Prices live in a committed config (`bench/agents/pricing.json`, override with
 placeholder that yields **no** cost estimate (the cell is marked `Priced: no`)
 rather than a silent zero — prices are never hardcoded in the script. The
 shipped config carries Sonnet 5 and Opus 4.8 list prices (Sonnet 5 also notes
-its intro pricing through 2026-08-31) and DeepSeek placeholders.
+its intro pricing through 2026-08-31) and DeepSeek V4 Flash/Pro list prices
+(verified 2026-07-10).
 
 Per cell, `raw $` = `Σ_rows (input_tokens × P_in + output_tokens × P_out)`.
 Rows already span every seed present, so there is no `n_seeds` multiplier here.

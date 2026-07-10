@@ -15,16 +15,16 @@
       "note": "List price."
     },
     "deepseek-v4-flash": {
-      "input_per_mtok": null,
-      "output_per_mtok": null,
-      "verified_on": null,
-      "note": "PLACEHOLDER — fill with a verified DeepSeek list price (and set verified_on) before trusting any projection for this model."
+      "input_per_mtok": 0.14,
+      "output_per_mtok": 0.28,
+      "verified_on": "2026-07-10",
+      "note": "List price."
     },
     "deepseek-v4-pro": {
-      "input_per_mtok": null,
-      "output_per_mtok": null,
-      "verified_on": null,
-      "note": "PLACEHOLDER — fill with a verified DeepSeek list price (and set verified_on) before trusting any projection for this model."
+      "input_per_mtok": 0.435,
+      "output_per_mtok": 0.87,
+      "verified_on": "2026-07-10",
+      "note": "List price."
     }
   },
   "projections": [
