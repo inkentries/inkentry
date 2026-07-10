@@ -737,6 +737,32 @@ pub fn remove_auth_tokens_from(config_path: &Path) -> Result<()> {
     write_config_secure(config_path, &serialised)
 }
 
+/// Write `slug` as `project_id` to a project-level `.spelunk/config.toml`,
+/// creating the file (and parent dir) if absent. Other keys are preserved.
+///
+/// Returns `(effective_slug, wrote)`: if the file already sets `project_id`,
+/// it is left untouched — `wrote` is `false` and the existing value is returned
+/// (no retroactive rename). This is a committed, shared file, so it is written
+/// with normal permissions (unlike the secret-bearing personal config).
+pub fn write_project_slug(config_path: &Path, slug: &str) -> Result<(String, bool)> {
+    let mut doc = read_config_table(config_path)?;
+    if let Some(existing) = doc.get("project_id").and_then(|v| v.as_str()) {
+        return Ok((existing.to_string(), false));
+    }
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating config dir {}", parent.display()))?;
+    }
+    doc.insert(
+        "project_id".to_string(),
+        toml::Value::String(slug.to_string()),
+    );
+    let serialised = toml::to_string_pretty(&doc).context("serialising config.toml")?;
+    std::fs::write(config_path, serialised)
+        .with_context(|| format!("writing {}", config_path.display()))?;
+    Ok((slug.to_string(), true))
+}
+
 /// Parse the config file into a `toml::Table`, returning an empty table when the
 /// file does not exist.
 fn read_config_table(config_path: &Path) -> Result<toml::Table> {
@@ -867,6 +893,58 @@ mod tests {
     /// never touch the host keychain or `~/.config/spelunk/secrets.toml`.
     fn load_hermetic(path: &Path) -> Result<Config> {
         Config::load_with_store(Some(path), &MemoryStore::default())
+    }
+
+    #[test]
+    fn write_project_slug_creates_file_and_reports_written() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join(".spelunk").join("config.toml");
+
+        let (slug, wrote) = write_project_slug(&cfg, "github.com/acme/app").unwrap();
+        assert_eq!(slug, "github.com/acme/app");
+        assert!(wrote);
+
+        let raw = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            raw.contains("project_id = \"github.com/acme/app\""),
+            "{raw}"
+        );
+    }
+
+    #[test]
+    fn write_project_slug_preserves_existing_and_does_not_rename() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "server_url = \"http://team:7777\"\nproject_id = \"old/slug\"\n",
+        )
+        .unwrap();
+
+        let (slug, wrote) = write_project_slug(&cfg, "local/deadbeef").unwrap();
+        assert_eq!(slug, "old/slug");
+        assert!(!wrote);
+
+        let raw = std::fs::read_to_string(&cfg).unwrap();
+        assert!(raw.contains("project_id = \"old/slug\""), "{raw}");
+        assert!(raw.contains("server_url"), "other keys preserved: {raw}");
+    }
+
+    #[test]
+    fn write_project_slug_adds_key_preserving_other_keys() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.toml");
+        std::fs::write(&cfg, "server_url = \"http://team:7777\"\n").unwrap();
+
+        let (_, wrote) = write_project_slug(&cfg, "github.com/acme/app").unwrap();
+        assert!(wrote);
+
+        let raw = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            raw.contains("project_id = \"github.com/acme/app\""),
+            "{raw}"
+        );
+        assert!(raw.contains("server_url"), "existing key preserved: {raw}");
     }
 
     /// Unset all spelunk-related env vars to prevent cross-test contamination.

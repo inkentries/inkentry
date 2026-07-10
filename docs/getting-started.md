@@ -161,10 +161,15 @@ spelunk search "where do we validate auth tokens"
 ```
 
 `init` also writes `.spelunk/.gitignore` so the machine-specific SQLite
-(`index.db*`, `memory.db*`) stays out of version control. It leaves
-`.spelunk/config.toml` and `.spelunk/cloud-project-id.lock` tracked, since those
-are meant to be committed and shared. An existing `.spelunk/.gitignore` is never
-overwritten, so re-running `init` is safe.
+(`index.db*`, `memory.db*`) stays out of version control, and records the
+project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
+git-derived identity (`host/owner/repo` when an `origin` remote exists, else
+`local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an
+explicit one for a repo without a remote. Both `.spelunk/config.toml` and
+`.spelunk/cloud-project-id.lock` stay tracked, since they are meant to be
+committed and shared, so the whole team resolves to one project identity. An
+existing `project_id` or `.spelunk/.gitignore` is never overwritten, so
+re-running `init` is safe.
 
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
@@ -345,10 +350,11 @@ This:
 
 Output:
 ```
-spelunk initialised for my-project
+spelunk initialised for github.com/acme/my-project
 
   Index:   142 files, 1 840 chunks
   DB:      ~/.local/share/spelunk/my-project.db
+  Project: github.com/acme/my-project  (written to .spelunk/config.toml)
   Embeddings: 1 840 vectors
 ```
 

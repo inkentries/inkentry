@@ -10,6 +10,12 @@ pub struct InitArgs {
     /// Skip the initial index run
     #[arg(long)]
     pub no_index: bool,
+
+    /// Explicit project slug, written to `.spelunk/config.toml`. Overrides the
+    /// git-derived default; use it for projects without a git remote. Ignored
+    /// when a `project_id` is already set in config.
+    #[arg(long)]
+    pub name: Option<String>,
 }
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
@@ -29,25 +35,43 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    let project_name = project_root
+    // Directory basename — a cosmetic title only (used for the CLAUDE.md heading).
+    let dir_name = project_root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| project_root.to_string_lossy().into_owned());
 
     let spelunk_dir = project_root.join(".spelunk");
     let db_path = spelunk_dir.join("index.db");
+    let config_path = spelunk_dir.join("config.toml");
 
     // Ignore machine-specific SQLite (index.db/memory.db + their -wal/-shm
     // sidecars); config.toml and cloud-project-id.lock are committed, so must
     // not be listed here. Idempotent: never clobbers a pre-existing file.
     write_spelunk_gitignore(&spelunk_dir);
 
+    // Project slug: explicit --name, else derived (`host/owner/repo` when a git
+    // remote exists, else `local/<blake3-hex>`). Written to config.toml, never
+    // overwriting an existing project_id (no retroactive rename).
+    let desired_slug = args
+        .name
+        .clone()
+        .unwrap_or_else(|| spelunk_core::config::derive_project_id(&project_root));
+    let (project_slug, wrote_slug) =
+        match spelunk_core::config::write_project_slug(&config_path, &desired_slug) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Warning: could not write project slug to config: {e}");
+                (desired_slug.clone(), false)
+            }
+        };
+
     // ── 2. Check if already initialised ──────────────────────────────────────
     let already_exists = db_path.exists();
     if already_exists {
         println!(
             "Note: spelunk is already initialised for '{}' (DB exists at {}).",
-            project_name,
+            project_slug,
             db_path.display()
         );
         println!("Re-running init is safe — it will update the registry and optionally re-index.");
@@ -159,7 +183,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
              spelunk memory add --kind handoff --title \"Handoff: <summary>\" --body \"done, next, open\"\n\
              spelunk index .               # re-index after any commits\n\
              ```\n",
-            name = project_name
+            name = dir_name
         );
         if let Err(e) = std::fs::write(&claude_md_path, claude_md) {
             eprintln!("Warning: could not write CLAUDE.md: {e}");
@@ -199,10 +223,23 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
 
     // ── 8. Print success summary ──────────────────────────────────────────────
     println!();
-    println!("spelunk initialised for {}", project_name);
+    println!("spelunk initialised for {}", project_slug);
     println!();
     println!("  Index:   {} files, {} chunks", file_count, chunk_count);
     println!("  DB:      {}", db_path.display());
+    if wrote_slug {
+        println!(
+            "  Project: {}  (written to {})",
+            project_slug,
+            config_path.display()
+        );
+    } else {
+        println!(
+            "  Project: {}  (from {})",
+            project_slug,
+            config_path.display()
+        );
+    }
     println!("  Hook:    {}", hook_status);
     if let Some(line) = server_line {
         println!("  Server:  {line}");

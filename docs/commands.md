@@ -26,13 +26,23 @@ spelunk init [options]
 |------|---------|-------------|
 | `--hook` | false | Also install the post-commit git hook |
 | `--no-index` | false | Skip the initial index run |
+| `--name <slug>` | derived | Explicit project slug. Overrides the git-derived default; use it for projects without a git remote. |
+
+`init` writes the project slug to `.spelunk/config.toml` (committed, so the whole
+team shares one identity). The slug defaults to the git-derived value:
+`host/owner/repo` when an `origin` remote exists, else `local/<blake3-hex>` of the
+canonical path. Pass `--name` to set an explicit slug for a repo without a remote
+or to choose your own. An existing `project_id` in config is never rewritten, so
+re-running `init` (or running it after a rename) does not change an established
+slug.
 
 **Example:**
 
 ```bash
 cd /path/to/project
 spelunk init
-spelunk init --hook        # also wire up auto-index/harvest on commit
+spelunk init --hook            # also wire up auto-index/harvest on commit
+spelunk init --name acme/tools # explicit slug (e.g. no git remote)
 ```
 
 ---
