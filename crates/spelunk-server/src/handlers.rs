@@ -399,20 +399,30 @@ fn require_embedder(
         return Ok(backend);
     }
     match state.embedder.state() {
-        EmbedderState::Loading => Err(AppError::EmbedderWarmingUp {
-            terminal: false,
-            detail: state
+        EmbedderState::Loading => {
+            let detail = state
                 .embedder
                 .detail()
-                .unwrap_or_else(|| "embedder warming up, retry shortly".to_string()),
-        }),
-        EmbedderState::Unavailable => Err(AppError::EmbedderWarmingUp {
-            terminal: true,
-            detail: state
+                .unwrap_or_else(|| "embedder warming up, retry shortly".to_string());
+            // Log the real cause: a 503 here is the model still loading, not a
+            // generic outage. Keeps the transient case out of error logs.
+            tracing::debug!(%detail, "embed request rejected: embedder still loading");
+            Err(AppError::EmbedderWarmingUp {
+                terminal: false,
+                detail,
+            })
+        }
+        EmbedderState::Unavailable => {
+            let detail = state
                 .embedder
                 .detail()
-                .unwrap_or_else(|| "embedder failed to load".to_string()),
-        }),
+                .unwrap_or_else(|| "embedder failed to load".to_string());
+            tracing::warn!(%detail, "embed request rejected: embedder unavailable (load failed)");
+            Err(AppError::EmbedderWarmingUp {
+                terminal: true,
+                detail,
+            })
+        }
         // Disabled (or the improbable ready-but-no-backend race) → permanent 400.
         EmbedderState::Disabled | EmbedderState::Ready => {
             Err(AppError::BadRequest(disabled_msg.to_string()))

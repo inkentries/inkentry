@@ -614,6 +614,35 @@ fn current_uid() -> Option<u32> {
     }
 }
 
+/// Guidance for an *inference*-backed feature (semantic `memory search`,
+/// `memory timeline`, `memory harvest`) that has no reachable server.
+///
+/// These features only need inference (query embedding / LLM extraction), which
+/// a zero-config local server satisfies — so the remedy depends on state:
+///   - `server_url` unset → no server is configured; point at the local
+///     auto-server. Never mention `server_url` (that is team-memory setup, a
+///     heavier and unrelated fix).
+///   - `server_url` set but unreachable → the configured team server is down;
+///     surface the URL so the user knows what to check.
+///
+/// This is deliberately NOT `require_tier1`'s message: `memory push/pull/watch`
+/// and `sync` genuinely require an explicit team `server_url`, so for those the
+/// `server_url` advice is correct.
+pub fn inference_server_required_message(feature: &str, server_url: Option<&str>) -> String {
+    match server_url {
+        None => format!(
+            "'spelunk {feature}' requires spelunk-server.\n\
+             Run `spelunk server start` to enable this feature."
+        ),
+        Some(url) => format!(
+            "'spelunk {feature}' requires spelunk-server.\n\
+             The configured server_url ({url}) is unreachable. Start it and retry, or \
+             remove server_url from ~/.config/spelunk/config.toml to use a local server \
+             (`spelunk server start`)."
+        ),
+    }
+}
+
 /// Return `Ok(())` if the tier is `Server`, otherwise return an `anyhow::Error`
 /// with the standard locked-feature message format.
 ///
@@ -885,6 +914,44 @@ mod tests {
         let eff = Tier::Offline.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
         assert_eq!(eff.server_url, None);
         assert_eq!(eff.inference_url, None);
+    }
+
+    // ── inference_server_required_message (oss^133) ──────────────────────────
+
+    /// No server reachable AND no `server_url` configured (solo user, no local
+    /// server running): the message must point at the zero-setup local server
+    /// and must NOT mention `server_url` (the misleading team-infra advice).
+    #[test]
+    fn inference_msg_no_server_url_points_at_local_start_only() {
+        let msg = inference_server_required_message("memory search", None);
+        assert!(msg.contains("'spelunk memory search' requires spelunk-server"));
+        assert!(
+            msg.contains("spelunk server start"),
+            "must point at the local auto-server: {msg}"
+        );
+        assert!(
+            !msg.contains("server_url"),
+            "must NOT mention server_url when none is configured: {msg}"
+        );
+    }
+
+    /// A team `server_url` IS configured but unreachable: mentioning it is now
+    /// legitimate, and the message still offers the local fallback.
+    #[test]
+    fn inference_msg_configured_server_url_mentions_it() {
+        let msg =
+            inference_server_required_message("memory search", Some("https://team.example:7777"));
+        assert!(msg.contains("server_url"));
+        assert!(msg.contains("https://team.example:7777"));
+        assert!(msg.contains("spelunk server start"));
+    }
+
+    /// Feature name is interpolated (harvest reuses this via
+    /// `harvest_requires_server`, preserving its Tier-0 substring contract).
+    #[test]
+    fn inference_msg_interpolates_feature_and_keeps_harvest_substring() {
+        let msg = inference_server_required_message("memory harvest", None);
+        assert!(msg.contains("'spelunk memory harvest' requires spelunk-server"));
     }
 
     // ── require_tier1 ────────────────────────────────────────────────────────

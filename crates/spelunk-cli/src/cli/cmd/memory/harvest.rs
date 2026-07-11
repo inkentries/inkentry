@@ -59,8 +59,10 @@ pub(super) async fn memory_harvest(
     let cfg = &eff_cfg;
 
     // Tier-0: harvest requires server inference (#259 locked-feature error).
+    // Pass the configured team `server_url` (usually `None` here) so the guidance
+    // points at the local auto-server rather than team setup (oss^133).
     if cfg.resolve_inference_url().is_none() {
-        return Err(harvest_requires_server(None));
+        return Err(harvest_requires_server(cfg.server_url.as_deref()));
     }
 
     if args.detach {
@@ -192,7 +194,7 @@ async fn memory_harvest_git(
     });
 
     let server = ServerInferenceClient::from_config(cfg)
-        .ok_or_else(|| harvest_requires_server(cfg.resolve_inference_url()))?;
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -578,7 +580,7 @@ async fn memory_harvest_failures(
     });
 
     let server = ServerInferenceClient::from_config(cfg)
-        .ok_or_else(|| harvest_requires_server(cfg.resolve_inference_url()))?;
+        .ok_or_else(|| harvest_requires_server(cfg.server_url.as_deref()))?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;

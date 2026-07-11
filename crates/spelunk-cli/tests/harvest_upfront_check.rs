@@ -63,7 +63,11 @@ fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
     harvest_cmd(&config_path, temp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(SERVER_REQUIRED));
+        .stderr(predicate::str::contains(SERVER_REQUIRED))
+        // oss^133: with no `server_url` the guidance must point at the local
+        // server and must NOT tell a solo user to configure a team `server_url`.
+        .stderr(predicate::str::contains("spelunk server start"))
+        .stderr(predicate::str::contains("server_url").not());
 }
 
 // ── (b) server_url set → gate passes (fails later for another reason) ─────────

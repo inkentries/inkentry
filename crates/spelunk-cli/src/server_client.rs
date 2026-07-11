@@ -444,12 +444,19 @@ impl ServerInferenceClient {
 
         // Response is raw little-endian f32 bytes (one vector, `dim` floats).
         let url = self.embed_url();
-        let bytes = self
+        let resp = self
             .send_authed(|| self.client.post(&url).json(&body))
             .await
-            .context("POST /index/embed (query vector)")?
-            .error_for_status()
-            .context("spelunk-server returned an error for /index/embed")?
+            .context("POST /index/embed (query vector)")?;
+        // Surface the server's structured reason (e.g. embedder still loading /
+        // failed to load) instead of a bare "HTTP status 503" so a memory search
+        // against a warming-up local server gets actionable guidance (oss^133).
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("{}", server_inference_error("/index/embed", status, &text));
+        }
+        let bytes = resp
             .bytes()
             .await
             .context("reading /index/embed response")?;
@@ -562,17 +569,45 @@ impl spelunk_core::llm::LlmBackend for ServerLlmAdapter {
     }
 }
 
+/// Format a non-2xx spelunk-server inference response into an actionable error.
+///
+/// The server returns a `{ error, state, detail }` JSON body for an unready
+/// embedder (state `loading`/`unavailable`). `reqwest::error_for_status` throws
+/// that body away and yields a bare "HTTP status 503", so we parse it here and
+/// append a next-step hint (oss^133).
+fn server_inference_error(endpoint: &str, status: reqwest::StatusCode, body: &str) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let field = |k: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    };
+    let reason = field("detail").or_else(|| field("error"));
+    let hint = match field("state") {
+        Some("loading") => " Retry shortly (`spelunk server status`).",
+        Some("unavailable") => " See `spelunk server logs`.",
+        _ => "",
+    };
+    match reason {
+        Some(reason) => format!("spelunk-server {endpoint} returned {status}: {reason}.{hint}"),
+        None => format!("spelunk-server {endpoint} returned {status}.{hint}"),
+    }
+}
+
 // ── Tier-0 error helper ───────────────────────────────────────────────────────
 
-/// Return the standard locked-feature error when harvest is attempted without a server.
+/// Return the locked-feature error when harvest is attempted without a server.
+///
+/// Harvest needs inference only, so a local `spelunk server start` suffices;
+/// pass the configured team `server_url` (or `None`) so the message points at
+/// the right fix (oss^133). See `capability::inference_server_required_message`.
 pub fn harvest_requires_server(server_url: Option<&str>) -> anyhow::Error {
-    let tried = server_url
-        .map(|u| format!("\n       (Tried: {u} — unreachable)"))
-        .unwrap_or_default();
-    anyhow::anyhow!(
-        "'spelunk memory harvest' requires spelunk-server.\n\
-         Set server_url in ~/.config/spelunk/config.toml to enable this feature.{tried}"
-    )
+    anyhow::anyhow!(crate::capability::inference_server_required_message(
+        "memory harvest",
+        server_url
+    ))
 }
 
 #[cfg(test)]
@@ -993,6 +1028,82 @@ mod tests {
             ServerInferenceClient::from_config(&cfg).is_some(),
             "https:// inference URL (any host) must be accepted"
         );
+    }
+
+    // ── server_inference_error (oss^133 bare-503 surfacing) ──────────────────
+
+    #[test]
+    fn inference_error_surfaces_loading_detail_and_retry_hint() {
+        let body = serde_json::json!({
+            "error": "embedder warming up, retry shortly",
+            "state": "loading",
+            "detail": "downloading model (42%)",
+        })
+        .to_string();
+        let msg = server_inference_error(
+            "/index/embed",
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            &body,
+        );
+        assert!(msg.contains("downloading model (42%)"), "got: {msg}");
+        assert!(msg.contains("spelunk server status"), "got: {msg}");
+        // The bare status is no longer the whole story.
+        assert!(msg.contains("503"), "got: {msg}");
+    }
+
+    #[test]
+    fn inference_error_surfaces_unavailable_points_at_logs() {
+        let body = serde_json::json!({
+            "error": "embedder unavailable",
+            "state": "unavailable",
+            "detail": "OOM loading GGUF",
+        })
+        .to_string();
+        let msg = server_inference_error(
+            "/index/embed",
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            &body,
+        );
+        assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
+        assert!(msg.contains("spelunk server logs"), "got: {msg}");
+    }
+
+    #[test]
+    fn inference_error_falls_back_when_body_not_json() {
+        // A non-JSON body (proxy error page, empty) still yields a clean line.
+        let msg = server_inference_error(
+            "/index/embed",
+            reqwest::StatusCode::BAD_GATEWAY,
+            "<html>502</html>",
+        );
+        assert!(msg.contains("/index/embed"), "got: {msg}");
+        assert!(msg.contains("502"), "got: {msg}");
+    }
+
+    /// End-to-end: a 503 from `/index/embed` must surface the server's `detail`
+    /// (not a bare "HTTP status 503") when embedding a query vector.
+    #[tokio::test]
+    async fn embed_text_surfaces_server_detail_on_503() {
+        let inference = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/index/embed"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": "embedder warming up, retry shortly",
+                "state": "loading",
+                "detail": "loading F2LLM weights",
+            })))
+            .mount(&inference)
+            .await;
+
+        let client =
+            ServerInferenceClient::for_test(&inference.uri(), "proj", Some("sk".into()), None);
+        let err = client
+            .embed_text("hello")
+            .await
+            .expect_err("503 must surface as an error");
+        let msg = err.to_string();
+        assert!(msg.contains("loading F2LLM weights"), "got: {msg}");
+        assert!(msg.contains("spelunk server status"), "got: {msg}");
     }
 
     /// `/v1/health`-style probes aside, inference requests built via
