@@ -259,10 +259,6 @@ struct ProjectConfig {
     /// Shared API key — acceptable if the server is behind a VPN/firewall.
     /// For secrets, prefer `SPELUNK_SERVER_KEY` env var instead.
     server_key: Option<String>,
-    /// Deprecated alias for server_url.
-    memory_server_url: Option<String>,
-    /// Deprecated alias for server_key.
-    memory_server_key: Option<String>,
     project_id: Option<String>,
 }
 
@@ -302,8 +298,7 @@ pub struct Config {
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.
-    /// The old `memory_server_url` TOML key is accepted as a backward-compat alias.
-    #[serde(default, alias = "memory_server_url")]
+    #[serde(default)]
     pub server_url: Option<String>,
 
     /// Bearer token for cloud/spelunk-server auth — the single token every auth
@@ -311,8 +306,7 @@ pub struct Config {
     /// Set in `~/.config/spelunk/config.toml` (personal), written by
     /// `spelunk login`, or overridden via `SPELUNK_SERVER_KEY`.
     /// Do NOT commit this to `.spelunk/config.toml`.
-    /// The old `memory_server_key` TOML key is accepted as a backward-compat alias.
-    #[serde(default, alias = "memory_server_key")]
+    #[serde(default)]
     pub server_key: Option<String>,
 
     /// Project slug for the spelunk-server (e.g. `acme/my-app`).
@@ -494,11 +488,10 @@ impl Config {
             let proj: ProjectConfig =
                 toml::from_str(&raw).context("parsing .spelunk/config.toml")?;
 
-            // Prefer new name; fall back to deprecated alias.
-            if let Some(v) = proj.server_url.or(proj.memory_server_url) {
+            if let Some(v) = proj.server_url {
                 cfg.server_url = Some(v);
             }
-            if let Some(v) = proj.server_key.or(proj.memory_server_key) {
+            if let Some(v) = proj.server_key {
                 project_server_key = Some(v.clone());
                 cfg.server_key = Some(v);
             }
@@ -537,11 +530,6 @@ impl Config {
 
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
-            cfg.server_url = Some(v);
-        } else if let Ok(v) = std::env::var("SPELUNK_MEMORY_SERVER_URL") {
-            tracing::warn!(
-                "SPELUNK_MEMORY_SERVER_URL is deprecated; use SPELUNK_SERVER_URL instead"
-            );
             cfg.server_url = Some(v);
         }
         let env_server_key = std::env::var("SPELUNK_SERVER_KEY").ok();
@@ -999,7 +987,6 @@ mod tests {
     fn clear_spelunk_env() {
         unsafe {
             std::env::remove_var("SPELUNK_SERVER_URL");
-            std::env::remove_var("SPELUNK_MEMORY_SERVER_URL");
             std::env::remove_var("SPELUNK_SERVER_KEY");
             std::env::remove_var("SPELUNK_PROJECT_ID");
             std::env::remove_var("SPELUNK_MODE");
@@ -1165,11 +1152,13 @@ specs_dir = "docs/specs"
         assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
     }
 
-    // ── serde alias: memory_server_url → server_url ─────────────────────────
+    // ── breaking change: the deprecated memory_server_* keys are gone ───────
 
     #[test]
     #[serial_test::serial]
-    fn memory_server_url_alias_loads_as_server_url() {
+    fn deprecated_memory_server_keys_are_ignored() {
+        // The old aliases were removed pre-1.0: these keys no longer populate
+        // server_url/server_key and are silently dropped as unknown.
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1177,28 +1166,6 @@ specs_dir = "docs/specs"
             &config_path,
             r#"
 memory_server_url = "http://old.example.com:7777"
-project_id = "my-proj"
-"#,
-        )
-        .unwrap();
-
-        let cfg = load_hermetic(&config_path).unwrap();
-        assert_eq!(
-            cfg.server_url,
-            Some("http://old.example.com:7777".to_string())
-        );
-        assert_eq!(cfg.project_id, Some("my-proj".to_string()));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn memory_server_key_alias_loads_as_server_key() {
-        clear_spelunk_env();
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(
-            &config_path,
-            r#"
 memory_server_key = "secret-token"
 project_id = "my-proj"
 "#,
@@ -1206,7 +1173,9 @@ project_id = "my-proj"
         .unwrap();
 
         let cfg = load_hermetic(&config_path).unwrap();
-        assert_eq!(cfg.server_key, Some("secret-token".to_string()));
+        assert_eq!(cfg.server_url, None);
+        assert_eq!(cfg.server_key, None);
+        assert_eq!(cfg.project_id, Some("my-proj".to_string()));
     }
 
     #[test]
@@ -1657,44 +1626,6 @@ project_id = "my-proj"
         assert_eq!(cfg.project_id, Some("env-proj".to_string()));
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn env_memory_server_url_deprecated_fallback() {
-        clear_spelunk_env();
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(&config_path, "").unwrap();
-
-        // Only set the deprecated var; SPELUNK_SERVER_URL must be absent.
-        unsafe {
-            std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
-        }
-        let cfg = load_hermetic(&config_path).unwrap();
-        assert_eq!(
-            cfg.server_url,
-            Some("http://old.example.com:7777".to_string())
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn env_spelunk_server_url_precedence_over_memory_fallback() {
-        clear_spelunk_env();
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(&config_path, "").unwrap();
-
-        unsafe {
-            std::env::set_var("SPELUNK_SERVER_URL", "http://new.example.com:7777");
-            std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
-        }
-        let cfg = load_hermetic(&config_path).unwrap();
-        assert_eq!(
-            cfg.server_url,
-            Some("http://new.example.com:7777".to_string())
-        );
-    }
-
     // ── .spelunk/config.toml project-level merge ─────────────────────────────
 
     #[test]
@@ -1871,7 +1802,8 @@ project_id = "team/proj"
 
     #[test]
     #[serial_test::serial]
-    fn project_level_config_accepts_memory_server_url_alias() {
+    fn project_level_config_ignores_deprecated_memory_server_url() {
+        // Breaking change: the removed alias no longer resolves in project config.
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
@@ -1892,10 +1824,7 @@ project_id = "team/old"
         std::env::set_current_dir(&proj_dir).unwrap();
 
         let cfg = load_hermetic(&global_config).unwrap();
-        assert_eq!(
-            cfg.server_url,
-            Some("http://old.example.com:7777".to_string())
-        );
+        assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.project_id, Some("team/old".to_string()));
 
         if let Some(d) = original_cwd {

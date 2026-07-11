@@ -38,7 +38,6 @@ fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command 
     let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         // Disable loopback auto-discovery so the server gate fires before the
         // git-log step even when a local spelunk-server happens to be running.

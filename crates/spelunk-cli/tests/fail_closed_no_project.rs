@@ -24,8 +24,7 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
         .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL");
+        .env_remove("SPELUNK_SERVER_URL");
     cmd
 }
 
