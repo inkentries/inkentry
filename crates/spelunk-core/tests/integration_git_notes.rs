@@ -195,6 +195,33 @@ async fn git_notes_concurrent_same_head_stays_consistent() {
     }
 }
 
+/// Deterministic sibling of the concurrent test: two *sequential* adds to the
+/// same HEAD both survive as distinct records. The concurrent test only reaches
+/// the 2-note path on a rare scheduling race (~1% of runs), so its distinct /
+/// well-formed checks are seldom exercised; this locks the same-HEAD append
+/// contract down on every run without any timing dependence.
+#[tokio::test]
+#[serial]
+async fn git_notes_sequential_same_head_both_survive_distinct() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    backend.add(note_input("note", "agent A")).await.expect("A");
+    backend.add(note_input("note", "agent B")).await.expect("B");
+
+    let notes = backend.list(None, 10, false, None).await.expect("list");
+    assert_eq!(notes.len(), 2, "both sequential same-HEAD adds survive");
+    for n in &notes {
+        assert_eq!(n.kind, "note", "unexpected kind: {}", n.kind);
+    }
+    let titles: std::collections::HashSet<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["agent A", "agent B"].into_iter().collect(),
+        "both writers present and distinct"
+    );
+}
+
 /// Archive marks an entry with status=archived and hides it from default list.
 #[tokio::test]
 #[serial]
