@@ -139,6 +139,17 @@ By default (`store_in_git_notes = true`) `memory add` also writes the entry to
 `refs/notes/spelunk` on `HEAD`, so memory travels with the code. Graceful no-op
 outside a git repo.
 
+To check those notes by hand with stock git, point it at the `spelunk` ref.
+Plain `git notes show` reads git's default `commits` ref and reports "no note
+found", which is a false negative:
+
+```bash
+git notes --ref=spelunk show HEAD    # notes on the current commit
+git notes --ref=spelunk list         # every commit carrying spelunk notes
+# equivalently
+GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+```
+
 ### Query
 
 ```bash
