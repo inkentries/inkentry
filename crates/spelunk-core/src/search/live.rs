@@ -59,6 +59,108 @@ fn detect_support_lang(path: &Path) -> Option<SupportLang> {
     support_lang(spelunk_lang)
 }
 
+/// A query is a structural ast-grep pattern when it contains a metavariable
+/// (`$X`, `$$FOO`, `$$$ARGS`). Plain strings have none and are matched by
+/// substring rather than node-text equality (spelunk-oss^130).
+fn is_structural_pattern(query: &str) -> bool {
+    query.contains('$')
+}
+
+/// Zero-setup search entry used by the CLI `search` fallback.
+///
+/// Structural patterns (with metavariables) run through the ast-grep matcher
+/// unchanged. A plain string is matched **case-insensitively**: first as a
+/// substring of identifier/text (named-leaf) nodes, then — for any file the
+/// node pass leaves uncovered — as a literal line scan, so a substring that
+/// demonstrably exists in a file never returns empty (spelunk-oss^130).
+pub fn search_live_query(query: &str, root: &Path, limit: usize) -> Vec<LiveMatch> {
+    if query.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    if is_structural_pattern(query) {
+        return search_live_matches(query, root, limit);
+    }
+    search_live_substring(query, root, limit)
+}
+
+/// Case-insensitive plain-string search: substring over identifier/text nodes,
+/// with a literal line scan beneath ast-grep for files the node pass misses
+/// (non-code files, or a substring spanning tokens / in an unparsed region).
+fn search_live_substring(query: &str, root: &Path, limit: usize) -> Vec<LiveMatch> {
+    let needle = query.to_lowercase();
+    let mut out: Vec<LiveMatch> = Vec::new();
+
+    for entry in WalkBuilder::new(root)
+        .standard_filters(true)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+    {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue; // non-UTF8 / binary — skip, mirroring the structural path.
+        };
+        if !src.to_lowercase().contains(&needle) {
+            continue;
+        }
+        let file_path = path.to_string_lossy().into_owned();
+        let before = out.len();
+
+        // Pass 1 — substring of identifier/text nodes (named leaves) via ast-grep.
+        if let Some(lang) = detect_support_lang(path) {
+            let spelunk_lang = crate::indexer::parser::detect_language(path).unwrap_or("unknown");
+            let ast: AstGrep<_> = lang.ast_grep(&src);
+            for node in ast.root().dfs() {
+                if out.len() >= limit {
+                    break;
+                }
+                // Named leaves are identifiers/comments/literals — the terminal
+                // tokens; this skips punctuation and every enclosing ancestor.
+                if !(node.is_named() && node.is_named_leaf()) {
+                    continue;
+                }
+                let text = node.text();
+                if !text.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                out.push(LiveMatch {
+                    file_path: file_path.clone(),
+                    language: spelunk_lang.to_string(),
+                    start_line: node.start_pos().line() + 1,
+                    end_line: node.end_pos().line() + 1,
+                    text: text.into_owned(),
+                });
+            }
+        }
+
+        // Pass 2 (beneath ast-grep) — the file contains the substring but the
+        // node pass matched nothing here. A literal line scan guarantees the
+        // substring is never silently dropped.
+        if out.len() == before {
+            let spelunk_lang = crate::indexer::parser::detect_language(path).unwrap_or("text");
+            for (i, line) in src.lines().enumerate() {
+                if out.len() >= limit {
+                    break;
+                }
+                if line.to_lowercase().contains(&needle) {
+                    out.push(LiveMatch {
+                        file_path: file_path.clone(),
+                        language: spelunk_lang.to_string(),
+                        start_line: i + 1,
+                        end_line: i + 1,
+                        text: line.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
+
 /// Run a structural pattern search over the working tree rooted at `root`.
 ///
 /// Walks files honouring `.gitignore` / `.ignore` (same traversal rules as the
@@ -171,5 +273,90 @@ mod tests {
         let matches = search_live_matches("def hello():\n    $$$BODY", dir.path(), 10);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].language, "python");
+    }
+
+    // ── plain-string substring search (spelunk-oss^130) ─────────────────────────
+
+    #[test]
+    fn plain_substring_matches_identifier() {
+        // The reported bug: a substring of an identifier found nothing.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "struct BillingEntity { id: u64 }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("Billing", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text.contains("BillingEntity")),
+            "substring 'Billing' should match the BillingEntity identifier: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_is_case_insensitive() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        let matches = search_live_query("billing", dir.path(), 10);
+        assert!(
+            !matches.is_empty(),
+            "lowercase 'billing' should match BillingEntity"
+        );
+    }
+
+    #[test]
+    fn plain_exact_identifier_still_matches() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "fn f() { let _ = BillingEntity; }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("BillingEntity", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text.contains("BillingEntity")),
+            "exact identifier must still match: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_absent_string_returns_nothing() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        let matches = search_live_query("Zzznotpresent", dir.path(), 10);
+        assert!(matches.is_empty(), "absent string must yield no matches");
+    }
+
+    #[test]
+    fn plain_substring_matches_non_code_file() {
+        // Exercises the literal line-scan pass beneath ast-grep: a `.txt` file has
+        // no tree-sitter grammar, so the node pass is skipped entirely.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "the BillingEntity ledger\n").unwrap();
+        let matches = search_live_query("Billing", dir.path(), 10);
+        assert!(
+            !matches.is_empty(),
+            "literal text pass should find the substring in a non-code file"
+        );
+    }
+
+    #[test]
+    fn structural_pattern_stays_structural() {
+        // `$X.foo()` contains a metavariable, so it must match the method call
+        // structurally — not substring-match the `.foo()` text in the string
+        // literal on the same line.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "fn f(a: T) { a.foo(); let _s = \"call .foo() somewhere\"; }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("$X.foo()", dir.path(), 10);
+        assert_eq!(
+            matches.len(),
+            1,
+            "structural pattern matches the call only, not the string literal: {matches:?}"
+        );
+        assert!(matches[0].text.contains("a.foo()"));
     }
 }

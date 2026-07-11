@@ -154,6 +154,71 @@ fn ast_grep_search_works_without_local_project() {
     assert!(!global_memory_db(home.path()).exists());
 }
 
+// ── zero-setup plain-string substring search (spelunk-oss^130) ─────────────────
+
+/// The reported bug: an exact identifier matched but a *substring* of it (and
+/// case variants) returned "No results found." in the index-free path, both in
+/// `auto` mode and explicit `--mode ast-grep`.
+#[test]
+fn zero_setup_search_matches_identifier_substring() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("model.rs"),
+        "pub struct BillingEntity { pub id: u64 }\n\
+         fn use_it() { let _ = BillingEntity { id: 1 }; }\n",
+    )
+    .unwrap();
+
+    // Exact identifier still works.
+    bin(home.path(), proj.path())
+        .args([
+            "search",
+            "BillingEntity",
+            "--mode",
+            "ast-grep",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model.rs"));
+
+    // Substring (auto mode, no index): the un-init'd dir degrades to the live
+    // path, which must now find "Billing" inside "BillingEntity".
+    bin(home.path(), proj.path())
+        .args(["search", "Billing", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model.rs"))
+        .stdout(predicate::str::contains("No results found.").not());
+
+    // Substring, explicit ast-grep mode.
+    bin(home.path(), proj.path())
+        .args([
+            "search", "Billing", "--mode", "ast-grep", "--format", "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model.rs"));
+
+    // Case-insensitive.
+    bin(home.path(), proj.path())
+        .args([
+            "search", "billing", "--mode", "ast-grep", "--format", "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("model.rs"));
+
+    // A genuinely-absent string still reports no results.
+    bin(home.path(), proj.path())
+        .args(["search", "Zzznotpresent", "--mode", "ast-grep"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No results found."));
+}
+
 // ── exempt: a real local project, an explicit --db, and `spelunk index` ────────
 
 #[test]
