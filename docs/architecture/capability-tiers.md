@@ -35,10 +35,7 @@ configuration.** All inference routes through `spelunk-server`.
 ### New unified field: `server_url`
 
 Add `server_url` to `Config` as the single entry point for all server-mediated
-features. The existing `memory_server_url` field is a backward-compat alias:
-if `server_url` is absent and `memory_server_url` is present, treat
-`memory_server_url` as the `server_url` value. Log a deprecation warning
-once.
+features.
 
 ```toml
 # ~/.config/spelunk/config.toml  (personal — never commit)
@@ -61,14 +58,13 @@ Environment variable overrides:
 
 | Field | Env var |
 |---|---|
-| `server_url` | `SPELUNK_SERVER_URL` (also `SPELUNK_MEMORY_SERVER_URL` as alias) |
+| `server_url` | `SPELUNK_SERVER_URL` |
 | `server_key` | `SPELUNK_SERVER_KEY` |
 | `project_id` | `SPELUNK_PROJECT_ID` |
 
 ### Validation
 
-`server_url` present without `project_id` → hard error at load time (same as
-current `memory_server_url` validation).
+`server_url` present without `project_id` → hard error at load time.
 
 ---
 
@@ -319,8 +315,7 @@ request.
 
 ## Definition of done
 
-- [ ] `Config` gains `server_url` / `server_key` fields; `memory_server_url`
-  aliased with deprecation warning
+- [ ] `Config` gains `server_url` / `server_key` fields
 - [ ] Capability probe implemented and cached per-process
 - [ ] `spelunk status` shows capability tier section
 - [ ] `spelunk check` shows server reachability line when `server_url` is set

@@ -9,6 +9,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Deprecated `memory_server_url` / `memory_server_key` config keys (and the
+  `SPELUNK_MEMORY_SERVER_URL` env var).** These were backward-compat aliases for
+  `server_url` / `server_key`; use those (and `SPELUNK_SERVER_URL`) instead. An
+  old config that still carries the deprecated keys continues to load, but the
+  keys are now silently ignored rather than mapped. (spelunk-oss^144)
+
 ## [0.9.3] — 2026-07-08
 
 ### Removed
