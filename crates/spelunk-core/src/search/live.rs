@@ -359,4 +359,194 @@ mod tests {
         );
         assert!(matches[0].text.contains("a.foo()"));
     }
+
+    // ── independent coverage pass (spelunk-oss^130, Test Engineer) ──────────────
+
+    #[test]
+    fn plain_substring_uppercase_query_lowercase_identifier() {
+        // Case-insensitivity the other direction: an UPPERCASE query against a
+        // lowercase identifier (the existing test only covers lowercase→mixed).
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "fn f() { let billing_total = 5; }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("BILLING", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text.contains("billing_total")),
+            "uppercase 'BILLING' should match lowercase billing_total: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_suffix_position() {
+        // Suffix substring: `Entity` inside `BillingEntity`.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        let matches = search_live_query("Entity", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text == "BillingEntity"),
+            "suffix 'Entity' should match the BillingEntity identifier node: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_middle_position() {
+        // Interior substring spanning the internal camel boundary: `ingEnt`.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        let matches = search_live_query("ingEnt", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text == "BillingEntity"),
+            "interior 'ingEnt' should match the BillingEntity identifier node: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_matches_across_languages() {
+        // The UAT repro was Ruby (getlago/lago); confirm the identifier-node
+        // (pass 1) path fires across multiple grammars, not just Rust. Each file
+        // holds a `BillingEntity` identifier; a node-level match yields the bare
+        // identifier as `text` (a line-scan fallback would yield the whole line),
+        // so `text == "BillingEntity"` proves pass 1 walked that language.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.rb"), "class BillingEntity\nend\n").unwrap();
+        fs::write(dir.path().join("b.ts"), "class BillingEntity {}\n").unwrap();
+        fs::write(dir.path().join("c.py"), "class BillingEntity:\n    pass\n").unwrap();
+        fs::write(dir.path().join("d.go"), "type BillingEntity struct{}\n").unwrap();
+
+        // Lowercase query also re-checks case-insensitivity across languages.
+        let matches = search_live_query("billing", dir.path(), 100);
+        for lang in ["ruby", "typescript", "python", "go"] {
+            assert!(
+                matches
+                    .iter()
+                    .any(|m| m.language == lang && m.text == "BillingEntity"),
+                "expected a node-level BillingEntity match for {lang}: {matches:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_substring_pass2_fires_when_span_crosses_tokens_in_code_file() {
+        // A substring spanning a keyword + identifier (`let x`) lives in no single
+        // named-leaf node, so pass 1 finds nothing; pass 2's literal line scan must
+        // still surface it. A line-scan hit yields the whole line as `text`.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "fn f() {\n    let x = 1;\n}\n").unwrap();
+        let matches = search_live_query("let x", dir.path(), 10);
+        assert_eq!(
+            matches.len(),
+            1,
+            "exactly the one line-scan hit: {matches:?}"
+        );
+        assert!(
+            matches[0].text.contains("let x = 1;"),
+            "pass 2 should report the whole line: {matches:?}"
+        );
+        assert_eq!(matches[0].start_line, 2);
+    }
+
+    #[test]
+    fn plain_substring_pass1_hit_is_not_double_counted_by_pass2() {
+        // A file where pass 1 matches must NOT also be line-scanned by pass 2 —
+        // otherwise the identifier's line would be reported twice.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        let matches = search_live_query("Billing", dir.path(), 10);
+        assert_eq!(
+            matches.len(),
+            1,
+            "one node match, no duplicate line-scan hit for the same file: {matches:?}"
+        );
+        assert_eq!(matches[0].text, "BillingEntity");
+    }
+
+    #[test]
+    fn plain_query_empty_or_zero_limit_returns_empty() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.rs"), "struct BillingEntity;\n").unwrap();
+        assert!(search_live_query("", dir.path(), 10).is_empty());
+        assert!(search_live_query("Billing", dir.path(), 0).is_empty());
+    }
+
+    #[test]
+    fn plain_substring_respects_limit() {
+        // Four identifiers each contain `x`; limit caps the result set.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "fn f() { let xa=1; let xb=2; let xc=3; let xd=4; }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("x", dir.path(), 2);
+        assert_eq!(
+            matches.len(),
+            2,
+            "limit must cap substring matches: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_honours_ignore_file() {
+        // `.ignore` (always respected by the `ignore` crate, no git repo needed)
+        // must exclude a file from the substring path just as it does structurally.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".ignore"), "hidden.rs\n").unwrap();
+        fs::write(dir.path().join("hidden.rs"), "struct BillingSecret;\n").unwrap();
+        fs::write(dir.path().join("visible.rs"), "struct BillingVisible;\n").unwrap();
+        let matches = search_live_query("Billing", dir.path(), 10);
+        assert!(
+            matches.iter().any(|m| m.text.contains("BillingVisible")),
+            "the un-ignored file must match: {matches:?}"
+        );
+        assert!(
+            !matches.iter().any(|m| m.text.contains("BillingSecret")),
+            "an ignored file must not leak into results: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn plain_substring_skips_hidden_dotgit_dir() {
+        // Hidden dirs (`.git/`, etc.) are skipped by the standard filters, so
+        // internal git files never surface as substring matches.
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(
+            dir.path().join(".git").join("COMMIT_EDITMSG"),
+            "BillingGitInternal\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("visible.rs"), "struct BillingVisible;\n").unwrap();
+        let matches = search_live_query("Billing", dir.path(), 10);
+        assert!(
+            !matches
+                .iter()
+                .any(|m| m.text.contains("BillingGitInternal")),
+            "content under .git/ must not be returned: {matches:?}"
+        );
+        assert!(
+            matches.iter().any(|m| m.text.contains("BillingVisible")),
+            "the tracked file must still match: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn query_containing_dollar_routes_structural_not_substring() {
+        // Boundary: any `$` makes the query structural. A literal `$5` in a string
+        // is therefore NOT substring-matched — it is compiled as an ast-grep
+        // pattern (which yields nothing here), documenting the accepted trade-off.
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("m.rs"),
+            "fn f() { let _p = \"$5 total\"; }\n",
+        )
+        .unwrap();
+        let matches = search_live_query("$5", dir.path(), 10);
+        assert!(
+            matches.iter().all(|m| !m.text.contains("$5 total")),
+            "a `$`-bearing query is structural, so the string literal is not substring-matched: {matches:?}"
+        );
+    }
 }
