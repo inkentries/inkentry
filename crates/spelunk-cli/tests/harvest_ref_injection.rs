@@ -69,7 +69,6 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         .arg("--config")
         .arg(&config_path)
@@ -105,7 +104,6 @@ fn harvest_rejects_option_like_git_range() {
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         .arg("--config")
         .arg(&config_path)
@@ -136,7 +134,6 @@ fn harvest_rejects_short_option_like_branch() {
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         .arg("--config")
         .arg(&config_path)
@@ -164,7 +161,6 @@ fn harvest_rejects_bare_double_dash_branch() {
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         .arg("--config")
         .arg(&config_path)
@@ -203,7 +199,6 @@ fn harvest_rejects_option_like_branch_with_shell_metacharacters() {
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
         .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MEMORY_SERVER_URL")
         .env_remove("SPELUNK_LLM_URL")
         .arg("--config")
         .arg(&config_path)

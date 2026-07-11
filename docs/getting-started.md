@@ -456,9 +456,6 @@ an owner-only `~/.config/spelunk/secrets.toml`. For the full credential-storage
 rules and the `SPELUNK_SECRET_STORE` override, see the
 [Commands reference](commands.md#spelunk-login).
 
-> The older `memory_server_url` / `memory_server_key` keys are still accepted as
-> deprecated aliases for `server_url` / `server_key`.
-
 `project_id` stays a human-readable slug. If the server routes projects by an
 internal UUID (as a team/cloud memory server does), the CLI resolves the slug
 for you on first use and caches the result locally, so no manual UUID lookup is

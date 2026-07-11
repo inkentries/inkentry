@@ -165,9 +165,6 @@ Personal config (`~/.config/spelunk/config.toml` — never commit):
 server_key = "your-shared-api-key"
 ```
 
-> The legacy `memory_server_url` / `memory_server_key` keys remain accepted as
-> deprecated aliases for `server_url` / `server_key`.
-
 `project_id` is a human-readable slug. If the server routes projects by an
 internal UUID (as a team/cloud memory server does), the CLI resolves the slug to
 that UUID automatically on first use and caches it in
