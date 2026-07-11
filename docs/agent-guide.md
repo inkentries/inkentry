@@ -179,6 +179,17 @@ spelunk memory search "why did we choose sqlite-vec"
 so decisions travel with the code through clone/fetch. It is a graceful no-op
 outside a git repository. Set `store_in_git_notes = false` to disable.
 
+To inspect that write-through by hand with stock git, name the `spelunk` ref.
+Plain `git notes show HEAD` reads git's default `commits` ref and reports "no
+note found", a false negative that makes it look like nothing was written:
+
+```bash
+git notes --ref=spelunk show HEAD    # notes on the current commit
+git notes --ref=spelunk list         # every commit carrying spelunk notes
+# equivalently
+GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+```
+
 ## Automatic capture (no authoring tax)
 
 Recording decisions by hand is the part that never happens under deadline. The
