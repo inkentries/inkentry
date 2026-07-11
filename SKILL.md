@@ -269,6 +269,6 @@ spelunk index .   # only if project is indexed
 
 - Memory and code graph commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
-- `spelunk search --mode text` and `--mode ast-grep` are always available. Semantic `spelunk search` (the `auto` default when an index + server exist) requires the server and a built index.
+- `spelunk search --mode text` and `--mode ast-grep` are always available. Semantic `spelunk search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
 - `spelunk explore`, `spelunk memory harvest`, and LLM summaries require a server with an LLM backend configured.
 - After changing the embedding model, run `spelunk index <path> --force` to rebuild the index.
