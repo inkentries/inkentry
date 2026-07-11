@@ -240,7 +240,8 @@ spelunk context [options]
 | `--index-db <path>` | auto | Index DB used to load the conventions section |
 | `--backend sqlite\|git-notes` | sqlite | Memory storage backend |
 | `-k, --kind <kind>` | — | Filter to a single kind instead of the multi-section view |
-| `-l, --limit <n>` | per-section | Max entries per section (handoff=3, decision=10, question/requirement=500) |
+| `-l, --limit <n>` | per-section | Max entries per section (handoff=3, question=10, decision=10, requirement=10); mutually exclusive with `--budget` |
+| `--budget <n>` (alias `--max-tokens`) | unlimited | Cap total output to this many tokens; mutually exclusive with `--limit` |
 | `--path <path>` | — | Only show entries tagged with this file/directory |
 | `--format text\|json` | text | Output format |
 | `--no-conventions` | false | Skip the conventions section |
@@ -257,6 +258,7 @@ projects' memory stores, each labelled with its source project. Pass
 spelunk context
 spelunk context --kind decision
 spelunk context --local-only      # primary project only, no dep pass
+spelunk context --budget 4000     # cap total output at ~4000 tokens
 AGENT=true spelunk context        # JSON for machine processing
 ```
 

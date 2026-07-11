@@ -10,7 +10,7 @@ This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.
 
 **At the start of every session:**
 ```bash
-spelunk context                                   # pull prior decisions, handoffs, questions, requirements
+spelunk context                                   # pull prior decisions, handoffs, questions, requirements (compact by default; --budget <N> caps output tokens)
 spelunk check                                     # verify index is fresh (only if indexed)
 ```
 

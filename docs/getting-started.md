@@ -234,6 +234,10 @@ spelunk context --kind decision
 AGENT=true spelunk context
 ```
 
+The default output is compact (a few recent entries per section). Pass
+`--budget <N>` (alias `--max-tokens`) to cap total output at N tokens, or
+`--limit <N>` to widen the per-section count.
+
 ## 5. Set up automatic memory harvesting (optional)
 
 Install a git post-commit hook so `spelunk` automatically extracts memories from commit messages:
