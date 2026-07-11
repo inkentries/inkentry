@@ -348,6 +348,7 @@ fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
 mod tests {
     use super::*;
     use crate::conventions::ConventionRecord;
+    use clap::Parser;
 
     fn note(id: i64, kind: &str, title: &str, body: &str) -> Note {
         Note {
@@ -444,5 +445,166 @@ mod tests {
             .collect();
         apply_budget(&mut sections, &mut conv, 250);
         assert!(conv.len() < 5);
+    }
+
+    // ── Coverage pass (spelunk-oss^143 Test Engineer) ────────────────────────
+
+    /// Minimal parser so we can exercise `ContextArgs` clap parsing (incl. the
+    /// declared `conflicts_with`) without pulling in the whole top-level `Cli`.
+    #[derive(clap::Parser, Debug)]
+    struct TestCli {
+        #[command(flatten)]
+        ctx: ContextArgs,
+    }
+
+    #[test]
+    fn limit_and_budget_conflict_is_enforced_at_arg_level() {
+        // Declared `conflicts_with` must actually reject both together, not just
+        // be present in the attribute.
+        assert!(
+            TestCli::try_parse_from(["spelunk", "--limit", "5", "--budget", "100"]).is_err(),
+            "--limit + --budget must be rejected"
+        );
+        // Each alone parses and lands in the right field.
+        let l = TestCli::try_parse_from(["spelunk", "--limit", "5"]).expect("limit alone parses");
+        assert_eq!(l.ctx.limit, Some(5));
+        assert_eq!(l.ctx.budget, None);
+        let b =
+            TestCli::try_parse_from(["spelunk", "--budget", "100"]).expect("budget alone parses");
+        assert_eq!(b.ctx.budget, Some(100));
+        assert_eq!(b.ctx.limit, None);
+    }
+
+    #[test]
+    fn max_tokens_alias_maps_to_budget_and_still_conflicts_with_limit() {
+        let a = TestCli::try_parse_from(["spelunk", "--max-tokens", "100"]).expect("alias parses");
+        assert_eq!(a.ctx.budget, Some(100));
+        assert!(
+            TestCli::try_parse_from(["spelunk", "--limit", "5", "--max-tokens", "100"]).is_err(),
+            "alias must inherit the conflict with --limit"
+        );
+    }
+
+    #[test]
+    fn budget_exact_fit_keeps_all_and_uses_full_budget() {
+        // 3 notes of ~101 tokens each; budget == exact total keeps all 3, and an
+        // entry sitting exactly at the remaining budget is kept (tc <= remaining).
+        let body = "x".repeat(400); // 100 tokens; title "ti" -> 1 => 101 each
+        let mut sections = vec![(
+            "decision".to_string(),
+            (0..3).map(|i| note(i, "decision", "ti", &body)).collect(),
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 303);
+        assert_eq!(sections[0].1.len(), 3, "exact-fit budget keeps every entry");
+        assert_eq!(used, 303, "tokens_used equals the full budget at exact fit");
+    }
+
+    #[test]
+    fn budget_larger_than_content_keeps_everything_with_correct_used() {
+        let body = "x".repeat(400); // 101 tokens each
+        let mut sections = vec![(
+            "decision".to_string(),
+            (0..3).map(|i| note(i, "decision", "ti", &body)).collect(),
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 100_000);
+        assert_eq!(sections[0].1.len(), 3, "generous budget emits everything");
+        assert_eq!(used, 303, "used is the true sum, not the budget");
+        assert!(used <= 100_000, "used never exceeds the budget");
+        // Mirrors the caller's `tokens_remaining = budget - used`: non-negative.
+        assert_eq!(100_000 - used, 99_697);
+    }
+
+    #[test]
+    fn budget_first_and_only_entry_exceeding_emits_nothing() {
+        let body = "x".repeat(800); // 200 tokens
+        let mut sections = vec![(
+            "decision".to_string(),
+            vec![note(0, "decision", "ti", &body)],
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 150);
+        assert!(sections[0].1.is_empty(), "an entry over budget is dropped");
+        assert_eq!(used, 0, "nothing packed => zero used, never underflows");
+    }
+
+    #[test]
+    fn budget_greedy_skips_oversized_then_packs_later_smaller() {
+        // Documents the greedy-by-fit (non-strict-prefix) semantics that mirror
+        // `search --budget`: an oversized head entry is skipped but a later
+        // smaller one can still be packed. Relative order of survivors is kept.
+        let big = "x".repeat(800); // 200 tokens, id 0
+        let small = "x".repeat(400); // 101 tokens, id 1
+        let mut sections = vec![(
+            "decision".to_string(),
+            vec![
+                note(0, "decision", "ti", &big),
+                note(1, "decision", "ti", &small),
+            ],
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 150);
+        assert_eq!(sections[0].1.len(), 1);
+        assert_eq!(sections[0].1[0].id, 1, "the smaller later entry survives");
+        assert_eq!(used, 101);
+    }
+
+    #[test]
+    fn budget_packs_sections_in_output_order_and_can_starve_a_later_section() {
+        // Budget is spent across sections in their fixed output order, so a
+        // budget-hungry earlier section starves a later one. Section slots and
+        // their order stay stable (a section can end up empty, not removed).
+        let big = "x".repeat(800); // title(1)+body(200) = 201 tokens
+        let small = "x".repeat(400); // title(1)+body(100) = 101 tokens
+        let mut sections = vec![
+            ("handoff".to_string(), vec![note(0, "handoff", "ti", &big)]),
+            (
+                "decision".to_string(),
+                vec![note(1, "decision", "ti", &small)],
+            ),
+        ];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        // Budget fits exactly the first section's note, leaving nothing for the
+        // second — proving spend follows output order and can starve a later one.
+        let used = apply_budget(&mut sections, &mut conv, 201);
+        assert_eq!(sections.len(), 2, "section slots and order are preserved");
+        assert_eq!(sections[0].0, "handoff");
+        assert_eq!(sections[0].1.len(), 1, "earlier section packed first");
+        assert_eq!(sections[1].0, "decision");
+        assert!(
+            sections[1].1.is_empty(),
+            "later section starved once budget is exhausted"
+        );
+        assert_eq!(used, 201);
+    }
+
+    #[test]
+    fn cap_keeps_locals_and_trims_dep_overflow() {
+        // Post-append order in production is locals-first then dep appends
+        // (context.rs collects locals, then pushes dep notes). cap_sections
+        // truncate() therefore keeps every local before any dep note.
+        let mut notes: Vec<Note> = (0..8).map(|i| note(i, "decision", "local", "b")).collect();
+        notes.extend((100..108).map(|i| note(i, "decision", "dep", "b")));
+        let mut sections = vec![("decision".to_string(), notes)];
+        cap_sections(&mut sections, None); // decision default = 10
+        let kept = &sections[0].1;
+        assert_eq!(kept.len(), 10);
+        // All 8 locals survive...
+        for (idx, expected) in (0..8).enumerate() {
+            assert_eq!(kept[idx].id, expected, "local {expected} must survive");
+        }
+        // ...and only the first two dep notes (the overflow tail is trimmed).
+        assert_eq!(kept[8].id, 100);
+        assert_eq!(kept[9].id, 101);
+    }
+
+    #[test]
+    fn note_tokens_handles_empty_and_huge_bodies() {
+        // estimate_tokens floors at 1, so an empty note weighs title(1)+body(1).
+        assert_eq!(note_tokens(&note(0, "decision", "", "")), 2);
+        // Huge body: 4000 chars -> 1000 tokens, plus 1 for the 1-char title.
+        let huge = note(1, "decision", "t", &"x".repeat(4000));
+        assert_eq!(note_tokens(&huge), 1001);
     }
 }
