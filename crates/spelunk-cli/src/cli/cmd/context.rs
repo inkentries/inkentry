@@ -36,9 +36,19 @@ pub struct ContextArgs {
     #[arg(short, long, value_name = "KIND")]
     pub kind: Option<String>,
 
-    /// Maximum entries per section (defaults: handoff=3, question=500, decision=10, requirement=500)
-    #[arg(short, long, value_name = "N")]
+    /// Maximum entries per section (defaults: handoff=3, question=10, decision=10, requirement=10)
+    #[arg(short, long, value_name = "N", conflicts_with = "budget")]
     pub limit: Option<usize>,
+
+    /// Cap total output to this many tokens (safety net independent of entry
+    /// count; mirrors `search --budget`). Mutually exclusive with --limit.
+    #[arg(
+        long,
+        visible_alias = "max-tokens",
+        value_name = "N",
+        conflicts_with = "limit"
+    )]
+    pub budget: Option<usize>,
 
     /// Only show entries tagged with this file or directory path
     #[arg(long, value_name = "PATH")]
@@ -59,7 +69,8 @@ pub struct ContextArgs {
 
 struct Section {
     kind: &'static str,
-    /// Fetch this many entries before optional path post-filter; 500 is the NoteStore hard-cap.
+    /// Fetch this many entries before optional path post-filter. `context` runs
+    /// every session/compaction, so defaults stay small — use `--limit` to widen.
     default_limit: usize,
 }
 
@@ -70,7 +81,7 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         kind: "question",
-        default_limit: 500,
+        default_limit: 10,
     },
     Section {
         kind: "decision",
@@ -78,9 +89,61 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         kind: "requirement",
-        default_limit: 500,
+        default_limit: 10,
     },
 ];
+
+/// Effective per-section entry cap for `kind` given an optional `--limit` override.
+fn section_limit(kind: &str, limit_override: Option<usize>) -> usize {
+    let default = SECTIONS
+        .iter()
+        .find(|s| s.kind == kind)
+        .map(|s| s.default_limit)
+        .unwrap_or(DEFAULT_UNKNOWN_KIND_LIMIT);
+    limit_override.unwrap_or(default)
+}
+
+/// Token weight of a note for `--budget` packing (title + body).
+fn note_tokens(n: &Note) -> usize {
+    crate::search::tokens::estimate_tokens(&n.title)
+        + crate::search::tokens::estimate_tokens(&n.body)
+}
+
+/// Truncate each section (local + appended dep notes) to its effective
+/// per-section limit, so cross-project appends can't exceed --limit / defaults.
+fn cap_sections(sections: &mut [(String, Vec<Note>)], limit_override: Option<usize>) {
+    for (kind, notes) in sections.iter_mut() {
+        notes.truncate(section_limit(kind, limit_override));
+    }
+}
+
+/// Greedily drop notes then conventions (in output order) that don't fit
+/// `budget`, mirroring `search --budget`. Returns the tokens actually packed.
+fn apply_budget(
+    sections: &mut [(String, Vec<Note>)],
+    conventions: &mut Vec<crate::conventions::ConventionRecord>,
+    budget: usize,
+) -> usize {
+    let mut remaining = budget;
+    let mut fits = |tc: usize| {
+        if tc <= remaining {
+            remaining -= tc;
+            true
+        } else {
+            false
+        }
+    };
+    for (_, notes) in sections.iter_mut() {
+        notes.retain(|n| fits(note_tokens(n)));
+    }
+    conventions.retain(|c| {
+        fits(
+            crate::search::tokens::estimate_tokens(&c.category)
+                + crate::search::tokens::estimate_tokens(&c.description),
+        )
+    });
+    budget - remaining
+}
 
 pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     cfg.validate()?;
@@ -145,20 +208,33 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         }
     }
 
+    // Cap each section (incl. cross-project appends) to its per-section limit.
+    cap_sections(&mut sections, args.limit);
+
     // Load conventions from the index DB (best-effort; skip if unavailable).
-    let conventions: Vec<crate::conventions::ConventionRecord> =
+    let mut conventions: Vec<crate::conventions::ConventionRecord> =
         if !args.no_conventions && args.kind.is_none() {
             load_conventions(args.index_db.as_deref(), &cfg)
         } else {
             vec![]
         };
 
+    // Token-budget safety net: pack output to fit --budget (mirrors search).
+    let budget_used = args
+        .budget
+        .map(|b| apply_budget(&mut sections, &mut conventions, b));
+
     match crate::utils::effective_format(&args.format) {
         "json" => {
-            let output = serde_json::json!({
+            let mut output = serde_json::json!({
                 "sections": sections,
                 "conventions": conventions,
             });
+            if let (Some(budget), Some(used)) = (args.budget, budget_used) {
+                output["token_budget"] = budget.into();
+                output["tokens_used"] = used.into();
+                output["tokens_remaining"] = (budget - used).into();
+            }
             println!("{output}");
         }
         _ => {
@@ -173,6 +249,9 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             }
             if !conventions.is_empty() {
                 print_conventions_section(&conventions);
+            }
+            if let (Some(budget), Some(used)) = (args.budget, budget_used) {
+                println!("tokens used: {used}/{budget}");
             }
         }
     }
@@ -211,16 +290,11 @@ async fn collect_sections(
     let mut result = Vec::new();
 
     let sections: Vec<(&str, usize)> = if let Some(k) = kind_filter {
-        let default_limit = SECTIONS
-            .iter()
-            .find(|s| s.kind == k)
-            .map(|s| s.default_limit)
-            .unwrap_or(DEFAULT_UNKNOWN_KIND_LIMIT);
-        vec![(k, limit_override.unwrap_or(default_limit))]
+        vec![(k, section_limit(k, limit_override))]
     } else {
         SECTIONS
             .iter()
-            .map(|s| (s.kind, limit_override.unwrap_or(s.default_limit)))
+            .map(|s| (s.kind, section_limit(s.kind, limit_override)))
             .collect()
     };
 
@@ -267,5 +341,108 @@ fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
             );
         }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conventions::ConventionRecord;
+
+    fn note(id: i64, kind: &str, title: &str, body: &str) -> Note {
+        Note {
+            id,
+            kind: kind.to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            tags: vec![],
+            linked_files: vec![],
+            created_at: 0,
+            status: "active".to_string(),
+            superseded_by: None,
+            source_ref: None,
+            valid_at: None,
+            invalid_at: None,
+            distance: None,
+            score: None,
+            source_project: None,
+            source_project_path: None,
+            remote_id: None,
+        }
+    }
+
+    #[test]
+    fn default_limits_are_small_for_every_section() {
+        // Regression for spelunk-oss^143: question/requirement were 500.
+        assert_eq!(section_limit("handoff", None), 3);
+        assert_eq!(section_limit("question", None), 10);
+        assert_eq!(section_limit("decision", None), 10);
+        assert_eq!(section_limit("requirement", None), 10);
+        // Unknown kind falls back to the shared default.
+        assert_eq!(section_limit("mystery", None), DEFAULT_UNKNOWN_KIND_LIMIT);
+    }
+
+    #[test]
+    fn explicit_limit_override_wins() {
+        assert_eq!(section_limit("question", Some(42)), 42);
+        assert_eq!(section_limit("mystery", Some(1)), 1);
+    }
+
+    #[test]
+    fn cap_sections_bounds_cross_project_appends() {
+        // A section holding local + appended dep notes past its limit is trimmed
+        // to the per-section default, keeping the earliest (local) entries.
+        let mut sections = vec![(
+            "decision".to_string(),
+            (0..25).map(|i| note(i, "decision", "t", "b")).collect(),
+        )];
+        cap_sections(&mut sections, None);
+        assert_eq!(sections[0].1.len(), 10);
+        assert_eq!(sections[0].1.first().unwrap().id, 0);
+    }
+
+    #[test]
+    fn budget_truncates_output_to_fit() {
+        // Each note ~ title+body tokens; a tight budget keeps only the earliest.
+        let body = "x".repeat(400); // ~100 tokens
+        let mut sections = vec![(
+            "decision".to_string(),
+            (0..5).map(|i| note(i, "decision", "ti", &body)).collect(),
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 250);
+        // 250-token budget fits 2 notes (~101 each), not the 3rd.
+        assert_eq!(sections[0].1.len(), 2);
+        assert!(used <= 250);
+        assert!(used > 0);
+    }
+
+    #[test]
+    fn budget_zero_drops_everything() {
+        let mut sections = vec![(
+            "decision".to_string(),
+            vec![note(0, "decision", "t", "body")],
+        )];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        let used = apply_budget(&mut sections, &mut conv, 0);
+        assert!(sections[0].1.is_empty());
+        assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn budget_also_bounds_conventions() {
+        let mut sections: Vec<(String, Vec<Note>)> = vec![];
+        let mut conv: Vec<ConventionRecord> = (0..5)
+            .map(|_| ConventionRecord {
+                language: "rust".to_string(),
+                category: "naming".to_string(),
+                description: "x".repeat(400),
+                confidence: 0.9,
+                evidence_count: 5,
+                extracted_at: 0,
+            })
+            .collect();
+        apply_budget(&mut sections, &mut conv, 250);
+        assert!(conv.len() < 5);
     }
 }
