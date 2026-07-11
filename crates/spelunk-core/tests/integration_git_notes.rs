@@ -6,16 +6,16 @@
 //!
 //! ## Concurrent-write safety (#185)
 //!
-//! `git notes add -f` uses replace semantics: two agents writing a note to the
-//! same HEAD commit simultaneously will silently lose one entry.  This test
-//! documents the behaviour and the chosen mitigation strategy.
+//! `add` is an unsynchronized read-modify-write that rewrites the HEAD note with
+//! `git notes add -f` (replace semantics). Two agents writing to the *same HEAD*
+//! concurrently race: one write may be lost, or both may survive — the outcome is
+//! timing-dependent, not guaranteed. The guaranteed contract is only that the
+//! store never corrupts and at least one write survives.
 //!
-//! **Chosen strategy: Option C — document last-write-wins.**
-//! For the v1 spike, concurrent writes to the *same HEAD* are a known
-//! limitation.  The typical agent workflow produces a note per commit; agents
-//! working in separate commits (the common case) are unaffected.
-//! Users who need conflict-free concurrent writes should use the sqlite
-//! backend (the default).
+//! **Chosen strategy: Option C — accept the race for the v1 spike.**
+//! The typical agent workflow produces a note per commit; agents working in
+//! separate commits (the common case) are unaffected. Users who need
+//! conflict-free concurrent writes should use the sqlite backend (the default).
 
 mod common;
 
@@ -136,22 +136,27 @@ async fn git_notes_list_without_kind_returns_all() {
 
 // ── concurrent write safety (#185) ───────────────────────────────────────────
 
-/// Documents the last-write-wins behaviour when two tasks write to the same HEAD
-/// concurrently.  The test asserts the *known* outcome (one entry survives) and
-/// is annotated so maintainers understand the trade-off.
+/// Two tasks writing a note to the same HEAD concurrently must never corrupt the
+/// store or panic. The backend does an unsynchronized read-modify-write, so the
+/// outcome is timing-dependent: if the second reader observes the first's write
+/// both notes survive (2); if both read the empty blob first, one overwrite wins
+/// (1). Either way at least one survives and the store stays readable — that is
+/// the guaranteed contract, and it is what we assert.
 ///
-/// To protect against silent data loss, use the sqlite backend for multi-agent
-/// workflows (the default backend).
+/// This is *not* last-write-wins: concurrent same-HEAD writes may lose an entry
+/// (the `-f` overwrite race, #185) — use the sqlite backend for multi-agent
+/// workflows. An earlier assertion of `len <= 1` was wrong: it asserted the
+/// data-loss race *always* happens, which it does not, so it flaked on CI.
 #[tokio::test]
 #[serial]
-async fn git_notes_concurrent_same_head_last_write_wins() {
+async fn git_notes_concurrent_same_head_stays_consistent() {
     let dir = make_temp_git_repo();
 
     let root = dir.path().to_path_buf();
     let b1 = GitNotesBackend::with_root(root.clone());
     let b2 = GitNotesBackend::with_root(root.clone());
 
-    // Two concurrent adds to the same HEAD.
+    // Two concurrent adds to the same HEAD; both must return Ok (no panic).
     let (r1, r2) = tokio::join!(
         b1.add(note_input("note", "agent A")),
         b2.add(note_input("note", "agent B")),
@@ -159,18 +164,61 @@ async fn git_notes_concurrent_same_head_last_write_wins() {
     r1.expect("agent A add");
     r2.expect("agent B add");
 
-    // At most one survives because both wrote to the same HEAD using -f.
     let notes = GitNotesBackend::with_root(dir.path().to_path_buf())
         .list(None, 10, false, None)
         .await
         .expect("list");
 
-    // KNOWN LIMITATION: only the last writer's note survives.
-    // Acceptable for the v1 spike; use sqlite backend for multi-agent workflows.
+    // At least one survives, at most both; the RMW race may drop one but never
+    // corrupts the blob or duplicates/mangles a record.
     assert!(
-        notes.len() <= 1,
-        "expected at most one note (last-write-wins); got {}",
+        (1..=2).contains(&notes.len()),
+        "expected 1 or 2 surviving notes; got {}",
         notes.len()
+    );
+    // Every surviving entry is a well-formed note we wrote — no partial/garbled
+    // records from an interleaved write.
+    for n in &notes {
+        assert_eq!(n.kind, "note", "unexpected kind: {}", n.kind);
+        assert!(
+            n.title == "agent A" || n.title == "agent B",
+            "unexpected title: {}",
+            n.title
+        );
+    }
+    // If both survived they must be the two distinct writers, not a duplicate.
+    if notes.len() == 2 {
+        assert_ne!(
+            notes[0].title, notes[1].title,
+            "both entries are distinct writers"
+        );
+    }
+}
+
+/// Deterministic sibling of the concurrent test: two *sequential* adds to the
+/// same HEAD both survive as distinct records. The concurrent test only reaches
+/// the 2-note path on a rare scheduling race (~1% of runs), so its distinct /
+/// well-formed checks are seldom exercised; this locks the same-HEAD append
+/// contract down on every run without any timing dependence.
+#[tokio::test]
+#[serial]
+async fn git_notes_sequential_same_head_both_survive_distinct() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    backend.add(note_input("note", "agent A")).await.expect("A");
+    backend.add(note_input("note", "agent B")).await.expect("B");
+
+    let notes = backend.list(None, 10, false, None).await.expect("list");
+    assert_eq!(notes.len(), 2, "both sequential same-HEAD adds survive");
+    for n in &notes {
+        assert_eq!(n.kind, "note", "unexpected kind: {}", n.kind);
+    }
+    let titles: std::collections::HashSet<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["agent A", "agent B"].into_iter().collect(),
+        "both writers present and distinct"
     );
 }
 
