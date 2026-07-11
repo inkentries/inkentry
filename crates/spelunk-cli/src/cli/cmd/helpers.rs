@@ -1,19 +1,25 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    config::{Config, resolve_db},
+    config::{Config, require_project_db},
     embeddings::vec_to_blob,
     server_client::ServerInferenceClient,
     storage::Database,
 };
 
-/// Resolve the DB path via `resolve_db`, error if not found, open and return
-/// both the path and the opened database.
+/// ADR-067: resolve the project's `index.db` fail-closed via
+/// [`require_project_db`] (no machine-global fallback), error if it does not
+/// exist, then open it. An explicit `--db` bypasses the project gate. In an
+/// un-`init`'d dir this refuses with the ADR-067 message instead of reading the
+/// global `~/.config/spelunk/index.db`.
 pub(crate) fn open_project_db(
     db: Option<&std::path::Path>,
     cfg_path: &std::path::Path,
 ) -> Result<(std::path::PathBuf, Database)> {
-    let db_path = resolve_db(db, cfg_path);
+    let db_path = match db {
+        Some(p) => p.to_path_buf(),
+        None => require_project_db(cfg_path, false)?,
+    };
     if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\

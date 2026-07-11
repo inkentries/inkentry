@@ -23,13 +23,18 @@ pub struct CheckArgs {
 
 use crate::{
     capability,
-    config::{Config, resolve_db},
+    config::{Config, require_project_db},
     storage::{Database, open_memory_backend},
     utils::{format_age, worktree_modified_files},
 };
 
 pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
-    let db_path = resolve_db(args.db.as_deref(), &cfg.db_path);
+    // ADR-067: fail closed in an un-init'd dir rather than checking the
+    // machine-global index.db. Explicit `--db` bypasses the project gate.
+    let db_path = match args.db.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => require_project_db(&cfg.db_path, false)?,
+    };
     if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
@@ -91,7 +96,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                     .unwrap_or(serde_json::Value::Null),
             ),
         };
-        let mem_path = resolve_db(args.db.as_deref(), &cfg.db_path).with_file_name("memory.db");
+        let mem_path = db_path.with_file_name("memory.db");
         let memory_backend_kind = open_memory_backend(&cfg, &mem_path, None)
             .await
             .ok()
@@ -158,7 +163,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
 
     // Show active intent entries (text mode only; silently skip if memory unavailable).
     if effective == "text" || effective == "porcelain" {
-        let mem_path = resolve_db(args.db.as_deref(), &cfg.db_path).with_file_name("memory.db");
+        let mem_path = db_path.with_file_name("memory.db");
         if let Ok(backend) = open_memory_backend(&cfg, &mem_path, None).await
             && let Ok(intents) = backend.list(Some("intent"), 20, false, None).await
             && !intents.is_empty()

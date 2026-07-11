@@ -34,6 +34,12 @@ fn global_memory_db(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("spelunk").join("memory.db")
 }
 
+/// The global index store path under the isolated HOME. Display commands must
+/// never read or create it from an un-init'd dir (ADR-067, spelunk-oss^147).
+fn global_index_db(home: &Path) -> std::path::PathBuf {
+    home.join(".config").join("spelunk").join("index.db")
+}
+
 // ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
 
 #[test]
@@ -424,6 +430,147 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
         std::fs::read(&global_index).unwrap(),
         sentinel,
         "refused index-backed search must not touch the pre-existing global index"
+    );
+}
+
+// ── display commands: graph / chunks / explore / check (spelunk-oss^147) ───────
+//
+// These read-only commands previously resolved their DB via the legacy
+// `open_project_db`/`resolve_db` path, which fell back to the machine-global
+// `index.db` in an un-init'd dir and displayed cross-project data. They now share
+// ADR-067's fail-closed resolver: refuse (or run live) instead of reading global.
+
+#[test]
+fn graph_runs_live_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    // A symbol query in an un-init'd dir must degrade to the live ast-grep graph
+    // (mirroring search), matching the `greet(...)` call site in `caller`, not
+    // read the machine-global index.
+    bin(home.path(), proj.path())
+        .args(["graph", "greet", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib.rs"))
+        .stdout(predicate::str::contains("calls"));
+
+    assert!(
+        !global_index_db(home.path()).exists(),
+        "live graph must not create the global index"
+    );
+}
+
+#[test]
+fn graph_does_not_read_preexisting_global_index() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
+    // The symbol query runs live and must leave the stray global index untouched
+    // rather than opening it (the pre-fix bug displayed its cross-project edges).
+    bin(home.path(), proj.path())
+        .args(["graph", "greet", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib.rs"));
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "live graph must not open or mutate the pre-existing global index"
+    );
+}
+
+#[test]
+fn graph_file_query_refuses_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    // A file-path query needs the index and has no live mode, so it must refuse
+    // rather than fall back to the global store.
+    bin(home.path(), proj.path())
+        .args(["graph", "src/lib.rs"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+}
+
+#[test]
+fn chunks_refuses_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["chunks", "src/lib.rs"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "refused chunks must not open or mutate the pre-existing global index"
+    );
+}
+
+#[test]
+fn explore_refuses_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    // The project gate fires before any server probe, so an un-init'd dir refuses
+    // with the ADR-067 message rather than reading the global index.
+    bin(home.path(), proj.path())
+        .args(["explore", "how does auth work"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert!(!global_index_db(home.path()).exists());
+}
+
+#[test]
+fn check_refuses_without_local_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "refused check must not open or mutate the pre-existing global index"
     );
 }
 

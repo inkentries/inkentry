@@ -30,6 +30,8 @@ pub fn languages() -> Result<()> {
 }
 
 pub fn chunks(args: ChunksArgs, cfg: Config) -> Result<()> {
+    // ADR-067: chunks needs the index and has no live mode, so an un-init'd dir
+    // refuses via open_project_db rather than reading the global store.
     let (_db_path, db) = open_project_db(args.db.as_deref(), &cfg.db_path)?;
     // Stored paths use forward slashes; normalize the query arg so a Windows
     // caller passing `src\lib.rs` matches the indexed `src/lib.rs`.

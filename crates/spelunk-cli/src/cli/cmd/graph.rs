@@ -49,9 +49,13 @@ pub fn graph(args: GraphArgs, cfg: Config) -> Result<()> {
         return graph_live(symbol, &args.format, &args.kind, Path::new("."));
     }
 
+    // ADR-067: resolves fail-closed (no global fallback) via open_project_db.
     let db_result = open_project_db(args.db.as_deref(), &cfg.db_path);
 
-    // No index present — fall back to ast-grep for symbol queries.
+    // No local project or no index — run the live ast-grep graph for symbol
+    // queries (mirrors search's auto/live posture) rather than reading the
+    // machine-global store. File queries need the index, so they propagate the
+    // refuse error below.
     if db_result.is_err() && !is_file_query {
         return graph_live(symbol, &args.format, &args.kind, Path::new("."));
     }
