@@ -93,7 +93,7 @@ Flags:
 - `--kind decision` — narrow to one section
 - `--path src/auth` — filter by file path tag
 - `--limit N` – entries per section (defaults: handoff=3, question=10, decision=10, requirement=10); mutually exclusive with `--budget`
-- `--budget N` (alias `--max-tokens`) – cap total output at N tokens; mutually exclusive with `--limit`
+- `--budget N` (alias `--max-tokens`) – cap total output at N tokens; mutually exclusive with `--limit`. Under a tight budget, durable decisions and requirements are kept ahead of open questions.
 - `--no-conventions` — skip the extracted-conventions section
 
 `spelunk context` also surfaces a **conventions** section: coding conventions
