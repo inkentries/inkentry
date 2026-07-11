@@ -235,7 +235,7 @@ AGENT=true spelunk context --kind decision
 AGENT=true spelunk check
 ```
 
-`spelunk context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call.
+`spelunk context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call. The default output is compact; pass `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens.
 
 **Understanding code:**
 1. `AGENT=true spelunk search "<topic>" --mode text` — full-text search, no server needed

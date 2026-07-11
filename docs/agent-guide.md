@@ -92,7 +92,8 @@ Flags:
 - `--format json` — machine-readable output
 - `--kind decision` — narrow to one section
 - `--path src/auth` — filter by file path tag
-- `--limit N` — entries per section (defaults: handoff=3, decision=10, question/requirement=500)
+- `--limit N` – entries per section (defaults: handoff=3, question=10, decision=10, requirement=10); mutually exclusive with `--budget`
+- `--budget N` (alias `--max-tokens`) – cap total output at N tokens; mutually exclusive with `--limit`
 - `--no-conventions` — skip the extracted-conventions section
 
 `spelunk context` also surfaces a **conventions** section: coding conventions
@@ -569,6 +570,7 @@ spelunk plumbing read-memory --kind decision --limit 5 | jq '{id, title}'
 ```bash
 # Session start — all work out of the box
 spelunk context                                              # pull all prior context
+spelunk context --budget 4000                               # cap total output at ~4000 tokens
 AGENT=true spelunk context --format json                    # machine-readable
 
 # Before writing code — retrieve context, reason yourself
