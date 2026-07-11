@@ -117,8 +117,15 @@ fn cap_sections(sections: &mut [(String, Vec<Note>)], limit_override: Option<usi
     }
 }
 
-/// Greedily drop notes then conventions (in output order) that don't fit
-/// `budget`, mirroring `search --budget`. Returns the tokens actually packed.
+/// Order in which sections compete for `--budget`: durable "why"
+/// (decision, requirement) survives first, ephemeral `question` drops first.
+/// Display/emission order is independent of this (see `SECTIONS`).
+const PACK_PRIORITY: &[&str] = &["decision", "requirement", "handoff", "question"];
+
+/// Greedily drop notes then conventions that don't fit `budget`. Notes are
+/// packed in `PACK_PRIORITY` order so durable memory wins a tight budget, but
+/// the `sections` Vec is not reordered: display order stays as assembled.
+/// Returns the tokens actually packed. Conventions pack after all sections.
 fn apply_budget(
     sections: &mut [(String, Vec<Note>)],
     conventions: &mut Vec<crate::conventions::ConventionRecord>,
@@ -133,7 +140,17 @@ fn apply_budget(
             false
         }
     };
-    for (_, notes) in sections.iter_mut() {
+    // Pack by priority, then any kind not in the priority list in existing
+    // order (defensive: no such kind today). `sections` is never reordered.
+    for kind in PACK_PRIORITY {
+        if let Some((_, notes)) = sections.iter_mut().find(|(k, _)| k == kind) {
+            notes.retain(|n| fits(note_tokens(n)));
+        }
+    }
+    for (kind, notes) in sections.iter_mut() {
+        if PACK_PRIORITY.contains(&kind.as_str()) {
+            continue;
+        }
         notes.retain(|n| fits(note_tokens(n)));
     }
     conventions.retain(|c| {
@@ -551,10 +568,11 @@ mod tests {
     }
 
     #[test]
-    fn budget_packs_sections_in_output_order_and_can_starve_a_later_section() {
-        // Budget is spent across sections in their fixed output order, so a
-        // budget-hungry earlier section starves a later one. Section slots and
-        // their order stay stable (a section can end up empty, not removed).
+    fn budget_packs_by_priority_not_display_order() {
+        // Budget is spent in PACK_PRIORITY order, not display order: `decision`
+        // outranks `handoff`, so under a tight budget the decision survives even
+        // though handoff is emitted first. Section slots and their display order
+        // stay stable (a starved section ends up empty, not removed).
         let big = "x".repeat(800); // title(1)+body(200) = 201 tokens
         let small = "x".repeat(400); // title(1)+body(100) = 101 tokens
         let mut sections = vec![
@@ -565,18 +583,90 @@ mod tests {
             ),
         ];
         let mut conv: Vec<ConventionRecord> = vec![];
-        // Budget fits exactly the first section's note, leaving nothing for the
-        // second — proving spend follows output order and can starve a later one.
+        // 201-token budget: decision (101) packs first and fits; handoff (201)
+        // no longer fits the 100 that remain — reversed vs a display-order pass.
         let used = apply_budget(&mut sections, &mut conv, 201);
         assert_eq!(sections.len(), 2, "section slots and order are preserved");
         assert_eq!(sections[0].0, "handoff");
-        assert_eq!(sections[0].1.len(), 1, "earlier section packed first");
-        assert_eq!(sections[1].0, "decision");
         assert!(
-            sections[1].1.is_empty(),
-            "later section starved once budget is exhausted"
+            sections[0].1.is_empty(),
+            "handoff starved despite being displayed first"
         );
-        assert_eq!(used, 201);
+        assert_eq!(sections[1].0, "decision");
+        assert_eq!(sections[1].1.len(), 1, "higher-priority decision survives");
+        assert_eq!(used, 101);
+    }
+
+    #[test]
+    fn budget_prioritizes_durable_over_questions() {
+        // Ticket ^149: under a tight budget, durable decision/requirement notes
+        // must survive while ephemeral questions drop first, regardless of the
+        // fact that `question` is displayed before decision/requirement.
+        let body = "x".repeat(400); // title(1)+body(100) = 101 tokens each
+        let mut sections = vec![
+            ("handoff".to_string(), vec![note(0, "handoff", "ti", &body)]),
+            (
+                "question".to_string(),
+                vec![
+                    note(1, "question", "ti", &body),
+                    note(2, "question", "ti", &body),
+                    note(3, "question", "ti", &body),
+                ],
+            ),
+            (
+                "decision".to_string(),
+                vec![
+                    note(4, "decision", "ti", &body),
+                    note(5, "decision", "ti", &body),
+                ],
+            ),
+            (
+                "requirement".to_string(),
+                vec![
+                    note(6, "requirement", "ti", &body),
+                    note(7, "requirement", "ti", &body),
+                ],
+            ),
+        ];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        // 505 tokens = 2 decisions + 2 requirements + 1 handoff (5 * 101). All
+        // durable notes plus handoff fit; the 3 questions are dropped first.
+        let used = apply_budget(&mut sections, &mut conv, 505);
+        // Emission order is unchanged.
+        let kinds: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds, ["handoff", "question", "decision", "requirement"]);
+        assert_eq!(sections[0].1.len(), 1, "handoff kept (outranks question)");
+        assert!(sections[1].1.is_empty(), "questions dropped first");
+        assert_eq!(sections[2].1.len(), 2, "every decision survives");
+        assert_eq!(sections[3].1.len(), 2, "every requirement survives");
+        assert_eq!(used, 505);
+    }
+
+    #[test]
+    fn budget_preserves_display_order_of_sections() {
+        // The retain pass reorders nothing: whatever budget survivors remain,
+        // the sections Vec keeps its assembled display order.
+        let body = "x".repeat(400);
+        let mut sections = vec![
+            ("handoff".to_string(), vec![note(0, "handoff", "ti", &body)]),
+            (
+                "question".to_string(),
+                vec![note(1, "question", "ti", &body)],
+            ),
+            (
+                "decision".to_string(),
+                vec![note(2, "decision", "ti", &body)],
+            ),
+            (
+                "requirement".to_string(),
+                vec![note(3, "requirement", "ti", &body)],
+            ),
+        ];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        // A budget that only fits some notes still must not shuffle the Vec.
+        apply_budget(&mut sections, &mut conv, 150);
+        let kinds: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds, ["handoff", "question", "decision", "requirement"]);
     }
 
     #[test]
