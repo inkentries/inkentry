@@ -503,6 +503,11 @@ fn graph_file_query_refuses_without_local_project() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
     // A file-path query needs the index and has no live mode, so it must refuse
     // rather than fall back to the global store.
     bin(home.path(), proj.path())
@@ -510,6 +515,12 @@ fn graph_file_query_refuses_without_local_project() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(NO_PROJECT_ERR));
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "refused graph file-query must not open or mutate the pre-existing global index"
+    );
 }
 
 #[test]
@@ -540,6 +551,11 @@ fn explore_refuses_without_local_project() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"pre-existing global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
     // The project gate fires before any server probe, so an un-init'd dir refuses
     // with the ADR-067 message rather than reading the global index.
     bin(home.path(), proj.path())
@@ -548,7 +564,11 @@ fn explore_refuses_without_local_project() {
         .failure()
         .stderr(predicate::str::contains(NO_PROJECT_ERR));
 
-    assert!(!global_index_db(home.path()).exists());
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "refused explore must not open or mutate the pre-existing global index"
+    );
 }
 
 #[test]
@@ -571,6 +591,123 @@ fn check_refuses_without_local_project() {
         std::fs::read(&global).unwrap(),
         sentinel,
         "refused check must not open or mutate the pre-existing global index"
+    );
+}
+
+// ── happy path: an init'd project still resolves graph/chunks/check locally ────
+//
+// The fail-closed rework must not break the normal case: with a real local
+// `.spelunk/index.db`, the display commands resolve LOCAL (not global) and work.
+// A stray global index is left in place to prove they read local, not global.
+
+#[test]
+fn display_commands_resolve_local_index_in_initd_project() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn local_target() -> u32 { 7 }\n\
+         fn local_caller() { let _ = local_target(); }\n",
+    )
+    .unwrap();
+
+    // A stray machine-global index that must never be consulted by the local
+    // happy path (garbage bytes: if any command opened it as SQLite it would err).
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    let sentinel = b"stray global index sentinel";
+    std::fs::write(&global, sentinel).unwrap();
+
+    // Create the local project.
+    bin(home.path(), proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+    assert!(proj.path().join(".spelunk").join("index.db").exists());
+
+    // graph: index-backed symbol query resolves the LOCAL index and shows the edge.
+    bin(home.path(), proj.path())
+        .args(["graph", "local_target", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib.rs"))
+        .stdout(predicate::str::contains("local_target"));
+
+    // chunks: resolves the LOCAL index and returns this file's chunks.
+    bin(home.path(), proj.path())
+        .args(["chunks", "lib.rs", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local_target"));
+
+    // check: resolves the LOCAL index and reports on it rather than refusing.
+    bin(home.path(), proj.path())
+        .args(["check"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        sentinel,
+        "init'd-project display commands must resolve local and never touch the global store"
+    );
+}
+
+// ── strongest isolation assertion: a REAL populated global is never surfaced ───
+//
+// The refuse tests above use garbage-byte sentinels (which prove the file is not
+// opened). graph is the one display command with a live fallback, so it is the
+// only place a resolver regression could actually *print* cross-project data.
+// This uses a genuine populated global index and asserts its data never appears.
+
+#[test]
+fn graph_does_not_surface_real_populated_global_index() {
+    let home = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+
+    // Build a real index elsewhere, then copy it into the machine-global location
+    // so the global store holds genuine graph edges for `global_only_symbol`.
+    let global_src = tmp.path().join("global_src");
+    std::fs::create_dir_all(&global_src).unwrap();
+    std::fs::write(
+        global_src.join("secret_global_file.rs"),
+        "pub fn global_only_symbol() -> u32 { 1 }\n\
+         fn global_only_caller() { let _ = global_only_symbol(); }\n",
+    )
+    .unwrap();
+    bin(home.path(), &global_src)
+        .args(["index", "."])
+        .assert()
+        .success();
+    let real_global_index = global_src.join(".spelunk").join("index.db");
+    assert!(
+        real_global_index.exists(),
+        "precondition: real global index built"
+    );
+
+    let global = global_index_db(home.path());
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    std::fs::copy(&real_global_index, &global).unwrap();
+    let before = std::fs::read(&global).unwrap();
+
+    // A sibling (not ancestor) un-init'd dir with no source defining the symbol.
+    // If graph regressed to reading the global store it would print
+    // `global_only_caller` / `secret_global_file`; the fail-closed live scan over
+    // this empty dir must not.
+    let proj = tmp.path().join("uninit");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    bin(home.path(), &proj)
+        .args(["graph", "global_only_symbol", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global_only_caller").not())
+        .stdout(predicate::str::contains("secret_global_file").not());
+
+    assert_eq!(
+        std::fs::read(&global).unwrap(),
+        before,
+        "graph in an un-init'd dir must not open the real populated global index"
     );
 }
 
