@@ -33,8 +33,7 @@ pub(crate) fn require_server_client(cfg: &Config, feature: &str) -> Result<Serve
     // for an auto-discovered loopback and `Some` only for an explicit team URL.
     ServerInferenceClient::from_config(cfg).ok_or_else(|| {
         anyhow::anyhow!(crate::capability::inference_server_required_message(
-            feature,
-            cfg.server_url.as_deref()
+            feature
         ))
     })
 }
