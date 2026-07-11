@@ -138,7 +138,7 @@ zero-setup body of work" into small, mostly-messaging fixes plus doc changes
 - **Not** adding a `--global` flag (ADR-067 D2 reserved it; still deferred).
 - **Not** specifying the `init` "wizard" UX itself — this ADR only establishes
   that leading with `init` is the chosen direction the wizard implements. The
-  wizard remains a separate scoping effort (CoS/Johan).
+  wizard remains a separate scoping effort.
 - **Not** building fuzzy/substring code search (^130) as part of this direction;
   it is demoted to optional.
 - **Not** changing `open_memory_backend` selection semantics or the
