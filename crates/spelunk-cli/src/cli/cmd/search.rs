@@ -493,15 +493,17 @@ pub(crate) fn search_all_dbs_linearrag(
     Ok(all)
 }
 
-/// Run a structural ("ast-grep") pattern search for `query` over the working
-/// tree rooted at `root`.
+/// Run the zero-setup ("ast-grep") search for `query` over the working tree
+/// rooted at `root`.
 ///
 /// This is the zero-infra fallback: no index and no embedder required, and no
-/// external `ast-grep` binary — structural matching runs in-process via
-/// `ast-grep-core` (see `spelunk_core::search::live`). It mirrors the
-/// `graph_live` pattern in `graph.rs`, but maps matches into `SearchResult`
-/// structs so the output shape is **identical** to the regular/semantic search
-/// paths.
+/// external `ast-grep` binary — matching runs in-process via `ast-grep-core`
+/// (see `spelunk_core::search::live`). A structural pattern (with metavariables)
+/// matches structurally; a plain string matches case-insensitively by substring
+/// on identifier/text nodes, with a literal line scan beneath (spelunk-oss^130).
+/// It mirrors the `graph_live` pattern in `graph.rs`, but maps matches into
+/// `SearchResult` structs so the output shape is **identical** to the
+/// regular/semantic search paths.
 ///
 /// Field mapping from a `LiveMatch` to `SearchResult`:
 /// - `file_path`  → `file_path`
@@ -518,7 +520,7 @@ pub(crate) fn search_live(
     root: &std::path::Path,
     limit: usize,
 ) -> Result<()> {
-    let matches = crate::search::live::search_live_matches(query, root, limit);
+    let matches = crate::search::live::search_live_query(query, root, limit);
 
     // Map structural matches to the canonical SearchResult shape so downstream
     // consumers (agents, benchmarks) see a consistent structure regardless of

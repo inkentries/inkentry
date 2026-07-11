@@ -128,6 +128,13 @@ spelunk search <query> [options]
 PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
 `ast-grep` need no embedding model or server.
 
+In `ast-grep` mode (and the `auto` fallback used when there is no index or
+server), a plain-string query matches case-insensitively as a substring of
+identifiers and file text, so `Billing` finds `BillingEntity`. A query
+containing a metavariable (`$X`, `$$$ARGS`) is instead compiled as a structural
+ast-grep pattern. Neither needs an index. This is literal substring matching,
+not semantic search (that needs the server).
+
 **Example:**
 
 ```bash
@@ -135,7 +142,8 @@ spelunk search "where is the JWT token validated"
 spelunk search "database schema migration" --limit 5 --format json
 spelunk search "authentication middleware" --graph
 spelunk search "TODO fix me" --mode text         # FTS only, no server needed
-spelunk search "fn .*token.*\(" --mode ast-grep  # structural live search
+spelunk search "Billing" --mode ast-grep         # case-insensitive substring, no index
+spelunk search "$X.unwrap()" --mode ast-grep     # structural pattern (metavariable)
 ```
 
 ---
