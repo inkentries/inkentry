@@ -20,6 +20,10 @@ thiserror   = "2"
 rusqlite    = { version = "0.40", features = ["bundled"] }
 sqlite-vec  = "0.1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# In-process HTTPS for spelunk-server (ADR-066). `tls-rustls-no-provider` avoids
+# rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
+# startup instead — already the resolved provider via reqwest/hf-hub.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 uuid        = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile    = "3"
 pretty_assertions = "1"
