@@ -1,5 +1,4 @@
-//! End-to-end coverage for the `search --mode text` empty-index guidance
-//! (spelunk-oss^129).
+//! End-to-end coverage for the `search --mode text` empty-index guidance.
 //!
 //! On an initialized-but-empty project (`.spelunk/index.db` exists but holds
 //! zero chunks), an explicit `--mode text` search previously emitted only the
