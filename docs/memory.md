@@ -22,12 +22,29 @@ git notes --ref=spelunk list         # every commit carrying spelunk notes
 GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
 ```
 
-Memory is scoped to a local project. Run `spelunk init` once per repository to
-create its `.spelunk/` store. In a directory with no local `.spelunk/`,
-`memory add/list/search` and `context` fail closed with a `no spelunk project
-here` error rather than reading or writing a machine-global store (see
-[ADR-067](adr/067-fail-closed-no-local-project.md)). An explicit `--db <path>`
-still overrides this.
+Memory is scoped to a local project and by default lives in `.spelunk/memory.db`.
+**Before `spelunk init`**, `memory add` and `memory list` fall back to storing entries
+in git-notes (`refs/notes/spelunk`) when inside a git repository, so you can record
+decisions without a `.spelunk/` directory. `memory search` and `context` remain
+gated to projects with `.spelunk/` (they need the index to search and embed).
+
+**Backend selection (precedence):**
+1. Explicit `--backend git-notes` → git-notes
+2. Explicit team `server_url` (in config) → remote server
+3. Local `.spelunk/memory.db` (after `spelunk init`)
+4. **Git-notes fallback (new)** — no project, but inside a git repo → `refs/notes/spelunk`
+5. Neither project nor git repo → error: *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
+
+**Known limitation:** git-notes writes are not atomic across concurrent `add` commands
+to the same commit (the read-modify-write can lose entries if agents write simultaneously).
+This is acceptable for solo pre-init use; multi-agent workflows should `spelunk init` to
+use SQLite. Also note: git-notes under `refs/notes/spelunk` do **not** push or fetch by
+default — see [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for
+cross-machine sync options and [git notes](https://git-scm.com/docs/git-notes) documentation.
+
+See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design and
+[ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the git-notes
+fallback rationale. An explicit `--db <path>` still overrides all backends.
 
 ## Why memory?
 
