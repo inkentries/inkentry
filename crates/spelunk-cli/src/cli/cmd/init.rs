@@ -35,12 +35,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // Directory basename — a cosmetic title only (used for the CLAUDE.md heading).
-    let dir_name = project_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| project_root.to_string_lossy().into_owned());
-
     let spelunk_dir = project_root.join(".spelunk");
     let db_path = spelunk_dir.join("index.db");
     let config_path = spelunk_dir.join("config.toml");
@@ -145,54 +139,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 6. Write CLAUDE.md if missing ─────────────────────────────────────────
-    let claude_md_path = project_root.join("CLAUDE.md");
-    if !claude_md_path.exists() {
-        let claude_md = format!(
-            "# CLAUDE.md — {name}\n\
-             \n\
-             Developer guide for AI agents working on this codebase.\n\
-             \n\
-             ---\n\
-             \n\
-             ## Agent workflow\n\
-             \n\
-             This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.\n\
-             \n\
-             **At the start of every session:**\n\
-             ```bash\n\
-             spelunk check                 # verify index is fresh\n\
-             spelunk context               # review handoffs, open questions, decisions, requirements\n\
-             ```\n\
-             \n\
-             **Before reading any file, search first:**\n\
-             ```bash\n\
-             spelunk search \"<topic>\"      # find relevant chunks by meaning\n\
-             spelunk graph <symbol>        # trace callers/callees when needed\n\
-             ```\n\
-             \n\
-             **Store decisions as you make them:**\n\
-             ```bash\n\
-             spelunk memory add --kind decision --title \"...\" --body \"why, alternatives, tradeoffs\"\n\
-             spelunk memory add --kind requirement --title \"...\"\n\
-             spelunk memory add --kind note --title \"...\"      # surprising/non-obvious facts\n\
-             ```\n\
-             \n\
-             **At the end of every session:**\n\
-             ```bash\n\
-             spelunk memory add --kind handoff --title \"Handoff: <summary>\" --body \"done, next, open\"\n\
-             spelunk index .               # re-index after any commits\n\
-             ```\n",
-            name = dir_name
-        );
-        if let Err(e) = std::fs::write(&claude_md_path, claude_md) {
-            eprintln!("Warning: could not write CLAUDE.md: {e}");
-        } else {
-            println!("  CLAUDE.md written to {}", claude_md_path.display());
-        }
-    }
-
-    // ── 7. Auto-spawn server (TTY only) or probe for a running server ─────────
+    // ── 6. Auto-spawn server (TTY only) or probe for a running server ─────────
     //
     // Interactive (stdin is a TTY): attempt to start the server so semantic
     // search works immediately. Non-interactive (CI / hook): probe only —
@@ -221,7 +168,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 8. Print success summary ──────────────────────────────────────────────
+    // ── 7. Print success summary ──────────────────────────────────────────────
     println!();
     println!("spelunk initialised for {}", project_slug);
     println!();

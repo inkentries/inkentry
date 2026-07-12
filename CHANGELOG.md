@@ -24,6 +24,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   prints "0 source files found" in an empty or umbrella directory, or "run
   'spelunk init' for the full indexed graph" when source files exist but no call
   site matched the symbol. (spelunk-oss^127)
+- **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
+  Users who want an agent guide should manually copy `docs/examples/AGENT.md`
+  and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)
 
 ### Added
 
