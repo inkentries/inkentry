@@ -16,11 +16,13 @@
   service shim) or a Task Scheduler task set to run at startup, whether or not a
   user is logged on, with restart-on-failure. Pick one; don't stack them.
 
-  This binds loopback (127.0.0.1) only. spelunk-server refuses a non-loopback
-  plaintext bind unconditionally, so this service is not reachable off-host by
-  itself. Exposing it to other machines is a separate deployment decision, out
-  of scope for this script. See ../../../docs/adr/056-oss-server-tenancy-model.md
-  for the trust model once you have a reachability plan.
+  For a team-reachable server, pass -BindHost 0.0.0.0 with -TlsCert and -TlsKey:
+  spelunk-server terminates HTTPS in-process (ADR-066), so nothing sits in front
+  of it. A non-loopback bind is refused unless BOTH the TLS cert/key AND an API
+  key are set. Bring your own PEM certificate (internal CA / certbot / cloud);
+  the server does not renew it. With no -TlsCert/-TlsKey the service stays on the
+  loopback (127.0.0.1) default, reachable on-host only. See
+  ../../../docs/adr/056-oss-server-tenancy-model.md for the trust model.
 
 .NOTES
   Run as Administrator. Verify NSSM argument names against your NSSM version;
@@ -38,8 +40,17 @@ param(
 
     [string]$ServiceName = "spelunk-server",
 
-    # Loopback only; see .DESCRIPTION. Do not set 0.0.0.0 here.
+    # Interface to bind. Loopback (default) is on-host only. For a
+    # team-reachable server pass 0.0.0.0 together with -TlsCert and -TlsKey.
+    [string]$BindHost = "127.0.0.1",
+
     [int]$Port = 7777,
+
+    # Operator-provided PEM cert chain (public) and private key. Both or neither.
+    # Required for a routable (-BindHost 0.0.0.0) bind; leave empty for loopback.
+    # Bring your own (internal CA / certbot / cloud); the server does not renew.
+    [string]$TlsCert = "",
+    [string]$TlsKey  = "",
 
     # Persistent DB + logs for an always-on host.
     [string]$DataDir = "$env:ProgramData\spelunk",
@@ -60,14 +71,26 @@ if (-not (Test-Path $BinaryPath)) {
     throw "spelunk-server.exe not found at '$BinaryPath'. Deploy the binary first (see README.md)."
 }
 
-# Register the service. --host is omitted so the server keeps its loopback
-# default. --key-file is preferred over --key so the key is not visible in the
-# service's argument list; write it 0600-equivalent (Administrators/SYSTEM only).
+# TLS args are all-or-nothing, and a routable bind requires them.
+if ([bool]$TlsCert -ne [bool]$TlsKey) {
+    throw "Set both -TlsCert and -TlsKey, or neither."
+}
+$tlsEnabled = [bool]$TlsCert
+if ($BindHost -ne "127.0.0.1" -and $BindHost -ne "::1" -and $BindHost -ne "localhost" -and -not $tlsEnabled) {
+    throw "A non-loopback -BindHost requires -TlsCert and -TlsKey (spelunk-server refuses a plaintext off-host bind)."
+}
+
+# --key-file is preferred over --key so the key is not visible in the service's
+# argument list; write it 0600-equivalent (Administrators/SYSTEM only).
 $keyFile = Join-Path $DataDir "server-key"
 Set-Content -Path $keyFile -Value $ServerKey -NoNewline
 icacls $keyFile /inheritance:r /grant:r "SYSTEM:(R)" "Administrators:(R)" | Out-Null
 
-$serverArgs = "--port $Port --db `"$dbPath`" --key-file `"$keyFile`""
+$serverArgs = "--host $BindHost --port $Port --db `"$dbPath`" --key-file `"$keyFile`""
+if ($tlsEnabled) {
+    # The private key must be a locked-down file (SYSTEM/Administrators only).
+    $serverArgs += " --tls-cert `"$TlsCert`" --tls-key `"$TlsKey`""
+}
 
 & $NssmPath install $ServiceName $BinaryPath
 & $NssmPath set $ServiceName AppParameters $serverArgs
@@ -81,5 +104,6 @@ $serverArgs = "--port $Port --db `"$dbPath`" --key-file `"$keyFile`""
 
 & $NssmPath start $ServiceName
 
-Write-Host "Installed and started service '$ServiceName' on 127.0.0.1:$Port."
+$scheme = if ($tlsEnabled) { "https" } else { "http" }
+Write-Host "Installed and started service '$ServiceName' on ${scheme}://${BindHost}:$Port."
 Write-Host "Verify: & '$BinaryPath' --health-check --port $Port"

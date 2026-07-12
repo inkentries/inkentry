@@ -3,6 +3,16 @@
 **Date:** 2026-07-02
 **Deciders:** founder (Johan), architect
 
+> **Clarification (2026-07-12, transport mechanism only, tenancy unchanged):**
+> This ADR's requirement that a non-loopback deployment use TLS "with no
+> override" still holds, but the *mechanism* has changed. Where the text below
+> implies TLS is terminated by a component in front of the server, read it as
+> terminated **by the server itself**: [ADR-066](066-native-tls-in-spelunk-server.md)
+> gives `spelunk-server` in-process HTTPS (`--tls-cert`/`--tls-key`), so a
+> non-loopback bind is now refused unless **both** TLS and a key are set, with
+> nothing in front of it. The tenancy model here (single trust domain, shared key
+> as the only boundary) is orthogonal to transport and is unchanged.
+
 ## Context
 
 `spelunk-server` is an HTTP listener (axum) that can hold a team's memory when a

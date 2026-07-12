@@ -367,3 +367,18 @@ Both open questions raised in review are resolved above (§2/§3): the binary
 reads the systemd credential directly (with `SPELUNK_SERVER_KEY` kept as a
 supported alternative), and a `DynamicUser=` variant will ship alongside the
 static-user default unit.
+
+---
+
+> **Correction (2026-07-12, transport topology, supersedes the
+> same-host-terminator reasoning):** In addition to the Non-goal reversal noted
+> at the top and in Non-goals, the recommended *topology* described in this ADR
+> is superseded by [ADR-066](066-native-tls-in-spelunk-server.md). Wherever this
+> ADR recommends the server bind loopback with a **same-host TLS terminator in
+> front** (Decision and Security implications), the shipped model instead has the
+> server bind a **routable interface and terminate HTTPS itself**
+> (`--tls-cert`/`--tls-key`), with nothing in front of it. The plaintext-off-host
+> refusal is unchanged and now bimodal: a non-loopback bind is allowed only with
+> both TLS and a key. The systemd unit, dedicated user, credential handling
+> (extended to the TLS private key), and sandboxing from this ADR remain in
+> force; only the "put a terminator in front" shape is retired.

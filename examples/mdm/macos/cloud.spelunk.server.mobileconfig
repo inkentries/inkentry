@@ -20,11 +20,14 @@
   see ../README.md ("Pushing spelunk configuration").
 
   REACHING IT OFF-HOST
-  This job binds loopback (--host 127.0.0.1) only, and this profile is scoped
-  to local, on-host use. spelunk-server refuses a non-loopback plaintext bind
-  with no override, so do NOT change --host to 0.0.0.0 (the daemon would fail
-  to start). This profile does not expose the server to other machines;
-  reaching it off-host is a separate deployment decision, out of scope here.
+  This job binds a routable interface (--host 0.0.0.0) and serves HTTPS
+  in-process: spelunk-server terminates TLS itself (ADR-066), with nothing in
+  front of it. A non-loopback bind is refused unless BOTH the TLS cert/key
+  (--tls-cert/--tls-key) AND an API key (SPELUNK_SERVER_KEY) are set, so a
+  team-reachable server carries all three. Bring your own PEM certificate
+  (internal CA, certbot, or a cloud-issued cert); spelunk-server does not renew
+  it, so the operator does. For a purely on-host server instead, set
+  --host 127.0.0.1 and drop the --tls-* args (loopback plaintext, no key needed).
 
   BEFORE YOU DEPLOY
   1. Regenerate every PayloadUUID below (`uuidgen`) so this profile does not
@@ -32,7 +35,10 @@
   2. Set PayloadOrganization to your organization name.
   3. Confirm the binary path matches where your fleet installs spelunk-server
      (the install script places it in /usr/local/bin when run as root).
-  4. Adjust the --port, --db path, and SPELUNK_SERVER_KEY to suit your
+  4. Install your PEM cert chain at /etc/spelunk/tls-cert (public, 0644) and the
+     private key at /etc/spelunk/tls-key (root-only, 0600), or edit the paths
+     below to match your host.
+  5. Adjust the --port, --db path, and SPELUNK_SERVER_KEY to suit your
      deployment. For a shared server, ALWAYS set an API key (see README).
 -->
 <plist version="1.0">
@@ -89,16 +95,27 @@
 									<!-- Path the install script uses when run as root. -->
 									<string>/usr/local/bin/spelunk-server</string>
 									<!--
-									  Loopback bind only. spelunk-server refuses a non-loopback
-									  plaintext bind (no override); see the header note.
+									  Routable bind + in-process HTTPS. A non-loopback bind is
+									  refused unless the --tls-* args below AND an API key are
+									  set; see the header note. For on-host-only use, set
+									  127.0.0.1 and remove the --tls-cert/--tls-key args.
 									-->
 									<string>--host</string>
-									<string>127.0.0.1</string>
+									<string>0.0.0.0</string>
 									<string>--port</string>
 									<string>7777</string>
 									<!-- Persistent DB path for a shared/always-on host. -->
 									<string>--db</string>
 									<string>/var/lib/spelunk/spelunk.db</string>
+									<!--
+									  Operator-provided PEM. The cert chain is public (0644);
+									  the private key is root-only (0600). Bring your own
+									  (internal CA / certbot / cloud); the server does not renew.
+									-->
+									<string>--tls-cert</string>
+									<string>/etc/spelunk/tls-cert</string>
+									<string>--tls-key</string>
+									<string>/etc/spelunk/tls-key</string>
 								</array>
 								<key>EnvironmentVariables</key>
 								<dict>
