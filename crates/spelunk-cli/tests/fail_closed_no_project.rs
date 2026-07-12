@@ -711,6 +711,68 @@ fn graph_does_not_surface_real_populated_global_index() {
     );
 }
 
+// ── zero-result affordance: empty tree vs no-match hint (spelunk-oss^127) ──────
+//
+// When the live graph scan finds no call sites, the message disambiguates a true
+// leaf/typo (scannable source present) from an empty tree (e.g. an umbrella repo
+// with uninitialized submodules). Text output only — the branch is in the text
+// path; JSON stays a bare edge array.
+
+#[test]
+fn graph_empty_dir_reports_zero_source_files_hint() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    // No source at all: the live scan reports 0 files and steers to a populated
+    // subdir / submodule init, not to `spelunk init`.
+    bin(home.path(), proj.path())
+        .args(["graph", "anything"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 source files found"))
+        .stdout(predicate::str::contains("submodules are initialized"))
+        .stdout(predicate::str::contains("run 'spelunk init'").not());
+}
+
+#[test]
+fn graph_populated_dir_no_match_reports_init_hint() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // Scannable source exists, but nothing calls `helper` — a true leaf/typo.
+    std::fs::write(proj.path().join("lib.rs"), "fn helper() {}\n").unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["graph", "helper"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "run 'spelunk init' for the full indexed graph",
+        ))
+        .stdout(predicate::str::contains("0 source files found").not());
+}
+
+#[test]
+fn graph_populated_dir_with_call_site_still_prints_edges() {
+    // Regression guard: the zero-result branching must not swallow a real hit.
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    // Text output: the call site is listed and neither zero-result hint fires.
+    bin(home.path(), proj.path())
+        .args(["graph", "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Incoming to 'greet'"))
+        .stdout(predicate::str::contains("lib.rs"))
+        .stdout(predicate::str::contains("No graph edges found").not());
+}
+
 // ── walk-up: memory resolves the ancestor project from a deep subdir ───────────
 
 #[test]
