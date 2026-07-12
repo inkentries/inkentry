@@ -40,6 +40,8 @@ bash bench/setup_repos.sh
 
 This fetches task metadata from HuggingFace (`princeton-nlp/SWE-bench_Verified`) and clones each repo at the correct base commit. Re-running is idempotent; already-correct checkouts are skipped. Requires internet access and `uv`.
 
+`--git-timeout` is enforced via a `timeout`/`gtimeout` binary. macOS ships neither; install GNU coreutils (`brew install coreutils`) for `gtimeout` to enforce it, otherwise the script runs git ops without a per-command timeout.
+
 Options: `--tasks N` (first N only) · `--repos-dir DIR` · `--dataset SLUG`
 
 **For Claude benchmarks (secondary):**
