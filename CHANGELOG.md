@@ -20,6 +20,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
   (spelunk-oss^147)
+- **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
+  Users who want an agent guide should manually copy `docs/examples/AGENT.md`
+  and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)
+
 ### Added
 
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
