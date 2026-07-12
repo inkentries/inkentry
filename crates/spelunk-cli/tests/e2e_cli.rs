@@ -1138,6 +1138,81 @@ fn test_init_non_tty_prints_skip_notice() {
         ));
 }
 
+/// Init a git repo at `dir` with a committer identity so `spelunk init` finds a
+/// project root. (spelunk#141 init tests only need the repo, not any commits.)
+fn git_init_repo(dir: &std::path::Path) {
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "test@test.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git setup");
+    }
+}
+
+/// spelunk-oss^141: `spelunk init` must NOT create an uninvited `CLAUDE.md` in
+/// the user's repo, and must not claim to have written one.
+#[test]
+fn test_init_does_not_write_claude_md() {
+    let tmp = tempdir().unwrap();
+    git_init_repo(tmp.path());
+
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success()
+        // The uninvited-write log line must be gone.
+        .stdout(predicate::str::contains("CLAUDE.md written").not());
+
+    assert!(
+        !tmp.path().join("CLAUDE.md").exists(),
+        "init must not create a CLAUDE.md in the project root"
+    );
+}
+
+/// spelunk-oss^141: a pre-existing `CLAUDE.md` must be left byte-for-byte
+/// untouched — init must never overwrite a user's own file.
+#[test]
+fn test_init_leaves_existing_claude_md_untouched() {
+    let tmp = tempdir().unwrap();
+    git_init_repo(tmp.path());
+
+    let claude_md = tmp.path().join("CLAUDE.md");
+    let sentinel = b"# my own CLAUDE.md\n\ndo not touch\n";
+    fs::write(&claude_md, sentinel).unwrap();
+
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(&claude_md).unwrap(),
+        sentinel,
+        "init must not modify a pre-existing CLAUDE.md"
+    );
+}
+
 // ── memory commands against an auto-discovered (loopback) server ─────────────
 //
 // ADR-004 (unified memory storage): `.spelunk/memory.db` is the single
