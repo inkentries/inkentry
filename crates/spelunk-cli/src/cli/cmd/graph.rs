@@ -130,7 +130,14 @@ fn graph_live(symbol: &str, format: &str, kind_filter: &Option<String>, root: &P
     }
 
     if edges.is_empty() {
-        println!("No graph edges found for '{symbol}' (live scan).");
+        // Disambiguate a true leaf/typo (source present) from an empty tree
+        // (e.g. an umbrella repo with uninitialized submodules).
+        let hint = if crate::search::live::has_scannable_source(root) {
+            "live structural scan found no call sites — run 'spelunk init' for the full indexed graph"
+        } else {
+            "0 source files found under this directory — check you're in a populated subdirectory, or that git submodules are initialized"
+        };
+        println!("No graph edges found for '{symbol}' (live scan). ({hint})");
         return Ok(());
     }
 

@@ -226,6 +226,19 @@ pub fn search_live_matches(pattern: &str, root: &Path, limit: usize) -> Vec<Live
     out
 }
 
+/// Early-exit probe: does the tree under `root` hold at least one file in a
+/// language the structural scan covers? `.any` short-circuits, so a huge tree is
+/// never fully walked. Same `.gitignore`-respecting traversal as the scan;
+/// working-tree-only (no global store).
+pub fn has_scannable_source(root: &Path) -> bool {
+    WalkBuilder::new(root)
+        .standard_filters(true)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .any(|e| detect_support_lang(e.path()).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
