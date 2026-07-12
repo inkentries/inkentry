@@ -18,6 +18,11 @@ use tempfile::TempDir;
 /// no-em-dash house rule for user-facing copy).
 const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
 
+/// ADR-068 D3 dual-escape-hatch error for `memory add`/`list` when there is
+/// neither a project DB nor a usable git repo (case 5).
+const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
+     or run inside a git repository.";
+
 /// A `spelunk` command with an isolated HOME (so the "global" store lives under
 /// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
@@ -42,8 +47,12 @@ fn global_index_db(home: &Path) -> std::path::PathBuf {
 
 // ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
 
+// A bare `TempDir` is not inside a git repo (it lives under the system temp
+// dir, not a checkout), so `memory add`/`list` hit ADR-068 D3 case 5 — neither
+// a project DB nor a usable git repo — and refuse with the dual-hatch message
+// rather than falling back to git-notes.
 #[test]
-fn memory_add_refuses_without_local_project() {
+fn memory_add_refuses_without_project_or_git_repo() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -53,7 +62,7 @@ fn memory_add_refuses_without_local_project() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -62,7 +71,7 @@ fn memory_add_refuses_without_local_project() {
 }
 
 #[test]
-fn memory_list_refuses_without_local_project() {
+fn memory_list_refuses_without_project_or_git_repo() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -70,7 +79,7 @@ fn memory_list_refuses_without_local_project() {
         .args(["memory", "list"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert!(!global_memory_db(home.path()).exists());
 }
@@ -362,9 +371,10 @@ fn sync_arm_refuses_without_local_project() {
 
 #[test]
 fn memory_timeline_refuses_without_local_project() {
-    // Every `memory` subcommand resolves its store through the same
-    // `require_project_db` line before dispatch; `timeline` (needs no server)
-    // confirms the guard is not specific to add/list/search.
+    // Every `memory` subcommand *except* the ADR-068 D3 add/list fallback
+    // resolves its store through the same `require_project_db` line before
+    // dispatch; `timeline` (needs no server) confirms the fail-closed guard
+    // still holds for the non-add/list subcommands.
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -399,7 +409,7 @@ fn refused_memory_add_does_not_mutate_preexisting_global_store() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert_eq!(
         std::fs::read(&global).unwrap(),

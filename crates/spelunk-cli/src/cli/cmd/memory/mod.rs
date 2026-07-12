@@ -372,13 +372,22 @@ mod watch;
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
+    let mut be = backend_override(&args.backend);
     // ADR-067: fail closed when there is no local `.spelunk/` project instead of
     // silently using the global store. `--db` is an explicit override, exempt.
-    let mem_path = match args.db.clone() {
-        Some(p) => p,
-        None => crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db"),
+    // ADR-068 D3 narrows this for `add`/`list` only: with no project DB but inside
+    // a git repo they fall back to git-notes; `resolve_add_list_store` may flip
+    // `be` to git-notes and returns a placeholder path the callers never open.
+    let mem_path = if matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_)) {
+        resolve_add_list_store(&args, &cfg, &mut be).await?
+    } else {
+        match args.db.clone() {
+            Some(p) => p,
+            None => {
+                crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db")
+            }
+        }
     };
-    let be = backend_override(&args.backend);
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be).await,
         MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg, be).await,
@@ -406,6 +415,61 @@ fn backend_override(s: &str) -> Option<&'static str> {
         "git-notes" => Some("git-notes"),
         _ => None,
     }
+}
+
+/// Resolve the memory store path for `memory add` / `list` (ADR-068 D3).
+///
+/// Precedence: explicit `--backend git-notes` › explicit `--db` › a resolvable
+/// local `.spelunk/` DB › a CloudFirst team `server_url` › **git-notes on the
+/// nearest repo when CWD is inside a git repo** › fail. The git-notes fallback
+/// flips `be` to `Some("git-notes")` so downstream takes the store-of-record
+/// path (no SQLite write-through, no global-store reads); in that mode the
+/// returned path is a placeholder the callers never open.
+async fn resolve_add_list_store(
+    args: &MemoryArgs,
+    cfg: &crate::config::Config,
+    be: &mut Option<&'static str>,
+) -> Result<PathBuf> {
+    use crate::config::SyncMode;
+
+    if *be == Some("git-notes") {
+        return Ok(cfg.db_path.with_file_name("memory.db"));
+    }
+    if let Some(p) = args.db.clone() {
+        return Ok(p);
+    }
+    if let Ok(p) = crate::config::require_project_db(&cfg.db_path, false) {
+        return Ok(p.with_file_name("memory.db"));
+    }
+    // No local project. A CloudFirst team server owns the store (ADR-004), so it
+    // wins over the git-notes fallback; let `open_memory_backend` route remote.
+    if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
+        return Ok(cfg.db_path.with_file_name("memory.db"));
+    }
+    if git_head_reachable().await {
+        *be = Some("git-notes");
+        return Ok(cfg.db_path.with_file_name("memory.db"));
+    }
+    anyhow::bail!(
+        "no spelunk project here, and not inside a git repo. \
+         Run 'spelunk init' first, or run inside a git repository."
+    )
+}
+
+/// Whether CWD is inside a git repo with a resolvable HEAD. An empty repo with
+/// no commits fails this (`git rev-parse HEAD` errors), matching ADR-068's
+/// "no git repo available" case.
+async fn git_head_reachable() -> bool {
+    use std::process::Stdio;
+    tokio::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // ── Shared display helpers ────────────────────────────────────────────────────

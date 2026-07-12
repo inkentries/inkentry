@@ -22,7 +22,15 @@ pub(super) async fn memory_add(
     // Build an effective config that routes inference to the discovered server
     // while leaving `server_url` unset, so `open_memory_backend` still writes the
     // note to the project's local `memory.db` (the single canonical store).
-    let project_root = mem_path.parent().unwrap_or(mem_path);
+    // On the git-notes path `mem_path` is a placeholder; the project is the git
+    // repo at CWD, so derive the inference project id from there instead.
+    let cwd;
+    let project_root: &std::path::Path = if backend_override == Some("git-notes") {
+        cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        &cwd
+    } else {
+        mem_path.parent().unwrap_or(mem_path)
+    };
     let tier = capability::get_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
@@ -97,7 +105,10 @@ pub(super) async fn memory_add(
         .await?;
 
     // ── Git-notes write-through (best-effort, non-fatal) ─────────────────────
-    if cfg.store_in_git_notes {
+    // Skip when git-notes is already the primary store (explicit `--backend
+    // git-notes` or the ADR-068 D3 pre-init fallback): the backend just wrote
+    // this record to `refs/notes/spelunk`, so a write-through would duplicate it.
+    if cfg.store_in_git_notes && backend_override != Some("git-notes") {
         let record = NoteRecord {
             schema_version: 1,
             id,
