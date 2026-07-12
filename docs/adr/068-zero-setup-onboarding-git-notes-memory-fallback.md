@@ -94,8 +94,13 @@ zero-setup framing at the top.
 
 ### D2 — a small, honestly-scoped index-free surface, documented as such
 
-Keep exactly these working with **no** `init`, and document **only** these in
-the zero-setup section:
+`getting-started` is ordered in sections. **The first section is pre-`init`**
+and showcases **only** the commands below (the index-free surface). It is
+followed by the **`spelunk init`** section, and only *after* that do the
+index-backed commands appear (indexed `search` / `--mode text`, the full indexed
+`graph`, semantic search, and DB-backed `memory`). "Index-free only" applies to
+that opening pre-`init` section, not to the whole document. Keep exactly these
+working with **no** `init`:
 
 - `spelunk search "<query>"` (auto mode → ast-grep live structural scan) and
   `spelunk search --mode ast-grep`.
