@@ -67,26 +67,38 @@ Run one long-lived `spelunk-server` and point every laptop at it.
    `%ProgramData%\spelunk\`.
 2. **Run the server as a Windows Service.** Use
    [`Install-SpelunkServerService.ps1`](Install-SpelunkServerService.ps1). It
-   registers `spelunk-server.exe` under NSSM (a service wrapper), binds loopback,
-   stores the DB and logs under `%ProgramData%\spelunk\`, and reads the API key
-   from a locked-down key file.
+   registers `spelunk-server.exe` under NSSM (a service wrapper), stores the DB
+   and logs under `%ProgramData%\spelunk\`, and reads the API key from a
+   locked-down key file. For a team-reachable server, pass `-BindHost 0.0.0.0`
+   with your PEM certificate and private key so the server terminates HTTPS
+   in-process (ADR-066), with nothing in front of it:
 
    ```powershell
-   .\Install-SpelunkServerService.ps1 -ServerKey "replace-with-your-shared-api-key"
+   .\Install-SpelunkServerService.ps1 `
+     -ServerKey "replace-with-your-shared-api-key" `
+     -BindHost 0.0.0.0 `
+     -TlsCert "C:\ProgramData\spelunk\tls-cert.pem" `
+     -TlsKey  "C:\ProgramData\spelunk\tls-key.pem"
    ```
+
+   Bring your own certificate (an internal CA, `certbot`, or a cloud-issued
+   cert); `spelunk-server` does not renew it, so the operator does. Omit the
+   `-BindHost`/`-TlsCert`/`-TlsKey` args for an on-host-only server that keeps the
+   loopback default.
 
    `spelunk-server.exe` is a plain console program and does not speak the Windows
    Service Control Manager protocol, so `sc.exe create` / `New-Service` pointed
    directly at it will fail to start (error 1053). A wrapper is required; the
    script uses NSSM, and WinSW or a startup Task Scheduler task work equally.
-3. **This installs a loopback-only server.** `spelunk-server` refuses a
-   non-loopback plaintext bind with no override, so the service from step 2 is
-   not reachable off-host by itself. Exposing it to other machines is a
-   separate deployment decision, out of scope for this script and README.
+3. **A non-loopback bind needs both TLS and a key.** `spelunk-server` refuses a
+   non-loopback plaintext bind with no override, so a routable `-BindHost`
+   requires `-TlsCert`/`-TlsKey` and the API key (the script enforces this). Lock
+   the private key file down to SYSTEM/Administrators only. Loopback with no TLS
+   stays on-host only.
 4. **Pre-configure the laptops.** Push [`../spelunk-config.toml`](../spelunk-config.toml)
    to each user's `%USERPROFILE%\.config\spelunk\config.toml` with `server_url`
-   set to wherever your own deployment makes the server reachable, and deliver
-   the shared `SPELUNK_SERVER_KEY` via the environment mechanism below.
+   set to the server's `https://` endpoint, and deliver the shared
+   `SPELUNK_SERVER_KEY` via the environment mechanism below.
 
 ## Pushing spelunk configuration on Windows
 

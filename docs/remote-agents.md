@@ -30,18 +30,20 @@ A containerized agent needs three things: an env var pointing its CLI at a
 `spelunk-server`, a bind-mount of the repo, and a bind-mount of your spelunk
 config so it resolves the same project.
 
-The one detail that trips people up is **which URL** the container uses. A
+The one detail that trips people up is **which URL** the container uses. A local
 `spelunk-server` binds the host's loopback (`127.0.0.1`), and a container's
 network namespace cannot reach the host's loopback by any portable means — so
-the reliable answer is to point the container at the server's **TLS endpoint**,
-the same `https://` URL any other client uses, not at a Docker bridge address.
+the reliable answer is to point the container at the team server's **HTTPS
+endpoint**, the same `https://` URL any other client uses, not at a Docker bridge
+address.
 
-### Recommended: point at the operator's TLS endpoint (portable)
+### Recommended: point at the server's HTTPS endpoint (portable)
 
-Stand up the team server the [Self-hosting](self-hosting.md) way — bare-metal on
-loopback with a same-host TLS terminator — and point the container at its
-`https://` hostname. This works identically on Docker Desktop and native Linux,
-because it's a routable HTTPS URL, not a host-loopback address:
+Stand up the team server the [Self-hosting](self-hosting.md) way (a routable
+bind with `--tls-cert`/`--tls-key` and a key, where the server terminates HTTPS
+itself) and point the container at its `https://` hostname. This works
+identically on Docker Desktop and native Linux, because it's a routable HTTPS
+URL, not a host-loopback address:
 
 ```bash
 docker run --rm -it \
@@ -53,8 +55,8 @@ docker run --rm -it \
   your-agent-image
 ```
 
-- `SPELUNK_SERVER_URL` points the in-container CLI at the operator's TLS
-  terminator, which forwards to the loopback-bound server on the host.
+- `SPELUNK_SERVER_URL` points the in-container CLI at the team server's own
+  HTTPS endpoint, which the server serves directly.
 - `SPELUNK_SERVER_KEY` is the shared API key (required — a networked server is
   always keyed; see [Self-hosting](self-hosting.md)).
 - `-v "$PWD":/work` bind-mounts the repository so file paths recorded in memory
@@ -71,8 +73,8 @@ spelunk check                 # should report the server reachable over TLS
 spelunk search "auth tokens"  # semantic search via the server
 ```
 
-The **server side** of this — the loopback bind, the systemd unit, and the TLS
-terminator — is the bare-metal path in [Self-hosting](self-hosting.md).
+The **server side** of this (the routable TLS bind and the systemd unit) is the
+bare-metal path in [Self-hosting](self-hosting.md).
 
 ### Docker Desktop convenience (solo, non-portable)
 
@@ -100,15 +102,17 @@ host-loopback-bound server from a container:
 
 - The default bridge gateway (`172.17.0.1`) and
   `--add-host=host.docker.internal:host-gateway` both resolve to the host's
-  **routable** interface, not its loopback — so a server bound to `127.0.0.1` is
-  not listening where the container can reach it.
-- Binding the server to the bridge address instead is a **non-loopback plaintext
-  bind, which `spelunk-server` refuses unconditionally** — there is no override.
+  **routable** interface, not its loopback, so a local server bound to
+  `127.0.0.1` is not listening where the container can reach it.
+- Binding the server to the bridge address over plaintext instead is a
+  **non-loopback plaintext bind, which `spelunk-server` refuses
+  unconditionally**: there is no override. A routable bind is only allowed with
+  `--tls-cert`/`--tls-key` and a key, i.e. the HTTPS endpoint below.
 
-So on native Linux there is no bridge shortcut: use the recommended TLS-endpoint
-path above. Terminating TLS on the host (per [Self-hosting](self-hosting.md)) is
-what makes the server reachable from a container, and it does so the same way on
-every platform.
+So on native Linux there is no bridge shortcut: use the recommended HTTPS-endpoint
+path above. The team server's own routable TLS listener (per
+[Self-hosting](self-hosting.md)) is what makes it reachable from a container, and
+it does so the same way on every platform.
 
 ### Notes
 

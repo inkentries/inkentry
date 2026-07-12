@@ -1,22 +1,27 @@
-# spelunk-server — minimal LOCAL SCAFFOLD (server + persistent volume)
+# spelunk-server – two shapes in one file.
 #
-# This is not a networked or team-serving deployment. spelunk-server binds
-# 127.0.0.1 inside its own container's network namespace (the image's own
-# default — see Dockerfile) and refuses to bind a non-loopback address over
-# plaintext HTTP, unconditionally, keyed or not (see
-# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override). No
-# port is published here, so the server is not reachable from the host or a
-# sibling container — only from inside this same network namespace, e.g. a
-# separate container started with `--network container:spelunk-server`
-# (the runtime image itself has no curl/wget to test from a bare
-# `docker compose exec` shell — see docs/server.md#docker-local-scaffold-only).
+#   spelunk-server (default) – a minimal LOCAL SCAFFOLD. It binds 127.0.0.1
+#     inside the container's own network namespace and publishes no port, so it
+#     is reachable only from inside that namespace (e.g. a sidecar started with
+#     `--network container:spelunk-server`; the runtime image has no curl/wget to
+#     test from a bare `docker compose exec` shell). Use it to poke at the API
+#     locally. See docs/server.md#docker-a-team-server-or-a-local-scaffold.
+#     Start with:  SPELUNK_SERVER_KEY=your-key docker compose up -d
 #
-# For a team-reachable deployment, run the binary bare-metal under systemd
-# instead, with your own TLS terminator in front of the same loopback bind on
-# that host — see docs/self-hosting.md. That is the recommended path.
+#   team-server (profile) – a TEAM-REACHABLE deployment. spelunk-server binds a
+#     routable interface and terminates HTTPS in-process (ADR-066): it serves TLS
+#     itself with an operator-provided PEM cert + key, with nothing in front of
+#     it. A non-loopback bind is refused unless BOTH the TLS cert/key AND an API
+#     key are set (see
+#     docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
+#     Bring your own certificate (internal CA / certbot / cloud); the server does
+#     not renew it, so you do. Start with:
+#       SPELUNK_SERVER_KEY=your-key \
+#       SPELUNK_TLS_CERT=/etc/spelunk/tls-cert SPELUNK_TLS_KEY=/etc/spelunk/tls-key \
+#       docker compose --profile team-server up -d
 #
-# Usage:
-#   SPELUNK_SERVER_KEY=your-key docker compose up -d
+# The bare-metal/systemd path in docs/self-hosting.md is the same shape without a
+# container, and is the recommended single-host deployment.
 
 services:
   spelunk-server:
@@ -34,6 +39,33 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Team-reachable: routable TLS bind, cert + key mounted, port published.
+  # Only started with `--profile team-server`.
+  team-server:
+    build: .
+    image: spelunk-server:latest
+    profiles: ["team-server"]
+    restart: unless-stopped
+    command: ["--host", "0.0.0.0", "--port", "7777"]
+    ports:
+      # Publish the container's routable TLS port on the host's 443.
+      - "443:7777"
+    volumes:
+      - spelunk-data:/data
+      # Operator-provided PEM. The cert chain is public; the key is a secret,
+      # so keep the source file 0600 root-owned on the host.
+      - ${SPELUNK_TLS_CERT:-/etc/spelunk/tls-cert}:/tls/cert:ro
+      - ${SPELUNK_TLS_KEY:-/etc/spelunk/tls-key}:/tls/key:ro
+    environment:
+      # A routable bind is refused without a key; set a real one.
+      SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:?set SPELUNK_SERVER_KEY for a team server}
+      SPELUNK_SERVER_TLS_CERT: /tls/cert
+      SPELUNK_SERVER_TLS_KEY: /tls/key
+    # No container healthcheck here: the binary's built-in `--health-check` probe
+    # speaks plaintext HTTP only, so it cannot validate this in-process TLS
+    # listener (it would report unhealthy forever). Health-check the published
+    # https:// endpoint from outside the container instead.
 
 volumes:
   spelunk-data:

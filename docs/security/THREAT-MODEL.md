@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** July 2026 (egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired)  
+**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -23,8 +23,8 @@ spelunk has two distinct operational modes with different attack surfaces:
 
 ### Mode B — spelunk-server
 An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
-- Binds to a configurable port; intended for shared team use
-- Bearer token authentication (`--key` / `SPELUNK_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind without a key is refused at startup (see "Key difference" below)
+- Binds to a configurable interface/port; intended for shared team use. Loopback binds serve plaintext HTTP; a non-loopback bind serves HTTPS in-process (ADR-066) via `--tls-cert`/`--tls-key`
+- Bearer token authentication (`--key` / `SPELUNK_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind is refused unless **both** TLS and a key are set (see "Key difference" below)
 - Accepts pre-computed embedding vectors from clients (clients embed locally, server stores and searches)
 - Serves multiple projects via project_id routing
 - Exposes: `POST /v1/projects/{id}/memory`, `POST /v1/projects/{id}/memory/search`, DELETE, archive, supersede
@@ -128,12 +128,23 @@ Client (spelunk CLI / any HTTP client)
 ```
 
 **Key difference from Mode A:** In server mode, memory content is accessible to anyone
-who can reach the server's port. To prevent an open, unauthenticated server on a
-shared network, `spelunk-server` **refuses to start** when `--host` is a non-loopback
-address (`0.0.0.0`, a LAN/public IP) and no `--key` / `SPELUNK_SERVER_KEY` is set. A
-keyless server can therefore only bind loopback (`127.0.0.1`), where it is reachable
-by local processes but not by other machines. (A blank/whitespace key — e.g.
-docker-compose's `${SPELUNK_SERVER_KEY:-}` default — is treated as no key.)
+who can reach the server's port. The bind guard (`check_bind_safety`) encodes the
+local/remote boundary directly (ADR-066 §4):
+
+| Bind | TLS configured | Key set | Result |
+|---|---|---|---|
+| loopback | any | any | allow (local plaintext HTTP, no key needed) |
+| non-loopback | no | any | refuse (no plaintext off-host, keyed or not) |
+| non-loopback | yes | no | refuse (remote requires an API key) |
+| non-loopback | yes | yes | allow (remote HTTPS, key required) |
+
+So a non-loopback bind is allowed **only** when the server terminates HTTPS
+itself (`--tls-cert`/`--tls-key`) **and** an API key is set: this keeps the bearer
+key off the wire in cleartext and prevents an open, unauthenticated server. A
+keyless or plaintext server can therefore only bind loopback (`127.0.0.1`), where
+it is reachable by local processes but not by other machines. (A blank or
+whitespace key, e.g. docker-compose's `${SPELUNK_SERVER_KEY:-}` default, is
+treated as no key.)
 
 ### Tenancy boundary: single trust domain (ADR-056)
 
@@ -155,9 +166,10 @@ the tenancy boundary. This is a deliberate design decision recorded in
   intended behaviour under this model, not a vulnerability. A future ADR that
   introduces a scoped-key and ACL model would supersede this decision.
 
-**Transport (ADR-056 addendum):** the server serves plaintext HTTP only on a
-loopback bind. A shared, non-loopback deployment terminates TLS in a front proxy
-so the shared key never crosses the network in cleartext. `/v1/health` is
+**Transport (ADR-056 addendum, updated by ADR-066):** the server serves plaintext
+HTTP only on a loopback bind. A shared, non-loopback deployment terminates TLS
+**in-process** (`--tls-cert`/`--tls-key`, ADR-066) so the shared key never crosses
+the network in cleartext, with nothing in front of the server. `/v1/health` is
 unauthenticated (no bearer required or sent).
 
 ---
@@ -195,7 +207,7 @@ unauthenticated (no bearer required or sent).
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to the team server) or a server whose operator set an external `--embedding-url` (server forwards post-secret-scan chunks to a third party). Both are explicit operator choices; users must be informed via docs. |
 | **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `spelunk-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url` or a server-side `--llm-url` shim. |
 | Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
-| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires a key — `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses without `--key` / `SPELUNK_SERVER_KEY`; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
+| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `SPELUNK_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (spelunk-oss^52 / PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `SPELUNK_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
 | `spelunk memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed (spelunk-oss^62):** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |

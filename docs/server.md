@@ -63,83 +63,72 @@ service so a team can sync memory. This is distinct from the local-auto server
 above: it's long-lived, reachable over the network, and protected by an API key.
 
 **Recommended: bare-metal + systemd.** Run the binary directly on a host under
-systemd, bound to loopback, with an operator-owned TLS terminator
-(nginx/Caddy/…) in front of that same loopback bind on the same host. This is
-the one mechanically-correct shape for a team-reachable server, because the
-server binds `127.0.0.1` unconditionally (see
+systemd, bound to a routable interface (`--host 0.0.0.0`) with a certificate and
+key (`--tls-cert`/`--tls-key`) and an API key. `spelunk-server` terminates HTTPS
+itself (ADR-066), so nothing sits in front of it. Off-host reachability is the
+server's own TLS listener, not a separate component. A non-loopback bind is
+refused unless both TLS and a key are set (see
 [Non-loopback plaintext binds are refused](#non-loopback-plaintext-binds-are-refused-no-override)
-below) and refuses to serve plaintext off-host — so reaching it from another
-machine needs a same-host terminator in front of that loopback bind. Docker
-cannot host this: a container's own loopback lives in its private network
-namespace and isn't reachable from the host or sibling containers by any of the
-usual means (bridge port-publish, Docker Desktop host-mode, container-to-container
-DNS all fail to reach it).
+below), so there is no way to expose it in cleartext.
+
+**Docker is an equally valid vehicle for the same shape.** With in-process TLS
+the container binds its routable interface directly and `-p 443:7777` publishes a
+working `https://` endpoint; see [Docker](#docker-a-team-server-or-a-local-scaffold)
+below.
 
 **[Self-hosting](self-hosting.md) is the full team-server guide** — it walks
-through the loopback bind, the first-party `spelunk-server.service` systemd unit
-(hardened, key supplied as a systemd credential), and the Caddy/nginx reference
-examples. Start there. The rest of this page covers client configuration, the
-trust model, and the CLI/flag reference that path relies on.
+through the routable TLS bind, bringing your own certificate, and the first-party
+`spelunk-server-team.service` systemd unit (hardened, both the API key and the
+TLS private key supplied as systemd credentials). Start there. The rest of this
+page covers client configuration, the trust model, and the CLI/flag reference
+that path relies on.
 
-## Docker: local scaffold only
+## Docker: a team server or a local scaffold
 
-`docker-compose.yml` in this repo is a **minimal local scaffold**: it builds
-the image and runs `spelunk-server` with a persistent named volume for the
-SQLite database. It is **not** a networked or team-serving recipe — the
-container binds `127.0.0.1` *inside its own network namespace* (the image's
-own default; see the Dockerfile), and nothing in the compose file publishes a
-port out of that namespace, so the server is not reachable from the host or
-from sibling containers. Use it to run the server process locally (e.g. to
-poke at the API by hand); for anything a team or a remote machine needs to
-reach, use the bare-metal/systemd path in [Self-hosting](self-hosting.md)
-instead.
+With in-process TLS, a container is a real team-server vehicle. Bind the
+container's routable interface, mount a certificate and key, publish the port,
+and set an API key:
 
 ```bash
-# Clone and build
 git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
-# Generate a key (optional for a purely local scaffold, but matches the
-# real deployment's shape if you're using this to test client config)
 export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
 
-# Start
-SPELUNK_SERVER_KEY=$SPELUNK_SERVER_KEY docker compose up -d
+# Team server: routable TLS bind, cert + key mounted, port published.
+docker run --rm -d --name spelunk-server \
+  -p 443:7777 \
+  -v spelunk-data:/data \
+  -v /etc/spelunk/tls-cert:/tls/cert:ro \
+  -v /etc/spelunk/tls-key:/tls/key:ro \
+  -e SPELUNK_SERVER_KEY \
+  -e SPELUNK_SERVER_TLS_CERT=/tls/cert \
+  -e SPELUNK_SERVER_TLS_KEY=/tls/key \
+  spelunk-server --host 0.0.0.0 --port 7777
 ```
 
-Because the container's loopback isn't reachable from outside its own
-network namespace, the only way to talk to this instance is from **inside
-that same namespace** — there is no host-reachable port to point a client
-at. The runtime image is a minimal Debian base with no `curl`/`wget`
-installed, so the practical way to reach it is a separate container that
-shares the same network namespace:
+`https://<host>` now answers, keyed, with the container serving TLS itself. The
+`team-server` profile in [`docker-compose.yml`](../docker-compose.yml) wires the
+same thing up declaratively.
+
+`docker-compose.yml`'s **default** service is still a **local scaffold**: it
+builds the image and runs `spelunk-server` on loopback with a persistent named
+volume and no published port, for poking at the API by hand. That default binds
+`127.0.0.1` inside the container's own network namespace, so it is reachable only
+from inside that namespace (e.g. a sidecar started with `--network
+container:spelunk-server`). The runtime image is a minimal Debian base with no
+`curl`/`wget`, so the practical way to reach the scaffold is a sidecar:
 
 ```bash
 docker run --rm --network container:spelunk-server curlimages/curl \
   curl http://127.0.0.1:7777/v1/health
 ```
 
-If you want other **sibling containers** (not sharing the exact namespace) to
-reach a spelunk-server on the same Docker network — e.g. a containerized
-agent, see [Remote agents](remote-agents.md) — run it on a user-defined
-bridge network instead of via compose:
-
-```bash
-docker network create spelunk-dev
-docker run --rm -d --name spelunk-server --network spelunk-dev \
-  -v spelunk-data:/data spelunk-server
-# other containers on `spelunk-dev` reach it at http://spelunk-server:7777
-```
-
-This works because Docker's embedded DNS resolves the container's *address on
-the bridge network*, not its loopback — the request never needs to cross into
-the container's private loopback namespace. A bare
-`docker run -p 7777:7777 ...` of this image, by contrast, will **not** make it
-reachable from the host: `-p` forwards host traffic to the container's
-network interface, not into its private loopback, so nothing published from
-the host ever reaches a loopback-only bind. There is no Docker Compose
-recipe in this repo for host- or off-host-reachable serving — use
-bare-metal/systemd (see [Self-hosting](self-hosting.md)) for that.
+To make it team-reachable, give it a routable TLS bind as shown above (the
+`team-server` compose profile does this); a bare `docker run -p 7777:7777 ...` of
+the loopback scaffold will **not** be reachable, because `-p` forwards host
+traffic to the container's routable interface, not into its private loopback, so
+nothing published reaches a loopback-only bind.
 
 ## Client configuration
 
@@ -154,9 +143,10 @@ project_id = "my-awesome-app"
 > **`server_url` must be `https://` unless it points at loopback**
 > (`127.0.0.1` / `::1` / `localhost`). The CLI attaches your bearer token to
 > requests built from this URL, so a non-loopback `http://` config is rejected
-> at startup with no override — see [Self-hosting](self-hosting.md) for how to
-> put TLS in front of a deployed server. Loopback `http://` (e.g. while
-> developing against a server on your own machine) is fine.
+> at startup with no override. A deployed server serves that `https://` itself
+> (see [Self-hosting](self-hosting.md)), so this is satisfied by pointing at its
+> TLS endpoint. Loopback `http://` (e.g. while developing against a server on
+> your own machine) is fine.
 
 Personal config (`~/.config/spelunk/config.toml` — never commit):
 
@@ -269,17 +259,16 @@ environment:
 ## Production deployment
 
 **Bare-metal / systemd is the recommended way to run a team-reachable
-`spelunk-server`.** The server itself binds loopback only; running it directly
-on the host (rather than in a container) means the operator's own TLS
-terminator — nginx, Caddy, whatever's already on the box — can sit in front of
-that same loopback bind on the same host and actually be reachable off-host.
-See [Self-hosting](self-hosting.md) for the systemd unit and reverse-proxy
-recipes.
+`spelunk-server`.** The server binds a routable interface and terminates HTTPS
+itself with `--tls-cert`/`--tls-key` and an API key, so it is reachable off-host
+with nothing in front of it. See [Self-hosting](self-hosting.md) for the systemd
+unit and the bring-your-own-certificate steps.
 
-`docker-compose.yml` (see [Docker: local scaffold only](#docker-local-scaffold-only) above)
-is a local scaffold for running the server process itself — useful for local
-development or testing — not a substitute for the bare-metal path when the
-server needs to be reachable by a team or over a network.
+A container works equally well for a team server now that the bind is routable
+TLS (see [Docker](#docker-a-team-server-or-a-local-scaffold) above). The
+`docker-compose.yml` **default** service remains a loopback-only local scaffold,
+useful for local development or testing; its `team-server` profile is the
+routable-TLS shape.
 
 Key considerations for any deployment:
 - Putting the server behind a VPN or private subnet is still good
@@ -310,11 +299,17 @@ cargo build --release --bin spelunk-server
 
 | Flag | Env | Default | Purpose |
 |---|---|---|---|
-| `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs a key and TLS in front (see below). |
+| `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs both a key and TLS (`--tls-cert`/`--tls-key`); see below. |
 | `--port` | (none) | `7777` | Port to bind. |
 | `--key` | (none) | unset | Shared bearer API key, passed inline. Visible in the process table — prefer `--key-file` or `SPELUNK_SERVER_KEY`. Leave every key source unset only for a loopback dev server. |
 | `--key-file` | (none) | unset | Read the key from a file (whole contents, trimmed). First-class alternative to `SPELUNK_SERVER_KEY`, not a fallback. |
 | (none) | `SPELUNK_SERVER_KEY` | unset | Read the key from the environment. Fully supported alongside `--key-file`. |
+| `--tls-cert` | `SPELUNK_SERVER_TLS_CERT` | unset | PEM certificate chain (leaf + intermediates) for in-process HTTPS. The chain is public. Set with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`. |
+| `--tls-key` | `SPELUNK_SERVER_TLS_KEY` | unset | PEM private key matching `--tls-cert`. A high-value secret: supply via a systemd credential or a `0600` root-owned file, never an `Environment=` line. Set with `--tls-cert`. |
+
+The certificate is bring-your-own PEM (an internal CA, `certbot`, or a
+cloud-issued cert). `spelunk-server` does not obtain or renew it (no ACME); the
+operator renews it. See [Self-hosting](self-hosting.md).
 
 The key is resolved from, in precedence order: `--key` → `--key-file` →
 `SPELUNK_SERVER_KEY` → a systemd `LoadCredential=server-key` (read automatically
@@ -345,13 +340,21 @@ overridden. The resolved value and its source are logged at startup
 whether or not a key is set, and there is no opt-out. With no key that would be
 an open, unauthenticated server; with a key the bearer `SPELUNK_SERVER_KEY`
 would travel across the network in cleartext. The refusal names the
-interface/port and points back at this guidance.
+interface/port and points at `--tls-cert`/`--tls-key`.
 
-The supported posture is to bind loopback and terminate TLS in a front proxy
-(see [Self-hosting](self-hosting.md)). If you need a process outside the host
-— including a container — to reach the server, put a reverse proxy (nginx,
-Caddy, Traefik) in front of the loopback bind and terminate TLS there; don't
-bind the server itself to a routable interface over plaintext.
+The rule the server enforces at startup is exactly the local/remote boundary:
+
+| Bind | TLS configured | Key set | Result |
+|---|---|---|---|
+| loopback | any | any | allow (local HTTP, no key needed) |
+| non-loopback | no | any | refuse (no plaintext off-host, keyed or not) |
+| non-loopback | yes | no | refuse (remote requires an API key) |
+| non-loopback | yes | yes | allow (the remote HTTPS path) |
+
+So the supported way to reach the server from another machine (including a
+container) is a routable bind with `--tls-cert`/`--tls-key` and a key, where the
+server terminates HTTPS itself (see [Self-hosting](self-hosting.md)). Plaintext
+off-host stays refused with no override.
 
 ## API reference
 

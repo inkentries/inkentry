@@ -100,13 +100,16 @@ Steps:
 
 1. **Install the binaries** on the laptops (as in Shape A) and on the host that
    will run the shared server.
-2. **Run the managed server.** On a macOS server host, install
-   `macos/cloud.spelunk.server.mobileconfig` (it installs a system-scoped
-   LaunchDaemon). On Linux, deploy the systemd unit from
-   `packaging/spelunk-server.service`. On Windows, run it as a Windows Service
-   with `windows/Install-SpelunkServerService.ps1` (see
-   [`windows/README.md`](windows/README.md)). Set a real `SPELUNK_SERVER_KEY` on
-   the server.
+2. **Run the managed server.** A team-reachable server binds a routable
+   interface and terminates HTTPS in-process (ADR-066): bring your own PEM
+   certificate and private key, and set a real `SPELUNK_SERVER_KEY`. On a macOS
+   server host, install `macos/cloud.spelunk.server.mobileconfig` (it installs a
+   system-scoped LaunchDaemon). On Linux, deploy the team systemd unit from
+   `packaging/spelunk-server-team.service` (see
+   [Self-hosting](../../docs/self-hosting.md)); `packaging/spelunk-server.service`
+   is the per-developer local-inference unit, not the team server. On Windows,
+   run it as a Windows Service with `windows/Install-SpelunkServerService.ps1`
+   (see [`windows/README.md`](windows/README.md)).
 3. **Pre-configure the laptops** so users do not have to. Push
    `spelunk-config.toml` to `~/.config/spelunk/config.toml` (server URL, project
    slug, sync mode) and deliver the shared `SPELUNK_SERVER_KEY` via the managed
