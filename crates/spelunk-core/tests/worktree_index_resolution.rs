@@ -1,5 +1,5 @@
 //! Integration test for worktree → main-index resolution over a REAL
-//! `git worktree` (spelunk-oss^138).
+//! `git worktree`.
 //!
 //! The `config.rs` unit fixtures build a `.git`-*file* by hand, on which
 //! `gix::discover` fails — so they exercise only the manual fallback branch of

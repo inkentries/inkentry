@@ -2295,7 +2295,7 @@ project_id = "team/new"
     #[test]
     fn find_project_db_resolves_worktree_to_main_index() {
         // A linked worktree with no local `.spelunk/` resolves reads to the
-        // main worktree's shared index, with no setup step (spelunk-oss^138).
+        // main worktree's shared index, with no setup step.
         let tmp = TempDir::new().unwrap();
         let (_main_root, wt_root, index_db) = linked_worktree_fixture(&tmp);
         assert!(
