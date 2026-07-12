@@ -207,16 +207,23 @@ spelunk unlink <path>
 
 ## Git worktrees
 
-Worktrees automatically share the main worktree's index. Just run
-`spelunk index .` from inside the worktree — spelunk creates the link for you:
+Read/query commands (`context`, `check`, `search`, `memory`, `graph`, `status`)
+run from a linked worktree resolve to the main worktree's index automatically,
+with no setup step. Nothing is written into the worktree:
 
 ```bash
 git worktree add ../my-feature my-feature-branch
 cd ../my-feature
-spelunk index .    # links to main worktree's index; all commands work immediately
+spelunk context    # resolves to the main worktree's index; no init needed
 ```
 
-Run `spelunk autoclean` after removing a worktree to tidy up the registry.
+`spelunk index .` from a worktree is optional. Run it only to refresh the
+shared index with files you changed in that worktree; it re-indexes into the
+shared `<main-worktree>/.spelunk/index.db`.
+
+`spelunk autoclean` prunes stale registry entries (e.g. after a worktree or
+project directory is removed). It does not write to or clean anything inside
+the worktree.
 
 ---
 
