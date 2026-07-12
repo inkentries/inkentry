@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -29,10 +30,11 @@ struct Args {
     #[arg(long, default_value = "7777")]
     port: u16,
 
-    /// Host/address to bind. Defaults to loopback (`127.0.0.1`) — the safe,
-    /// firewall-exempt posture for a local server. Pass `--host 0.0.0.0`
-    /// explicitly to expose the server on all interfaces (e.g. a shared/team
-    /// server or the container image, which sets this in its entrypoint).
+    /// Host/address to bind. Defaults to loopback (`127.0.0.1`): a local
+    /// plaintext-HTTP server, no API key required. To serve a team/remote
+    /// server, bind a routable address (e.g. `--host 0.0.0.0`) together with
+    /// `--tls-cert`/`--tls-key` and an API key — the server terminates HTTPS
+    /// itself. A non-loopback bind is refused unless both TLS and a key are set.
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
@@ -55,6 +57,19 @@ struct Args {
     /// flag. Read failure is fatal.
     #[arg(long, value_name = "PATH")]
     key_file: Option<PathBuf>,
+
+    /// PEM certificate chain (leaf + intermediates) for in-process HTTPS. Set
+    /// with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`,
+    /// which are the bearer API key — a different secret. The certificate chain
+    /// is public; a routable bind needs this plus `--tls-key` and an API key.
+    #[arg(long, env = "SPELUNK_SERVER_TLS_CERT", value_name = "PATH")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key matching `--tls-cert`. Set with `--tls-cert` (both or
+    /// neither). A high-value secret: supply via a systemd credential or a
+    /// `0600` root-owned file, never an `Environment=` line.
+    #[arg(long, env = "SPELUNK_SERVER_TLS_KEY", value_name = "PATH")]
+    tls_key: Option<PathBuf>,
 
     /// Embedding dimension expected from clients (must match the team's model).
     /// Default: 896 (F2LLM-v2-330M).
@@ -181,11 +196,13 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         credentials_dir.as_deref(),
     )?;
 
-    // Bind-safety: refuse to expose the server off-host over plaintext HTTP,
-    // whether that would leak an open (keyless) endpoint or the bearer key in
-    // cleartext (keyed). Fail fast, before touching the DB or warming the
-    // embedder. This refusal is unconditional — there is no opt-out.
-    check_bind_safety(&args.host, args.port, api_key.is_some())?;
+    // TLS flags are all-or-nothing (ADR-066 §2).
+    let tls_enabled = resolve_tls_enabled(args.tls_cert.is_some(), args.tls_key.is_some())?;
+
+    // Bind-safety (ADR-066 §4): loopback binds are always allowed; a non-loopback
+    // bind is refused unless BOTH in-process TLS and an API key are configured.
+    // Fail fast, before touching the DB or warming the embedder.
+    check_bind_safety(&args.host, args.port, api_key.is_some(), tls_enabled)?;
 
     let db = ServerDb::open(&args.db, args.embedding_dim, NATIVE_MODEL_ID)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
@@ -305,10 +322,43 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         .parse()
         .context("parsing bind address")?;
 
+    // Load TLS material before binding so a bad cert/key fails fast. Install
+    // `ring` as the process crypto provider (NOT rustls' default aws-lc-rs,
+    // which needs a cmake/C/NASM build toolchain); ignore the error if another
+    // component already installed one.
+    let tls_config = if tls_enabled {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = args.tls_cert.as_deref().expect("tls_enabled ⇒ cert set");
+        let key = args.tls_key.as_deref().expect("tls_enabled ⇒ key set");
+        let config = RustlsConfig::from_pem_file(cert, key)
+            .await
+            .with_context(|| {
+                format!(
+                    "loading TLS cert {} / key {}",
+                    cert.display(),
+                    key.display()
+                )
+            })?;
+        Some(config)
+    } else {
+        None
+    };
+
     // Bind first: `/v1/health` must be reachable the instant the port is bound,
-    // *before* the (potentially multi-minute, ~339 MB) native model download.
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("spelunk-server listening on http://{addr}");
+    // *before* the (potentially multi-minute, ~339 MB) native model download. A
+    // std listener backs both serve paths (plaintext axum, TLS axum-server), so
+    // the single bind-before-warm point is preserved either way.
+    let listener = std::net::TcpListener::bind(addr).with_context(|| format!("binding {addr}"))?;
+    // Both serve paths register the fd with tokio, which rejects a blocking fd.
+    listener
+        .set_nonblocking(true)
+        .context("setting listener non-blocking")?;
+    let scheme = if tls_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    tracing::info!("spelunk-server listening on {scheme}://{addr}");
 
     // Load the native embedder on a background task now that health is live.
     // `embed_hub::load_from_hub()` is blocking/CPU-heavy, so run it on the blocking
@@ -346,11 +396,22 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     #[cfg(not(feature = "embed-native"))]
     let _ = (load_native, &embedder_slot);
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+    match tls_config {
+        // axum-server accepts the pre-bound std listener (bind-before-warm kept).
+        Some(config) => {
+            axum_server::from_tcp_rustls(listener, config)
+                .context("adopting std listener for TLS")?
+                .serve(make_service)
+                .await?;
+        }
+        // Plaintext loopback path, unchanged.
+        None => {
+            let listener =
+                tokio::net::TcpListener::from_std(listener).context("adopting std listener")?;
+            axum::serve(listener, make_service).await?;
+        }
+    }
 
     Ok(())
 }
@@ -498,43 +559,69 @@ fn resolve_api_key(
     Ok(None)
 }
 
-/// Refuse to expose the server off-host over plaintext HTTP. Binding to any
-/// non-loopback address makes the endpoint reachable from other machines, and
-/// the server only ever speaks plaintext HTTP. Two cases are refused,
-/// unconditionally:
+/// `--tls-cert`/`--tls-key` are all-or-nothing (ADR-066 §2): a cert chain needs
+/// its matching private key. Returns whether in-process TLS is enabled, or errs
+/// when exactly one of the two is set.
+fn resolve_tls_enabled(cert_set: bool, key_set: bool) -> Result<bool> {
+    match (cert_set, key_set) {
+        (true, true) => Ok(true),
+        (false, false) => Ok(false),
+        (true, false) => {
+            anyhow::bail!(
+                "--tls-cert was set without --tls-key: a certificate chain needs its matching private key."
+            )
+        }
+        (false, true) => {
+            anyhow::bail!(
+                "--tls-key was set without --tls-cert: a private key needs its matching certificate chain."
+            )
+        }
+    }
+}
+
+/// TLS-aware bind-safety guard (ADR-066 §4). Encodes "local = HTTP no key,
+/// remote = HTTPS + key":
 ///
-/// - **keyless** non-loopback bind: an open, unauthenticated server; and
-/// - **keyed** non-loopback bind: the bearer `SPELUNK_SERVER_KEY` would cross
-///   the network in cleartext.
+/// | Bind | TLS | Key | Result |
+/// |---|---|---|---|
+/// | loopback | any | any | allow |
+/// | non-loopback | no | any | refuse (no plaintext off-host) |
+/// | non-loopback | yes | no | refuse (remote requires an API key) |
+/// | non-loopback | yes | yes | allow (the remote HTTPS path) |
 ///
-/// This matches the ADR-056 transport guardrail: plaintext HTTP is
-/// loopback-only. Loopback binds (the default) are always allowed. There is
-/// no opt-out. The refusal names the interface and port being refused.
-fn check_bind_safety(host: &str, port: u16, key_is_set: bool) -> Result<()> {
+/// Loopback binds are always allowed (unreachable off-host). Plaintext off-host
+/// stays refused with no opt-out. The refusal names the interface/port and
+/// points the operator at `--tls-cert`/`--tls-key`.
+fn check_bind_safety(host: &str, port: u16, key_is_set: bool, tls_is_set: bool) -> Result<()> {
     if host_is_loopback(host) {
         return Ok(());
     }
 
-    if !key_is_set {
-        // Keyless off-host bind: an open, unauthenticated server.
+    if !tls_is_set {
+        // Non-loopback plaintext, keyed or not: an open server, or the bearer
+        // key crossing the wire in cleartext. Refused unconditionally.
         anyhow::bail!(
-            "Refusing to bind to non-loopback address '{host}:{port}' without \
-             authentication.\n\
-             A server reachable from other machines must require an API key. Either:\n  \
-             • set --key / SPELUNK_SERVER_KEY to expose it on {host}:{port}, or\n  \
+            "Refusing to bind to non-loopback address '{host}:{port}' over plaintext HTTP.\n\
+             A server reachable from other machines must terminate TLS in-process. Either:\n  \
+             • pass --tls-cert <pem> --tls-key <pem> and an API key \
+             (--key / --key-file / SPELUNK_SERVER_KEY) to serve HTTPS on {host}:{port}, or\n  \
+             • bind to loopback (the default --host 127.0.0.1) for local-only plaintext use."
+        );
+    }
+
+    if !key_is_set {
+        // TLS is configured but no bearer key: a remote HTTPS server must
+        // authenticate its callers.
+        anyhow::bail!(
+            "Refusing to bind to non-loopback address '{host}:{port}' with TLS but no API key.\n\
+             A remote HTTPS server must require an API key so callers are authenticated. Either:\n  \
+             • set --key / --key-file / SPELUNK_SERVER_KEY, or\n  \
              • bind to loopback (the default --host 127.0.0.1) for local-only use."
         );
     }
 
-    // Keyed off-host bind over plaintext HTTP: the bearer key would cross the
-    // network in cleartext. Refused unconditionally — there is no opt-out.
-    anyhow::bail!(
-        "Refusing to bind to non-loopback address '{host}:{port}' over plaintext HTTP: \
-         the bearer SPELUNK_SERVER_KEY would cross the network in cleartext.\n\
-         A shared server must not send its key in the clear. Bind to loopback \
-         (the default --host 127.0.0.1) instead.\n\
-         See docs/adr/056-oss-server-tenancy-model.md."
-    );
+    // Non-loopback + TLS + key: the remote HTTPS path (ADR-066 §4). Allowed.
+    Ok(())
 }
 
 /// Whether a keyed, non-loopback bind is a shared/team server that should get
@@ -845,61 +932,125 @@ mod arg_tests {
         }
     }
 
-    /// Loopback binds never require a key (local-only, unreachable off-host).
+    // ── ADR-066 §4: TLS-aware bind-safety table ─────────────────────────────
+    //
+    // | Bind | TLS | Key | Result |
+    // | loopback     | any | any | allow |
+    // | non-loopback | no  | any | refuse |
+    // | non-loopback | yes | no  | refuse |
+    // | non-loopback | yes | yes | allow  |
+
+    /// Row 1: a loopback bind is allowed for every TLS/key combination
+    /// (unreachable off-host, so local plaintext with no key is fine).
     #[test]
-    fn loopback_without_key_is_allowed() {
+    fn loopback_is_allowed_for_every_combination() {
         for h in ["127.0.0.1", "::1", "localhost"] {
-            assert!(
-                super::check_bind_safety(h, 7777, false).is_ok(),
-                "{h} without a key should be allowed"
-            );
-            assert!(
-                super::check_bind_safety(h, 7777, true).is_ok(),
-                "{h} with a key should be allowed on loopback"
-            );
+            for tls in [false, true] {
+                for key in [false, true] {
+                    assert!(
+                        super::check_bind_safety(h, 7777, key, tls).is_ok(),
+                        "loopback {h} (tls={tls}, key={key}) should be allowed"
+                    );
+                }
+            }
         }
     }
 
-    /// A non-loopback bind without a key is refused — no open, unauthenticated
-    /// server reachable from other machines.
+    /// Row 2: a non-loopback bind with no TLS is refused whether keyed or not —
+    /// no plaintext off-host, keyed (key in cleartext) or keyless (open server).
     #[test]
-    fn non_loopback_without_key_is_refused() {
-        for h in ["0.0.0.0", "::", "192.168.1.10"] {
-            assert!(
-                super::check_bind_safety(h, 7777, false).is_err(),
-                "{h} without a key must be refused"
-            );
-        }
-    }
-
-    /// A keyed non-loopback *plaintext* bind is refused unconditionally: the
-    /// bearer key would cross the network in cleartext (ADR-056 transport
-    /// guardrail). There is no opt-out. The error names the interface/port
-    /// and points at the ADR-056 guidance doc.
-    #[test]
-    fn non_loopback_with_key_plaintext_is_refused_unconditionally() {
+    fn non_loopback_without_tls_is_refused() {
         for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
-            let err = super::check_bind_safety(h, 7777, true)
-                .expect_err(&format!("{h} with a key over plaintext must be refused"));
+            for key in [false, true] {
+                let err = super::check_bind_safety(h, 7777, key, false)
+                    .expect_err(&format!("{h} (tls=false, key={key}) must be refused"));
+                let msg = format!("{err}");
+                assert!(
+                    msg.contains(h) && msg.contains("7777"),
+                    "error must name the interface and port '{h}:7777': {msg}"
+                );
+                assert!(
+                    msg.contains("--tls-cert") && msg.contains("--tls-key"),
+                    "refusal must offer the --tls-cert/--tls-key remedy, not a proxy: {msg}"
+                );
+            }
+        }
+    }
+
+    /// Row 3: a non-loopback TLS bind with no API key is refused — a remote
+    /// HTTPS server must authenticate its callers.
+    #[test]
+    fn non_loopback_tls_without_key_is_refused() {
+        for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            let err = super::check_bind_safety(h, 7777, false, true)
+                .expect_err(&format!("{h} (tls=true, key=false) must be refused"));
             let msg = format!("{err}");
             assert!(
                 msg.contains(h) && msg.contains("7777"),
                 "error must name the interface and port '{h}:7777': {msg}"
             );
             assert!(
-                msg.contains("cleartext"),
-                "error must mention cleartext exposure: {msg}"
-            );
-            assert!(
-                msg.contains("loopback"),
-                "error must point at binding to loopback instead: {msg}"
-            );
-            assert!(
-                msg.contains("docs/adr/056-oss-server-tenancy-model.md"),
-                "error must point at the ADR-056 guidance doc so the operator \
-                 can find the loopback-only policy: {msg}"
+                msg.contains("API key"),
+                "refusal must say a remote server requires an API key: {msg}"
             );
         }
+    }
+
+    /// Row 4: the new remote path — a non-loopback bind with BOTH TLS and a key
+    /// is allowed.
+    #[test]
+    fn non_loopback_tls_with_key_is_allowed() {
+        for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
+            assert!(
+                super::check_bind_safety(h, 7777, true, true).is_ok(),
+                "{h} (tls=true, key=true) is the remote HTTPS path and must be allowed"
+            );
+        }
+    }
+
+    // ── ADR-066 §2: --tls-cert / --tls-key are all-or-nothing ────────────────
+
+    /// Both unset → TLS disabled; both set → TLS enabled.
+    #[test]
+    fn tls_both_or_neither_resolves() {
+        assert!(!super::resolve_tls_enabled(false, false).unwrap());
+        assert!(super::resolve_tls_enabled(true, true).unwrap());
+    }
+
+    /// Exactly one set is a fatal configuration error, and the message names the
+    /// missing flag.
+    #[test]
+    fn tls_exactly_one_set_is_error() {
+        let err = super::resolve_tls_enabled(true, false).unwrap_err();
+        assert!(
+            format!("{err}").contains("--tls-key"),
+            "cert-only error must name the missing --tls-key: {err}"
+        );
+        let err = super::resolve_tls_enabled(false, true).unwrap_err();
+        assert!(
+            format!("{err}").contains("--tls-cert"),
+            "key-only error must name the missing --tls-cert: {err}"
+        );
+    }
+
+    /// The TLS flags parse as paths and read their env vars.
+    #[test]
+    fn tls_flags_parse() {
+        let args = Args::parse_from([
+            "spelunk-server",
+            "--tls-cert",
+            "/etc/spelunk/tls-cert",
+            "--tls-key",
+            "/etc/spelunk/tls-key",
+        ]);
+        assert_eq!(
+            args.tls_cert.as_deref(),
+            Some(std::path::Path::new("/etc/spelunk/tls-cert"))
+        );
+        assert_eq!(
+            args.tls_key.as_deref(),
+            Some(std::path::Path::new("/etc/spelunk/tls-key"))
+        );
     }
 
     /// A blank/whitespace key (incl. clap's `Some("")` for a set-but-empty

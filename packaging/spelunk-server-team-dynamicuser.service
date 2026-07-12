@@ -6,6 +6,9 @@
 # no manual `install -d` for the data dir. Choose this when you prefer
 # systemd-managed identity/ownership over a fixed-owner data dir.
 #
+# The server terminates HTTPS in-process (ADR-066): a routable bind, TLS served
+# by the server itself, API key required, nothing in front.
+#
 # Trade-off: the data dir owner changes across boots, so out-of-band backup
 # tooling must not assume a fixed UID. If you need a stable owner for backup /
 # inspection or a stable started_by UID, use the static-user default
@@ -15,6 +18,9 @@
 #   sudo install -d -m 0755 /etc/spelunk
 #   openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
 #   sudo chmod 0600 /etc/spelunk/server-key   # root:root
+#   # Bring your own TLS cert chain + private key (internal CA, certbot, cloud):
+#   sudo install -m 0644 fullchain.pem /etc/spelunk/tls-cert   # public chain
+#   sudo install -m 0600 privkey.pem   /etc/spelunk/tls-key    # root:root, private
 #   sudo install -m 0644 packaging/spelunk-server-team-dynamicuser.service \
 #        /etc/systemd/system/spelunk-server.service
 #   sudo systemctl daemon-reload
@@ -34,16 +40,22 @@ Type=simple
 DynamicUser=yes
 StateDirectory=spelunk
 
-# See the static-user unit for why the key is a credential, not Environment=.
+# See the static-user unit for why both secrets are credentials, not Environment=.
+# server-key (bearer API key) is auto-read from $CREDENTIALS_DIRECTORY; tls-key
+# (TLS private key) is passed to --tls-key via %d (= $CREDENTIALS_DIRECTORY). The
+# certificate chain is public and stays a plain readable path.
 LoadCredential=server-key:/etc/spelunk/server-key
+LoadCredential=tls-key:/etc/spelunk/tls-key
 ExecStart=/usr/local/bin/spelunk-server \
-  --host 127.0.0.1 --port 7777 \
-  --db /var/lib/spelunk/spelunk.db
+  --host 0.0.0.0 --port 7777 \
+  --db /var/lib/spelunk/spelunk.db \
+  --tls-cert /etc/spelunk/tls-cert \
+  --tls-key %d/tls-key
 
 Restart=on-failure
 RestartSec=5
 
-# Hardening — the server needs only its state dir (StateDirectory=) and loopback.
+# Hardening — the server needs its state dir (StateDirectory=) and a routable socket.
 # DynamicUser=yes already implies ProtectSystem=strict, ProtectHome=read-only,
 # PrivateTmp, and RemoveIPC; the directives below narrow it further.
 NoNewPrivileges=true

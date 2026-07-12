@@ -10,6 +10,18 @@ database or server is required. (You can make git-notes the primary backend with
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
+To verify that memory really travels with the repository, inspect the notes by
+hand with stock git. They live on the `spelunk` ref, so you must name it: plain
+`git notes show HEAD` reads git's default `commits` ref and reports "no note
+found" even when spelunk has written entries.
+
+```bash
+git notes --ref=spelunk show HEAD    # notes on the current commit
+git notes --ref=spelunk list         # every commit carrying spelunk notes
+# equivalently
+GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+```
+
 Memory is scoped to a local project. Run `spelunk init` once per repository to
 create its `.spelunk/` store. In a directory with no local `.spelunk/`,
 `memory add/list/search` and `context` fail closed with a `no spelunk project

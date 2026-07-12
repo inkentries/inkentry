@@ -20,6 +20,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
   (spelunk-oss^147)
+### Added
+
+- **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
+  (env `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_SERVER_TLS_KEY`), both-or-neither. The
+  server terminates TLS itself, so a team/remote deployment is a routable
+  `--host` plus the TLS flags and an API key, with nothing in front. A
+  non-loopback bind is now allowed only with both TLS and an API key set;
+  loopback binds are unchanged. (ADR-066, spelunk-oss^151)
 
 ### Removed
 
