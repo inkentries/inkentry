@@ -20,6 +20,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
   (spelunk-oss^147)
+- **`spelunk graph <symbol>` shows clearer messages when no call sites are found**:
+  prints "0 source files found" in an empty or umbrella directory, or "run
+  'spelunk init' for the full indexed graph" when source files exist but no call
+  site matched the symbol. (spelunk-oss^127)
+
 ### Added
 
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
