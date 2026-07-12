@@ -600,13 +600,11 @@ fn server_inference_error(endpoint: &str, status: reqwest::StatusCode, body: &st
 
 /// Return the locked-feature error when harvest is attempted without a server.
 ///
-/// Harvest needs inference only, so a local `spelunk server start` suffices;
-/// pass the configured team `server_url` (or `None`) so the message points at
-/// the right fix (oss^133). See `capability::inference_server_required_message`.
-pub fn harvest_requires_server(server_url: Option<&str>) -> anyhow::Error {
+/// Harvest needs inference only, so a local `spelunk server start` suffices.
+/// See `capability::inference_server_required_message`.
+pub fn harvest_requires_server() -> anyhow::Error {
     anyhow::anyhow!(crate::capability::inference_server_required_message(
-        "memory harvest",
-        server_url
+        "memory harvest"
     ))
 }
 
