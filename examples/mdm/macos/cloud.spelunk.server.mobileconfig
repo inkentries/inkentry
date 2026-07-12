@@ -120,10 +120,11 @@
 								<key>EnvironmentVariables</key>
 								<dict>
 									<!--
-									  Set a real API key for any shared server.
-									  An unset key leaves the server unauthenticated
-									  (dev only). You can also inject it out-of-band
-									  rather than committing it into the profile.
+									  Set a real API key. This job binds a routable
+									  interface, so an unset key makes spelunk-server
+									  refuse to start (a non-loopback bind requires
+									  both TLS and a key). You can also inject it
+									  out-of-band rather than committing it here.
 									-->
 									<key>SPELUNK_SERVER_KEY</key>
 									<string>replace-with-your-shared-api-key</string>

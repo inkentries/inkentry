@@ -62,11 +62,10 @@ services:
       SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:?set SPELUNK_SERVER_KEY for a team server}
       SPELUNK_SERVER_TLS_CERT: /tls/cert
       SPELUNK_SERVER_TLS_KEY: /tls/key
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/spelunk-server", "--health-check"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    # No container healthcheck here: the binary's built-in `--health-check` probe
+    # speaks plaintext HTTP only, so it cannot validate this in-process TLS
+    # listener (it would report unhealthy forever). Health-check the published
+    # https:// endpoint from outside the container instead.
 
 volumes:
   spelunk-data:
