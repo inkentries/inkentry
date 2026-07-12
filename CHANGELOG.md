@@ -9,6 +9,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`graph`, `chunks`, `explore`, and `check` no longer read the machine-global
+  index (`~/.config/spelunk/index.db`) from an un-`init`'d directory**, extending
+  the ADR-067 fail-closed posture to these read-only display commands (previously
+  they resolved via the legacy `open_project_db` fallback and could surface
+  cross-project data from the global store). In an uninitialized directory,
+  `graph <symbol>` now degrades to a live ast-grep scan; `graph <file-path>`,
+  `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
+  'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
+  (spelunk-oss^147)
 ### Added
 
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`

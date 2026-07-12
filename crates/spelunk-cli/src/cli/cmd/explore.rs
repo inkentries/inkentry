@@ -41,10 +41,14 @@ use crate::{
 };
 
 pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
+    // ADR-067: gate on a local project first (fail-closed, no global fallback) so
+    // an un-init'd dir refuses before any server probe, and explore never reads
+    // the machine-global index.db.
+    let (db_path, _db) = open_project_db(args.db.as_deref(), &cfg.db_path)?;
+
     let tier = capability::get_tier(&cfg).await;
     capability::require_tier1("explore", tier, cfg.server_url.as_deref())?;
 
-    let (db_path, _db) = open_project_db(args.db.as_deref(), &cfg.db_path)?;
     maybe_warn_stale(&db_path);
     crate::storage::record_usage_at(&db_path, "explore");
 

@@ -145,7 +145,7 @@ AGENT=true spelunk explore "where is the embedding model loaded?" --max-steps 3
 ## After making changes
 
 ```bash
-# Confirm call sites still match using the code graph (always works)
+# Confirm call sites still match using the code graph (symbol queries work live even without an index)
 spelunk graph validate_token --kind calls
 
 # If the project is indexed: re-index changed files (incremental, blake3-gated)

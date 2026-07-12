@@ -16,7 +16,7 @@ spelunk check                                     # verify index is fresh (only 
 
 **Before reading any file, search first:**
 ```bash
-spelunk graph <symbol>                            # trace callers/callees (always works)
+spelunk graph <symbol>                            # trace callers/callees (works live even without an index)
 spelunk search "<topic>" --mode text              # full-text search (always works)
 spelunk search "<topic>"                          # semantic search (if indexed + server running)
 ```
@@ -45,7 +45,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 `spelunk` is a Rust CLI and context retrieval engine for AI agents.
 
-**Built-in (zero infrastructure):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Works immediately with no setup.
+**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `spelunk graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, `check`, memory, and `graph` on a file path) need `spelunk init` first.
 
 **Semantic search via spelunk-server:** from v0.9.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
