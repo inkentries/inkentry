@@ -152,6 +152,113 @@ fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
     cmd
 }
 
+/// Seed a fresh project with fixed-size notes so `--budget` token math is
+/// deterministic (chars/4 heuristic): each note is a 4-char title (1 token) +
+/// 400-char body (100 tokens) = 101 tokens. 1 handoff, 3 questions, 2
+/// decisions, 2 requirements. Returns `(TempDir, config_path)`.
+fn setup_budget_project() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().expect("create temp dir");
+    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
+    let db_path = tmp.path().join(".spelunk").join("index.db");
+    // No embed server needed: memory add stores without a vector when no server
+    // is configured, which is irrelevant to budget packing.
+    let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
+    let mem_path = db_path.with_file_name("memory.db");
+
+    let body = "x".repeat(400); // 100 tokens; 4-char title => 101 tokens/note
+    let entries: &[(&str, &str)] = &[
+        ("handoff", "hnd0"),
+        ("question", "qst0"),
+        ("question", "qst1"),
+        ("question", "qst2"),
+        ("decision", "dec0"),
+        ("decision", "dec1"),
+        ("requirement", "req0"),
+        ("requirement", "req1"),
+    ];
+    for (kind, title) in entries {
+        spelunk_bin()
+            .arg("--config")
+            .arg(&config_path)
+            .arg("memory")
+            .arg("--db")
+            .arg(&mem_path)
+            .arg("add")
+            .arg("--kind")
+            .arg(kind)
+            .arg("--title")
+            .arg(title)
+            .arg("--body")
+            .arg(&body)
+            .assert()
+            .success();
+    }
+    (tmp, config_path)
+}
+
+// ── budget: durable priority end-to-end (spelunk-oss^149) ─────────────────────
+
+#[test]
+fn context_budget_keeps_durable_drops_questions_e2e() {
+    // Drives the real `spelunk context --budget` CLI path. A 505-token budget
+    // fits every decision+requirement+handoff (5 * 101) with nothing left for
+    // the 3 questions, so questions must drop first while durable notes survive
+    // — regardless of question being displayed before decision/requirement.
+    let (_tmp, config_path) = setup_budget_project();
+
+    let mut cmd = spelunk_bin();
+    if let Some(dir) = config_path.parent() {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .arg("--config")
+        .arg(&config_path)
+        .arg("context")
+        .arg("--budget")
+        .arg("505")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output);
+    let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let parsed = obj["sections"].as_array().expect("sections array");
+
+    // Display order is unchanged by budget packing.
+    let kinds: Vec<&str> = parsed.iter().map(|s| s[0].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        ["handoff", "question", "decision", "requirement"],
+        "section display order must stay handoff -> question -> decision -> requirement"
+    );
+
+    let len_of = |kind: &str| -> usize {
+        parsed
+            .iter()
+            .find(|s| s[0].as_str() == Some(kind))
+            .and_then(|s| s[1].as_array())
+            .map(|n| n.len())
+            .unwrap_or(0)
+    };
+    assert_eq!(len_of("decision"), 2, "every durable decision survives");
+    assert_eq!(
+        len_of("requirement"),
+        2,
+        "every durable requirement survives"
+    );
+    assert_eq!(len_of("handoff"), 1, "handoff outranks question, survives");
+    assert_eq!(len_of("question"), 0, "ephemeral questions drop first");
+
+    // Budget accounting is reported and never exceeds the cap.
+    assert_eq!(obj["token_budget"].as_u64(), Some(505));
+    assert_eq!(obj["tokens_used"].as_u64(), Some(505));
+    assert_eq!(obj["tokens_remaining"].as_u64(), Some(0));
+}
+
 // ── happy path: default text output ───────────────────────────────────────────
 
 #[test]

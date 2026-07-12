@@ -255,6 +255,10 @@ spelunk context [options]
 | `--no-conventions` | false | Skip the conventions section |
 | `--local-only` | false | Skip cross-project dep pass; query only the primary project's memory |
 
+Under a tight `--budget`, durable memory (decisions and requirements) is kept
+ahead of ephemeral open questions when trimming to fit; the section display
+order is unchanged.
+
 When projects are linked with `spelunk link`, `context` also surfaces `locked`
 or `cross-project`-tagged `decision` and `requirement` entries from linked
 projects' memory stores, each labelled with its source project. Pass
