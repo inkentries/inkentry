@@ -41,8 +41,10 @@ FROM rust:1.97.0-slim AS builder
 WORKDIR /build
 
 # System build deps the slim image lacks: a C/C++ toolchain for tokenizers'
-# esaxx-rs build script (embed-native default), and libdbus for libdbus-sys
-# (keyring's sync-secret-service backend, linked transitively on Linux).
+# esaxx-rs build script (embed-native default), and libdbus-1-dev to satisfy
+# libdbus-sys's build script (pulled via keyring's sync-secret-service backend).
+# Build-time only — the linker strips the unused lib, so the runtime image
+# needs no dbus package.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -69,19 +71,19 @@ RUN mkdir -p crates/spelunk-core/src crates/spelunk-cli/src \
     cargo build --release --bin spelunk-server && \
     rm -rf crates/*/src
 
-# Now copy the real source and build properly. COPY refreshes mtimes so the
-# workspace crates recompile while the cached third-party deps are reused.
+# Now copy the real source and build properly. BuildKit normalizes COPY mtimes
+# to a constant OLDER than the cached placeholder artifacts, so cargo's
+# freshness check would reuse the placeholder binary. `touch` every crate
+# source so the real build supersedes the cache.
 COPY . .
-RUN cargo build --release --bin spelunk-server
+RUN find crates -name '*.rs' -exec touch {} + && \
+    cargo build --release --bin spelunk-server
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:trixie-slim
 
-# libdbus-1-3: the binary dynamically links libdbus-1 (keyring backend), so the
-# shared lib must be present at load time even though the server uses file/env
-# secret storage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libdbus-1-3 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -r -s /bin/false spelunk
