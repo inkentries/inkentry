@@ -116,38 +116,76 @@ machine-global store (oss^147 already guarantees this for `graph`).
 ### D3 — git-notes memory fallback for `add` / `list` before `init` (new feature)
 
 When there is no configured project DB (pre-`init`) but the current directory is
-inside a git repository, `memory add` and `memory list` fall back to the
-git-notes backend on the nearest git repo instead of failing. This lives the
-"memory goes with the repo" promise and gives an engineer a place to record a
-result — and, via `list`, visibility into what is stored — without indexing the
-project.
+inside a git repository, `memory add` and `memory list` record to (and read back
+from) git notes on the nearest repo instead of failing. This lives the "memory
+goes with the repo" promise and gives an engineer a place to record a result,
+and via `list` visibility into what is stored, without indexing the project.
 
-**Backend selection for `memory add` / `list` (precise precedence):**
+> **Revised 2026-07-13** (founder correction from the #580 review): the first
+> draft of this section resolved backend selection as a precedence ladder whose
+> pre-`init` rung made git notes the *store of record* and **skipped** the
+> existing git-notes write-through ("no double write"). That reshaped store
+> priority for no reason. The corrected model below does not touch store
+> priority: it leans on the universal `store_in_git_notes` write-through that
+> already runs on every `memory add`, and only stops `add` / `list` from failing
+> closed before `init`. #580 (^154) implemented the superseded framing and is
+> re-scoped to this model.
 
-1. **Explicit `--backend git-notes`** → git-notes backend (unchanged; already
-   supported).
-2. **Explicit team `server_url`** (resolved `CloudFirst` mode) → remote backend
-   (unchanged; relocates the store of record to the shared server per ADR-004).
-3. **A resolvable local project DB** — `find_project_dir` walks up from CWD and
-   finds a `.spelunk/` — → local SQLite `memory.db` (unchanged post-`init`
-   behaviour).
-4. **No project DB, but CWD is inside a git repo** (`git rev-parse HEAD`
-   succeeds) → **git-notes backend on the nearest repo** (`GitNotesBackend`,
-   which runs `git` from CWD and lets git resolve the enclosing repo). This is
-   the new fallback.
-5. **Neither a project DB nor a git repo** → fail with a message that names both
-   escape hatches, e.g. *"no spelunk project here, and not inside a git repo.
-   Run 'spelunk init' first, or run inside a git repository."*
-
-Implementation note: today `memory/mod.rs` resolves `mem_path` via
+**The carrier already exists.** `memory add` already appends every new entry as
+a line of JSON to `refs/notes/spelunk` on HEAD, *in addition to* its primary
+SQLite write, whenever `store_in_git_notes` is true, which is the default
+(`Config::store_in_git_notes` in `config.rs`). That append (`append_to_git_notes`
+in `memory/add.rs`) is best-effort and non-fatal, and it is the mechanism behind
+the product's "memory travels with code" messaging. The only thing that stops it
+before `init` is that `memory/mod.rs` resolves the store via
 `require_project_db(&cfg.db_path, false)` for **every** subcommand and bails
-before dispatch. The fallback moves that decision into per-subcommand backend
-selection for `add` / `list` only: when `require_project_db` would bail (no
-`.spelunk/`), probe for a git repo and, if present, construct a `GitNotesBackend`
-rather than erroring. In this mode git-notes is the **store of record**, not the
-best-effort write-through it is today alongside SQLite — so there is no double
-write. Entries stored this way carry no embedding vector (git-notes holds none),
-which is fine because semantic `memory search` stays gated (D4).
+before `add` ever runs.
+
+**Store roles, reconciled with [ADR-004](004-unified-memory-storage.md).** Git
+notes (`refs/notes/spelunk`) are the durable carrier that travels with the repo;
+the local SQLite `memory.db` is the queryable index over that carrier. It holds
+the embeddings semantic `memory search` needs and is hydrated from the notes
+(the `init`-time git-notes import, ^155, is exactly that hydration step). This
+does **not** contradict ADR-004. ADR-004 resolved a *local-vs-server*
+split-brain: it makes `memory.db` canonical *relative to a shared team server*
+and holds that memory stays local unless an explicit team `server_url` relocates
+the store of record. Both `memory.db` and `refs/notes/spelunk` are local to the
+repo, so neither leaves the machine and that clause is untouched. ADR-004
+adjudicates local vs server, not the relationship between two local carriers;
+describing git notes as the carrier and `memory.db` as the index over it sits
+entirely inside ADR-004's "memory stays local" domain.
+
+**What changes (`add` / `list` before `init`).** Do **not** fail closed, and do
+**not** reshape store priority: the ADR-004 backend order for the primary store
+is unchanged (explicit `--backend git-notes` selects git notes; an explicit team
+`server_url` selects the remote backend; otherwise the local `memory.db`). The
+single change is at the pre-dispatch `require_project_db` bail:
+
+- **`memory add`:** with no `.spelunk/` project but CWD inside a git repo
+  (`git rev-parse HEAD` succeeds), skip the absent SQLite primary write and let
+  the universal write-through carry the entry to git notes through
+  `append_to_git_notes`, the very call that already runs post-`init`. There is
+  **one write path** pre- and post-`init`, so every note in `refs/notes/spelunk`
+  carries an identical record shape (`schema_version`, timestamps, `remote_id`).
+  That uniformity is the robustness win over a separate `GitNotesBackend.add`
+  path: it keeps the `init`-time import (^155) and plain
+  `git notes --ref=spelunk …` inspection consistent.
+- **`memory list`:** with no `memory.db`, read the entries back from
+  `refs/notes/spelunk`.
+- **Fail only** when there is neither a project DB nor a git repo, with the same
+  message as the first draft: *"no spelunk project here, and not inside a git
+  repo. Run 'spelunk init' first, or run inside a git repository."*
+
+**Double-write guard.** The one case where the primary store already *is* git
+notes is an explicit `--backend git-notes`. There, and only there, suppress the
+write-through so the entry is not written to `refs/notes/spelunk` twice. In every
+other case the primary is SQLite (or, pre-`init`, absent), and the write-through
+is the sole notes writer.
+
+Entries recorded before `init` carry no embedding vector (git notes hold none),
+which is fine because semantic `memory search` stays gated (D4); the vector is
+added when the project is later `init`'d and indexed and the carrier hydrates the
+index.
 
 Scope of the fallback is deliberately narrow — **only `add` and `list`**. Every
 other memory subcommand (`search`, `timeline`, `show`, `graph`, `since`,
@@ -188,7 +226,7 @@ returns a clear message pointing at the right next step — `spelunk init`,
 | **^126** — git notes don't travel via push/fetch/clone by default | **Elevated by this decision.** Once git-notes is the pre-`init` "memory that travels with the repo," the promise only fully holds if `refs/notes/spelunk` is push/fetch-visible. Decide whether the fallback (or `init`, or a documented one-time git config) should configure the notes refspec — see Open questions. |
 | **^140** — manual git-notes inspection docs | **Elevated.** More users will now have notes written via the fallback; the inspection docs (`git notes --ref=spelunk …`, and `spelunk memory list`) are the transparency surface. Keep them current. |
 | **marketing-site ^32 / ^33** — getting-started rewrite | **Primary doc deliverable.** Keep the zero-setup framing (D1). Fix the broken examples to use commands that actually work with no `init` (D2): bare `search "…"`, `graph <symbol>` / `--live`, and `memory add` / `list` via the git-notes fallback (D3). Move `--mode text`, indexed graph, and semantic examples into a clearly-marked "after `spelunk init`" section without displacing the zero-setup headline. |
-| **New work item — git-notes memory fallback** | **Implement D3** in spelunk-cli: per-subcommand backend selection for `memory add` / `list` so that, with no `.spelunk/` project but inside a git repo, they route to `GitNotesBackend` (nearest repo) instead of the `require_project_db` bail; fail (case 5) only when there is neither a DB nor a git repo. File under spelunk-oss. |
+| **New work item — git-notes memory fallback** | **Implement D3** in spelunk-cli: before `init` (no `.spelunk/` project) but inside a git repo, stop `memory add` / `list` failing at the `require_project_db` bail. `add` skips the absent SQLite primary and lets the existing `store_in_git_notes` write-through carry the entry to `refs/notes/spelunk`; `list` reads it back from the notes; explicit `--backend git-notes` suppresses the write-through so an entry is not written twice. Fail only when there is neither a DB nor a git repo. File under spelunk-oss. |
 
 ## Non-goals
 
@@ -210,10 +248,12 @@ returns a clear message pointing at the right next step — `spelunk init`,
 
 - **The pitch stays "zero setup."** The opening promise — no API keys, no
   servers, memory that travels with the repo — is kept and made true by pointing
-  the docs at the commands that work without `init` and by extending `memory add`
-  / `list` to the git-notes backend pre-`init`.
-- **`memory add` / `list` gain a new pre-`init` path** (git-notes on the nearest
-  repo). This is net-new behaviour and a partial reversal of ADR-067's
+  the docs at the commands that work without `init` and by carrying `memory add`
+  / `list` to git notes before `init` through the write-through that already
+  ships.
+- **`memory add` / `list` gain a new pre-`init` path** (the git-notes
+  write-through, now allowed to run with no `.spelunk/` project). This is net-new
+  behaviour and a partial reversal of ADR-067's
   fail-closed-for-memory posture: fail-closed now means "fall back to git notes
   if a repo exists, else refuse," not "always refuse without `.spelunk/`."
 - **git-notes visibility becomes a promise-load-bearing concern.** ^126 (notes
@@ -245,7 +285,10 @@ returns a clear message pointing at the right next step — `spelunk init`,
 
 - **Does "travels with the repo" require configuring the notes refspec?**
   `git notes` under `refs/notes/spelunk` are **not** pushed, fetched, or cloned
-  by default (^126). For the promise to hold across machines / teammates, either
+  by default (^126). Because D3 makes those notes the durable carrier for
+  pre-`init` memory (not a second copy of a SQLite store of record), the
+  "travels with the repo" claim now rests entirely on that ref being visible
+  across clones. For the promise to hold across machines / teammates, either
   the fallback path, `spelunk init`, or a documented one-time
   `git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'`
   (plus the matching push refspec) must make the notes ref travel. Recommended
