@@ -204,10 +204,9 @@ resolve and the server to answer.
 
 ### Trusting the server's certificate on the client
 
-When the server's certificate chains to a public CA, or to an internal CA that is
-already installed in each client's OS trust store, agents need no extra
-configuration: spelunk trusts the OS root store. Otherwise, point the CLI at the
-CA bundle explicitly with the `SPELUNK_SERVER_CA` environment variable:
+When the server's certificate chains to a public CA, agents need no extra
+configuration. When it is signed by a self-signed or internal CA, point the CLI
+at the CA bundle explicitly with the `SPELUNK_SERVER_CA` environment variable:
 
 ```bash
 export SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle
@@ -220,8 +219,8 @@ server_ca = "/etc/spelunk/internal-ca.pem"
 ```
 
 `SPELUNK_SERVER_CA` overrides the config value. The bundle is added as a trust
-anchor on top of the built-in and OS roots. TLS verification stays on; there is
-no option to disable it.
+anchor on top of the built-in roots. TLS verification stays on; there is no
+option to disable it.
 
 The bundle must contain the issuing **CA** certificate, not the server's leaf. A
 certificate made with a plain `openssl req -x509` is a self-signed CA certificate

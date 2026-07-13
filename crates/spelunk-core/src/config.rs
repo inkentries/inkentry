@@ -318,10 +318,10 @@ pub struct Config {
     #[serde(default)]
     pub project_id: Option<String>,
 
-    /// Path to a PEM CA bundle trusted (in addition to the built-in webpki +
-    /// OS roots) when connecting to a team `server_url` whose certificate is
-    /// signed by a self-signed or internal CA. Verification stays ON — this only
-    /// adds a trust anchor, it does not disable checks.
+    /// Path to a PEM CA bundle trusted (in addition to the built-in roots) when
+    /// connecting to a team `server_url` whose certificate is signed by a
+    /// self-signed or internal CA. Verification stays ON — this only adds a
+    /// trust anchor, it does not disable checks.
     /// `SPELUNK_SERVER_CA` overrides this; set in either config file.
     #[serde(default)]
     pub server_ca: Option<String>,
@@ -943,8 +943,8 @@ pub fn validate_transport_url(url: &str) -> Result<(), String> {
 ///
 /// `ca_path` is the resolved [`Config::server_ca`] (env `SPELUNK_SERVER_CA`
 /// precedence is already applied at load time). Adds every certificate in the
-/// PEM bundle as a trust anchor **on top of** the built-in webpki + OS roots;
-/// certificate verification stays on. A `None` path is a no-op, so every
+/// PEM bundle as a trust anchor **on top of** the built-in roots; certificate
+/// verification stays on. A `None` path is a no-op, so every
 /// team-server client site can route through this unconditionally.
 pub fn apply_server_ca(
     builder: reqwest::ClientBuilder,

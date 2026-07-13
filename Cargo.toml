@@ -19,10 +19,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror   = "2"
 rusqlite    = { version = "0.40", features = ["bundled"] }
 sqlite-vec  = "0.1"
-# `rustls-tls` keeps the bundled webpki roots; `rustls-tls-native-roots` adds the
-# OS trust store on top (both default-on in the same client) so an internal CA
-# already installed in the system store is trusted with no extra config.
-reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots"] }
+reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # In-process HTTPS for spelunk-server (ADR-066). `tls-rustls-no-provider` avoids
 # rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
 # startup instead — already the resolved provider via reqwest/hf-hub.

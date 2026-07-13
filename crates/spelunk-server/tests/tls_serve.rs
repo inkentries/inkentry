@@ -307,7 +307,7 @@ async fn server_ca_establishes_trust_over_real_https() {
         "client trusting the internal CA must reach {url}"
     );
 
-    // Control: only the built-in/OS roots. The server is already accepting, so a
+    // Control: only the built-in roots. The server is already accepting, so a
     // failure here is a genuine trust rejection, not a connect race — this is
     // what proves verification stayed on.
     let untrusting = reqwest::Client::builder()
