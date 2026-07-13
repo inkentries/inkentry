@@ -26,6 +26,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`spelunk init` imports existing git-notes memory into the project
+  `memory.db`.** When the enclosing repo already carries entries on
+  `refs/notes/spelunk` (for example a fresh clone whose memory travels in git
+  notes), `init` imports every entry not already present into the local
+  `memory.db`, so `spelunk memory list` reflects the repo's recorded history.
+  The import is idempotent (re-running `init` imports nothing) and carries no
+  embeddings; it prints `Memory:  imported N entries from git notes` when at
+  least one entry is imported. (ADR-068)
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
   (env `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_SERVER_TLS_KEY`), both-or-neither. The
   server terminates TLS itself, so a team/remote deployment is a routable

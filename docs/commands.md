@@ -36,6 +36,11 @@ or to choose your own. An existing `project_id` in config is never rewritten, so
 re-running `init` (or running it after a rename) does not change an established
 slug.
 
+If the repo already carries memory on `refs/notes/spelunk`, `init` also hydrates
+the new `memory.db` from those notes: every entry not already present is imported
+(idempotent, no embeddings), and it prints `Memory:  imported N entries from git
+notes` when any were imported. See [Project memory](memory.md) for details.
+
 **Example:**
 
 ```bash
