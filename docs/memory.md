@@ -22,6 +22,49 @@ git notes --ref=spelunk list         # every commit carrying spelunk notes
 GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
 ```
 
+### Sharing memory across clones via git-notes
+
+When you run `spelunk init` inside a git repository with an `origin` remote,
+spelunk automatically configures the fetch refspec for `origin` so that
+`refs/notes/spelunk` travels on `git fetch`. The init command prints the status:
+
+```
+Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)
+         push notes after each memory change: git push origin refs/notes/spelunk
+```
+
+To publish your memory notes to the remote, push the notes ref:
+
+```bash
+git push origin refs/notes/spelunk
+```
+
+Re-run this push whenever you record memory: each `spelunk memory add` (or
+remove) creates a new notes commit that travels only once it is pushed. The
+fetch refspec, by contrast, is configured once, so teammates' (and later
+clones') `git fetch` then pulls whatever notes you have already pushed.
+
+**For teammates to receive the notes:**
+
+1. Clone the repository normally: `git clone <repo>`
+2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'`)
+3. Fetch: `git fetch`
+
+A fresh clone does **not** inherit the source's local git config, so `git fetch`
+alone won't pull the notes. The teammate must either run `spelunk init` (which
+configures the refspec automatically) or add it manually, then fetch.
+
+**If there is no `origin` remote** (for example, in a local-only or detached
+repository), `spelunk init` prints the commands to run later:
+
+```
+Memory:  no 'origin' remote — notes refspec not configured
+         run later: git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'
+         push notes after each memory change: git push origin refs/notes/spelunk
+```
+
+Add the refspec when an `origin` is created, then push the notes as above.
+
 Memory is scoped to a local project. Run `spelunk init` once per repository to
 create its `.spelunk/` store. In a directory with no local `.spelunk/`,
 `memory add/list/search` and `context` fail closed with a `no spelunk project
