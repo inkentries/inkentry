@@ -28,7 +28,6 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `graph <symbol>` now degrades to a live ast-grep scan; `graph <file-path>`,
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
-  (spelunk-oss^147)
 - **`spelunk graph <symbol>` gives unambiguous zero-result messages.** When the
   index holds graph data but the symbol has none, it points to `spelunk graph
   <symbol> --live` for a structural scan; when the index holds no graph data at
@@ -39,7 +38,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   empty/umbrella tree.
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
-  and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)
+  and rename it to `CLAUDE.md` or `AGENT.md` as needed.
 
 ### Added
 
@@ -67,13 +66,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   clones (or manually add the same refspec) and `git fetch` to receive notes. In
   projects without an `origin`, init prints the exact git commands to run later
   when the remote is added. See [docs/memory.md](#sharing-memory-across-clones-via-git-notes).
-  (ADR-068, spelunk-oss^126)
+  (ADR-068)
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
   (env `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_SERVER_TLS_KEY`), both-or-neither. The
   server terminates TLS itself, so a team/remote deployment is a routable
   `--host` plus the TLS flags and an API key, with nothing in front. A
   non-loopback bind is now allowed only with both TLS and an API key set;
-  loopback binds are unchanged. (ADR-066, spelunk-oss^151)
+  loopback binds are unchanged. (ADR-066)
 
 ### Removed
 
@@ -81,7 +80,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `SPELUNK_MEMORY_SERVER_URL` env var).** These were backward-compat aliases for
   `server_url` / `server_key`; use those (and `SPELUNK_SERVER_URL`) instead. An
   old config that still carries the deprecated keys continues to load, but the
-  keys are now silently ignored rather than mapped. (spelunk-oss^144)
+  keys are now silently ignored rather than mapped.
 
 ## [0.9.3] — 2026-07-08
 
@@ -94,13 +93,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `snapshot_chunks`, `snapshot_embeddings`) are dropped via migration 021 on any
   database opened with this version; existing `spelunk search` (without `--as-of`)
   continues to work unchanged. Note: `spelunk memory list/search --as-of <date>` for
-  point-in-time memory archaeology remains available and unaffected. (#517,
-  spelunk-oss^67)
+  point-in-time memory archaeology remains available and unaffected. (#517)
 - **Retired the `api_base_url` client egress path and pruned the remaining dead
   config keys** (`plans_dir`, `specs_dir`, `batch_size`, …) from the config surface
   and the shipped `examples/mdm/spelunk-config.toml`. Existing config files that
   still carry these keys continue to parse unchanged (forward-compat locked by a
-  regression test). (#532, #551, spelunk-oss^109/^118)
+  regression test). (#532, #551)
 
 ### Security
 
@@ -113,7 +111,6 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   is set; the error names the interface/port. There is no opt-out. Loopback
   binds are unchanged. See
   [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
-  (spelunk-oss^79)
   - **Docker Compose demoted to a local scaffold; bare-metal/systemd is now
     the recommended team-server deployment.** The shipped `docker-compose.yml`
     previously bound the `spelunk-server` container to `0.0.0.0` directly,
@@ -133,9 +130,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     [Self-hosting](docs/self-hosting.md). `docker-compose.full.yml` (Ollama
     sidecar) and `Caddyfile` (bundled TLS sidecar) are removed; no proxy ships
     with this repo. See [docs/server.md](docs/server.md#quick-start-docker).
-    (spelunk-oss^79)
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
-  file reads).** [spelunk-oss^65]
+  file reads).**
   - `AppError::Internal` no longer inspects the error message text (previously it returned the
     raw error string to the client whenever it contained `"mismatch"` or `"required"`). The one
     legitimately-safe case — a project's configured embedding dimension not matching an
@@ -150,7 +146,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     error to the caller. **Known gap:** a query term containing an embedded NUL byte still
     leaks a raw FTS5 parse error despite the quoting (FTS5's own parser appears to treat `\0`
     as an early string terminator, independent of SQLite's NUL-safe `TEXT` binding); tracked as
-    a follow-up in spelunk-oss^75.
+    a follow-up.
   - `spelunk index` now enforces a `MAX_FILE_BYTES` (64 MiB) cap via `metadata().len()` before
     reading a file into memory, applied uniformly across every format (text/Markdown/tree-sitter
     source, PDF, DOCX, XLSX) — previously the cap only bounded an already-read buffer on the
@@ -162,15 +158,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   at construction.** A team `server_url` set to plaintext `http://` no longer sends
   the bearer `SPELUNK_SERVER_KEY` in cleartext — the client fails fast at
   construction, closing the CLI-side gap adjacent to the server bind-safety work
-  above. (#549, spelunk-oss^78)
+  above. (#549)
 - **`add_note` now audit-logs notes rejected by injection-pattern detection**, so a
   rejected write leaves a trail instead of failing silently.
 - **Bumped `crossbeam-epoch` to 0.9.20** for RUSTSEC-2026-0204. (#535)
 
 ### Added
 
-- **`bench/paired_stats.py` for publishing agentic benchmarks:** McNemar's exact test with paired task outcomes, bootstrap 95% CIs over per-seed means, deterministic n=1 handling, and cell-labeled output refusing to aggregate across differing model/harness/condition. Committed example fixtures in `bench/results/examples/`. Run: `python bench/paired_stats.py <baseline.json> <condition.json>`. (spelunk-oss^86)
-- **Benchmark `vanilla_rag` condition: plain embed-and-KNN control.** [spelunk-oss^87]
+- **`bench/paired_stats.py` for publishing agentic benchmarks:** McNemar's exact test with paired task outcomes, bootstrap 95% CIs over per-seed means, deterministic n=1 handling, and cell-labeled output refusing to aggregate across differing model/harness/condition. Committed example fixtures in `bench/results/examples/`. Run: `python bench/paired_stats.py <baseline.json> <condition.json>`.
+- **Benchmark `vanilla_rag` condition: plain embed-and-KNN control.**
   `bench/memory/decision_archaeology.py` now includes a fifth baseline condition
   that embeds raw commit messages with the native F2LLM embedder and ranks by
   cosine similarity, isolating the lift of `memory_search` from harvesting and LLM
@@ -184,7 +180,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Features
 
-- **`spelunk index --detach-embed`: background embedding on slow hardware.** [spelunk-oss^74]
+- **`spelunk index --detach-embed`: background embedding on slow hardware.**
   When embedding a large codebase on slow hardware, parsing can now run in the foreground (so
   text/ast-grep search is immediately available) while the long embedding phase runs in the
   background. Useful for CI/CD and multi-corebot indexing workflows where waiting for full
@@ -192,10 +188,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   "Embedding in progress: N/M embedded" when a background or interrupted embed is underway). If
   the background pass is interrupted (machine sleep, process killed, network downtime), simply
   re-run `spelunk index` to resume from where it left off.
-- **Embedding progress bar displayed immediately during indexing.** [spelunk-oss^73]
+- **Embedding progress bar displayed immediately during indexing.**
   The ETA-aware embedding progress bar now appears as soon as the embed phase begins, instead of
   waiting for the first batch to complete.
-- **`spelunk-server --health-check`: a self-contained container health probe.** [spelunk-oss^99]
+- **`spelunk-server --health-check`: a self-contained container health probe.**
   It probes the server's own `/v1/health` on the configured `--host`/`--port` and exits `0`
   (live) or non-zero, so a container `HEALTHCHECK` needs no `curl`/`wget` in the runtime image.
 - **First-party systemd units + credential-based API keys for the team server.** `spelunk-server`
@@ -206,18 +202,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Fixes
 
 - **`spelunk-server` bounds candle's CPU embedding threads so embeds no longer starve request
-  serving.** [spelunk-oss^97] On CPU-only hosts a single embed batch previously fanned candle's
+  serving.** On CPU-only hosts a single embed batch previously fanned candle's
   gemm across every core, pinning the machine and briefly hanging `/v1/health`. The server now
   caps the embedder's CPU thread budget to `max(1, cores − 2)` by default (override with
   `SPELUNK_EMBED_THREADS`, or a pre-set `RAYON_NUM_THREADS`), leaving headroom to keep serving
   requests during indexing.
 - **The chunker caps oversized semantic and Markdown chunks** so a single very large unit no
-  longer stalls the embed phase. [spelunk-oss^114]
+  longer stalls the embed phase.
 - **`spelunk init` writes `.spelunk/.gitignore`** so machine-specific SQLite files aren't
   accidentally committed.
 - **The CLI no longer surfaces a phantom `plan` capability** it never implemented. (#540)
 - **`spelunk index` no longer loses computed embeddings when a batch times out on slow hardware.**
-  [spelunk-oss^71] The embed phase now calibrates against real timing before committing to a
+  The embed phase now calibrates against real timing before committing to a
   batch size: it sends a 1-chunk request, then a 4-chunk request, and derives the per-request
   batch size (and its timeout) from the measured per-chunk rate — a small batch on slow hardware,
   a large one (up to the 256-chunk server limit) on fast hardware — re-estimating as later
@@ -226,7 +222,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   timeout, machine sleep, or process termination) can resume by re-running `spelunk index`. Prior
   batches are retained, and already-embedded chunks are skipped.
 - **`spelunk index` embedding could fail immediately with a server `408 Request Timeout`, even
-  on the very first (single-chunk) request.** [spelunk-oss^71/^73/^74 field-failure follow-up]
+  on the very first (single-chunk) request.**
   The calibration design above targets a ~240s round trip per batch (scaling down on slower
   hardware), but `spelunk-server`'s general request-handling middleware enforced a blanket 30s
   budget on every route — including `/index/embed` — so any batch sized for the calibration
@@ -303,7 +299,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   separately wrapped in its own `tokio::time::timeout`. See `docs/security/THREAT-MODEL.md`
   ("D — Denial of Service") for the full threat breakdown, including a known limitation where
   `ConcurrencyLimitLayer`'s permit release doesn't yet bound concurrent *streaming* sessions on
-  `/explore`/`/llm/complete`. (spelunk-oss^60)
+  `/explore`/`/llm/complete`.
 - **Suppressed two `quick-xml` DoS advisories with no upstream fix
   (RUSTSEC-2026-0194, RUSTSEC-2026-0195).** `quick-xml` is pulled transitively by
   the `calamine` (XLSX/ODS) and `docx-rs` (DOCX) document parsers used during
