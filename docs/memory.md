@@ -105,6 +105,19 @@ Memory:  no 'origin' remote — notes refspec not configured
 
 Add the refspec when an `origin` is created, then push the notes as above.
 
+If the repository already carries memory on `refs/notes/spelunk` (for example a
+fresh clone of a project whose team records memory through git notes), `spelunk
+init` **hydrates** the new `memory.db` from those notes: every entry not already
+present is imported, and `spelunk memory list` then shows the repo's recorded
+history. The import is idempotent (re-running `init` imports nothing) and copies
+entry content only, not embeddings, so imported entries appear in `memory list`
+and full-text search right away. This is a local import: the notes must already
+be present in your clone. Their cross-machine arrival still depends on your git
+notes refspec, since git does not fetch `refs/notes/*` by default (see above).
+git-notes is the durable carrier here and `memory.db` is a local index rebuilt
+from it; see
+[ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
 ## Why memory?
 
 Code tells you *what* the system does. Memory tells you *why* it was built that way.

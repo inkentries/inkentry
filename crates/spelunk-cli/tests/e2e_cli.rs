@@ -1502,3 +1502,181 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
             "Loopback server is inference-only",
         ));
 }
+
+// ── init imports git-notes memory into memory.db ─────────────────────────────
+//
+// During `spelunk init`, after the project memory.db is created, every entry on
+// the enclosing repo's `refs/notes/spelunk` that is not already present is
+// imported into memory.db (no embeddings). The summary line
+// `Memory:  imported N entries from git notes` prints only when N > 0, and a
+// re-run imports nothing (dedup by the same content key as `memory reconcile`).
+
+/// Init a git repo at `dir` with a committer identity AND one commit, so
+/// `refs/notes/spelunk` can be attached — git notes hang off a commit object,
+/// so the no-commit `git_init_repo` helper above is not enough here.
+fn git_init_repo_with_commit(dir: &std::path::Path) {
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "test@test.com"][..],
+        &["config", "user.name", "Test"][..],
+    ] {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git setup");
+    }
+    fs::write(dir.join("README.md"), "seed\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .status()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-q", "--no-gpg-sign", "-m", "seed"])
+        .current_dir(dir)
+        .status()
+        .expect("git commit");
+}
+
+/// One JSON-Lines `NoteRecord` as the git-notes backend serializes it. Built as
+/// a `serde_json::Value` rather than the (crate-private) `NoteRecord` type so
+/// this test needs no library dependency on spelunk-cli.
+fn git_note_record_line(id: i64, kind: &str, title: &str, body: &str) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "id": id,
+        "kind": kind,
+        "title": title,
+        "body": body,
+        "tags": [],
+        "linked_files": [],
+        // Fixed timestamps → a stable content key, so a re-run dedups exactly.
+        "created_at": 1_700_000_000_i64 + id,
+        "status": "active",
+    })
+    .to_string()
+}
+
+/// Attach `jsonl` (one or more record lines) to HEAD's `refs/notes/spelunk`.
+fn seed_git_notes(dir: &std::path::Path, jsonl: &str) {
+    let notes_file = tempfile::NamedTempFile::new().expect("notes tempfile");
+    fs::write(notes_file.path(), jsonl).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["notes", "--ref=spelunk", "add", "-f", "-F"])
+        .arg(notes_file.path())
+        .args(["--", "HEAD"])
+        .current_dir(dir)
+        .status()
+        .expect("git notes add");
+    assert!(status.success(), "seeding git notes must succeed");
+}
+
+/// End-to-end: `spelunk init` over a real repo that already has git-notes
+/// memory imports those entries, `memory list` surfaces them, the summary line
+/// reports the right count, and a second init is a no-op (no re-import, no
+/// duplicate rows). Covers the import-on-init and idempotency guarantees.
+#[test]
+fn test_init_imports_git_notes_memory_and_is_idempotent() {
+    let tmp = tempdir().unwrap();
+    git_init_repo_with_commit(tmp.path());
+
+    let l1 = git_note_record_line(
+        1,
+        "decision",
+        "Adopt sqlite for memory",
+        "portable, no server",
+    );
+    let l2 = git_note_record_line(
+        2,
+        "requirement",
+        "Notes survive a clone",
+        "git-notes travel",
+    );
+    seed_git_notes(tmp.path(), &format!("{l1}\n{l2}\n"));
+
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+
+    // First init: both pre-existing git-notes entries import, and the summary
+    // line reports the exact count.
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "imported 2 entries from git notes",
+        ));
+
+    // `memory list` (default sqlite backend, reads memory.db) surfaces both.
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Adopt sqlite for memory"))
+        .stdout(predicate::str::contains("Notes survive a clone"));
+
+    // Second init: everything dedups, so nothing imports and the Memory summary
+    // line is suppressed (printed only when N > 0).
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from git notes").not());
+
+    // The key idempotency guarantee: row count is stable — no duplicate rows.
+    let output = spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "list", "--format", "json", "--limit", "100"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let notes: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("memory list --format json");
+    assert_eq!(
+        notes.as_array().map(Vec::len),
+        Some(2),
+        "re-running init must not duplicate imported rows"
+    );
+}
+
+/// `spelunk init` outside any git repo skips the git-notes import entirely:
+/// there is no enclosing repo to read notes from, so no import runs, the Memory
+/// summary line is absent, and init still succeeds.
+#[test]
+fn test_init_without_git_repo_skips_notes_import() {
+    let tmp = tempdir().unwrap();
+    // Deliberately NOT a git repo — no `.git`, no notes ref.
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+
+    spelunk_bin()
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .args(["init", "--no-index"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from git notes").not());
+}

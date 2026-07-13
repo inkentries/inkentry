@@ -45,6 +45,11 @@ The init output includes the push command to publish your notes; re-run it
 after each memory change so new notes commits travel. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
+If the repo already carries memory on `refs/notes/spelunk`, `init` also hydrates
+the new `memory.db` from those notes: every entry not already present is imported
+(idempotent, no embeddings), and it prints `Memory:  imported N entries from git
+notes` when any were imported. See [Project memory](memory.md) for details.
+
 **Example:**
 
 ```bash
