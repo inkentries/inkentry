@@ -207,15 +207,23 @@ spelunk unlink <path>
 
 ## Git worktrees
 
-Read/query commands (`context`, `check`, `search`, `memory`, `graph`, `status`)
-run from a linked worktree resolve to the main worktree's index automatically,
-with no setup step. Nothing is written into the worktree:
+Read/query commands (`context`, `check`, `search`, `memory list`,
+`memory search`, `graph`, `status`) run from a linked worktree resolve to the
+main worktree's shared index automatically, with no setup step. Nothing is
+written into the worktree:
 
 ```bash
 git worktree add ../my-feature my-feature-branch
 cd ../my-feature
 spelunk context    # resolves to the main worktree's index; no init needed
 ```
+
+`memory add` is a write, not a read/query command, but it resolves the same
+way: an entry recorded from a linked worktree lands in the main worktree's
+shared `<main-worktree>/.spelunk/memory.db`, and its git-notes write-through
+appends to the repo's shared `refs/notes/spelunk`. There is no separate
+per-worktree memory store, so recording memory from a worktree needs no setup
+and stays in one place.
 
 `spelunk index .` from a worktree is optional. Run it only to refresh the
 shared index with files you changed in that worktree; it re-indexes into the
