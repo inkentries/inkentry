@@ -351,12 +351,17 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
     let explicit_offline = spelunk_core::config::no_server_env_set()
         || cfg.mode == Some(spelunk_core::config::SyncMode::Offline);
     let url = cfg.server_url.clone();
+    let server_ca = cfg.server_ca.clone();
     TIER.get_or_init(|| async move {
         if explicit_offline {
             tracing::debug!("sync mode is explicitly offline — skipping all server probes");
             return Tier::Offline;
         }
-        probe(url.as_deref()).await
+        probe(
+            url.as_deref(),
+            server_ca.as_deref().map(std::path::Path::new),
+        )
+        .await
     })
     .await
 }
@@ -370,7 +375,7 @@ const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 /// Default loopback port for `spelunk-server`.
 const DEFAULT_LOOPBACK_PORT: u16 = 7777;
 
-async fn probe(url: Option<&str>) -> Tier {
+async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     // ── 1. SPELUNK_NO_SERVER short-circuit ───────────────────────────────────
     if matches!(
         std::env::var("SPELUNK_NO_SERVER").as_deref(),
@@ -382,7 +387,7 @@ async fn probe(url: Option<&str>) -> Tier {
 
     // ── 2. Explicit server_url from config / env ─────────────────────────────
     if let Some(url) = url {
-        return match probe_url(url, REMOTE_PROBE_TIMEOUT, false).await {
+        return match probe_url(url, REMOTE_PROBE_TIMEOUT, false, server_ca).await {
             Ok(tier) => tier,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -399,7 +404,8 @@ async fn probe(url: Option<&str>) -> Tier {
             "loopback auto-discovery: found server.port={port}, probing {loopback_url}"
         );
         // Loopback probes never produce hard errors (auto_discovered=true), so unwrap is safe.
-        let tier = probe_url(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true)
+        // Loopback is plaintext http — a custom CA is irrelevant here.
+        let tier = probe_url(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
             .await
             .unwrap_or(Tier::Offline);
         if tier.is_server() {
@@ -411,7 +417,7 @@ async fn probe(url: Option<&str>) -> Tier {
     // Step 3b: default port 7777
     let default_url = format!("http://127.0.0.1:{DEFAULT_LOOPBACK_PORT}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
-    let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true)
+    let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
         .await
         .unwrap_or(Tier::Offline);
     if tier.is_server() {
@@ -432,13 +438,22 @@ async fn probe_url(
     url: &str,
     timeout: std::time::Duration,
     auto_discovered: bool,
+    server_ca: Option<&std::path::Path>,
 ) -> Result<Tier, String> {
     // Non-loopback plaintext http:// is invalid config — reject before sending
     // anything. No opt-out (Johan, 2026-07-02 — see spelunk-oss^63): the fix is
     // always "use https, or loopback".
     spelunk_core::config::validate_transport_url(url)?;
 
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
+    let builder = match spelunk_core::config::apply_server_ca(reqwest::Client::builder(), server_ca)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("could not load custom CA for server probe: {e}");
+            return Ok(Tier::Offline);
+        }
+    };
+    let client = match builder.timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
@@ -1023,7 +1038,7 @@ mod tests {
             unsafe { std::env::set_var("SPELUNK_NO_SERVER", val) };
             // server_url = None so that, absent the short-circuit, the probe would
             // attempt loopback auto-discovery; the short-circuit must win.
-            let tier = probe(None).await;
+            let tier = probe(None, None).await;
             assert!(
                 matches!(tier, Tier::Offline),
                 "SPELUNK_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
@@ -1063,7 +1078,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None).await;
         assert!(
             matches!(result, Ok(Tier::Offline)),
             "auto-discovered loopback with wrong dim must downgrade to Offline; got {result:?}"
@@ -1086,7 +1101,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None).await;
         assert!(
             matches!(result, Ok(Tier::Server { .. })),
             "auto-discovered loopback with correct dim must return Server; got {result:?}"
@@ -1120,7 +1135,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe must succeed");
         let limits = result
@@ -1153,7 +1168,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe must succeed");
         assert_eq!(
@@ -1185,7 +1200,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe must succeed");
         let limits = result.server_limits().expect("limits object was present");
@@ -1207,7 +1222,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None).await;
         assert!(
             matches!(result, Ok(Tier::Server { .. })),
             "server with no embedder (dim 0) must still return Server; got {result:?}"
@@ -1231,7 +1246,7 @@ mod tests {
             .await;
 
         // auto_discovered = false → explicit server_url path → must be a hard Err.
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false, None).await;
         assert!(
             result.is_err(),
             "explicit server_url with wrong dim must return Err; got {result:?}"
@@ -1263,7 +1278,7 @@ mod tests {
         // Deliberately no MockServer / no listener on this address — if
         // `probe_url` tried to send a request it would get a connection error,
         // not this validation message.
-        let result = probe_url("http://team-server:7777", REMOTE_PROBE_TIMEOUT, false).await;
+        let result = probe_url("http://team-server:7777", REMOTE_PROBE_TIMEOUT, false, None).await;
         let err = result.expect_err("non-loopback http:// must be a hard error");
         assert!(err.contains("loopback"), "got: {err}");
         assert!(err.contains("https"), "got: {err}");
@@ -1273,7 +1288,13 @@ mod tests {
     /// auto-discovery URLs are always loopback in practice).
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_even_when_auto_discovered() {
-        let result = probe_url("http://team-server:7777", LOOPBACK_PROBE_TIMEOUT, true).await;
+        let result = probe_url(
+            "http://team-server:7777",
+            LOOPBACK_PROBE_TIMEOUT,
+            true,
+            None,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -1292,7 +1313,7 @@ mod tests {
             .await;
 
         // wiremock serves over http on 127.0.0.1, which is loopback.
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false, None).await;
         assert!(
             matches!(result, Ok(Tier::Server { .. })),
             "loopback http:// must be accepted; got {result:?}"
@@ -1314,7 +1335,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false).await;
+        let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false, None).await;
         assert!(matches!(result, Ok(Tier::Server { .. })), "got {result:?}");
 
         // Assert no request in wiremock's log carried an Authorization header.
@@ -1390,7 +1411,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe ok");
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Loading));
@@ -1410,7 +1431,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe ok");
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Unavailable));
@@ -1430,7 +1451,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true)
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
             .await
             .expect("probe ok");
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Unknown));

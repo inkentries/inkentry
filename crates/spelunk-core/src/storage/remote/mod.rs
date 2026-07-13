@@ -139,6 +139,7 @@ pub async fn resolve_cloud_project_uuid(
     project_id: &str,
     server_url: &str,
     server_key: Option<&str>,
+    server_ca: Option<&std::path::Path>,
     spelunk_dir: &std::path::Path,
 ) -> Result<uuid::Uuid> {
     // D5: raw UUID in config → use directly, no lookup, no cache.
@@ -158,7 +159,8 @@ pub async fn resolve_cloud_project_uuid(
         );
     }
 
-    resolve_cloud_project_uuid_inner(project_id, server_url, server_key, spelunk_dir).await
+    resolve_cloud_project_uuid_inner(project_id, server_url, server_key, server_ca, spelunk_dir)
+        .await
 }
 
 /// The cache + `GET /v1/projects` half of [`resolve_cloud_project_uuid`],
@@ -172,6 +174,7 @@ async fn resolve_cloud_project_uuid_inner(
     project_id: &str,
     server_url: &str,
     server_key: Option<&str>,
+    server_ca: Option<&std::path::Path>,
     spelunk_dir: &std::path::Path,
 ) -> Result<uuid::Uuid> {
     let use_cache = !no_slug_cache_env_set();
@@ -182,7 +185,7 @@ async fn resolve_cloud_project_uuid_inner(
     }
 
     let url = format!("{}/v1/projects", server_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = crate::config::apply_server_ca(reqwest::Client::builder(), server_ca)?.build()?;
     let mut req = client.get(&url);
     if let Some(key) = server_key {
         req = req.header("Authorization", format!("Bearer {key}"));

@@ -112,14 +112,19 @@ impl CloudSyncClient {
     /// Build a client. `project_id` is the server-side project identifier
     /// (a UUID for cloud-api, or a slug for an OSS spelunk-server); it is
     /// percent-encoded into a single path segment either way.
-    pub fn new(base_url: &str, project_id: &str, api_key: Option<&str>) -> Result<Self> {
+    pub fn new(
+        base_url: &str,
+        project_id: &str,
+        api_key: Option<&str>,
+        server_ca: Option<&std::path::Path>,
+    ) -> Result<Self> {
         // Fail closed before building the client: a bearer must never travel over
         // plaintext http to a non-loopback host (spelunk-oss^63). Keyless
         // loopback-dev construction is unaffected — nothing to leak.
         if api_key.is_some() {
             crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
         }
-        let client = reqwest::Client::builder()
+        let client = crate::config::apply_server_ca(reqwest::Client::builder(), server_ca)?
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("building sync HTTP client")?;
@@ -251,7 +256,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let res = client.push_batch(vec![item("e1")]).await.unwrap();
         assert_eq!(res.created, 1);
 
@@ -270,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn push_batch_empty_is_noop_no_request() {
         let server = MockServer::start().await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let res = client.push_batch(vec![]).await.unwrap();
         assert_eq!((res.created, res.skipped, res.failed), (0, 0, 0));
         assert!(server.received_requests().await.unwrap().is_empty());
@@ -287,7 +292,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let res = client.push_batch(vec![item("e1")]).await.unwrap();
         assert_eq!(res.skipped, 1);
         assert_eq!(res.created, 0);
@@ -314,7 +319,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let entries = client
             .pull_since(Some("01890000-0000-7000-8000-000000000000"))
             .await
@@ -341,7 +346,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let entries = client.pull_since(None).await.unwrap();
         assert!(entries.is_empty());
     }
@@ -361,7 +366,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let entries = client.pull_since(None).await.unwrap();
         assert!(entries[0].is_archived());
     }
@@ -382,7 +387,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = CloudSyncClient::new(&server.uri(), "acme/new-app", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "acme/new-app", None, None).unwrap();
         let res = client.push_batch(vec![item("e1")]).await.unwrap();
         assert_eq!(res.created, 1);
     }
@@ -393,24 +398,31 @@ mod tests {
 
     #[test]
     fn new_with_key_rejects_non_loopback_http() {
-        let err = match CloudSyncClient::new("http://team-server:7777", "proj", Some("secret")) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("expected non-loopback plaintext http to be rejected"),
-        };
+        let err =
+            match CloudSyncClient::new("http://team-server:7777", "proj", Some("secret"), None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("expected non-loopback plaintext http to be rejected"),
+            };
         assert!(err.contains("plaintext http"), "err: {err}");
     }
 
     #[test]
     fn new_with_key_accepts_https_and_loopback_http() {
-        assert!(CloudSyncClient::new("https://team-server:7777", "proj", Some("secret")).is_ok());
-        assert!(CloudSyncClient::new("http://127.0.0.1:7777", "proj", Some("secret")).is_ok());
-        assert!(CloudSyncClient::new("http://localhost:7777", "proj", Some("secret")).is_ok());
+        assert!(
+            CloudSyncClient::new("https://team-server:7777", "proj", Some("secret"), None).is_ok()
+        );
+        assert!(
+            CloudSyncClient::new("http://127.0.0.1:7777", "proj", Some("secret"), None).is_ok()
+        );
+        assert!(
+            CloudSyncClient::new("http://localhost:7777", "proj", Some("secret"), None).is_ok()
+        );
     }
 
     #[test]
     fn new_keyless_construction_unaffected_by_transport() {
         // No bearer to leak, so even a non-loopback plaintext dev server is fine.
-        assert!(CloudSyncClient::new("http://team-server:7777", "proj", None).is_ok());
+        assert!(CloudSyncClient::new("http://team-server:7777", "proj", None, None).is_ok());
     }
 
     #[tokio::test]
@@ -421,7 +433,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         // 404 (already gone) is the desired end state → Ok.
         client.delete_remote("missing").await.unwrap();
     }

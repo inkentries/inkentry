@@ -95,7 +95,12 @@ pub async fn memory_pull(
 
     let local = MemoryStore::open(mem_path)
         .with_context(|| format!("opening local memory at {}", mem_path.display()))?;
-    let client = CloudSyncClient::new(&base_url, &project_id, key.as_deref())?;
+    let client = CloudSyncClient::new(
+        &base_url,
+        &project_id,
+        key.as_deref(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )?;
 
     let pulled = pull_and_apply(&local, &client).await?;
     println!("Pull complete. Applied {pulled} new remote entries.");
@@ -115,7 +120,12 @@ pub async fn memory_sync(
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = MemoryStore::open(src_path)
         .with_context(|| format!("opening local memory at {}", src_path.display()))?;
-    let client = CloudSyncClient::new(&base_url, &project_id, key.as_deref())?;
+    let client = CloudSyncClient::new(
+        &base_url,
+        &project_id,
+        key.as_deref(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )?;
 
     // ── Push local → cloud (batched, text-only, idempotent on UUID) ─────────
     let pushed = push_local(&local, &client, args.include_archived).await?;
@@ -396,7 +406,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = CloudSyncClient::new(&server.uri(), &slug, None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), &slug, None, None).unwrap();
         let res = client
             .push_batch(vec![BatchPushItem {
                 kind: "decision".into(),
@@ -470,7 +480,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let client = CloudSyncClient::new(&server.uri(), "proj", None).unwrap();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
         // First push: creates both, persists the server-minted id on each row.
         let s1 = push_local(&store, &client, false).await.unwrap();
