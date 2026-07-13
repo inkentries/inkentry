@@ -20,10 +20,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
   (spelunk-oss^147)
-- **`spelunk graph <symbol>` shows clearer messages when no call sites are found**:
-  prints "0 source files found" in an empty or umbrella directory, or "run
-  'spelunk init' for the full indexed graph" when source files exist but no call
-  site matched the symbol. (spelunk-oss^127)
+- **`spelunk graph <symbol>` gives unambiguous zero-result messages.** When the
+  index holds graph data but the symbol has none, it points to `spelunk graph
+  <symbol> --live` for a structural scan; when the index holds no graph data at
+  all, it auto-falls-back to that live scan (matching the no-project behaviour).
+  The live scan distinguishes an empty or umbrella directory ("No scannable
+  source files under this directory") from a genuine no-match ("No callers found
+  for '<symbol>' (live scan)"), and never suggests `spelunk init` for an
+  already-initialized project.
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)

@@ -563,7 +563,7 @@ mod tests {
         );
     }
 
-    // ── has_scannable_source: empty-tree vs populated probe (spelunk-oss^127) ────
+    // ── has_scannable_source: empty-tree vs populated probe ──────────────────────
 
     #[test]
     fn scannable_source_false_for_empty_dir() {

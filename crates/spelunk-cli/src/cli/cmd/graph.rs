@@ -78,6 +78,20 @@ pub fn graph(args: GraphArgs, cfg: Config) -> Result<()> {
         return graph_live(symbol, &args.format, &args.kind, Path::new("."));
     }
 
+    // Symbol query with nothing for this symbol: an index that holds no graph
+    // edges at all auto-falls-back to the live scan (same posture as the
+    // no-project case); a populated graph that simply lacks this symbol gets an
+    // unambiguous message. Never suggest `init` here — already initialized.
+    if edges.is_empty() && !is_file_query {
+        if db.has_any_graph_edges()? {
+            println!(
+                "No calls to '{symbol}' found in the indexed graph. Try 'spelunk graph {symbol} --live' for a structural scan."
+            );
+            return Ok(());
+        }
+        return graph_live(symbol, &args.format, &args.kind, Path::new("."));
+    }
+
     if let Some(kind) = &args.kind {
         edges.retain(|e| e.kind == *kind);
     }
@@ -131,13 +145,15 @@ fn graph_live(symbol: &str, format: &str, kind_filter: &Option<String>, root: &P
 
     if edges.is_empty() {
         // Disambiguate a true leaf/typo (source present) from an empty tree
-        // (e.g. an umbrella repo with uninitialized submodules).
-        let hint = if crate::search::live::has_scannable_source(root) {
-            "live structural scan found no call sites — run 'spelunk init' for the full indexed graph"
+        // (e.g. an umbrella repo with uninitialized submodules). The live scan
+        // never suggests `init`.
+        if crate::search::live::has_scannable_source(root) {
+            println!("No callers found for '{symbol}' (live scan).");
         } else {
-            "0 source files found under this directory — check you're in a populated subdirectory, or that git submodules are initialized"
-        };
-        println!("No graph edges found for '{symbol}' (live scan). ({hint})");
+            println!(
+                "No scannable source files under this directory (live scan). Check you're in a populated subdirectory, or that git submodules are initialized."
+            );
+        }
         return Ok(());
     }
 

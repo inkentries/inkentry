@@ -711,31 +711,31 @@ fn graph_does_not_surface_real_populated_global_index() {
     );
 }
 
-// ── zero-result affordance: empty tree vs no-match hint (spelunk-oss^127) ──────
+// ── zero-result affordance: empty tree vs no-match hint ───────────────────────
 //
 // When the live graph scan finds no call sites, the message disambiguates a true
 // leaf/typo (scannable source present) from an empty tree (e.g. an umbrella repo
-// with uninitialized submodules). Text output only — the branch is in the text
-// path; JSON stays a bare edge array.
+// with uninitialized submodules). Neither message suggests `spelunk init`. Text
+// output only — the branch is in the text path; JSON stays a bare edge array.
 
 #[test]
-fn graph_empty_dir_reports_zero_source_files_hint() {
+fn graph_empty_dir_reports_no_scannable_source_hint() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    // No source at all: the live scan reports 0 files and steers to a populated
-    // subdir / submodule init, not to `spelunk init`.
+    // No source at all: the live scan reports an empty tree and steers to a
+    // populated subdir / submodule init, never to `spelunk init`.
     bin(home.path(), proj.path())
         .args(["graph", "anything"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("0 source files found"))
+        .stdout(predicate::str::contains("No scannable source files"))
         .stdout(predicate::str::contains("submodules are initialized"))
-        .stdout(predicate::str::contains("run 'spelunk init'").not());
+        .stdout(predicate::str::contains("spelunk init").not());
 }
 
 #[test]
-fn graph_populated_dir_no_match_reports_init_hint() {
+fn graph_populated_dir_no_match_reports_live_scan() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     // Scannable source exists, but nothing calls `helper` — a true leaf/typo.
@@ -746,9 +746,10 @@ fn graph_populated_dir_no_match_reports_init_hint() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "run 'spelunk init' for the full indexed graph",
+            "No callers found for 'helper' (live scan).",
         ))
-        .stdout(predicate::str::contains("0 source files found").not());
+        .stdout(predicate::str::contains("spelunk init").not())
+        .stdout(predicate::str::contains("No scannable source files").not());
 }
 
 #[test]
