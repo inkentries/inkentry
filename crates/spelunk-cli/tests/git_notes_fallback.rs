@@ -28,6 +28,14 @@ use tempfile::TempDir;
 const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
      or run inside a git repository.";
 
+/// ADR-067 single-hatch error: no local `.spelunk/` project. This is what every
+/// memory subcommand *except* the ADR-068 D3 add/list carrier still raises,
+/// even inside a git repo (the carrier never widens to them). Distinct from
+/// `NO_PROJECT_NO_REPO_ERR`: the dual-hatch text splices ", and not inside a git
+/// repo" between "here" and ". Run", so this substring matches only the
+/// single-hatch message.
+const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
+
 /// A `spelunk` command with an isolated HOME (so the "global" store lives under
 /// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
@@ -297,13 +305,41 @@ fn pre_init_and_post_init_records_have_identical_shape() {
         "post-init write-through writes one record"
     );
 
+    let pre_keys = json_top_level_keys(&pre_lines[0]);
+    let post_keys = json_top_level_keys(&post_lines[0]);
+
+    // Guard against a degenerate match: an empty (or shrunk) key set on both
+    // sides would satisfy a bare set-equality check. Assert both records actually
+    // carry the canonical NoteRecord field set a `note` add with no
+    // tags/files/dates serializes. (The Option-typed fields source_ref,
+    // valid_at, invalid_at, superseded_by, and remote_id are omitted by serde
+    // when None, so the always-present core below is the shape under test.)
+    for expected in [
+        "body",
+        "created_at",
+        "id",
+        "kind",
+        "linked_files",
+        "schema_version",
+        "status",
+        "tags",
+        "title",
+    ] {
+        assert!(
+            pre_keys.iter().any(|k| k == expected),
+            "pre-init record is missing the canonical key {expected:?}; got {pre_keys:?}"
+        );
+        assert!(
+            post_keys.iter().any(|k| k == expected),
+            "post-init record is missing the canonical key {expected:?}; got {post_keys:?}"
+        );
+    }
+
     assert_eq!(
-        json_top_level_keys(&pre_lines[0]),
-        json_top_level_keys(&post_lines[0]),
+        pre_keys, post_keys,
         "pre-init carrier and post-init write-through records must share one shape\n\
          pre:  {}\npost: {}",
-        pre_lines[0],
-        post_lines[0]
+        pre_lines[0], post_lines[0]
     );
 }
 
@@ -420,6 +456,23 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
         "explicit git-notes add must write the note; got: {note_blob:?}"
     );
 
+    // Double-write guard: with `--backend git-notes` git notes is the *primary*
+    // store, so the universal write-through is suppressed. A single `add` must
+    // therefore leave exactly one record (not a primary write plus a redundant
+    // write-through): the other single-write path alongside the pre-init carrier.
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(
+        lines.len(),
+        1,
+        "explicit --backend git-notes must write exactly one record \
+         (write-through suppressed); got: {lines:?}"
+    );
+    assert!(
+        lines[0].contains("\"schema_version\":1") && lines[0].contains(title),
+        "the single record must be the well-formed entry we added; got: {:?}",
+        lines[0]
+    );
+
     bin(home.path(), repo.path())
         .args(["memory", "list", "--backend", "git-notes"])
         .assert()
@@ -481,5 +534,168 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
     assert!(
         spelunk_note_lines(repo.path()).is_empty(),
         "a body-secret-blocked add must also leave the note ref untouched"
+    );
+}
+
+// ── carrier scope: only add/list ride it; siblings stay fail-closed ────────────
+
+/// The ADR-068 D3 carrier is narrowed to `add`/`list`. Inside a git repo with a
+/// commit (exactly the setup where `add`/`list` DO ride the carrier) every other
+/// memory subcommand must still fail closed with the ADR-067 single-hatch
+/// message, never reach the git-notes path, and never write a note. This guards
+/// against the carrier accidentally widening its scope to non-add/list
+/// subcommands.
+#[test]
+fn non_add_list_subcommands_stay_fail_closed_inside_git_repo() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+
+    // A representative spread of the non-carrier subcommands, each needing no
+    // server: read (search, timeline) and mutate (supersede).
+    let invocations: [&[&str]; 3] = [
+        &["memory", "search", "anything"],
+        &["memory", "timeline", "anything"],
+        &["memory", "supersede", "1", "2"],
+    ];
+    for args in invocations {
+        bin(home.path(), repo.path())
+            .args(args)
+            .assert()
+            .failure()
+            // The ADR-067 single-hatch message, NOT the add/list dual-hatch: these
+            // subcommands never consult the git repo for a carrier.
+            .stderr(predicate::str::contains(NO_PROJECT_ERR))
+            .stderr(predicate::str::contains("not inside a git repo").not());
+    }
+
+    assert!(
+        spelunk_note_lines(repo.path()).is_empty(),
+        "a fail-closed non-add/list subcommand must not write any spelunk note"
+    );
+    assert!(
+        !global_memory_db(home.path()).exists(),
+        "a fail-closed subcommand must not create the machine-global store"
+    );
+}
+
+// ── case 6: post-init add writes BOTH the SQLite primary and the write-through ─
+
+/// With a local `.spelunk/` project inside a git repo, a single `add` writes the
+/// SQLite primary AND rides the universal git-notes write-through (exactly one
+/// record, no double write), and `list` reads back from SQLite. This is the
+/// unchanged post-`init` behaviour, asserted end-to-end in one flow.
+#[test]
+fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+    // A local project makes SQLite the primary (not the pre-init carrier).
+    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+
+    bin(home.path(), repo.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "decision",
+            "--title",
+            "post-init-both",
+            "--body",
+            "b",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored [decision]"));
+
+    // Primary: the local SQLite store exists (proving branch 3, not the carrier).
+    assert!(
+        repo.path().join(".spelunk").join("memory.db").exists(),
+        "post-init add must write the local SQLite primary"
+    );
+
+    // Write-through: exactly one record landed in refs/notes/spelunk (the SQLite
+    // primary write plus the write-through must not double up).
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(
+        lines.len(),
+        1,
+        "post-init add must ride the write-through exactly once; got: {lines:?}"
+    );
+    assert!(
+        lines[0].contains("post-init-both"),
+        "the write-through record must be the entry we added; got: {:?}",
+        lines[0]
+    );
+
+    // `list` (default sqlite backend) reads the entry back from SQLite.
+    bin(home.path(), repo.path())
+        .args(["memory", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("post-init-both"));
+
+    assert!(!global_memory_db(home.path()).exists());
+}
+
+// ── case 7: a failed pre-init carry is fatal (no primary to fall back on) ───────
+
+/// Pre-`init` the carrier is the SOLE writer, so a failed carry has no SQLite
+/// primary to absorb it and must surface as a non-zero exit (an `Err`), never a
+/// false "Stored". The carry is forced to fail deterministically: HEAD resolves
+/// (so `git_head_reachable` engages the carrier) but the `git notes add` the
+/// carrier runs has no usable committer identity: no local `user.*`, no
+/// system/global config, and `user.useConfigOnly` on so git cannot auto-derive a
+/// USER@host fallback (nor honour a stray `$EMAIL`). `git rev-parse HEAD` needs
+/// no identity, so the carrier still engages and the failure is in the write.
+#[test]
+fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+
+    // A commit with NO local `user.*` identity in `.git/config`: the setup `git`
+    // helper supplies identity via env for the commit only, so HEAD is resolvable
+    // but the child's `git notes add` has nothing local to use.
+    git(repo.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.path().join("f.txt"), "x\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-q", "-m", "init"]);
+
+    let mut cmd = spelunk_bin_in(home.path());
+    cmd.current_dir(repo.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("SPELUNK_SERVER_URL")
+        // Neutralize every identity source for the git subprocess spelunk spawns.
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "note",
+            "--title",
+            "carry-fails",
+            "--body",
+            "b",
+        ]);
+
+    cmd.assert()
+        .failure()
+        // No false success line, and the error names the fatal-carry context.
+        .stdout(predicate::str::contains("Stored").not())
+        .stderr(predicate::str::contains(
+            "recording memory entry to git notes",
+        ));
+
+    assert!(
+        spelunk_note_lines(repo.path()).is_empty(),
+        "a fatal failed carry must not leave a partial spelunk note"
+    );
+    assert!(
+        !global_memory_db(home.path()).exists(),
+        "a fatal failed carry must not create the machine-global store"
     );
 }
