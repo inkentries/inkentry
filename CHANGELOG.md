@@ -34,11 +34,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`memory add` and `memory list` fall back to git-notes before `init`** when
-  inside a git repository, so you can record and list decisions without running
-  `spelunk init`. Entries are stored in `refs/notes/spelunk` on the repository's
-  HEAD, giving you a persistent memory store that travels with the code—locally.
-  `memory search` remains gated to initialized projects. (ADR-068, spelunk-oss^154)
+- **`memory add` and `memory list` work before `init`** when inside a git
+  repository, so you can record and list decisions without running `spelunk init`
+  first. Pre-`init` entries ride the same git-notes write-through that already
+  runs after `init`, landing in `refs/notes/spelunk` on HEAD with an identical
+  record shape; there is no local SQLite store until you `spelunk init`. The
+  notes stay on the local machine unless you push the ref. `memory search`
+  remains gated to initialized projects. (ADR-068)
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
   (env `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_SERVER_TLS_KEY`), both-or-neither. The
   server terminates TLS itself, so a team/remote deployment is a routable

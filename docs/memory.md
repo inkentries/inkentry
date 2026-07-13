@@ -22,29 +22,44 @@ git notes --ref=spelunk list         # every commit carrying spelunk notes
 GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
 ```
 
-Memory is scoped to a local project and by default lives in `.spelunk/memory.db`.
-**Before `spelunk init`**, `memory add` and `memory list` fall back to storing entries
-in git-notes (`refs/notes/spelunk`) when inside a git repository, so you can record
-decisions without a `.spelunk/` directory. `memory search` and `context` remain
-gated to projects with `.spelunk/` (they need the index to search and embed).
+**Carrier and index.** Think of `refs/notes/spelunk` as the durable *carrier*
+that travels with the repo, and `.spelunk/memory.db` as the queryable *index*
+built over it. Every `memory add` appends its entry to the carrier through one
+write-through path; `spelunk init` hydrates the index by importing those notes,
+adding the embeddings semantic search needs. Both stores are local to the repo;
+neither leaves the machine unless you configure a team `server_url`.
 
-**Backend selection (precedence):**
-1. Explicit `--backend git-notes` → git-notes
-2. Explicit team `server_url` (in config) → remote server
-3. Local `.spelunk/memory.db` (after `spelunk init`)
-4. **Git-notes fallback (new)** — no project, but inside a git repo → `refs/notes/spelunk`
-5. Neither project nor git repo → error: *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
+**Before `spelunk init`**, `memory add` and `memory list` still work when you are
+inside a git repository: with no `.spelunk/` project, `add` rides the same
+write-through carrier (there is no SQLite primary yet) and `list` reads entries
+back from `refs/notes/spelunk`. Because it is the same write path pre- and
+post-`init`, every note carries an identical record shape. `memory search` and
+`context` remain gated to projects with `.spelunk/` (they need the index to
+search and embed).
 
-**Known limitation:** git-notes writes are not atomic across concurrent `add` commands
-to the same commit (the read-modify-write can lose entries if agents write simultaneously).
-This is acceptable for solo pre-init use; multi-agent workflows should `spelunk init` to
-use SQLite. Also note: git-notes under `refs/notes/spelunk` do **not** push or fetch by
-default — see [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for
-cross-machine sync options and [git notes](https://git-scm.com/docs/git-notes) documentation.
+**Store priority** (unchanged from [ADR-004](adr/004-unified-memory-storage.md)):
 
-See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design and
-[ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the git-notes
-fallback rationale. An explicit `--db <path>` still overrides all backends.
+1. Explicit `--db <path>` (always wins)
+2. Explicit `--backend git-notes` (git notes is the primary store)
+3. Explicit team `server_url` in config (remote server)
+4. A local `.spelunk/memory.db` (after `spelunk init`)
+5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
+6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
+
+**Known limitation:** git-notes writes are not atomic across concurrent `add`
+commands to the same commit (the read-modify-write can lose an entry if two
+agents write simultaneously). This is acceptable for the solo, pre-`init`
+quick-fix case; multi-agent workflows should `spelunk init` and use SQLite. Note
+also that notes under `refs/notes/spelunk` are **not** pushed or fetched by
+default, so pre-`init` entries stay on the machine that wrote them until you
+configure a refspec or push the ref. See
+[ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the
+cross-machine sync options and the [git notes](https://git-scm.com/docs/git-notes)
+documentation.
+
+See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design
+and [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the
+git-notes carrier rationale.
 
 ## Why memory?
 

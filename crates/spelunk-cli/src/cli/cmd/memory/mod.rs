@@ -372,26 +372,18 @@ mod watch;
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
-    let mut be = backend_override(&args.backend);
-    // ADR-067: fail closed when there is no local `.spelunk/` project instead of
-    // silently using the global store. `--db` is an explicit override, exempt.
-    // ADR-068 D3 narrows this for `add`/`list` only: with no project DB but inside
-    // a git repo they fall back to git-notes; `resolve_add_list_store` may flip
-    // `be` to git-notes and returns a placeholder path the callers never open.
-    let mem_path = if matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_)) {
-        resolve_add_list_store(&args, &cfg, &mut be).await?
-    } else {
-        match args.db.clone() {
-            Some(p) => p,
-            None => {
-                crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db")
-            }
-        }
-    };
+    let be = backend_override(&args.backend);
+    // ADR-067 fails closed when there is no local `.spelunk/` project rather than
+    // silently using the machine-global store. ADR-068 D3 narrows that for
+    // `add`/`list` only: with no project DB but CWD inside a git repo they ride
+    // the git-notes carrier instead of failing. `pre_init_notes` signals that
+    // carrier mode downstream (add skips the absent SQLite primary; list reads
+    // from `refs/notes/spelunk`). Store priority is otherwise unchanged (ADR-004).
+    let (mem_path, pre_init_notes) = resolve_memory_store(&args, &cfg, be).await?;
     match args.command {
-        MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg, be).await,
-        MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be).await,
+        MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg, be).await,
         MemoryCommand::Harvest(a) => harvest::memory_harvest(a, &mem_path, &cfg, be).await,
         MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg, be).await,
@@ -417,38 +409,55 @@ fn backend_override(s: &str) -> Option<&'static str> {
     }
 }
 
-/// Resolve the memory store path for `memory add` / `list` (ADR-068 D3).
+/// Resolve `(mem_path, pre_init_notes)` for the dispatched memory subcommand.
 ///
-/// Precedence: explicit `--backend git-notes` › explicit `--db` › a resolvable
-/// local `.spelunk/` DB › a CloudFirst team `server_url` › **git-notes on the
-/// nearest repo when CWD is inside a git repo** › fail. The git-notes fallback
-/// flips `be` to `Some("git-notes")` so downstream takes the store-of-record
-/// path (no SQLite write-through, no global-store reads); in that mode the
-/// returned path is a placeholder the callers never open.
-async fn resolve_add_list_store(
+/// Store priority is ADR-004's, unchanged: `--db` › a resolvable local
+/// `.spelunk/` DB › (for `add`/`list` without a local project) an explicit
+/// CloudFirst team `server_url` › the git-notes carrier when CWD is inside a git
+/// repo › fail. `open_memory_backend` still makes the final local-vs-remote and
+/// `--backend git-notes` choice from `mem_path`/`cfg`; nothing here reshapes it.
+///
+/// The one behavioural change (ADR-068 D3) is that `add`/`list` do not fail
+/// closed pre-`init`: with no project DB but a git repo, they ride the universal
+/// git-notes write-through instead. `pre_init_notes` is `true` only in that
+/// carrier case (no SQLite primary). Explicit `--backend git-notes` keeps git
+/// notes as the *primary* store, so it is not carrier mode; its own `add`
+/// writes the record and the write-through is suppressed to avoid a double
+/// write. Every other subcommand keeps ADR-067's fail-closed behaviour.
+async fn resolve_memory_store(
     args: &MemoryArgs,
     cfg: &crate::config::Config,
-    be: &mut Option<&'static str>,
-) -> Result<PathBuf> {
+    be: Option<&'static str>,
+) -> Result<(PathBuf, bool)> {
     use crate::config::SyncMode;
 
-    if *be == Some("git-notes") {
-        return Ok(cfg.db_path.with_file_name("memory.db"));
-    }
+    // `--db` is an explicit override; always honored.
     if let Some(p) = args.db.clone() {
-        return Ok(p);
+        return Ok((p, false));
     }
-    if let Ok(p) = crate::config::require_project_db(&cfg.db_path, false) {
-        return Ok(p.with_file_name("memory.db"));
+    // A resolvable local `.spelunk/` DB is the normal case.
+    match crate::config::require_project_db(&cfg.db_path, false) {
+        Ok(p) => return Ok((p.with_file_name("memory.db"), false)),
+        Err(e) => {
+            // Only `add`/`list` narrow the fail-closed bail (ADR-068 D3).
+            if !matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_)) {
+                return Err(e);
+            }
+        }
     }
-    // No local project. A CloudFirst team server owns the store (ADR-004), so it
-    // wins over the git-notes fallback; let `open_memory_backend` route remote.
+    // No local project, running `add`/`list`. An explicit CloudFirst team
+    // `server_url` still owns the store and wins over the carrier;
+    // `open_memory_backend` routes remote from this placeholder path.
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
-        return Ok(cfg.db_path.with_file_name("memory.db"));
+        return Ok((cfg.db_path.with_file_name("memory.db"), false));
     }
+    // Inside a git repo: ride the git-notes carrier rather than failing closed.
+    // The returned path is a placeholder the pre-init callers never open.
     if git_head_reachable().await {
-        *be = Some("git-notes");
-        return Ok(cfg.db_path.with_file_name("memory.db"));
+        return Ok((
+            cfg.db_path.with_file_name("memory.db"),
+            be != Some("git-notes"),
+        ));
     }
     anyhow::bail!(
         "no spelunk project here, and not inside a git repo. \

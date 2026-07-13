@@ -1,16 +1,19 @@
-//! ADR-068 D3: git-notes memory fallback for `memory add`/`list` before `init`.
+//! ADR-068 D3: git-notes memory carrier for `memory add`/`list` before `init`.
 //!
-//! Precedence for `memory add`/`list` store resolution:
-//!   1. `--backend git-notes`
+//! Store priority for `memory add`/`list` (ADR-004, unchanged) resolves in order:
+//!   1. `--backend git-notes` → git notes as the *primary* store
 //!   2. explicit team `server_url` (CloudFirst → remote)
 //!   3. a resolvable local `.spelunk/` DB (sqlite)
-//!   4. NEW: no DB but inside a git repo → `GitNotesBackend` on the nearest repo
-//!      (ref `refs/notes/spelunk`)
+//!   4. no DB but inside a git repo → the universal git-notes write-through is
+//!      the sole writer (ref `refs/notes/spelunk`); there is no SQLite primary
 //!   5. neither → fail with the dual-escape-hatch message.
 //!
-//! These tests cover branches 1, 3, 4, and 5, the no-double-write invariant, and
-//! the secret-scan gate on the git-notes path. The complementary refuse-only
-//! tests (case 5 from a bare temp dir) live in `fail_closed_no_project.rs`.
+//! Pre-`init` (case 4) rides the same `append_to_git_notes` write-through that
+//! already runs post-`init`, so every note carries an identical record shape.
+//! These tests cover cases 1, 3, 4, and 5, the single-record invariant, record
+//! shape parity between the pre-init and post-init write-through forms, and the
+//! secret-scan gate on the git-notes path. The complementary refuse-only tests
+//! (case 5 from a bare temp dir) live in `fail_closed_no_project.rs`.
 
 mod plumbing_helpers;
 use plumbing_helpers::spelunk_bin_in;
@@ -150,17 +153,17 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
     );
 }
 
-// ── no double-write: exactly one record per single `add` ───────────────────────
+// ── single record per single `add`: the carrier is the sole writer ─────────────
 
 #[test]
-fn single_add_writes_exactly_one_note_record_no_write_through_dup() {
+fn single_add_writes_exactly_one_note_record() {
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
 
-    // Fallback path is the store of record, so the legacy SQLite write-through is
-    // skipped: a single `add` must leave exactly one JSON record in the note, not
-    // two (backend append + a redundant write-through).
+    // Pre-init there is no SQLite primary: the write-through carrier is the sole
+    // writer, so a single `add` must leave exactly one JSON record in the note,
+    // not two (no separate primary append + write-through).
     bin(home.path(), repo.path())
         .args([
             "memory",
@@ -185,6 +188,122 @@ fn single_add_writes_exactly_one_note_record_no_write_through_dup() {
         lines[0].contains("\"schema_version\":1") && lines[0].contains("one-and-only"),
         "the single record must be the well-formed entry we added; got: {:?}",
         lines[0]
+    );
+}
+
+// ── record-shape parity: pre-init carrier == post-init write-through form ──────
+
+/// Top-level object keys of a one-line JSON object, sorted. A minimal
+/// depth-aware scan (integration tests can't reach the crate's `serde_json`):
+/// only quoted strings at brace-depth 1 that are immediately followed by `:`
+/// count, so nested-array elements and string *values* are ignored.
+fn json_top_level_keys(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut keys = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_str {
+            if escaped {
+                cur.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+                let mut j = i + 1;
+                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                    j += 1;
+                }
+                if depth == 1 && j < bytes.len() && bytes[j] as char == ':' {
+                    keys.push(std::mem::take(&mut cur));
+                } else {
+                    cur.clear();
+                }
+            } else {
+                cur.push(c);
+            }
+        } else {
+            match c {
+                '"' => {
+                    in_str = true;
+                    cur.clear();
+                }
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    keys.sort();
+    keys
+}
+
+/// The single note record a pre-init `add` writes (via the carrier) must have
+/// the exact same field set as the record a post-init `add` writes (via the
+/// SQLite-primary write-through). Both flow through one `append_to_git_notes`
+/// path, so any divergence in the pre-init record shape is a regression.
+#[test]
+fn pre_init_and_post_init_records_have_identical_shape() {
+    let home = TempDir::new().unwrap();
+
+    // Pre-init: no `.spelunk/`, inside a git repo → carrier writes the record.
+    let pre = TempDir::new().unwrap();
+    init_git_repo_with_commit(pre.path());
+    bin(home.path(), pre.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "note",
+            "--title",
+            "shape-pre",
+            "--body",
+            "b",
+        ])
+        .assert()
+        .success();
+    let pre_lines = spelunk_note_lines(pre.path());
+    assert_eq!(pre_lines.len(), 1, "pre-init add writes one record");
+
+    // Post-init: a local `.spelunk/` makes SQLite the primary; the same
+    // write-through then appends the note. Creating the dir is enough for
+    // `require_project_db` to resolve the project (matches the precedence test).
+    let post = TempDir::new().unwrap();
+    init_git_repo_with_commit(post.path());
+    std::fs::create_dir_all(post.path().join(".spelunk")).unwrap();
+    bin(home.path(), post.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "note",
+            "--title",
+            "shape-post",
+            "--body",
+            "b",
+        ])
+        .assert()
+        .success();
+    let post_lines = spelunk_note_lines(post.path());
+    assert_eq!(
+        post_lines.len(),
+        1,
+        "post-init write-through writes one record"
+    );
+
+    assert_eq!(
+        json_top_level_keys(&pre_lines[0]),
+        json_top_level_keys(&post_lines[0]),
+        "pre-init carrier and post-init write-through records must share one shape\n\
+         pre:  {}\npost: {}",
+        pre_lines[0],
+        post_lines[0]
     );
 }
 

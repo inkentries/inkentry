@@ -48,8 +48,8 @@ fn global_index_db(home: &Path) -> std::path::PathBuf {
 // ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
 
 // A bare `TempDir` is not inside a git repo (it lives under the system temp
-// dir, not a checkout), so `memory add`/`list` hit ADR-068 D3 case 5 — neither
-// a project DB nor a usable git repo — and refuse with the dual-hatch message
+// dir, not a checkout), so `memory add`/`list` hit ADR-068 D3 case 5 (neither
+// a project DB nor a usable git repo) and refuse with the dual-hatch message
 // rather than falling back to git-notes.
 #[test]
 fn memory_add_refuses_without_project_or_git_repo() {

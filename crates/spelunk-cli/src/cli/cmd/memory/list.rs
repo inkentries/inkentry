@@ -9,19 +9,25 @@ pub(super) async fn memory_list(
     mem_path: &std::path::Path,
     cfg: &Config,
     backend_override: Option<&str>,
+    pre_init_notes: bool,
 ) -> Result<()> {
-    // git-notes is a self-contained store of record (explicit `--backend
-    // git-notes` or the ADR-068 D3 pre-init fallback): `mem_path` is a
-    // placeholder, so skip the SQLite-oriented nudge and cross-project pass,
-    // which would otherwise open the local/global SQLite store.
-    let git_notes = backend_override == Some("git-notes");
+    // Read from git notes when it's the explicit backend (`--backend git-notes`)
+    // or the ADR-068 D3 pre-init carrier: `mem_path` is a placeholder in both, so
+    // skip the SQLite-oriented nudge and cross-project pass (they'd open the
+    // local/global SQLite store) and route the read to `refs/notes/spelunk`.
+    let git_notes = pre_init_notes || backend_override == Some("git-notes");
+    let effective_override = if git_notes {
+        Some("git-notes")
+    } else {
+        backend_override
+    };
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     if !git_notes {
         super::reconcile::maybe_emit_nudge(mem_path, cfg);
     }
 
-    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
+    let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let mut notes = if let Some(ref sha_prefix) = args.source_ref {
         backend
