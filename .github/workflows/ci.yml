@@ -124,6 +124,18 @@ jobs:
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}
 
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    # The image compiles the release server (candle embedder) from scratch with
+    # no cargo cache, so allow a generous ceiling.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t spelunk-server:ci .
+
   openapi-snapshot:
     name: OpenAPI snapshot check
     runs-on: ubuntu-latest

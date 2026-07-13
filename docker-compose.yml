@@ -27,6 +27,8 @@ services:
   spelunk-server:
     build: .
     image: spelunk-server:latest
+    # Build locally; never fall back to a registry pull (the tag isn't published).
+    pull_policy: build
     restart: unless-stopped
     volumes:
       - spelunk-data:/data
@@ -45,6 +47,7 @@ services:
   team-server:
     build: .
     image: spelunk-server:latest
+    pull_policy: build
     profiles: ["team-server"]
     restart: unless-stopped
     command: ["--host", "0.0.0.0", "--port", "7777"]
@@ -58,8 +61,11 @@ services:
       - ${SPELUNK_TLS_CERT:-/etc/spelunk/tls-cert}:/tls/cert:ro
       - ${SPELUNK_TLS_KEY:-/etc/spelunk/tls-key}:/tls/key:ro
     environment:
-      # A routable bind is refused without a key; set a real one.
-      SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:?set SPELUNK_SERVER_KEY for a team server}
+      # A routable bind is refused without a key; set a real one. Left unset by
+      # default (not `:?`) so a bare `docker compose up` — which parses every
+      # service before profile filtering — doesn't abort on this profiled one.
+      # The binary still refuses a non-loopback bind without a key (ADR-066).
+      SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
       SPELUNK_SERVER_TLS_CERT: /tls/cert
       SPELUNK_SERVER_TLS_KEY: /tls/key
     # No container healthcheck here: the binary's built-in `--health-check` probe

@@ -40,25 +40,48 @@ FROM rust:1.97.0-slim AS builder
 
 WORKDIR /build
 
-# Cache dependency compilation separately from source changes.
-COPY Cargo.toml Cargo.lock ./
-COPY src/lib.rs src/lib.rs
-# Placeholder main.rs so the dependency step compiles.
-RUN mkdir -p src/bin && \
-    echo 'fn main(){}' > src/main.rs && \
-    echo 'fn main(){}' > src/bin/spelunk_server.rs && \
-    cargo build --release --bin spelunk-server 2>/dev/null || true
+# System build deps the slim image lacks: a C/C++ toolchain for tokenizers'
+# esaxx-rs build script (embed-native default), and libdbus for libdbus-sys
+# (keyring's sync-secret-service backend, linked transitively on Linux).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libdbus-1-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Now copy the real source and build properly.
+# Cache dependency compilation separately from source changes. This is a
+# virtual Cargo workspace (no root package), so prime the cache from the
+# workspace manifests plus a placeholder source per member crate; the heavy
+# third-party deps (candle, etc.) then land in a layer that only busts when a
+# Cargo.toml / Cargo.lock changes. Every member manifest must be present and
+# its declared target source must exist, or cargo refuses to load the
+# workspace — even members the server bin doesn't depend on.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/spelunk-core/Cargo.toml   crates/spelunk-core/Cargo.toml
+COPY crates/spelunk-cli/Cargo.toml    crates/spelunk-cli/Cargo.toml
+COPY crates/spelunk-embed/Cargo.toml  crates/spelunk-embed/Cargo.toml
+COPY crates/spelunk-server/Cargo.toml crates/spelunk-server/Cargo.toml
+RUN mkdir -p crates/spelunk-core/src crates/spelunk-cli/src \
+             crates/spelunk-embed/src crates/spelunk-server/src && \
+    : > crates/spelunk-core/src/lib.rs && \
+    : > crates/spelunk-embed/src/lib.rs && \
+    : > crates/spelunk-server/src/lib.rs && \
+    echo 'fn main(){}' > crates/spelunk-cli/src/main.rs && \
+    echo 'fn main(){}' > crates/spelunk-server/src/main.rs && \
+    cargo build --release --bin spelunk-server && \
+    rm -rf crates/*/src
+
+# Now copy the real source and build properly. COPY refreshes mtimes so the
+# workspace crates recompile while the cached third-party deps are reused.
 COPY . .
-RUN touch src/bin/spelunk_server.rs && \
-    cargo build --release --bin spelunk-server
+RUN cargo build --release --bin spelunk-server
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:trixie-slim
 
+# libdbus-1-3: the binary dynamically links libdbus-1 (keyring backend), so the
+# shared lib must be present at load time even though the server uses file/env
+# secret storage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -r -s /bin/false spelunk
