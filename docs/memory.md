@@ -22,6 +22,46 @@ git notes --ref=spelunk list         # every commit carrying spelunk notes
 GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
 ```
 
+**Carrier and index.** Think of `refs/notes/spelunk` as the durable *carrier*
+for memory and `.spelunk/memory.db` as the queryable *index* built over it. Every
+`memory add` appends its entry to the carrier through one write-through path;
+`spelunk init` hydrates the index by importing those notes, adding the embeddings
+semantic search needs. Both live in the repo, and the store of record stays local
+unless you configure a team `server_url`. The carrier reaches teammates only once
+the notes ref is pushed and fetched (see [Sharing memory across clones via
+git-notes](#sharing-memory-across-clones-via-git-notes) below).
+
+**Before `spelunk init`**, `memory add` and `memory list` still work when you are
+inside a git repository: with no `.spelunk/` project, `add` rides the same
+write-through carrier (there is no SQLite primary yet) and `list` reads entries
+back from `refs/notes/spelunk`. Because it is the same write path pre- and
+post-`init`, every note carries an identical record shape. `memory search` and
+`context` remain gated to projects with `.spelunk/` (they need the index to
+search and embed).
+
+**Store priority** (unchanged from [ADR-004](adr/004-unified-memory-storage.md)):
+
+1. Explicit `--db <path>` (always wins)
+2. Explicit `--backend git-notes` (git notes is the primary store)
+3. Explicit team `server_url` in config (remote server)
+4. A local `.spelunk/memory.db` (after `spelunk init`)
+5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
+6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
+
+**Known limitation:** git-notes writes are not atomic across concurrent `add`
+commands to the same commit (the read-modify-write can lose an entry if two
+agents write simultaneously). This is acceptable for the solo, pre-`init`
+quick-fix case; multi-agent workflows should `spelunk init` and use SQLite. Note
+also that notes under `refs/notes/spelunk` are **not** pushed or fetched by
+default, so pre-`init` entries stay on the machine that wrote them until the
+notes ref is pushed (see [Sharing memory across clones via
+git-notes](#sharing-memory-across-clones-via-git-notes) below, and the
+[git notes](https://git-scm.com/docs/git-notes) documentation).
+
+See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design
+and [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the
+git-notes carrier rationale.
+
 ### Sharing memory across clones via git-notes
 
 When you run `spelunk init` inside a git repository with an `origin` remote,
@@ -64,13 +104,6 @@ Memory:  no 'origin' remote — notes refspec not configured
 ```
 
 Add the refspec when an `origin` is created, then push the notes as above.
-
-Memory is scoped to a local project. Run `spelunk init` once per repository to
-create its `.spelunk/` store. In a directory with no local `.spelunk/`,
-`memory add/list/search` and `context` fail closed with a `no spelunk project
-here` error rather than reading or writing a machine-global store (see
-[ADR-067](adr/067-fail-closed-no-local-project.md)). An explicit `--db <path>`
-still overrides this.
 
 ## Why memory?
 
