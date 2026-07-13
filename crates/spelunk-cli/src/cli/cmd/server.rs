@@ -1398,8 +1398,14 @@ mod tests {
 
     /// A second `acquire_start_lock` on the same state dir must fail while the
     /// first guard is still held (serialises concurrent `server start`).
+    ///
+    /// `#[serial(server_start_lock)]`: this test asserts on `flock` release
+    /// timing, which a concurrent `fork()+exec()` in another test can delay (a
+    /// forked child transiently inherits the lock fd until it execs). Grouped
+    /// with the process-spawning tests below so they never overlap.
     #[cfg(unix)]
     #[test]
+    #[serial(server_start_lock)]
     fn start_lock_is_exclusive_while_held() {
         let tmp = TempDir::new().unwrap();
         let first = acquire_start_lock(tmp.path()).expect("first lock acquires");
@@ -1480,6 +1486,289 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&outside_target).unwrap(),
             "do not overwrite me"
+        );
+    }
+
+    // ── same_path (different-DB start guard predicate) ───────────────────────
+    //
+    // `cmd_start` refuses to start a second server against a *different* DB by
+    // comparing the recorded db-path against the requested one via `same_path`.
+    // The full decision runs against the real home state dir + a live daemon
+    // (an e2e-only path), so these cover the load-bearing predicate directly.
+
+    #[test]
+    fn same_path_true_for_identical() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("server.db");
+        std::fs::write(&p, b"x").unwrap();
+        assert!(same_path(&p, &p));
+    }
+
+    #[test]
+    fn same_path_false_for_distinct() {
+        let tmp = TempDir::new().unwrap();
+        // Non-existent distinct paths fall back to raw comparison → not equal.
+        assert!(!same_path(
+            &tmp.path().join("a.db"),
+            &tmp.path().join("b.db")
+        ));
+    }
+
+    /// A symlink and its target name the same DB — the guard must treat a
+    /// `start` against either as the same server, not a different DB.
+    #[cfg(unix)]
+    #[test]
+    fn same_path_true_across_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("real.db");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("link.db");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(
+            same_path(&target, &link),
+            "a symlink and its target are the same DB"
+        );
+    }
+
+    // ── ensure_port_available_for_start (no silent port drift) ───────────────
+
+    /// A free port passes — `start` binds the exact requested port.
+    #[tokio::test]
+    async fn ensure_port_available_for_start_ok_when_free() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(ensure_port_available_for_start(port).await.is_ok());
+    }
+
+    /// A port held by an unrelated process makes `start` fail loudly (naming
+    /// the port) instead of drifting to a different one.
+    #[tokio::test]
+    async fn ensure_port_available_for_start_fails_when_port_held() {
+        // Hold the listener for the whole call so the bounded retry never frees.
+        let _held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = _held.local_addr().unwrap().port();
+        let err = ensure_port_available_for_start(port)
+            .await
+            .expect_err("must fail while the port is held");
+        assert!(
+            err.to_string().contains(&format!("port {port}")),
+            "error should name the occupied port, got: {err}"
+        );
+    }
+
+    // ── Live-process helpers: identity + termination ─────────────────────────
+    //
+    // These spawn a real short-lived process to exercise the Unix signal /
+    // identity paths that only a real PID can drive. Every spawned process is
+    // reaped: a background thread `wait()`s it (so a killed process can't linger
+    // as a zombie — a zombie still answers `kill(pid, 0)` and would fool
+    // `pid_is_alive`), and `Drop` SIGKILLs any still-live helper.
+
+    #[cfg(unix)]
+    struct DummyProc {
+        pid: u32,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        reaper: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl DummyProc {
+        /// Spawn `cmd` detached from stdio and start reaping it immediately.
+        fn spawn(cmd: &mut std::process::Command) -> Self {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let mut child = cmd
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn dummy process");
+            let pid = child.id();
+            let done = Arc::new(AtomicBool::new(false));
+            let done_reaper = Arc::clone(&done);
+            let reaper = std::thread::spawn(move || {
+                let _ = child.wait();
+                done_reaper.store(true, Ordering::SeqCst);
+            });
+            DummyProc {
+                pid,
+                done,
+                reaper: Some(reaper),
+            }
+        }
+
+        /// A `sleep`-style process that responds normally to SIGTERM.
+        fn graceful() -> Self {
+            DummyProc::spawn(std::process::Command::new("sleep").arg("30"))
+        }
+
+        /// A process that ignores SIGTERM from birth (only SIGKILL reaps it) —
+        /// a wedged daemon. `pre_exec` sets SIGTERM to `SIG_IGN`, which is
+        /// preserved across the `exec` into `sleep` (POSIX), so there is no
+        /// trap-install race and no shell child to orphan on SIGKILL.
+        fn ignores_sigterm() -> Self {
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("30");
+            // SAFETY: the closure only calls `signal`, which is async-signal-safe.
+            unsafe {
+                cmd.pre_exec(|| {
+                    unsafe extern "C" {
+                        fn signal(signum: i32, handler: usize) -> usize;
+                    }
+                    const SIGTERM: i32 = 15;
+                    const SIG_IGN: usize = 1;
+                    signal(SIGTERM, SIG_IGN);
+                    Ok(())
+                });
+            }
+            DummyProc::spawn(&mut cmd)
+        }
+
+        /// A live process whose command line contains `spelunk-server`, so
+        /// `process_matches_server` recognises it as ours.
+        fn named_server() -> (Self, TempDir) {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = TempDir::new().unwrap();
+            let bin = dir.path().join("spelunk-server");
+            std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (DummyProc::spawn(&mut std::process::Command::new(&bin)), dir)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DummyProc {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering;
+            // SIGKILL only if it hasn't already exited, to avoid signalling a
+            // reused PID after the reaper collected ours.
+            if !self.done.load(Ordering::SeqCst) {
+                let _ = force_kill(self.pid);
+            }
+            if let Some(h) = self.reaper.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    // ── process_matches_server (hung-server identity signal) ─────────────────
+
+    #[cfg(unix)]
+    #[test]
+    #[serial(server_start_lock)]
+    fn process_matches_server_true_for_named_process() {
+        let (proc, _dir) = DummyProc::named_server();
+        assert!(
+            process_matches_server(proc.pid),
+            "a process whose command line contains 'spelunk-server' must match"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial(server_start_lock)]
+    fn process_matches_server_false_for_unrelated_process() {
+        let proc = DummyProc::graceful();
+        assert!(
+            !process_matches_server(proc.pid),
+            "an unrelated process must not be mistaken for a spelunk-server"
+        );
+    }
+
+    // ── classify_running_server: HungOurs (reclaimable wedged daemon) ────────
+
+    /// A live `spelunk-server` process with a silent `/v1/health` (no recorded
+    /// port) is our wedged daemon — classified `HungOurs`, not `Foreign`, so
+    /// `stop`/`start` reclaim it instead of refusing. This is the core of the
+    /// fix: the old health-only check gave up on a hung server.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(server_start_lock)]
+    async fn classify_hung_ours_when_process_matches_but_health_silent() {
+        let (proc, _dir) = DummyProc::named_server();
+        let tmp = TempDir::new().unwrap(); // no server.port → health probe skipped
+        let class = classify_running_server(tmp.path(), proc.pid).await;
+        assert!(
+            matches!(class, RunningServer::HungOurs),
+            "expected HungOurs for a live spelunk-server process with silent health"
+        );
+    }
+
+    // ── terminate_and_wait / force_kill / wait_for_exit ──────────────────────
+
+    /// `wait_for_exit` must NOT report a still-running process as gone — the
+    /// guard that keeps `terminate_and_wait` from claiming a stop that didn't
+    /// happen.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(server_start_lock)]
+    async fn wait_for_exit_false_for_live_process() {
+        let proc = DummyProc::graceful();
+        assert!(
+            !wait_for_exit(proc.pid, Duration::from_millis(300)).await,
+            "a live process must not be reported as exited"
+        );
+    }
+
+    /// Graceful path: a SIGTERM-responsive process is terminated and only
+    /// reported stopped once the PID is confirmed gone.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(server_start_lock)]
+    async fn terminate_and_wait_stops_graceful_process() {
+        let proc = DummyProc::graceful();
+        assert!(pid_is_alive(proc.pid));
+        let stopped = terminate_and_wait(proc.pid).await.expect("terminate");
+        assert!(stopped, "graceful process should be reported stopped");
+        assert!(!pid_is_alive(proc.pid), "process must actually be gone");
+    }
+
+    /// Escalation seam: SIGKILL reaps a process that ignores SIGTERM, and
+    /// `wait_for_exit` confirms it is gone — the mechanism `terminate_and_wait`
+    /// falls back to for a wedged daemon.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(server_start_lock)]
+    async fn force_kill_reaps_sigterm_ignoring_process() {
+        let proc = DummyProc::ignores_sigterm();
+        assert!(pid_is_alive(proc.pid));
+        // SIGTERM alone leaves it running (trap ignores it).
+        terminate_process(proc.pid).expect("SIGTERM");
+        assert!(
+            !wait_for_exit(proc.pid, Duration::from_millis(400)).await,
+            "SIGTERM-ignoring process should survive SIGTERM"
+        );
+        // SIGKILL cannot be trapped; it must go.
+        force_kill(proc.pid).expect("SIGKILL");
+        assert!(
+            wait_for_exit(proc.pid, FORCE_KILL_TIMEOUT).await,
+            "SIGKILL must reap the process"
+        );
+    }
+
+    /// Integrated wedged-stop: `terminate_and_wait` on a daemon that ignores
+    /// SIGTERM escalates to SIGKILL and reports success only once the PID is
+    /// gone. Slow (spans the graceful-stop timeout) but captures the exact
+    /// behaviour the fix is about — previously only exercised by hand.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(server_start_lock)]
+    async fn terminate_and_wait_escalates_when_sigterm_ignored() {
+        let proc = DummyProc::ignores_sigterm();
+        assert!(pid_is_alive(proc.pid));
+        let stopped = terminate_and_wait(proc.pid)
+            .await
+            .expect("terminate should not error");
+        assert!(
+            stopped,
+            "a SIGTERM-ignoring daemon must still be stopped via SIGKILL"
+        );
+        assert!(
+            !pid_is_alive(proc.pid),
+            "success must mean the PID is actually gone"
         );
     }
 }
