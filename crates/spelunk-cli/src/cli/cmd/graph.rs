@@ -144,11 +144,18 @@ fn graph_live(symbol: &str, format: &str, kind_filter: &Option<String>, root: &P
     }
 
     if edges.is_empty() {
-        // Disambiguate a true leaf/typo (source present) from an empty tree
-        // (e.g. an umbrella repo with uninitialized submodules). The live scan
-        // never suggests `init`.
+        // Disambiguate a leaf/no-call symbol (source present) from an empty tree
+        // (e.g. an umbrella repo with uninitialized submodules). The empty-tree
+        // branch never suggests `init`; only the source-present branch does, since
+        // the live scan is structurally call-syntax-only and an empty result there
+        // means "no bare calls", not "unused".
         if crate::search::live::has_scannable_source(root) {
-            println!("No callers found for '{symbol}' (live scan).");
+            println!(
+                "No call-site invocations of '{symbol}' found (live structural scan matches '{symbol}(...)' calls only)."
+            );
+            println!(
+                "Class, constant, association, and receiver-method references never take that form. Run 'spelunk init' to build an index with imports/extends/implements plus call edges that surface them."
+            );
         } else {
             println!(
                 "No scannable source files under this directory (live scan). Check you're in a populated subdirectory, or that git submodules are initialized."

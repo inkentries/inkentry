@@ -731,25 +731,47 @@ fn graph_empty_dir_reports_no_scannable_source_hint() {
         .success()
         .stdout(predicate::str::contains("No scannable source files"))
         .stdout(predicate::str::contains("submodules are initialized"))
-        .stdout(predicate::str::contains("spelunk init").not());
+        .stdout(predicate::str::contains("spelunk init").not())
+        // The source-present call-scan wording must not leak into the empty-tree branch.
+        .stdout(predicate::str::contains("No call-site invocations").not());
 }
 
 #[test]
 fn graph_populated_dir_no_match_reports_live_scan() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    // Scannable source exists, but nothing calls `helper` — a true leaf/typo.
-    std::fs::write(proj.path().join("lib.rs"), "fn helper() {}\n").unwrap();
+    // Scannable source exists, but `BillingEntity` is only referenced as a class,
+    // never invoked as a bare `BillingEntity(...)` call. The live structural scan
+    // is call-syntax-only, so it finds nothing even though the symbol is heavily
+    // used, not unused. The message must say so and point at the full index.
+    std::fs::write(
+        proj.path().join("model.rb"),
+        "class BillingEntity\nend\nclass Invoice < BillingEntity\nend\n",
+    )
+    .unwrap();
 
-    bin(home.path(), proj.path())
-        .args(["graph", "helper"])
+    let assert = bin(home.path(), proj.path())
+        .args(["graph", "BillingEntity"])
         .assert()
         .success()
+        // New wording: scope the empty result to call-site syntax, not "unused".
         .stdout(predicate::str::contains(
-            "No callers found for 'helper' (live scan).",
+            "No call-site invocations of 'BillingEntity' found",
         ))
-        .stdout(predicate::str::contains("spelunk init").not())
+        .stdout(predicate::str::contains("calls only"))
+        // Source is present, so the full-index hint is appended.
+        .stdout(predicate::str::contains("spelunk init"))
+        .stdout(predicate::str::contains("imports/extends/implements"))
+        // The old misleading "No callers found ... (live scan)" wording is gone.
+        .stdout(predicate::str::contains("No callers found").not())
         .stdout(predicate::str::contains("No scannable source files").not());
+
+    // No em-dash in any user-facing line (reads as an AI-tell in public copy).
+    let out = assert.get_output();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains('\u{2014}'),
+        "graph live empty message must not contain an em-dash"
+    );
 }
 
 #[test]
