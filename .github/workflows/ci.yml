@@ -136,6 +136,14 @@ jobs:
       - name: Build image
         run: docker build -t spelunk-server:ci .
 
+      # `docker build` never runs the binary, so a runtime stage missing a
+      # dynamically-linked shared lib (e.g. libdbus-1-3) still builds green and
+      # only fails at `docker run`. `--version` exits 0 without binding a port,
+      # but the dynamic linker still resolves every NEEDED lib at load, so this
+      # guards the runtime image's shared-lib set.
+      - name: Smoke-run image
+        run: docker run --rm spelunk-server:ci --version
+
   openapi-snapshot:
     name: OpenAPI snapshot check
     runs-on: ubuntu-latest
