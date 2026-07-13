@@ -143,6 +143,12 @@ fn init_no_origin_prints_hint_and_succeeds() {
         )),
         "no-origin init should print the exact refspec hint, got:\n{stdout}"
     );
+    // The push hint frames the notes push as per-change, not one-time: each
+    // memory add/remove makes a new notes commit that must be pushed to travel.
+    assert!(
+        stdout.contains("push notes after each memory change: git push origin refs/notes/spelunk"),
+        "no-origin init should print the per-change notes push hint, got:\n{stdout}"
+    );
     // And it must not have invented an `origin` remote.
     assert!(
         !git_out(tmp.path(), &["remote", "get-url", "origin"])

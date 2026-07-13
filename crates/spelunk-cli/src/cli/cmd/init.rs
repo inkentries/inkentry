@@ -237,10 +237,11 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
 /// Push refspec is deliberately NOT set: any `remote.origin.push` value
 /// overrides git's default branch push, so a normal `git push` would stop
 /// pushing the current branch. We keep the branch-push default intact and
-/// surface the one-time manual notes push instead.
+/// surface the manual notes push (needed after each memory change) instead.
 fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
     const FETCH_REFSPEC: &str = "+refs/notes/spelunk:refs/notes/spelunk";
-    const PUSH_HINT: &str = "notes push (one-time): git push origin refs/notes/spelunk";
+    const PUSH_HINT: &str =
+        "push notes after each memory change: git push origin refs/notes/spelunk";
 
     let git = |args: &[&str]| {
         std::process::Command::new("git")

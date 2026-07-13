@@ -37,8 +37,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk init` now configures the `origin` fetch refspec for `refs/notes/spelunk`**,
   so project memory notes travel automatically on `git fetch`. When init detects
   an `origin` remote, it adds `+refs/notes/spelunk:refs/notes/spelunk` to the
-  fetch config (idempotently) and prints a one-time push command so users can
-  publish their memory to the remote. Teammates then run `spelunk init` in their
+  fetch config (idempotently) and prints the push command users run to publish
+  their memory to the remote (re-run after each memory change, since every
+  memory add/remove creates a new notes commit). Teammates then run `spelunk init` in their
   clones (or manually add the same refspec) and `git fetch` to receive notes. In
   projects without an `origin`, init prints the exact git commands to run later
   when the remote is added. See [docs/memory.md](#sharing-memory-across-clones-via-git-notes).

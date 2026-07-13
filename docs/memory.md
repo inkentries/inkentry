@@ -30,17 +30,19 @@ spelunk automatically configures the fetch refspec for `origin` so that
 
 ```
 Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)
-         notes push (one-time): git push origin refs/notes/spelunk
+         push notes after each memory change: git push origin refs/notes/spelunk
 ```
 
-To publish your memory notes to the remote, run the one-time push command:
+To publish your memory notes to the remote, push the notes ref:
 
 ```bash
 git push origin refs/notes/spelunk
 ```
 
-Push only once; subsequent `git fetch` commands from teammates (or later clones)
-will automatically pull the notes because the refspec is configured.
+Re-run this push whenever you record memory: each `spelunk memory add` (or
+remove) creates a new notes commit that travels only once it is pushed. The
+fetch refspec, by contrast, is configured once, so teammates' (and later
+clones') `git fetch` then pulls whatever notes you have already pushed.
 
 **For teammates to receive the notes:**
 
@@ -58,7 +60,7 @@ repository), `spelunk init` prints the commands to run later:
 ```
 Memory:  no 'origin' remote — notes refspec not configured
          run later: git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'
-         notes push (one-time): git push origin refs/notes/spelunk
+         push notes after each memory change: git push origin refs/notes/spelunk
 ```
 
 Add the refspec when an `origin` is created, then push the notes as above.
