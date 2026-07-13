@@ -774,6 +774,47 @@ fn graph_populated_dir_no_match_reports_live_scan() {
     );
 }
 
+/// Deferral anchor: the live scan matches only bare `symbol($$$)` call syntax, so
+/// a symbol reached solely through a receiver (`X.new(...)`, `obj.method(...)`)
+/// currently falls into the same "no call-site invocations" branch as a class or
+/// constant reference. Broadening the matcher to receiver-method
+/// `$_.<symbol>($$$)` calls was intentionally left out of this change; this test
+/// pins the present behaviour so that future broadening has a failing anchor to
+/// flip rather than silently changing an untested path.
+#[test]
+fn graph_receiver_method_only_symbol_reports_no_call_site_match() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // `Widget` appears only as the receiver of `Widget.new(1)` and never as a bare
+    // `Widget(...)` call. The receiver-method form is not yet scanned, so the live
+    // result is empty and takes the source-present no-match branch.
+    std::fs::write(
+        proj.path().join("factory.rb"),
+        "def make\n  Widget.new(1)\nend\n",
+    )
+    .unwrap();
+
+    let assert = bin(home.path(), proj.path())
+        .args(["graph", "Widget"])
+        .assert()
+        .success()
+        // Receiver-method usage is not matched, so it reads as the call-site
+        // no-match line (source is present), not as an edge and not as empty-tree.
+        .stdout(predicate::str::contains(
+            "No call-site invocations of 'Widget' found",
+        ))
+        .stdout(predicate::str::contains("receiver-method references"))
+        .stdout(predicate::str::contains("Incoming to 'Widget'").not())
+        .stdout(predicate::str::contains("No scannable source files").not());
+
+    // Same no-em-dash guard as the sibling no-match test.
+    let out = assert.get_output();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains('\u{2014}'),
+        "graph live empty message must not contain an em-dash"
+    );
+}
+
 #[test]
 fn graph_populated_dir_with_call_site_still_prints_edges() {
     // Regression guard: the zero-result branching must not swallow a real hit.
