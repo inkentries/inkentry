@@ -630,6 +630,7 @@ spelunk plumbing read-memory           # memory entries as JSONL
 | `SPELUNK_SERVER_URL` | Point the CLI at a specific server URL |
 | `SPELUNK_CLOUD_URL` | Override the spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
 | `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
+| `SPELUNK_SERVER_CA` | Path to a PEM CA bundle to trust for a `SPELUNK_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in and OS trust roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
 | `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |

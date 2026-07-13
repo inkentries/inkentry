@@ -73,6 +73,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `--host` plus the TLS flags and an API key, with nothing in front. A
   non-loopback bind is now allowed only with both TLS and an API key set;
   loopback binds are unchanged. (ADR-066)
+- **CLI trust for internal-CA / self-signed team-server certificates.** Point the
+  CLI at a PEM CA bundle with `SPELUNK_SERVER_CA` (env) or `server_ca` in
+  `.spelunk/config.toml` (env overrides config) to trust a `server_url` whose
+  certificate is signed by an internal or self-signed CA. The bundle is added as a
+  trust anchor on top of the built-in webpki and OS roots; TLS verification stays
+  on and there is no insecure/disable switch. An internal CA already installed in
+  the OS trust store now works with no configuration (native root certificates are
+  enabled). The trusted certificate must be a proper CA (or a CA-to-leaf chain);
+  a bare self-signed `openssl req -x509` end-entity certificate is rejected. (ADR-066)
 
 ### Removed
 
