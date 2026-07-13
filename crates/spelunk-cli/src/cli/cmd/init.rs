@@ -187,7 +187,14 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 7. Print success summary ──────────────────────────────────────────────
+    // ── 7. Configure git-notes refspec on `origin` (only inside a git repo) ───
+    let notes_lines = if git_root.is_some() {
+        configure_notes_refspec(&project_root)
+    } else {
+        Vec::new()
+    };
+
+    // ── 8. Print success summary ──────────────────────────────────────────────
     println!();
     println!("spelunk initialised for {}", project_slug);
     println!();
@@ -212,6 +219,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     }
     if let Some(line) = server_line {
         println!("  Server:  {line}");
+    }
+    for line in &notes_lines {
+        println!("  {line}");
     }
     println!();
     println!("Next steps:");
@@ -240,6 +250,68 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
     }
     if let Err(e) = std::fs::write(&gitignore_path, GITIGNORE) {
         eprintln!("Warning: could not write {}: {e}", gitignore_path.display());
+    }
+}
+
+/// Configure the `origin` fetch refspec so `refs/notes/spelunk` (spelunk's
+/// memory) travels on clone/fetch. Returns announce lines for the init summary.
+///
+/// Push refspec is deliberately NOT set: any `remote.origin.push` value
+/// overrides git's default branch push, so a normal `git push` would stop
+/// pushing the current branch. We keep the branch-push default intact and
+/// surface the manual notes push (needed after each memory change) instead.
+fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
+    const FETCH_REFSPEC: &str = "+refs/notes/spelunk:refs/notes/spelunk";
+    const PUSH_HINT: &str =
+        "push notes after each memory change: git push origin refs/notes/spelunk";
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(project_root)
+            .args(args)
+            .output()
+    };
+
+    // No `origin` remote → skip gracefully with the exact manual commands.
+    let has_origin = git(&["remote", "get-url", "origin"])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_origin {
+        return vec![
+            "Memory:  no 'origin' remote — notes refspec not configured".to_string(),
+            format!("         run later: git config --add remote.origin.fetch '{FETCH_REFSPEC}'"),
+            format!("         {PUSH_HINT}"),
+        ];
+    }
+
+    // Idempotent: only `--add` when the identical refspec is not already present.
+    let already = git(&["config", "--get-all", "remote.origin.fetch"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.trim() == FETCH_REFSPEC)
+        })
+        .unwrap_or(false);
+    if already {
+        return vec![
+            "Memory:  notes fetch refspec already configured on 'origin'".to_string(),
+            format!("         {PUSH_HINT}"),
+        ];
+    }
+
+    match git(&["config", "--add", "remote.origin.fetch", FETCH_REFSPEC]) {
+        Ok(o) if o.status.success() => vec![
+            "Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)"
+                .to_string(),
+            format!("         {PUSH_HINT}"),
+        ],
+        Ok(o) => vec![format!(
+            "Memory:  could not configure notes refspec: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )],
+        Err(e) => vec![format!("Memory:  could not configure notes refspec: {e}")],
     }
 }
 

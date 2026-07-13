@@ -20,6 +20,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `chunks`, `explore`, and `check` refuse with `no spelunk project here. Run
   'spelunk init' first`. Initialized projects and explicit `--db` are unaffected.
   (spelunk-oss^147)
+- **`spelunk graph <symbol>` gives unambiguous zero-result messages.** When the
+  index holds graph data but the symbol has none, it points to `spelunk graph
+  <symbol> --live` for a structural scan; when the index holds no graph data at
+  all, it auto-falls-back to that live scan (matching the no-project behaviour).
+  The live scan distinguishes an empty or umbrella directory ("No scannable
+  source files under this directory") from a genuine no-match ("No callers found
+  for '<symbol>' (live scan)"), and never suggests `spelunk init` for an
+  already-initialized project.
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)
@@ -34,6 +42,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   The import is idempotent (re-running `init` imports nothing) and carries no
   embeddings; it prints `Memory:  imported N entries from git notes` when at
   least one entry is imported. (ADR-068)
+- **`spelunk init` now configures the `origin` fetch refspec for `refs/notes/spelunk`**,
+  so project memory notes travel automatically on `git fetch`. When init detects
+  an `origin` remote, it adds `+refs/notes/spelunk:refs/notes/spelunk` to the
+  fetch config (idempotently) and prints the push command users run to publish
+  their memory to the remote (re-run after each memory change, since every
+  memory add/remove creates a new notes commit). Teammates then run `spelunk init` in their
+  clones (or manually add the same refspec) and `git fetch` to receive notes. In
+  projects without an `origin`, init prints the exact git commands to run later
+  when the remote is added. See [docs/memory.md](#sharing-memory-across-clones-via-git-notes).
+  (ADR-068, spelunk-oss^126)
 - **Native in-process HTTPS for `spelunk-server`** via `--tls-cert`/`--tls-key`
   (env `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_SERVER_TLS_KEY`), both-or-neither. The
   server terminates TLS itself, so a team/remote deployment is a routable

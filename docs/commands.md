@@ -16,7 +16,9 @@ always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 ## spelunk init
 
 Initialise spelunk for the current project: register it, parse and chunk the
-source tree, start the local server if needed, and embed the code.
+source tree, start the local server if needed, embed the code, and (when inside
+a git repo with an `origin` remote) configure the fetch refspec so project
+memory notes travel automatically on `git fetch`.
 
 ```
 spelunk init [options]
@@ -35,6 +37,13 @@ canonical path. Pass `--name` to set an explicit slug for a repo without a remot
 or to choose your own. An existing `project_id` in config is never rewritten, so
 re-running `init` (or running it after a rename) does not change an established
 slug.
+
+**Memory notes travel with the repository:** When run inside a git repo with an
+`origin` remote, `init` configures `remote.origin.fetch` to include
+`refs/notes/spelunk`, so project memory automatically travels on `git fetch`.
+The init output includes the push command to publish your notes; re-run it
+after each memory change so new notes commits travel. See
+[Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
 If the repo already carries memory on `refs/notes/spelunk`, `init` also hydrates
 the new `memory.db` from those notes: every entry not already present is imported

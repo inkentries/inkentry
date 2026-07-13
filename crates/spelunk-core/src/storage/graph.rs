@@ -67,6 +67,16 @@ impl Database {
             .map_err(Into::into)
     }
 
+    /// Whether the index holds any graph edge at all (any kind). Cheap probe
+    /// that short-circuits; distinguishes "graph never populated" from "this
+    /// symbol is absent from a populated graph".
+    pub fn has_any_graph_edges(&self) -> Result<bool> {
+        let exists: bool =
+            self.conn
+                .query_row("SELECT EXISTS(SELECT 1 FROM graph_edges)", [], |r| r.get(0))?;
+        Ok(exists)
+    }
+
     /// All edges originating from `file_path`.
     pub fn edges_for_file(&self, file_path: &str) -> Result<Vec<GraphEdge>> {
         let mut stmt = self.conn.prepare_cached(
@@ -531,6 +541,20 @@ mod tests {
             merged.len(),
             1,
             "filler symbols must not introduce spurious map keys"
+        );
+    }
+
+    #[test]
+    fn has_any_graph_edges_reflects_population() {
+        let db = open_db();
+        assert!(
+            !db.has_any_graph_edges().expect("probe ok"),
+            "a fresh index holds no graph edges"
+        );
+        seed_graph(&db);
+        assert!(
+            db.has_any_graph_edges().expect("probe ok"),
+            "after seeding, the probe reports edges present"
         );
     }
 
