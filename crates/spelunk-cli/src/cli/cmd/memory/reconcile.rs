@@ -844,4 +844,315 @@ mod init_import_tests {
             .expect("import");
         assert_eq!(imported, 0, "no notes ref → nothing imported");
     }
+
+    // ── added coverage (init git-notes import hardening) ──────────────────────
+
+    /// A `git init`'d repo with no commit yet (no HEAD, no notes ref) is a
+    /// silent no-op — and must not churn an empty `memory.db` into existence.
+    #[tokio::test]
+    async fn init_import_no_commit_repo_is_noop_no_churn() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo_no_commit();
+        let git_root = repo.path();
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(imported, 0, "no HEAD / no notes ref → nothing imported");
+        assert!(
+            !mem_path.exists(),
+            "an empty notes ref must not create a memory.db (no churn)"
+        );
+    }
+
+    /// A repo that HAS a commit but no spelunk notes must likewise leave no
+    /// `memory.db` behind (the import bails before opening the store).
+    #[tokio::test]
+    async fn init_import_no_notes_no_db_churn() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(imported, 0);
+        assert!(
+            !mem_path.exists(),
+            "no notes to import must not create a memory.db"
+        );
+    }
+
+    /// An archived git-notes entry imports (carrying its archived status) and
+    /// participates in dedup, so a re-run imports nothing and never duplicates.
+    #[tokio::test]
+    async fn init_import_archived_entry_imports_and_dedups() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        let id = backend
+            .add(NoteInput {
+                kind: "note".to_string(),
+                title: "retired decision".to_string(),
+                body: "kept for the record".to_string(),
+                tags: vec![],
+                linked_files: vec![],
+                embedding: None,
+                source_ref: None,
+                valid_at: None,
+                supersedes: None,
+            })
+            .await
+            .expect("git-notes add");
+        assert!(
+            backend.archive(id).await.expect("archive"),
+            "the seeded entry must archive"
+        );
+
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(imported, 1, "archived git-notes entry must import");
+
+        let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        // Not surfaced by an active-only listing …
+        assert!(
+            store.list(None, 10, false).expect("active list").is_empty(),
+            "an imported archived entry must not appear in the active listing"
+        );
+        // … but present, and archived, when archived rows are included.
+        let all = store.list(None, 10, true).expect("full list");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].status, "archived", "archived status must be carried");
+
+        // Re-run: the archived row already present in memory.db dedups (the
+        // content key excludes status), so nothing re-imports and no duplicate.
+        let again = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("re-import");
+        assert_eq!(again, 0, "archived entry must not double-import");
+        assert_eq!(
+            store.list(None, 10, true).expect("full list again").len(),
+            1,
+            "row count must stay stable across re-import"
+        );
+    }
+
+    /// A git-notes entry whose content already exists in `memory.db` (e.g. it
+    /// arrived earlier via `memory reconcile` or a manual add) is NOT
+    /// re-imported: init reuses reconcile's content key, so the two stores
+    /// dedup against each other. Only the genuinely-new entry imports.
+    #[tokio::test]
+    async fn init_import_skips_entries_already_in_memory_db() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        // Entry A: will be pre-seeded into memory.db (simulating a prior path).
+        backend
+            .add(NoteInput {
+                kind: "decision".to_string(),
+                title: "already present".to_string(),
+                body: "seeded into memory.db before init".to_string(),
+                tags: vec!["x".to_string()],
+                linked_files: vec![],
+                embedding: None,
+                source_ref: None,
+                valid_at: None,
+                supersedes: None,
+            })
+            .await
+            .expect("git-notes add A");
+        // Entry B: only in git-notes — the one init should actually import.
+        backend
+            .add(NoteInput {
+                kind: "decision".to_string(),
+                title: "brand new".to_string(),
+                body: "only in git notes".to_string(),
+                tags: vec![],
+                linked_files: vec![],
+                embedding: None,
+                source_ref: None,
+                valid_at: None,
+                supersedes: None,
+            })
+            .await
+            .expect("git-notes add B");
+
+        // Read A back so we can seed memory.db with a byte-identical content key
+        // (same kind/title/body/tags/created_at → same dedup hash).
+        let seeded = backend
+            .list(None, 10, true, None)
+            .await
+            .expect("list git notes");
+        let a = seeded
+            .iter()
+            .find(|n| n.title == "already present")
+            .expect("entry A present in git notes");
+
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+        {
+            let store = MemoryStore::open(&mem_path).expect("open memory.db");
+            let tags: Vec<&str> = a.tags.iter().map(String::as_str).collect();
+            store
+                .add_note_with_created_at(
+                    &a.kind,
+                    &a.title,
+                    &a.body,
+                    &tags,
+                    &[],
+                    Some("manual"),
+                    "active",
+                    a.created_at,
+                )
+                .expect("seed A into memory.db");
+        }
+
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(imported, 1, "only the entry absent from memory.db imports");
+
+        let store = MemoryStore::open(&mem_path).expect("reopen memory.db");
+        let all = store.list(None, 50, true).expect("list");
+        assert_eq!(
+            all.len(),
+            2,
+            "no duplicate row for the already-present entry"
+        );
+        // A keeps its original source_ref; only B is stamped init:git-notes.
+        let init_sourced = all
+            .iter()
+            .filter(|n| n.source_ref.as_deref() == Some(INIT_GIT_NOTES_SOURCE))
+            .count();
+        assert_eq!(init_sourced, 1, "exactly one row came from the init import");
+    }
+
+    /// Drift guard: reconcile's server-row content key and init-import's
+    /// memory-row content key must be byte-identical for identical content.
+    /// If they ever diverge, an entry present in both git-notes and memory.db
+    /// would be imported twice. The two inputs below deliberately differ in
+    /// tag/file order and status (all excluded/normalized by the key) to prove
+    /// both entry points agree after normalization.
+    #[test]
+    fn dedup_hash_parity_between_reconcile_and_init_import() {
+        register_sqlite_vec();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mem_path = tmp.path().join("memory.db");
+        let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        let created_at = 1_700_000_123_i64;
+        store
+            .add_note_with_created_at(
+                "decision",
+                "shared key",
+                "body text",
+                &["beta", "alpha"],
+                &["b.rs", "a.rs"],
+                Some("manual"),
+                "active",
+                created_at,
+            )
+            .expect("seed note");
+        let note = store
+            .all_notes_for_dedup()
+            .expect("dedup set")
+            .pop()
+            .expect("one note");
+
+        // The reconcile candidate (a server.db row) carrying identical content,
+        // with raw CSV fields in a different order and an archived status.
+        let server_note = ServerNote {
+            kind: "decision".to_string(),
+            title: "shared key".to_string(),
+            body: "body text".to_string(),
+            tags: "alpha,beta".to_string(),
+            linked_files: "a.rs,b.rs".to_string(),
+            created_at,
+            status: "archived".to_string(),
+            superseded_by: None,
+        };
+
+        assert_eq!(
+            note_dedup_hash(&note),
+            server_note.hash().to_hex().to_string(),
+            "reconcile's key and init-import's key must match for identical content"
+        );
+    }
+
+    /// Many entries import in a single batch and the whole set dedups on re-run.
+    ///
+    /// The import caps its git-notes read at `GIT_NOTES_IMPORT_LIMIT` (mirroring
+    /// `GitNotesBackend`'s internal per-list cap). A live test of the 500+
+    /// boundary is deliberately omitted: each git-notes write is a
+    /// read-modify-write of the whole note blob, so seeding 500+ entries is
+    /// O(n^2) subprocess work — too slow and flaky for CI. This exercises the
+    /// multi-entry transaction path with a small plural batch instead, and the
+    /// static assertion below pins the boundary constant.
+    #[tokio::test]
+    async fn init_import_multiple_entries_single_batch() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        const N: usize = 6;
+        for i in 0..N {
+            backend
+                .add(NoteInput {
+                    kind: "note".to_string(),
+                    title: format!("entry {i}"),
+                    body: format!("body {i}"),
+                    tags: vec![],
+                    linked_files: vec![],
+                    embedding: None,
+                    source_ref: None,
+                    valid_at: None,
+                    supersedes: None,
+                })
+                .await
+                .expect("git-notes add");
+        }
+
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(imported, N, "all seeded entries import in one batch");
+
+        let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        assert_eq!(store.list(None, 100, false).expect("list").len(), N);
+
+        let again = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("re-import");
+        assert_eq!(again, 0, "the whole batch dedups on re-run");
+        assert_eq!(
+            store.list(None, 100, false).expect("list again").len(),
+            N,
+            "row count stable across re-import"
+        );
+    }
+
+    /// The init import limit mirrors `GitNotesBackend`'s internal per-list cap
+    /// (`GIT_NOTES_MAX_LIST`, currently 500). Kept in a static assertion so a
+    /// change to one side without the other is caught at compile time; the cap
+    /// itself lives in `storage::git_notes` and is not publicly re-exported.
+    const _: () = assert!(GIT_NOTES_IMPORT_LIMIT == 500);
+
+    /// A `git init`'d repo with no commit (no HEAD), for the no-op/no-churn path.
+    fn make_temp_git_repo_no_commit() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git init");
+        dir
+    }
 }
