@@ -260,6 +260,72 @@ fn extractor_handles_empty_input() {
     assert!(records.is_empty());
 }
 
+/// Regression: the extractor must emit at most one record per (language,
+/// category). Language-specific + always-on generic sets emit overlapping
+/// categories (naming.functions, docs), and tsx chunks route through the
+/// typescript set (self-labelled "typescript"), so a rust/ts/tsx corpus
+/// previously listed those categories two or three times per language.
+#[test]
+fn extractor_dedups_language_category() {
+    let rust_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| rust_fn(&format!("do_thing_{i}"), "/// doc\nfn do_thing() {}"))
+        .collect();
+    let ts_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| {
+            ts_fn(
+                &format!("getThing{i}"),
+                "/** doc */\nfunction getThing() {}",
+            )
+        })
+        .collect();
+    // tsx chunks: the typescript rule set self-labels these "typescript", so
+    // without dedup they collide with the ts group's records.
+    let tsx_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| ChunkSummary {
+            language: "tsx".into(),
+            node_type: "function".into(),
+            name: Some(format!("renderThing{i}")),
+            content: "/** doc */\nfunction renderThing() {}".into(),
+            file_path: "src/App.tsx".into(),
+            has_docstring: true,
+        })
+        .collect();
+
+    let all: Vec<ChunkSummary> = rust_chunks
+        .into_iter()
+        .chain(ts_chunks)
+        .chain(tsx_chunks)
+        .collect();
+
+    let records = ConventionExtractor::new().extract(&all);
+
+    let mut seen = std::collections::HashSet::new();
+    for r in &records {
+        assert!(
+            seen.insert((r.language.clone(), r.category.clone())),
+            "duplicate (language, category): ({}, {})",
+            r.language,
+            r.category
+        );
+    }
+
+    // The overlapping categories must survive exactly once per language.
+    let naming: Vec<_> = records
+        .iter()
+        .filter(|r| r.language == "typescript" && r.category == "naming.functions")
+        .collect();
+    assert_eq!(
+        naming.len(),
+        1,
+        "typescript naming.functions must be unique"
+    );
+    let docs: Vec<_> = records
+        .iter()
+        .filter(|r| r.language == "rust" && r.category == "docs")
+        .collect();
+    assert_eq!(docs.len(), 1, "rust docs must be unique");
+}
+
 // ── DB round-trip: replace_conventions + list_conventions ─────────────────────
 
 #[test]
