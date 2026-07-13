@@ -82,6 +82,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   old config that still carries the deprecated keys continues to load, but the
   keys are now silently ignored rather than mapped.
 
+### Fixed
+
+- **`spelunk context` no longer lists duplicate convention records per
+  language.** Convention rows are now merged to one per (language, category)
+  before storage, so overlapping generic and language-specific rules (for
+  example `naming.functions` and `docs`) each surface once instead of two or
+  three times.
+
 ## [0.9.3] — 2026-07-08
 
 ### Removed
