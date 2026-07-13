@@ -139,6 +139,25 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
+    // ── 5b. Import git-notes memory into the project memory.db ────────────────
+    // Entries recorded on `refs/notes/spelunk` before init (git-notes fallback
+    // or write-through) are invisible to the SQLite-backed `memory list` until
+    // imported. No enclosing git repo → nothing to import. Non-fatal: a failure
+    // here must not sink init.
+    let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
+        let mem_path = spelunk_dir.join("memory.db");
+        match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
+            Ok(0) => None,
+            Ok(n) => Some(format!("imported {n} entries from git notes")),
+            Err(e) => {
+                tracing::warn!("git-notes memory import skipped (non-fatal): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // ── 6. Auto-spawn server (TTY only) or probe for a running server ─────────
     //
     // Interactive (stdin is a TTY): attempt to start the server so semantic
@@ -188,6 +207,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         );
     }
     println!("  Hook:    {}", hook_status);
+    if let Some(line) = memory_line {
+        println!("  Memory:  {line}");
+    }
     if let Some(line) = server_line {
         println!("  Server:  {line}");
     }
