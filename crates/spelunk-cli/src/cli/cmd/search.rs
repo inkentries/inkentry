@@ -105,6 +105,15 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             .and_then(|db| db.stats())
             .is_ok_and(|s| s.chunk_count == 0)
     {
+        // Text mode has no index yet: point at the zero-setup modes that need
+        // none (auto default, ast-grep) rather than only demanding an index.
+        if mode == "text" {
+            return Err(anyhow::anyhow!(
+                "no FTS index yet for --mode text. Run `spelunk index <path>` first,\n\
+                 or try `spelunk search \"...\" --mode ast-grep` (or omit --mode) for a\n\
+                 zero-setup search."
+            ));
+        }
         return Err(crate::error::SearchError::EmptyIndex.into());
     }
 

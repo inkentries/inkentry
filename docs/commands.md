@@ -126,7 +126,9 @@ spelunk search <query> [options]
 
 `semantic`/`hybrid` uses LinearRAG: a two-stage entity-activation + personalised
 PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
-`ast-grep` need no embedding model or server.
+`ast-grep` need no embedding model or server. `text` does run over the FTS
+index, so it needs `spelunk index` first; `ast-grep` and the `auto` default
+work with no index at all.
 
 In `ast-grep` mode (and the `auto` fallback used when there is no index or
 server), a plain-string query matches case-insensitively as a substring of
