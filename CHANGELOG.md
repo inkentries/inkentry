@@ -11,6 +11,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`spelunk graph <symbol>` no longer implies a heavily-referenced symbol is
+  unused.** The live structural scan matches only bare call syntax
+  (`symbol(...)`), so class, constant, association, and receiver-method
+  references never appear in it. When the scan finds no call sites but the
+  directory has scannable source, the message now reads "No call-site
+  invocations of '<symbol>' found (live structural scan matches '<symbol>(...)'
+  calls only)." and points at `spelunk init`, whose index carries the
+  imports/extends/implements edges the call-scan cannot see. The empty/umbrella
+  directory message is unchanged and still never suggests `init`.
 - **`graph`, `chunks`, `explore`, and `check` no longer read the machine-global
   index (`~/.config/spelunk/index.db`) from an un-`init`'d directory**, extending
   the ADR-067 fail-closed posture to these read-only display commands (previously
@@ -24,15 +33,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   <symbol> --live` for a structural scan; when the index holds no graph data at
   all, it auto-falls-back to that live scan (matching the no-project behaviour).
   The live scan distinguishes an empty or umbrella directory ("No scannable
-  source files under this directory") from a genuine no-match ("No callers found
-  for '<symbol>' (live scan)"), and never suggests `spelunk init` for an
-  already-initialized project.
+  source files under this directory") from a genuine no-call result (see the
+  reworded call-site message above), and never suggests `spelunk init` for an
+  empty/umbrella tree.
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed.
 
 ### Added
 
+- **`memory add` and `memory list` work before `init`** when inside a git
+  repository, so you can record and list decisions without running `spelunk init`
+  first. Pre-`init` entries ride the same git-notes write-through that already
+  runs after `init`, landing in `refs/notes/spelunk` on HEAD with an identical
+  record shape; there is no local SQLite store until you `spelunk init`. The
+  notes stay on the local machine unless you push the ref. `memory search`
+  remains gated to initialized projects. (ADR-068)
 - **`spelunk init` now configures the `origin` fetch refspec for `refs/notes/spelunk`**,
   so project memory notes travel automatically on `git fetch`. When init detects
   an `origin` remote, it adds `+refs/notes/spelunk:refs/notes/spelunk` to the

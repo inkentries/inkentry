@@ -18,6 +18,11 @@ use tempfile::TempDir;
 /// no-em-dash house rule for user-facing copy).
 const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
 
+/// ADR-068 D3 dual-escape-hatch error for `memory add`/`list` when there is
+/// neither a project DB nor a usable git repo (case 5).
+const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
+     or run inside a git repository.";
+
 /// A `spelunk` command with an isolated HOME (so the "global" store lives under
 /// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
@@ -42,8 +47,12 @@ fn global_index_db(home: &Path) -> std::path::PathBuf {
 
 // ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
 
+// A bare `TempDir` is not inside a git repo (it lives under the system temp
+// dir, not a checkout), so `memory add`/`list` hit ADR-068 D3 case 5 (neither
+// a project DB nor a usable git repo) and refuse with the dual-hatch message
+// rather than falling back to git-notes.
 #[test]
-fn memory_add_refuses_without_local_project() {
+fn memory_add_refuses_without_project_or_git_repo() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -53,7 +62,7 @@ fn memory_add_refuses_without_local_project() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -62,7 +71,7 @@ fn memory_add_refuses_without_local_project() {
 }
 
 #[test]
-fn memory_list_refuses_without_local_project() {
+fn memory_list_refuses_without_project_or_git_repo() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -70,7 +79,7 @@ fn memory_list_refuses_without_local_project() {
         .args(["memory", "list"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert!(!global_memory_db(home.path()).exists());
 }
@@ -362,9 +371,10 @@ fn sync_arm_refuses_without_local_project() {
 
 #[test]
 fn memory_timeline_refuses_without_local_project() {
-    // Every `memory` subcommand resolves its store through the same
-    // `require_project_db` line before dispatch; `timeline` (needs no server)
-    // confirms the guard is not specific to add/list/search.
+    // Every `memory` subcommand *except* the ADR-068 D3 add/list fallback
+    // resolves its store through the same `require_project_db` line before
+    // dispatch; `timeline` (needs no server) confirms the fail-closed guard
+    // still holds for the non-add/list subcommands.
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -399,7 +409,7 @@ fn refused_memory_add_does_not_mutate_preexisting_global_store() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
+        .stderr(predicate::str::contains(NO_PROJECT_NO_REPO_ERR));
 
     assert_eq!(
         std::fs::read(&global).unwrap(),
@@ -731,25 +741,88 @@ fn graph_empty_dir_reports_no_scannable_source_hint() {
         .success()
         .stdout(predicate::str::contains("No scannable source files"))
         .stdout(predicate::str::contains("submodules are initialized"))
-        .stdout(predicate::str::contains("spelunk init").not());
+        .stdout(predicate::str::contains("spelunk init").not())
+        // The source-present call-scan wording must not leak into the empty-tree branch.
+        .stdout(predicate::str::contains("No call-site invocations").not());
 }
 
 #[test]
 fn graph_populated_dir_no_match_reports_live_scan() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    // Scannable source exists, but nothing calls `helper` — a true leaf/typo.
-    std::fs::write(proj.path().join("lib.rs"), "fn helper() {}\n").unwrap();
+    // Scannable source exists, but `BillingEntity` is only referenced as a class,
+    // never invoked as a bare `BillingEntity(...)` call. The live structural scan
+    // is call-syntax-only, so it finds nothing even though the symbol is heavily
+    // used, not unused. The message must say so and point at the full index.
+    std::fs::write(
+        proj.path().join("model.rb"),
+        "class BillingEntity\nend\nclass Invoice < BillingEntity\nend\n",
+    )
+    .unwrap();
 
-    bin(home.path(), proj.path())
-        .args(["graph", "helper"])
+    let assert = bin(home.path(), proj.path())
+        .args(["graph", "BillingEntity"])
         .assert()
         .success()
+        // New wording: scope the empty result to call-site syntax, not "unused".
         .stdout(predicate::str::contains(
-            "No callers found for 'helper' (live scan).",
+            "No call-site invocations of 'BillingEntity' found",
         ))
-        .stdout(predicate::str::contains("spelunk init").not())
+        .stdout(predicate::str::contains("calls only"))
+        // Source is present, so the full-index hint is appended.
+        .stdout(predicate::str::contains("spelunk init"))
+        .stdout(predicate::str::contains("imports/extends/implements"))
+        // The old misleading "No callers found ... (live scan)" wording is gone.
+        .stdout(predicate::str::contains("No callers found").not())
         .stdout(predicate::str::contains("No scannable source files").not());
+
+    // No em-dash in any user-facing line (reads as an AI-tell in public copy).
+    let out = assert.get_output();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains('\u{2014}'),
+        "graph live empty message must not contain an em-dash"
+    );
+}
+
+/// Deferral anchor: the live scan matches only bare `symbol($$$)` call syntax, so
+/// a symbol reached solely through a receiver (`X.new(...)`, `obj.method(...)`)
+/// currently falls into the same "no call-site invocations" branch as a class or
+/// constant reference. Broadening the matcher to receiver-method
+/// `$_.<symbol>($$$)` calls was intentionally left out of this change; this test
+/// pins the present behaviour so that future broadening has a failing anchor to
+/// flip rather than silently changing an untested path.
+#[test]
+fn graph_receiver_method_only_symbol_reports_no_call_site_match() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // `Widget` appears only as the receiver of `Widget.new(1)` and never as a bare
+    // `Widget(...)` call. The receiver-method form is not yet scanned, so the live
+    // result is empty and takes the source-present no-match branch.
+    std::fs::write(
+        proj.path().join("factory.rb"),
+        "def make\n  Widget.new(1)\nend\n",
+    )
+    .unwrap();
+
+    let assert = bin(home.path(), proj.path())
+        .args(["graph", "Widget"])
+        .assert()
+        .success()
+        // Receiver-method usage is not matched, so it reads as the call-site
+        // no-match line (source is present), not as an edge and not as empty-tree.
+        .stdout(predicate::str::contains(
+            "No call-site invocations of 'Widget' found",
+        ))
+        .stdout(predicate::str::contains("receiver-method references"))
+        .stdout(predicate::str::contains("Incoming to 'Widget'").not())
+        .stdout(predicate::str::contains("No scannable source files").not());
+
+    // Same no-em-dash guard as the sibling no-match test.
+    let out = assert.get_output();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains('\u{2014}'),
+        "graph live empty message must not contain an em-dash"
+    );
 }
 
 #[test]

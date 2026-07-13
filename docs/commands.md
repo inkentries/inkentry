@@ -303,6 +303,12 @@ spelunk graph <symbol> [options]
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--live` | false | Skip the index and scan live files directly |
 
+The live scan is structural and matches only call-site `symbol(...)`
+invocations, so a zero result means "no bare calls", not "unused". Class,
+constant, association, and receiver-method references never take that form. Run
+`spelunk init` to build the full graph, which adds imports/extends/implements
+edges alongside call edges.
+
 **Example:**
 
 ```bash
