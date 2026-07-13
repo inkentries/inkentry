@@ -44,7 +44,7 @@ repo:
 |---|---|
 | `spelunk search "…"` (**auto**, no `--mode`) | Degrades to `search_live` (ast-grep structural scan) when no index is present. This is the genuine zero-setup search surface; the doc never showed it. |
 | `spelunk search "…" --mode text` | Explicit FTS-over-index mode. Fails closed via `require_project_db` with *"no spelunk project here. Run 'spelunk init' first"*. Correct for an index-only mode — the doc simply led with the wrong invocation. |
-| `spelunk graph <symbol>` | Falls to the ast-grep `symbol($$$)` live call-site scan (exact, unranked) when no index opens; no longer reads any global store (oss^147). Zero results print `No graph edges found for '<symbol>'` with no guidance toward `init` or `--live`. |
+| `spelunk graph <symbol>` | Falls to the ast-grep `symbol($$$)` live call-site scan (exact, unranked) when no index opens; no longer reads any global store (oss^147). Zero results print `No scannable source files under this directory` (empty/umbrella dir) or `No callers found for '<symbol>' (live scan)` (source present, no match); the live scan never suggests `init` (oss^127). |
 | `spelunk graph <file-path>` / `chunks` / `check` / `explore` | Index-backed. Refuse with *"no spelunk project here. Run 'spelunk init' first"* (post-^147). |
 | `spelunk memory add` / `list` / `search` | **Currently** all fail closed pre-`init`: `memory/mod.rs:377–380` calls `require_project_db(&cfg.db_path, false)` and bails without a `.spelunk/` dir. This ADR changes `add` / `list` (see D3). |
 
