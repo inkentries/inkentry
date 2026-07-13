@@ -131,6 +131,17 @@ read. Serialization of *our* records uses the canonical `serde_json::to_string`
 one-line form; a record we did not touch is re-emitted from its original source
 text, not re-serialized (so we never reformat another writer's spacing).
 
+> **Clarification (2026-07-12, collision surface is narrower than the opening
+> sentence implies):** The "we do not own the store; other tools and humans may
+> write into the same note" framing above overstates the collision risk.
+> `refs/notes/spelunk` is a spelunk-specific notes ref, not git's default
+> `refs/notes/commits`, so no default git tooling writes to it. The realistic
+> foreign-content surface is limited to another tool deliberately targeting this
+> custom ref, or a human editing it by hand. The permissive-read,
+> non-clobbering-write design still stands regardless: it is sound defensive
+> engineering independent of how narrow that surface is, and it is what lets the
+> interleaved-prose conformance fixture below round-trip.
+
 ### D2 – optional additive `remote_id` (uuid)
 
 Add an **optional, additive** `remote_id` to the three distributed surfaces. It
