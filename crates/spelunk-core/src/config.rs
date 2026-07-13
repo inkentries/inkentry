@@ -2265,4 +2265,52 @@ project_id = "team/new"
         let got = require_project_db_at(tmp.path(), &global, true).unwrap();
         assert_eq!(got, global);
     }
+
+    /// Build a linked-worktree fixture: `<main>/.spelunk/index.db` exists and
+    /// `<wt>` is a linked worktree with NO local `.spelunk/`. Returns
+    /// `(main_root, wt_root, index_db)`. Mirrors the fixture in `utils::tests`.
+    fn linked_worktree_fixture(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
+        let main_root = tmp.path().join("main");
+        let wt_root = tmp.path().join("feat-branch");
+        std::fs::create_dir_all(&main_root).unwrap();
+        std::fs::create_dir_all(&wt_root).unwrap();
+
+        // Main worktree owns the shared index.
+        std::fs::create_dir_all(main_root.join(".spelunk")).unwrap();
+        let index_db = main_root.join(".spelunk").join("index.db");
+        std::fs::write(&index_db, b"").unwrap();
+
+        // wt_root/.git is a file pointing at <main>/.git/worktrees/<name>.
+        let gitdir_entry = main_root.join(".git").join("worktrees").join("feat-branch");
+        std::fs::create_dir_all(&gitdir_entry).unwrap();
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", gitdir_entry.display()),
+        )
+        .unwrap();
+
+        (main_root, wt_root, index_db)
+    }
+
+    #[test]
+    fn find_project_db_resolves_worktree_to_main_index() {
+        // A linked worktree with no local `.spelunk/` resolves reads to the
+        // main worktree's shared index, with no setup step.
+        let tmp = TempDir::new().unwrap();
+        let (_main_root, wt_root, index_db) = linked_worktree_fixture(&tmp);
+        assert!(
+            !wt_root.join(".spelunk").exists(),
+            "worktree must have no local .spelunk/"
+        );
+        assert_eq!(find_project_db(&wt_root), Some(index_db));
+    }
+
+    #[test]
+    fn require_project_db_at_resolves_worktree_to_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let (main_root, wt_root, _index_db) = linked_worktree_fixture(&tmp);
+        let global = PathBuf::from("/nonexistent/global/index.db");
+        let got = require_project_db_at(&wt_root, &global, false).unwrap();
+        assert_eq!(got, main_root.join(".spelunk").join("index.db"));
+    }
 }

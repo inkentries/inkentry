@@ -721,6 +721,201 @@ fn graph_does_not_surface_real_populated_global_index() {
     );
 }
 
+// ── zero-result affordance: empty tree vs no-match hint ───────────────────────
+//
+// When the live graph scan finds no call sites, the message disambiguates a true
+// leaf/typo (scannable source present) from an empty tree (e.g. an umbrella repo
+// with uninitialized submodules). Neither message suggests `spelunk init`. Text
+// output only — the branch is in the text path; JSON stays a bare edge array.
+
+#[test]
+fn graph_empty_dir_reports_no_scannable_source_hint() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    // No source at all: the live scan reports an empty tree and steers to a
+    // populated subdir / submodule init, never to `spelunk init`.
+    bin(home.path(), proj.path())
+        .args(["graph", "anything"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No scannable source files"))
+        .stdout(predicate::str::contains("submodules are initialized"))
+        .stdout(predicate::str::contains("spelunk init").not());
+}
+
+#[test]
+fn graph_populated_dir_no_match_reports_live_scan() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // Scannable source exists, but nothing calls `helper` — a true leaf/typo.
+    std::fs::write(proj.path().join("lib.rs"), "fn helper() {}\n").unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["graph", "helper"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No callers found for 'helper' (live scan).",
+        ))
+        .stdout(predicate::str::contains("spelunk init").not())
+        .stdout(predicate::str::contains("No scannable source files").not());
+}
+
+#[test]
+fn graph_populated_dir_with_call_site_still_prints_edges() {
+    // Regression guard: the zero-result branching must not swallow a real hit.
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    // Text output: the call site is listed and neither zero-result hint fires.
+    bin(home.path(), proj.path())
+        .args(["graph", "greet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Incoming to 'greet'"))
+        .stdout(predicate::str::contains("lib.rs"))
+        .stdout(predicate::str::contains("No graph edges found").not());
+}
+
+// ── zero-result affordance: INDEXED (init'd) project branches ─────────────────
+//
+// The tests above exercise the un-init'd auto-live path. These cover the
+// index-backed branches of the graph zero-result rework, all inside a real
+// `.spelunk/`-init'd project:
+//   * empty graph table         → auto-fall-back to the live scan
+//   * populated graph, no symbol → a distinct, index-specific hint
+//   * file-path query, no edges  → the unchanged "No graph edges found" message
+// The project is already initialized, so no zero-result path here may ever
+// suggest `spelunk init` (asserted on both stdout and stderr).
+
+/// An init'd project whose `graph_edges` table is EMPTY (a graph-less or
+/// freshly-created index) must AUTO-FALL-BACK to the live ast-grep scan for a
+/// symbol query, never the ambiguous "no calls in the indexed graph" hint. Proven
+/// by clearing every edge from a real local index, then confirming the query
+/// still surfaces the working-tree call site through the live scan.
+#[test]
+fn graph_empty_index_auto_falls_back_to_live_scan() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    // Build a real local index; the parse phase populates graph_edges.
+    bin(home.path(), proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+    let index_db = proj.path().join(".spelunk").join("index.db");
+    assert!(index_db.exists(), "precondition: local index built");
+
+    // Test-only DB surgery: drop every graph edge so the index is a valid project
+    // with an EMPTY graph table. Regular-table access needs no sqlite-vec
+    // registration — the vec0 vtabs are never touched. A scoped connection so it
+    // is fully closed before the CLI reopens the same DB.
+    {
+        let conn = rusqlite::Connection::open(&index_db).expect("open index db");
+        let cleared = conn
+            .execute("DELETE FROM graph_edges", [])
+            .expect("clear graph_edges");
+        assert!(cleared > 0, "precondition: index had edges to clear");
+    }
+
+    // `--no-stale-check` isolates the empty-graph fallback from the pre-existing
+    // stale-index fallback, so this proves the has_any_graph_edges()==false path.
+    // The live scan runs over the working tree, which still holds the greet call.
+    bin(home.path(), proj.path())
+        .args(["graph", "greet", "--no-stale-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("live scan"))
+        .stdout(predicate::str::contains("Incoming to 'greet'"))
+        .stdout(predicate::str::contains("lib.rs"))
+        .stdout(predicate::str::contains("No calls to 'greet' found in the indexed graph").not())
+        .stdout(predicate::str::contains("spelunk init").not())
+        .stderr(predicate::str::contains("spelunk init").not());
+}
+
+/// A populated graph that simply lacks the queried symbol gets a distinct,
+/// index-specific hint steering to `--live` — NOT the live-scan no-match line and
+/// NOT the empty-graph live fallback. `--no-stale-check` keeps the fresh index off
+/// the stale-fallback path so the has_any_graph_edges()==true branch is what fires.
+#[test]
+fn graph_populated_index_missing_symbol_reports_distinct_hint() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+
+    // `no_such_symbol_xyz` has no edge, but the graph is populated (greet/caller),
+    // so has_any_graph_edges() is true → the index-specific hint. It must be
+    // distinct from the live path's "(live scan)" wording.
+    bin(home.path(), proj.path())
+        .args(["graph", "no_such_symbol_xyz", "--no-stale-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No calls to 'no_such_symbol_xyz' found in the indexed graph",
+        ))
+        .stdout(predicate::str::contains(
+            "spelunk graph no_such_symbol_xyz --live",
+        ))
+        .stdout(predicate::str::contains("(live scan)").not())
+        .stdout(predicate::str::contains("spelunk init").not())
+        .stderr(predicate::str::contains("spelunk init").not());
+}
+
+/// A file-path query with no edges keeps the unchanged "No graph edges found"
+/// message and, like every zero-result path, never suggests `spelunk init`.
+#[test]
+fn graph_file_query_no_edges_reports_no_edges_message() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("lib.rs"),
+        "pub fn greet(name: &str) -> String { format!(\"hi {name}\") }\n\
+         fn caller() { greet(\"x\"); }\n",
+    )
+    .unwrap();
+
+    bin(home.path(), proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+
+    // A path-shaped query (contains '/', ends in .rs) is a file query; a file
+    // absent from the index has no edges, so the file-query branch prints the
+    // unchanged message rather than any live-scan or `init` hint.
+    bin(home.path(), proj.path())
+        .args(["graph", "src/does_not_exist.rs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No graph edges found for 'src/does_not_exist.rs'.",
+        ))
+        .stdout(predicate::str::contains("spelunk init").not())
+        .stderr(predicate::str::contains("spelunk init").not());
+}
+
 // ── walk-up: memory resolves the ancestor project from a deep subdir ───────────
 
 #[test]

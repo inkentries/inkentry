@@ -226,6 +226,19 @@ pub fn search_live_matches(pattern: &str, root: &Path, limit: usize) -> Vec<Live
     out
 }
 
+/// Early-exit probe: does the tree under `root` hold at least one file in a
+/// language the structural scan covers? `.any` short-circuits, so a huge tree is
+/// never fully walked. Same `.gitignore`-respecting traversal as the scan;
+/// working-tree-only (no global store).
+pub fn has_scannable_source(root: &Path) -> bool {
+    WalkBuilder::new(root)
+        .standard_filters(true)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .any(|e| detect_support_lang(e.path()).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +560,54 @@ mod tests {
         assert!(
             matches.iter().all(|m| !m.text.contains("$5 total")),
             "a `$`-bearing query is structural, so the string literal is not substring-matched: {matches:?}"
+        );
+    }
+
+    // ── has_scannable_source: empty-tree vs populated probe ──────────────────────
+
+    #[test]
+    fn scannable_source_false_for_empty_dir() {
+        // No files at all → the zero-result affordance's "empty tree" branch.
+        let dir = tempdir().unwrap();
+        assert!(!has_scannable_source(dir.path()));
+    }
+
+    #[test]
+    fn scannable_source_true_for_rust_file() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn f() {}\n").unwrap();
+        assert!(has_scannable_source(dir.path()));
+    }
+
+    #[test]
+    fn scannable_source_true_for_python_file() {
+        // A second grammar proves the probe isn't Rust-specific.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("m.py"), "def f():\n    pass\n").unwrap();
+        assert!(has_scannable_source(dir.path()));
+    }
+
+    #[test]
+    fn scannable_source_false_for_non_scannable_files_only() {
+        // The umbrella-repo-with-uninitialized-submodules case: docs/config/text
+        // files exist, but none has a structural grammar, so the probe is false.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("README.md"), "# hi\n").unwrap();
+        fs::write(dir.path().join(".gitmodules"), "[submodule \"x\"]\n").unwrap();
+        fs::write(dir.path().join("notes.txt"), "just text\n").unwrap();
+        assert!(!has_scannable_source(dir.path()));
+    }
+
+    #[test]
+    fn scannable_source_ignores_dot_ignore_excluded_source() {
+        // An `.ignore`d source file is not counted — the probe shares the scan's
+        // ignore-respecting walk, so an excluded `.rs` leaves the tree "empty".
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".ignore"), "hidden.rs\n").unwrap();
+        fs::write(dir.path().join("hidden.rs"), "fn f() {}\n").unwrap();
+        assert!(
+            !has_scannable_source(dir.path()),
+            "an ignored source file must not register as scannable"
         );
     }
 }
