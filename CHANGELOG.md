@@ -42,6 +42,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   The import is idempotent (re-running `init` imports nothing) and carries no
   embeddings; it prints `Memory:  imported N entries from git notes` when at
   least one entry is imported. (ADR-068)
+- **`memory add` and `memory list` work before `init`** when inside a git
+  repository, so you can record and list decisions without running `spelunk init`
+  first. Pre-`init` entries ride the same git-notes write-through that already
+  runs after `init`, landing in `refs/notes/spelunk` on HEAD with an identical
+  record shape; there is no local SQLite store until you `spelunk init`. The
+  notes stay on the local machine unless you push the ref. `memory search`
+  remains gated to initialized projects. (ADR-068)
 - **`spelunk init` now configures the `origin` fetch refspec for `refs/notes/spelunk`**,
   so project memory notes travel automatically on `git fetch`. When init detects
   an `origin` remote, it adds `+refs/notes/spelunk:refs/notes/spelunk` to the

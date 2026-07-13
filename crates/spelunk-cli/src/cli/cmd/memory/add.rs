@@ -6,7 +6,9 @@ use crate::{
     config::Config,
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
-    storage::{NoteInput, NoteRecord, append_to_git_notes, now_secs, open_memory_backend},
+    storage::{
+        NoteInput, NoteRecord, append_to_git_notes, now_millis, now_secs, open_memory_backend,
+    },
 };
 
 pub(super) async fn memory_add(
@@ -14,6 +16,7 @@ pub(super) async fn memory_add(
     mem_path: &std::path::Path,
     cfg: &Config,
     backend_override: Option<&str>,
+    pre_init_notes: bool,
 ) -> Result<()> {
     // Honor the auto-discovered server tier (ADR-004): loopback auto-discovery
     // sets the capability tier without populating `cfg.server_url`, so without
@@ -22,7 +25,17 @@ pub(super) async fn memory_add(
     // Build an effective config that routes inference to the discovered server
     // while leaving `server_url` unset, so `open_memory_backend` still writes the
     // note to the project's local `memory.db` (the single canonical store).
-    let project_root = mem_path.parent().unwrap_or(mem_path);
+    // On the git-notes paths `mem_path` is a placeholder (explicit `--backend
+    // git-notes` or the ADR-068 D3 pre-init carrier); the project is the git
+    // repo at CWD, so derive the inference project id from there instead.
+    let cwd;
+    let placeholder_path = pre_init_notes || backend_override == Some("git-notes");
+    let project_root: &std::path::Path = if placeholder_path {
+        cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        &cwd
+    } else {
+        mem_path.parent().unwrap_or(mem_path)
+    };
     let tier = capability::get_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
@@ -74,30 +87,52 @@ pub(super) async fn memory_add(
         );
     }
 
-    let embed_text = format!("title: {title} | text: {body}");
-    let embedding = try_embed_via_server(cfg, &embed_text).await;
+    // Pre-init carrier entries carry no vector (git notes hold none), and
+    // semantic `memory search` stays gated until the project is indexed and the
+    // carrier hydrates the index (ADR-068 D3/D4).
+    let embedding = if pre_init_notes {
+        None
+    } else {
+        let embed_text = format!("title: {title} | text: {body}");
+        try_embed_via_server(cfg, &embed_text).await
+    };
 
     let valid_at = args
         .valid_at
         .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
 
-    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
-    let id = backend
-        .add(NoteInput {
-            kind: args.kind.clone(),
-            title: title.clone(),
-            body: body.clone(),
-            tags: tags.clone(),
-            linked_files: files.clone(),
-            embedding,
-            source_ref: None,
-            valid_at,
-            supersedes: args.supersedes,
-        })
-        .await?;
+    // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
+    // server, or (with `--backend git-notes`) git notes itself. Pre-init there
+    // is no primary; the write-through carrier below is the sole writer, so mint
+    // an id the same way the backends do (`now_millis`).
+    let id = if pre_init_notes {
+        now_millis()
+    } else {
+        let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
+        backend
+            .add(NoteInput {
+                kind: args.kind.clone(),
+                title: title.clone(),
+                body: body.clone(),
+                tags: tags.clone(),
+                linked_files: files.clone(),
+                embedding,
+                source_ref: None,
+                valid_at,
+                supersedes: args.supersedes,
+            })
+            .await?
+    };
 
-    // ── Git-notes write-through (best-effort, non-fatal) ─────────────────────
-    if cfg.store_in_git_notes {
+    // ── Git-notes write-through carrier ──────────────────────────────────────
+    // The single write path to `refs/notes/spelunk` both pre- and post-`init`,
+    // so every note carries an identical record shape. Suppressed only when git
+    // notes is already the primary store (explicit `--backend git-notes`), to
+    // avoid a double write. Post-`init` it is best-effort (SQLite already holds
+    // the entry); pre-`init` it is the sole store, so a failed carry is fatal.
+    let write_through =
+        pre_init_notes || (cfg.store_in_git_notes && backend_override != Some("git-notes"));
+    if write_through {
         let record = NoteRecord {
             schema_version: 1,
             id,
@@ -117,8 +152,14 @@ pub(super) async fn memory_add(
         };
         // Use process CWD (None) — the CLI is always run from the project root.
         // Secret scan already ran above; no second check needed here.
-        if let Err(e) = append_to_git_notes(None, &record).await {
-            tracing::warn!("git-notes write-through failed (non-fatal): {e}");
+        match append_to_git_notes(None, &record).await {
+            Ok(()) => {}
+            Err(e) if pre_init_notes => {
+                return Err(e.context(
+                    "recording memory entry to git notes (no local project store to fall back on)",
+                ));
+            }
+            Err(e) => tracing::warn!("git-notes write-through failed (non-fatal): {e}"),
         }
     }
 
