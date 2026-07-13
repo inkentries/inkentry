@@ -3,7 +3,8 @@
 //! ## Subcommands
 //!
 //! - `spelunk server start`  — daemonise spelunk-server; write PID/port/log files.
-//! - `spelunk server stop`   — send SIGTERM to the running daemon and wait for exit.
+//! - `spelunk server stop`   — terminate the running daemon (SIGTERM, then
+//!   SIGKILL if it won't exit) and verify it is gone.
 //! - `spelunk server status` — print PID, port, instance_id, and uptime.
 //! - `spelunk server logs`   — print the last N lines from the server log.
 //!
@@ -222,6 +223,205 @@ fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
+// ── Process lifecycle helpers ──────────────────────────────────────────────────
+
+/// Grace period for a `SIGTERM`ed daemon to exit before escalation.
+const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Extra window for the process to disappear after `SIGKILL` (Unix).
+const FORCE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `server.db-path` records the DB the running daemon was started against, so a
+/// second `start` can refuse to point a new server at a different DB.
+fn db_path_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("server.db-path")
+}
+
+/// Read the DB path recorded for the running daemon. `None` if absent/empty.
+fn read_db_path(state_dir: &Path) -> Option<PathBuf> {
+    std::fs::read_to_string(db_path_file(state_dir))
+        .ok()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// Best-effort path equality that tolerates symlinks / `.` / `..` by
+/// canonicalising each side when it exists, falling back to the raw path.
+fn same_path(a: &Path, b: &Path) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
+/// Return `true` when `pid`'s command line looks like a `spelunk-server`.
+///
+/// This is the identity signal used when `/v1/health` does *not* respond: a
+/// wedged/hung daemon still exists as a `spelunk-server` process, so we can
+/// safely terminate it, whereas a PID reused by an unrelated process after a
+/// crash must not be killed. Uses `ps` (Unix) / `tasklist` (Windows).
+fn process_matches_server(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        match std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).contains("spelunk-server")
+            }
+            _ => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        match std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+        {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .to_lowercase()
+                .contains("spelunk-server"),
+            _ => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Classification of a live PID recorded in the state dir.
+enum RunningServer {
+    /// `/v1/health` responded on the recorded port — a healthy daemon.
+    Healthy { port: u16 },
+    /// Alive and a `spelunk-server` process, but `/v1/health` is silent — our
+    /// wedged daemon. Safe to terminate/reclaim.
+    HungOurs,
+    /// Alive but neither healthy nor a `spelunk-server` — the PID was almost
+    /// certainly reused by an unrelated process after a crash. Do not signal it.
+    Foreign,
+}
+
+/// Classify the live process `pid` recorded in `state_dir`.
+///
+/// Health probe first (definitive "ours + reachable"); on no response, fall
+/// back to a process-command identity check so a *hung* daemon is still
+/// recognised as ours and can be reclaimed — the previous health-only check
+/// refused to stop a wedged server, which is the core bug this fixes.
+async fn classify_running_server(state_dir: &Path, pid: u32) -> RunningServer {
+    if let Some(port) = read_port(state_dir)
+        && probe_health(port).await.is_some()
+    {
+        return RunningServer::Healthy { port };
+    }
+    if process_matches_server(pid) {
+        return RunningServer::HungOurs;
+    }
+    RunningServer::Foreign
+}
+
+/// `SIGKILL` on Unix. Tolerates a process that already exited (`ESRCH`).
+#[cfg(unix)]
+fn force_kill(pid: u32) -> Result<()> {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    let rc = unsafe { kill(pid as i32, SIGKILL) };
+    if rc != 0 && pid_is_alive(pid) {
+        anyhow::bail!("kill({pid}, SIGKILL) failed");
+    }
+    Ok(())
+}
+
+/// Poll until `pid` is gone or `timeout` elapses. Returns `true` if gone.
+async fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !pid_is_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    !pid_is_alive(pid)
+}
+
+/// Terminate `pid` and confirm it is gone. Returns `Ok(true)` only when the
+/// process has actually exited.
+///
+/// Unix: `SIGTERM`, wait [`GRACEFUL_STOP_TIMEOUT`], then escalate to `SIGKILL`
+/// and wait [`FORCE_KILL_TIMEOUT`]. Windows: `taskkill /F` (already forceful),
+/// then wait. Never reports success on a still-running process.
+async fn terminate_and_wait(pid: u32) -> Result<bool> {
+    // Graceful signal. If it errored only because the process already exited
+    // (a race between classify and here), treat that as success.
+    if let Err(e) = terminate_process(pid) {
+        if !pid_is_alive(pid) {
+            return Ok(true);
+        }
+        return Err(e);
+    }
+    if wait_for_exit(pid, GRACEFUL_STOP_TIMEOUT).await {
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    if pid_is_alive(pid) {
+        force_kill(pid)?;
+        if wait_for_exit(pid, FORCE_KILL_TIMEOUT).await {
+            return Ok(true);
+        }
+    }
+    Ok(!pid_is_alive(pid))
+}
+
+/// Held for the duration of a `start` sequence so two concurrent
+/// `spelunk server start` invocations can't both spawn a daemon against the
+/// same state dir / DB. The lock is advisory (`flock`, Unix) and releases when
+/// the guard drops (the CLI process exits or `start` returns).
+#[cfg(unix)]
+struct StartLock {
+    _file: std::fs::File,
+}
+
+/// Acquire the single-instance `start` lock. Fails fast if another start is in
+/// progress. No-op guard on non-Unix platforms.
+#[cfg(unix)]
+fn acquire_start_lock(state_dir: &Path) -> Result<StartLock> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let path = state_dir.join("server.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if rc != 0 {
+        anyhow::bail!(
+            "another `spelunk server start` is already in progress for this machine. \
+             Wait for it to finish, or check `spelunk server status`."
+        );
+    }
+    Ok(StartLock { _file: file })
+}
+
+#[cfg(not(unix))]
+struct StartLock;
+
+#[cfg(not(unix))]
+fn acquire_start_lock(_state_dir: &Path) -> Result<StartLock> {
+    Ok(StartLock)
+}
+
 // ── CLI types ─────────────────────────────────────────────────────────────────
 
 #[derive(Args, Debug)]
@@ -244,7 +444,8 @@ pub enum ServerCommand {
 
 #[derive(Args, Debug)]
 pub struct ServerStartArgs {
-    /// Port to try first (then 7778–7787 on collision)
+    /// Port to bind (default 7777). Explicit `start` does not drift to another
+    /// port: if this one is held by an unrelated process, start fails loudly.
     #[arg(long, default_value = "7777")]
     pub port: u16,
 
@@ -287,13 +488,28 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     let state_dir = spelunk_state_dir()?;
     create_state_dir(&state_dir)?;
 
-    // Already running and healthy?
+    // Serialise against a concurrent `server start` so we don't race two
+    // daemons onto the same DB.
+    let _start_lock = acquire_start_lock(&state_dir)?;
+
+    // Inspect any recorded daemon before spawning. A wedged ("hung") daemon
+    // must be reclaimed, not left running while we bind a *different* port —
+    // that leaves two servers on one DB (the leaked-process + port-drift bug).
     if let Some(pid) = read_pid(&state_dir)
         && pid_is_alive(pid)
-        && let Some(port) = read_port(&state_dir)
-        && probe_health(port).await.is_some()
     {
-        return Ok((port, false));
+        match classify_running_server(&state_dir, pid).await {
+            RunningServer::Healthy { port } => return Ok((port, false)),
+            RunningServer::HungOurs => {
+                tracing::warn!("reclaiming unresponsive spelunk-server (pid={pid}) before restart");
+                let _ = terminate_and_wait(pid).await;
+                cleanup_state_files(&state_dir);
+            }
+            RunningServer::Foreign => {
+                // PID reused by an unrelated process; recorded state is stale.
+                cleanup_state_files(&state_dir);
+            }
+        }
     }
 
     let bin = which_spelunk_server()?;
@@ -312,6 +528,8 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
     write_state_file(&port_path(&state_dir), &format!("{port}\n"))
         .context("writing server.port")?;
+    write_state_file(&db_path_file(&state_dir), &format!("{}\n", db.display()))
+        .context("writing server.db-path")?;
 
     // Wait for *liveness* (the port binds, /v1/health responds) — not model
     // readiness. Health now goes live at bind, before the model download, so
@@ -340,18 +558,63 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     let state_dir = spelunk_state_dir()?;
     create_state_dir(&state_dir)?;
 
-    // ── Idempotency check ────────────────────────────────────────────────────
-    if let Some(pid) = read_pid(&state_dir)
-        && pid_is_alive(pid)
-    {
-        if let Some(port) = read_port(&state_dir)
-            && probe_health(port).await.is_some()
-        {
-            println!("spelunk-server is already running (pid={pid}, port={port}).");
-            return Ok(());
+    // Single-instance guard: block a concurrent `server start` from racing us
+    // into a second daemon on the same DB.
+    let _start_lock = acquire_start_lock(&state_dir)?;
+
+    // ── Default DB path ──────────────────────────────────────────────────────
+    let db = args
+        .db
+        .clone()
+        .unwrap_or_else(|| state_dir.join("server.db"));
+
+    // ── Reclaim / idempotency ────────────────────────────────────────────────
+    // The previous code fell through to `find_available_port` whenever a
+    // recorded PID was alive-but-unhealthy, silently binding a *new* port and
+    // leaving the wedged daemon holding the old one — two servers on one DB.
+    // Instead: return early if healthy, reclaim if wedged, clear stale state.
+    if let Some(pid) = read_pid(&state_dir) {
+        if pid_is_alive(pid) {
+            match classify_running_server(&state_dir, pid).await {
+                RunningServer::Healthy { port } => {
+                    // Refuse to start a second server against a *different* DB —
+                    // the single state dir tracks one daemon; clobbering it would
+                    // orphan the running one.
+                    if let Some(running_db) = read_db_path(&state_dir)
+                        && !same_path(&running_db, &db)
+                    {
+                        anyhow::bail!(
+                            "a spelunk-server is already running (pid={pid}, port={port}) against \
+                             {}. Stop it first with `spelunk server stop` before starting one \
+                             against {}.",
+                            running_db.display(),
+                            db.display()
+                        );
+                    }
+                    println!("spelunk-server is already running (pid={pid}, port={port}).");
+                    return Ok(());
+                }
+                RunningServer::HungOurs => {
+                    println!("Reclaiming unresponsive spelunk-server (pid={pid})...");
+                    if !terminate_and_wait(pid).await? {
+                        anyhow::bail!(
+                            "could not stop the unresponsive spelunk-server (pid={pid}); it \
+                             survived SIGTERM and SIGKILL. Kill it manually and retry."
+                        );
+                    }
+                    cleanup_state_files(&state_dir);
+                }
+                RunningServer::Foreign => {
+                    tracing::warn!(
+                        "recorded pid={pid} is not a spelunk-server (PID reused); clearing stale state"
+                    );
+                    cleanup_state_files(&state_dir);
+                }
+            }
+        } else {
+            // Dead PID — clear stale state before starting fresh.
+            cleanup_state_files(&state_dir);
         }
-        // PID alive but no health response — stale state; fall through to restart.
-        tracing::warn!("pid {pid} is alive but /v1/health did not respond; restarting");
     }
 
     // ── Find the binary ──────────────────────────────────────────────────────
@@ -365,12 +628,12 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
         None => which_spelunk_server()?,
     };
 
-    // ── Default DB path ──────────────────────────────────────────────────────
-    let db = args.db.unwrap_or_else(|| state_dir.join("server.db"));
-
-    // ── Port selection (7777–7787) ───────────────────────────────────────────
-    const PORT_RANGE: u16 = 11; // 7777..=7787
-    let port = find_available_port(args.port, PORT_RANGE)?;
+    // ── Port (no silent drift) ───────────────────────────────────────────────
+    // Any wedged daemon of ours was reclaimed above, freeing its port. If the
+    // requested port is still occupied, it belongs to an unrelated process —
+    // fail loudly rather than binding elsewhere.
+    let port = args.port;
+    ensure_port_available_for_start(port).await?;
 
     // ── Spawn daemonised process ─────────────────────────────────────────────
     let log_file = open_log_file_for_append(&log_path(&state_dir))?;
@@ -386,6 +649,8 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
     write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
     write_state_file(&port_path(&state_dir), &format!("{port}\n"))
         .context("writing server.port")?;
+    write_state_file(&db_path_file(&state_dir), &format!("{}\n", db.display()))
+        .context("writing server.db-path")?;
 
     // Wait up to 30 s for the server to become reachable (liveness, not model
     // readiness — /v1/health is live at bind, before any model download).
@@ -439,6 +704,27 @@ fn which_spelunk_server() -> Result<PathBuf> {
                  Install it alongside `spelunk` or pass --bin <path>."
             )
         })
+}
+
+/// Verify the requested `start` port is bindable, failing loudly if not.
+///
+/// Explicit `server start` never drifts to a different port (a silent drift is
+/// what leaves a stale daemon on the old port and a new one elsewhere). A short
+/// bounded retry absorbs the brief window after reclaiming our own daemon while
+/// the OS releases its listening socket.
+async fn ensure_port_available_for_start(port: u16) -> Result<()> {
+    for attempt in 0..10 {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(());
+        }
+        if attempt < 9 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    anyhow::bail!(
+        "port {port} is already in use by another process. If it is a spelunk-server not \
+         managed here, stop it; otherwise free the port or pass `--port <N>`."
+    );
 }
 
 /// Walk ports `start..start+range` to find the first unbound one.
@@ -584,73 +870,37 @@ async fn cmd_stop() -> Result<()> {
     }
 
     // ── Identity check ───────────────────────────────────────────────────────
-    // A liveness check alone (`pid_is_alive`) is not enough: PIDs are reused
-    // by the OS, so after a crash/reboot the recorded PID may now belong to
-    // an entirely unrelated process. Verify it is actually *our* server
-    // before sending a kill signal — mirroring the health-check `start`
-    // already does on its restart path (see `cmd_start`'s idempotency
-    // check above).
-    verify_server_identity(&state_dir, pid)
-        .await
-        .with_context(|| {
-            format!(
-                "refusing to stop pid={pid}: it does not look like the spelunk-server \
-             recorded in {}. If the server crashed and this PID was reused by an \
-             unrelated process, remove the stale state files manually \
-             (`server.pid`, `server.port` under {}) and retry.",
+    // A liveness check alone is not enough: PIDs are reused, so after a
+    // crash/reboot the recorded PID may belong to an unrelated process. But a
+    // *health*-only check (the previous behaviour) is too strict — it refused
+    // to stop a wedged daemon whose `/v1/health` had stopped responding, which
+    // is exactly the hang this command must handle. Classify instead: a healthy
+    // *or* a hung-but-still-`spelunk-server` process is ours to kill; only a
+    // truly foreign process is refused.
+    match classify_running_server(&state_dir, pid).await {
+        RunningServer::Healthy { .. } | RunningServer::HungOurs => {}
+        RunningServer::Foreign => {
+            anyhow::bail!(
+                "refusing to stop pid={pid}: it does not look like the spelunk-server recorded \
+                 in {}. If the server crashed and this PID was reused by an unrelated process, \
+                 remove the stale state files manually (under {}) and retry.",
                 pid_path(&state_dir).display(),
                 state_dir.display()
-            )
-        })?;
-
-    // Send SIGTERM (Unix) or TerminateProcess (Windows).
-    terminate_process(pid)?;
-
-    // Wait up to 10 s for the process to exit.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if !pid_is_alive(pid) {
-            break;
+            );
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    if pid_is_alive(pid) {
-        eprintln!("warning: spelunk-server (pid={pid}) did not stop within 10 s.");
-    } else {
+    // Terminate (SIGTERM → SIGKILL on Unix) and confirm the process is gone
+    // before reporting success — never claim a stop that didn't happen.
+    if terminate_and_wait(pid).await? {
         println!("spelunk-server stopped.");
         cleanup_state_files(&state_dir);
-    }
-
-    Ok(())
-}
-
-/// Verify that `pid` is actually the spelunk-server we started, not some
-/// unrelated process that happens to have reused the PID after a crash.
-///
-/// Mirrors the health-check `start` already performs on its restart path:
-/// read the recorded port, probe `/v1/health`, and require a response.
-/// A `state_dir` written by *this* CLI always has a `server.port` alongside
-/// `server.pid` (both are written together in `cmd_start` /
-/// `ensure_server_running`), so a healthy probe on that port is strong
-/// evidence the PID still names our daemon. If no port is recorded or the
-/// probe fails, we do not have enough signal to safely distinguish "our
-/// server, just briefly unhealthy" from "PID reused by something else" —
-/// refuse rather than guess.
-///
-/// We do not attempt to also match `instance_id` against a previously
-/// recorded value because none is persisted to disk today (only exposed at
-/// runtime via `/v1/health`); a live, successful health response on the
-/// port we ourselves recorded is the available identity signal.
-async fn verify_server_identity(state_dir: &Path, pid: u32) -> Result<()> {
-    let port = read_port(state_dir).ok_or_else(|| {
-        anyhow::anyhow!("no server.port recorded — cannot verify pid={pid} is spelunk-server")
-    })?;
-    match probe_health(port).await {
-        Some(_instance_id) => Ok(()),
-        None => Err(anyhow::anyhow!(
-            "pid={pid} is alive but /v1/health on port {port} did not respond"
-        )),
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "spelunk-server (pid={pid}) is still running after SIGTERM and SIGKILL. State files \
+             left in place; retry `spelunk server stop` or kill the process manually."
+        );
     }
 }
 
@@ -684,6 +934,7 @@ fn terminate_process(pid: u32) -> Result<()> {
 fn cleanup_state_files(state_dir: &Path) {
     let _ = std::fs::remove_file(pid_path(state_dir));
     let _ = std::fs::remove_file(port_path(state_dir));
+    let _ = std::fs::remove_file(db_path_file(state_dir));
 }
 
 // ── status ────────────────────────────────────────────────────────────────────
@@ -1049,46 +1300,44 @@ mod tests {
         );
     }
 
-    // ── verify_server_identity (PID-reuse hardening, spelunk-oss^64 #1) ──────
+    // ── classify_running_server (PID-reuse + hung-server handling) ───────────
 
-    /// `stop` must refuse to signal a PID whose recorded port is unreachable
-    /// (the PID may have been reused by an unrelated process after a crash).
+    /// A PID with no recorded port and no matching process command classifies
+    /// as `Foreign` — `stop` must refuse to signal it (possible PID reuse).
     #[tokio::test]
-    async fn verify_server_identity_rejects_no_port_recorded() {
+    async fn classify_foreign_when_no_port_and_no_match() {
         let tmp = TempDir::new().unwrap();
-        // No server.port written — nothing to verify against.
-        let result = verify_server_identity(tmp.path(), 999_999).await;
+        // No server.port written; PID 999_999 is not a spelunk-server process.
+        let class = classify_running_server(tmp.path(), 999_999).await;
         assert!(
-            result.is_err(),
-            "identity check must fail when no port is recorded"
+            matches!(class, RunningServer::Foreign),
+            "expected Foreign when nothing identifies the PID as our server"
         );
     }
 
-    /// `stop` must refuse to signal a PID when the recorded port's
-    /// `/v1/health` does not respond — most commonly because that PID was
-    /// reused by an unrelated process after the real server crashed.
+    /// An unreachable recorded port plus a non-matching process command is
+    /// still `Foreign` (health silent AND not a spelunk-server process).
     #[tokio::test]
-    async fn verify_server_identity_rejects_unhealthy_port() {
+    async fn classify_foreign_when_unhealthy_and_no_match() {
         let tmp = TempDir::new().unwrap();
-        // Bind (but don't serve HTTP on) an ephemeral port so it's a real,
-        // non-listening-for-HTTP port rather than a guessed free one.
+        // Bind then free an ephemeral port so it's real but not serving HTTP.
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener); // free the port again, but /v1/health still won't respond
+        drop(listener);
 
         std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
 
-        let result = verify_server_identity(tmp.path(), 999_999).await;
+        let class = classify_running_server(tmp.path(), 999_999).await;
         assert!(
-            result.is_err(),
-            "identity check must fail when /v1/health does not respond on the recorded port"
+            matches!(class, RunningServer::Foreign),
+            "expected Foreign when /v1/health is silent and the PID isn't spelunk-server"
         );
     }
 
-    /// `stop` proceeds only when the recorded port's `/v1/health` responds —
-    /// this is the positive case mirroring a genuinely-running server.
+    /// A responding `/v1/health` on the recorded port classifies as `Healthy`
+    /// regardless of the PID — the positive case mirroring a live server.
     #[tokio::test]
-    async fn verify_server_identity_accepts_healthy_port() {
+    async fn classify_healthy_when_health_responds() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1106,14 +1355,64 @@ mod tests {
         let port = server.address().port();
         std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
 
-        let result = verify_server_identity(tmp.path(), 999_999).await;
+        let class = classify_running_server(tmp.path(), 999_999).await;
         assert!(
-            result.is_ok(),
-            "identity check must succeed when /v1/health responds: {result:?}"
+            matches!(class, RunningServer::Healthy { .. }),
+            "expected Healthy when /v1/health responds on the recorded port"
         );
     }
 
-    // ── state file / dir permissions (unix-gated, spelunk-oss^64 #2) ─────────
+    // ── db-path state file (single-instance / different-DB guard) ────────────
+
+    #[test]
+    fn read_db_path_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(db_path_file(tmp.path()), "/some/where/server.db\n").unwrap();
+        assert_eq!(
+            read_db_path(tmp.path()),
+            Some(PathBuf::from("/some/where/server.db"))
+        );
+    }
+
+    #[test]
+    fn read_db_path_none_when_missing_or_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert!(read_db_path(tmp.path()).is_none());
+        std::fs::write(db_path_file(tmp.path()), "\n").unwrap();
+        assert!(read_db_path(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn cleanup_removes_db_path_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(pid_path(tmp.path()), "1\n").unwrap();
+        std::fs::write(port_path(tmp.path()), "7777\n").unwrap();
+        std::fs::write(db_path_file(tmp.path()), "/x/server.db\n").unwrap();
+        cleanup_state_files(tmp.path());
+        assert!(!db_path_file(tmp.path()).exists());
+        assert!(!pid_path(tmp.path()).exists());
+        assert!(!port_path(tmp.path()).exists());
+    }
+
+    // ── start lock (single-instance guard) ───────────────────────────────────
+
+    /// A second `acquire_start_lock` on the same state dir must fail while the
+    /// first guard is still held (serialises concurrent `server start`).
+    #[cfg(unix)]
+    #[test]
+    fn start_lock_is_exclusive_while_held() {
+        let tmp = TempDir::new().unwrap();
+        let first = acquire_start_lock(tmp.path()).expect("first lock acquires");
+        assert!(
+            acquire_start_lock(tmp.path()).is_err(),
+            "second lock must fail while the first is held"
+        );
+        drop(first);
+        // Released — a fresh acquire now succeeds.
+        assert!(acquire_start_lock(tmp.path()).is_ok(), "lock frees on drop");
+    }
+
+    // ── state file / dir permissions (unix-gated) ───────────────────────────
 
     #[cfg(unix)]
     #[test]
