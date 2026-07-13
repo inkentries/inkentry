@@ -82,6 +82,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   old config that still carries the deprecated keys continues to load, but the
   keys are now silently ignored rather than mapped.
 
+### Fixed
+
+- **The self-hosted Docker Quick-Start builds and runs again.** The `Dockerfile`
+  now builds the Cargo workspace (per-crate manifests, `crates/spelunk-server`
+  binary) instead of the old single-crate layout, and installs the C/C++
+  toolchain plus libdbus the slim base lacks so the tokenizers build script and
+  the keyring backend link. `docker-compose.yml` no longer aborts a bare `docker
+  compose up` when `SPELUNK_SERVER_KEY` is unset (the profiled team-server key is
+  no longer evaluated at parse time), so the default loopback scaffold comes up
+  with no key while the team-server profile still requires the key and TLS. Both
+  services set `pull_policy: build`, so the image is built locally with no
+  registry pull (air-gapped friendly). A CI job now builds and smoke-runs the
+  image so a broken build is caught on PRs.
+
 ## [0.9.3] — 2026-07-08
 
 ### Removed
