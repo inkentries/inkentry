@@ -11,6 +11,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`spelunk graph <symbol>` no longer implies a heavily-referenced symbol is
+  unused.** The live structural scan matches only bare call syntax
+  (`symbol(...)`), so class, constant, association, and receiver-method
+  references never appear in it. When the scan finds no call sites but the
+  directory has scannable source, the message now reads "No call-site
+  invocations of '<symbol>' found (live structural scan matches '<symbol>(...)'
+  calls only)." and points at `spelunk init`, whose index carries the
+  imports/extends/implements edges the call-scan cannot see. The empty/umbrella
+  directory message is unchanged and still never suggests `init`.
 - **`graph`, `chunks`, `explore`, and `check` no longer read the machine-global
   index (`~/.config/spelunk/index.db`) from an un-`init`'d directory**, extending
   the ADR-067 fail-closed posture to these read-only display commands (previously
@@ -25,9 +34,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   <symbol> --live` for a structural scan; when the index holds no graph data at
   all, it auto-falls-back to that live scan (matching the no-project behaviour).
   The live scan distinguishes an empty or umbrella directory ("No scannable
-  source files under this directory") from a genuine no-match ("No callers found
-  for '<symbol>' (live scan)"), and never suggests `spelunk init` for an
-  already-initialized project.
+  source files under this directory") from a genuine no-call result (see the
+  reworded call-site message above), and never suggests `spelunk init` for an
+  empty/umbrella tree.
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed. (spelunk-oss^141)
