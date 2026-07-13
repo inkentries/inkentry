@@ -57,6 +57,31 @@ done
 mkdir -p "$REPOS_DIR"
 
 # ---------------------------------------------------------------------------
+# Timeout wrapper — macOS ships no `timeout`; prefer it, else `gtimeout` (GNU
+# coreutils). If neither exists, run git ops without a limit rather than failing
+# with exit 127 (which would masquerade as a clone failure).
+# ---------------------------------------------------------------------------
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="gtimeout"
+else
+    TIMEOUT_BIN=""
+    echo "WARNING: no 'timeout' binary found — --git-timeout (${GIT_TIMEOUT}s) will NOT be enforced." >&2
+    echo "         Install GNU coreutils for 'gtimeout' (macOS: brew install coreutils)." >&2
+fi
+
+# Run a command under the timeout limit when a timeout binary exists; otherwise
+# run it directly (portable no-op passthrough).
+git_timeout() {
+    if [[ -n "$TIMEOUT_BIN" ]]; then
+        "$TIMEOUT_BIN" "$GIT_TIMEOUT" "$@"
+    else
+        "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Retry helper — retries a command with exponential backoff.
 # Usage: retry <attempts> <description> <command...>
 # ---------------------------------------------------------------------------
@@ -68,8 +93,9 @@ retry() {
     local attempt=1
     local delay=5
     local rc=0
+    local errfile="/tmp/spelunk-setup-git-stderr.$$"
     while [[ $attempt -le $attempts ]]; do
-        "$@" 2>/tmp/spelunk-setup-git-stderr.$$ && return 0
+        "$@" 2>"$errfile" && return 0
         rc=$?
         if [[ $attempt -lt $attempts ]]; then
             echo "    Retry ${attempt}/${attempts}: ${desc} failed (exit ${rc}), retrying in ${delay}s..." >&2
@@ -80,6 +106,9 @@ retry() {
         fi
         attempt=$((attempt + 1))
     done
+    # Surface the real cause instead of a bare exit code (e.g. 127 = missing
+    # binary vs a genuine clone/network error).
+    echo "    ${desc} failed (exit ${rc}): $(tail -3 "$errfile" 2>/dev/null | tr '\n' ' ')" >&2
     return $rc
 }
 
@@ -196,7 +225,7 @@ while IFS= read -r line; do
         # Existing repo: fetch with timeout and retry
         echo "  Fetching origin..."
         if ! retry "$MAX_RETRIES" "git fetch" \
-            timeout "$GIT_TIMEOUT" git -C "$DEST" fetch --quiet origin; then
+            git_timeout git -C "$DEST" fetch --quiet origin; then
             echo "  ERROR: git fetch failed after ${MAX_RETRIES} retries."
             FAILED_TASKS+=("${INSTANCE_ID}: git fetch failed")
             continue
@@ -205,10 +234,10 @@ while IFS= read -r line; do
         # New clone — try partial (blobless) clone first, fall back to full clone
         echo "  Cloning ${CLONE_URL}..."
         if retry "$MAX_RETRIES" "git clone (blobless)" \
-            timeout "$GIT_TIMEOUT" git clone --filter=blob:none --no-checkout --quiet "$CLONE_URL" "$DEST" 2>/dev/null; then
+            git_timeout git clone --filter=blob:none --no-checkout --quiet "$CLONE_URL" "$DEST"; then
             echo "    (partial clone OK)"
         elif retry "$MAX_RETRIES" "git clone (full)" \
-            timeout "$GIT_TIMEOUT" git clone --no-checkout --quiet "$CLONE_URL" "$DEST" 2>/dev/null; then
+            git_timeout git clone --no-checkout --quiet "$CLONE_URL" "$DEST"; then
             echo "    (full clone OK — partial clone not supported by server)"
         else
             echo "  ERROR: git clone failed after retries."
