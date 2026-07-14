@@ -39,6 +39,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed.
+- **`spelunk index` embed-phase messages drop the pre-1.0 "older build /
+  upgrade the server" advice.** The three user-facing embed messages keep their
+  actionable guidance (the request-budget hint and the conservative-budget
+  fallback) but no longer suggest the server may be a legacy build or tell users
+  to upgrade or restart it. The request-budget fallback behaviour is unchanged.
 
 ### Added
 
@@ -89,6 +94,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   before storage, so overlapping generic and language-specific rules (for
   example `naming.functions` and `docs`) each surface once instead of two or
   three times.
+- **`spelunk server stop` reliably terminates a wedged local server.** A daemon
+  whose `/v1/health` had stopped responding could not be stopped and was
+  silently orphaned across a `stop && start`. `stop` now recognises a hung
+  daemon as ours, sends SIGTERM, escalates to SIGKILL after a bounded wait, and
+  reports success only once the process is confirmed gone. `start` reclaims a
+  stale or hung prior daemon on the requested port instead of drifting to a
+  different port (which left two servers on one `server.db`), and fails loudly
+  if an unrelated process holds the port. A single-instance guard prevents two
+  servers running against the same `server.db`.
 
 ## [0.9.3] — 2026-07-08
 
