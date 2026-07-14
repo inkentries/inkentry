@@ -202,10 +202,12 @@ class TestProvenanceAdditiveContract:
         # --no-deepseek path: no live DeepSeek key/base-url involved.
         assert payload["endpoint_kind"] == "native"
         # condition defaults to "baseline" (not a harness-specific hardcoded
-        # string like the old "claude_code_native"/"claude_code_deepseek") --
-        # see README "Conditions": claude-code is generic, not
-        # spelunk-instrumented, so condition is always baseline in practice.
+        # string like the old "claude_code_native"/"claude_code_deepseek").
         assert payload["condition"] == "baseline"
+        # No spelunk tools wired in on baseline, so provenance must not claim
+        # a version. Positive control:
+        # TestSpelunkProvenance.test_version_recorded_on_spelunk_condition.
+        assert payload["spelunk_version"] is None
 
     def test_condition_flows_from_flag_not_hardcoded(
         self, fake_claude_on_path, throwaway_repo, tmp_path
@@ -242,6 +244,84 @@ class TestProvenanceAdditiveContract:
         line = [l for l in result.stdout.splitlines() if l.startswith("{")][-1]
         payload = json.loads(line)
         assert payload["condition"] == "spelunk_search"
+
+
+class TestSpelunkProvenance:
+    """A spelunk cell whose provenance lies about what was wired in is worse
+    than no cell. Driven through the fake `claude` shim, which never spawns
+    the MCP server, so the telemetry here is the never-spawned case."""
+
+    def test_version_recorded_on_spelunk_condition(
+        self, fake_claude_on_path, throwaway_repo, tmp_path
+    ):
+        issue_file = tmp_path / "ISSUE.txt"
+        issue_file.write_text("Fix the bug.")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS_CLAUDE_CODE),
+                "--task-id",
+                "fake__task-1c",
+                "--repo-path",
+                str(throwaway_repo),
+                "--issue",
+                str(issue_file),
+                "--no-deepseek",
+                "--condition",
+                "spelunk_full",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=fake_claude_on_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(
+            [l for l in result.stdout.splitlines() if l.startswith("{")][-1]
+        )
+        # Real version string if spelunk is installed, "unknown" if not.
+        # Never None on a spelunk condition, which is the old bug: both
+        # harnesses hardcoded None and the record disagreed with the wiring.
+        assert payload["spelunk_version"] is not None
+        assert payload["condition"] == "spelunk_full"
+
+    def test_telemetry_reports_a_server_that_never_spawned(
+        self, fake_claude_on_path, throwaway_repo, tmp_path
+    ):
+        # The fake shim ignores --mcp-config entirely, so this is exactly the
+        # "spelunk-labelled cell that is really baseline with extra latency"
+        # case the telemetry exists to expose.
+        issue_file = tmp_path / "ISSUE.txt"
+        issue_file.write_text("Fix the bug.")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS_CLAUDE_CODE),
+                "--task-id",
+                "fake__task-1d",
+                "--repo-path",
+                str(throwaway_repo),
+                "--issue",
+                str(issue_file),
+                "--no-deepseek",
+                "--condition",
+                "spelunk_search",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=fake_claude_on_path,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(
+            [l for l in result.stdout.splitlines() if l.startswith("{")][-1]
+        )
+        assert payload["spelunk_mcp_server_spawned"] is False
+        assert payload["spelunk_tool_calls"] == 0
 
 
 class TestOpencodeProvenanceAdditiveContract:
