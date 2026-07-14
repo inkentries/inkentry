@@ -125,11 +125,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk index` no longer silently drops LLM summaries.** The summary pass
   ran detached from the rest of the run, so an index whose other phases finished
   first could exit with summaries still in flight: they were never generated,
-  and nothing reported it. Because a summary is secret-scanned only as it is
-  stored, a dropped summary also skipped that redaction pass. `index` now
-  finishes summaries before it returns. Generation stays best-effort (a failure
-  warns and never fails the run, so git hooks still exit 0), and `--detach` /
-  `--detach-embed` still background the whole run.
+  and nothing reported it. `index` now finishes summaries before it returns.
+  Generation stays best-effort (a failure warns and never fails the run, so git
+  hooks still exit 0), and `--detach` / `--detach-embed` still background the
+  whole run.
 - **`spelunk index` no longer reports success for summaries the LLM never
   produced.** Against an unreachable or failing LLM the run printed `Summarised
   1 batch(es).` and exited 0 while storing empty summaries. Failed batches are

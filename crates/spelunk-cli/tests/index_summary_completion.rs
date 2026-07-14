@@ -1,6 +1,5 @@
 //! `spelunk index` must run its LLM summary pass to completion before it returns.
-//! A summary is secret-scanned only as it is stored, so one still in flight at
-//! process exit silently skips that scan.
+//! A summary still in flight at process exit is silently lost; the run exits 0.
 //!
 //! Nothing here is timing-based: the mock `/llm/complete` cannot answer until the
 //! test releases it, so "summaries finished before phase 5" holds by program order
@@ -94,7 +93,7 @@ fn assert_summary_precedes_conventions(stderr: &str) {
     assert!(
         summarised < conventions,
         "the summary pass must complete before phase 5 begins; a detached pass lets \
-         `index` reach phase 5 (and exit) with summaries unscanned.\n--- stderr ---\n{stderr}"
+         `index` exit with summaries still in flight, losing them.\n--- stderr ---\n{stderr}"
     );
 }
 

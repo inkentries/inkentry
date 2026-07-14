@@ -385,8 +385,8 @@ async fn run_phases_3_to_5(
         }
     }
 
-    // Phase 4: LLM summaries. Must finish before the process exits: a summary is
-    // secret-scanned only as it is stored. Backgrounding here is process-level
+    // Phase 4: LLM summaries. Must finish before the process exits: an in-flight
+    // summary is silently lost. Backgrounding here is process-level
     // (--detach, --detach-embed, the phases-3-5 spawn), never a thread.
     if let Err(e) =
         summaries::generate_summaries(args.no_summaries, args.summary_batch_size, cfg, db).await
