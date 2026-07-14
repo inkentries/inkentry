@@ -60,6 +60,17 @@ fn ts_class(name: &str) -> ChunkSummary {
     }
 }
 
+fn tsx_fn(name: &str, content: &str) -> ChunkSummary {
+    ChunkSummary {
+        language: "tsx".into(),
+        node_type: "function".into(),
+        name: Some(name.into()),
+        content: content.into(),
+        file_path: "src/App.tsx".into(),
+        has_docstring: content.trim_start().starts_with("/**"),
+    }
+}
+
 fn find_record<'a>(
     records: &'a [ConventionRecord],
     category: &str,
@@ -278,16 +289,14 @@ fn extractor_dedups_language_category() {
             )
         })
         .collect();
-    // tsx chunks: the typescript rule set self-labels these "typescript", so
-    // without dedup they collide with the ts group's records.
+    // tsx chunks canonicalize onto the typescript label, so without dedup they
+    // collide with the ts group's records.
     let tsx_chunks: Vec<ChunkSummary> = (0..10)
-        .map(|i| ChunkSummary {
-            language: "tsx".into(),
-            node_type: "function".into(),
-            name: Some(format!("renderThing{i}")),
-            content: "/** doc */\nfunction renderThing() {}".into(),
-            file_path: "src/App.tsx".into(),
-            has_docstring: true,
+        .map(|i| {
+            tsx_fn(
+                &format!("renderThing{i}"),
+                "/** doc */\nfunction renderThing() {}",
+            )
         })
         .collect();
 
@@ -384,23 +393,15 @@ fn extractor_language_specific_wins_over_generic() {
     );
 }
 
-/// Same-source duplicates aggregate evidence. tsx chunks route through the
-/// typescript set (self-labelled "typescript") — both are LanguageSpecific — so
-/// their `naming.functions` evidence is summed into one record (5 ts + 5 tsx).
+/// .ts and .tsx chunks land in one canonical group, so a single
+/// `naming.functions` record counts all of them (5 ts + 5 tsx).
 #[test]
-fn extractor_sums_evidence_across_ts_and_tsx() {
+fn extractor_pools_evidence_across_ts_and_tsx() {
     let ts_chunks: Vec<ChunkSummary> = (0..5)
         .map(|i| ts_fn(&format!("getThing{i}"), "function getThing() {}"))
         .collect();
     let tsx_chunks: Vec<ChunkSummary> = (0..5)
-        .map(|i| ChunkSummary {
-            language: "tsx".into(),
-            node_type: "function".into(),
-            name: Some(format!("renderThing{i}")),
-            content: "function renderThing() {}".into(),
-            file_path: "src/App.tsx".into(),
-            has_docstring: false,
-        })
+        .map(|i| tsx_fn(&format!("renderThing{i}"), "function renderThing() {}"))
         .collect();
     let all: Vec<ChunkSummary> = ts_chunks.into_iter().chain(tsx_chunks).collect();
 
@@ -414,7 +415,7 @@ fn extractor_sums_evidence_across_ts_and_tsx() {
     );
     assert_eq!(
         naming[0].evidence_count, 10,
-        "ts (5) + tsx (5) same-source evidence must sum to 10"
+        "ts (5) + tsx (5) evidence must pool to 10"
     );
     assert!(
         !records.iter().any(|r| r.language == "tsx"),
@@ -439,14 +440,7 @@ fn extractor_extract_is_deterministic() {
         })
         .collect();
     let tsx_chunks: Vec<ChunkSummary> = (0..8)
-        .map(|i| ChunkSummary {
-            language: "tsx".into(),
-            node_type: "function".into(),
-            name: Some(format!("renderThing{i}")),
-            content: "function renderThing() {}".into(),
-            file_path: "src/App.tsx".into(),
-            has_docstring: false,
-        })
+        .map(|i| tsx_fn(&format!("renderThing{i}"), "function renderThing() {}"))
         .collect();
     let all: Vec<ChunkSummary> = rust_chunks
         .into_iter()
@@ -472,9 +466,13 @@ fn extractor_extract_is_deterministic() {
     );
 }
 
-/// No regression for generic-only languages: go/js/ruby have no dedicated rule
-/// set, so they flow through the generic set alone. Dedup must not drop their
-/// legitimate distinct records.
+/// No regression for generic-only languages: go/js/jsx/ruby have no dedicated
+/// rule set, so they flow through the generic set alone. Dedup must not drop
+/// their legitimate distinct records.
+///
+/// jsx keeps its own label: only tsx is canonicalized, because only tsx routes
+/// through a language-specific set and so could surface under two labels.
+/// Folding jsx into javascript would pool their evidence here instead.
 #[test]
 fn extractor_preserves_generic_only_languages() {
     fn fn_chunk(lang: &str, name: &str) -> ChunkSummary {
@@ -492,12 +490,13 @@ fn extractor_preserves_generic_only_languages() {
     for i in 0..6 {
         all.push(fn_chunk("go", &format!("HandleRequest{i}"))); // PascalCase
         all.push(fn_chunk("javascript", &format!("handleClick{i}"))); // camelCase
+        all.push(fn_chunk("jsx", &format!("renderRow{i}"))); // camelCase
         all.push(fn_chunk("ruby", &format!("handle_request_{i}"))); // snake_case
     }
 
     let records = ConventionExtractor::new().extract(&all);
 
-    for lang in ["go", "javascript", "ruby"] {
+    for lang in ["go", "javascript", "jsx", "ruby"] {
         let naming = find_lang_cat(&records, lang, "naming.functions");
         assert_eq!(
             naming.len(),
@@ -513,14 +512,7 @@ fn extractor_preserves_generic_only_languages() {
 #[test]
 fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
     let tsx_chunks: Vec<ChunkSummary> = (0..8)
-        .map(|i| ChunkSummary {
-            language: "tsx".into(),
-            node_type: "function".into(),
-            name: Some(format!("renderThing{i}")),
-            content: "function renderThing() {}".into(),
-            file_path: "src/App.tsx".into(),
-            has_docstring: false,
-        })
+        .map(|i| tsx_fn(&format!("renderThing{i}"), "function renderThing() {}"))
         .collect();
 
     let records = ConventionExtractor::new().extract(&tsx_chunks);
@@ -543,6 +535,68 @@ fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
     assert!(
         !records.iter().any(|r| r.language == "tsx"),
         "no category may carry the tsx label"
+    );
+}
+
+/// Confidence must describe the whole corpus, not the most extreme dialect.
+///
+/// Splitting .ts from .tsx produced two partial `async` views that the merge
+/// collapsed by keeping the *higher* confidence, so a small all-async .tsx group
+/// made "async/await is widely used" read 100% when only 9 of 16 functions were
+/// async. Pooling the evidence before the rate is computed is what keeps the
+/// number honest, and it is what `spelunk context` reports to an agent.
+#[test]
+fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() {
+    // 10 .ts functions, 3 async.
+    let ts_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| {
+            let content = if i < 3 {
+                format!("async function loadThing{i}() {{ await fetch('/api'); }}")
+            } else {
+                format!("function getThing{i}() {{ return 1; }}")
+            };
+            ts_fn(&format!("thing{i}"), &content)
+        })
+        .collect();
+    // 6 .tsx functions, all async: the lopsided split that used to win outright.
+    let tsx_chunks: Vec<ChunkSummary> = (0..6)
+        .map(|i| {
+            tsx_fn(
+                &format!("renderThing{i}"),
+                &format!("async function renderThing{i}() {{ await load(); }}"),
+            )
+        })
+        .collect();
+
+    let all: Vec<ChunkSummary> = ts_chunks
+        .iter()
+        .cloned()
+        .chain(tsx_chunks.iter().cloned())
+        .collect();
+    let records = ConventionExtractor::new().extract(&all);
+
+    let async_recs = find_lang_cat(&records, "typescript", "async");
+    assert_eq!(async_recs.len(), 1, "typescript async must be unique");
+    let pooled = async_recs[0];
+
+    assert_eq!(pooled.evidence_count, 9, "3 ts + 6 tsx async functions");
+    assert!(
+        (pooled.confidence - 9.0 / 16.0).abs() < 1e-6,
+        "confidence must be the pooled 9/16 rate, got {}",
+        pooled.confidence
+    );
+
+    // Extracting the .tsx chunks alone reproduces the split whose 100% used to
+    // be adopted wholesale.
+    let tsx_refs: Vec<&ChunkSummary> = tsx_chunks.iter().collect();
+    let split = spelunk_core::conventions::rules::typescript::extract(&tsx_refs, "typescript", 0);
+    let split_async = find_record(&split, "async").expect("tsx-only async record");
+    assert_eq!(split_async.confidence, 1.0, "tsx-only split is 100% async");
+    assert!(
+        pooled.confidence < split_async.confidence,
+        "pooled confidence ({}) must not inherit the max-of-splits value ({})",
+        pooled.confidence,
+        split_async.confidence
     );
 }
 
