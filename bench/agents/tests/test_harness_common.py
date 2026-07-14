@@ -52,6 +52,12 @@ class TestBuildSystemPrompt:
     def test_guidance_core_is_still_an_exact_substring_of_agent_pys_prompt(self):
         assert SPELUNK_GUIDANCE_CORE in agent.SYSTEM_PROMPT_SPELUNK
 
+    def test_the_two_mcp_harnesses_share_one_base_prompt(self):
+        # What makes opencode-vs-claude-code spelunk uplift prompt-clean, and
+        # what the README states. Diverge these and that comparison silently
+        # gains a confound: the base no longer cancels across harnesses.
+        assert OPENCODE_SYSTEM_PROMPT == CLAUDE_CODE_PROMPT_PREFIX
+
     @pytest.mark.parametrize("base", BASE_PROMPTS)
     def test_baseline_prompt_is_left_untouched(self, base):
         assert build_system_prompt(base, "baseline", []) == base

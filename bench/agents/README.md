@@ -66,17 +66,32 @@ the model sees `spelunk_search`; under the MCP harnesses it sees
 otherwise identical because they are the same objects. Transport differs,
 capability does not.
 
-**The system prompt is not identical across harnesses.** Each harness keeps
-its own base prompt; on a spelunk condition it appends a guidance sentence
-naming that harness's tool names rather than reusing `agent.py`'s whole
-`SYSTEM_PROMPT_SPELUNK`. That sentence is held as an exact substring of
-`SYSTEM_PROMPT_SPELUNK` and asserted by the offline suite, so an upstream
-reword fails loudly, but a spelunk arm's full prompt is *not* byte-identical
-to `agent.py`'s. Unlike the tool schemas, this is not equivalence by
-construction: it is the second accepted asymmetry alongside tool namespacing.
-Within a harness the baseline/spelunk contrast is unaffected (same base
-prompt on both sides); weigh it when comparing spelunk uplift *across*
-harnesses.
+**The system prompt is not byte-identical across all three harnesses.**
+There are two distinct base prompts, not three: `opencode` and `claude-code`
+share a byte-identical base, and `agent.py` (`--harness none`) differs from
+them by one clause describing how that harness applies edits. `agent.py` edits
+only through its own tool dispatch ("use the available tools ... and apply the
+fix"); the MCP harnesses edit with their native editing loop ("apply the fix
+directly by editing files in the repository"). That clause is load-bearing, so
+the prompts are deliberately *not* unified: giving either harness the other's
+sentence would describe an edit mechanism it does not have.
+
+On a spelunk condition each harness appends a guidance sentence naming its own
+tool names rather than reusing `agent.py`'s whole `SYSTEM_PROMPT_SPELUNK`. The
+sentence is held as an exact substring of `SYSTEM_PROMPT_SPELUNK` and asserted
+by the offline suite, so an upstream reword fails loudly.
+
+What that means when reading a result:
+
+- *Within* a harness the baseline/spelunk contrast is clean. The baseline arm
+  gets that harness's base prompt verbatim, the spelunk arm gets the same base
+  plus the guidance sentence, so the base cancels out of the uplift.
+- `opencode` vs `claude-code` spelunk uplift is also prompt-clean: identical
+  base, identical guidance core, differing only in tool names, which MCP
+  namespacing forces.
+- Only comparisons *against* `--harness none` carry the one-clause difference,
+  and there it is one of several irreducible differences between an in-process
+  agent and a subprocess one. Weigh it there, not across the MCP harnesses.
 
 **MCP hygiene (`--strict-mcp-config`).** The claude-code adapter passes
 `--strict-mcp-config` in *both* arms, so only the bench's own `--mcp-config`
@@ -85,13 +100,13 @@ leak them into baseline *and* spelunk, contaminating both. opencode has no
 equivalent flag; its generated `opencode.json` is repo-scoped, and on
 v1.17.20 `mcp` servers declared in a global `~/.config/opencode/` config were
 observed not to spawn for a repo-scoped run. That is an observed behaviour,
-not a documented guarantee — unlike `--strict-mcp-config`, nothing enforces
-it, so re-check it when bumping opencode.
+not a documented guarantee. Unlike `--strict-mcp-config`, nothing enforces it,
+so re-check it when bumping opencode.
 
 **Tool-invocation telemetry.** Runs on a spelunk condition report
 `spelunk_mcp_server_spawned` plus `spelunk_tool_calls` /
 `spelunk_tool_calls_by_tool`. These separate three outcomes that otherwise
-look alike: the server never spawned (broken wiring — a baseline run with
+look alike: the server never spawned (broken wiring, i.e. a baseline run with
 extra latency, not a spelunk cell), it spawned but the model never reached
 for a tool (a real result), or it was used.
 
