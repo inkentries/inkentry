@@ -294,7 +294,7 @@ mod tests {
     /// A chunk with no matching `embeddings` row must surface via
     /// `chunks_missing_embeddings` (the parse phase unions these into the embed
     /// batch so a parse-only index doesn't leave chunks permanently
-    /// unembedded — spelunk-oss^72). Once an embedding is inserted, the chunk
+    /// unembedded). Once an embedding is inserted, the chunk
     /// drops out of the result.
     #[test]
     fn chunks_missing_embeddings_finds_unembedded_then_clears() {

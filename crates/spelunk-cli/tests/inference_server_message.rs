@@ -1,4 +1,4 @@
-//! End-to-end coverage for the inference-server-required guidance (oss^133).
+//! End-to-end coverage for the inference-server-required guidance.
 //!
 //! The bug: inference-only commands (`memory search --mode semantic|hybrid`,
 //! `memory timeline`, `plumbing embed`) told a solo user with no server to set a
@@ -59,7 +59,7 @@ fn assert_local_start_no_server_url(stderr: &str) {
     );
     assert!(
         !stderr.contains(REGRESSION_SUBSTR),
-        "no-server message must NOT mention `server_url` (oss^133 regression); got: {stderr}"
+        "no-server message must NOT mention `server_url`; got: {stderr}"
     );
 }
 

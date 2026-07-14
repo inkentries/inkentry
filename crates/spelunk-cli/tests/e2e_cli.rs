@@ -60,14 +60,15 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
-/// spelunk-oss^67 regression: `spelunk search --as-of <sha>` (snapshot
-/// search) was removed outright — the flag no longer exists on the top-level
-/// `search` command. `spelunk search --help` must not mention `--as-of`.
+/// regression: `spelunk search --as-of <sha>` (snapshot search) was removed
+/// outright — the flag no longer exists on the top-level `search` command.
+/// `spelunk search --help` must not mention `--as-of`.
 ///
 /// This is deliberately scoped to top-level `search --help` only. It must NOT
 /// be confused with the unrelated, still-live `--as-of <date>` flag on
 /// `memory list` / `memory search` / `memory failures` (point-in-time memory
-/// queries, untouched by ^67) — asserting its absence there would be wrong.
+/// queries, untouched by the snapshot removal) — asserting its absence there
+/// would be wrong.
 #[test]
 fn test_search_help_does_not_list_as_of() {
     spelunk_bin()
@@ -1154,8 +1155,8 @@ fn git_init_repo(dir: &std::path::Path) {
     }
 }
 
-/// spelunk-oss^141: `spelunk init` must NOT create an uninvited `CLAUDE.md` in
-/// the user's repo, and must not claim to have written one.
+/// `spelunk init` must NOT create an uninvited `CLAUDE.md` in the user's repo,
+/// and must not claim to have written one.
 #[test]
 fn test_init_does_not_write_claude_md() {
     let tmp = tempdir().unwrap();
@@ -1182,8 +1183,8 @@ fn test_init_does_not_write_claude_md() {
     );
 }
 
-/// spelunk-oss^141: a pre-existing `CLAUDE.md` must be left byte-for-byte
-/// untouched — init must never overwrite a user's own file.
+/// A pre-existing `CLAUDE.md` must be left byte-for-byte untouched — init must
+/// never overwrite a user's own file.
 #[test]
 fn test_init_leaves_existing_claude_md_untouched() {
     let tmp = tempdir().unwrap();

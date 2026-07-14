@@ -885,8 +885,8 @@ mod arg_tests {
     use clap::Parser;
 
     /// The server binary default host must be loopback (127.0.0.1), not the
-    /// wildcard (0.0.0.0). The wildcard bind is now an explicit `--host 0.0.0.0`
-    /// opt-in (loopback is firewall-exempt and the safer default). oss^50 / req #6.
+    /// wildcard (0.0.0.0). The wildcard bind is an explicit `--host 0.0.0.0`
+    /// opt-in (loopback is firewall-exempt and the safer default).
     #[test]
     fn default_host_is_loopback() {
         let args = Args::parse_from(["spelunk-server"]);

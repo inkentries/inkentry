@@ -1,4 +1,4 @@
-//! Indexer coverage for PHP and Ruby (spelunk-oss^49, batch 1).
+//! Indexer coverage for PHP and Ruby.
 //!
 //! Asserts that `SourceParser::parse` produces the expected semantic chunks and
 //! that `EdgeExtractor::extract` produces the expected import/call/inheritance

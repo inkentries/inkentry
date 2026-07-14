@@ -213,7 +213,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // In auto mode, if the embedding call fails (e.g. embedder unreachable or
         // still warming up), fall back to ast-grep. Print a visible, one-line
         // notice first so the degradation isn't silent and a downstream
-        // "ast-grep not found" error isn't misattributed (spelunk-oss^50 #5).
+        // "ast-grep not found" error isn't misattributed.
         if auto_mode && query_vec_result.is_err() {
             sp.finish_and_clear();
             eprint_semantic_unavailable_notice(tier, &cfg);
@@ -509,7 +509,7 @@ pub(crate) fn search_all_dbs_linearrag(
 /// external `ast-grep` binary — matching runs in-process via `ast-grep-core`
 /// (see `spelunk_core::search::live`). A structural pattern (with metavariables)
 /// matches structurally; a plain string matches case-insensitively by substring
-/// on identifier/text nodes, with a literal line scan beneath (spelunk-oss^130).
+/// on identifier/text nodes, with a literal line scan beneath.
 /// It mirrors the `graph_live` pattern in `graph.rs`, but maps matches into
 /// `SearchResult` structs so the output shape is **identical** to the
 /// regular/semantic search paths.
@@ -575,7 +575,7 @@ pub(crate) fn search_live(
 
 /// Build the one-line notice explaining why `auto`-mode search is falling back
 /// from semantic to ast-grep, differentiating the cases the readiness contract
-/// exposes (spelunk-oss^50 #5).
+/// exposes.
 ///
 /// Pure so it can be unit-tested without capturing stderr; `has_server_url` is
 /// `cfg.server_url.is_some()`.

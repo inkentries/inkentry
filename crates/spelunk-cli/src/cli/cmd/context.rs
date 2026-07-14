@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn default_limits_are_small_for_every_section() {
-        // Regression for spelunk-oss^143: question/requirement were 500.
+        // Regression: question/requirement defaults were once 500.
         assert_eq!(section_limit("handoff", None), 3);
         assert_eq!(section_limit("question", None), 10);
         assert_eq!(section_limit("decision", None), 10);
@@ -464,7 +464,7 @@ mod tests {
         assert!(conv.len() < 5);
     }
 
-    // ── Coverage pass (spelunk-oss^143 Test Engineer) ────────────────────────
+    // ── Coverage pass ────────────────────────────────────────────────────────
 
     /// Minimal parser so we can exercise `ContextArgs` clap parsing (incl. the
     /// declared `conflicts_with`) without pulling in the whole top-level `Cli`.
@@ -599,9 +599,9 @@ mod tests {
 
     #[test]
     fn budget_prioritizes_durable_over_questions() {
-        // Ticket ^149: under a tight budget, durable decision/requirement notes
-        // must survive while ephemeral questions drop first, regardless of the
-        // fact that `question` is displayed before decision/requirement.
+        // Under a tight budget, durable decision/requirement notes must survive
+        // while ephemeral questions drop first, regardless of the fact that
+        // `question` is displayed before decision/requirement.
         let body = "x".repeat(400); // title(1)+body(100) = 101 tokens each
         let mut sections = vec![
             ("handoff".to_string(), vec![note(0, "handoff", "ti", &body)]),

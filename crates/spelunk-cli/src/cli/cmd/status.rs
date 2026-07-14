@@ -116,7 +116,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             ),
         };
 
-        // Server-side embedder readiness (spelunk-oss^50). `null` when offline
+        // Server-side embedder readiness. `null` when offline
         // or when talking to a server that pre-dates the readiness field.
         let embedder_state_json: serde_json::Value = match tier.embedder_state() {
             Some(capability::EmbedderState::Unknown) | None => serde_json::Value::Null,
@@ -284,7 +284,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     // Surface an in-progress (or interrupted) embed pass: when chunks outnumber
     // embeddings there is embedding work left, e.g. a detached `--detach-embed`
     // run still working through batches, or an interrupted run to resume. This
-    // is the completion check for a backgrounded embed (spelunk-oss^74).
+    // is the completion check for a backgrounded embed.
     if let Some(line) = embedding_progress_line(s.chunk_count, s.embedding_count) {
         println!("{line}");
     }
@@ -409,7 +409,7 @@ fn memory_backend_label(kind: &str) -> &str {
 /// Render the `embedder` line for `spelunk status` (text mode) from the
 /// server-side readiness state, or `None` when there is nothing useful to show
 /// (an older server that never reported readiness). Pure so it can be unit
-/// tested without capturing stdout (spelunk-oss^50).
+/// tested without capturing stdout.
 fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
     use capability::EmbedderState;
     let line = match state {
@@ -436,8 +436,7 @@ fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
 /// has more chunks than embeddings, i.e. an embed pass is still running (e.g. a
 /// detached `--detach-embed` subprocess) or was interrupted and can be resumed.
 /// Returns `None` when every chunk is embedded (or the index is empty), so a
-/// fully-embedded index prints nothing extra. Pure so it can be unit tested
-/// (spelunk-oss^74).
+/// fully-embedded index prints nothing extra. Pure so it can be unit tested.
 fn embedding_progress_line(chunk_count: i64, embedding_count: i64) -> Option<String> {
     if chunk_count <= 0 || embedding_count >= chunk_count {
         return None;
@@ -511,7 +510,6 @@ mod tests {
     }
 
     // ── embedding_progress_line: detached / interrupted embed signal ────────────
-    // (spelunk-oss^74)
 
     #[test]
     fn embedding_progress_shown_when_chunks_outnumber_embeddings() {

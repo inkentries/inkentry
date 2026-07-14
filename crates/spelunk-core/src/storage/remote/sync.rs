@@ -119,7 +119,7 @@ impl CloudSyncClient {
         server_ca: Option<&std::path::Path>,
     ) -> Result<Self> {
         // Fail closed before building the client: a bearer must never travel over
-        // plaintext http to a non-loopback host (spelunk-oss^63). Keyless
+        // plaintext http to a non-loopback host. Keyless
         // loopback-dev construction is unaffected — nothing to leak.
         if api_key.is_some() {
             crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
@@ -373,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_batch_threads_explicit_slug_into_request_path() {
-        // spelunk-oss^47: an explicit project slug (e.g. from `spelunk sync
+        // An explicit project slug (e.g. from `spelunk sync
         // --project acme/new-app`) must reach the server verbatim in the request
         // path, so the server can lazily create/reuse that project on first sync.
         // The mock only matches the slug-scoped path, so a match proves it.
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(res.created, 1);
     }
 
-    // ── transport-scheme guard at construction (spelunk-oss^78) ──────────────
+    // ── transport-scheme guard at construction ───────────────────────────────
     // A bearer must never travel over plaintext http to a non-loopback host;
     // keyless construction is unaffected. Mirrors config::validate_transport_url_*.
 

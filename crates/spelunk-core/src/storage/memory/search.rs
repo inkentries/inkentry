@@ -240,7 +240,6 @@ mod tests {
     /// A query term containing an embedded NUL byte must not surface a raw
     /// FTS5 "unterminated string" parse error via this memory-search path
     /// too (same fix as the code-search path in `storage::search::tests`).
-    /// See spelunk-oss^65 follow-up.
     #[test]
     fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
         let store = open_store();
