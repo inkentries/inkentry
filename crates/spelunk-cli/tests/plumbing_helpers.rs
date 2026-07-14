@@ -55,7 +55,12 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         // `spelunk_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
         // XDG_CONFIG_HOME so the file store lands under `<home>/.config/spelunk`
         // and never the developer's real config dir.
-        .env_remove("XDG_CONFIG_HOME");
+        .env_remove("XDG_CONFIG_HOME")
+        // The HOME redirect above hides `~/.gitconfig` from the git this child
+        // spawns, but an exported GIT_CONFIG_GLOBAL outranks HOME and would
+        // still reach it.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
     cmd
 }
 

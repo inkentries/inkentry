@@ -21,9 +21,29 @@ use spelunk_core::storage::NoteInput;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Drop the machine's global/system git config for every git this process
+/// spawns, including the ones the code under test spawns itself (`run_git`
+/// inherits our env, so a per-`Command` `.env()` would not reach them).
+/// An ambient value layers under the temp repo's local config and changes what
+/// the code under test reads: a global `notes.rewriteRef` reads back as
+/// already-covered and the repo never looks unconfigured.
+fn isolate_git_config() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: every git-touching helper here calls this first and `Once`
+        // blocks the rest until it returns, so no thread can be spawning git
+        // (reading environ) while these run.
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+        }
+    });
+}
+
 /// Create a temporary git repo with one initial commit.
 /// Returns the path; the repo is cleaned up when the returned `TempDir` drops.
 fn make_temp_git_repo() -> tempfile::TempDir {
+    isolate_git_config();
     let dir = tempfile::TempDir::new().expect("tempdir");
     let p = dir.path();
 
@@ -1460,6 +1480,38 @@ async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
     assert!(
         note_on_head(root).is_some_and(|b| b.contains(PRECIOUS)),
         "our note must carry too"
+    );
+}
+
+/// The read is deliberately unscoped: a value the user set in *global* scope is
+/// theirs and must be honoured, so we add nothing on top of it. Pins the intent
+/// that `isolate_git_config` would otherwise hide from every test here.
+#[tokio::test]
+#[serial]
+async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let global = home.path().join("gitconfig");
+    std::fs::write(&global, "[notes]\n\trewriteRef = refs/notes/spelunk\n").expect("write");
+
+    // SAFETY: `#[serial]` keeps this the only running test under `cargo test`,
+    // and nextest gives each test its own process.
+    unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &global) };
+    let status = ensure_notes_rewrite_ref(Some(root)).await;
+    // Restore before asserting: a panic below would otherwise leak the global
+    // value into every later test in this process.
+    unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null") };
+
+    assert_eq!(
+        status,
+        RewriteRefStatus::AlreadyCovered,
+        "a global value is the user's own and must be read"
+    );
+    assert!(
+        rewrite_ref_values(root).is_empty(),
+        "honouring the global value means writing no local one"
     );
 }
 
