@@ -416,8 +416,8 @@ spelunk server logs [-n <lines>]
 
 | Subcommand | Notes |
 |------------|-------|
-| `start` | Idempotent; tries `--port` (default 7777) then 7778–7787 on collision; auto-binds `127.0.0.1` |
-| `stop` | SIGTERM the running daemon and wait for exit |
+| `start` | Idempotent; binds `--port` exactly (default 7777) on `127.0.0.1`. Reclaims a wedged prior daemon of ours instead of drifting to a new port; fails loudly if an unrelated process holds the port. A single-instance guard refuses a second server against a different `server.db`. |
+| `stop` | Graceful SIGTERM, then SIGKILL escalation for an unresponsive daemon; reports success only once the process is confirmed gone. |
 | `status` | Print PID, port, instance id, and uptime |
 | `logs` | Print the last N lines of the server log (`-n`, default 50) |
 

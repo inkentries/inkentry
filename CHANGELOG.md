@@ -82,6 +82,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   old config that still carries the deprecated keys continues to load, but the
   keys are now silently ignored rather than mapped.
 
+### Fixed
+
+- **`spelunk server stop` reliably terminates a wedged local server.** A daemon
+  whose `/v1/health` had stopped responding could not be stopped and was
+  silently orphaned across a `stop && start`. `stop` now recognises a hung
+  daemon as ours, sends SIGTERM, escalates to SIGKILL after a bounded wait, and
+  reports success only once the process is confirmed gone. `start` reclaims a
+  stale or hung prior daemon on the requested port instead of drifting to a
+  different port (which left two servers on one `server.db`), and fails loudly
+  if an unrelated process holds the port. A single-instance guard prevents two
+  servers running against the same `server.db`.
+
 ## [0.9.3] — 2026-07-08
 
 ### Removed
