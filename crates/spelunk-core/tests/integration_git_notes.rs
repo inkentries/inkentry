@@ -6,16 +6,11 @@
 //!
 //! ## Concurrent-write safety (#185)
 //!
-//! `add` is an unsynchronized read-modify-write that rewrites the HEAD note with
-//! `git notes add -f` (replace semantics). Two agents writing to the *same HEAD*
-//! concurrently race: one write may be lost, or both may survive — the outcome is
-//! timing-dependent, not guaranteed. The guaranteed contract is only that the
-//! store never corrupts and at least one write survives.
-//!
-//! **Chosen strategy: Option C — accept the race for the v1 spike.**
-//! The typical agent workflow produces a note per commit; agents working in
-//! separate commits (the common case) are unaffected. Users who need
-//! conflict-free concurrent writes should use the sqlite backend (the default).
+//! Writes are a read-modify-write that rewrites the HEAD note with
+//! `git notes add -f` (replace semantics). Two agents writing to the *same
+//! HEAD* concurrently would race, and the loser's entry would vanish silently
+//! with both exiting 0. ADR-069 (D6) closes that: every read-modify-write is
+//! serialized by a lock in the git common dir, so all writers survive.
 
 mod common;
 
@@ -136,17 +131,9 @@ async fn git_notes_list_without_kind_returns_all() {
 
 // ── concurrent write safety (#185) ───────────────────────────────────────────
 
-/// Two tasks writing a note to the same HEAD concurrently must never corrupt the
-/// store or panic. The backend does an unsynchronized read-modify-write, so the
-/// outcome is timing-dependent: if the second reader observes the first's write
-/// both notes survive (2); if both read the empty blob first, one overwrite wins
-/// (1). Either way at least one survives and the store stays readable — that is
-/// the guaranteed contract, and it is what we assert.
-///
-/// This is *not* last-write-wins: concurrent same-HEAD writes may lose an entry
-/// (the `-f` overwrite race, #185) — use the sqlite backend for multi-agent
-/// workflows. An earlier assertion of `len <= 1` was wrong: it asserted the
-/// data-loss race *always* happens, which it does not, so it flaked on CI.
+/// Two tasks writing a note to the same HEAD concurrently must both survive, as
+/// well-formed records of the two distinct writers. Serialized by the notes
+/// lock, so the count is exact rather than timing-dependent.
 #[tokio::test]
 #[serial]
 async fn git_notes_concurrent_same_head_stays_consistent() {
@@ -169,12 +156,13 @@ async fn git_notes_concurrent_same_head_stays_consistent() {
         .await
         .expect("list");
 
-    // At least one survives, at most both; the RMW race may drop one but never
-    // corrupts the blob or duplicates/mangles a record.
-    assert!(
-        (1..=2).contains(&notes.len()),
-        "expected 1 or 2 surviving notes; got {}",
-        notes.len()
+    // Serialized by the notes lock: neither writer's entry may be dropped.
+    assert_eq!(
+        notes.len(),
+        2,
+        "both concurrent same-HEAD adds must survive; got {} ({:?})",
+        notes.len(),
+        notes.iter().map(|n| &n.title).collect::<Vec<_>>()
     );
     // Every surviving entry is a well-formed note we wrote — no partial/garbled
     // records from an interleaved write.
@@ -186,13 +174,10 @@ async fn git_notes_concurrent_same_head_stays_consistent() {
             n.title
         );
     }
-    // If both survived they must be the two distinct writers, not a duplicate.
-    if notes.len() == 2 {
-        assert_ne!(
-            notes[0].title, notes[1].title,
-            "both entries are distinct writers"
-        );
-    }
+    assert_ne!(
+        notes[0].title, notes[1].title,
+        "the survivors are the two distinct writers, not one entry twice"
+    );
 }
 
 /// Deterministic sibling of the concurrent test: two *sequential* adds to the
@@ -737,4 +722,436 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(all.len(), 3, "all three records still present");
     let rec2 = all.iter().find(|n| n.id == 2).expect("record 2 present");
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
+}
+
+// ── concurrent append safety (#185) ──────────────────────────────────────────
+
+/// N concurrent `append_to_git_notes` calls against one HEAD must all survive.
+///
+/// Regression guard for #185: the read-modify-write is only safe while every
+/// writer holds the notes lock across all four steps. Without it, two writers
+/// read the same body and the later write-back drops the earlier entry, both
+/// exiting 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn append_to_git_notes_concurrent_writers_all_survive() {
+    const WRITERS: i64 = 8;
+
+    let dir = make_temp_git_repo();
+    let root = dir.path().to_path_buf();
+
+    let mut tasks = Vec::new();
+    for id in 1..=WRITERS {
+        let root = root.clone();
+        tasks.push(tokio::spawn(async move {
+            let record = make_note_record(id, &format!("concurrent decision {id}"));
+            append_to_git_notes(Some(&root), &record).await
+        }));
+    }
+
+    for task in tasks {
+        task.await
+            .expect("writer task should not panic")
+            .expect("append should succeed");
+    }
+
+    // Every writer's entry must be present in the final note body.
+    let blob = read_raw_note(&root);
+    let found: Vec<i64> = blob
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
+
+    let missing: Vec<i64> = (1..=WRITERS).filter(|id| !found.contains(id)).collect();
+    assert!(
+        missing.is_empty(),
+        "lost {} of {WRITERS} concurrent entries (ids {missing:?}); surviving ids {found:?}",
+        missing.len(),
+    );
+}
+
+/// Concurrent writers in **separate worktrees** must all survive.
+///
+/// Worktrees share one `refs/notes/spelunk` (it resolves through the git
+/// common dir to the main repo's copy), so they are real contenders on one
+/// note body. This pins the lock to the common dir: a lock keyed on the
+/// per-worktree git dir would still pass the single-repo test above while
+/// serializing nothing here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn append_to_git_notes_concurrent_worktrees_all_survive() {
+    const PER_TREE: i64 = 4;
+
+    let dir = make_temp_git_repo();
+    let main_root = dir.path().to_path_buf();
+
+    // Second worktree on a new branch at the same commit, so both HEADs
+    // resolve to one note object.
+    let wt_parent = tempfile::TempDir::new().expect("tempdir");
+    let wt_root = wt_parent.path().join("wt");
+    let out = std::process::Command::new("git")
+        .args(["worktree", "add", "-b", "wt", wt_root.to_str().unwrap()])
+        .current_dir(&main_root)
+        .output()
+        .expect("git worktree add");
+    assert!(
+        out.status.success(),
+        "worktree add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Precondition: the two trees really do share one notes ref.
+    let head_of = |root: &std::path::Path| -> String {
+        let o = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .expect("rev-parse");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    assert_eq!(
+        head_of(&main_root),
+        head_of(&wt_root),
+        "both worktrees must sit on the same commit"
+    );
+
+    let mut tasks = Vec::new();
+    for (tree, base) in [(&main_root, 0), (&wt_root, PER_TREE)] {
+        for n in 1..=PER_TREE {
+            let root = tree.clone();
+            let id = base + n;
+            tasks.push(tokio::spawn(async move {
+                let record = make_note_record(id, &format!("worktree decision {id}"));
+                append_to_git_notes(Some(&root), &record).await
+            }));
+        }
+    }
+
+    for task in tasks {
+        task.await
+            .expect("writer task should not panic")
+            .expect("append should succeed");
+    }
+
+    let total = PER_TREE * 2;
+    let blob = read_raw_note(&main_root);
+    let found: Vec<i64> = blob
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
+
+    let missing: Vec<i64> = (1..=total).filter(|id| !found.contains(id)).collect();
+    assert!(
+        missing.is_empty(),
+        "lost {} of {total} cross-worktree entries (ids {missing:?}); surviving ids {found:?}",
+        missing.len(),
+    );
+}
+
+// ── the lock itself: contract and degraded paths (ADR-069 D6) ────────────────
+
+use spelunk_core::storage::lock_notes;
+
+/// The wait budget `lock_notes` allows before giving up on a contended lock.
+/// Mirrors `LOCK_WAIT_BUDGET` in `storage/git_notes/lock.rs` (not exported).
+const LOCK_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The path production locks: `<git-common-dir>/spelunk-notes.lock`. Mirrors
+/// `notes_lock_path`, including resolving git's relative answer (a plain repo
+/// answers `.git`) against the repo root.
+fn notes_lock_path(root: &std::path::Path) -> std::path::PathBuf {
+    let out = std::process::Command::new("git")
+        .args([
+            "-C",
+            root.to_str().unwrap(),
+            "rev-parse",
+            "--git-common-dir",
+        ])
+        .output()
+        .expect("git rev-parse --git-common-dir");
+    assert!(out.status.success(), "rev-parse --git-common-dir");
+
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let raw = std::path::Path::new(&raw);
+    let common_dir = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    common_dir.join("spelunk-notes.lock")
+}
+
+/// Open the lock file the way production does. A lock taken through this handle
+/// really contends with `lock_notes`: std leaves same-handle (or cloned-handle)
+/// re-locking unspecified, but a distinct `open` is a distinct handle on every
+/// platform, so the conflict is well-defined.
+fn open_lock_file(path: &std::path::Path) -> std::fs::File {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .expect("open notes lock file")
+}
+
+/// The `lock_notes` contract D5 builds on: `Some` when free, `None` when
+/// contended past the budget, and the guard releases on drop.
+///
+/// D5 reads `None` as "skip the merge, read anyway", so `None` must be reachable
+/// (never an indefinite block) and a dropped guard must not keep the lock held.
+#[tokio::test]
+#[serial]
+async fn lock_notes_grants_when_free_yields_none_when_contended_and_frees_on_drop() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let held = lock_notes(Some(root)).await;
+    assert!(held.is_some(), "an uncontended lock must be granted");
+
+    let started = std::time::Instant::now();
+    let contended = lock_notes(Some(root)).await;
+    let waited = started.elapsed();
+    assert!(
+        contended.is_none(),
+        "a lock held elsewhere must yield None, not block indefinitely"
+    );
+    // Negative control: a `None` returned immediately would mean the lock was
+    // never taken (a bad path, an unopenable file) and the contention above was
+    // never actually exercised.
+    assert!(
+        waited >= LOCK_WAIT_BUDGET,
+        "the contended caller must wait out the {LOCK_WAIT_BUDGET:?} budget before giving up; \
+         gave up after {waited:?}, so it never contended"
+    );
+
+    drop(held);
+
+    assert!(
+        lock_notes(Some(root)).await.is_some(),
+        "the guard must release the lock on drop"
+    );
+}
+
+/// An unusable lock file degrades to an unlocked write, never an `Err`.
+///
+/// `memory add` treats a failed pre-`init` carry as fatal (ADR-068 D3), so a
+/// lock that cannot even be opened must not surface as a command failure.
+///
+/// A directory at the lock path makes the open fail deterministically on every
+/// platform (EISDIR on unix, access-denied on Windows).
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_proceeds_when_lock_file_is_unusable() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    std::fs::create_dir_all(notes_lock_path(root)).expect("place a directory at the lock path");
+
+    // Negative control: prove the lock really is unusable at the path production
+    // resolves, so the write below exercises the degraded path rather than
+    // quietly locking a file this test never blocked.
+    assert!(
+        lock_notes(Some(root)).await.is_none(),
+        "setup: an unopenable lock path must yield None"
+    );
+
+    let record = make_note_record(1, "unusable lock still writes");
+    append_to_git_notes(Some(root), &record)
+        .await
+        .expect("an unusable lock must degrade to an unlocked write, not an error");
+
+    assert!(
+        read_raw_note(root).contains("unusable lock still writes"),
+        "the entry must still be written when the lock cannot be opened"
+    );
+}
+
+/// Contention past the wait budget degrades to an unlocked write, never an `Err`
+/// (the other half of the ADR-068 D3 interaction above).
+///
+/// Deterministic: the lock is held here for the whole call, so the writer is
+/// guaranteed to exhaust its budget rather than race for it.
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_proceeds_when_lock_budget_is_exhausted() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let held = open_lock_file(&notes_lock_path(root));
+    held.lock()
+        .expect("hold the notes lock for the whole write");
+
+    let started = std::time::Instant::now();
+    let result = append_to_git_notes(
+        Some(root),
+        &make_note_record(1, "contended lock still writes"),
+    )
+    .await;
+    let waited = started.elapsed();
+
+    drop(held);
+
+    result.expect("lock contention must never fail the caller's write");
+    // Negative control: too fast means the writer took the lock uncontended, so
+    // the degraded path was never exercised.
+    assert!(
+        waited >= LOCK_WAIT_BUDGET,
+        "the writer must have waited out the {LOCK_WAIT_BUDGET:?} budget; \
+         returned after {waited:?}, so it never contended"
+    );
+    assert!(
+        read_raw_note(root).contains("contended lock still writes"),
+        "the entry must still be written after the lock budget is exhausted"
+    );
+}
+
+// ── the `--backend git-notes` path (append_record / archive_record) ───────────
+
+/// `GitNotesBackend::add` → `append_record` carries the same read-modify-write
+/// as the write-through helper, so it needs the same guarantee: N concurrent
+/// adds against one HEAD all survive.
+///
+/// Asserted on titles, not ids: `add` mints its id from `now_millis()` *before*
+/// taking the lock, so adds landing in one millisecond can share an id. Entry
+/// survival is what the lock guarantees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn git_notes_backend_concurrent_adds_all_survive() {
+    const WRITERS: usize = 8;
+
+    let dir = make_temp_git_repo();
+    let root = dir.path().to_path_buf();
+
+    let mut tasks = Vec::new();
+    for n in 1..=WRITERS {
+        let root = root.clone();
+        tasks.push(tokio::spawn(async move {
+            GitNotesBackend::with_root(root)
+                .add(note_input("decision", &format!("backend writer {n}")))
+                .await
+        }));
+    }
+    for task in tasks {
+        task.await
+            .expect("writer task should not panic")
+            .expect("backend add should succeed");
+    }
+
+    let notes = GitNotesBackend::with_root(root)
+        .list(Some("decision"), 100, false, None)
+        .await
+        .expect("list");
+    let titles: std::collections::HashSet<String> = notes.into_iter().map(|n| n.title).collect();
+
+    let missing: Vec<String> = (1..=WRITERS)
+        .map(|n| format!("backend writer {n}"))
+        .filter(|t| !titles.contains(t))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "lost {} of {WRITERS} concurrent backend adds ({missing:?}); surviving {titles:?}",
+        missing.len(),
+    );
+}
+
+/// `GitNotesBackend::archive` → `archive_record` is the same read-modify-write
+/// in reverse, and needs the same guarantee. Concurrent archives of distinct
+/// entries must each land: unserialized, each writer's write-back would revive
+/// the entries its peers had just archived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn git_notes_backend_concurrent_archives_all_land() {
+    const ENTRIES: usize = 6;
+
+    let dir = make_temp_git_repo();
+    let root = dir.path().to_path_buf();
+    let backend = GitNotesBackend::with_root(root.clone());
+
+    // Sequential adds: each is several git subprocesses, so the `now_millis()`
+    // ids are distinct — `archive(id)` targets the first id match, so a
+    // collision here would archive the wrong record.
+    let mut ids = Vec::new();
+    for n in 1..=ENTRIES {
+        ids.push(
+            backend
+                .add(note_input("decision", &format!("archive target {n}")))
+                .await
+                .expect("add"),
+        );
+    }
+    let distinct: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    assert_eq!(distinct.len(), ENTRIES, "setup: the ids must be distinct");
+
+    let mut tasks = Vec::new();
+    for id in ids {
+        let root = root.clone();
+        tasks.push(tokio::spawn(async move {
+            GitNotesBackend::with_root(root).archive(id).await
+        }));
+    }
+    for task in tasks {
+        assert!(
+            task.await
+                .expect("archive task should not panic")
+                .expect("archive should succeed"),
+            "each archive must find and rewrite its entry"
+        );
+    }
+
+    let active = backend
+        .list(Some("decision"), 100, false, None)
+        .await
+        .expect("list active");
+    assert!(
+        active.is_empty(),
+        "every concurrently archived entry must stay archived; still active: {:?}",
+        active.iter().map(|n| &n.title).collect::<Vec<_>>()
+    );
+
+    let all = backend
+        .list(Some("decision"), 100, true, None)
+        .await
+        .expect("list all");
+    assert_eq!(
+        all.len(),
+        ENTRIES,
+        "archiving must rewrite entries in place, never drop them"
+    );
+}
+
+/// `add` and `archive` take the notes lock exactly once; nothing beneath them
+/// takes it again. A nested acquisition would not hang (the wait is bounded),
+/// it would silently burn a full budget and then degrade to an unlocked write.
+/// An *uncontended* op is a handful of git subprocesses (~30ms), so reaching the
+/// budget at all means it waited on a lock it already holds.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_uncontended_add_and_archive_never_reach_the_wait_budget() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    let started = std::time::Instant::now();
+    let id = backend
+        .add(note_input("decision", "no nested acquisition"))
+        .await
+        .expect("add");
+    let add_took = started.elapsed();
+
+    let started = std::time::Instant::now();
+    assert!(
+        backend.archive(id).await.expect("archive"),
+        "entry archived"
+    );
+    let archive_took = started.elapsed();
+
+    for (op, took) in [("add", add_took), ("archive", archive_took)] {
+        assert!(
+            took < LOCK_WAIT_BUDGET,
+            "uncontended {op} took {took:?}, reaching the {LOCK_WAIT_BUDGET:?} lock budget: \
+             it waited on a lock it already holds (a nested acquisition)"
+        );
+    }
 }
