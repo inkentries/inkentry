@@ -795,7 +795,6 @@ to re-embed. (#439, #441)
 - **Auto-spawned `spelunk-server` now binds to `127.0.0.1` only.** Previously
   the server started by `spelunk init` / `ensure_server_running` defaulted to
   `0.0.0.0`, making the unauthenticated local server LAN-reachable.
-  (THREAT-MODEL req #9, decision #88)
 
 ### Added
 
