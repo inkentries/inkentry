@@ -58,7 +58,8 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         .env_remove("XDG_CONFIG_HOME")
         // The HOME redirect above hides `~/.gitconfig` from the git this child
         // spawns, but an exported GIT_CONFIG_GLOBAL outranks HOME and would
-        // still reach it.
+        // still reach it. Not a Windows path, but git skips a scope whenever
+        // its var is set, whatever the path resolves to.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
     cmd

@@ -27,6 +27,9 @@ use spelunk_core::storage::NoteInput;
 /// An ambient value layers under the temp repo's local config and changes what
 /// the code under test reads: a global `notes.rewriteRef` reads back as
 /// already-covered and the repo never looks unconfigured.
+///
+/// `/dev/null` is not a Windows path, but git skips a scope whenever its var is
+/// set, whatever the path resolves to, so this isolates on Windows regardless.
 fn isolate_git_config() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
