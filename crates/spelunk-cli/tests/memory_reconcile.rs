@@ -680,6 +680,253 @@ fn dedup_key_excludes_tags_which_union_on_collapse() {
 }
 
 #[test]
+fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
+    // The add-wins union must also fire when a candidate collapses onto a row
+    // already in memory.db, not just against a sibling candidate. Tags/files
+    // are outside the key, so without the merge the losing copy's metadata is
+    // discarded silently — the row is "already present" and simply skipped.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "stored-union-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    // Pass 1: import the entry carrying only `alpha` / `a.rs`.
+    let conn = Connection::open(&server_db).unwrap();
+    let first_id = insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("alpha"),
+        Some("a.rs"),
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(count_memory_notes(&mem_path), 1, "pass 1 imports the entry");
+
+    // Pass 2: the same text reappears with different tags/files. Same entity,
+    // so it will not re-import — its metadata has to merge into the stored row.
+    let conn = Connection::open(&server_db).unwrap();
+    conn.execute(
+        "DELETE FROM notes WHERE id = ?1",
+        rusqlite::params![first_id],
+    )
+    .unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("beta"),
+        Some("b.rs"),
+        1_700_000_002,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    assert_eq!(
+        count_memory_notes(&mem_path),
+        1,
+        "identical text stays one entity"
+    );
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let (tags, files): (String, String) = mem
+        .query_row("SELECT tags, linked_files FROM notes", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    for want in ["alpha", "beta"] {
+        assert!(
+            tags.contains(want),
+            "tags {tags:?} must keep {want} after collapsing onto the stored row"
+        );
+    }
+    for want in ["a.rs", "b.rs"] {
+        assert!(
+            files.contains(want),
+            "linked_files {files:?} must keep {want} after collapsing onto the stored row"
+        );
+    }
+}
+
+#[test]
+fn dry_run_does_not_union_tags_into_a_stored_row() {
+    // The tag merge is a write. `--dry-run` must stop before it, not just
+    // before the insert.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "dryrun-union-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    let conn = Connection::open(&server_db).unwrap();
+    let first_id = insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("alpha"),
+        None,
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    // Same entity, new tag — a live run would merge `beta` in.
+    let conn = Connection::open(&server_db).unwrap();
+    conn.execute(
+        "DELETE FROM notes WHERE id = ?1",
+        rusqlite::params![first_id],
+    )
+    .unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("beta"),
+        None,
+        1_700_000_002,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .arg("--dry-run")
+        .assert()
+        .success();
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let tags: String = mem
+        .query_row("SELECT tags FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        !tags.contains("beta"),
+        "--dry-run must not merge tags; found {tags:?}"
+    );
+}
+
+#[test]
+fn json_counts_partition_the_source_rows() {
+    // The summary must account for every source row exactly once:
+    // candidates == already_present + collapsed_duplicates + imported.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "partition-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    // Pass 1: one row, imported — it becomes the "already present" copy.
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Stored",
+        "stored body",
+        None,
+        None,
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(count_memory_notes(&mem_path), 1);
+
+    // Pass 2: the stored row again (already_present=1), plus two rows sharing
+    // one entity_id (imported=1, collapsed_duplicates=1). 4 candidates total.
+    let conn = Connection::open(&server_db).unwrap();
+    for created_at in [1_700_000_010_i64, 1_700_000_011] {
+        insert_server_note(
+            &conn,
+            project_id,
+            "decision",
+            "Twin",
+            "twin body",
+            None,
+            None,
+            created_at,
+            "active",
+            None,
+        );
+    }
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Fresh",
+        "fresh body",
+        None,
+        None,
+        1_700_000_012,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    let out = reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value =
+        serde_json::from_slice(&out).expect("summary line must be valid JSON");
+
+    let candidates = v["candidates"].as_i64().expect("candidates");
+    let already = v["already_present"].as_i64().expect("already_present");
+    let collapsed = v["collapsed_duplicates"]
+        .as_i64()
+        .expect("collapsed_duplicates");
+    let imported = v["imported"].as_i64().expect("imported");
+
+    assert_eq!(candidates, 4, "4 source rows: {v}");
+    assert_eq!(already, 1, "the stored row is already present: {v}");
+    assert_eq!(collapsed, 1, "the twin pair folds one row away: {v}");
+    assert_eq!(imported, 2, "Twin (collapsed) and Fresh import: {v}");
+    assert_eq!(
+        candidates,
+        already + collapsed + imported,
+        "counts must partition the source rows exactly: {v}"
+    );
+    assert_eq!(count_memory_notes(&mem_path), 3, "Stored + Twin + Fresh");
+}
+
+#[test]
 fn tag_reorder_does_not_reimport() {
     // Tags are excluded from the key outright (they were formerly sorted and
     // hashed), so reordering them cannot produce a second copy.
