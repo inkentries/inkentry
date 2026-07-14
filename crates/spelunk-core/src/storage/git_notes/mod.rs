@@ -8,6 +8,9 @@ use super::memory::Note;
 use super::note_record::{NoteRecord, record_to_note};
 
 mod backend_impl;
+mod lock;
+
+pub use lock::{NotesLock, lock_notes};
 
 // ── Write-through helper (free function) ─────────────────────────────────────
 
@@ -17,6 +20,9 @@ mod backend_impl;
 /// lines (spelunk records and foreign content alike) are preserved verbatim;
 /// the new record is appended as one JSON line; the combined text is written
 /// back with `git notes add -f`.
+///
+/// Serialized end to end by [`lock_notes`]; without it a concurrent writer
+/// reads the same body and silently drops this entry on write-back (#185).
 ///
 /// Errors are intentionally non-fatal: the caller should log `tracing::warn!`
 /// and continue.  This function returns `Ok(())` on success or propagates
@@ -29,6 +35,10 @@ pub async fn append_to_git_notes(
     git_root: Option<&std::path::Path>,
     record: &NoteRecord,
 ) -> Result<()> {
+    // Guard all four steps. Contention must never fail the caller's write, so
+    // an unavailable lock degrades to the pre-#185 unserialized behaviour.
+    let _lock = lock_notes(git_root).await;
+
     // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
     let head = run_git(git_root, &["rev-parse", "HEAD"])
         .await
@@ -146,12 +156,11 @@ const GIT_NOTES_MAX_LIST: usize = 500;
 /// foreign lines; writes preserve them and every sibling record verbatim.
 /// Multiple entries accumulate within a commit's note and across commits.
 ///
-/// # Concurrency warning
+/// # Concurrency
 /// `add`/`archive` do read-modify-write and rewrite the note with
-/// `git notes add -f`. If two processes mutate the same `HEAD` note
-/// simultaneously the second write can silently overwrite the first's edit.
-/// For multi-agent workflows use the sqlite backend (the default).
-/// See issue #185 for the full analysis.
+/// `git notes add -f`. Each is serialized by [`lock_notes`], which is keyed on
+/// the git **common** dir so that worktrees sharing one notes ref contend on
+/// one lock (#185).
 ///
 /// # Unsupported methods
 /// Semantic search (`search`, `search_hybrid`, `search_timeline`, `search_text`),
@@ -330,6 +339,8 @@ impl GitNotesBackend {
     /// Append `record` as a new JSON line to `object`'s note, preserving every
     /// existing line (spelunk records and foreign content) byte-for-byte.
     async fn append_record(&self, object: &str, record: &NoteRecord) -> Result<()> {
+        let _lock = lock_notes(self.git_root.as_deref()).await;
+
         let existing = self.read_note_blob(object).await?;
         let new_line = serde_json::to_string(record)?;
         let combined = if existing.trim().is_empty() {
@@ -346,6 +357,8 @@ impl GitNotesBackend {
     /// the matched record's line is re-serialized. Returns whether a match was
     /// rewritten.
     async fn archive_record(&self, object: &str, id: i64) -> Result<bool> {
+        let _lock = lock_notes(self.git_root.as_deref()).await;
+
         let blob = self.read_note_blob(object).await?;
         let mut out_lines: Vec<String> = Vec::new();
         let mut changed = false;

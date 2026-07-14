@@ -6,16 +6,11 @@
 //!
 //! ## Concurrent-write safety (#185)
 //!
-//! `add` is an unsynchronized read-modify-write that rewrites the HEAD note with
-//! `git notes add -f` (replace semantics). Two agents writing to the *same HEAD*
-//! concurrently race: one write may be lost, or both may survive — the outcome is
-//! timing-dependent, not guaranteed. The guaranteed contract is only that the
-//! store never corrupts and at least one write survives.
-//!
-//! **Chosen strategy: Option C — accept the race for the v1 spike.**
-//! The typical agent workflow produces a note per commit; agents working in
-//! separate commits (the common case) are unaffected. Users who need
-//! conflict-free concurrent writes should use the sqlite backend (the default).
+//! Writes are a read-modify-write that rewrites the HEAD note with
+//! `git notes add -f` (replace semantics). Two agents writing to the *same
+//! HEAD* concurrently would race, and the loser's entry would vanish silently
+//! with both exiting 0. ADR-069 (D6) closes that: every read-modify-write is
+//! serialized by a lock in the git common dir, so all writers survive.
 
 mod common;
 
@@ -737,4 +732,130 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(all.len(), 3, "all three records still present");
     let rec2 = all.iter().find(|n| n.id == 2).expect("record 2 present");
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
+}
+
+// ── concurrent append safety (#185) ──────────────────────────────────────────
+
+/// N concurrent `append_to_git_notes` calls against one HEAD must all survive.
+///
+/// Regression guard for #185: the read-modify-write is only safe while every
+/// writer holds the notes lock across all four steps. Without it, two writers
+/// read the same body and the later write-back drops the earlier entry, both
+/// exiting 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn append_to_git_notes_concurrent_writers_all_survive() {
+    const WRITERS: i64 = 8;
+
+    let dir = make_temp_git_repo();
+    let root = dir.path().to_path_buf();
+
+    let mut tasks = Vec::new();
+    for id in 1..=WRITERS {
+        let root = root.clone();
+        tasks.push(tokio::spawn(async move {
+            let record = make_note_record(id, &format!("concurrent decision {id}"));
+            append_to_git_notes(Some(&root), &record).await
+        }));
+    }
+
+    for task in tasks {
+        task.await
+            .expect("writer task should not panic")
+            .expect("append should succeed");
+    }
+
+    // Every writer's entry must be present in the final note body.
+    let blob = read_raw_note(&root);
+    let found: Vec<i64> = blob
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
+
+    let missing: Vec<i64> = (1..=WRITERS).filter(|id| !found.contains(id)).collect();
+    assert!(
+        missing.is_empty(),
+        "lost {} of {WRITERS} concurrent entries (ids {missing:?}); surviving ids {found:?}",
+        missing.len(),
+    );
+}
+
+/// Concurrent writers in **separate worktrees** must all survive.
+///
+/// Worktrees share one `refs/notes/spelunk` (it resolves through the git
+/// common dir to the main repo's copy), so they are real contenders on one
+/// note body. This pins the lock to the common dir: a lock keyed on the
+/// per-worktree git dir would still pass the single-repo test above while
+/// serializing nothing here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+async fn append_to_git_notes_concurrent_worktrees_all_survive() {
+    const PER_TREE: i64 = 4;
+
+    let dir = make_temp_git_repo();
+    let main_root = dir.path().to_path_buf();
+
+    // Second worktree on a new branch at the same commit, so both HEADs
+    // resolve to one note object.
+    let wt_parent = tempfile::TempDir::new().expect("tempdir");
+    let wt_root = wt_parent.path().join("wt");
+    let out = std::process::Command::new("git")
+        .args(["worktree", "add", "-b", "wt", wt_root.to_str().unwrap()])
+        .current_dir(&main_root)
+        .output()
+        .expect("git worktree add");
+    assert!(
+        out.status.success(),
+        "worktree add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Precondition: the two trees really do share one notes ref.
+    let head_of = |root: &std::path::Path| -> String {
+        let o = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .expect("rev-parse");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    assert_eq!(
+        head_of(&main_root),
+        head_of(&wt_root),
+        "both worktrees must sit on the same commit"
+    );
+
+    let mut tasks = Vec::new();
+    for (tree, base) in [(&main_root, 0), (&wt_root, PER_TREE)] {
+        for n in 1..=PER_TREE {
+            let root = tree.clone();
+            let id = base + n;
+            tasks.push(tokio::spawn(async move {
+                let record = make_note_record(id, &format!("worktree decision {id}"));
+                append_to_git_notes(Some(&root), &record).await
+            }));
+        }
+    }
+
+    for task in tasks {
+        task.await
+            .expect("writer task should not panic")
+            .expect("append should succeed");
+    }
+
+    let total = PER_TREE * 2;
+    let blob = read_raw_note(&main_root);
+    let found: Vec<i64> = blob
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
+
+    let missing: Vec<i64> = (1..=total).filter(|id| !found.contains(id)).collect();
+    assert!(
+        missing.is_empty(),
+        "lost {} of {total} cross-worktree entries (ids {missing:?}); surviving ids {found:?}",
+        missing.len(),
+    );
 }
