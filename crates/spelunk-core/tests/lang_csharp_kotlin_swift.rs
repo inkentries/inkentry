@@ -1,4 +1,4 @@
-//! Indexer coverage for C#, Kotlin, and Swift (spelunk-oss^49, batch 2).
+//! Indexer coverage for C#, Kotlin, and Swift.
 //!
 //! Asserts that `SourceParser::parse` produces the expected semantic chunks and
 //! that `EdgeExtractor::extract` produces the expected import/call/inheritance

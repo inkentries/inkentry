@@ -1,5 +1,4 @@
-//! Fail-closed behaviour when there is no local `.spelunk/` project (ADR-067,
-//! spelunk-oss^131).
+//! Fail-closed behaviour when there is no local `.spelunk/` project (ADR-067).
 //!
 //! In a directory that was never `spelunk init`'d, memory/context/index-backed
 //! search must refuse rather than silently read or write the machine-global
@@ -40,7 +39,7 @@ fn global_memory_db(home: &Path) -> std::path::PathBuf {
 }
 
 /// The global index store path under the isolated HOME. Display commands must
-/// never read or create it from an un-init'd dir (ADR-067, spelunk-oss^147).
+/// never read or create it from an un-init'd dir (ADR-067).
 fn global_index_db(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("spelunk").join("index.db")
 }
@@ -168,7 +167,7 @@ fn ast_grep_search_works_without_local_project() {
     assert!(!global_memory_db(home.path()).exists());
 }
 
-// ── zero-setup plain-string substring search (spelunk-oss^130) ─────────────────
+// ── zero-setup plain-string substring search ───────────────────────────────────
 
 /// The reported bug: an exact identifier matched but a *substring* of it (and
 /// case variants) returned "No results found." in the index-free path, both in
@@ -443,7 +442,7 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     );
 }
 
-// ── display commands: graph / chunks / explore / check (spelunk-oss^147) ───────
+// ── display commands: graph / chunks / explore / check ─────────────────────────
 //
 // These read-only commands previously resolved their DB via the legacy
 // `open_project_db`/`resolve_db` path, which fell back to the machine-global

@@ -241,7 +241,7 @@ mod tests {
     /// embedded `\0` before quoting, since FTS5's own query-string parser
     /// treats `\0` as an early string terminator (distinct from SQLite's
     /// NUL-safe text binding), which would otherwise hide the closing `"` we
-    /// append. See spelunk-oss^65 follow-up.
+    /// append.
     #[test]
     fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
         let db = open_db();
