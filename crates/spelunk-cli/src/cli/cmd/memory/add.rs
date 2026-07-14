@@ -7,7 +7,8 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        NoteInput, NoteRecord, append_to_git_notes, now_millis, now_secs, open_memory_backend,
+        NoteInput, NoteRecord, RewriteRefStatus, append_to_git_notes, now_millis, now_secs,
+        open_memory_backend,
     },
 };
 
@@ -132,6 +133,7 @@ pub(super) async fn memory_add(
     // the entry); pre-`init` it is the sole store, so a failed carry is fatal.
     let write_through =
         pre_init_notes || (cfg.store_in_git_notes && backend_override != Some("git-notes"));
+    let mut notes_rewrite_note: Option<&str> = None;
     if write_through {
         let record = NoteRecord {
             schema_version: 1,
@@ -153,7 +155,21 @@ pub(super) async fn memory_add(
         // Use process CWD (None) — the CLI is always run from the project root.
         // Secret scan already ran above; no second check needed here.
         match append_to_git_notes(None, &record).await {
-            Ok(()) => {}
+            // Announce only the call that set it, so a repo says this once.
+            Ok(RewriteRefStatus::Configured) => {
+                notes_rewrite_note = Some(
+                    "Configured git notes.rewriteRef in this repo, so memory now survives \
+                     `git commit --amend` and `git rebase`.",
+                );
+            }
+            Ok(RewriteRefStatus::Failed) => {
+                notes_rewrite_note = Some(
+                    "Warning: could not set git notes.rewriteRef, so memory may not survive \
+                     `git commit --amend` or `git rebase`. Set it with: \
+                     git config --add notes.rewriteRef refs/notes/spelunk",
+                );
+            }
+            Ok(RewriteRefStatus::AlreadyCovered) => {}
             Err(e) if pre_init_notes => {
                 return Err(e.context(
                     "recording memory entry to git notes (no local project store to fall back on)",
@@ -164,6 +180,9 @@ pub(super) async fn memory_add(
     }
 
     println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
+    if let Some(line) = notes_rewrite_note {
+        println!("{line}");
+    }
     Ok(())
 }
 

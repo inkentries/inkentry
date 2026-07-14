@@ -1155,3 +1155,357 @@ async fn git_notes_backend_uncontended_add_and_archive_never_reach_the_wait_budg
         );
     }
 }
+
+// ── survival across git history rewrites ─────────────────────────────────────
+//
+// git copies a note onto a rewritten commit only when `notes.rewriteRef` names
+// the ref, and it has no built-in default. Pre-`init` git notes is the sole
+// store, so an unconfigured repo lost the only copy on every amend/rebase.
+//
+// Known gap: `merge --squash` and cherry-pick onto a divergent base do not
+// carry notes even with `notes.rewriteRef` set. git honours it for `amend` and
+// `rebase` only.
+
+/// Run `git args` in `root`, asserting success.
+fn git_ok(root: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("git command");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Trimmed stdout of `git args` in `root`, asserting success.
+fn git_stdout_ok(root: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("git command");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Run a rebase with scripted editors. git runs an editor through a shell when
+/// the command holds shell metacharacters, so a value ending in `>` redirects
+/// into the file git appends as the trailing argument. Portable across the CI
+/// matrix, unlike `sed -i` (BSD and GNU disagree on its argument).
+fn git_rebase_scripted(root: &std::path::Path, args: &[&str], seq_editor: &str, editor: &str) {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .env("GIT_SEQUENCE_EDITOR", seq_editor)
+        .env("GIT_EDITOR", editor)
+        .output()
+        .expect("git rebase");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The spelunk note body on HEAD, or `None` when HEAD carries no note.
+fn note_on_head(root: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .output()
+        .expect("git notes show");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Commit a new `file` in `root` with subject `msg`.
+fn commit_file(root: &std::path::Path, file: &str, msg: &str) {
+    std::fs::write(root.join(file), "x").expect("write");
+    git_ok(root, &["add", "."]);
+    git_ok(root, &["commit", "--no-gpg-sign", "-m", msg]);
+}
+
+/// A repo whose rewrites are deterministic regardless of ambient git config.
+fn rewrite_test_repo() -> tempfile::TempDir {
+    let dir = make_temp_git_repo();
+    git_ok(dir.path(), &["config", "commit.gpgsign", "false"]);
+    dir
+}
+
+const PRECIOUS: &str = "precious decision";
+
+/// `git commit --amend` must carry the entry onto the rewritten commit.
+#[tokio::test]
+#[serial]
+async fn note_survives_git_commit_amend() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+
+    let before = git_stdout_ok(root, &["rev-parse", "HEAD"]);
+    // Amend the subject, not just `--no-edit`: an amend that changes nothing
+    // re-creates a byte-identical commit object within the same second, so the
+    // sha is unchanged and the note is never actually asked to move.
+    git_ok(
+        root,
+        &[
+            "commit",
+            "--amend",
+            "--no-gpg-sign",
+            "-m",
+            "amended subject",
+        ],
+    );
+    assert_ne!(
+        before,
+        git_stdout_ok(root, &["rev-parse", "HEAD"]),
+        "the amend must actually have rewritten the commit"
+    );
+
+    let body = note_on_head(root).expect("entry must survive `git commit --amend`");
+    assert!(
+        body.contains(PRECIOUS),
+        "amended HEAD must carry the entry; got: {body:?}"
+    );
+}
+
+/// A plain `git rebase` must carry the entry onto the replayed commit.
+#[tokio::test]
+#[serial]
+async fn note_survives_git_rebase() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    git_ok(root, &["checkout", "-q", "-b", "feat"]);
+    commit_file(root, "feat.txt", "feat work");
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+
+    // Move main ahead so the rebase really replays onto new shas.
+    git_ok(root, &["checkout", "-q", "main"]);
+    commit_file(root, "main.txt", "main moves");
+    git_ok(root, &["checkout", "-q", "feat"]);
+    git_ok(root, &["rebase", "main"]);
+
+    let body = note_on_head(root).expect("entry must survive `git rebase`");
+    assert!(
+        body.contains(PRECIOUS),
+        "rebased HEAD must carry the entry; got: {body:?}"
+    );
+}
+
+/// `git rebase -i` reword must carry the entry.
+#[tokio::test]
+#[serial]
+async fn note_survives_rebase_interactive_reword() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    commit_file(root, "work.txt", "target commit");
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+
+    let sha = git_stdout_ok(root, &["rev-parse", "--short", "HEAD"]);
+    git_rebase_scripted(
+        root,
+        &["rebase", "-i", "HEAD~1"],
+        &format!("printf 'reword {sha}\\n' >"),
+        "printf 'reworded subject\\n' >",
+    );
+
+    assert_eq!(
+        git_stdout_ok(root, &["log", "-1", "--format=%s"]),
+        "reworded subject",
+        "the reword must actually have rewritten the commit"
+    );
+    let body = note_on_head(root).expect("entry must survive a `rebase -i` reword");
+    assert!(
+        body.contains(PRECIOUS),
+        "reworded HEAD must carry the entry; got: {body:?}"
+    );
+}
+
+/// `git rebase --autosquash` (fixup) must carry the entry onto the squashed commit.
+#[tokio::test]
+#[serial]
+async fn note_survives_rebase_autosquash_fixup() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    commit_file(root, "work.txt", "target commit");
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+
+    let noted = git_stdout_ok(root, &["rev-parse", "HEAD"]);
+    std::fs::write(root.join("more.txt"), "x").expect("write");
+    git_ok(root, &["add", "."]);
+    git_ok(root, &["commit", "--no-gpg-sign", "--fixup", &noted]);
+
+    // `-i` plus a no-op sequence editor accepts the autosquash-arranged todo.
+    // A non-interactive `--autosquash` would need git >= 2.38.
+    git_rebase_scripted(
+        root,
+        &["rebase", "-i", "--autosquash", "HEAD~2"],
+        "exit 0 #",
+        "exit 0 #",
+    );
+
+    assert_eq!(
+        git_stdout_ok(root, &["log", "--oneline"]).lines().count(),
+        2,
+        "the fixup must actually have been squashed away"
+    );
+    let body = note_on_head(root).expect("entry must survive an autosquash fixup");
+    assert!(
+        body.contains(PRECIOUS),
+        "squashed HEAD must carry the entry; got: {body:?}"
+    );
+}
+
+// ── notes.rewriteRef carry config ────────────────────────────────────────────
+
+use spelunk_core::storage::{RewriteRefStatus, ensure_notes_rewrite_ref};
+
+/// Every configured `notes.rewriteRef` value, in config order.
+fn rewrite_ref_values(root: &std::path::Path) -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["config", "--get-all", "notes.rewriteRef"])
+        .output()
+        .expect("git config");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// Re-running must not stack duplicate config lines.
+#[tokio::test]
+#[serial]
+async fn ensure_notes_rewrite_ref_is_idempotent() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    assert_eq!(
+        ensure_notes_rewrite_ref(Some(root)).await,
+        RewriteRefStatus::Configured,
+        "first call must set it"
+    );
+    assert_eq!(
+        ensure_notes_rewrite_ref(Some(root)).await,
+        RewriteRefStatus::AlreadyCovered,
+        "second call must detect its own value and stay quiet"
+    );
+    assert_eq!(
+        rewrite_ref_values(root),
+        vec!["refs/notes/spelunk"],
+        "re-running must not duplicate the config line"
+    );
+}
+
+/// A user's own rewriteRef must survive: the value is multi-valued, so `--add`
+/// composes instead of clobbering, and both refs keep carrying.
+#[tokio::test]
+#[serial]
+async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+    git_ok(
+        root,
+        &["config", "--add", "notes.rewriteRef", "refs/notes/commits"],
+    );
+    git_ok(
+        root,
+        &["notes", "--ref=commits", "add", "-m", "user note", "HEAD"],
+    );
+
+    assert_eq!(
+        ensure_notes_rewrite_ref(Some(root)).await,
+        RewriteRefStatus::Configured
+    );
+    assert_eq!(
+        rewrite_ref_values(root),
+        vec!["refs/notes/commits", "refs/notes/spelunk"],
+        "the user's value must be kept alongside ours"
+    );
+
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+    git_ok(
+        root,
+        &["commit", "--amend", "--no-gpg-sign", "-m", "amended"],
+    );
+
+    let user_note = git_stdout_ok(root, &["notes", "--ref=commits", "show", "HEAD"]);
+    assert_eq!(user_note, "user note", "the user's note must still carry");
+    assert!(
+        note_on_head(root).is_some_and(|b| b.contains(PRECIOUS)),
+        "our note must carry too"
+    );
+}
+
+/// A user glob that already covers our ref is left alone.
+#[tokio::test]
+#[serial]
+async fn ensure_notes_rewrite_ref_defers_to_a_covering_glob() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+    git_ok(
+        root,
+        &["config", "--add", "notes.rewriteRef", "refs/notes/*"],
+    );
+
+    assert_eq!(
+        ensure_notes_rewrite_ref(Some(root)).await,
+        RewriteRefStatus::AlreadyCovered
+    );
+    assert_eq!(
+        rewrite_ref_values(root),
+        vec!["refs/notes/*"],
+        "a covering glob needs no addition"
+    );
+}
+
+/// A glob reaching outside `refs/notes/` does NOT cover us: git refuses to
+/// rewrite notes there ("Refusing to rewrite notes in refs/*"), so treating it
+/// as coverage would silently skip the fix and lose the entry.
+#[tokio::test]
+#[serial]
+async fn ensure_notes_rewrite_ref_ignores_a_glob_outside_the_notes_namespace() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+    git_ok(root, &["config", "--add", "notes.rewriteRef", "refs/*"]);
+
+    assert_eq!(
+        ensure_notes_rewrite_ref(Some(root)).await,
+        RewriteRefStatus::Configured,
+        "refs/* is not coverage; our exact ref must still be added"
+    );
+
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+    git_ok(
+        root,
+        &["commit", "--amend", "--no-gpg-sign", "-m", "amended"],
+    );
+    assert!(
+        note_on_head(root).is_some_and(|b| b.contains(PRECIOUS)),
+        "entry must survive despite the user's out-of-namespace glob"
+    );
+}
