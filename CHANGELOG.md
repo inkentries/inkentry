@@ -113,6 +113,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   before storage, so overlapping generic and language-specific rules (for
   example `naming.functions` and `docs`) each surface once instead of two or
   three times.
+- **`spelunk context` no longer lists `.tsx` conventions twice, and no longer
+  overstates their confidence.** Conventions from `.tsx` files surfaced under
+  both a `typescript` and a `tsx` label, because the TypeScript rule set labelled
+  every record `typescript` while the generic rules labelled by the chunk's own
+  language. `.tsx` now folds onto the `typescript` label it already shares
+  heuristics with, so each convention appears once. The two labels had also held
+  separate partial views of a single language, and merging them kept the *higher*
+  of the two confidences: a project with 9 async functions out of 16 reported
+  `async` at 100% instead of 56%. Confidence is now pooled across all of a
+  language's chunks, so mixed `.ts`/`.tsx` projects may see reported confidence
+  drop. The lower figure is the accurate one, and no conventions are lost.
+  `spelunk plumbing read-conventions --lang tsx` now matches no rows (exit 1);
+  use `--lang typescript`.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung
