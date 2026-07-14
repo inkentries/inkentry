@@ -39,10 +39,12 @@ re-running `init` (or running it after a rename) does not change an established
 slug.
 
 **Memory notes travel with the repository:** When run inside a git repo with an
-`origin` remote, `init` configures `remote.origin.fetch` to include
-`refs/notes/spelunk`, so project memory automatically travels on `git fetch`.
-The init output includes the push command to publish your notes; re-run it
-after each memory change so new notes commits travel. See
+`origin` remote, `init` configures `remote.origin.fetch` so teammates'
+`refs/notes/spelunk` arrives on `git fetch`, landing on the tracking ref
+`refs/notes/origin/spelunk`. `memory list`, `context`, and `init` merge that
+tracking ref into your own notes, so *reading* teammates' memory needs no extra
+step. *Publishing* yours is still manual: the init output includes the push
+command; re-run it after each memory change so new notes commits travel. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
 **Memory survives history rewrites:** `init` also points `notes.rewriteRef` at

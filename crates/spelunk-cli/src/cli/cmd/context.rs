@@ -171,6 +171,11 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         None => crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db"),
     };
 
+    // `git fetch` lands teammates' notes on a tracking ref that nothing else
+    // merges, so without this they stay invisible (ADR-069 D5). Local-only, no
+    // network; a no-op outside a git repo or with nothing fetched.
+    crate::storage::merge_tracking_notes(None).await;
+
     // Discovery nudge: warn once when unimported server.db notes exist.
     crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
 

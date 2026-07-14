@@ -151,6 +151,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // here must not sink init.
     let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
         let mem_path = spelunk_dir.join("memory.db");
+        // Fold in anything a previous `git fetch` left on the tracking ref
+        // before hydrating, so teammates' entries import too (ADR-069 D5).
+        crate::storage::merge_tracking_notes(Some(git_root)).await;
         match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
             Ok(0) => None,
             Ok(n) => Some(format!("imported {n} entries from git notes")),
@@ -258,8 +261,17 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
     }
 }
 
-/// Configure the `origin` fetch refspec so `refs/notes/spelunk` (spelunk's
-/// memory) travels on clone/fetch. Returns announce lines for the init summary.
+/// Configure the `origin` fetch refspec so teammates' `refs/notes/spelunk`
+/// (spelunk's memory) travels on clone/fetch. Returns announce lines for the
+/// init summary.
+///
+/// The destination is a **tracking** ref (`refs/notes/origin/spelunk`), never
+/// the working ref. Fetching straight onto `refs/notes/spelunk` force-updates
+/// it, silently replacing a local unpushed note with the remote's; and the
+/// non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
+/// The glob tolerates the missing remote ref; only the tracking destination
+/// stops the clobber. spelunk merges the tracking ref on its read paths
+/// (ADR-069 D4/D5), so fetched notes stay visible without user action.
 ///
 /// Push refspec is deliberately NOT set: any `remote.origin.push` value
 /// overrides git's default branch push, so a normal `git push` would stop
@@ -269,7 +281,7 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
 /// rewrites. That half is independent of `origin`: rewrites are purely local,
 /// so it runs even in a remote-less repo.
 async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
-    const FETCH_REFSPEC: &str = "+refs/notes/spelunk:refs/notes/spelunk";
+    const FETCH_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
     const PUSH_HINT: &str =
         "push notes after each memory change: git push origin refs/notes/spelunk";
 
@@ -287,7 +299,7 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
             .unwrap_or(false);
         if !has_origin {
             vec![
-                "Memory:  no 'origin' remote — notes refspec not configured".to_string(),
+                "Memory:  no 'origin' remote, so the notes refspec is not configured".to_string(),
                 format!(
                     "         run later: git config --add remote.origin.fetch '{FETCH_REFSPEC}'"
                 ),
@@ -312,7 +324,7 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
             } else {
                 match git(&["config", "--add", "remote.origin.fetch", FETCH_REFSPEC]) {
                     Ok(o) if o.status.success() => vec![
-                        "Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)"
+                        "Memory:  configured notes fetch refspec on 'origin' (teammates' memory arrives on fetch)"
                             .to_string(),
                         format!("         {PUSH_HINT}"),
                     ],

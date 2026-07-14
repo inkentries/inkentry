@@ -20,8 +20,8 @@ pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::Database;
 pub use files::FileRecord;
 pub use git_notes::{
-    GitNotesBackend, NotesLock, RewriteRefStatus, append_to_git_notes, ensure_notes_rewrite_ref,
-    lock_notes,
+    GitNotesBackend, NotesLock, NotesMergeOutcome, RewriteRefStatus, append_to_git_notes,
+    ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes,
 };
 pub use graph::GraphEdge;
 pub use memory::{MemoryEdge, MemoryStore, SyncRow};

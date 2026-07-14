@@ -64,12 +64,21 @@ git-notes carrier rationale.
 
 ### Sharing memory across clones via git-notes
 
+Reading and publishing are not symmetric, and it is worth being precise about
+which is automatic:
+
+- **Reading teammates' memory is automatic.** `spelunk init` configures the
+  `origin` fetch refspec, so their notes arrive on your next `git fetch`, and
+  spelunk merges them on its own read paths.
+- **Publishing your own memory is manual.** You push the notes ref yourself.
+
 When you run `spelunk init` inside a git repository with an `origin` remote,
 spelunk automatically configures the fetch refspec for `origin` so that
-`refs/notes/spelunk` travels on `git fetch`. The init command prints the status:
+teammates' `refs/notes/spelunk` travels on `git fetch`. The init command prints
+the status:
 
 ```
-Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)
+Memory:  configured notes fetch refspec on 'origin' (teammates' memory arrives on fetch)
          push notes after each memory change: git push origin refs/notes/spelunk
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
@@ -89,11 +98,23 @@ remove) creates a new notes commit that travels only once it is pushed. The
 fetch refspec, by contrast, is configured once, so teammates' (and later
 clones') `git fetch` then pulls whatever notes you have already pushed.
 
+**How fetched notes become visible.** The refspec fetches into a *tracking* ref,
+`refs/notes/origin/spelunk`, rather than over your own `refs/notes/spelunk`.
+Fetching straight onto your working ref would force-update it and silently
+replace a local note you had not pushed yet. So arrival is **fetch + merge**:
+`git fetch` populates the tracking ref, and `spelunk memory list`, `spelunk
+context`, and `spelunk init` merge it into `refs/notes/spelunk` (union, no
+conflicts, duplicates dropped). That merge is local-only and does no network, so
+it works with the remote unreachable. Right after a fetch, `git notes
+--ref=spelunk` alone will not show a teammate's entry until one of those spelunk
+commands has run.
+
 **For teammates to receive the notes:**
 
 1. Clone the repository normally: `git clone <repo>`
-2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'`)
+2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'`)
 3. Fetch: `git fetch`
+4. Read: `spelunk memory list` (this is the step that merges the fetched notes in)
 
 A fresh clone does **not** inherit the source's local git config, so `git fetch`
 alone won't pull the notes. The teammate must either run `spelunk init` (which
@@ -103,8 +124,8 @@ configures the refspec automatically) or add it manually, then fetch.
 repository), `spelunk init` prints the commands to run later:
 
 ```
-Memory:  no 'origin' remote — notes refspec not configured
-         run later: git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'
+Memory:  no 'origin' remote, so the notes refspec is not configured
+         run later: git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'
          push notes after each memory change: git push origin refs/notes/spelunk
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
