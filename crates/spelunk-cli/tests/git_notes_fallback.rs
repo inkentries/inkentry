@@ -21,6 +21,7 @@ use plumbing_helpers::spelunk_bin_in;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 /// ADR-068 D3 dual-escape-hatch error (case 5): neither a project DB nor a
@@ -697,5 +698,89 @@ fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
     assert!(
         !global_memory_db(home.path()).exists(),
         "a fatal failed carry must not create the machine-global store"
+    );
+}
+
+// ── the notes lock must not weaponize the fatal carry (ADR-069 D6 x D3) ────────
+
+/// The wait budget the carrier allows before giving up on a contended notes
+/// lock. Mirrors `LOCK_WAIT_BUDGET` in `storage/git_notes/lock.rs`.
+const LOCK_WAIT_BUDGET: Duration = Duration::from_secs(5);
+
+/// `<git-common-dir>/spelunk-notes.lock` — the file the carrier locks, resolved
+/// the way the production code resolves it.
+fn notes_lock_path(repo: &Path) -> std::path::PathBuf {
+    let raw = git_stdout(repo, &["rev-parse", "--git-common-dir"]);
+    let raw = raw.trim();
+    let raw = Path::new(raw);
+    let common_dir = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        repo.join(raw)
+    };
+    common_dir.join("spelunk-notes.lock")
+}
+
+/// A contended notes lock must never turn a working `memory add` into a failure.
+///
+/// Case 7 above makes a failed pre-`init` carry fatal: there is no SQLite
+/// primary to absorb it. The carrier's lock (ADR-069 D6) is therefore bounded
+/// and non-fatal by design — on contention it warns and writes unlocked. If it
+/// ever returned an `Err` instead, contention alone would break `memory add` on
+/// exactly the path that has nowhere to fall back to.
+///
+/// Deterministic: this test holds the lock across the child's whole run, from a
+/// separate process, so the child is guaranteed to exhaust its budget.
+#[test]
+fn contended_notes_lock_does_not_fail_the_fatal_pre_init_carry() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+
+    let title = "contended-lock-still-stored";
+
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(notes_lock_path(repo.path()))
+        .expect("open the notes lock file");
+    held.lock()
+        .expect("hold the notes lock across the child run");
+
+    let started = Instant::now();
+    bin(home.path(), repo.path())
+        .args([
+            "memory", "add", "--kind", "note", "--title", title, "--body", "b",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored [note]"));
+    let took = started.elapsed();
+
+    drop(held);
+
+    // Negative control: the child must actually have contended. A fast run means
+    // it locked a different path than the one held here, leaving the assertions
+    // below vacuous.
+    assert!(
+        took >= LOCK_WAIT_BUDGET,
+        "the child must wait out its {LOCK_WAIT_BUDGET:?} lock budget; it returned after \
+         {took:?}, so it never contended on {}",
+        notes_lock_path(repo.path()).display()
+    );
+
+    // The whole point: the entry is still there, written unlocked.
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(
+        lines.len(),
+        1,
+        "a contended carry must still write exactly one record; got: {lines:?}"
+    );
+    assert!(
+        lines[0].contains(title),
+        "the record must be the entry we added; got: {:?}",
+        lines[0]
     );
 }
