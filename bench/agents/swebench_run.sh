@@ -18,11 +18,10 @@
 #       [--tasks 50] [--max-turns 20] [--seed 42] [--eval]
 #
 # Options:
-#   --condition     baseline|spelunk_search|spelunk_full   (required; must be
-#                           "baseline" for --harness opencode|claude-code —
-#                           those harnesses are generic coding agents, not
-#                           spelunk-instrumented, so spelunk_search/spelunk_full
-#                           don't apply to them)
+#   --condition     baseline|spelunk_search|spelunk_full   (required; valid for
+#                           every harness — opencode/claude-code reach the
+#                           spelunk tools over the bench-local MCP server, see
+#                           bench/agents/spelunk_mcp_server.py)
 #   --harness       none|opencode|claude-code               (default: none)
 #                   none:        agent.py's own tool-calling loop (component-clean cell)
 #                   opencode:    headless `opencode run`, DeepSeek via a generated
@@ -39,8 +38,7 @@
 #   --max-turns     N       max agent turns per task (default: 20)
 #   --seed          N       random seed (default: 42)
 #   --skip-index            skip spelunk index (if repos are pre-indexed;
-#                           --harness none only — opencode/claude-code cells
-#                           never invoke spelunk, see README "Adapter notes")
+#                           applies to any harness on a spelunk condition)
 #   --repos-dir     DIR     checkout root (default: bench/repos)
 #   --patches-dir   DIR     where per-task .patch files are saved
 #                           (default: bench/patches/<condition>-<timestamp>)
@@ -142,17 +140,15 @@ case "$HARNESS" in
     *) echo "Error: --harness must be one of none|opencode|claude-code (got: ${HARNESS})" >&2; exit 1 ;;
 esac
 
-# opencode/claude-code are generic coding agents, not spelunk-instrumented —
-# spelunk_search/spelunk_full only mean something for --harness none (they
-# vary spelunk tool access, which these two harnesses never have). Enforcing
-# this here (rather than just documenting it) keeps the per-task result
-# JSON's own "condition" field — which each harness script now sets from
-# --condition, see harness_opencode.py/harness_claude_code.py — from ever
-# disagreeing with what --condition claimed to request.
-if [[ "$HARNESS" != "none" && "$CONDITION" != "baseline" ]]; then
-    echo "Error: --condition must be baseline for --harness ${HARNESS} (got: ${CONDITION})." >&2
-    exit 1
-fi
+# All three conditions are valid for all three harnesses: opencode and
+# claude-code reach the spelunk tools over the bench-local MCP server (see
+# bench/agents/spelunk_mcp_server.py). Validating the value here keeps the
+# per-task result JSON's own "condition" field — which each harness script
+# sets from --condition — from ever recording a typo as a real cell.
+case "$CONDITION" in
+    baseline|spelunk_search|spelunk_full) ;;
+    *) echo "Error: --condition must be one of baseline|spelunk_search|spelunk_full (got: ${CONDITION})" >&2; exit 1 ;;
+esac
 
 if [[ "$HARNESS" == "claude-code" && "$ENDPOINT_KIND" == "shim" && -z "$SHIM_BASE_URL" ]]; then
     echo "Error: --shim-base-url is required with --harness claude-code --endpoint-kind shim." >&2
@@ -251,24 +247,19 @@ for TASK_ID in $ALL_TASK_IDS; do
         continue
     fi
 
-    # spelunk indexing / memory harvest only apply to the harness=none cell —
-    # opencode and claude-code are generic coding-agent harnesses, not
-    # spelunk-instrumented (see README "Adapter notes"). Gating on $HARNESS
-    # keeps this the single place that decides whether spelunk touches the
-    # repo, rather than duplicating the condition check per-harness.
-    if [[ "$HARNESS" == "none" ]]; then
-        # Index the repo for spelunk conditions (unless --skip-index)
-        if [[ "$CONDITION" != "baseline" && "$SKIP_INDEX" != "true" ]]; then
-            echo "  Indexing repo..."
-            spelunk index "$TASK_REPO" 2>&1 | tail -1 || true
-        fi
+    # Condition, not harness, decides whether spelunk touches the repo: every
+    # harness reaches the same tools on a spelunk condition. Without the
+    # index the spelunk arm is a silent no-op that scores like baseline.
+    if [[ "$CONDITION" != "baseline" && "$SKIP_INDEX" != "true" ]]; then
+        echo "  Indexing repo..."
+        spelunk index "$TASK_REPO" 2>&1 | tail -1 || true
+    fi
 
-        # For spelunk_full: attempt memory harvest from git history.
-        # Best-effort — single-commit SWE-bench repos have no harvestable history.
-        if [[ "$CONDITION" == "spelunk_full" ]]; then
-            echo "  Harvesting memory (best-effort)..."
-            spelunk memory harvest --git-range HEAD~50..HEAD "$TASK_REPO" 2>&1 | tail -1 || true
-        fi
+    # For spelunk_full: attempt memory harvest from git history.
+    # Best-effort — single-commit SWE-bench repos have no harvestable history.
+    if [[ "$CONDITION" == "spelunk_full" ]]; then
+        echo "  Harvesting memory (best-effort)..."
+        spelunk memory harvest --git-range HEAD~50..HEAD "$TASK_REPO" 2>&1 | tail -1 || true
     fi
 
     # Build the per-harness command. Each harness script takes the same
