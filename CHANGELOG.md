@@ -11,6 +11,32 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Memory entries are now identified by their content.** An entry's canonical
+  identity is a SHA-256 over exactly its `kind`, `title`, and `body`, so the
+  same decision recorded independently on two machines converges on one
+  identity, with no server and no coordination. Previously the identity that
+  travelled in `refs/notes/spelunk` was the local SQLite row number, which
+  `spelunk init` renumbers and each machine assigns independently, so two
+  different entries could both be stamped `"id":1` in one notes ref. Supersede
+  edges now resolve by that content identity and survive a renumber. The
+  numeric `id` in `memory list` output is unchanged and remains a local row
+  number. (ADR-068)
+- **Two entries that differ only in when they were recorded are now one entry.**
+  `memory reconcile` and the `spelunk init` git-notes import previously folded
+  the creation time into their dedup key, so identical text recorded twice at
+  different times stayed as two entries. A creation time cannot be reproduced by
+  a second party recording the same decision, so it is no longer part of the
+  key: those entries now collapse into one on import. If you recorded the same
+  decision more than once, expect to see a single entry after importing.
+- **Two entries that differ only in their tags or linked files are now one
+  entry, and their tags and linked files are merged.** `tags` and `linked_files`
+  are likewise out of the dedup key, so entries with identical text but
+  different tags collapse on import rather than staying separate. The survivor
+  carries the union: values are added, never removed, so nothing recorded on a
+  collapsed copy is lost. `memory reconcile --format json` reports the number of
+  folded rows as a new `collapsed_duplicates` key, and its counts partition the
+  source rows exactly
+  (`candidates == already_present + collapsed_duplicates + imported`).
 - **`spelunk graph <symbol>` no longer implies a heavily-referenced symbol is
   unused.** The live structural scan matches only bare call syntax
   (`symbol(...)`), so class, constant, association, and receiver-method

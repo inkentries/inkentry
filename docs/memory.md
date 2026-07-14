@@ -31,6 +31,16 @@ unless you configure a team `server_url`. The carrier reaches teammates only onc
 the notes ref is pushed and fetched (see [Sharing memory across clones via
 git-notes](#sharing-memory-across-clones-via-git-notes) below).
 
+**Entry identity.** An entry is identified by what it says, not by where or when
+it was recorded. spelunk derives a canonical identity for every entry as a
+SHA-256 over exactly its `kind`, `title`, and `body`. Two people who
+independently record the same decision in two clones arrive at the same
+identity, with no server and no coordination between them. Mutable metadata is
+deliberately excluded, so tagging, archiving, or superseding an entry never
+changes its identity. (The numeric `id` in `memory list` output is a local row
+number rather than an identity: `spelunk init` renumbers it, and each machine
+assigns it independently.)
+
 **Before `spelunk init`**, `memory add` and `memory list` still work when you are
 inside a git repository: with no `.spelunk/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
@@ -452,9 +462,17 @@ after a session where entries were written through `server_url` and need to be
 pulled into the project's local store, or when migrating from server-backed to
 local storage.
 
-Dedup is by content hash: notes already present in `memory.db` (same kind,
-title, body, tags, files, and creation time) are skipped. The source `server.db`
-is opened read-only; it is never modified.
+Dedup is by content identity (see **Entry identity** at the top of this page): a
+note whose `kind`, `title`, and `body` already match an entry in `memory.db` is
+skipped. The source `server.db` is opened read-only; it is never modified.
+
+Because that identity covers only those three fields, source rows that differ
+*only* in creation time, tags, or linked files are the same entry, and collapse
+into a single row on import. Tags and linked files are merged onto the survivor,
+adding but never removing, so nothing recorded on a collapsed copy is lost.
+`--format json` reports the count as `collapsed_duplicates`, and the counts
+partition the source rows exactly:
+`candidates == already_present + collapsed_duplicates + imported`.
 
 ```bash
 # Import notes for the active project (default source: ~/.local/state/spelunk/server.db)

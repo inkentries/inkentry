@@ -62,6 +62,10 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     let mem_path = db_path.with_file_name("memory.db");
 
     spelunk_bin()
+        // The git-notes carrier follows the process CWD and ignores `--db`, so
+        // seeding from the repo under test would write the fixture into its
+        // real notes ref.
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("memory")

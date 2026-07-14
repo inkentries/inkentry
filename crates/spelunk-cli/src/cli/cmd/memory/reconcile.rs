@@ -2,9 +2,20 @@
 //!
 //! Discovers notes that exist in the local daemon's `server.db` but are absent
 //! from `memory.db` for the active project, and imports them in a single
-//! all-or-nothing transaction.  Dedup is by computed content hash, not rowid.
+//! all-or-nothing transaction.
 //!
-//! See issue #391 and ADR-004 for the full interface contract.
+//! Dedup is by `entity_id` (ADR-068) — sha256 over the canonical JSON of
+//! {body, kind, title} — never by rowid, which server.db and memory.db number
+//! independently. This module and `init`'s git-notes import must key
+//! identically or a row imported by one path is re-imported by the other; the
+//! shared `entity_id` function is what enforces that.
+//!
+//! `created_at`, `tags`, and `linked_files` are deliberately out of the key:
+//! identity has to be reproducible by a second machine recording the same
+//! decision, and none of the three is. Entries differing only in those fields
+//! collapse, unioning tags/linked_files add-wins.
+//!
+//! See ADR-004 for the full interface contract.
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
@@ -13,73 +24,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::MemoryReconcileArgs;
-use crate::{config::Config, server_client::ServerInferenceClient, storage::MemoryStore};
-
-// ── Content-hash ──────────────────────────────────────────────────────────────
-
-/// Compute the stable identity hash for a note.
-///
-/// Hash input: `kind \x1f title \x1f body \x1f normalize(tags) \x1f normalize(linked_files) \x1f created_at`
-///
-/// `normalize(csv)`: split on `,`, trim, drop empties, sort, rejoin with `,`.
-/// `created_at` is included so two distinct notes with identical text don't collapse.
-/// `status` and `superseded_by` are excluded so an archived note still matches its twin.
-fn content_hash(
-    kind: &str,
-    title: &str,
-    body: &str,
-    tags_csv: &str,
-    files_csv: &str,
-    created_at: i64,
-) -> blake3::Hash {
-    let tags = normalize_csv(tags_csv);
-    let files = normalize_csv(files_csv);
-    let created_str = created_at.to_string();
-    let mut hasher = blake3::Hasher::new();
-    for part in [kind, title, body, &tags, &files, &created_str] {
-        hasher.update(part.as_bytes());
-        hasher.update(b"\x1f");
-    }
-    hasher.finalize()
-}
-
-fn normalize_csv(csv: &str) -> String {
-    let mut parts: Vec<&str> = csv
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    parts.sort_unstable();
-    parts.join(",")
-}
-
-/// Content-identity hash (hex) for a `memory.db` note. Shared by reconcile's
-/// dedup and `init`'s git-notes import so a row imported by one path is never
-/// re-imported by the other.
-fn note_dedup_hash(n: &crate::storage::memory::Note) -> String {
-    content_hash(
-        &n.kind,
-        &n.title,
-        &n.body,
-        &n.tags.join(","),
-        &n.linked_files.join(","),
-        n.created_at,
-    )
-    .to_hex()
-    .to_string()
-}
+use crate::{
+    config::Config,
+    server_client::ServerInferenceClient,
+    storage::{MemoryStore, entity_id, note_entity_id},
+};
 
 // ── Candidate row from server.db ──────────────────────────────────────────────
 
 /// A row read from `server.db`.
 ///
-/// `superseded_by` carries the server-local rowid.  It is NOT portable across
-/// stores; `build_supersede_map` re-reads server.db to resolve the links by
-/// rowid and maps them back to candidate indices.  The field is kept here for
-/// status-detection: if a note's status is `archived` we set it archived on
-/// import regardless of whether we can resolve the successor.
+/// `id` and `superseded_by` are server-local rowids: meaningful for resolving an
+/// edge *within* server.db, never across the boundary into memory.db. The edge
+/// crosses by `entity_id`.
 #[derive(Debug, Clone)]
 struct ServerNote {
+    id: i64,
     kind: String,
     title: String,
     body: String,
@@ -87,21 +47,129 @@ struct ServerNote {
     linked_files: String,
     created_at: i64,
     status: String,
-    #[allow(dead_code)] // resolved via SQL in build_supersede_map, not field access
     superseded_by: Option<i64>,
 }
 
 impl ServerNote {
-    fn hash(&self) -> blake3::Hash {
-        content_hash(
-            &self.kind,
-            &self.title,
-            &self.body,
-            &self.tags,
-            &self.linked_files,
-            self.created_at,
-        )
+    fn entity_id(&self) -> String {
+        entity_id(&self.kind, &self.title, &self.body)
     }
+
+    fn tags_vec(&self) -> Vec<String> {
+        split_csv(&self.tags)
+    }
+
+    fn files_vec(&self) -> Vec<String> {
+        split_csv(&self.linked_files)
+    }
+
+    fn is_archived(&self) -> bool {
+        self.status == "archived"
+    }
+}
+
+/// Split a raw server.db CSV field: trim members, drop empties.
+fn split_csv(csv: &str) -> Vec<String> {
+    csv.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+// ── Candidate collapse ────────────────────────────────────────────────────────
+
+/// Candidate rows sharing one `entity_id`, folded into a single entry.
+///
+/// Several rows can share an id now that `created_at`/`tags`/`linked_files` are
+/// out of the key, so the fold has to decide what the survivor carries.
+#[derive(Debug)]
+struct MergedNote {
+    entity_id: String,
+    kind: String,
+    title: String,
+    body: String,
+    tags: Vec<String>,
+    linked_files: Vec<String>,
+    created_at: i64,
+    status: String,
+    /// How many candidate rows folded in — drives the summary counts.
+    rows: usize,
+}
+
+impl MergedNote {
+    fn from_server(entity_id: String, c: &ServerNote) -> Self {
+        Self {
+            entity_id,
+            kind: c.kind.clone(),
+            title: c.title.clone(),
+            body: c.body.clone(),
+            tags: c.tags_vec(),
+            linked_files: c.files_vec(),
+            created_at: c.created_at,
+            status: c.status.clone(),
+            rows: 1,
+        }
+    }
+
+    /// `kind`/`title`/`body` are identical by construction — they are the id.
+    /// Everything else folds: tags/linked_files union (add-wins), an archive on
+    /// any row sticks, and the earliest `created_at` wins so supersede chains
+    /// keep importing in order.
+    fn absorb(&mut self, c: &ServerNote) {
+        for t in c.tags_vec() {
+            if !self.tags.contains(&t) {
+                self.tags.push(t);
+            }
+        }
+        for f in c.files_vec() {
+            if !self.linked_files.contains(&f) {
+                self.linked_files.push(f);
+            }
+        }
+        if c.is_archived() {
+            self.status = "archived".to_string();
+        }
+        self.created_at = self.created_at.min(c.created_at);
+        self.rows += 1;
+    }
+}
+
+/// Fold `candidates` to one entry per `entity_id`, preserving first-seen order.
+fn collapse_candidates(candidates: &[ServerNote]) -> Vec<MergedNote> {
+    let mut merged: Vec<MergedNote> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for c in candidates {
+        let eid = c.entity_id();
+        match index.get(&eid) {
+            Some(&i) => merged[i].absorb(c),
+            None => {
+                index.insert(eid.clone(), merged.len());
+                merged.push(MergedNote::from_server(eid, c));
+            }
+        }
+    }
+    merged
+}
+
+/// `entity_id` → successor's `entity_id`.
+///
+/// Resolved through the server-local rowids, which are valid inside server.db;
+/// the resulting edge is expressed entirely in content-addressed ids and so
+/// survives the crossing into a store whose rowids are numbered differently.
+fn build_supersede_edges(candidates: &[ServerNote]) -> HashMap<String, String> {
+    let by_server_id: HashMap<i64, &ServerNote> = candidates.iter().map(|c| (c.id, c)).collect();
+    let mut edges = HashMap::new();
+    for c in candidates {
+        if let Some(succ_id) = c.superseded_by
+            && let Some(succ) = by_server_id.get(&succ_id)
+        {
+            edges
+                .entry(c.entity_id())
+                .or_insert_with(|| succ.entity_id());
+        }
+    }
+    edges
 }
 
 // ── Summary / NDJSON reporting ────────────────────────────────────────────────
@@ -112,12 +180,17 @@ struct ReconcileError {
     message: String,
 }
 
+/// Counts are over source *rows*, and partition them exactly:
+/// `candidates == already_present + collapsed_duplicates + imported`
+/// (`would_import` replaces `imported` under `--dry-run`).
 #[derive(Debug, Serialize)]
 struct ReconcileSummary {
     source_db: String,
     project_slug: String,
     candidates: usize,
     already_present: usize,
+    /// Rows folded into a sibling candidate sharing their `entity_id`.
+    collapsed_duplicates: usize,
     imported: usize,
     would_import: usize,
     imported_without_embedding: usize,
@@ -147,6 +220,7 @@ pub(super) async fn memory_reconcile(
             project_slug: String::new(),
             candidates: 0,
             already_present: 0,
+            collapsed_duplicates: 0,
             imported: 0,
             would_import: 0,
             imported_without_embedding: 0,
@@ -214,6 +288,7 @@ async fn reconcile_project(
         project_slug: slug.to_string(),
         candidates: 0,
         already_present: 0,
+        collapsed_duplicates: 0,
         imported: 0,
         would_import: 0,
         imported_without_embedding: 0,
@@ -261,7 +336,7 @@ async fn reconcile_project(
         return Ok(());
     }
 
-    // ── Step 3: open memory.db, compute existing content-hash set ────────────
+    // ── Step 3: open memory.db, index existing entries by entity_id ──────────
     let mem_store = MemoryStore::open(mem_path)
         .with_context(|| format!("opening memory.db at {}", mem_path.display()))?;
 
@@ -269,27 +344,47 @@ async fn reconcile_project(
         .all_notes_for_dedup()
         .context("reading existing memory.db notes for dedup")?;
 
-    let existing_hashes: std::collections::HashSet<String> =
-        existing_notes.iter().map(note_dedup_hash).collect();
+    // A store can already hold several rows under one entity_id — the previous
+    // key folded in created_at, so same-text entries stayed distinct. They are
+    // left alone; the oldest is the stable edge target.
+    let mut entity_to_local: HashMap<String, i64> = HashMap::new();
+    for n in &existing_notes {
+        entity_to_local.entry(note_entity_id(n)).or_insert(n.id);
+    }
 
     // ── Step 4: build reconcile set (source rows not in memory.db) ───────────
+    // Candidates sharing an entity_id collapse into one entry first.
+    let (present, mut to_import): (Vec<MergedNote>, Vec<MergedNote>) =
+        collapse_candidates(&candidates)
+            .into_iter()
+            .partition(|m| entity_to_local.contains_key(&m.entity_id));
+
     // Sort by created_at ASC to preserve supersede chains.
-    let mut to_import: Vec<&ServerNote> = candidates
-        .iter()
-        .filter(|c| !existing_hashes.contains(&c.hash().to_hex().to_string()))
-        .collect();
     to_import.sort_by_key(|n| n.created_at);
 
-    summary.already_present = candidates.len() - to_import.len();
+    summary.already_present = present.iter().map(|m| m.rows).sum();
+    summary.collapsed_duplicates = to_import.iter().map(|m| m.rows - 1).sum();
 
-    if to_import.is_empty() {
+    // Dry-run: report and stop, before any write.
+    if args.dry_run {
+        summary.would_import = to_import.len();
         emit_summary(&summary, json, args.dry_run);
         return Ok(());
     }
 
-    // Dry-run: report and stop.
-    if args.dry_run {
-        summary.would_import = to_import.len();
+    // A candidate that collapsed onto a stored entry still carries tags and
+    // linked_files the stored copy may lack. Add-wins: merge them in rather than
+    // dropping them with the duplicate.
+    for m in &present {
+        let Some(&local_id) = entity_to_local.get(&m.entity_id) else {
+            continue;
+        };
+        if let Err(e) = mem_store.union_tags_and_files(local_id, &m.tags, &m.linked_files) {
+            tracing::warn!("reconcile: could not merge tags into #{local_id}: {e}");
+        }
+    }
+
+    if to_import.is_empty() {
         emit_summary(&summary, json, args.dry_run);
         return Ok(());
     }
@@ -318,48 +413,36 @@ async fn reconcile_project(
             summary.imported = imported_ids.len();
 
             // ── Step 7: resolve supersede links ──────────────────────────────
-            // Build a hash → local_id map from the just-imported notes plus
-            // the pre-existing notes, so we can relink supersede chains.
-            let mut hash_to_local: HashMap<String, i64> = existing_notes
-                .iter()
-                .map(|n| (note_dedup_hash(n), n.id))
-                .collect();
+            // Every entity now in the store, keyed by its content-addressed id:
+            // the successor may be a row we just imported or one already held.
             for (note, local_id) in to_import.iter().zip(imported_ids.iter()) {
-                hash_to_local.insert(note.hash().to_hex().to_string(), *local_id);
+                entity_to_local.insert(note.entity_id.clone(), *local_id);
             }
 
-            // For imported notes that were originally superseded, try to find
-            // the successor in the local id map by looking for a candidate whose
-            // server-side id matches the superseded_by.  Because server rowids
-            // aren't portable we skip candidates whose successor we can't resolve.
-            let server_id_to_hash: HashMap<usize, String> = candidates
-                .iter()
-                .enumerate()
-                .map(|(i, n)| (i, n.hash().to_hex().to_string()))
-                .collect();
-
-            // Map server note index → its server-side original id is not directly
-            // stored.  Re-read the server.db to get server IDs for supersede resolution.
-            // We do this with a lightweight re-open to avoid holding the connection.
-            let supersede_map = build_supersede_map(server_db_path, project_id, &candidates)?;
+            // The edge is content-addressed on both ends, so it resolves even
+            // though server.db and memory.db number their rows independently.
+            let supersede_edges = build_supersede_edges(&candidates);
 
             let mut unresolved = 0usize;
-            for (idx, (note, local_id)) in to_import.iter().zip(imported_ids.iter()).enumerate() {
-                if note.status == "archived"
-                    && let Some(server_successor_hash) = supersede_map
-                        .get(&idx)
-                        .and_then(|server_succ_idx| server_id_to_hash.get(server_succ_idx))
-                {
-                    if let Some(&succ_local_id) = hash_to_local.get(server_successor_hash) {
-                        if let Err(e) = mem_store.set_superseded_by(*local_id, succ_local_id) {
-                            tracing::warn!(
-                                "reconcile: could not set superseded_by for #{local_id}: {e}"
-                            );
-                            unresolved += 1;
-                        }
-                    } else {
-                        unresolved += 1;
-                    }
+            for (note, local_id) in to_import.iter().zip(imported_ids.iter()) {
+                if note.status != "archived" {
+                    continue;
+                }
+                let Some(succ_entity_id) = supersede_edges.get(&note.entity_id) else {
+                    continue;
+                };
+                let Some(&succ_local_id) = entity_to_local.get(succ_entity_id) else {
+                    unresolved += 1;
+                    continue;
+                };
+                // Collapse can point an entry at itself when a supersede pair
+                // shares its text; a self-edge is a cycle, not a chain.
+                if succ_local_id == *local_id {
+                    continue;
+                }
+                if let Err(e) = mem_store.set_superseded_by(*local_id, succ_local_id) {
+                    tracing::warn!("reconcile: could not set superseded_by for #{local_id}: {e}");
+                    unresolved += 1;
                 }
             }
             summary.skipped_archived_supersede_unresolved = unresolved;
@@ -406,7 +489,7 @@ fn open_server_db_readonly(path: &std::path::Path) -> Result<Connection> {
 
 fn read_server_notes(conn: &Connection, project_id: i64) -> Result<Vec<ServerNote>> {
     let mut stmt = conn.prepare(
-        "SELECT kind, title, body, \
+        "SELECT id, kind, title, body, \
                COALESCE(tags, ''), COALESCE(linked_files, ''), \
                created_at, status, superseded_by \
          FROM notes \
@@ -416,14 +499,15 @@ fn read_server_notes(conn: &Connection, project_id: i64) -> Result<Vec<ServerNot
     let notes = stmt
         .query_map(rusqlite::params![project_id], |row| {
             Ok(ServerNote {
-                kind: row.get(0)?,
-                title: row.get(1)?,
-                body: row.get(2)?,
-                tags: row.get(3)?,
-                linked_files: row.get(4)?,
-                created_at: row.get(5)?,
-                status: row.get(6)?,
-                superseded_by: row.get(7)?,
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get(2)?,
+                body: row.get(3)?,
+                tags: row.get(4)?,
+                linked_files: row.get(5)?,
+                created_at: row.get(6)?,
+                status: row.get(7)?,
+                superseded_by: row.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -433,7 +517,7 @@ fn read_server_notes(conn: &Connection, project_id: i64) -> Result<Vec<ServerNot
 /// Insert the batch in a single transaction. Returns the list of new local ids.
 fn import_batch(
     store: &MemoryStore,
-    notes: &[&ServerNote],
+    notes: &[MergedNote],
     embeddings: &[Option<Vec<u8>>],
 ) -> Result<Vec<i64>> {
     store
@@ -443,17 +527,8 @@ fn import_batch(
     let mut ids = Vec::with_capacity(notes.len());
     let result: Result<()> = (|| {
         for (note, embedding) in notes.iter().zip(embeddings.iter()) {
-            // Compute normalized tags/files as owned strings first, then slice.
-            let norm_tags_owned = normalize_csv(&note.tags);
-            let norm_files_owned = normalize_csv(&note.linked_files);
-            let tag_parts: Vec<&str> = norm_tags_owned
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .collect();
-            let file_parts: Vec<&str> = norm_files_owned
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .collect();
+            let tag_parts: Vec<&str> = note.tags.iter().map(String::as_str).collect();
+            let file_parts: Vec<&str> = note.linked_files.iter().map(String::as_str).collect();
 
             // Determine import status: archived source rows stay archived.
             let status = if note.status == "archived" {
@@ -493,45 +568,6 @@ fn import_batch(
             Err(e)
         }
     }
-}
-
-/// Build a map from candidate index → candidate index of the successor,
-/// using the server.db to obtain the original server-side IDs.
-///
-/// `superseded_by` in server.db is a server-local rowid.  We build a map
-/// server_id → candidate_index first, then follow the link.
-fn build_supersede_map(
-    server_db_path: &std::path::Path,
-    project_id: i64,
-    candidates: &[ServerNote],
-) -> Result<HashMap<usize, usize>> {
-    let conn = open_server_db_readonly(server_db_path)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, superseded_by FROM notes WHERE project_id = ?1 ORDER BY created_at ASC",
-    )?;
-    let rows: Vec<(i64, Option<i64>)> = stmt
-        .query_map(rusqlite::params![project_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
-    // Map server_id → candidate_index (index into `candidates` vec, same order).
-    let server_id_to_idx: HashMap<i64, usize> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, (server_id, _))| (*server_id, i))
-        .collect();
-
-    let mut result = HashMap::new();
-    for (idx, (_, superseded_by)) in rows.iter().enumerate() {
-        if idx < candidates.len()
-            && let Some(succ_server_id) = superseded_by
-            && let Some(&succ_idx) = server_id_to_idx.get(succ_server_id)
-        {
-            result.insert(idx, succ_idx);
-        }
-    }
-    Ok(result)
 }
 
 /// Try to obtain an embedding blob for `text`.  Returns `None` without
@@ -615,16 +651,18 @@ pub(crate) async fn import_git_notes_into_memory(
 
     let store = MemoryStore::open(mem_path)
         .with_context(|| format!("opening memory.db at {}", mem_path.display()))?;
-    let existing: std::collections::HashSet<String> = store
+    let mut existing: std::collections::HashSet<String> = store
         .all_notes_for_dedup()
         .context("reading existing memory.db notes for dedup")?
         .iter()
-        .map(note_dedup_hash)
+        .map(note_entity_id)
         .collect();
 
+    // `insert` returning false also drops duplicates *within* the notes ref —
+    // two entries with identical text are one entity now.
     let to_import: Vec<&crate::storage::memory::Note> = notes
         .iter()
-        .filter(|&n| !existing.contains(&note_dedup_hash(n)))
+        .filter(|&n| existing.insert(note_entity_id(n)))
         .collect();
     if to_import.is_empty() {
         return Ok(0);
@@ -700,12 +738,14 @@ pub(super) fn count_reconcilable(
 
     let mem_store = MemoryStore::open(mem_path).ok()?;
     let existing = mem_store.all_notes_for_dedup().ok()?;
-    let existing_hashes: std::collections::HashSet<String> =
-        existing.iter().map(note_dedup_hash).collect();
+    let existing_entities: std::collections::HashSet<String> =
+        existing.iter().map(note_entity_id).collect();
 
-    let count = candidates
+    // Counts entries the user would gain, so collapsed duplicates count once —
+    // it must not promise more than `reconcile` would import.
+    let count = collapse_candidates(&candidates)
         .iter()
-        .filter(|c| !existing_hashes.contains(&c.hash().to_hex().to_string()))
+        .filter(|m| !existing_entities.contains(&m.entity_id))
         .count();
 
     if count > 0 { Some(count) } else { None }
@@ -830,6 +870,76 @@ mod init_import_tests {
             1,
             "no duplication on re-run"
         );
+    }
+
+    /// A blob written before `entity_id` existed carries no such key. Its
+    /// identity recomputes from the three fields it does carry, so it still
+    /// dedups against a stored row — absence must be fully recoverable.
+    #[tokio::test]
+    async fn init_import_dedups_legacy_blob_without_entity_id() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+
+        // A legacy record: serde omits `entity_id` when None, so this is
+        // byte-identical to a blob written before the field existed.
+        let legacy = crate::storage::NoteRecord {
+            schema_version: 1,
+            id: 1,
+            kind: "decision".to_string(),
+            title: "legacy entry".to_string(),
+            body: "written by an older client".to_string(),
+            tags: vec![],
+            linked_files: vec![],
+            created_at: 1_700_000_000,
+            status: "active".to_string(),
+            source_ref: None,
+            valid_at: None,
+            invalid_at: None,
+            superseded_by: None,
+            remote_id: None,
+            entity_id: None,
+            superseded_by_entity_id: None,
+        };
+        crate::storage::append_to_git_notes(Some(git_root), &legacy)
+            .await
+            .expect("append legacy record");
+
+        let raw = std::process::Command::new("git")
+            .args(["notes", "--ref=spelunk", "show", "HEAD"])
+            .current_dir(git_root)
+            .output()
+            .expect("git notes show");
+        let blob = String::from_utf8_lossy(&raw.stdout);
+        assert!(
+            !blob.contains("\"entity_id\""),
+            "the seeded blob must genuinely lack the key: {blob}"
+        );
+
+        // Seed memory.db with the same content, as a prior import would have.
+        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        store
+            .add_note_with_created_at(
+                "decision",
+                "legacy entry",
+                "written by an older client",
+                &[],
+                &[],
+                Some("manual"),
+                "active",
+                1_700_000_999, // a different created_at: no longer part of the key
+            )
+            .expect("seed note");
+
+        let imported = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(
+            imported, 0,
+            "legacy blob must recompute its id and dedup against the stored row"
+        );
+        assert_eq!(store.list(None, 10, true).expect("list").len(), 1);
     }
 
     /// A repo with no spelunk notes ref is a silent no-op.
@@ -1034,14 +1144,13 @@ mod init_import_tests {
         assert_eq!(init_sourced, 1, "exactly one row came from the init import");
     }
 
-    /// Drift guard: reconcile's server-row content key and init-import's
-    /// memory-row content key must be byte-identical for identical content.
-    /// If they ever diverge, an entry present in both git-notes and memory.db
-    /// would be imported twice. The two inputs below deliberately differ in
-    /// tag/file order and status (all excluded/normalized by the key) to prove
-    /// both entry points agree after normalization.
+    /// Drift guard: reconcile's server-row key and init-import's memory-row key
+    /// must be byte-identical for identical content. If they ever diverge, an
+    /// entry present in both git-notes and memory.db is imported twice. The two
+    /// inputs below deliberately differ in tag/file order and status — all
+    /// excluded from the key — to prove both entry points agree regardless.
     #[test]
-    fn dedup_hash_parity_between_reconcile_and_init_import() {
+    fn dedup_key_parity_between_reconcile_and_init_import() {
         register_sqlite_vec();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let mem_path = tmp.path().join("memory.db");
@@ -1066,21 +1175,23 @@ mod init_import_tests {
             .expect("one note");
 
         // The reconcile candidate (a server.db row) carrying identical content,
-        // with raw CSV fields in a different order and an archived status.
+        // but differing in every field the key excludes: a server-local rowid,
+        // a different created_at, reordered tags/files, and an archived status.
         let server_note = ServerNote {
+            id: 4242,
             kind: "decision".to_string(),
             title: "shared key".to_string(),
             body: "body text".to_string(),
             tags: "alpha,beta".to_string(),
             linked_files: "a.rs,b.rs".to_string(),
-            created_at,
+            created_at: created_at + 86_400,
             status: "archived".to_string(),
             superseded_by: None,
         };
 
         assert_eq!(
-            note_dedup_hash(&note),
-            server_note.hash().to_hex().to_string(),
+            note_entity_id(&note),
+            server_note.entity_id(),
             "reconcile's key and init-import's key must match for identical content"
         );
     }

@@ -21,6 +21,10 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
     spelunk_bin()
+        // The git-notes carrier follows the process CWD and ignores `--db`, so
+        // seeding from the repo under test would write the fixture into its
+        // real notes ref.
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("memory")

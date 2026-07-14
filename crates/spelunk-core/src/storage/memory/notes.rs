@@ -50,6 +50,23 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
     })
 }
 
+/// Append the members of `incoming` that `current` lacks, preserving `current`'s
+/// order. Returns `None` only when the result is empty and `current` was NULL,
+/// so a row with no tags is not rewritten to `""`.
+fn union_csv(current: Option<&str>, incoming: &[String]) -> Option<String> {
+    let mut merged = split_csv(current);
+    for v in incoming {
+        let v = v.trim();
+        if !v.is_empty() && !merged.iter().any(|e| e == v) {
+            merged.push(v.to_string());
+        }
+    }
+    match (merged.is_empty(), current) {
+        (true, None) => None,
+        _ => Some(merged.join(",")),
+    }
+}
+
 pub(super) fn split_csv(s: Option<&str>) -> Vec<String> {
     match s {
         None | Some("") => vec![],
@@ -78,8 +95,9 @@ impl MemoryStore {
         valid_at: Option<i64>,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO notes (kind, title, body, tags, linked_files, source_ref, valid_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO notes \
+             (kind, title, body, tags, linked_files, source_ref, valid_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 kind,
                 title,
@@ -88,6 +106,7 @@ impl MemoryStore {
                 linked_files.join(","),
                 source_ref,
                 valid_at,
+                crate::storage::entity_id::entity_id(kind, title, body),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -112,8 +131,8 @@ impl MemoryStore {
     ) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO notes \
-             (kind, title, body, tags, linked_files, source_ref, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (kind, title, body, tags, linked_files, source_ref, status, created_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 kind,
                 title,
@@ -123,6 +142,7 @@ impl MemoryStore {
                 source_ref,
                 status,
                 created_at,
+                crate::storage::entity_id::entity_id(kind, title, body),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -144,6 +164,42 @@ impl MemoryStore {
             .query_map([], super::notes::row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(notes)
+    }
+
+    /// Merge `tags` and `linked_files` into an existing note, add-wins: values
+    /// are only ever added, never removed or reordered.
+    ///
+    /// Two entries with identical text but different tags share one `entity_id`
+    /// and so collapse on import; unioning is what keeps the losing copy's tags
+    /// from being dropped. Mirrors the pull-side Add-Wins policy in `sync.rs`.
+    ///
+    /// Returns `true` when the row changed.
+    pub fn union_tags_and_files(
+        &self,
+        note_id: i64,
+        tags: &[String],
+        linked_files: &[String],
+    ) -> Result<bool> {
+        let (cur_tags, cur_files): (Option<String>, Option<String>) = self.conn.query_row(
+            "SELECT tags, linked_files FROM notes WHERE id = ?1",
+            rusqlite::params![note_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let merged_tags = union_csv(cur_tags.as_deref(), tags);
+        let merged_files = union_csv(cur_files.as_deref(), linked_files);
+
+        if merged_tags.as_deref() == cur_tags.as_deref()
+            && merged_files.as_deref() == cur_files.as_deref()
+        {
+            return Ok(false);
+        }
+
+        self.conn.execute(
+            "UPDATE notes SET tags = ?1, linked_files = ?2 WHERE id = ?3",
+            rusqlite::params![merged_tags, merged_files, note_id],
+        )?;
+        Ok(true)
     }
 
     /// Update an existing note's `superseded_by` link (used by reconcile to

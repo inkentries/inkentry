@@ -1,9 +1,9 @@
 //! Integration tests for `spelunk memory reconcile`.
 //!
-//! Covers all 8 acceptance criteria from issue #391:
+//! Covers all 8 acceptance criteria:
 //!
-//! 1. Dedup by content-hash (kind|title|body|normalize(tags)|normalize(linked_files)|created_at)
-//!    - not by rowid.
+//! 1. Dedup by `entity_id` — sha256 over the canonical JSON of {body, kind,
+//!    title} (ADR-068) — not by rowid.
 //! 2. No-op when server.db is absent (exit 0, no error).
 //! 3. Read-only guarantee on server.db (implementer opens it read-only).
 //! 4. Archived rows in server.db import as archived in memory.db.
@@ -441,10 +441,131 @@ fn dedup_ignores_rowid_changes() {
     );
 }
 
+/// Insert a server note at an explicit rowid, so the source store's ids can be
+/// made to diverge from the ids memory.db will assign on import.
+#[allow(clippy::too_many_arguments)]
+fn insert_server_note_with_id(
+    conn: &Connection,
+    id: i64,
+    project_id: i64,
+    title: &str,
+    body: &str,
+    created_at: i64,
+    status: &str,
+    superseded_by: Option<i64>,
+) {
+    conn.execute(
+        "INSERT INTO notes \
+         (id, project_id, kind, title, body, tags, linked_files, created_at, status, superseded_by) \
+         VALUES (?1, ?2, 'decision', ?3, ?4, NULL, NULL, ?5, ?6, ?7)",
+        rusqlite::params![id, project_id, title, body, created_at, status, superseded_by],
+    )
+    .expect("insert server note with id");
+}
+
 #[test]
-fn dedup_hash_includes_created_at() {
-    // Criteria #1: two notes with identical kind/title/body/tags but different
-    // created_at values must be treated as distinct (separate hashes).
+fn supersede_edge_resolves_across_a_rowid_renumber() {
+    // Two independent reasons a rowid-based edge breaks here, both live:
+    //  1. the source rows sit at ids 101/102 while memory.db numbers them 2/3;
+    //  2. an earlier note is already imported, so the pair's position among the
+    //     *candidates* differs from its position in the *import set*.
+    // Resolved by entity_id, the edge is immune to both.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "supersede-renumber";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    // Phase 1: one earlier note, imported on its own.
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note_with_id(
+        &conn,
+        100,
+        project_id,
+        "Unrelated earlier note",
+        "already imported",
+        1_700_000_100,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(
+        count_memory_notes(&mem_path),
+        1,
+        "phase 1 imported one note"
+    );
+
+    // Phase 2: the supersede pair arrives. Note 100 is now already present, so
+    // the pair's candidate indices (1, 2) no longer match its import-set
+    // indices (0, 1).
+    let conn = Connection::open(&server_db).unwrap();
+    // Successor first: `superseded_by` is a FK, so 102 must exist before 101
+    // can reference it. Import order is driven by created_at, not insert order.
+    insert_server_note_with_id(
+        &conn,
+        102,
+        project_id,
+        "New approach",
+        "successor body",
+        1_700_000_501,
+        "active",
+        None,
+    );
+    insert_server_note_with_id(
+        &conn,
+        101,
+        project_id,
+        "Old approach",
+        "superseded body",
+        1_700_000_500,
+        "archived",
+        Some(102), // → server rowid of the successor
+    );
+    drop(conn);
+
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let (old_id, old_succ): (i64, Option<i64>) = mem
+        .query_row(
+            "SELECT id, superseded_by FROM notes WHERE title = 'Old approach'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let new_id: i64 = mem
+        .query_row(
+            "SELECT id FROM notes WHERE title = 'New approach'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Guard the premise: local ids must actually differ from the server's.
+    assert!(
+        old_id != 101 && new_id != 102,
+        "memory.db must have renumbered ({old_id}, {new_id}) — otherwise this proves nothing"
+    );
+    assert_eq!(
+        old_succ,
+        Some(new_id),
+        "the supersede edge must point at the successor's local rowid"
+    );
+}
+
+#[test]
+fn dedup_key_excludes_created_at() {
+    // `created_at` is not part of the identity: a second machine recording the
+    // same decision cannot reproduce the first one's timestamp. Two rows with
+    // identical text therefore collapse to one entry, whatever their timestamps.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -487,16 +608,328 @@ fn dedup_hash_includes_created_at() {
 
     assert_eq!(
         count_memory_notes(&mem_path),
-        2,
-        "notes with different created_at must both be imported"
+        1,
+        "identical text at different times is one entity"
+    );
+
+    // Re-running is a no-op: the collapsed entry is already present.
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(count_memory_notes(&mem_path), 1, "re-run imports nothing");
+}
+
+#[test]
+fn dedup_key_excludes_tags_which_union_on_collapse() {
+    // Two rows with identical text but disjoint tags/linked_files are one
+    // entity; the survivor carries the union rather than dropping either set.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "tag-union-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("alpha"),
+        Some("a.rs"),
+        1_700_000_001,
+        "active",
+        None,
+    );
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("beta"),
+        Some("b.rs"),
+        1_700_000_002,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    assert_eq!(count_memory_notes(&mem_path), 1, "one entity");
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let (tags, files): (String, String) = mem
+        .query_row("SELECT tags, linked_files FROM notes", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    for want in ["alpha", "beta"] {
+        assert!(tags.contains(want), "tags {tags:?} must union {want}");
+    }
+    for want in ["a.rs", "b.rs"] {
+        assert!(files.contains(want), "files {files:?} must union {want}");
+    }
+}
+
+#[test]
+fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
+    // The add-wins union must also fire when a candidate collapses onto a row
+    // already in memory.db, not just against a sibling candidate. Tags/files
+    // are outside the key, so without the merge the losing copy's metadata is
+    // discarded silently — the row is "already present" and simply skipped.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "stored-union-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    // Pass 1: import the entry carrying only `alpha` / `a.rs`.
+    let conn = Connection::open(&server_db).unwrap();
+    let first_id = insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("alpha"),
+        Some("a.rs"),
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(count_memory_notes(&mem_path), 1, "pass 1 imports the entry");
+
+    // Pass 2: the same text reappears with different tags/files. Same entity,
+    // so it will not re-import — its metadata has to merge into the stored row.
+    let conn = Connection::open(&server_db).unwrap();
+    conn.execute(
+        "DELETE FROM notes WHERE id = ?1",
+        rusqlite::params![first_id],
+    )
+    .unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("beta"),
+        Some("b.rs"),
+        1_700_000_002,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    assert_eq!(
+        count_memory_notes(&mem_path),
+        1,
+        "identical text stays one entity"
+    );
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let (tags, files): (String, String) = mem
+        .query_row("SELECT tags, linked_files FROM notes", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    for want in ["alpha", "beta"] {
+        assert!(
+            tags.contains(want),
+            "tags {tags:?} must keep {want} after collapsing onto the stored row"
+        );
+    }
+    for want in ["a.rs", "b.rs"] {
+        assert!(
+            files.contains(want),
+            "linked_files {files:?} must keep {want} after collapsing onto the stored row"
+        );
+    }
+}
+
+#[test]
+fn dry_run_does_not_union_tags_into_a_stored_row() {
+    // The tag merge is a write. `--dry-run` must stop before it, not just
+    // before the insert.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "dryrun-union-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    let conn = Connection::open(&server_db).unwrap();
+    let first_id = insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("alpha"),
+        None,
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+
+    // Same entity, new tag — a live run would merge `beta` in.
+    let conn = Connection::open(&server_db).unwrap();
+    conn.execute(
+        "DELETE FROM notes WHERE id = ?1",
+        rusqlite::params![first_id],
+    )
+    .unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Union title",
+        "Union body",
+        Some("beta"),
+        None,
+        1_700_000_002,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .arg("--dry-run")
+        .assert()
+        .success();
+
+    let mem = Connection::open(&mem_path).unwrap();
+    let tags: String = mem
+        .query_row("SELECT tags FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        !tags.contains("beta"),
+        "--dry-run must not merge tags; found {tags:?}"
     );
 }
 
 #[test]
-fn dedup_hash_normalizes_tags() {
-    // Criteria #1: tags are normalized (sorted, trimmed) before hashing, so
-    // "beta, alpha" and "alpha,beta" in server.db should match a note in
-    // memory.db that has normalized "alpha,beta".
+fn json_counts_partition_the_source_rows() {
+    // The summary must account for every source row exactly once:
+    // candidates == already_present + collapsed_duplicates + imported.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "partition-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+
+    // Pass 1: one row, imported — it becomes the "already present" copy.
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Stored",
+        "stored body",
+        None,
+        None,
+        1_700_000_001,
+        "active",
+        None,
+    );
+    drop(conn);
+    reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .assert()
+        .success();
+    assert_eq!(count_memory_notes(&mem_path), 1);
+
+    // Pass 2: the stored row again (already_present=1), plus two rows sharing
+    // one entity_id (imported=1, collapsed_duplicates=1). 4 candidates total.
+    let conn = Connection::open(&server_db).unwrap();
+    for created_at in [1_700_000_010_i64, 1_700_000_011] {
+        insert_server_note(
+            &conn,
+            project_id,
+            "decision",
+            "Twin",
+            "twin body",
+            None,
+            None,
+            created_at,
+            "active",
+            None,
+        );
+    }
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Fresh",
+        "fresh body",
+        None,
+        None,
+        1_700_000_012,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    let out = reconcile_cmd(&config_path, &server_db)
+        .arg("--all-projects")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value =
+        serde_json::from_slice(&out).expect("summary line must be valid JSON");
+
+    let candidates = v["candidates"].as_i64().expect("candidates");
+    let already = v["already_present"].as_i64().expect("already_present");
+    let collapsed = v["collapsed_duplicates"]
+        .as_i64()
+        .expect("collapsed_duplicates");
+    let imported = v["imported"].as_i64().expect("imported");
+
+    assert_eq!(candidates, 4, "4 source rows: {v}");
+    assert_eq!(already, 1, "the stored row is already present: {v}");
+    assert_eq!(collapsed, 1, "the twin pair folds one row away: {v}");
+    assert_eq!(imported, 2, "Twin (collapsed) and Fresh import: {v}");
+    assert_eq!(
+        candidates,
+        already + collapsed + imported,
+        "counts must partition the source rows exactly: {v}"
+    );
+    assert_eq!(count_memory_notes(&mem_path), 3, "Stored + Twin + Fresh");
+}
+
+#[test]
+fn tag_reorder_does_not_reimport() {
+    // Tags are excluded from the key outright (they were formerly sorted and
+    // hashed), so reordering them cannot produce a second copy.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -536,7 +969,7 @@ fn dedup_hash_normalizes_tags() {
     .unwrap();
     drop(conn);
 
-    // Second run: hash should still match - no re-import.
+    // Second run: same entity_id — no re-import.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -544,7 +977,7 @@ fn dedup_hash_normalizes_tags() {
     assert_eq!(
         count_memory_notes(&mem_path),
         1,
-        "tag-normalized notes must not be re-imported"
+        "reordering tags must not re-import"
     );
 }
 
