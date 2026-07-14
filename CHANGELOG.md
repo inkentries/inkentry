@@ -95,6 +95,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   services set `pull_policy: build`, so the image is built locally with no
   registry pull (air-gapped friendly). A CI job now builds and smoke-runs the
   image so a broken build is caught on PRs.
+- **`spelunk server stop` reliably terminates a wedged local server.** A daemon
+  whose `/v1/health` had stopped responding could not be stopped and was
+  silently orphaned across a `stop && start`. `stop` now recognises a hung
+  daemon as ours, sends SIGTERM, escalates to SIGKILL after a bounded wait, and
+  reports success only once the process is confirmed gone. `start` reclaims a
+  stale or hung prior daemon on the requested port instead of drifting to a
+  different port (which left two servers on one `server.db`), and fails loudly
+  if an unrelated process holds the port. A single-instance guard prevents two
+  servers running against the same `server.db`.
 
 ## [0.9.3] — 2026-07-08
 

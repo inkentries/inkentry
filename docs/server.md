@@ -35,6 +35,14 @@ spelunk server status    # show whether a local server is running and its PID
 spelunk server logs      # tail the local server's logs
 ```
 
+`stop` terminates even a wedged server whose `/v1/health` has stopped
+responding: it sends SIGTERM, escalates to SIGKILL after a bounded wait, and
+reports success only once the process is confirmed gone. `start` reclaims a
+stale or hung prior daemon on the requested port rather than drifting to a
+different one, and fails loudly if an unrelated process already holds that port.
+A single-instance guard keeps two servers from running against the same
+`server.db`.
+
 To opt out entirely and keep spelunk fully offline, set `SPELUNK_NO_SERVER=1`
 (see [Capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live)).
 With it set, spelunk never autostarts a server and inference-only features exit
