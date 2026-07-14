@@ -1,13 +1,15 @@
 use anyhow::{Result, anyhow};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::memory::Note;
 use super::note_record::{NoteRecord, record_to_note};
+use fold::fold_records;
 
 mod backend_impl;
+mod fold;
 mod lock;
 
 pub use lock::{NotesLock, lock_notes};
@@ -286,8 +288,8 @@ async fn run_git_with_stdin(
 
 /// Hard cap on entries returned by `list()`.
 ///
-/// Each entry requires one `git notes show` subprocess call (~13 ms).
-/// Without a guard, `list(5000)` would take ~65 seconds.
+/// Bounds output only, not work: the entity fold has to read every reachable
+/// note blob whatever the limit.
 /// Callers needing unbounded listing should use `--backend sqlite`.
 const GIT_NOTES_MAX_LIST: usize = 500;
 
@@ -395,9 +397,13 @@ impl GitNotesBackend {
         Ok(self.run(&["rev-parse", "HEAD"]).await?.trim().to_string())
     }
 
-    /// Return (commit-sha, commit-timestamp) pairs for commits that have a
-    /// spelunk note, in reverse-chronological (newest first) order.
-    async fn noted_commits(&self) -> Result<Vec<(String, i64)>> {
+    /// Commits carrying a spelunk note, in reverse-chronological (newest first)
+    /// order.
+    ///
+    /// Only commits reachable from HEAD are listed: memory travels with the
+    /// code that carries it, so a teammate's note on a fetched-but-unmerged
+    /// commit stays invisible until that commit is merged.
+    async fn noted_commits(&self) -> Result<Vec<NotedCommit>> {
         // `git notes --ref=spelunk list` → "<note-blob-sha> <commit-sha>"
         let list_out = self
             .git()
@@ -409,33 +415,85 @@ impl GitNotesBackend {
             return Ok(vec![]);
         }
 
-        let noted: HashSet<String> = String::from_utf8_lossy(&list_out.stdout)
+        let listing = String::from_utf8_lossy(&list_out.stdout);
+        let noted: HashMap<&str, &str> = listing
             .lines()
-            .filter_map(|l| l.split_whitespace().nth(1).map(str::to_owned))
+            .filter_map(|l| {
+                let mut parts = l.split_whitespace();
+                let blob = parts.next()?;
+                let commit = parts.next()?;
+                Some((commit, blob))
+            })
             .collect();
 
         if noted.is_empty() {
             return Ok(vec![]);
         }
 
-        // Walk git log in reverse-chronological order to get commit timestamps.
-        let log_out = self.git().args(["log", "--format=%H %at"]).output().await?;
+        let log_out = self.git().args(["log", "--format=%H"]).output().await?;
 
         if !log_out.status.success() {
             return Ok(vec![]);
         }
 
-        let pairs = String::from_utf8_lossy(&log_out.stdout)
+        let commits = String::from_utf8_lossy(&log_out.stdout)
             .lines()
             .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let sha = parts.next()?.to_owned();
-                let ts: i64 = parts.next()?.parse().ok()?;
-                noted.contains(&sha).then_some((sha, ts))
+                let commit = line.trim();
+                noted.get(commit).map(|blob| NotedCommit {
+                    commit: commit.to_owned(),
+                    note_blob: (*blob).to_owned(),
+                })
             })
             .collect();
 
-        Ok(pairs)
+        Ok(commits)
+    }
+
+    /// Read every listed note blob in one `git cat-file --batch`, in the order
+    /// given.
+    ///
+    /// The fold needs every reachable blob, so a per-commit `git notes show`
+    /// would cost one subprocess each (~13 ms). Write paths keep `show`: they
+    /// read exactly one note.
+    async fn read_note_blobs(&self, blob_shas: &[String]) -> Result<Vec<String>> {
+        if blob_shas.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut cmd = self.git();
+        cmd.args(["cat-file", "--batch"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open stdin for git cat-file --batch"))?;
+
+        let mut request = blob_shas.join("\n");
+        request.push('\n');
+
+        // Write and drain concurrently: git blocks once the stdout pipe fills,
+        // so writing the whole request first would deadlock on a big enough repo.
+        let writer = async move {
+            stdin.write_all(request.as_bytes()).await?;
+            stdin.shutdown().await
+        };
+        let (write_res, out) = tokio::join!(writer, child.wait_with_output());
+
+        let out = out?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "git cat-file --batch: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        write_res?;
+
+        parse_cat_file_batch(&out.stdout)
     }
 
     /// Read the raw note blob for `commit_sha` (empty string if no note).
@@ -453,28 +511,12 @@ impl GitNotesBackend {
 
     /// Permissively parse the spelunk records from a commit's note blob.
     ///
-    /// The blob is JSON Lines interleaved with foreign content (prose, other
-    /// tools' lines). Foreign lines are skipped without error; only a record
-    /// from a newer, incompatible `schema_version` returns an error.
+    /// Sees one commit's blob, so it cannot see a second machine's copy of an
+    /// entity: at differing HEADs the copies land on different commits' notes.
+    /// The entity fold therefore lives in [`Self::collect`], not here.
     async fn read_records(&self, commit_sha: &str) -> Result<Vec<NoteRecord>> {
         let blob = self.read_note_blob(commit_sha).await?;
-        let mut records = Vec::new();
-        for line in blob.lines() {
-            match parse_spelunk_line(line) {
-                Some(record) => {
-                    if record.schema_version > 1 {
-                        return Err(anyhow::Error::new(
-                            crate::error::SpelunkError::SchemaMismatch {
-                                found: record.schema_version,
-                                max_known: 1,
-                            },
-                        ));
-                    }
-                    records.push(record);
-                }
-                None => continue, // foreign line: skip, never error
-            }
-        }
+        let mut records = parse_records(&blob)?;
         // `cat_sort_uniq` unions lines lexicographically, so after a merge blob
         // order is not chronological (ADR-069 D2). Stable: ties keep blob order.
         records.sort_by_key(|r| r.created_at);
@@ -529,6 +571,10 @@ impl GitNotesBackend {
         Ok(changed)
     }
 
+    /// Every entry on the ref, folded to one record per entity, then filtered.
+    ///
+    /// The only site that sees every commit's records, so the only site that
+    /// can fold an entity's copies together.
     async fn collect(
         &self,
         kind_filter: Option<&str>,
@@ -536,35 +582,125 @@ impl GitNotesBackend {
         as_of: Option<i64>,
         limit: usize,
     ) -> Result<Vec<Note>> {
-        let commits = self.noted_commits().await?;
-        let mut notes = Vec::new();
+        let blob_shas: Vec<String> = self
+            .noted_commits()
+            .await?
+            .into_iter()
+            .map(|c| c.note_blob)
+            .collect();
 
-        'outer: for (sha, _) in commits {
-            for record in self.read_records(&sha).await? {
-                if notes.len() >= limit {
-                    break 'outer;
-                }
-                if kind_filter.is_some_and(|k| record.kind != k) {
-                    continue;
-                }
-                if !include_archived && record.status == "archived" {
-                    continue;
-                }
-                if let Some(ts) = as_of {
-                    let effective = record.valid_at.unwrap_or(record.created_at);
-                    if effective > ts {
-                        continue;
-                    }
-                    if record.invalid_at.is_some_and(|ia| ia <= ts) {
-                        continue;
-                    }
-                }
-                notes.push(record_to_note(record));
-            }
+        let mut records = Vec::new();
+        for blob in self.read_note_blobs(&blob_shas).await? {
+            records.extend(parse_records(&blob)?);
         }
 
-        Ok(notes)
+        // Fold before every filter below. Dropping an archived copy first would
+        // leave a surviving active copy to resurrect the entity.
+        let mut folded = fold_records(records);
+
+        folded.retain(|record| {
+            if kind_filter.is_some_and(|k| record.kind != k) {
+                return false;
+            }
+            if !include_archived && record.status == "archived" {
+                return false;
+            }
+            if let Some(ts) = as_of {
+                let effective = record.valid_at.unwrap_or(record.created_at);
+                if effective > ts {
+                    return false;
+                }
+                if record.invalid_at.is_some_and(|ia| ia <= ts) {
+                    return false;
+                }
+            }
+            true
+        });
+
+        // Stable over first-encounter order, so ties keep blob order (D2).
+        folded.sort_by_key(|r| r.created_at);
+        if folded.len() > limit {
+            // Keep the newest, as the sqlite backend's `ORDER BY created_at
+            // DESC LIMIT` does. Folding first is what makes this exact.
+            folded.drain(..folded.len() - limit);
+        }
+
+        Ok(folded.into_iter().map(record_to_note).collect())
     }
+}
+
+/// A commit carrying a spelunk note, and the note's blob sha.
+struct NotedCommit {
+    commit: String,
+    note_blob: String,
+}
+
+/// Permissively parse the spelunk records from one note blob.
+///
+/// The blob is JSON Lines interleaved with foreign content (prose, other
+/// tools' lines). Foreign lines are skipped without error; only a record from
+/// a newer, incompatible `schema_version` returns an error.
+fn parse_records(blob: &str) -> Result<Vec<NoteRecord>> {
+    let mut records = Vec::new();
+    for line in blob.lines() {
+        match parse_spelunk_line(line) {
+            Some(record) => {
+                if record.schema_version > 1 {
+                    return Err(anyhow::Error::new(
+                        crate::error::SpelunkError::SchemaMismatch {
+                            found: record.schema_version,
+                            max_known: 1,
+                        },
+                    ));
+                }
+                records.push(record);
+            }
+            None => continue, // foreign line: skip, never error
+        }
+    }
+    Ok(records)
+}
+
+/// Split `git cat-file --batch` output into one body per requested object.
+///
+/// Each record is `<sha> <type> <size>\n<size bytes>\n`. The size header is the
+/// only safe delimiter: a note body contains newlines of its own.
+fn parse_cat_file_batch(out: &[u8]) -> Result<Vec<String>> {
+    let mut bodies = Vec::new();
+    let mut rest = out;
+
+    while !rest.is_empty() {
+        let nl = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or_else(|| anyhow!("git cat-file --batch: header with no newline"))?;
+        let header = String::from_utf8_lossy(&rest[..nl]).into_owned();
+        rest = &rest[nl + 1..];
+
+        let fields: Vec<&str> = header.split(' ').collect();
+        match fields.as_slice() {
+            // "<sha> missing" / "<sha> ambiguous": no body follows. A read must
+            // not break on one unreadable note.
+            [_, _] => bodies.push(String::new()),
+            [_, _, size] => {
+                let size: usize = size
+                    .parse()
+                    .map_err(|_| anyhow!("git cat-file --batch: bad size in {header:?}"))?;
+                if rest.len() < size + 1 {
+                    return Err(anyhow!("git cat-file --batch: truncated body"));
+                }
+                bodies.push(String::from_utf8_lossy(&rest[..size]).into_owned());
+                rest = &rest[size + 1..];
+            }
+            _ => {
+                return Err(anyhow!(
+                    "git cat-file --batch: unexpected header {header:?}"
+                ));
+            }
+        }
+    }
+
+    Ok(bodies)
 }
 
 /// Classify one line of a note blob: `Some(record)` if it parses as a JSON

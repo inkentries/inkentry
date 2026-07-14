@@ -2483,3 +2483,187 @@ async fn read_orders_records_by_created_at_with_entity_id_present() {
         "created_at order must hold with entity_id present"
     );
 }
+
+// ── The entity fold: one decision recorded twice is one entry ────────────────
+
+/// One entity, as a second machine would have recorded it: same
+/// `{kind, title, body}` (so the same `entity_id`), its own `id`/`created_at`/
+/// tags.
+fn entity_copy(title: &str, id: i64, created_at: i64, tags: &[&str]) -> NoteRecord {
+    let mut r = make_note_record(id, title);
+    r.created_at = created_at;
+    r.tags = tags.iter().map(|t| t.to_string()).collect();
+    r
+}
+
+fn write_lines(root: &std::path::Path, records: &[&NoteRecord]) {
+    let lines: Vec<String> = records
+        .iter()
+        .map(|r| serde_json::to_string(r).expect("serialize"))
+        .collect();
+    write_raw_note(root, &lines.join("\n"));
+}
+
+/// Two machines at the same HEAD: `cat_sort_uniq` leaves both copies as two
+/// lines of one blob, and the read folds them into one entry.
+#[tokio::test]
+#[serial]
+async fn same_head_duplicate_folds_to_one_entry() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let mine = entity_copy("shared decision", 1, 100, &["a"]);
+    let theirs = entity_copy("shared decision", 7, 300, &["b"]);
+    assert_eq!(
+        mine.resolve_entity_id(),
+        theirs.resolve_entity_id(),
+        "fixture: both copies must be one entity"
+    );
+    assert_ne!(mine.id, theirs.id, "fixture: rowids differ per machine");
+
+    write_lines(root, &[&theirs, &mine]);
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+
+    assert_eq!(notes.len(), 1, "one decision, one entry, got: {notes:?}");
+    assert_eq!(notes[0].created_at, 100, "earliest recording survives");
+    assert_eq!(notes[0].tags, vec!["a", "b"], "tags merge by union");
+}
+
+/// Two machines at **different** HEADs: the copies land on two separate notes,
+/// so only a fold that sees every commit can collapse them.
+///
+/// This is the test that pins the fold's placement: it fails if the fold moves
+/// into `read_records`, which sees one commit's blob at a time.
+#[tokio::test]
+#[serial]
+async fn different_head_duplicate_folds_to_one_entry() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // Their copy, recorded at their HEAD, arriving via `git fetch`.
+    append_to_git_notes(Some(root), &entity_copy("shared decision", 7, 300, &["b"]))
+        .await
+        .expect("seed theirs");
+    park_working_ref_as_tracking(root);
+
+    // We commit before recording, so our copy attaches to a different commit.
+    commit_file(root, "work.txt", "our work");
+    append_to_git_notes(Some(root), &entity_copy("shared decision", 1, 100, &["a"]))
+        .await
+        .expect("seed mine");
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged
+    );
+
+    let listing = git_stdout_at(root, &["notes", "--ref=spelunk", "list"]);
+    assert_eq!(
+        listing.lines().count(),
+        2,
+        "fixture: the copies must sit on two separate notes, got: {listing}"
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+
+    assert_eq!(
+        notes.len(),
+        1,
+        "one decision recorded on two machines is one entry, got: {notes:?}"
+    );
+    assert_eq!(notes[0].created_at, 100, "earliest recording survives");
+    assert_eq!(
+        notes[0].tags,
+        vec!["a", "b"],
+        "tags union across two commits' notes"
+    );
+}
+
+/// Archival is monotonic, and the fold runs before the status filter: filtering
+/// first would drop the archived copy and let the active one resurrect the
+/// entity as live.
+#[tokio::test]
+#[serial]
+async fn an_archived_copy_wins_and_the_entity_stays_hidden() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let active = entity_copy("shared decision", 1, 100, &[]);
+    let mut archived = entity_copy("shared decision", 7, 300, &[]);
+    archived.status = "archived".to_string();
+
+    write_lines(root, &[&active, &archived]);
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let visible = backend.list(None, 50, false, None).await.expect("list");
+    assert!(
+        visible.is_empty(),
+        "an archived entity must not come back as active, got: {visible:?}"
+    );
+
+    let all = backend.list(None, 50, true, None).await.expect("list all");
+    assert_eq!(all.len(), 1, "still one entity, got: {all:?}");
+    assert_eq!(all[0].status, "archived");
+}
+
+/// A line written before `entity_id` existed folds with a fresh copy of the
+/// same entry: `resolve_entity_id()` recomputes the key it never stored.
+#[tokio::test]
+#[serial]
+async fn a_legacy_line_folds_with_a_fresh_copy_of_the_same_entry() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let fresh = entity_copy("shared decision", 2, 300, &["new"]);
+    let legacy = format!(
+        r#"{{"schema_version":1,"id":1,"kind":"decision","title":"shared decision","body":"{}","tags":["old"],"linked_files":[],"created_at":100,"status":"active"}}"#,
+        fresh.body
+    );
+    assert!(
+        !legacy.contains("entity_id"),
+        "fixture: the legacy line must not carry the key"
+    );
+
+    write_raw_note(
+        root,
+        &[legacy, serde_json::to_string(&fresh).expect("serialize")].join("\n"),
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+
+    assert_eq!(
+        notes.len(),
+        1,
+        "a recomputed entity_id must fold with a stored one, got: {notes:?}"
+    );
+    assert_eq!(notes[0].created_at, 100, "the legacy copy is the earliest");
+    assert_eq!(notes[0].tags, vec!["new", "old"], "tags merge by union");
+}
+
+/// The fold collapses copies, never distinct entries.
+#[tokio::test]
+#[serial]
+async fn three_distinct_entities_stay_three_entries() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let first = entity_copy("first", 1, 100, &[]);
+    let second = entity_copy("second", 2, 200, &[]);
+    let third = entity_copy("third", 3, 300, &[]);
+    write_lines(root, &[&first, &second, &third]);
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+
+    assert_eq!(
+        titles,
+        vec!["first", "second", "third"],
+        "distinct entities must not collapse"
+    );
+}
