@@ -22,6 +22,8 @@
 //!   notes (D4 regression).
 //! - round-trip: notes pushed to a bare origin reach a fresh clone's tracking
 //!   ref on fetch, and the read-path merge makes them visible (D5).
+//! - call sites: `context` and `init` merge the tracking ref too, not just
+//!   `memory list` (D5).
 //! - non-TTY: piped-stdin init completes without prompting/hanging.
 //!
 //! Every spawned `spelunk` uses `spelunk_bin` (pins `SPELUNK_SECRET_STORE=file`),
@@ -456,6 +458,133 @@ fn notes_round_trip_through_bare_origin() {
     assert!(
         git_stdout(&clone, &["notes", "--ref=spelunk", "show", &annotated]).contains(unique),
         "the read-path merge should have folded the tracking ref into refs/notes/spelunk"
+    );
+}
+
+/// Write `body` as HEAD's note on `git_ref`, standing in for a `git fetch` that
+/// landed a teammate's note on the tracking ref. No network, and no dependence
+/// on the refspec under test in the tests that use it to set up.
+fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
+    git(
+        dir,
+        &[
+            "notes",
+            &format!("--ref={git_ref}"),
+            "add",
+            "-f",
+            "-m",
+            body,
+            "HEAD",
+        ],
+    );
+}
+
+/// The `refs/notes/spelunk` blob for HEAD, or `""` when there is no note.
+fn working_note(dir: &Path) -> String {
+    let out = git_out(dir, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    if out.status.success() {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// (5b) Call site: `spelunk context` merges the tracking ref (ADR-069 D5).
+///
+/// `memory list` is covered by the round-trip above; `context` is a separate
+/// call site with its own read path, and a fetched entry is invisible on it
+/// unless it merges too. Asserted on a genuinely diverged pair, so the entry
+/// arriving proves a union rather than a fast-forward.
+#[test]
+fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo_with_commit(&repo);
+
+    run_init(&repo);
+
+    // A teammate's entry, as a fetch would have left it; plus one of my own, so
+    // the refs genuinely diverge.
+    const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"their fetched decision","body":"b","tags":[],"linked_files":[],"created_at":100,"status":"active"}"#;
+    const MINE: &str = r#"{"schema_version":1,"id":2,"kind":"decision","title":"my local decision","body":"b","tags":[],"linked_files":[],"created_at":200,"status":"active"}"#;
+    add_note_on_ref(&repo, TRACKING_REF, THEIRS);
+    add_note_on_ref(&repo, "refs/notes/spelunk", MINE);
+
+    // Setup control: the fetched entry is not on the working ref yet, so
+    // surfacing it below can only be the merge's doing.
+    assert!(
+        !working_note(&repo).contains("their fetched decision"),
+        "setup: the fetched entry must start out on the tracking ref only"
+    );
+
+    let cfg = empty_config(&repo);
+    let out = spelunk_bin()
+        .current_dir(&repo)
+        .env("HOME", &repo)
+        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("SPELUNK_SERVER_URL")
+        .arg("--config")
+        .arg(&cfg)
+        .args(["context", "--backend", "git-notes"])
+        .output()
+        .expect("spawn spelunk context");
+    assert!(
+        out.status.success(),
+        "spelunk context should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("their fetched decision"),
+        "context must merge the tracking ref and surface the fetched entry, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("my local decision"),
+        "the union must not drop my local entry, got:\n{stdout}"
+    );
+    assert!(
+        working_note(&repo).contains("their fetched decision"),
+        "context's merge should have folded the tracking ref into refs/notes/spelunk"
+    );
+}
+
+/// (5c) Call site: `spelunk init` merges the tracking ref before importing
+/// (ADR-069 D5).
+///
+/// init hydrates `memory.db` from git notes, so an entry still parked on the
+/// tracking ref would be skipped by the import and stay missing from the
+/// project's memory until some later read merged it. Nothing else in init
+/// writes the working ref, so the entry landing there isolates init's merge.
+#[test]
+fn init_merges_the_tracking_ref_before_importing_git_notes() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo_with_commit(&repo);
+
+    // A teammate's entry arrives on the tracking ref before this repo is ever
+    // init'd: the fresh-clone case.
+    const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"their fetched decision","body":"b","tags":[],"linked_files":[],"created_at":100,"status":"active"}"#;
+    add_note_on_ref(&repo, TRACKING_REF, THEIRS);
+    assert!(
+        working_note(&repo).is_empty(),
+        "setup: nothing may be on the working ref yet"
+    );
+
+    let stdout = run_init(&repo);
+
+    assert!(
+        working_note(&repo).contains("their fetched decision"),
+        "init must merge the tracking ref onto refs/notes/spelunk"
+    );
+    // The payoff: the merge fed the import, so the entry is in the project's
+    // memory. Without the merge the import sees an empty working ref and
+    // announces nothing.
+    assert!(
+        stdout.contains("imported 1 entries from git notes"),
+        "init must import the fetched entry it merged, got:\n{stdout}"
     );
 }
 

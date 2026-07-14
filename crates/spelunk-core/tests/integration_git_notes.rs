@@ -1943,3 +1943,543 @@ async fn read_orders_records_by_created_at_not_blob_order() {
         "records must read back in created_at order regardless of blob order"
     );
 }
+
+// ── ADR-069 D5: what the merge must never do ─────────────────────────────────
+
+/// Run `git args` in `root`, returning the raw `Output` (no success assertion).
+fn git_at(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .args(["-C", root.to_str().unwrap()])
+        .args(args)
+        .output()
+        .expect("git")
+}
+
+/// Trimmed stdout of `git args` in `root`, asserting success.
+fn git_stdout_at(root: &std::path::Path, args: &[&str]) -> String {
+    let out = git_at(root, args);
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// Put a genuinely diverged pair in place: a different note for HEAD on the
+/// tracking ref and on the working ref, so a merge has a real conflict to
+/// resolve. A fast-forward (empty working ref) would not exercise the strategy
+/// at all, which is what most of these assertions are about.
+fn seed_diverged_notes(root: &std::path::Path) {
+    write_raw_note(
+        root,
+        r#"{"schema_version":1,"id":1,"kind":"decision","title":"theirs"}"#,
+    );
+    park_working_ref_as_tracking(root);
+    write_raw_note(
+        root,
+        r#"{"schema_version":1,"id":2,"kind":"decision","title":"mine"}"#,
+    );
+}
+
+/// (D5) The merge leaves no merge state behind in the git dir.
+///
+/// The `notes.mergeStrategy` default is `manual`: on a real conflict it exits 1
+/// and strands `NOTES_MERGE_WORKTREE`, `NOTES_MERGE_PARTIAL` and
+/// `NOTES_MERGE_REF`, wedging the user's own `git notes merge` until they run
+/// `--abort`. Passing `-s cat_sort_uniq` per invocation is the only thing that
+/// avoids it, so the absence of the debris is asserted, not assumed.
+#[tokio::test]
+#[serial]
+async fn merge_leaves_no_notes_merge_state_in_the_git_dir() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    seed_diverged_notes(root);
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged
+    );
+
+    let git_dir = root.join(".git");
+    for debris in [
+        "NOTES_MERGE_WORKTREE",
+        "NOTES_MERGE_PARTIAL",
+        "NOTES_MERGE_REF",
+    ] {
+        assert!(
+            !git_dir.join(debris).exists(),
+            "the merge must not strand {debris} in the git dir"
+        );
+    }
+}
+
+/// (D5) A user's own `notes.mergeStrategy` can neither drop a teammate's note
+/// nor be rewritten by spelunk.
+///
+/// `ours` is the dangerous setting: it resolves a conflict by discarding the
+/// other side, so a merge that honoured it would silently drop exactly what the
+/// merge exists to surface. `-s` on the command line outranks both the general
+/// and the per-ref (`notes.spelunk.mergeStrategy`) scopes, which is why the
+/// strategy is passed per invocation instead of configured.
+#[tokio::test]
+#[serial]
+async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // Both scopes git consults for this ref, set to the lossy strategy.
+    git_ok(root, &["config", "notes.mergeStrategy", "ours"]);
+    git_ok(root, &["config", "notes.spelunk.mergeStrategy", "ours"]);
+
+    seed_diverged_notes(root);
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged
+    );
+
+    let merged = read_raw_note(root);
+    assert!(
+        merged.contains("theirs") && merged.contains("mine"),
+        "-s must outrank the user's 'ours' so neither side is dropped, got:\n{merged}"
+    );
+    // …and spelunk must not have rewritten the setting out from under them.
+    assert_eq!(
+        git_stdout_at(root, &["config", "--get", "notes.mergeStrategy"]),
+        "ours",
+        "the user's own merge strategy must be left exactly as they set it"
+    );
+    assert_eq!(
+        git_stdout_at(root, &["config", "--get", "notes.spelunk.mergeStrategy"]),
+        "ours",
+        "the user's own per-ref merge strategy must be left exactly as they set it"
+    );
+}
+
+/// (D5, security) The read path does no network.
+///
+/// The merge folds in only what the user's own `git fetch` already wrote. That
+/// is what lets a read work with the remote unreachable, and it keeps egress off
+/// a path the user never pointed at a remote. Pinned by making any network
+/// attempt fail loudly: `origin` is configured, with the refspec `spelunk init`
+/// writes, but points at a path that does not exist.
+#[tokio::test]
+#[serial]
+async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let nowhere = root.join("no-such-origin.git");
+    assert!(!nowhere.exists(), "setup: the origin must not exist");
+    git_ok(
+        root,
+        &["remote", "add", "origin", nowhere.to_str().unwrap()],
+    );
+    git_ok(
+        root,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/notes/spelunk*:refs/notes/origin/spelunk*",
+        ],
+    );
+
+    append_to_git_notes(Some(root), &make_note_record(1, "their decision"))
+        .await
+        .expect("seed");
+    park_working_ref_as_tracking(root);
+    let tracking_before = git_stdout_at(root, &["rev-parse", "refs/notes/origin/spelunk"]);
+
+    // Negative control: prove a fetch really would fail from here, so `Merged`
+    // below means the merge never reached for the network — not that it tried
+    // and happened to get away with it.
+    assert!(
+        !git_at(root, &["fetch", "origin"]).status.success(),
+        "setup: a fetch against a nonexistent origin must fail"
+    );
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged,
+        "the merge must not depend on reaching the remote"
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let after = backend
+        .list(None, 50, false, None)
+        .await
+        .expect("a read must work with the remote unreachable");
+    assert!(
+        after.iter().any(|n| n.title == "their decision"),
+        "the offline read must still surface the fetched entry, got: {after:?}"
+    );
+
+    // A merge that fetched would have moved the tracking ref.
+    assert_eq!(
+        git_stdout_at(root, &["rev-parse", "refs/notes/origin/spelunk"]),
+        tracking_before,
+        "the merge must leave the tracking ref alone: updating it would mean it fetched"
+    );
+}
+
+/// (D5, security) The merge never fetches: an entry the user has not fetched
+/// stays invisible.
+///
+/// The sibling test proves a read survives an unreachable remote, but an
+/// unreachable remote cannot tell a merge that skipped the network from one that
+/// tried and failed — both look identical. Here `origin` is real, reachable, and
+/// holds a note this repo has never fetched, so an implicit fetch would visibly
+/// succeed: the tracking ref would appear and the entry would surface on the
+/// read. Both are asserted absent, which is what makes the property testable at
+/// all.
+///
+/// Travel is deliberately fetch **then** merge: the user's own `git fetch` is
+/// the only thing that moves data, so spelunk reading memory never reaches the
+/// network on its own.
+#[tokio::test]
+#[serial]
+async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    // The origin lives outside the working tree so it cannot perturb the repo.
+    let origin_dir = tempfile::TempDir::new().expect("tempdir");
+    let origin = origin_dir.path().join("origin.git");
+
+    // `-b main` matches the repo: a bare origin defaulting to `master` leaves a
+    // clone with nothing checked out.
+    git_ok(
+        root,
+        &[
+            "init",
+            "--bare",
+            "-q",
+            "-b",
+            "main",
+            origin.to_str().unwrap(),
+        ],
+    );
+    git_ok(root, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git_ok(root, &["push", "-q", "origin", "main"]);
+    git_ok(
+        root,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/notes/spelunk*:refs/notes/origin/spelunk*",
+        ],
+    );
+
+    // Publish a note, then drop every local trace of it: origin now holds an
+    // entry this repo has never fetched, exactly as a teammate's push would
+    // leave it. The tracking ref is deleted too because `git push` populates it
+    // itself once a fetch refspec maps the pushed ref.
+    write_raw_note(
+        root,
+        r#"{"schema_version":1,"id":1,"kind":"decision","title":"never fetched"}"#,
+    );
+    git_ok(root, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git_ok(root, &["update-ref", "-d", "refs/notes/spelunk"]);
+    git_at(root, &["update-ref", "-d", "refs/notes/origin/spelunk"]);
+
+    // A local entry of my own, so the read has something to return.
+    append_to_git_notes(Some(root), &make_note_record(2, "my decision"))
+        .await
+        .expect("seed local");
+
+    // Setup control: nothing has been fetched, so there is no tracking ref.
+    assert!(
+        !git_at(
+            root,
+            &["rev-parse", "--verify", "refs/notes/origin/spelunk"]
+        )
+        .status
+        .success(),
+        "setup: the tracking ref must be absent until the user fetches"
+    );
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged,
+        "nothing to merge is a silent no-op, not a failure"
+    );
+
+    assert!(
+        !git_at(
+            root,
+            &["rev-parse", "--verify", "refs/notes/origin/spelunk"]
+        )
+        .status
+        .success(),
+        "the merge must not populate the tracking ref: that would mean it fetched"
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+    assert!(
+        !titles.contains(&"never fetched"),
+        "an entry the user never fetched must not appear on a read: the read path \
+         does no network, got: {titles:?}"
+    );
+    assert!(
+        titles.contains(&"my decision"),
+        "the local entry must still read, got: {titles:?}"
+    );
+}
+
+// ── D5/D6: the lock contract, across real processes ──────────────────────────
+
+/// Repo root the [`lock_holder_child`] helper process locks. Set only by
+/// [`merge_skips_without_touching_the_ref_when_another_process_holds_the_lock`].
+const LOCK_HOLDER_REPO_ENV: &str = "SPELUNK_TEST_LOCK_HOLDER_REPO";
+
+/// Marker the helper writes once it holds the lock.
+fn held_marker(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("lock-held.marker")
+}
+
+/// Marker the parent writes to tell the helper to release and exit.
+fn release_marker(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("lock-release.marker")
+}
+
+/// Poll for `path` to appear, up to `budget`. Returns whether it showed up.
+fn wait_for_marker(path: &std::path::Path, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+/// Not a test: the lock-holding half of the cross-process test below, which
+/// re-executes this binary to run it. Inert (and instantly green) unless
+/// [`LOCK_HOLDER_REPO_ENV`] is set, so a plain `--ignored` run cannot hang.
+///
+/// Takes the lock through the real `lock_notes`, so the contention it creates is
+/// the production one rather than a re-implementation of it.
+#[tokio::test]
+#[ignore = "helper process: driven by the cross-process lock test"]
+async fn lock_holder_child() {
+    let Ok(root) = std::env::var(LOCK_HOLDER_REPO_ENV) else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+
+    let guard = lock_notes(Some(&root))
+        .await
+        .expect("helper must get the lock: the parent takes it only after we signal");
+    std::fs::write(held_marker(&root), "held").expect("write held marker");
+
+    // Hold until released, with a ceiling so a wedged parent cannot leak this
+    // process. Comfortably above the parent's one LOCK_WAIT_BUDGET wait.
+    assert!(
+        wait_for_marker(&release_marker(&root), std::time::Duration::from_secs(120)),
+        "parent never released the helper"
+    );
+    drop(guard);
+}
+
+/// (D5/D6) A lock held by a **separate process** makes the merge skip: it does
+/// not block, does not fail the read, and does not touch the ref.
+///
+/// The sibling test above contends two handles inside one process, which is the
+/// same OS primitive but not the same situation. This is the real one: two
+/// spelunk processes (agents, worktrees, a hook racing a shell) on one repo,
+/// which is the case the lock exists for. The helper takes the lock via
+/// `lock_notes` itself, so nothing here re-implements the locking under test.
+///
+/// Costs one `LOCK_WAIT_BUDGET` of wall clock: the merge must genuinely wait the
+/// budget out before giving up.
+#[tokio::test]
+#[serial]
+async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_lock() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, "their decision"))
+        .await
+        .expect("seed");
+    park_working_ref_as_tracking(root);
+    // A local note too, so the working ref exists and has a sha to compare.
+    append_to_git_notes(Some(root), &make_note_record(2, "my decision"))
+        .await
+        .expect("seed local");
+    let ref_before = git_stdout_at(root, &["rev-parse", "refs/notes/spelunk"]);
+
+    let mut child = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+        .args(["--exact", "lock_holder_child", "--ignored"])
+        .env(LOCK_HOLDER_REPO_ENV, root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the lock-holder helper");
+
+    assert!(
+        wait_for_marker(&held_marker(root), std::time::Duration::from_secs(60)),
+        "the helper process never acquired the lock"
+    );
+
+    let started = std::time::Instant::now();
+    let outcome = merge_tracking_notes(Some(root)).await;
+    let waited = started.elapsed();
+
+    assert_eq!(
+        outcome,
+        NotesMergeOutcome::LockUnavailable,
+        "a lock held by another process must skip the merge, not block or fail the read"
+    );
+    // Negative control: an immediate `None` would mean the lock was never
+    // contended (a bad path, an unopenable file) and this test proved nothing.
+    assert!(
+        waited >= LOCK_WAIT_BUDGET,
+        "the merge must wait the {LOCK_WAIT_BUDGET:?} budget out before skipping; \
+         gave up after {waited:?}, so it never contended"
+    );
+    assert_eq!(
+        git_stdout_at(root, &["rev-parse", "refs/notes/spelunk"]),
+        ref_before,
+        "a skipped merge must leave the working ref untouched"
+    );
+
+    // The read still works — it just does not see the fetched entry yet.
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let during = backend
+        .list(None, 50, false, None)
+        .await
+        .expect("a read must never fail because another process holds the lock");
+    assert!(
+        during.iter().any(|n| n.title == "my decision"),
+        "the local entry must still read while the lock is held, got: {during:?}"
+    );
+
+    std::fs::write(release_marker(root), "go").expect("write release marker");
+    assert!(
+        child.wait().expect("wait for helper").success(),
+        "the lock-holder helper must exit cleanly"
+    );
+
+    // The union is idempotent, so the next read catches up.
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged,
+        "the read after the lock frees must catch up"
+    );
+    let after = backend.list(None, 50, false, None).await.expect("list");
+    assert!(
+        after.iter().any(|n| n.title == "their decision"),
+        "the fetched entry must arrive on the catch-up read, got: {after:?}"
+    );
+}
+
+// ── D2: the merge invariants with `entity_id` present ────────────────────────
+
+/// (D2/D5) A union of records carrying `entity_id` keeps every record parseable
+/// and every identity intact.
+///
+/// `cat_sort_uniq` unions raw lines knowing nothing of the schema, so a record
+/// growing a field is exactly when welding or identity loss would show up. Both
+/// sides go through `append_to_git_notes`, so the bodies are what production
+/// writes, including the missing trailing newline git has to normalize.
+#[tokio::test]
+#[serial]
+async fn union_merge_preserves_entity_id_on_both_sides() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let theirs = make_note_record(1, "their decision");
+    let mine = make_note_record(2, "my decision");
+    let their_entity = theirs
+        .entity_id
+        .clone()
+        .expect("fixture must carry an entity_id");
+    let my_entity = mine
+        .entity_id
+        .clone()
+        .expect("fixture must carry an entity_id");
+    assert_ne!(
+        their_entity, my_entity,
+        "fixture: distinct entries need distinct identities"
+    );
+
+    append_to_git_notes(Some(root), &theirs)
+        .await
+        .expect("seed");
+    park_working_ref_as_tracking(root);
+    append_to_git_notes(Some(root), &mine).await.expect("seed");
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged
+    );
+
+    // Every merged line still deserializes as a record (no welding), and both
+    // identities came through.
+    let merged = read_raw_note(root);
+    let entity_ids: Vec<String> = merged
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<NoteRecord>(l.trim())
+                .unwrap_or_else(|e| panic!("every merged line must parse as a record ({e}): {l:?}"))
+                .resolve_entity_id()
+        })
+        .collect();
+    assert!(
+        entity_ids.contains(&their_entity) && entity_ids.contains(&my_entity),
+        "both entity_ids must survive the union, got: {entity_ids:?}"
+    );
+
+    // …and the read path surfaces both entries.
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+    assert!(
+        titles.contains(&"their decision") && titles.contains(&"my decision"),
+        "both entries must be visible after the union, got: {titles:?}"
+    );
+}
+
+/// (D2) The `created_at` ordering holds for records carrying `entity_id`,
+/// serialized the way production writes them.
+///
+/// The sibling ordering test hand-writes a minimal line, which cannot notice a
+/// record-shape change. This one serializes a real `NoteRecord`, so the fixture
+/// tracks whatever the struct currently is.
+#[tokio::test]
+#[serial]
+async fn read_orders_records_by_created_at_with_entity_id_present() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // ids ascend while created_at descends, so blob/lexicographic order and
+    // chronological order disagree and only a sort can get this right.
+    let mut lines = Vec::new();
+    for (id, created_at, title) in [(1, 300, "third"), (2, 100, "first"), (3, 200, "second")] {
+        let mut rec = make_note_record(id, title);
+        rec.created_at = created_at;
+        assert!(
+            rec.entity_id.is_some(),
+            "fixture must carry an entity_id, else this adds nothing"
+        );
+        lines.push(serde_json::to_string(&rec).expect("serialize"));
+    }
+    write_raw_note(root, &lines.join("\n"));
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 50, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+
+    assert_eq!(
+        titles,
+        vec!["first", "second", "third"],
+        "created_at order must hold with entity_id present"
+    );
+}
