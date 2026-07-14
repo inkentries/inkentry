@@ -1,11 +1,11 @@
 -- ADR-068 A5: persist the content-addressed canonical identity of a memory entry.
 --
 -- `entity_id` is sha256 over the canonical JSON of {body, kind, title}. It is a
--- pure function of columns this table already holds, so the column is an O(1)
--- dedup optimization rather than the system of record: a NULL row's identity is
--- recomputed in Rust on read. That is what makes this migration safe to run on
--- an existing store with no backfill — sha256 is not available in SQLite, and
--- the backfill rule is a separate open decision.
+-- pure function of columns this table already holds, and identity is always
+-- recomputed in Rust on read, so the column is never the system of record. That
+-- is what makes this migration safe to run on an existing store with no
+-- backfill: sha256 is not available in SQLite, and the backfill rule is a
+-- separate open decision.
 --
 -- The index is deliberately NOT UNIQUE. Existing stores legitimately hold rows
 -- with identical kind/title/body: the previous dedup hash folded in created_at

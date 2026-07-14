@@ -153,9 +153,10 @@ impl MemoryStore {
         // makes that cursor lookup and the `remote_id` dedupe cheap.
 
         // Migration 023 (ADR-068): content-addressed `entity_id`.
-        // Not backfilled — sha256 is unavailable in SQLite, and a NULL row's
-        // identity is recomputed in Rust from kind/title/body, so the column is
-        // an optimization rather than the system of record.
+        // Not backfilled: every identity is recomputed in Rust from
+        // kind/title/body, so a NULL column costs nothing (sha256 is
+        // unavailable in SQLite regardless). The column is written but not yet
+        // read back — it is never the system of record.
         match self
             .conn
             .execute_batch("ALTER TABLE notes ADD COLUMN entity_id TEXT")
