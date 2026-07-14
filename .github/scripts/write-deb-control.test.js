@@ -7,7 +7,7 @@
 // node:test is a Node builtin, so this needs no package.json and no install.
 // Black-box over the subprocess because that is the contract release.yml uses.
 //
-// Every case here is one way `Depends:` could go stale, blank, or truncated —
+// Every case here is one way `Depends:` could go stale, blank, or truncated –
 // the failure mode that shipped a .deb missing libdbus-1-3.
 
 "use strict";

@@ -97,6 +97,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The Debian package no longer installs a `spelunk` that cannot start.** The
+  `.deb` declared `libc6` as its only dependency, omitting `libdbus-1-3`, which
+  the `spelunk` binary dynamically links via the keyring's secret-service
+  backend. On a machine without libdbus already present the install *reported
+  success* and the binary then failed to load with `libdbus-1.so.3: cannot open
+  shared object file` (exit 127). `Depends:` is now derived from the packaged
+  binaries at release time with `dpkg-shlibdeps` instead of being hand-written,
+  so it lists every shared library they actually link (`libc6`, `libdbus-1-3`,
+  and `libgcc-s1`) and the package manager pulls them in. The declared `libc6`
+  floor now also reflects the glibc the release binaries are built against
+  (2.39), so a system with an older glibc gets an accurate refusal at install
+  time rather than a package that installs and then crashes. A release-pipeline
+  check now installs the `.deb` in a clean container and runs both binaries, so
+  a missing dependency fails the build instead of shipping.
 - **The self-hosted Docker Quick-Start builds and runs again.** The `Dockerfile`
   now builds the Cargo workspace (per-crate manifests, `crates/spelunk-server`
   binary) instead of the old single-crate layout, and installs the C/C++
