@@ -136,43 +136,6 @@ class TestMcpBlockIsConditionGated:
         assert config["$schema"] == "https://opencode.ai/config.json"
 
 
-class TestSystemPromptNamesTheToolsOnSpelunkConditions:
-    """Tools the model is never told about are a handicap, not a condition.
-    agent.py swaps its whole prompt; a harness adapter can only restate the
-    delta, so the restatement is pinned to agent.py's own text.
-    """
-
-    def test_guidance_core_is_an_exact_substring_of_agent_prompt(self):
-        import agent
-        from harness_common import SPELUNK_GUIDANCE_CORE
-
-        assert SPELUNK_GUIDANCE_CORE in agent.SYSTEM_PROMPT_SPELUNK
-
-    def test_baseline_prompt_is_untouched(self):
-        from harness_common import build_system_prompt
-        from harness_opencode import OPENCODE_SYSTEM_PROMPT
-
-        assert (
-            build_system_prompt(OPENCODE_SYSTEM_PROMPT, "baseline", [])
-            == OPENCODE_SYSTEM_PROMPT
-        )
-
-    @pytest.mark.parametrize("condition", SPELUNK_CONDITIONS)
-    def test_spelunk_prompt_names_every_tool_the_model_can_see(self, condition):
-        from harness_common import build_system_prompt
-        from harness_opencode import OPENCODE_SYSTEM_PROMPT
-        from spelunk_mcp_server import mcp_tool_names_for_condition
-
-        names = mcp_tool_names_for_condition(condition)
-        prompt = build_system_prompt(OPENCODE_SYSTEM_PROMPT, condition, names)
-        for name in names:
-            assert name in prompt
-        # Gating again: the prompt must not advertise a tool the condition
-        # does not expose.
-        if condition == "spelunk_search":
-            assert "spelunk_graph" not in prompt
-
-
 class TestGetOpencodeCommand:
     def test_prefers_installed_binary_when_on_path(self, monkeypatch):
         monkeypatch.setattr(

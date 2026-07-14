@@ -13,7 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from harness_common import extract_patch
+import agent
+from harness_claude_code import CLAUDE_CODE_PROMPT_PREFIX
+from harness_common import SPELUNK_GUIDANCE_CORE, build_system_prompt, extract_patch
+from harness_opencode import OPENCODE_SYSTEM_PROMPT
+from spelunk_mcp_server import SPELUNK_CONDITIONS, mcp_tool_names_for_condition
+
+BASE_PROMPTS = [OPENCODE_SYSTEM_PROMPT, CLAUDE_CODE_PROMPT_PREFIX]
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -31,6 +37,46 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
+
+
+class TestBuildSystemPrompt:
+    """Tools the model is never told about are a handicap, not a condition:
+    agent.py's spelunk arm swaps its whole prompt, so an adapter that kept a
+    baseline-flavoured prompt would hand the spelunk arm tools it never uses.
+
+    An adapter can only restate that delta (agent.py exposes whole prompts,
+    not the difference), so the restatement is pinned to agent.py's own text
+    and drift fails here rather than silently skewing a cell.
+    """
+
+    def test_guidance_core_is_still_an_exact_substring_of_agent_pys_prompt(self):
+        assert SPELUNK_GUIDANCE_CORE in agent.SYSTEM_PROMPT_SPELUNK
+
+    @pytest.mark.parametrize("base", BASE_PROMPTS)
+    def test_baseline_prompt_is_left_untouched(self, base):
+        assert build_system_prompt(base, "baseline", []) == base
+
+    @pytest.mark.parametrize("base", BASE_PROMPTS)
+    @pytest.mark.parametrize("condition", SPELUNK_CONDITIONS)
+    def test_spelunk_prompt_names_every_tool_the_model_can_see(self, base, condition):
+        names = mcp_tool_names_for_condition(condition)
+        prompt = build_system_prompt(base, condition, names)
+        assert base in prompt
+        assert SPELUNK_GUIDANCE_CORE in prompt
+        for name in names:
+            assert name in prompt
+
+    @pytest.mark.parametrize("base", BASE_PROMPTS)
+    def test_prompt_never_advertises_a_tool_the_condition_withholds(self, base):
+        # Positive control below: the same name is present for spelunk_full.
+        search = build_system_prompt(
+            base, "spelunk_search", mcp_tool_names_for_condition("spelunk_search")
+        )
+        full = build_system_prompt(
+            base, "spelunk_full", mcp_tool_names_for_condition("spelunk_full")
+        )
+        assert "spelunk_graph" not in search
+        assert "spelunk_graph" in full
 
 
 class TestExtractPatchNormalCase:
