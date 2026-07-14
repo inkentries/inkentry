@@ -114,10 +114,15 @@ Fetching straight onto your working ref would force-update it and silently
 replace a local note you had not pushed yet. So arrival is **fetch + merge**:
 `git fetch` populates the tracking ref, and `spelunk memory list`, `spelunk
 context`, and `spelunk init` merge it into `refs/notes/spelunk` (union, no
-conflicts, duplicates dropped). That merge is local-only and does no network, so
-it works with the remote unreachable. Right after a fetch, `git notes
---ref=spelunk` alone will not show a teammate's entry until one of those spelunk
-commands has run.
+conflicts, duplicates dropped). That merge is local-only and does no network: it
+folds in what your own `git fetch` already brought down, so it works with the
+remote unreachable, and it never picks up remote state on its own. Right after a
+fetch, `git notes --ref=spelunk` alone will not show a teammate's entry until one
+of those spelunk commands has run.
+
+The merge never delays or fails a read. If another spelunk command is writing
+notes at that moment, the merge is skipped and the read returns anyway; the union
+is idempotent, so the next read folds the entries in.
 
 **For teammates to receive the notes:**
 

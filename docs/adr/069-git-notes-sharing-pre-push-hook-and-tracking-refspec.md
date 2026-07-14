@@ -251,10 +251,15 @@ Why this rather than a hook or a git config setting:
   configured it.
 - **Repeated reads converge.** The union merge is idempotent (D2), so a read
   path can run it every time without drift.
-- **A missing tracking ref is a silent no-op that exits 0.** Verified both for
-  users with no remote at all and after a `fetch --prune` deletes the ref. This
-  is what makes the read-path merge safe to run unconditionally: the solo user
-  never sees it, and it needs no "do I have a remote?" special case.
+- **A missing tracking ref never reaches the caller, though not always by
+  exiting 0.** It has two arms, verified for users with no remote at all and
+  after a `fetch --prune` deletes the ref. With notes already on the working ref
+  the merge is a no-op that exits 0. With the working ref empty too, which is
+  the fresh solo user who has recorded nothing yet, git exits **128** with
+  `Cannot merge empty notes ref`. `merge_tracking_notes` swallows either outcome
+  and reads regardless, so the read-path merge is safe to run unconditionally:
+  the solo user never sees it, and it needs no "do I have a remote?" special
+  case.
 
 **The merge is synchronous, not backgrounded.** The founder's constraint is that
 it must not block the user's command and must work with the network down or
