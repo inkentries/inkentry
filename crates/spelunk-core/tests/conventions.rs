@@ -260,6 +260,288 @@ fn extractor_handles_empty_input() {
     assert!(records.is_empty());
 }
 
+/// Regression: the extractor must emit at most one record per (language,
+/// category). Language-specific + always-on generic sets emit overlapping
+/// categories (naming.functions, docs), and tsx chunks route through the
+/// typescript set (self-labelled "typescript"), so a rust/ts/tsx corpus
+/// previously listed those categories two or three times per language.
+#[test]
+fn extractor_dedups_language_category() {
+    let rust_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| rust_fn(&format!("do_thing_{i}"), "/// doc\nfn do_thing() {}"))
+        .collect();
+    let ts_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| {
+            ts_fn(
+                &format!("getThing{i}"),
+                "/** doc */\nfunction getThing() {}",
+            )
+        })
+        .collect();
+    // tsx chunks: the typescript rule set self-labels these "typescript", so
+    // without dedup they collide with the ts group's records.
+    let tsx_chunks: Vec<ChunkSummary> = (0..10)
+        .map(|i| ChunkSummary {
+            language: "tsx".into(),
+            node_type: "function".into(),
+            name: Some(format!("renderThing{i}")),
+            content: "/** doc */\nfunction renderThing() {}".into(),
+            file_path: "src/App.tsx".into(),
+            has_docstring: true,
+        })
+        .collect();
+
+    let all: Vec<ChunkSummary> = rust_chunks
+        .into_iter()
+        .chain(ts_chunks)
+        .chain(tsx_chunks)
+        .collect();
+
+    let records = ConventionExtractor::new().extract(&all);
+
+    let mut seen = std::collections::HashSet::new();
+    for r in &records {
+        assert!(
+            seen.insert((r.language.clone(), r.category.clone())),
+            "duplicate (language, category): ({}, {})",
+            r.language,
+            r.category
+        );
+    }
+
+    // The overlapping categories must survive exactly once per language.
+    let naming: Vec<_> = records
+        .iter()
+        .filter(|r| r.language == "typescript" && r.category == "naming.functions")
+        .collect();
+    assert_eq!(
+        naming.len(),
+        1,
+        "typescript naming.functions must be unique"
+    );
+    let docs: Vec<_> = records
+        .iter()
+        .filter(|r| r.language == "rust" && r.category == "docs")
+        .collect();
+    assert_eq!(docs.len(), 1, "rust docs must be unique");
+}
+
+fn find_lang_cat<'a>(
+    records: &'a [ConventionRecord],
+    language: &str,
+    category: &str,
+) -> Vec<&'a ConventionRecord> {
+    records
+        .iter()
+        .filter(|r| r.language == language && r.category == category)
+        .collect()
+}
+
+/// Language-specific wins over generic for overlapping categories.
+///
+/// Both the rust set and the always-on generic set emit `naming.functions` and
+/// `docs` via the same shared helpers, so their description/confidence are
+/// identical by construction — the only observable of the win is that the
+/// cross-source duplicate is *discarded*, not summed: evidence stays at the
+/// single-source count (N), never 2N. A rust-only category (`error_handling`)
+/// confirms the language-specific records are the ones flowing through.
+#[test]
+fn extractor_language_specific_wins_over_generic() {
+    const N: u32 = 8;
+    let chunks: Vec<ChunkSummary> = (0..N)
+        .map(|i| {
+            rust_fn(
+                &format!("do_thing_{i}"),
+                "/// doc\nuse anyhow::Result;\nfn do_thing() -> Result<()> { Ok(()) }",
+            )
+        })
+        .collect();
+
+    let records = ConventionExtractor::new().extract(&chunks);
+
+    let naming = find_lang_cat(&records, "rust", "naming.functions");
+    assert_eq!(naming.len(), 1, "naming.functions must be unique");
+    assert_eq!(
+        naming[0].evidence_count, N,
+        "generic duplicate must be discarded, not summed into 2N"
+    );
+
+    let docs = find_lang_cat(&records, "rust", "docs");
+    assert_eq!(docs.len(), 1, "docs must be unique");
+    assert_eq!(
+        docs[0].evidence_count, N,
+        "generic docs duplicate must be discarded, not summed"
+    );
+
+    // error_handling is emitted only by the rust set, so its presence proves
+    // the language-specific records survive the merge.
+    let eh = find_lang_cat(&records, "rust", "error_handling");
+    assert_eq!(eh.len(), 1, "rust error_handling must survive");
+    assert!(
+        eh[0].description.contains("anyhow"),
+        "desc={}",
+        eh[0].description
+    );
+}
+
+/// Same-source duplicates aggregate evidence. tsx chunks route through the
+/// typescript set (self-labelled "typescript") — both are LanguageSpecific — so
+/// their `naming.functions` evidence is summed into one record (5 ts + 5 tsx).
+#[test]
+fn extractor_sums_evidence_across_ts_and_tsx() {
+    let ts_chunks: Vec<ChunkSummary> = (0..5)
+        .map(|i| ts_fn(&format!("getThing{i}"), "function getThing() {}"))
+        .collect();
+    let tsx_chunks: Vec<ChunkSummary> = (0..5)
+        .map(|i| ChunkSummary {
+            language: "tsx".into(),
+            node_type: "function".into(),
+            name: Some(format!("renderThing{i}")),
+            content: "function renderThing() {}".into(),
+            file_path: "src/App.tsx".into(),
+            has_docstring: false,
+        })
+        .collect();
+    let all: Vec<ChunkSummary> = ts_chunks.into_iter().chain(tsx_chunks).collect();
+
+    let records = ConventionExtractor::new().extract(&all);
+
+    let naming = find_lang_cat(&records, "typescript", "naming.functions");
+    assert_eq!(
+        naming.len(),
+        1,
+        "typescript naming.functions must be unique"
+    );
+    assert_eq!(
+        naming[0].evidence_count, 10,
+        "ts (5) + tsx (5) same-source evidence must sum to 10"
+    );
+}
+
+/// Determinism: `extract` is backed by a BTreeMap keyed on (language, category),
+/// so repeated runs on the same input yield the same records in the same,
+/// ascending order.
+#[test]
+fn extractor_extract_is_deterministic() {
+    let rust_chunks: Vec<ChunkSummary> = (0..8)
+        .map(|i| rust_fn(&format!("do_thing_{i}"), "/// doc\nfn do_thing() {}"))
+        .collect();
+    let ts_chunks: Vec<ChunkSummary> = (0..8)
+        .map(|i| {
+            ts_fn(
+                &format!("getThing{i}"),
+                "/** doc */\nfunction getThing() {}",
+            )
+        })
+        .collect();
+    let tsx_chunks: Vec<ChunkSummary> = (0..8)
+        .map(|i| ChunkSummary {
+            language: "tsx".into(),
+            node_type: "function".into(),
+            name: Some(format!("renderThing{i}")),
+            content: "function renderThing() {}".into(),
+            file_path: "src/App.tsx".into(),
+            has_docstring: false,
+        })
+        .collect();
+    let all: Vec<ChunkSummary> = rust_chunks
+        .into_iter()
+        .chain(ts_chunks)
+        .chain(tsx_chunks)
+        .collect();
+
+    let keys = |recs: &[ConventionRecord]| -> Vec<(String, String)> {
+        recs.iter()
+            .map(|r| (r.language.clone(), r.category.clone()))
+            .collect()
+    };
+
+    let first = keys(&ConventionExtractor::new().extract(&all));
+    let second = keys(&ConventionExtractor::new().extract(&all));
+    assert_eq!(first, second, "repeated extract must yield identical order");
+
+    let mut sorted = first.clone();
+    sorted.sort();
+    assert_eq!(
+        first, sorted,
+        "records must be ordered by (language, category)"
+    );
+}
+
+/// No regression for generic-only languages: go/js/ruby have no dedicated rule
+/// set, so they flow through the generic set alone. Dedup must not drop their
+/// legitimate distinct records.
+#[test]
+fn extractor_preserves_generic_only_languages() {
+    fn fn_chunk(lang: &str, name: &str) -> ChunkSummary {
+        ChunkSummary {
+            language: lang.into(),
+            node_type: "function".into(),
+            name: Some(name.into()),
+            content: format!("func {name}() {{}}"),
+            file_path: format!("src/main.{lang}"),
+            has_docstring: false,
+        }
+    }
+
+    let mut all: Vec<ChunkSummary> = Vec::new();
+    for i in 0..6 {
+        all.push(fn_chunk("go", &format!("HandleRequest{i}"))); // PascalCase
+        all.push(fn_chunk("javascript", &format!("handleClick{i}"))); // camelCase
+        all.push(fn_chunk("ruby", &format!("handle_request_{i}"))); // snake_case
+    }
+
+    let records = ConventionExtractor::new().extract(&all);
+
+    for lang in ["go", "javascript", "ruby"] {
+        let naming = find_lang_cat(&records, lang, "naming.functions");
+        assert_eq!(
+            naming.len(),
+            1,
+            "{lang} naming.functions must survive exactly once"
+        );
+        assert_eq!(naming[0].evidence_count, 6, "{lang} evidence unchanged");
+    }
+}
+
+/// Documents current (quirky) behavior of tsx routing. OUT OF SCOPE to fix here.
+///
+/// tsx chunks feed two rule sets with conflicting language labels: the
+/// typescript set self-labels its records "typescript", while the generic set
+/// (layered on top) uses the chunk's own language, "tsx". Those land under
+/// different (language, category) keys, so dedup does NOT collapse them — a
+/// single tsx convention surfaces under BOTH "typescript" and "tsx". This test
+/// pins that down so a future relabel is a conscious change, not a silent one.
+#[test]
+fn extractor_tsx_records_surface_under_typescript() {
+    let tsx_chunks: Vec<ChunkSummary> = (0..8)
+        .map(|i| ChunkSummary {
+            language: "tsx".into(),
+            node_type: "function".into(),
+            name: Some(format!("renderThing{i}")),
+            content: "function renderThing() {}".into(),
+            file_path: "src/App.tsx".into(),
+            has_docstring: false,
+        })
+        .collect();
+
+    let records = ConventionExtractor::new().extract(&tsx_chunks);
+
+    // The language-specific set relabels tsx conventions as "typescript".
+    assert_eq!(
+        find_lang_cat(&records, "typescript", "naming.functions").len(),
+        1,
+        "tsx naming.functions currently self-labels as typescript"
+    );
+    // The generic set keeps the original "tsx" label, so the same convention
+    // is currently duplicated across two language labels (a future-fix target).
+    assert_eq!(
+        find_lang_cat(&records, "tsx", "naming.functions").len(),
+        1,
+        "generic set currently also emits a tsx-labelled record"
+    );
+}
+
 // ── DB round-trip: replace_conventions + list_conventions ─────────────────────
 
 #[test]

@@ -24,8 +24,8 @@ impl ConventionExtractor {
         Self
     }
 
-    /// Run all rule sets over `chunks` and return raw `ConventionRecord`s.
-    /// Caller is responsible for applying confidence / evidence-count thresholds.
+    /// Run all rule sets over `chunks` and return `ConventionRecord`s, one per
+    /// `(language, category)`. Caller applies confidence / evidence thresholds.
     pub fn extract(&self, chunks: &[ChunkSummary]) -> Vec<ConventionRecord> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -39,25 +39,84 @@ impl ConventionExtractor {
             by_lang.entry(c.language.as_str()).or_default().push(c);
         }
 
-        let mut records = Vec::new();
+        // Both the language-specific set and the always-run generic set emit
+        // overlapping categories (naming.functions, docs); tsx chunks also route
+        // through the typescript set, which self-labels every record "typescript",
+        // colliding with the typescript group. Tag each record with its source so
+        // the merge below can prefer language-specific over generic.
+        let mut tagged: Vec<(Source, ConventionRecord)> = Vec::new();
         for (lang, lang_chunks) in &by_lang {
-            let mut lang_records = match *lang {
-                "rust" => rules::rust::extract(lang_chunks, now),
-                "typescript" | "tsx" => rules::typescript::extract(lang_chunks, now),
-                _ => rules::generic::extract(lang_chunks, now),
+            let is_specific = matches!(*lang, "rust" | "typescript" | "tsx");
+            let specific = match *lang {
+                "rust" => Some(rules::rust::extract(lang_chunks, now)),
+                "typescript" | "tsx" => Some(rules::typescript::extract(lang_chunks, now)),
+                _ => None,
             };
-            // Generic rules always run as a fallback for all languages.
-            if *lang != "rust" && *lang != "typescript" && *lang != "tsx" {
-                // Already handled by the generic branch above.
-            } else {
-                // Append generic rules on top of language-specific ones.
-                let mut generic = rules::generic::extract(lang_chunks, now);
-                lang_records.append(&mut generic);
+            if let Some(recs) = specific {
+                tagged.extend(recs.into_iter().map(|r| (Source::LanguageSpecific, r)));
             }
-            records.extend(lang_records);
+            // Generic rules run for every language: as the sole set for
+            // unspecialised languages, and layered on top otherwise.
+            let source = if is_specific {
+                Source::Generic
+            } else {
+                Source::LanguageSpecific
+            };
+            tagged.extend(
+                rules::generic::extract(lang_chunks, now)
+                    .into_iter()
+                    .map(|r| (source, r)),
+            );
         }
-        records
+
+        dedup_by_language_category(tagged)
     }
+}
+
+/// Provenance of a record, used to break ties when merging duplicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// A per-language rule set, or the generic set acting as a language's sole set.
+    LanguageSpecific,
+    /// The generic set layered on top of a language-specific set.
+    Generic,
+}
+
+/// Collapse records to one per `(language, category)`.
+///
+/// Language-specific records win over generic ones. Between two records of the
+/// same source, the higher-confidence description is kept and evidence counts
+/// are summed (e.g. tsx chunks routed through the typescript set). Output is
+/// ordered by `(language, category)` for determinism.
+fn dedup_by_language_category(tagged: Vec<(Source, ConventionRecord)>) -> Vec<ConventionRecord> {
+    use std::collections::BTreeMap;
+
+    let mut merged: BTreeMap<(String, String), (Source, ConventionRecord)> = BTreeMap::new();
+    for (source, rec) in tagged {
+        let key = (rec.language.clone(), rec.category.clone());
+        match merged.get_mut(&key) {
+            None => {
+                merged.insert(key, (source, rec));
+            }
+            Some((kept_source, kept)) => {
+                if source == Source::LanguageSpecific && *kept_source == Source::Generic {
+                    // Language-specific replaces generic outright.
+                    *kept_source = source;
+                    *kept = rec;
+                } else if source == *kept_source {
+                    // Same source: aggregate evidence, keep higher-confidence fields.
+                    kept.evidence_count = kept.evidence_count.saturating_add(rec.evidence_count);
+                    if rec.confidence > kept.confidence {
+                        kept.description = rec.description;
+                        kept.confidence = rec.confidence;
+                    }
+                }
+                // else: incoming is Generic, kept is LanguageSpecific — discard.
+            }
+        }
+    }
+
+    merged.into_values().map(|(_, rec)| rec).collect()
 }
 
 impl Default for ConventionExtractor {

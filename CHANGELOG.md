@@ -89,6 +89,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk context` no longer lists duplicate convention records per
+  language.** Convention rows are now merged to one per (language, category)
+  before storage, so overlapping generic and language-specific rules (for
+  example `naming.functions` and `docs`) each surface once instead of two or
+  three times.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung
