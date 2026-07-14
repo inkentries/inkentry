@@ -145,7 +145,7 @@ pub(super) fn run_parse_phase(
     // the embedder was still loading, so the embed phase was skipped). These
     // belong to unchanged files that the hash-based skip above never re-emits,
     // so without this union a plain `spelunk index` would report "nothing to
-    // do" and leave them permanently unembedded (spelunk-oss^72).
+    // do" and leave them permanently unembedded.
     //
     // Freshly-parsed chunks from this run also lack an embedding row, so they
     // appear here too; dedupe against the ids we already queued to avoid
@@ -171,9 +171,9 @@ pub(super) fn run_parse_phase(
 /// Build the `(chunk_id, embedding_text)` list for every chunk in the index
 /// that has no embedding row yet, reconstructing each chunk's document text
 /// from its stored columns. This is the same union `run_parse_phase` applies as
-/// a backfill (spelunk-oss^72); exposed separately so a detached embed-only
+/// a backfill; exposed separately so a detached embed-only
 /// subprocess can rebuild the embed queue straight from the DB without
-/// re-parsing (spelunk-oss^74).
+/// re-parsing.
 pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String)>> {
     let mut out = Vec::new();
     for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
@@ -567,7 +567,7 @@ mod tests {
     /// The DB-side reconstruction used to backfill unembedded chunks must
     /// produce byte-for-byte the same document text as `Chunk::embedding_text()`
     /// did at store time, so a backfilled embedding is identical to one written
-    /// during a normal parse (spelunk-oss^72). Covers: name present/absent and
+    /// during a normal parse. Covers: name present/absent and
     /// docstring present/absent (summary is always None at store time).
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text() {
@@ -614,7 +614,7 @@ mod tests {
     /// chunk (`chunks.summary`) before a later re-index backfills its embedding,
     /// so the backfill path reconstructs with a non-null `summary` and must
     /// produce the exact `title: {name} | summary: {summary} | text: {body}`
-    /// document (spelunk-oss^72). Covers summary × docstring present/absent.
+    /// document. Covers summary × docstring present/absent.
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text_with_summary() {
         use crate::indexer::{Chunk, ChunkKind};
@@ -665,7 +665,7 @@ mod tests {
     }
 
     // ── End-to-end backfill: parse-only run leaves chunks unembedded, a
-    //    second parse run backfills them without reparsing (spelunk-oss^72) ────
+    //    second parse run backfills them without reparsing ────
 
     /// `run_parse_phase` stores chunks but never writes embeddings — that is the
     /// embed phase's job. So a single parse run models the real bug: an
@@ -769,7 +769,6 @@ mod tests {
     }
 
     // ── missing_embedding_texts: detached embed-only queue reconstruction ──────
-    // (spelunk-oss^74)
 
     /// The detached `--_embed-phases` subprocess rebuilds its embed queue purely
     /// from the DB via `missing_embedding_texts()` — it never re-parses. This test

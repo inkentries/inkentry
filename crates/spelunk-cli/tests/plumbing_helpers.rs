@@ -149,6 +149,44 @@ impl wiremock::Respond for IndexEmbedResponder {
     }
 }
 
+/// Build the SSE body `ServerInferenceClient::llm_complete` expects: one
+/// `token` event carrying the whole payload, then a `done` terminator.
+/// Event boundary is `\n\n`, with a `data: ` prefix per line.
+pub fn sse_token_response(content: &str) -> String {
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"kind": "token", "content": content}),
+        serde_json::json!({"kind": "done"}),
+    )
+}
+
+/// Mount `GET /v1/health` advertising the full Tier 1 capability set.
+pub async fn mount_health(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/health"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok",
+                "version": "test",
+                "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"],
+            })),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Mount `POST /v1/projects/{id}/index/embed` with [`IndexEmbedResponder`], so
+/// parsing/embedding succeeds and the summary pass is reached.
+pub async fn mount_index_embed(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path_regex(
+            r"^/v1/projects/.+/index/embed$",
+        ))
+        .respond_with(IndexEmbedResponder)
+        .mount(server)
+        .await;
+}
+
 /// Run `spelunk index <fixture_dir>` backed by a mock spelunk-server.
 ///
 /// The mock server handles:

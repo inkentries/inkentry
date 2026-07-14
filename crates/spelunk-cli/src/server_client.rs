@@ -154,8 +154,8 @@ impl ServerInferenceClient {
             .to_string();
         if let Err(msg) = spelunk_core::config::validate_transport_url(&base_url) {
             // Fail loudly and immediately: the alternative is silently sending a
-            // bearer token in the clear. No opt-out (Johan, 2026-07-02 — see
-            // spelunk-oss^63): the fix is always "use https, or loopback".
+            // bearer token in the clear. No opt-out: the fix is always "use
+            // https, or loopback".
             eprintln!("error: {msg}");
             std::process::exit(2);
         }
@@ -454,7 +454,7 @@ impl ServerInferenceClient {
             .context("POST /index/embed (query vector)")?;
         // Surface the server's structured reason (e.g. embedder still loading /
         // failed to load) instead of a bare "HTTP status 503" so a memory search
-        // against a warming-up local server gets actionable guidance (oss^133).
+        // against a warming-up local server gets actionable guidance.
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -578,7 +578,7 @@ impl spelunk_core::llm::LlmBackend for ServerLlmAdapter {
 /// The server returns a `{ error, state, detail }` JSON body for an unready
 /// embedder (state `loading`/`unavailable`). `reqwest::error_for_status` throws
 /// that body away and yields a bare "HTTP status 503", so we parse it here and
-/// append a next-step hint (oss^133).
+/// append a next-step hint.
 fn server_inference_error(endpoint: &str, status: reqwest::StatusCode, body: &str) -> String {
     let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
     let field = |k: &str| {
@@ -975,7 +975,7 @@ mod tests {
         assert!(chunk_id.starts_with("query:"));
     }
 
-    // ── transport-scheme validation (spelunk-oss^63) ─────────────────────────
+    // ── transport-scheme validation ──────────────────────────────────────────
     //
     // `from_config` hard-exits the process on an invalid (non-loopback http://)
     // inference URL, so the exit path itself isn't exercised in-process here
@@ -1032,7 +1032,7 @@ mod tests {
         );
     }
 
-    // ── server_inference_error (oss^133 bare-503 surfacing) ──────────────────
+    // ── server_inference_error ───────────────────────────────────────────────
 
     #[test]
     fn inference_error_surfaces_loading_detail_and_retry_hint() {

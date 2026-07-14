@@ -61,7 +61,7 @@ fn detect_support_lang(path: &Path) -> Option<SupportLang> {
 
 /// A query is a structural ast-grep pattern when it contains a metavariable
 /// (`$X`, `$$FOO`, `$$$ARGS`). Plain strings have none and are matched by
-/// substring rather than node-text equality (spelunk-oss^130).
+/// substring rather than node-text equality.
 fn is_structural_pattern(query: &str) -> bool {
     query.contains('$')
 }
@@ -72,7 +72,7 @@ fn is_structural_pattern(query: &str) -> bool {
 /// unchanged. A plain string is matched **case-insensitively**: first as a
 /// substring of identifier/text (named-leaf) nodes, then — for any file the
 /// node pass leaves uncovered — as a literal line scan, so a substring that
-/// demonstrably exists in a file never returns empty (spelunk-oss^130).
+/// demonstrably exists in a file never returns empty.
 pub fn search_live_query(query: &str, root: &Path, limit: usize) -> Vec<LiveMatch> {
     if query.is_empty() || limit == 0 {
         return Vec::new();
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(matches[0].language, "python");
     }
 
-    // ── plain-string substring search (spelunk-oss^130) ─────────────────────────
+    // ── plain-string substring search ───────────────────────────────────────────
 
     #[test]
     fn plain_substring_matches_identifier() {
@@ -373,7 +373,7 @@ mod tests {
         assert!(matches[0].text.contains("a.foo()"));
     }
 
-    // ── independent coverage pass (spelunk-oss^130, Test Engineer) ──────────────
+    // ── independent coverage pass ───────────────────────────────────────────────
 
     #[test]
     fn plain_substring_uppercase_query_lowercase_identifier() {

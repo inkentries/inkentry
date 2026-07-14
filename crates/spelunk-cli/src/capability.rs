@@ -65,10 +65,10 @@ fn read_server_port_file() -> Option<u16> {
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
 /// Server-side embedder readiness, mirrored from the `/v1/health` `embedder.state`
-/// field (spelunk-oss^50 PR A). The CLI uses this to distinguish, when semantic
-/// search is unavailable, between "no server reachable", "server up but the model
-/// is still warming up", and "the model failed to load" — so it can print an
-/// actionable one-line notice rather than silently degrading (task item #5).
+/// field. The CLI uses this to distinguish, when semantic search is unavailable,
+/// between "no server reachable", "server up but the model is still warming up",
+/// and "the model failed to load" — so it can print an actionable one-line notice
+/// rather than silently degrading.
 ///
 /// Serialized lowercase to match the server's health body and to feed
 /// `spelunk status --format json`.
@@ -84,7 +84,7 @@ pub enum EmbedderState {
     /// Server started with no in-process model to load (external embedding URL,
     /// or no embedder feature). Treated as ready.
     Disabled,
-    /// Field absent from the health body (server pre-dates PR A). Unknown state.
+    /// Field absent from the health body (server pre-dates it). Unknown state.
     #[default]
     Unknown,
 }
@@ -104,9 +104,8 @@ impl EmbedderState {
 }
 
 /// Server-enforced operative limits relevant to sizing an `/index/embed`
-/// request, mirrored from `/v1/health`'s `limits` object (spelunk-oss^71/^73/
-/// ^74, PR #513 field-failure follow-up: `crates/spelunk-server/src/handlers.rs`
-/// `ServerLimits`).
+/// request, mirrored from `/v1/health`'s `limits` object (see
+/// `crates/spelunk-server/src/handlers.rs` `ServerLimits`).
 ///
 /// `None` on a `Tier::Server` (rather than this struct being absent) means the
 /// server pre-dates this field — the embed phase treats that as "assume the
@@ -203,17 +202,17 @@ pub enum Tier {
         /// Consumed by `is_auto_discovered()` and sub-issue #324 UX wiring.
         auto_discovered: bool,
         /// Server-side embedder readiness, mirrored from the `/v1/health`
-        /// `embedder.state` field (spelunk-oss^50). `Unknown` when the field is
-        /// absent (server pre-dates PR A). Lets the CLI distinguish "server up
-        /// but model still warming up / failed to load" from a ready server when
-        /// semantic search is unavailable (task item #5; rendered by `status`).
+        /// `embedder.state` field. `Unknown` when the field is absent (server
+        /// pre-dates it). Lets the CLI distinguish "server up but model still
+        /// warming up / failed to load" from a ready server when semantic
+        /// search is unavailable (rendered by `status`).
         embedder_state: EmbedderState,
         /// Server-enforced `/index/embed` limits, mirrored from `/v1/health`'s
-        /// `limits` object (spelunk-oss^71/^73/^74). `None` when the field is
-        /// absent — a server that pre-dates this fix and still enforces the
-        /// old blanket 30s budget with no `/index/embed` exemption. The embed
-        /// phase (`embed_phase.rs`) reads this to clamp its own calibration to
-        /// what this particular server actually supports instead of assuming.
+        /// `limits` object. `None` when the field is absent — a server that
+        /// pre-dates this fix and still enforces the old blanket 30s budget
+        /// with no `/index/embed` exemption. The embed phase
+        /// (`embed_phase.rs`) reads this to clamp its own calibration to what
+        /// this particular server actually supports instead of assuming.
         server_limits: Option<ServerLimits>,
     },
 }
@@ -244,7 +243,7 @@ impl Tier {
     /// offline. `EmbedderState::Unknown` is returned for a reachable server that
     /// pre-dates the `embedder.state` health field. Used by the offline notice
     /// (`search`/`index`) and by `spelunk status` to explain why semantic search
-    /// is unavailable (spelunk-oss^50).
+    /// is unavailable.
     pub fn embedder_state(&self) -> Option<EmbedderState> {
         match self {
             Tier::Server { embedder_state, .. } => Some(*embedder_state),
@@ -255,8 +254,7 @@ impl Tier {
     /// Server-enforced `/index/embed` limits for a `Server` tier, or `None`
     /// when offline *or* when the server pre-dates the `/v1/health` `limits`
     /// field. Used by the embed phase (`embed_phase.rs`) to clamp its own
-    /// calibration to what this particular server actually supports —
-    /// see spelunk-oss^71/^73/^74 (PR #513 field-failure follow-up).
+    /// calibration to what this particular server actually supports.
     pub fn server_limits(&self) -> Option<ServerLimits> {
         match self {
             Tier::Server { server_limits, .. } => *server_limits,
@@ -441,8 +439,7 @@ async fn probe_url(
     server_ca: Option<&std::path::Path>,
 ) -> Result<Tier, String> {
     // Non-loopback plaintext http:// is invalid config — reject before sending
-    // anything. No opt-out (Johan, 2026-07-02 — see spelunk-oss^63): the fix is
-    // always "use https, or loopback".
+    // anything. No opt-out: the fix is always "use https, or loopback".
     spelunk_core::config::validate_transport_url(url)?;
 
     let builder = match spelunk_core::config::apply_server_ca(reqwest::Client::builder(), server_ca)
@@ -461,8 +458,7 @@ async fn probe_url(
         }
     };
 
-    // `/v1/health` is an unauthenticated endpoint (spelunk-oss^56) — do not send
-    // a bearer to it (spelunk-oss^63).
+    // `/v1/health` is an unauthenticated endpoint — do not send a bearer to it.
     let req = client.get(format!("{}/v1/health", url.trim_end_matches('/')));
 
     match req.send().await {
@@ -531,15 +527,15 @@ async fn probe_url(
 /// or when no embedder is loaded. A `0` dim skips the dimension check in `probe_url`
 /// for backward compatibility.
 ///
-/// `embedder_state` mirrors the `/v1/health` `embedder.state` field shipped in
-/// spelunk-oss^50 PR A (`embedder: { state, detail }`). It is `Unknown` when the
-/// sub-object is absent (older server) or the body is legacy plain-text.
+/// `embedder_state` mirrors the `/v1/health` `embedder.state` field
+/// (`embedder: { state, detail }`). It is `Unknown` when the sub-object is
+/// absent (older server) or the body is legacy plain-text.
 ///
-/// `server_limits` mirrors `/v1/health`'s `limits` object (spelunk-oss^71/^73/
-/// ^74). `None` when absent — a server that pre-dates the field, which is
-/// exactly the version-skew case: it still enforces the old blanket 30s
-/// `/index/embed` budget with no exemption, regardless of what the CLI's own
-/// calibration would otherwise target.
+/// `server_limits` mirrors `/v1/health`'s `limits` object. `None` when absent —
+/// a server that pre-dates the field, which is exactly the version-skew case:
+/// it still enforces the old blanket 30s `/index/embed` budget with no
+/// exemption, regardless of what the CLI's own calibration would otherwise
+/// target.
 async fn parse_health(
     url: &str,
     resp: reqwest::Response,
@@ -560,11 +556,11 @@ async fn parse_health(
         /// Absent on old servers that pre-date this field; defaults to 0 (skip check).
         #[serde(default)]
         embedding_dim: usize,
-        /// Embedder readiness sub-object (spelunk-oss^50). Absent on older servers
+        /// Embedder readiness sub-object. Absent on older servers
         /// → `embedder_state` stays `Unknown`.
         #[serde(default)]
         embedder: Option<EmbedderBody>,
-        /// Server-enforced `/index/embed` limits (spelunk-oss^71/^73/^74).
+        /// Server-enforced `/index/embed` limits.
         /// Absent on older servers → `server_limits` stays `None`.
         #[serde(default)]
         limits: Option<ServerLimits>,
@@ -918,7 +914,7 @@ mod tests {
         assert_eq!(eff.inference_url, None);
     }
 
-    // ── inference_server_required_message (oss^133) ──────────────────────────
+    // ── inference_server_required_message ────────────────────────────────────
 
     /// No server reachable AND no `server_url` configured (solo user, no local
     /// server running): the message must point at the zero-setup local server
@@ -1108,8 +1104,7 @@ mod tests {
         );
     }
 
-    // ── ServerLimits parsing (spelunk-oss^71/^73/^74, PR #513 field-failure
-    //    fix: /v1/health `limits` object) ────────────────────────────────────
+    // ── ServerLimits parsing (/v1/health `limits` object) ──────────────────────
 
     /// A server that DOES advertise `limits` must have it parsed into
     /// `Tier::Server.server_limits`. This is the non-version-skew case: a
@@ -1267,7 +1262,7 @@ mod tests {
         );
     }
 
-    // ── transport-scheme validation (spelunk-oss^63) ─────────────────────────
+    // ── transport-scheme validation ──────────────────────────────────────────
 
     /// A non-loopback `http://` URL must be rejected before any request is
     /// sent — no mock is mounted, so a request would fail with "connection
@@ -1321,7 +1316,7 @@ mod tests {
     }
 
     /// `/v1/health` must never carry an `Authorization` header — it is an
-    /// unauthenticated endpoint (spelunk-oss^56 server-side companion).
+    /// unauthenticated endpoint.
     #[tokio::test]
     async fn probe_url_health_request_carries_no_bearer_header() {
         use wiremock::matchers::{method, path};
@@ -1347,7 +1342,7 @@ mod tests {
         );
     }
 
-    // ── EmbedderState (spelunk-oss^50) ───────────────────────────────────────
+    // ── EmbedderState ────────────────────────────────────────────────────────
 
     #[test]
     fn embedder_state_default_is_unknown() {

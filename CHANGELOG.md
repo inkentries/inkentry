@@ -123,6 +123,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Memory attached to a commit now survives `git commit --amend` and `git
+  rebase`.** git carries a note onto a rewritten commit only when
+  `notes.rewriteRef` names the ref, and it has no built-in default, so an
+  unconfigured repository silently orphaned every entry the rewrite touched: the
+  note stayed bound to the dead sha, and `memory list` never surfaced it again.
+  Pre-`init`, git notes is the sole store, so that was total loss of the only
+  copy. spelunk now points `notes.rewriteRef` at `refs/notes/spelunk` in the
+  repository's own config (never global) at `spelunk init`, at the first
+  pre-`init` note write, and on the `--backend git-notes` write path. It composes
+  with any value you set yourself rather than replacing it, honours an existing
+  value that already covers the ref, announces itself on the run that sets it,
+  and warns without failing when it cannot be written. `notes.rewriteMode` is
+  deliberately left at its `concatenate` default, which keeps both entries when
+  two noted commits are squashed together. Known gap: git honours the setting for
+  `amend` and `rebase` only, so `git merge --squash` and cherry-picking onto a
+  divergent base still do not carry notes. See
+  [docs/memory.md](#surviving-history-rewrites). (ADR-068)
 - **The Debian package no longer installs a `spelunk` that cannot start.** The
   `.deb` declared `libc6` as its only dependency, omitting `libdbus-1-3`, which
   the `spelunk` binary dynamically links via the keyring's secret-service
@@ -175,6 +192,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   different port (which left two servers on one `server.db`), and fails loudly
   if an unrelated process holds the port. A single-instance guard prevents two
   servers running against the same `server.db`.
+- **`spelunk index` no longer silently drops LLM summaries.** The summary pass
+  ran detached from the rest of the run, so an index whose other phases finished
+  first could exit with summaries still in flight: they were never generated,
+  and nothing reported it. `index` now finishes summaries before it returns.
+  Generation stays best-effort (a failure warns and never fails the run, so git
+  hooks still exit 0), and `--detach` / `--detach-embed` still background the
+  whole run.
+- **`spelunk index` no longer reports success for summaries the LLM never
+  produced.** Against an unreachable or failing LLM the run printed `Summarised
+  1 batch(es).` and exited 0 while storing empty summaries. Failed batches are
+  now excluded from that count (`Summarised 0 batch(es).`) and a warning reports
+  how many produced nothing; `RUST_LOG=warn` shows the cause. Retrying needs
+  `spelunk index --force`, since a chunk whose summary failed is recorded as
+  attempted and a plain re-run skips it.
 
 ## [0.9.3] — 2026-07-08
 
@@ -821,7 +852,6 @@ to re-embed. (#439, #441)
 - **Auto-spawned `spelunk-server` now binds to `127.0.0.1` only.** Previously
   the server started by `spelunk init` / `ensure_server_running` defaulted to
   `0.0.0.0`, making the unauthenticated local server LAN-reachable.
-  (THREAT-MODEL req #9, decision #88)
 
 ### Added
 

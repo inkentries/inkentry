@@ -745,7 +745,7 @@ fn find_available_port(start: u16, range: u16) -> Result<u16> {
 /// Build the argument list passed to `spelunk-server` when auto-spawning the daemon.
 ///
 /// Extracted from the spawn helpers so that unit tests can verify the args
-/// without actually launching a process (THREAT-MODEL req #9 / decision #88).
+/// without actually launching a process.
 ///
 /// The returned `Vec` contains every argument **after** the binary path, in
 /// order, as it would be appended to `std::process::Command`.
@@ -767,10 +767,9 @@ pub(super) fn build_daemon_args(db: &Path, port: u16) -> Vec<std::ffi::OsString>
 /// CLI process exits after writing the PID/port state files, at which point
 /// the child is reparented to init/launchd and becomes fully detached.
 ///
-/// `--host 127.0.0.1` is always passed so the auto-spawned daemon only binds
-/// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
-/// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
-/// unauthenticated.
+/// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
+/// unauthenticated, so it must only ever bind loopback; passing the flag keeps
+/// that true regardless of spelunk-server's own default.
 #[cfg(unix)]
 fn spawn_daemon_unix(
     bin: &Path,
@@ -796,10 +795,9 @@ fn spawn_daemon_unix(
 
 /// Spawn the server on Windows with `CREATE_NEW_PROCESS_GROUP`.
 ///
-/// `--host 127.0.0.1` is always passed so the auto-spawned daemon only binds
-/// the loopback interface (THREAT-MODEL req #9 / decision #88).  Without this
-/// flag spelunk-server defaults to 0.0.0.0 and would be LAN-reachable while
-/// unauthenticated.
+/// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
+/// unauthenticated, so it must only ever bind loopback; passing the flag keeps
+/// that true regardless of spelunk-server's own default.
 #[cfg(windows)]
 fn spawn_daemon_windows(
     bin: &Path,
@@ -1184,19 +1182,16 @@ mod tests {
         assert!(result.is_err(), "should fail when binary is not on PATH");
     }
 
-    // ── spawn_daemon arg list (THREAT-MODEL req #9) ──────────────────────────
+    // ── spawn_daemon arg list: loopback-only bind ────────────────────────────
     //
-    // Security invariant: the auto-spawned spelunk-server daemon MUST bind
-    // only the loopback interface.  Without `--host 127.0.0.1` the server
-    // defaults to 0.0.0.0 and becomes LAN-reachable while unauthenticated.
+    // Security invariant: the auto-spawned spelunk-server daemon is
+    // unauthenticated, so it MUST only ever bind the loopback interface.
     //
-    // These tests verify the arg list produced by `build_daemon_args` — the
+    // These tests pin the arg list produced by `build_daemon_args` — the
     // single source of truth for both the Unix and Windows spawn helpers —
     // so that a future refactor cannot silently drop the flag.
-    //
-    // refs: https://github.com/spelunk-cloud/spelunk/pull/365
 
-    /// `--host 127.0.0.1` must appear in the daemon arg list (THREAT-MODEL req #9).
+    /// `--host 127.0.0.1` must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_bind_loopback() {
         let tmp = TempDir::new().unwrap();
@@ -1212,7 +1207,7 @@ mod tests {
         // `--host` flag must be present.
         assert!(
             args_str.contains(&"--host".to_string()),
-            "THREAT-MODEL req #9: --host flag missing from daemon args: {args_str:?}"
+            "daemon must bind loopback: --host flag missing from daemon args: {args_str:?}"
         );
 
         // The value immediately following `--host` must be `127.0.0.1`.
@@ -1225,11 +1220,11 @@ mod tests {
             .expect("--host must be followed by a value");
         assert_eq!(
             host_value, "127.0.0.1",
-            "THREAT-MODEL req #9: daemon must bind 127.0.0.1 only, got {host_value:?}"
+            "daemon must bind 127.0.0.1 only, got {host_value:?}"
         );
     }
 
-    /// `0.0.0.0` must NOT appear in the daemon arg list (THREAT-MODEL req #9).
+    /// `0.0.0.0` must NOT appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_do_not_bind_wildcard() {
         let tmp = TempDir::new().unwrap();
@@ -1243,7 +1238,7 @@ mod tests {
 
         assert!(
             !args_str.contains(&"0.0.0.0".to_string()),
-            "THREAT-MODEL req #9: daemon args must not contain 0.0.0.0 (wildcard bind): {args_str:?}"
+            "daemon args must not contain 0.0.0.0 (wildcard bind): {args_str:?}"
         );
     }
 

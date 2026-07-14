@@ -54,11 +54,21 @@ agent.py, plus the harness-dimension fields — see bench/agents/README.md).
 import argparse
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
-from harness_common import extract_patch, read_issue_text
+from agent import get_spelunk_version
+from harness_common import CONDITIONS, build_system_prompt, extract_patch, read_issue_text
+from spelunk_mcp_server import (
+    SERVER_NAME,
+    SPELUNK_CONDITIONS,
+    mcp_server_command,
+    mcp_tool_names_for_condition,
+    read_telemetry,
+)
 
 DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
 
@@ -105,20 +115,35 @@ def _deepseek_anthropic_env(api_key: str, model: str, base_url: str) -> dict:
     return env
 
 
-def run_claude_code(
-    repo_path: Path,
-    issue_text: str,
-    model: str,
+def write_mcp_config(
+    config_dir: Path, condition: str, repo_path: Path, telemetry_log: Path | None
+) -> Path:
+    """Write a --mcp-config JSON registering the bench-local spelunk server.
+
+    Written outside repo_path so it can never land in the extracted patch.
+    """
+    argv = mcp_server_command(condition, repo_path, telemetry_log)
+    config = {
+        "mcpServers": {
+            SERVER_NAME: {
+                "command": argv[0],
+                "args": argv[1:],
+                "env": {"SPELUNK_SECRET_STORE": "file"},
+            }
+        }
+    }
+    config_path = config_dir / "mcp-config.json"
+    config_path.write_text(json.dumps(config, indent=2))
+    return config_path
+
+
+def build_claude_cmd(
+    prompt: str,
     effort: str,
     thinking: bool,
-    env: dict,
-) -> dict:
-    prompt = (
-        f"{CLAUDE_CODE_PROMPT_PREFIX}\n\n"
-        f"Repository path: {repo_path}\n\nIssue:\n{issue_text}\n\n"
-        "Please investigate the issue and apply a fix."
-    )
-
+    condition: str,
+    mcp_config_path: Path | None,
+) -> list[str]:
     cmd = [
         "claude",
         "-p",
@@ -129,9 +154,48 @@ def run_claude_code(
         "acceptEdits",  # headless: accept file edits without a TTY prompt
         "--effort",
         effort,
+        # Both arms, baseline included: the bench host has its own MCP
+        # servers configured, and without this they leak into *both* arms and
+        # the comparison is unpublishable.
+        "--strict-mcp-config",
     ]
+    if condition in SPELUNK_CONDITIONS and mcp_config_path:
+        cmd += ["--mcp-config", str(mcp_config_path)]
+        # acceptEdits covers file edits, not MCP tool calls; a headless -p run
+        # that hits a permission prompt is a lost cell. Each tool is named in
+        # full: whether the `mcp__spelunk` server-wide shorthand is honoured
+        # is unverified, and naming them keeps the allow-list condition-gated
+        # independently of what the server advertises.
+        cmd += ["--allowedTools", *mcp_tool_names_for_condition(condition)]
     if thinking:
         cmd += ["--append-system-prompt", "Think step by step before acting."]
+    return cmd
+
+
+def run_claude_code(
+    repo_path: Path,
+    issue_text: str,
+    model: str,
+    effort: str,
+    thinking: bool,
+    env: dict,
+    condition: str = "baseline",
+    mcp_config_path: Path | None = None,
+) -> dict:
+    system_prompt = build_system_prompt(
+        CLAUDE_CODE_PROMPT_PREFIX,
+        condition,
+        mcp_tool_names_for_condition(condition)
+        if condition in SPELUNK_CONDITIONS
+        else [],
+    )
+    prompt = (
+        f"{system_prompt}\n\n"
+        f"Repository path: {repo_path}\n\nIssue:\n{issue_text}\n\n"
+        "Please investigate the issue and apply a fix."
+    )
+
+    cmd = build_claude_cmd(prompt, effort, thinking, condition, mcp_config_path)
 
     start = time.monotonic()
     result = subprocess.run(
@@ -183,11 +247,12 @@ def main() -> None:
     parser.add_argument(
         "--condition",
         default="baseline",
+        choices=list(CONDITIONS),
         help=(
-            "Recorded verbatim in provenance as condition. claude-code is a "
-            "generic coding agent, not spelunk-instrumented, so this is "
-            "always baseline in practice — see bench/agents/README.md. The "
-            "deepseek-vs-native distinction lives in endpoint_kind, not here."
+            "Recorded verbatim in provenance as condition. On a spelunk "
+            "condition the spelunk tools are wired in over a bench-local MCP "
+            "server — see bench/agents/README.md. The deepseek-vs-native "
+            "distinction lives in endpoint_kind, not here."
         ),
     )
     parser.add_argument("--task-id", required=True)
@@ -288,14 +353,29 @@ def main() -> None:
         env = _deepseek_anthropic_env(api_key, args.model, base_url_used)
         endpoint_kind = args.endpoint_kind
 
-    agent_result = run_claude_code(
-        repo_path=repo_path,
-        issue_text=issue_text,
-        model=args.model,
-        effort=args.effort,
-        thinking=args.thinking,
-        env=env,
+    scratch_dir = Path(tempfile.mkdtemp(prefix="spelunk-bench-mcp-"))
+    telemetry_log = scratch_dir / "tool_calls.jsonl"
+    mcp_config_path = (
+        write_mcp_config(scratch_dir, args.condition, repo_path, telemetry_log)
+        if args.condition in SPELUNK_CONDITIONS
+        else None
     )
+
+    try:
+        agent_result = run_claude_code(
+            repo_path=repo_path,
+            issue_text=issue_text,
+            model=args.model,
+            effort=args.effort,
+            thinking=args.thinking,
+            env=env,
+            condition=args.condition,
+            mcp_config_path=mcp_config_path,
+        )
+        # Read before the scratch dir goes away.
+        telemetry = read_telemetry(telemetry_log)
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     patch_path = extract_patch(repo_path, args.save_patch)
 
@@ -311,7 +391,10 @@ def main() -> None:
         "model_source": "api",
         "api_base_url": base_url_used,
         "api_key_source": api_key_source,
-        "spelunk_version": None,  # claude-code harness does not invoke spelunk tools
+        # Null only on baseline, where no spelunk tools are wired in.
+        "spelunk_version": (
+            get_spelunk_version() if args.condition in SPELUNK_CONDITIONS else None
+        ),
         "seed": args.seed,
         "run_seed": args.seed,
         "max_turns": args.max_turns,
@@ -323,6 +406,7 @@ def main() -> None:
         "judge_model": None,
         "judge_version": None,
         "judge_error_rate": None,
+        **telemetry,
         **agent_result,
     }
     print(json.dumps(output))

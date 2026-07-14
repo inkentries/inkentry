@@ -172,10 +172,10 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // server is reachable but the model is still `loading` or has failed
     // (`unavailable`), skip embedding and print a visible, differentiated
     // notice rather than letting the embed request 503 out mid-index or
-    // silently producing an unembedded index (spelunk-oss^50 #5).
+    // silently producing an unembedded index.
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
     if tier.is_server() && embed_ready {
-        // ── Detached embed (spelunk-oss^74) ──────────────────────────────────
+        // ── Detached embed ───────────────────────────────────────────────────
         // Parsing is done and the chunks are persisted; hand the (usually long)
         // embedding phase to a background process so the user regains the
         // prompt now. The subprocess (`--_embed-phases`) rebuilds the embed
@@ -239,7 +239,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
 
 /// Spawn a detached background process to run the embed phase (plus phases 3–5)
 /// against the chunks the foreground run just parsed, reusing the internal
-/// `--_embed-phases` mode (spelunk-oss^74). Mirrors the phases-3–5 background
+/// `--_embed-phases` mode. Mirrors the phases-3–5 background
 /// spawn: stdio is closed so the parent regains its prompt immediately.
 ///
 /// Returns `Ok(true)` when the subprocess was launched (caller should return),
@@ -271,7 +271,7 @@ fn spawn_embed_subprocess(args: &IndexArgs) -> Result<bool> {
 
 /// Embed-only entry point for the detached `--_embed-phases` subprocess: rebuild
 /// the embed queue from the chunks already in the DB (no re-parse), run the
-/// embed phase, then phases 3–5 (spelunk-oss^74).
+/// embed phase, then phases 3–5.
 async fn run_embed_phases(
     args: &IndexArgs,
     cfg: &Config,
@@ -305,9 +305,9 @@ async fn run_embed_phases(
 }
 
 /// Build the differentiated notice lines shown when the embedding phase is
-/// skipped, so an unembedded index is never a silent surprise (spelunk-oss^50
-/// #5). Pure so it can be unit-tested; the four cases mirror PR A's readiness
-/// contract. `server_url` is `cfg.server_url` (used only for the offline case).
+/// skipped, so an unembedded index is never a silent surprise. Pure so it can
+/// be unit-tested; the four cases mirror the server's readiness contract.
+/// `server_url` is `cfg.server_url` (used only for the offline case).
 fn embed_skipped_lines(
     embedder_state: Option<capability::EmbedderState>,
     server_url: Option<&str>,
@@ -385,39 +385,14 @@ async fn run_phases_3_to_5(
         }
     }
 
-    // Phase 4: LLM summaries — spawn a background thread so the caller
-    // returns immediately. The thread opens its own DB connection because
-    // `Database` (rusqlite::Connection) is not Send.
-    let no_summaries = args.no_summaries;
-    let summary_batch_size = args.summary_batch_size;
-    let summary_cfg = cfg.clone();
-    let summary_db_path = db_path.to_path_buf();
-    eprintln!("Generating summaries in background\u{2026}");
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-        match rt {
-            Ok(rt) => rt.block_on(async move {
-                match crate::storage::Database::open(&summary_db_path) {
-                    Ok(bg_db) => {
-                        if let Err(e) = summaries::generate_summaries(
-                            no_summaries,
-                            summary_batch_size,
-                            &summary_cfg,
-                            &bg_db,
-                        )
-                        .await
-                        {
-                            eprintln!("summary error: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!("summary error: {e}"),
-                }
-            }),
-            Err(e) => eprintln!("summary error: could not build runtime: {e}"),
-        }
-    });
+    // Phase 4: LLM summaries. Must finish before the process exits: an in-flight
+    // summary is silently lost. Backgrounding here is process-level
+    // (--detach, --detach-embed, the phases-3-5 spawn), never a thread.
+    if let Err(e) =
+        summaries::generate_summaries(args.no_summaries, args.summary_batch_size, cfg, db).await
+    {
+        eprintln!("Warning: summary generation failed: {e:#}");
+    }
 
     // Phase 5: convention extraction (heuristic, no LLM).
     eprintln!("Extracting conventions\u{2026}");

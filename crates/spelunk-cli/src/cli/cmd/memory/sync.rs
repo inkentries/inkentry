@@ -307,7 +307,7 @@ mod tests {
         assert!(parse_iso_to_secs("not-a-timestamp") > 0);
     }
 
-    // ── resolve_sync_project (spelunk-oss^47) ──────────────────────────────
+    // ── resolve_sync_project ───────────────────────────────────────────────
     // Sync must never invent a project name. With neither `--project` nor a
     // configured `project_id`, the call halts with a message pointing the user
     // at `--project <slug>`; with an explicit slug (or configured id), that slug
@@ -361,7 +361,7 @@ mod tests {
         assert!(resolve_sync_project(Some("   "), &cfg).is_err());
     }
 
-    // ── end-to-end first-run path (spelunk-oss^47 QA handback) ─────────────
+    // ── end-to-end first-run path ──────────────────────────────────────────
     // The story's target path: a first-run user has a non-loopback team
     // `server_url`, NO configured `project_id`, and passes `--project <slug>`.
     // Before the fix this was rejected at dispatch by `cfg.validate()` before
@@ -421,7 +421,7 @@ mod tests {
     }
 
     // ── push_local end-to-end: remote_id stamping + idempotent re-sync ─────
-    // spelunk-oss^112: the local-first push path is where the server-minted
+    // The local-first push path is where the server-minted
     // cross-machine id is PERSISTED — stamped onto `notes.remote_id` from the
     // 207 batch result — not the `RemoteMemoryBackend::add` debug-log path
     // (which is the cloud-first, remote-is-store-of-record case with no local

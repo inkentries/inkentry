@@ -12,6 +12,83 @@ mod lock;
 
 pub use lock::{NotesLock, lock_notes};
 
+// ── Carry config: surviving history rewrites ─────────────────────────────────
+
+/// The ref spelunk stores memory notes on.
+const SPELUNK_NOTES_REF: &str = "refs/notes/spelunk";
+
+/// The namespace git is willing to rewrite notes in.
+const NOTES_NAMESPACE: &str = "refs/notes/";
+
+/// What [`ensure_notes_rewrite_ref`] found or did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteRefStatus {
+    /// This call added the setting; announce it once.
+    Configured,
+    /// Already named by an existing value (exactly, or via a glob).
+    AlreadyCovered,
+    /// Could not be set; the reason is logged. Entries stay at risk.
+    Failed,
+}
+
+/// Point `notes.rewriteRef` at spelunk's notes ref in this repo.
+///
+/// Gotcha: git carries a note onto a rewritten commit (`commit --amend`,
+/// `rebase`) only if `notes.rewriteRef` names the ref, and it has **no**
+/// built-in default, so an unconfigured repo silently orphans every entry.
+/// Pre-`init` git notes is the sole store, making that total loss.
+///
+/// `notes.rewriteMode` is deliberately left alone: its `concatenate` default
+/// keeps every JSON line, whereas `overwrite` and `ignore` each drop one side
+/// of a squashed pair, causing the loss this is meant to prevent.
+///
+/// Never returns an error: the write it guards may be an entry's only copy, so
+/// a config failure must not sink it.
+pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> RewriteRefStatus {
+    // Reads local, global and system scopes, so a user who set this themselves
+    // anywhere is left alone. Absent (exit 1) means unset, not an error.
+    let existing = run_git(git_root, &["config", "--get-all", "notes.rewriteRef"])
+        .await
+        .unwrap_or_default();
+    if existing.lines().any(rewrite_ref_covers_spelunk) {
+        return RewriteRefStatus::AlreadyCovered;
+    }
+
+    // Multi-valued: `--add` composes with any value the user already has, and
+    // writes to the repo-local config (never global).
+    match run_git(
+        git_root,
+        &["config", "--add", "notes.rewriteRef", SPELUNK_NOTES_REF],
+    )
+    .await
+    {
+        Ok(_) => RewriteRefStatus::Configured,
+        Err(e) => {
+            tracing::warn!(
+                "could not set notes.rewriteRef ({e}); memory will not survive \
+                 `git commit --amend` or `git rebase`"
+            );
+            RewriteRefStatus::Failed
+        }
+    }
+}
+
+/// Whether an existing `notes.rewriteRef` value already names spelunk's ref.
+///
+/// Values may be globs. git refuses to rewrite notes outside `refs/notes/`, so
+/// a glob only counts while it stays inside that namespace: `refs/notes/*`
+/// covers us, `refs/*` does not. A false negative only re-adds the exact ref,
+/// which stays correct, so matching a trailing `*` is enough.
+fn rewrite_ref_covers_spelunk(value: &str) -> bool {
+    let value = value.trim();
+    if value == SPELUNK_NOTES_REF {
+        return true;
+    }
+    value.strip_suffix('*').is_some_and(|prefix| {
+        prefix.starts_with(NOTES_NAMESPACE) && SPELUNK_NOTES_REF.starts_with(prefix)
+    })
+}
+
 // ── Write-through helper (free function) ─────────────────────────────────────
 
 /// Append a `NoteRecord` as a JSON line to `refs/notes/spelunk` on HEAD.
@@ -25,8 +102,8 @@ pub use lock::{NotesLock, lock_notes};
 /// reads the same body and silently drops this entry on write-back (#185).
 ///
 /// Errors are intentionally non-fatal: the caller should log `tracing::warn!`
-/// and continue.  This function returns `Ok(())` on success or propagates
-/// an error for the caller to handle gracefully.
+/// and continue.  On success it returns the [`RewriteRefStatus`] of the carry
+/// config ensured along the way, so a CLI caller can announce it once.
 ///
 /// # Arguments
 /// * `git_root` — directory passed to `git -C`; `None` uses the process CWD.
@@ -34,7 +111,11 @@ pub use lock::{NotesLock, lock_notes};
 pub async fn append_to_git_notes(
     git_root: Option<&std::path::Path>,
     record: &NoteRecord,
-) -> Result<()> {
+) -> Result<RewriteRefStatus> {
+    // Touches `git config` only, never the notes ref, so it stays outside the
+    // lock: serializing it would widen the guarded section for nothing.
+    let rewrite_ref = ensure_notes_rewrite_ref(git_root).await;
+
     // Guard all four steps. Contention must never fail the caller's write, so
     // an unavailable lock degrades to the pre-#185 unserialized behaviour.
     let _lock = lock_notes(git_root).await;
@@ -82,7 +163,7 @@ pub async fn append_to_git_notes(
     )
     .await?;
 
-    Ok(())
+    Ok(rewrite_ref)
 }
 
 /// Run a git subprocess, optionally in `dir`, and return stdout as a `String`.
@@ -339,6 +420,11 @@ impl GitNotesBackend {
     /// Append `record` as a new JSON line to `object`'s note, preserving every
     /// existing line (spelunk records and foreign content) byte-for-byte.
     async fn append_record(&self, object: &str, record: &NoteRecord) -> Result<()> {
+        // git notes is the primary store on this path (`--backend git-notes`),
+        // so an unconfigured carry ref orphans the only copy. Status is dropped:
+        // this path has no command output to announce on.
+        ensure_notes_rewrite_ref(self.git_root.as_deref()).await;
+
         let _lock = lock_notes(self.git_root.as_deref()).await;
 
         let existing = self.read_note_blob(object).await?;

@@ -45,6 +45,14 @@ The init output includes the push command to publish your notes; re-run it
 after each memory change so new notes commits travel. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
+**Memory survives history rewrites:** `init` also points `notes.rewriteRef` at
+`refs/notes/spelunk` in the repository's own config, so memory attached to a
+commit is carried onto its replacement by `git commit --amend` and `git rebase`
+rather than orphaned on the old sha. This runs even without an `origin`, since
+rewrites are local. Note that `git merge --squash` and cherry-picking onto a
+divergent base still do not carry notes. See [Surviving history
+rewrites](memory.md#surviving-history-rewrites).
+
 If the repo already carries memory on `refs/notes/spelunk`, `init` also hydrates
 the new `memory.db` from those notes: every entry not already present is imported
 (idempotent, no embeddings), and it prints `Memory:  imported N entries from git
@@ -85,6 +93,10 @@ and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
+
+Summaries are the exception: a chunk whose summary failed (say the LLM was
+unreachable) is recorded as attempted rather than missing, so a plain re-run
+skips it. Use `--force` to retry those.
 
 The embed phase calibrates its own batch size instead of guessing: it times a
 1-chunk request, then a 4-chunk request, and sizes subsequent requests (and

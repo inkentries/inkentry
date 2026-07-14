@@ -59,7 +59,7 @@ pub(super) async fn memory_harvest(
     let cfg = &eff_cfg;
 
     // Tier-0: harvest requires server inference (#259 locked-feature error).
-    // Guidance points at the local auto-server, never team `server_url` setup (oss^133).
+    // Guidance points at the local auto-server, never team `server_url` setup.
     if cfg.resolve_inference_url().is_none() {
         return Err(harvest_requires_server());
     }

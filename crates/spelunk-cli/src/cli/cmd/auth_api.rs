@@ -656,7 +656,7 @@ mod tests {
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
     }
 
-    // ── ensure_fresh_token (expiry guard, spelunk-oss^40) ────────────────────────
+    // ── ensure_fresh_token (expiry guard) ────────────────────────────────────────
 
     /// A still-valid access token is returned unchanged with NO network call and
     /// NO persist call (the persist closure would panic if invoked).

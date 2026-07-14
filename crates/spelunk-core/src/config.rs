@@ -482,7 +482,7 @@ impl Config {
         };
 
         // A bare `server_key` in the *personal* global config is the legacy
-        // plaintext credential we migrate into the secret store (spelunk-oss^23).
+        // plaintext credential we migrate into the secret store.
         // Captured before the project-level merge so we never migrate a shared
         // team key from a checked-in `.spelunk/config.toml`.
         let global_bare_server_key = cfg.server_key.clone();
@@ -681,10 +681,10 @@ impl Config {
 /// (macOS Keychain / Linux Secret Service / Windows Credential Manager) by
 /// default, falling back to an owner-only file when no keychain backend is
 /// available (CI / headless). The credential is **never** written to
-/// `config.toml` (spelunk-oss^23).
+/// `config.toml`.
 ///
 /// The store is credential-format-agnostic, so the same call path serves a
-/// future WorkOS-token migration (spelunk-oss^22).
+/// future WorkOS-token migration.
 pub fn save_server_key(key: &str) -> Result<()> {
     let store = secret_store::default_store(&spelunk_config_dir())?;
     save_server_key_with(key, store.as_ref())
@@ -910,8 +910,8 @@ pub fn is_loopback_url(url: &str) -> bool {
 ///
 /// A non-loopback `http://` URL is invalid config — plaintext HTTP outside the
 /// loopback interface would send the bearer token (and query content) in the
-/// clear. There is no opt-out env var (Johan, 2026-07-02 — see spelunk-oss^63):
-/// the fix is always "use https, or loopback".
+/// clear. There is no opt-out env var: the fix is always "use https, or
+/// loopback".
 ///
 /// Like [`is_loopback_url`], this is a lightweight string check on the literal
 /// host — there is no DNS resolution. A `/etc/hosts` alias or other custom DNS
@@ -1343,7 +1343,7 @@ memory_server_key = "old-token"
         assert!(cfg.validate().is_err());
     }
 
-    // ── validate_with_project() — --project satisfies the requirement (oss^47) ─
+    // ── validate_with_project() — --project satisfies the requirement ──────────
 
     #[test]
     fn validate_with_project_true_passes_non_loopback_without_project_id() {
@@ -1426,7 +1426,7 @@ memory_server_key = "old-token"
         assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
     }
 
-    // ── validate_transport_url (spelunk-oss^63: loopback-only plaintext http) ──
+    // ── validate_transport_url (loopback-only plaintext http) ──────────────────
 
     #[test]
     fn validate_transport_url_rejects_non_loopback_http() {
@@ -1970,7 +1970,7 @@ project_id = "team/new"
         }
     }
 
-    // ── spelunk-oss^23: keychain secret store migration / precedence ─────────
+    // ── keychain secret store migration / precedence ─────────────────────────
     //
     // These exercise the credential paths through an injected `MemoryStore`, so
     // no real keychain or Secret Service daemon is required (CI-safe).

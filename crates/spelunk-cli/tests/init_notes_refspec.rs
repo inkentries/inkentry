@@ -1,6 +1,6 @@
 //! Integration tests for `spelunk init` configuring the `origin` git-notes
 //! fetch refspec so `refs/notes/spelunk` (spelunk's memory) travels on
-//! clone/fetch (spelunk-oss^126, ADR-068).
+//! clone/fetch (ADR-068).
 //!
 //! Covered:
 //! - origin present: `remote.origin.fetch` gains `+refs/notes/spelunk:…` and
@@ -155,6 +155,41 @@ fn init_no_origin_prints_hint_and_succeeds() {
             .status
             .success(),
         "init must not create an origin remote when none exists"
+    );
+}
+
+/// (2b) No `origin` remote: init still configures `notes.rewriteRef`, so memory
+/// survives `git commit --amend` and `git rebase`. The carry is purely local and
+/// must not be gated on having a remote: a remote-less repo is exactly where the
+/// note is the only copy of an entry.
+///
+/// Read `--local` so the assertion is about what init wrote to this repo, not
+/// about an ambient global value on the machine running the test.
+#[test]
+fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
+    let tmp = tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    assert!(
+        !git_out(tmp.path(), &["remote", "get-url", "origin"])
+            .status
+            .success(),
+        "setup: this repo must have no origin remote"
+    );
+
+    let stdout = run_init(tmp.path());
+
+    assert_eq!(
+        git_stdout(
+            tmp.path(),
+            &["config", "--local", "--get-all", "notes.rewriteRef"]
+        )
+        .trim(),
+        "refs/notes/spelunk",
+        "init must configure the notes carry ref even with no origin, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("configured notes.rewriteRef"),
+        "init should announce the carry config, got:\n{stdout}"
     );
 }
 

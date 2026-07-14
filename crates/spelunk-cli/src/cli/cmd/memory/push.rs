@@ -49,7 +49,7 @@ pub async fn memory_push(
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = MemoryStore::open(src_path)
         .with_context(|| format!("opening local memory at {}", src_path.display()))?;
-    // Refresh a stale WorkOS access token before the cloud-api call (oss^40).
+    // Refresh a stale WorkOS access token before the cloud-api call.
     let key = auth_api::ensure_fresh_server_key(cfg).await?;
     let client = CloudSyncClient::new(
         &base_url,
