@@ -160,10 +160,14 @@ impl ServerInferenceClient {
             std::process::exit(2);
         }
         let project_id = cfg.project_id.clone().unwrap_or_default();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .expect("building HTTP client for server inference");
+        let client = spelunk_core::config::apply_server_ca(
+            reqwest::Client::builder(),
+            cfg.server_ca.as_deref().map(std::path::Path::new),
+        )
+        .expect("applying custom CA for server inference")
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("building HTTP client for server inference");
 
         // Carry WorkOS refresh state only when the bearer comes from `[auth]`
         // (i.e. `server_key` was resolved from the access token). A bare

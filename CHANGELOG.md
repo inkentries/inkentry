@@ -39,6 +39,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed.
+- **`spelunk index` embed-phase messages drop the pre-1.0 "older build /
+  upgrade the server" advice.** The three user-facing embed messages keep their
+  actionable guidance (the request-budget hint and the conservative-budget
+  fallback) but no longer suggest the server may be a legacy build or tell users
+  to upgrade or restart it. The request-budget fallback behaviour is unchanged.
 
 ### Added
 
@@ -73,6 +78,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `--host` plus the TLS flags and an API key, with nothing in front. A
   non-loopback bind is now allowed only with both TLS and an API key set;
   loopback binds are unchanged. (ADR-066)
+- **CLI trust for internal-CA / self-signed team-server certificates.** Point the
+  CLI at a PEM CA bundle with `SPELUNK_SERVER_CA` (env) or `server_ca` in
+  `.spelunk/config.toml` (env overrides config) to trust a `server_url` whose
+  certificate is signed by an internal or self-signed CA. The bundle is added as a
+  trust anchor on top of the built-in roots; TLS verification stays on and there
+  is no insecure/disable switch. The trusted certificate must be a proper CA (or a
+  CA-to-leaf chain); a bare self-signed `openssl req -x509` end-entity certificate
+  is rejected. (ADR-066)
 
 ### Removed
 
@@ -95,6 +108,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   services set `pull_policy: build`, so the image is built locally with no
   registry pull (air-gapped friendly). A CI job now builds and smoke-runs the
   image so a broken build is caught on PRs.
+- **`spelunk context` no longer lists duplicate convention records per
+  language.** Convention rows are now merged to one per (language, category)
+  before storage, so overlapping generic and language-specific rules (for
+  example `naming.functions` and `docs`) each surface once instead of two or
+  three times.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung

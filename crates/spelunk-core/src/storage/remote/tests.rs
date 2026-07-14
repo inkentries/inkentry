@@ -157,10 +157,15 @@ async fn resolve_raw_uuid_passes_through_without_lookup() {
     let tmp = TempDir::new().unwrap();
     // server_url points nowhere reachable; if a lookup were attempted this
     // would fail. A raw UUID must short-circuit before any network call.
-    let got =
-        resolve_cloud_project_uuid(UUID_A, "https://api.example.com", Some("key"), tmp.path())
-            .await
-            .unwrap();
+    let got = resolve_cloud_project_uuid(
+        UUID_A,
+        "https://api.example.com",
+        Some("key"),
+        None,
+        tmp.path(),
+    )
+    .await
+    .unwrap();
     assert_eq!(got.to_string(), UUID_A);
     // No cache should have been written for the raw-UUID path.
     assert!(!tmp.path().join(CLOUD_PROJECT_CACHE_FILE).exists());
@@ -171,12 +176,13 @@ async fn resolve_raw_uuid_passes_through_without_lookup() {
 #[tokio::test]
 async fn resolve_loopback_with_slug_errors() {
     let tmp = TempDir::new().unwrap();
-    let err = resolve_cloud_project_uuid("spelunk", "http://127.0.0.1:7777", None, tmp.path())
-        .await
-        .unwrap_err();
+    let err =
+        resolve_cloud_project_uuid("spelunk", "http://127.0.0.1:7777", None, None, tmp.path())
+            .await
+            .unwrap_err();
     assert!(err.to_string().contains("loopback"), "got: {err}");
 
-    let err2 = resolve_cloud_project_uuid("spelunk", "", None, tmp.path())
+    let err2 = resolve_cloud_project_uuid("spelunk", "", None, None, tmp.path())
         .await
         .unwrap_err();
     assert!(err2.to_string().contains("loopback"), "got: {err2}");
@@ -196,6 +202,7 @@ async fn resolve_uses_cache_when_slug_matches() {
         "spelunk",
         "https://unreachable.invalid",
         Some("key"),
+        None,
         tmp.path(),
     )
     .await
@@ -227,9 +234,10 @@ async fn resolve_discards_cache_on_slug_mismatch() {
         .mount(&server)
         .await;
 
-    let got = resolve_cloud_project_uuid_inner("new-slug", &server.uri(), Some("key"), tmp.path())
-        .await
-        .unwrap();
+    let got =
+        resolve_cloud_project_uuid_inner("new-slug", &server.uri(), Some("key"), None, tmp.path())
+            .await
+            .unwrap();
     assert_eq!(
         got.to_string(),
         UUID_B,
@@ -265,10 +273,15 @@ async fn resolve_via_list_endpoint_and_caches() {
         .mount(&server)
         .await;
 
-    let got =
-        resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("sekret"), tmp.path())
-            .await
-            .unwrap();
+    let got = resolve_cloud_project_uuid_inner(
+        "spelunk",
+        &server.uri(),
+        Some("sekret"),
+        None,
+        tmp.path(),
+    )
+    .await
+    .unwrap();
     assert_eq!(got.to_string(), UUID_B);
 
     // Cached for next time.
@@ -295,9 +308,10 @@ async fn resolve_slug_not_found_errors() {
         .mount(&server)
         .await;
 
-    let err = resolve_cloud_project_uuid_inner("missing", &server.uri(), Some("k"), tmp.path())
-        .await
-        .unwrap_err();
+    let err =
+        resolve_cloud_project_uuid_inner("missing", &server.uri(), Some("k"), None, tmp.path())
+            .await
+            .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("missing"), "got: {msg}");
     assert!(msg.contains("not found"), "got: {msg}");
@@ -332,9 +346,10 @@ async fn resolve_surfaces_401_error() {
         .mount(&server)
         .await;
 
-    let err = resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("bad"), tmp.path())
-        .await
-        .unwrap_err();
+    let err =
+        resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("bad"), None, tmp.path())
+            .await
+            .unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("/v1/projects"),
@@ -367,9 +382,10 @@ async fn resolve_surfaces_5xx_error() {
         .mount(&server)
         .await;
 
-    let err = resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("k"), tmp.path())
-        .await
-        .unwrap_err();
+    let err =
+        resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("k"), None, tmp.path())
+            .await
+            .unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("503") || msg.to_lowercase().contains("server error"),
@@ -392,7 +408,7 @@ async fn resolve_surfaces_connection_error() {
     };
     let dead_url = format!("http://127.0.0.1:{port}");
 
-    let err = resolve_cloud_project_uuid_inner("spelunk", &dead_url, Some("k"), tmp.path())
+    let err = resolve_cloud_project_uuid_inner("spelunk", &dead_url, Some("k"), None, tmp.path())
         .await
         .unwrap_err();
     let msg = format!("{err:#}");
@@ -424,7 +440,8 @@ async fn resolve_no_cache_env_forces_fresh_lookup() {
 
     unsafe { std::env::set_var("SPELUNK_NO_SLUG_CACHE", "1") };
     let got =
-        resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("k"), tmp.path()).await;
+        resolve_cloud_project_uuid_inner("spelunk", &server.uri(), Some("k"), None, tmp.path())
+            .await;
     unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
 
     assert_eq!(got.unwrap().to_string(), UUID_B);

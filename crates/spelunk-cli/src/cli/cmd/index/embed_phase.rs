@@ -253,8 +253,8 @@ struct ReqChunk {
 }
 
 /// Report an unrecoverable embed-phase failure: abandon the progress bar and
-/// print an actionable message to stderr (naming the server request budget and a
-/// possible server-version mismatch). Does NOT return `Err` — callers report the
+/// print an actionable message to stderr (naming the server request budget).
+/// Does NOT return `Err` — callers report the
 /// count embedded so far via `Ok(embedded)`.
 fn report_embed_failure(
     bar: &ProgressBar,
@@ -274,9 +274,7 @@ fn report_embed_failure(
     );
     eprintln!(
         "If this keeps happening: the spelunk-server at {server_url} may be enforcing a \
-         smaller request budget than this batch needs, or may be running an older build \
-         that predates the long-running-embed fix (upgrading the server, or running \
-         `spelunk server stop && spelunk server start` to pick up a newer build, may help)."
+         smaller request budget than this batch needs."
     );
 }
 
@@ -318,9 +316,8 @@ pub(super) async fn run_embed_phase(
         // 30s budget. Target smaller batches to keep the run working.
         eprintln!(
             "Note: spelunk-server at {server_url} did not report its /index/embed request \
-             budget (older server build) — assuming a conservative {LEGACY_SERVER_REQUEST_BUDGET_SECS}s \
-             legacy budget and targeting smaller batches accordingly. If this looks slower than \
-             expected, consider upgrading the server."
+             budget; assuming a conservative {LEGACY_SERVER_REQUEST_BUDGET_SECS}s budget and \
+             targeting smaller batches accordingly."
         );
     }
 
@@ -332,9 +329,12 @@ pub(super) async fn run_embed_phase(
     // No client-wide timeout: a PER-REQUEST timeout is applied below, derived
     // from the measured rate (pessimistic for the first, single-chunk request).
     // A single fixed deadline let a slow first batch expire with nothing saved.
-    let client = reqwest::Client::builder()
-        .build()
-        .context("building HTTP client for embed phase")?;
+    let client = spelunk_core::config::apply_server_ca(
+        reqwest::Client::builder(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )?
+    .build()
+    .context("building HTTP client for embed phase")?;
 
     let total = chunk_ids_and_texts.len() as u64;
     let bar = if is_tty() && !crate::utils::is_agent_mode() {
@@ -448,8 +448,7 @@ pub(super) async fn run_embed_phase(
                         escalated_calibration_once = true;
                         eprintln!(
                             "First embed request timed out (server request budget \
-                             may be smaller than expected, or this server predates \
-                             the long-running-embed fix) — retrying with more patience\u{2026}"
+                             may be smaller than expected); retrying with more patience\u{2026}"
                         );
                         continue 'retry;
                     }
