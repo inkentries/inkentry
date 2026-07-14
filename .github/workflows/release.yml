@@ -222,6 +222,19 @@ jobs:
         run: |
           dpkg-deb --build BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
 
+      # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
+      # only executing the binary resolves its NEEDED libs and surfaces the gap.
+      # Pinned to 24.04: it supplies the GLIBC_2.39 the derived libc6 floor
+      # targets, so a failure here means the .deb no longer installs on it.
+      - name: Smoke-test the .deb in a clean container
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -euc '
+            apt-get update -qq
+            apt-get install -y -qq ./spelunk_${{ env.DEB_VERSION }}_amd64.deb
+            test -n "$(spelunk --version)"
+            test -n "$(spelunk-server --version)"
+          '
+
       - name: Upload deb artifact
         uses: actions/upload-artifact@v7
         with:
