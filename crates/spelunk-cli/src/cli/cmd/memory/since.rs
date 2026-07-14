@@ -38,7 +38,12 @@ pub(super) async fn memory_since(
             base_url.trim_end_matches('/'),
             project_id,
         );
-        let client = reqwest::Client::new();
+        let client = spelunk_core::config::apply_server_ca(
+            reqwest::Client::builder(),
+            cfg.server_ca.as_deref().map(std::path::Path::new),
+        )?
+        .build()
+        .context("building HTTP client for memory since")?;
         let mut req = client
             .get(&url)
             .query(&[("t", args.since.to_string()), ("limit", limit.to_string())]);

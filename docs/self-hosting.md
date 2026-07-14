@@ -202,6 +202,34 @@ network path to `spelunk.example.com` is yours to provide: a VPN, Tailscale, or 
 public DNS record. Spelunk does not tunnel traffic; it just needs the URL to
 resolve and the server to answer.
 
+### Trusting the server's certificate on the client
+
+When the server's certificate chains to a public CA, agents need no extra
+configuration. When it is signed by a self-signed or internal CA, point the CLI
+at the CA bundle explicitly with the `SPELUNK_SERVER_CA` environment variable:
+
+```bash
+export SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle
+```
+
+or set it per project in `.spelunk/config.toml`:
+
+```toml
+server_ca = "/etc/spelunk/internal-ca.pem"
+```
+
+`SPELUNK_SERVER_CA` overrides the config value. The bundle is added as a trust
+anchor on top of the built-in roots. TLS verification stays on; there is no
+option to disable it.
+
+The bundle must contain the issuing **CA** certificate, not the server's leaf. A
+certificate made with a plain `openssl req -x509` is a self-signed CA certificate
+(basicConstraints `CA:TRUE`), and rustls rejects it if the server presents it as
+its own end-entity certificate, even when you trust it here. Generate an internal
+CA, issue the server a leaf certificate from it (the leaf carrying `CA:FALSE`, a
+`serverAuth` extended key usage, and a SAN matching the server host), and
+distribute the CA certificate as the bundle above.
+
 ## Related
 
 - [Remote agents](remote-agents.md) – the R1 local-Docker path

@@ -329,9 +329,12 @@ pub(super) async fn run_embed_phase(
     // No client-wide timeout: a PER-REQUEST timeout is applied below, derived
     // from the measured rate (pessimistic for the first, single-chunk request).
     // A single fixed deadline let a slow first batch expire with nothing saved.
-    let client = reqwest::Client::builder()
-        .build()
-        .context("building HTTP client for embed phase")?;
+    let client = spelunk_core::config::apply_server_ca(
+        reqwest::Client::builder(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )?
+    .build()
+    .context("building HTTP client for embed phase")?;
 
     let total = chunk_ids_and_texts.len() as u64;
     let bar = if is_tty() && !crate::utils::is_agent_mode() {

@@ -158,14 +158,18 @@ async fn open_remote_memory_backend(
                 &project_id,
                 url,
                 cfg.server_key.as_deref(),
+                cfg.server_ca.as_deref().map(std::path::Path::new),
                 spelunk_dir,
             )
             .await?;
             uuid.to_string()
         };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = crate::config::apply_server_ca(
+        reqwest::Client::builder(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )?
+    .timeout(std::time::Duration::from_secs(30))
+    .build()?;
     Ok(Box::new(RemoteMemoryBackend {
         client,
         base_url: url.to_string(),

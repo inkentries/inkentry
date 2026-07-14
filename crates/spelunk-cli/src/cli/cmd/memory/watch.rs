@@ -60,7 +60,12 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
             }
         );
 
-        let client = reqwest::Client::new();
+        let client = spelunk_core::config::apply_server_ca(
+            reqwest::Client::builder(),
+            cfg.server_ca.as_deref().map(std::path::Path::new),
+        )?
+        .build()
+        .context("building HTTP client for memory watch")?;
         let mut req = client.get(&url);
         if let Some(key) = cfg.server_key.as_deref() {
             req = req.header("Authorization", format!("Bearer {key}"));
