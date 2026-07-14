@@ -1,8 +1,7 @@
 """Tests for bench/agents/spelunk_mcp_server.py.
 
 Run:
-    uv run --with pytest --with-requirements bench/requirements.txt \
-        pytest bench/agents/tests/ -v
+    uv run --with pytest pytest bench/agents/tests/ -v
 
 Network-free, no spelunk binary, no MCP handshake: these target the tool
 layer the server builds before any client connects (schemas, condition

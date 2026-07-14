@@ -24,6 +24,8 @@ Usage:
 Output: single JSON object on stdout (reproducibility contract fields).
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -31,15 +33,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
-# Auto-load .env.local from project root if present
-_load_root = Path(__file__).resolve().parents[2]
-_dotenv_path = _load_root / ".env.local"
-if _dotenv_path.exists():
-    load_dotenv(_dotenv_path)
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -479,6 +476,16 @@ def main() -> None:
         help="Save git diff to this file after agent finishes (for SWE-bench eval).",
     )
     args = parser.parse_args()
+
+    # Lazy on purpose: importing this module must not require the LLM stack, so
+    # the tool schemas stay reachable offline (spelunk_mcp_server.py, tests).
+    from dotenv import load_dotenv
+    from openai import OpenAI
+
+    # Auto-load .env.local from project root if present
+    dotenv_path = Path(__file__).resolve().parents[2] / ".env.local"
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path)
 
     repo_path = Path(args.repo_path).resolve()
     if not repo_path.is_dir():
