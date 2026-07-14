@@ -151,6 +151,10 @@ pub(super) async fn memory_add(
             superseded_by: None,
             // Never-synced local row: no cross-machine id yet.
             remote_id: None,
+            entity_id: Some(crate::storage::entity_id::entity_id(
+                &args.kind, &title, &body,
+            )),
+            superseded_by_entity_id: None,
         };
         // Use process CWD (None) — the CLI is always run from the project root.
         // Secret scan already ran above; no second check needed here.

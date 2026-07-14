@@ -152,6 +152,29 @@ impl MemoryStore {
         // watermark to persist. The unique `idx_notes_remote_id` above is what
         // makes that cursor lookup and the `remote_id` dedupe cheap.
 
+        // Migration 023 (ADR-068): content-addressed `entity_id`.
+        // Not backfilled: every identity is recomputed in Rust from
+        // kind/title/body, so a NULL column costs nothing (sha256 is
+        // unavailable in SQLite regardless). The column is written but not yet
+        // read back — it is never the system of record.
+        match self
+            .conn
+            .execute_batch("ALTER TABLE notes ADD COLUMN entity_id TEXT")
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e).context("running memory entity_id migration"),
+        }
+        // Non-unique: existing stores legitimately hold rows with identical
+        // kind/title/body (the previous dedup key folded in created_at), so a
+        // UNIQUE index would abort on real data.
+        self.conn
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_notes_entity_id \
+                 ON notes(entity_id) WHERE entity_id IS NOT NULL;",
+            )
+            .context("creating memory entity_id index")?;
+
         // Upgrade note_embeddings from 768-dim (Nomic) to 896-dim (F2LLM-v2-330M).
         // Guarded by a marker table so re-opening an already-upgraded store is a no-op.
         // Fresh stores get FLOAT[896] directly from 004_memory.sql above.

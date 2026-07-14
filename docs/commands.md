@@ -592,6 +592,14 @@ and `source_project` / `source_project_path` fields in JSON.
 `spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
 so memory travels with the code. Outside a git repo this is a graceful no-op.
 
+**Entry identity:** entries are identified by a SHA-256 over exactly their
+`kind`, `title`, and `body`, so the same decision recorded on two machines
+converges on one identity. `memory reconcile` and the `spelunk init` git-notes
+import dedup on it: entries with identical text collapse into one even when
+their creation time, tags, or linked files differ, and the survivor carries the
+union of the tags and linked files. The `id` shown by `memory list` is a local
+row number, not this identity. See [Entry identity](memory.md#project-memory).
+
 ---
 
 ## spelunk sync

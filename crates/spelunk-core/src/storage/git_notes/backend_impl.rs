@@ -11,6 +11,8 @@ use super::GitNotesBackend;
 impl MemoryBackend for GitNotesBackend {
     async fn add(&self, input: NoteInput) -> Result<i64> {
         let id = now_millis();
+        let entity_id =
+            crate::storage::entity_id::entity_id(&input.kind, &input.title, &input.body);
         let record = NoteRecord {
             schema_version: 1,
             id,
@@ -26,6 +28,8 @@ impl MemoryBackend for GitNotesBackend {
             invalid_at: None,
             superseded_by: None,
             remote_id: None,
+            entity_id: Some(entity_id),
+            superseded_by_entity_id: None,
         };
 
         let head = self.head_sha().await?;

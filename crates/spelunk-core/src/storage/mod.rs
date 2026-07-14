@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod db;
+pub mod entity_id;
 pub mod git_notes;
 pub mod memory;
 pub mod note_record;
@@ -18,6 +19,7 @@ mod stats;
 pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::Database;
+pub use entity_id::{entity_id, note_entity_id};
 pub use files::FileRecord;
 pub use git_notes::{
     GitNotesBackend, NotesLock, NotesMergeOutcome, RewriteRefStatus, append_to_git_notes,
