@@ -33,10 +33,19 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
-from harness_common import extract_patch, read_issue_text
+from agent import get_spelunk_version
+from harness_common import CONDITIONS, build_system_prompt, extract_patch, read_issue_text
+from spelunk_mcp_server import (
+    SERVER_NAME,
+    SPELUNK_CONDITIONS,
+    mcp_server_command,
+    mcp_tool_names_for_condition,
+    read_telemetry,
+)
 
 PROVIDER_ID = "spelunk-bench-deepseek"
 
@@ -74,10 +83,18 @@ def get_opencode_version(opencode_cmd: list[str]) -> str:
     return "unknown"
 
 
-def write_provider_config(repo_path: Path, model: str, api_base_url: str, api_key: str) -> Path:
+def write_provider_config(
+    repo_path: Path,
+    model: str,
+    api_base_url: str,
+    api_key: str,
+    condition: str = "baseline",
+    telemetry_log: Path | None = None,
+) -> Path:
     """Write an opencode.json in the task repo registering DeepSeek as a
     custom OpenAI-compatible provider (native DeepSeek endpoint — not the
-    Anthropic-compat shim used by the claude-code harness).
+    Anthropic-compat shim used by the claude-code harness), plus the spelunk
+    MCP server on a spelunk condition.
 
     Scoped to the repo directory (not global ~/.config/opencode/) so
     concurrent/parallel task runs never race on a shared config file, and so
@@ -99,6 +116,15 @@ def write_provider_config(repo_path: Path, model: str, api_base_url: str, api_ke
             }
         },
     }
+    if condition in SPELUNK_CONDITIONS:
+        config["mcp"] = {
+            SERVER_NAME: {
+                "type": "local",
+                "command": mcp_server_command(condition, repo_path, telemetry_log),
+                "environment": {"SPELUNK_SECRET_STORE": "file"},
+                "enabled": True,
+            }
+        }
     config_path = repo_path / "opencode.json"
     config_path.write_text(json.dumps(config, indent=2))
     return config_path
@@ -113,9 +139,15 @@ def run_opencode(
     max_turns: int,  # accepted for CLI-contract parity; opencode has no
     # per-task turn cap of its own, see README "Adapter notes"
     opencode_cmd: list[str],
+    condition: str = "baseline",
 ) -> dict:
+    system_prompt = build_system_prompt(
+        OPENCODE_SYSTEM_PROMPT,
+        condition,
+        mcp_tool_names_for_condition(condition) if condition in SPELUNK_CONDITIONS else [],
+    )
     prompt = (
-        f"{OPENCODE_SYSTEM_PROMPT}\n\n"
+        f"{system_prompt}\n\n"
         f"Repository path: {repo_path}\n\nIssue:\n{issue_text}\n\n"
         "Please investigate the issue and apply a fix."
     )
@@ -195,10 +227,11 @@ def main() -> None:
     parser.add_argument(
         "--condition",
         default="baseline",
+        choices=list(CONDITIONS),
         help=(
-            "Recorded verbatim in provenance as condition. opencode is a "
-            "generic coding agent, not spelunk-instrumented, so this is "
-            "always baseline in practice — see bench/agents/README.md."
+            "Recorded verbatim in provenance as condition. On a spelunk "
+            "condition the spelunk tools are wired in over a bench-local MCP "
+            "server — see bench/agents/README.md."
         ),
     )
     parser.add_argument("--task-id", required=True)
@@ -236,8 +269,16 @@ def main() -> None:
     opencode_cmd = get_opencode_command()
     opencode_version = get_opencode_version(opencode_cmd)
 
+    telemetry_dir = tempfile.mkdtemp(prefix="spelunk-bench-mcp-")
+    telemetry_log = Path(telemetry_dir) / "tool_calls.jsonl"
+
     config_path = write_provider_config(
-        repo_path, args.model, args.api_base_url, api_key
+        repo_path,
+        args.model,
+        args.api_base_url,
+        api_key,
+        condition=args.condition,
+        telemetry_log=telemetry_log,
     )
     try:
         agent_result = run_opencode(
@@ -248,6 +289,7 @@ def main() -> None:
             api_key=api_key,
             max_turns=args.max_turns,
             opencode_cmd=opencode_cmd,
+            condition=args.condition,
         )
     finally:
         # Don't leave bench-generated provider config in the task repo's
@@ -255,6 +297,8 @@ def main() -> None:
         # despite being outside SOURCE_PATHSPECS (harmless there, but
         # cleaner to remove) and would leak the API key into repo state.
         config_path.unlink(missing_ok=True)
+
+    telemetry = read_telemetry(telemetry_log)
 
     patch_path = extract_patch(repo_path, args.save_patch)
 
@@ -275,7 +319,10 @@ def main() -> None:
         "model_source": "api",
         "api_base_url": args.api_base_url,
         "api_key_source": api_key_source,
-        "spelunk_version": None,  # opencode harness does not invoke spelunk tools
+        # Null only on baseline, where no spelunk tools are wired in.
+        "spelunk_version": (
+            get_spelunk_version() if args.condition in SPELUNK_CONDITIONS else None
+        ),
         "seed": args.seed,
         "run_seed": args.seed,
         "max_turns": args.max_turns,
@@ -287,6 +334,7 @@ def main() -> None:
         "judge_model": None,
         "judge_version": None,
         "judge_error_rate": None,
+        **telemetry,
         **agent_result,
     }
     print(json.dumps(output))

@@ -11,6 +11,36 @@ import sys
 import time
 from pathlib import Path
 
+# Every condition agent.py accepts. The harness adapters validate against
+# this rather than a per-harness subset: all three conditions now run under
+# all three harnesses (spelunk tools reach opencode/claude-code over the
+# bench-local MCP server, see spelunk_mcp_server.py).
+CONDITIONS = ("baseline", "spelunk_search", "spelunk_full")
+
+# Mirrors the sentence agent.py's SYSTEM_PROMPT_SPELUNK adds over
+# SYSTEM_PROMPT_BASE. Not imported verbatim: agent.py's wording names bare
+# tool names, but an MCP client's model only ever sees the namespaced
+# `mcp__spelunk__*` spelling, so a verbatim copy would point the model at
+# names that don't exist in these harnesses.
+SPELUNK_PROMPT_GUIDANCE = (
+    "You have access to spelunk tools for fast semantic code search, code "
+    "graph traversal, and project memory retrieval — use them to locate "
+    "relevant code and context before diving into files. They are available "
+    "as these tools: {tools}."
+)
+
+
+def build_system_prompt(base_prompt: str, condition: str, tool_names: list[str]) -> str:
+    """Mirror agent.py's get_system_prompt() split for a harness adapter.
+
+    Without this the spelunk arm is handed tools it is never told to use —
+    handicapped against agent.py's spelunk arm rather than comparable to it.
+    base_prompt stays each harness's own so the baseline arm is untouched.
+    """
+    if condition == "baseline":
+        return base_prompt
+    return f"{base_prompt} {SPELUNK_PROMPT_GUIDANCE.format(tools=', '.join(tool_names))}"
+
 # Same allowlist as agent.py's --save-patch handling. Keeping this as a
 # single shared list (imported by every adapter) is the point: if the
 # denylist-vs-allowlist tradeoff is ever revisited, it only needs to change
