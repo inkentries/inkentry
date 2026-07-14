@@ -71,7 +71,12 @@ spelunk automatically configures the fetch refspec for `origin` so that
 ```
 Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)
          push notes after each memory change: git push origin refs/notes/spelunk
+         configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
+
+The last line is a separate setting, covered in [Surviving history
+rewrites](#surviving-history-rewrites) below. It is printed only by the run that
+sets it, so a re-run of `init` omits it.
 
 To publish your memory notes to the remote, push the notes ref:
 
@@ -101,9 +106,12 @@ repository), `spelunk init` prints the commands to run later:
 Memory:  no 'origin' remote — notes refspec not configured
          run later: git config --add remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'
          push notes after each memory change: git push origin refs/notes/spelunk
+         configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
 
-Add the refspec when an `origin` is created, then push the notes as above.
+Add the refspec when an `origin` is created, then push the notes as above. The
+`notes.rewriteRef` line appears here too: rewrites are purely local, so that
+setting is configured even in a repository with no remote.
 
 If the repository already carries memory on `refs/notes/spelunk` (for example a
 fresh clone of a project whose team records memory through git notes), `spelunk
@@ -117,6 +125,57 @@ notes refspec, since git does not fetch `refs/notes/*` by default (see above).
 git-notes is the durable carrier here and `memory.db` is a local index rebuilt
 from it; see
 [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
+### Surviving history rewrites
+
+`git commit --amend` and `git rebase` replace a commit with a new sha. A note is
+bound to the sha it was written on, and git carries it onto the replacement only
+when `notes.rewriteRef` names the ref the note lives on. That setting has **no
+built-in default**: in an unconfigured repository, amending or rebasing a commit
+that carries memory orphans every entry on the dead sha. `memory list` never
+shows those entries again, because it lists notes that are reachable from `git
+log`, and the dead sha no longer is.
+
+spelunk therefore points `notes.rewriteRef` at `refs/notes/spelunk` for you. It
+is written to the repository's own config, never your global config, at whichever
+of these comes first:
+
+- `spelunk init`, alongside the fetch refspec. Independent of `origin`, since
+  rewrites are purely local, so a repository with no remote is covered too.
+- The first `memory add` write-through, which reaches repositories where you
+  never run `init`.
+- The `--backend git-notes` write path, where notes are the primary store.
+
+Setting it is announced, never silent. The run that sets it prints:
+
+```
+Configured git notes.rewriteRef in this repo, so memory now survives `git commit --amend` and `git rebase`.
+```
+
+Later runs stay quiet, since the setting is already in place. `--add` composes
+with any value you set yourself rather than replacing it, and an existing value
+that already covers the ref (exactly, or via a glob that stays inside
+`refs/notes/`) is left alone. If the setting cannot be written, spelunk warns and
+continues rather than failing the write, and names the command to run:
+
+```
+Warning: could not set git notes.rewriteRef, so memory may not survive `git commit --amend` or `git rebase`. Set it with: git config --add notes.rewriteRef refs/notes/spelunk
+```
+
+`notes.rewriteMode` is deliberately left at its `concatenate` default, which
+keeps both sides when two noted commits are squashed into one. `overwrite` and
+`ignore` each drop one of them, causing the loss this is meant to prevent.
+
+**Known limitation:** git honours `notes.rewriteRef` for `commit --amend` and
+`rebase` only. `git merge --squash`, and cherry-picking onto a divergent base, do
+**not** carry notes, even with the setting configured. Memory attached to a
+commit that reaches your branch by either of those routes is still orphaned on
+the original sha. If those entries matter, re-record them on the new commit
+before the original is discarded.
+
+This is about surviving a rewrite of your own local history. It is a separate
+concern from whether notes reach a teammate, which still depends on the notes ref
+being pushed and fetched (see above).
 
 ## Why memory?
 

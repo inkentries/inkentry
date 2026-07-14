@@ -18,7 +18,12 @@ pub struct InitArgs {
     pub name: Option<String>,
 }
 
-use crate::{capability, config::Config, registry::Registry, storage::Database};
+use crate::{
+    capability,
+    config::Config,
+    registry::Registry,
+    storage::{Database, RewriteRefStatus, ensure_notes_rewrite_ref},
+};
 
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 1. Detect project root ────────────────────────────────────────────────
@@ -189,7 +194,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
 
     // ── 7. Configure git-notes refspec on `origin` (only inside a git repo) ───
     let notes_lines = if git_root.is_some() {
-        configure_notes_refspec(&project_root)
+        configure_notes_refspec(&project_root).await
     } else {
         Vec::new()
     };
@@ -260,7 +265,10 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
 /// overrides git's default branch push, so a normal `git push` would stop
 /// pushing the current branch. We keep the branch-push default intact and
 /// surface the manual notes push (needed after each memory change) instead.
-fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
+/// Also points `notes.rewriteRef` at spelunk's ref so memory survives history
+/// rewrites. That half is independent of `origin`: rewrites are purely local,
+/// so it runs even in a remote-less repo.
+async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
     const FETCH_REFSPEC: &str = "+refs/notes/spelunk:refs/notes/spelunk";
     const PUSH_HINT: &str =
         "push notes after each memory change: git push origin refs/notes/spelunk";
@@ -272,47 +280,71 @@ fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
             .output()
     };
 
-    // No `origin` remote → skip gracefully with the exact manual commands.
-    let has_origin = git(&["remote", "get-url", "origin"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_origin {
-        return vec![
-            "Memory:  no 'origin' remote — notes refspec not configured".to_string(),
-            format!("         run later: git config --add remote.origin.fetch '{FETCH_REFSPEC}'"),
-            format!("         {PUSH_HINT}"),
-        ];
-    }
+    let mut lines = {
+        // No `origin` remote → skip gracefully with the exact manual commands.
+        let has_origin = git(&["remote", "get-url", "origin"])
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_origin {
+            vec![
+                "Memory:  no 'origin' remote — notes refspec not configured".to_string(),
+                format!(
+                    "         run later: git config --add remote.origin.fetch '{FETCH_REFSPEC}'"
+                ),
+                format!("         {PUSH_HINT}"),
+            ]
+        } else {
+            // Idempotent: only `--add` when the identical refspec is not already present.
+            let already = git(&["config", "--get-all", "remote.origin.fetch"])
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|l| l.trim() == FETCH_REFSPEC)
+                })
+                .unwrap_or(false);
+            if already {
+                vec![
+                    "Memory:  notes fetch refspec already configured on 'origin'".to_string(),
+                    format!("         {PUSH_HINT}"),
+                ]
+            } else {
+                match git(&["config", "--add", "remote.origin.fetch", FETCH_REFSPEC]) {
+                    Ok(o) if o.status.success() => vec![
+                        "Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)"
+                            .to_string(),
+                        format!("         {PUSH_HINT}"),
+                    ],
+                    Ok(o) => vec![format!(
+                        "Memory:  could not configure notes refspec: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    )],
+                    Err(e) => vec![format!("Memory:  could not configure notes refspec: {e}")],
+                }
+            }
+        }
+    };
 
-    // Idempotent: only `--add` when the identical refspec is not already present.
-    let already = git(&["config", "--get-all", "remote.origin.fetch"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l.trim() == FETCH_REFSPEC)
-        })
-        .unwrap_or(false);
-    if already {
-        return vec![
-            "Memory:  notes fetch refspec already configured on 'origin'".to_string(),
-            format!("         {PUSH_HINT}"),
-        ];
-    }
-
-    match git(&["config", "--add", "remote.origin.fetch", FETCH_REFSPEC]) {
-        Ok(o) if o.status.success() => vec![
-            "Memory:  configured notes fetch refspec on 'origin' (refs/notes/spelunk travels on fetch)"
+    // Continuation lines: every branch above already opened a `Memory:` block.
+    match ensure_notes_rewrite_ref(Some(project_root)).await {
+        RewriteRefStatus::Configured => lines.push(
+            "         configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)"
                 .to_string(),
-            format!("         {PUSH_HINT}"),
-        ],
-        Ok(o) => vec![format!(
-            "Memory:  could not configure notes refspec: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )],
-        Err(e) => vec![format!("Memory:  could not configure notes refspec: {e}")],
+        ),
+        RewriteRefStatus::AlreadyCovered => {}
+        RewriteRefStatus::Failed => {
+            lines.push(
+                "         could not set notes.rewriteRef; memory will not survive `git commit --amend` or `git rebase`"
+                    .to_string(),
+            );
+            lines.push(
+                "         run later: git config --add notes.rewriteRef refs/notes/spelunk"
+                    .to_string(),
+            );
+        }
     }
+    lines
 }
 
 /// Walk up from `start` to find the nearest `.git` directory.
