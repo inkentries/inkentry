@@ -107,6 +107,10 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
 
     for (kind, title, body) in entries {
         spelunk_bin()
+            // `memory add` carries every entry through to git notes in the
+            // *process CWD's* repo; `--db` does not redirect that carrier. Seed
+            // from the temp project or the entries land in the repo under test.
+            .current_dir(tmp.path())
             .arg("--config")
             .arg(&config_path)
             .arg("memory")
@@ -178,6 +182,9 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
     ];
     for (kind, title) in entries {
         spelunk_bin()
+            // See `setup_context_project`: the git-notes carrier follows the
+            // process CWD, not `--db`.
+            .current_dir(tmp.path())
             .arg("--config")
             .arg(&config_path)
             .arg("memory")
