@@ -306,3 +306,169 @@ fn set_remote_id_records_and_dedupes() {
     assert!(store.has_remote_id(remote_id).unwrap());
     assert_eq!(store.note_id_for_remote_id(remote_id).unwrap(), Some(id));
 }
+
+#[test]
+fn add_note_persists_entity_id() {
+    let store = open_store();
+    let id = store
+        .add_note("decision", "HTTP layer", "use axum", &[], &[], None, None)
+        .unwrap();
+
+    let stored: Option<String> = store
+        .conn
+        .query_row(
+            "SELECT entity_id FROM notes WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored.as_deref(),
+        Some("cc308a1ca5d849191e1710cc9def561377a9ef37e4fcb895e5aa3b1896e43603"),
+        "the stored column must hold the canonical id"
+    );
+}
+
+#[test]
+fn union_tags_and_files_is_add_wins() {
+    let store = open_store();
+    let id = store
+        .add_note("note", "N", "b", &["alpha"], &["a.rs"], None, None)
+        .unwrap();
+
+    let read = |store: &MemoryStore| -> (Option<String>, Option<String>) {
+        store
+            .conn
+            .query_row(
+                "SELECT tags, linked_files FROM notes WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+
+    // New values are appended; the existing ones survive.
+    assert!(
+        store
+            .union_tags_and_files(id, &["beta".to_string()], &["b.rs".to_string()])
+            .unwrap()
+    );
+    assert_eq!(read(&store).0.as_deref(), Some("alpha,beta"));
+    assert_eq!(read(&store).1.as_deref(), Some("a.rs,b.rs"));
+
+    // Nothing new to add: no write, and nothing is dropped.
+    assert!(
+        !store
+            .union_tags_and_files(id, &["alpha".to_string()], &[])
+            .unwrap(),
+        "a subset must not rewrite the row"
+    );
+    assert_eq!(read(&store).0.as_deref(), Some("alpha,beta"));
+}
+
+/// The union rewrites `tags`, and `tags` is an FTS-indexed column — the
+/// AFTER UPDATE trigger must keep the index in step or search goes stale.
+#[test]
+fn union_tags_keeps_fts_in_sync() {
+    let store = open_store();
+    let id = store
+        .add_note("note", "Findable", "body", &["alpha"], &[], None, None)
+        .unwrap();
+    store
+        .union_tags_and_files(id, &["zetatag".to_string()], &[])
+        .unwrap();
+
+    let hits: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'zetatag'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1, "the unioned tag must be searchable");
+}
+
+/// The entity_id migration runs against a store that predates the column and
+/// already holds rows that collide under the new key. It must add the column
+/// without aborting, and without deleting or merging any existing row — those
+/// duplicates are legitimate (the previous key folded in `created_at`).
+#[test]
+fn entity_id_migration_is_additive_on_a_store_with_duplicates() {
+    register_sqlite_vec();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("memory.db");
+
+    // Build a store, then take the column away to model a pre-migration DB.
+    {
+        let store = MemoryStore::open(&path).expect("open");
+        for created_at in [1_700_000_001_i64, 1_700_000_002] {
+            store
+                .add_note_with_created_at(
+                    "decision",
+                    "same text",
+                    "same body",
+                    &[],
+                    &[],
+                    None,
+                    "active",
+                    created_at,
+                )
+                .expect("seed duplicate-text note");
+        }
+        store
+            .execute_batch(
+                "DROP INDEX idx_notes_entity_id; \
+                 ALTER TABLE notes DROP COLUMN entity_id;",
+            )
+            .expect("drop column to simulate the older schema");
+        let has_col: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'entity_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_col, 0, "precondition: the column is gone");
+    }
+
+    // Re-opening runs the migration over that data.
+    let store = MemoryStore::open(&path).expect("migration must not abort on existing data");
+
+    let rows: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "no existing row may be deleted or merged");
+
+    let has_col: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'entity_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_col, 1, "the column is added");
+
+    // Not backfilled: identity for these legacy rows is recomputed on read.
+    let nulls: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE entity_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(nulls, 2, "backfill is a separate decision; rows stay NULL");
+    assert_eq!(
+        super::super::entity_id::note_entity_id(&store.list(None, 10, true).unwrap()[0]),
+        super::super::entity_id::note_entity_id(&store.list(None, 10, true).unwrap()[1]),
+        "the two legacy rows do collide under the new key — a UNIQUE index would have aborted"
+    );
+
+    // Idempotent: opening again is a no-op, not a duplicate-column error.
+    drop(store);
+    MemoryStore::open(&path).expect("re-open must be idempotent");
+}

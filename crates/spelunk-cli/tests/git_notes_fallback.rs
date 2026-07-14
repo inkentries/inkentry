@@ -317,6 +317,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
     for expected in [
         "body",
         "created_at",
+        "entity_id",
         "id",
         "kind",
         "linked_files",
@@ -340,6 +341,120 @@ fn pre_init_and_post_init_records_have_identical_shape() {
         "pre-init carrier and post-init write-through records must share one shape\n\
          pre:  {}\npost: {}",
         pre_lines[0], post_lines[0]
+    );
+}
+
+// ── identity survives a rowid renumber ────────────────────────────────────────
+
+/// The value of `key` in a JSON-Lines record.
+fn record_field(line: &str, key: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(line).expect("record parses as JSON");
+    v.get(key)
+        .unwrap_or_else(|| panic!("record has no {key:?}: {line}"))
+        .to_string()
+        .trim_matches('"')
+        .to_string()
+}
+
+/// Re-`init` recreates memory.db, resetting its autoincrement rowid to 1. Two
+/// different entries then land in one notes ref stamped `"id":1` — the observed
+/// collision. Their `entity_id`s must still tell them apart.
+#[test]
+fn reinit_between_adds_yields_distinct_entity_ids() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+
+    let add = |title: &str, body: &str| {
+        bin(home.path(), repo.path())
+            .args([
+                "memory", "add", "--kind", "decision", "--title", title, "--body", body,
+            ])
+            .assert()
+            .success();
+    };
+
+    // A local `.spelunk/` makes SQLite the primary, so the rowid is a real
+    // autoincrement rather than the pre-init timestamp id.
+    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    add("first decision", "body one");
+
+    // Re-init: the store is recreated, so the rowid counter restarts.
+    std::fs::remove_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    add("second decision", "body two");
+
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(lines.len(), 2, "both adds carried into the notes ref");
+
+    // The collision is real, not hypothetical: assert it before asserting the fix.
+    assert_eq!(
+        record_field(&lines[0], "id"),
+        record_field(&lines[1], "id"),
+        "re-init must reset the rowid — otherwise this test proves nothing"
+    );
+
+    let first = record_field(&lines[0], "entity_id");
+    let second = record_field(&lines[1], "entity_id");
+    assert_ne!(
+        first, second,
+        "two different decisions must have distinct entity_ids despite the rowid collision"
+    );
+    assert_eq!(first.len(), 64, "entity_id is hex sha256: {first}");
+    assert_eq!(second.len(), 64, "entity_id is hex sha256: {second}");
+}
+
+/// Same `{kind, title, body}` recorded in two unrelated repos, on stores whose
+/// rowids and timestamps differ, must produce a byte-identical `entity_id`.
+#[test]
+fn entity_id_is_stable_across_stores() {
+    let home = TempDir::new().unwrap();
+
+    let entity_id_for = |title: &str, seed_extra: bool| -> String {
+        let repo = TempDir::new().unwrap();
+        init_git_repo_with_commit(repo.path());
+        std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+        // Push the second store's rowid counter along so the two entries under
+        // test cannot share a rowid.
+        if seed_extra {
+            for i in 0..3 {
+                bin(home.path(), repo.path())
+                    .args([
+                        "memory",
+                        "add",
+                        "--kind",
+                        "note",
+                        "--title",
+                        &format!("filler {i}"),
+                        "--body",
+                        "filler",
+                    ])
+                    .assert()
+                    .success();
+            }
+        }
+        bin(home.path(), repo.path())
+            .args([
+                "memory",
+                "add",
+                "--kind",
+                "decision",
+                "--title",
+                title,
+                "--body",
+                "shared body",
+            ])
+            .assert()
+            .success();
+        let lines = spelunk_note_lines(repo.path());
+        let last = lines.last().expect("at least one record");
+        record_field(last, "entity_id")
+    };
+
+    assert_eq!(
+        entity_id_for("portable", false),
+        entity_id_for("portable", true),
+        "entity_id must not depend on the store's rowid or write time"
     );
 }
 

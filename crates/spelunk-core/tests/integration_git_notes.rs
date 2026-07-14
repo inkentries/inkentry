@@ -274,15 +274,18 @@ async fn git_notes_unsupported_methods_return_errors() {
 
 // ── append_to_git_notes write-through helper ─────────────────────────────────
 
-use spelunk_core::storage::{NoteRecord, append_to_git_notes};
+use spelunk_core::storage::{NoteRecord, append_to_git_notes, entity_id};
 
 fn make_note_record(id: i64, title: &str) -> NoteRecord {
+    let kind = "decision".to_string();
+    let body = format!("body for {title}");
     NoteRecord {
         schema_version: 1,
         id,
-        kind: "decision".to_string(),
+        entity_id: Some(entity_id(&kind, title, &body)),
+        kind,
         title: title.to_string(),
-        body: format!("body for {title}"),
+        body,
         tags: vec![],
         linked_files: vec![],
         created_at: 0,
@@ -292,6 +295,7 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
         invalid_at: None,
         superseded_by: None,
         remote_id: None,
+        superseded_by_entity_id: None,
     }
 }
 
