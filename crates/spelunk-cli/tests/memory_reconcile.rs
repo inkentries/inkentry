@@ -680,10 +680,9 @@ fn dedup_key_excludes_tags_which_union_on_collapse() {
 }
 
 #[test]
-fn dedup_hash_normalizes_tags() {
-    // Criteria #1: tags are normalized (sorted, trimmed) before hashing, so
-    // "beta, alpha" and "alpha,beta" in server.db should match a note in
-    // memory.db that has normalized "alpha,beta".
+fn tag_reorder_does_not_reimport() {
+    // Tags are excluded from the key outright (they were formerly sorted and
+    // hashed), so reordering them cannot produce a second copy.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -723,7 +722,7 @@ fn dedup_hash_normalizes_tags() {
     .unwrap();
     drop(conn);
 
-    // Second run: hash should still match - no re-import.
+    // Second run: same entity_id — no re-import.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -731,7 +730,7 @@ fn dedup_hash_normalizes_tags() {
     assert_eq!(
         count_memory_notes(&mem_path),
         1,
-        "tag-normalized notes must not be re-imported"
+        "reordering tags must not re-import"
     );
 }
 
