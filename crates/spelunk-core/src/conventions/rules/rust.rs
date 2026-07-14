@@ -39,8 +39,7 @@ impl RustPatterns {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
-    let lang = "rust";
+pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<ConventionRecord> {
     let mut records = Vec::new();
 
     // ── naming.functions ─────────────────────────────────────────────────────

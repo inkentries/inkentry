@@ -7,13 +7,7 @@ use super::{
     naming_record,
 };
 
-pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
-    // Use the first chunk's language as the label (all chunks here share it).
-    let lang = chunks
-        .first()
-        .map(|c| c.language.as_str())
-        .unwrap_or("unknown");
-
+pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<ConventionRecord> {
     let mut records = Vec::new();
 
     // ── naming.functions ─────────────────────────────────────────────────────

@@ -75,7 +75,7 @@ fn rust_functions_snake_case() {
         .map(|i| rust_fn(&format!("do_thing_{i}"), "fn do_thing() {}"))
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "naming.functions").expect("naming.functions record");
     assert!(r.confidence >= 0.9, "confidence={}", r.confidence);
     assert!(
@@ -92,7 +92,7 @@ fn rust_types_pascal_case() {
         .map(|n| rust_struct(n))
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "naming.types").expect("naming.types record");
     assert!(
         r.description.contains("PascalCase"),
@@ -106,7 +106,7 @@ fn rust_error_handling_anyhow() {
     let content = "use anyhow::Result; fn foo() -> Result<()> { Ok(()) }";
     let chunks: Vec<ChunkSummary> = (0..8).map(|_| rust_fn("foo", content)).collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "error_handling").expect("error_handling record");
     assert!(r.description.contains("anyhow"), "desc={}", r.description);
 }
@@ -116,7 +116,7 @@ fn rust_async_runtime_detected() {
     let content = "use tokio::time; async fn handler() { tokio::spawn(async {}); }";
     let chunks: Vec<ChunkSummary> = (0..6).map(|_| rust_fn("handler", content)).collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "async").expect("async record");
     assert!(r.description.contains("tokio"), "desc={}", r.description);
 }
@@ -132,7 +132,7 @@ fn rust_testing_cfg_test() {
         })
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "testing").expect("testing record");
     assert!(
         r.description.contains("cfg(test)"),
@@ -148,7 +148,7 @@ fn rust_doc_coverage_high() {
         .chain((0..2).map(|i| rust_fn(&format!("undoc_{i}"), "fn undoc() {}")))
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     let r = find_record(&records, "docs").expect("docs record");
     assert!(r.description.contains("high"), "desc={}", r.description);
 }
@@ -170,7 +170,7 @@ fn ts_functions_camel_case() {
     .map(|n| ts_fn(n, &format!("function {n}() {{}}")))
     .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::typescript::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::typescript::extract(&refs, "typescript", 0);
     let r = find_record(&records, "naming.functions").expect("naming.functions record");
     assert!(
         r.description.contains("camelCase"),
@@ -192,7 +192,7 @@ fn ts_types_pascal_case() {
     .map(|n| ts_class(n))
     .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::typescript::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::typescript::extract(&refs, "typescript", 0);
     let r = find_record(&records, "naming.types").expect("naming.types record");
     assert!(
         r.description.contains("PascalCase"),
@@ -208,7 +208,7 @@ fn ts_async_usage_detected() {
         .map(|i| ts_fn(&format!("fetchUser{i}"), content))
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::typescript::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::typescript::extract(&refs, "typescript", 0);
     let r = find_record(&records, "async").expect("async record");
     assert!(r.description.contains("async"), "desc={}", r.description);
     assert!(r.confidence > 0.2, "confidence={}", r.confidence);
@@ -227,7 +227,7 @@ fn ts_testing_spec_files() {
         })
         .collect();
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let records = spelunk_core::conventions::rules::typescript::extract(&refs, 0);
+    let records = spelunk_core::conventions::rules::typescript::extract(&refs, "typescript", 0);
     let r = find_record(&records, "testing").expect("testing record");
     assert!(r.description.contains("spec.ts"), "desc={}", r.description);
 }
@@ -416,6 +416,10 @@ fn extractor_sums_evidence_across_ts_and_tsx() {
         naming[0].evidence_count, 10,
         "ts (5) + tsx (5) same-source evidence must sum to 10"
     );
+    assert!(
+        !records.iter().any(|r| r.language == "tsx"),
+        "tsx must not survive as its own language group"
+    );
 }
 
 /// Determinism: `extract` is backed by a BTreeMap keyed on (language, category),
@@ -504,16 +508,10 @@ fn extractor_preserves_generic_only_languages() {
     }
 }
 
-/// Documents current (quirky) behavior of tsx routing. OUT OF SCOPE to fix here.
-///
-/// tsx chunks feed two rule sets with conflicting language labels: the
-/// typescript set self-labels its records "typescript", while the generic set
-/// (layered on top) uses the chunk's own language, "tsx". Those land under
-/// different (language, category) keys, so dedup does NOT collapse them — a
-/// single tsx convention surfaces under BOTH "typescript" and "tsx". This test
-/// pins that down so a future relabel is a conscious change, not a silent one.
+/// tsx is typescript plus JSX, so its conventions canonicalize onto the
+/// "typescript" label: never emitted under "tsx", and never twice.
 #[test]
-fn extractor_tsx_records_surface_under_typescript() {
+fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
     let tsx_chunks: Vec<ChunkSummary> = (0..8)
         .map(|i| ChunkSummary {
             language: "tsx".into(),
@@ -527,18 +525,24 @@ fn extractor_tsx_records_surface_under_typescript() {
 
     let records = ConventionExtractor::new().extract(&tsx_chunks);
 
-    // The language-specific set relabels tsx conventions as "typescript".
+    let ts = find_lang_cat(&records, "typescript", "naming.functions");
     assert_eq!(
-        find_lang_cat(&records, "typescript", "naming.functions").len(),
+        ts.len(),
         1,
-        "tsx naming.functions currently self-labels as typescript"
+        "tsx naming.functions surfaces once, as typescript"
     );
-    // The generic set keeps the original "tsx" label, so the same convention
-    // is currently duplicated across two language labels (a future-fix target).
     assert_eq!(
-        find_lang_cat(&records, "tsx", "naming.functions").len(),
-        1,
-        "generic set currently also emits a tsx-labelled record"
+        ts[0].evidence_count, 8,
+        "all tsx evidence lands on that record"
+    );
+
+    assert!(
+        find_lang_cat(&records, "tsx", "naming.functions").is_empty(),
+        "no record may carry the tsx label"
+    );
+    assert!(
+        !records.iter().any(|r| r.language == "tsx"),
+        "no category may carry the tsx label"
     );
 }
 
@@ -697,7 +701,7 @@ fn extractor_emits_low_evidence_raw_records() {
         rust_fn("small_set_b", "fn small_set_b() {}"),
     ];
     let refs: Vec<&ChunkSummary> = chunks.iter().collect();
-    let raw = spelunk_core::conventions::rules::rust::extract(&refs, 0);
+    let raw = spelunk_core::conventions::rules::rust::extract(&refs, "rust", 0);
     if let Some(r) = raw.iter().find(|r| r.category == "naming.functions") {
         assert!(
             r.evidence_count < 5,
