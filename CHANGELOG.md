@@ -123,6 +123,52 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk init` no longer breaks plain `git fetch` / `git pull`, and no
+  longer lets a fetch destroy your unpushed memory.** The fetch refspec `init`
+  configured, `+refs/notes/spelunk:refs/notes/spelunk`, had two failures. It is
+  non-glob, so it required the remote ref to exist: in any repository where
+  nobody had pushed notes yet, `git fetch origin` exited 128 and `git pull`
+  exited 1 with `fatal: couldn't find remote ref refs/notes/spelunk`. And its
+  leading `+` force-updated your working notes ref, so a plain `git fetch`
+  silently replaced a local note you had not pushed with the remote's, reported
+  only as `(forced update)` and recoverable only via the reflog. The refspec is
+  now `+refs/notes/spelunk*:refs/notes/origin/spelunk*`, which fetches into a
+  *tracking* ref: the glob tolerates a missing remote ref, and the tracking
+  destination leaves your own notes alone. Fetched notes therefore arrive on
+  `refs/notes/origin/spelunk`, and spelunk merges them into `refs/notes/spelunk`
+  itself (see below), so travel is now fetch + merge.
+
+  **If you ran `spelunk init` on a build from `main` between 2026-07-12 and this
+  change, remove the old refspec by hand.** No release shipped it (v0.9.3
+  predates it), so there is no automatic migration, and re-running `init` does
+  *not* fix it: the idempotence check matches only the exact string, so you would
+  keep the clobbering refspec and gain the new one alongside it. Run:
+
+  ```bash
+  git config --unset --fixed-value remote.origin.fetch '+refs/notes/spelunk:refs/notes/spelunk'
+  ```
+
+  `--fixed-value` needs git >= 2.30. On older git, escape the leading `+`, which
+  git otherwise reads as an invalid regex (`error: invalid pattern`):
+  `git config --unset remote.origin.fetch '\+refs/notes/spelunk:refs/notes/spelunk'`.
+  Then re-run `spelunk init` to add the corrected refspec. (ADR-069)
+- **Teammates' fetched memory is now visible without any extra step.** Because
+  notes now land on a tracking ref, nothing merged them into your own, so a
+  teammate's entry would have stayed invisible to `memory list`. `spelunk memory
+  list`, `spelunk context`, and `spelunk init` now merge
+  `refs/notes/origin/spelunk` into `refs/notes/spelunk` with git's
+  `cat_sort_uniq` strategy: a union, so no conflicts, no duplicates, and neither
+  side's entries are dropped. The merge is local-only and performs **no**
+  network, so reads work with the remote unreachable; it merges only what your
+  own `git fetch` already brought down. It is serialized by the notes lock, and
+  if the lock is busy the merge is skipped and the read proceeds anyway (the
+  union is idempotent, so the next read catches up). Your `notes.mergeStrategy`
+  is never written; the strategy is passed per-invocation. *Publishing* your own
+  memory remains a manual `git push origin refs/notes/spelunk`. (ADR-069)
+- **Memory entries now read back in chronological order after a merge.** The
+  union merge sorts lines lexicographically, so a note's records are no longer
+  in append order once teammates' entries are folded in. Reads now sort by
+  `created_at` explicitly rather than relying on blob order. (ADR-069)
 - **Memory attached to a commit now survives `git commit --amend` and `git
   rebase`.** git carries a note onto a rewritten commit only when
   `notes.rewriteRef` names the ref, and it has no built-in default, so an

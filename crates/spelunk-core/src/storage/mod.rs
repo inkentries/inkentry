@@ -22,8 +22,8 @@ pub use db::Database;
 pub use entity_id::{entity_id, note_entity_id};
 pub use files::FileRecord;
 pub use git_notes::{
-    GitNotesBackend, NotesLock, RewriteRefStatus, append_to_git_notes, ensure_notes_rewrite_ref,
-    lock_notes,
+    GitNotesBackend, NotesLock, NotesMergeOutcome, RewriteRefStatus, append_to_git_notes,
+    ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes,
 };
 pub use graph::GraphEdge;
 pub use memory::{MemoryEdge, MemoryStore, SyncRow};

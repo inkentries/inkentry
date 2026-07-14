@@ -17,6 +17,11 @@ pub use lock::{NotesLock, lock_notes};
 /// The ref spelunk stores memory notes on.
 const SPELUNK_NOTES_REF: &str = "refs/notes/spelunk";
 
+/// The tracking ref `git fetch` populates, per the refspec `spelunk init`
+/// configures. Fetching straight onto [`SPELUNK_NOTES_REF`] would force-update
+/// it and silently destroy local unpushed notes (ADR-069 D4).
+const SPELUNK_TRACKING_REF: &str = "refs/notes/origin/spelunk";
+
 /// The namespace git is willing to rewrite notes in.
 const NOTES_NAMESPACE: &str = "refs/notes/";
 
@@ -164,6 +169,62 @@ pub async fn append_to_git_notes(
     .await?;
 
     Ok(rewrite_ref)
+}
+
+// ── Read-path merge: making fetched notes visible ────────────────────────────
+
+/// What [`merge_tracking_notes`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesMergeOutcome {
+    /// The merge ran; any fetched entries are now on the working ref.
+    Merged,
+    /// Nothing to merge, or the merge failed. The caller reads regardless.
+    Skipped,
+    /// The lock was unavailable, so the merge was skipped. The union is
+    /// idempotent, so the next read catches up.
+    LockUnavailable,
+}
+
+/// Merge fetched teammate notes ([`SPELUNK_TRACKING_REF`]) into the working ref
+/// so `memory list` / `context` can see them.
+///
+/// Does **no** network. It merges only what the user's own `git fetch` already
+/// wrote, which is what lets reads work with the remote unreachable and keeps
+/// egress off a path the user never pointed at a remote (ADR-069 D5).
+///
+/// Never fails the caller: a read must not break because the merge could not
+/// run. A missing tracking ref is nothing to do (git exits 128 when both refs
+/// are empty, which is the un-fetched solo case), and an unavailable lock skips
+/// the merge rather than waiting the caller out.
+pub async fn merge_tracking_notes(git_root: Option<&std::path::Path>) -> NotesMergeOutcome {
+    // Without this, a concurrent `append_to_git_notes` read-modify-write
+    // silently overwrites the merged entries (#185 / ADR-069 D6).
+    let Some(_lock) = lock_notes(git_root).await else {
+        return NotesMergeOutcome::LockUnavailable;
+    };
+
+    // `-s` is explicit on every call: the `notes.mergeStrategy` default is
+    // `manual`, which exits 1 and leaves a stuck `.git/NOTES_MERGE_WORKTREE`.
+    // The user's own setting is never written.
+    match run_git(
+        git_root,
+        &[
+            "notes",
+            "--ref=spelunk",
+            "merge",
+            "-s",
+            "cat_sort_uniq",
+            SPELUNK_TRACKING_REF,
+        ],
+    )
+    .await
+    {
+        Ok(_) => NotesMergeOutcome::Merged,
+        Err(e) => {
+            tracing::debug!("notes merge from {SPELUNK_TRACKING_REF} skipped: {e}");
+            NotesMergeOutcome::Skipped
+        }
+    }
 }
 
 /// Run a git subprocess, optionally in `dir`, and return stdout as a `String`.
@@ -414,6 +475,9 @@ impl GitNotesBackend {
                 None => continue, // foreign line: skip, never error
             }
         }
+        // `cat_sort_uniq` unions lines lexicographically, so after a merge blob
+        // order is not chronological (ADR-069 D2). Stable: ties keep blob order.
+        records.sort_by_key(|r| r.created_at);
         Ok(records)
     }
 
