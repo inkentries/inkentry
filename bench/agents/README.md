@@ -49,16 +49,39 @@ runs; it is kept only so old invocations in scrollback don't 404.
 | `spelunk_full` | baseline + `spelunk_search` + `spelunk_graph` + `spelunk_memory_search` |
 
 `condition` and `harness` are independent dimensions — vary exactly one
-at a time between comparisons (bench/AGENTS.md principle #1). `spelunk_search`
-/ `spelunk_full` are meaningful only for `--harness none` (see "Harnesses"
-below); opencode and claude-code are generic coding agents, not
-spelunk-instrumented, so they only ever run as `baseline` —
-`swebench_run.sh` errors if `--condition` isn't `baseline` for those two
-harnesses, and each harness's own result JSON records `condition` from
-`--condition` (default `baseline`) rather than a hardcoded per-harness
-string, so the value in the JSON always matches what was requested. (The
+at a time between comparisons (bench/AGENTS.md principle #1). All three
+conditions run under all three harnesses. `--harness none` (`agent.py`) calls
+the spelunk tools in-process; opencode and claude-code reach the same tools
+over `spelunk_mcp_server.py`, a bench-local stdio MCP server that *imports*
+`agent.py`'s tool functions and schemas rather than reimplementing them, so
+the capability behind a `spelunk` condition cannot drift between harnesses.
+Each harness's result JSON records `condition` from `--condition`, so the
+value in the JSON always matches what was requested. (The
 DeepSeek-vs-native-Claude distinction for the claude-code harness lives in
 `endpoint_kind`, not `condition` — see the provenance table below.)
+
+**Tool names differ by harness; capability does not.** Under `--harness none`
+the model sees `spelunk_search`; under the MCP harnesses it sees
+`mcp__spelunk__spelunk_search`. Names, descriptions, and schemas are
+otherwise identical because they are the same objects. Transport differs,
+capability does not — the one accepted, documented asymmetry.
+
+**MCP hygiene (`--strict-mcp-config`).** The claude-code adapter passes
+`--strict-mcp-config` in *both* arms, so only the bench's own `--mcp-config`
+is loaded. A dev host with its own MCP servers configured would otherwise
+leak them into baseline *and* spelunk, contaminating both. opencode has no
+equivalent flag; its generated `opencode.json` is repo-scoped, and on
+v1.17.20 `mcp` servers declared in a global `~/.config/opencode/` config were
+observed not to spawn for a repo-scoped run. That is an observed behaviour,
+not a documented guarantee — unlike `--strict-mcp-config`, nothing enforces
+it, so re-check it when bumping opencode.
+
+**Tool-invocation telemetry.** Runs on a spelunk condition report
+`spelunk_mcp_server_spawned` plus `spelunk_tool_calls` /
+`spelunk_tool_calls_by_tool`. These separate three outcomes that otherwise
+look alike: the server never spawned (broken wiring — a baseline run with
+extra latency, not a spelunk cell), it spawned but the model never reached
+for a tool (a real result), or it was used.
 
 ## Harnesses
 
@@ -241,13 +264,12 @@ Reads `bench/agents/tasks_50.json`, expects repos checked out at
 where repos live without needing `--repos-dir` on every invocation).
 Override either with `--repos-dir`.
 
-For `--harness none` with `spelunk_search`/`spelunk_full` conditions, runs
-`spelunk index` (and, for `spelunk_full`, `spelunk memory harvest`) on each
-repo before the agent, unless `--skip-index` is set. The `opencode` and
-`claude-code` harnesses never invoke spelunk — they are generic coding
-agents being measured on their own, not spelunk-instrumented (see
-"Harnesses" above) — so this step is skipped entirely for them regardless of
-`--skip-index`.
+For `spelunk_search`/`spelunk_full` conditions, runs `spelunk index` (and,
+for `spelunk_full`, `spelunk memory harvest`) on each repo before the agent,
+unless `--skip-index` is set. This is gated on the condition, not the
+harness: every harness reaches the same tools on a spelunk condition, and
+without the index the spelunk arm is a silent no-op that scores like
+baseline.
 
 Each task's patch is saved to
 `bench/patches/<condition>-<timestamp>/<task_id>.patch` for `--harness none`,

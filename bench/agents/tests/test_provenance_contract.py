@@ -210,10 +210,11 @@ class TestProvenanceAdditiveContract:
     def test_condition_flows_from_flag_not_hardcoded(
         self, fake_claude_on_path, throwaway_repo, tmp_path
     ):
-        # Pass a value that's neither the old hardcoded strings
-        # ("claude_code_deepseek"/"claude_code_native") nor the new default
-        # ("baseline"), to prove the output really tracks --condition rather
-        # than a fixed per-harness string.
+        # Neither the old hardcoded strings
+        # ("claude_code_deepseek"/"claude_code_native") nor the default
+        # ("baseline"), to prove the output tracks --condition rather than a
+        # fixed per-harness string. A real condition rather than a sentinel:
+        # --condition is validated against the condition set.
         issue_file = tmp_path / "ISSUE.txt"
         issue_file.write_text("Fix the bug.")
 
@@ -229,7 +230,7 @@ class TestProvenanceAdditiveContract:
                 str(issue_file),
                 "--no-deepseek",
                 "--condition",
-                "condition_passthrough_probe",
+                "spelunk_search",
             ],
             capture_output=True,
             text=True,
@@ -240,7 +241,7 @@ class TestProvenanceAdditiveContract:
         assert result.returncode == 0, result.stderr
         line = [l for l in result.stdout.splitlines() if l.startswith("{")][-1]
         payload = json.loads(line)
-        assert payload["condition"] == "condition_passthrough_probe"
+        assert payload["condition"] == "spelunk_search"
 
 
 class TestOpencodeProvenanceAdditiveContract:

@@ -54,6 +54,7 @@ agent.py, plus the harness-dimension fields — see bench/agents/README.md).
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -161,10 +162,10 @@ def build_claude_cmd(
     if condition in SPELUNK_CONDITIONS and mcp_config_path:
         cmd += ["--mcp-config", str(mcp_config_path)]
         # acceptEdits covers file edits, not MCP tool calls; a headless -p run
-        # that hits a permission prompt is a lost cell. The `mcp__spelunk`
-        # server-wide shorthand also works, but naming each tool keeps the
-        # allow-list itself condition-gated rather than trusting the server to
-        # advertise only what the condition warrants.
+        # that hits a permission prompt is a lost cell. Each tool is named in
+        # full: whether the `mcp__spelunk` server-wide shorthand is honoured
+        # is unverified, and naming them keeps the allow-list condition-gated
+        # independently of what the server advertises.
         cmd += ["--allowedTools", *mcp_tool_names_for_condition(condition)]
     if thinking:
         cmd += ["--append-system-prompt", "Think step by step before acting."]
@@ -360,18 +361,21 @@ def main() -> None:
         else None
     )
 
-    agent_result = run_claude_code(
-        repo_path=repo_path,
-        issue_text=issue_text,
-        model=args.model,
-        effort=args.effort,
-        thinking=args.thinking,
-        env=env,
-        condition=args.condition,
-        mcp_config_path=mcp_config_path,
-    )
-
-    telemetry = read_telemetry(telemetry_log)
+    try:
+        agent_result = run_claude_code(
+            repo_path=repo_path,
+            issue_text=issue_text,
+            model=args.model,
+            effort=args.effort,
+            thinking=args.thinking,
+            env=env,
+            condition=args.condition,
+            mcp_config_path=mcp_config_path,
+        )
+        # Read before the scratch dir goes away.
+        telemetry = read_telemetry(telemetry_log)
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     patch_path = extract_patch(repo_path, args.save_patch)
 

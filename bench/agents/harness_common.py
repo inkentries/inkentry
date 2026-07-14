@@ -17,16 +17,21 @@ from pathlib import Path
 # bench-local MCP server, see spelunk_mcp_server.py).
 CONDITIONS = ("baseline", "spelunk_search", "spelunk_full")
 
-# Mirrors the sentence agent.py's SYSTEM_PROMPT_SPELUNK adds over
-# SYSTEM_PROMPT_BASE. Not imported verbatim: agent.py's wording names bare
-# tool names, but an MCP client's model only ever sees the namespaced
-# `mcp__spelunk__*` spelling, so a verbatim copy would point the model at
-# names that don't exist in these harnesses.
-SPELUNK_PROMPT_GUIDANCE = (
+# Restates the sentence agent.py's SYSTEM_PROMPT_SPELUNK adds over
+# SYSTEM_PROMPT_BASE, then names the namespaced tools this harness's model
+# actually sees. Restated rather than imported because agent.py exposes only
+# whole prompts, not that delta, and each harness keeps its own base prompt.
+# The leading sentence is kept an exact substring of SYSTEM_PROMPT_SPELUNK so
+# the offline suite can assert it and make drift fail loudly.
+# Exact substring of agent.py's SYSTEM_PROMPT_SPELUNK — assert, don't edit.
+SPELUNK_GUIDANCE_CORE = (
     "You have access to spelunk tools for fast semantic code search, code "
     "graph traversal, and project memory retrieval — use them to locate "
-    "relevant code and context before diving into files. They are available "
-    "as these tools: {tools}."
+    "relevant code and context before diving into files."
+)
+
+SPELUNK_PROMPT_GUIDANCE = (
+    SPELUNK_GUIDANCE_CORE + " They are available as these tools: {tools}."
 )
 
 

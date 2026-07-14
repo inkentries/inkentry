@@ -76,38 +76,30 @@ class TestHarnessEnumValidation:
             assert "--harness must be one of" not in result.stderr
 
 
-class TestConditionMustBeBaselineForNonNoneHarness:
-    """opencode/claude-code are generic coding agents, not
-    spelunk-instrumented, so spelunk_search/spelunk_full don't apply to them
-    (README "Conditions"). Enforced here rather than just documented, so a
-    mismatched --condition can't silently produce a result JSON whose
-    condition field disagrees with what --condition claimed to request."""
+class TestConditionValidatedAgainstConditionSet:
+    """Every condition is valid for every harness: opencode/claude-code reach
+    the spelunk tools over the bench-local MCP server. --condition is
+    validated against the condition set alone, so a typo can't be recorded as
+    a real cell, but a spelunk condition is never rejected by harness.
 
-    def test_rejects_non_baseline_condition_for_opencode(self):
+    Replaces an earlier rule that forced --condition=baseline for these two
+    harnesses, which made the spelunk arm unreachable for them."""
+
+    @pytest.mark.parametrize("harness", ["none", "opencode", "claude-code"])
+    def test_rejects_unknown_condition(self, harness):
         result = run_script(
-            ["--condition", "spelunk_full", "--harness", "opencode", "--api-key", "fake-key"]
+            ["--condition", "spelunk_xxx", "--harness", harness, "--api-key", "fake-key"]
         )
         assert result.returncode != 0
-        assert "--condition must be baseline for --harness opencode" in result.stderr
+        assert "--condition must be one of baseline|spelunk_search|spelunk_full" in result.stderr
 
-    def test_rejects_non_baseline_condition_for_claude_code(self):
+    @pytest.mark.parametrize("harness", ["none", "opencode", "claude-code"])
+    @pytest.mark.parametrize("condition", ["baseline", "spelunk_search", "spelunk_full"])
+    def test_accepts_every_condition_for_every_harness(self, harness, condition):
         result = run_script(
-            ["--condition", "spelunk_search", "--harness", "claude-code", "--api-key", "fake-key"]
+            ["--condition", condition, "--harness", harness, "--api-key", "fake-key", "--tasks", "0"]
         )
-        assert result.returncode != 0
-        assert "--condition must be baseline for --harness claude-code" in result.stderr
-
-    def test_baseline_condition_passes_for_opencode(self):
-        result = run_script(
-            ["--condition", "baseline", "--harness", "opencode", "--api-key", "fake-key", "--tasks", "0"]
-        )
-        assert "--condition must be baseline" not in result.stderr
-
-    def test_non_baseline_condition_still_allowed_for_harness_none(self):
-        result = run_script(
-            ["--condition", "spelunk_full", "--harness", "none", "--api-key", "fake-key", "--tasks", "0"]
-        )
-        assert "--condition must be baseline" not in result.stderr
+        assert "--condition must be" not in result.stderr
 
 
 class TestConditionRequired:

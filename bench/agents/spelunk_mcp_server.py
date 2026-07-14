@@ -109,35 +109,46 @@ def mcp_server_command(
 
 
 # ---------------------------------------------------------------------------
-# Tool-invocation telemetry
+# Telemetry
 #
-# Without this, "spelunk didn't help" and "spelunk was never invoked" are
-# indistinguishable in the results — and a spelunk-labelled cell where the
-# tools were never called is a baseline run with extra latency.
+# Separates three outcomes a spelunk-labelled cell can't otherwise be told
+# apart by: the server never spawned (wiring is broken, the cell is baseline
+# with extra latency), it spawned but the model never reached for a tool
+# (a real result), or it was used. Only the last two are publishable as
+# spelunk cells.
 # ---------------------------------------------------------------------------
 
 
-def log_tool_call(telemetry_log: Path | None, tool_name: str) -> None:
+def _append(telemetry_log: Path | None, record: dict) -> None:
     if not telemetry_log:
         return
     try:
         with open(telemetry_log, "a") as f:
-            f.write(json.dumps({"tool": tool_name, "ts": time.time()}) + "\n")
+            f.write(json.dumps({**record, "ts": time.time()}) + "\n")
             f.flush()
     except Exception:
         # Telemetry must never take the run down with it.
         pass
 
 
+def log_server_start(telemetry_log: Path | None, condition: str) -> None:
+    _append(telemetry_log, {"event": "server_start", "condition": condition})
+
+
+def log_tool_call(telemetry_log: Path | None, tool_name: str) -> None:
+    _append(telemetry_log, {"event": "tool_call", "tool": tool_name})
+
+
 def read_telemetry(telemetry_log: Path | None) -> dict:
     """Summarise a telemetry log for the harness's result JSON.
 
-    A missing log means zero calls, not an error: the client only spawns the
-    server lazily, so a run where the model never reached for a spelunk tool
-    legitimately leaves no file behind.
+    A missing log is a real, reportable outcome (server never spawned), not
+    an error — the client spawns the server itself, so its absence is
+    evidence about the wiring rather than a failure to read.
     """
     by_tool: dict[str, int] = {}
     total = 0
+    spawned = False
     if telemetry_log and Path(telemetry_log).exists():
         for line in Path(telemetry_log).read_text().splitlines():
             line = line.strip()
@@ -147,12 +158,14 @@ def read_telemetry(telemetry_log: Path | None) -> dict:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            name = rec.get("tool")
-            if not name:
-                continue
-            by_tool[name] = by_tool.get(name, 0) + 1
-            total += 1
+            event = rec.get("event")
+            if event == "server_start":
+                spawned = True
+            elif event == "tool_call" and rec.get("tool"):
+                by_tool[rec["tool"]] = by_tool.get(rec["tool"], 0) + 1
+                total += 1
     return {
+        "spelunk_mcp_server_spawned": spawned,
         "spelunk_tool_calls": total,
         "spelunk_tool_calls_by_tool": by_tool or None,
     }
@@ -172,6 +185,11 @@ async def serve(condition: str, repo_path: Path, telemetry_log: Path | None) -> 
     exposed = {t["function"]["name"] for t in tools}
     dispatch = build_dispatch_table(repo_path)
     server: Server = Server(SERVER_NAME)
+
+    # Recorded before the handshake, so it survives a client that spawns us
+    # and disconnects: the question this answers is whether the harness
+    # spawned the server at all, not whether a session completed.
+    log_server_start(telemetry_log, condition)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:

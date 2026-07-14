@@ -269,8 +269,8 @@ def main() -> None:
     opencode_cmd = get_opencode_command()
     opencode_version = get_opencode_version(opencode_cmd)
 
-    telemetry_dir = tempfile.mkdtemp(prefix="spelunk-bench-mcp-")
-    telemetry_log = Path(telemetry_dir) / "tool_calls.jsonl"
+    scratch_dir = Path(tempfile.mkdtemp(prefix="spelunk-bench-mcp-"))
+    telemetry_log = scratch_dir / "tool_calls.jsonl"
 
     config_path = write_provider_config(
         repo_path,
@@ -291,14 +291,15 @@ def main() -> None:
             opencode_cmd=opencode_cmd,
             condition=args.condition,
         )
+        # Read before the scratch dir goes away.
+        telemetry = read_telemetry(telemetry_log)
     finally:
         # Don't leave bench-generated provider config in the task repo's
         # working tree — it would otherwise show up in the saved patch
         # despite being outside SOURCE_PATHSPECS (harmless there, but
         # cleaner to remove) and would leak the API key into repo state.
         config_path.unlink(missing_ok=True)
-
-    telemetry = read_telemetry(telemetry_log)
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     patch_path = extract_patch(repo_path, args.save_patch)
 
