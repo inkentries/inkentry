@@ -1460,6 +1460,11 @@ async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
 }
 
 /// A user glob that already covers our ref is left alone.
+///
+/// Deferring is only safe if the glob genuinely carries, so this asserts git's
+/// behaviour end to end rather than trusting our reading of it: silently
+/// skipping the fix against a glob that did not really cover us would orphan
+/// the entry, which is the whole bug.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_defers_to_a_covering_glob() {
@@ -1478,6 +1483,18 @@ async fn ensure_notes_rewrite_ref_defers_to_a_covering_glob() {
         rewrite_ref_values(root),
         vec!["refs/notes/*"],
         "a covering glob needs no addition"
+    );
+
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+    git_ok(
+        root,
+        &["commit", "--amend", "--no-gpg-sign", "-m", "amended"],
+    );
+    assert!(
+        note_on_head(root).is_some_and(|b| b.contains(PRECIOUS)),
+        "the glob we deferred to must actually carry the entry"
     );
 }
 
@@ -1507,5 +1524,149 @@ async fn ensure_notes_rewrite_ref_ignores_a_glob_outside_the_notes_namespace() {
     assert!(
         note_on_head(root).is_some_and(|b| b.contains(PRECIOUS)),
         "entry must survive despite the user's out-of-namespace glob"
+    );
+}
+
+/// `--backend git-notes` makes notes the primary store, so an unconfigured carry
+/// ref there orphans the only copy. Asserted through `list`, not just the raw
+/// note: `list` intersects against `git log`, which is what actually made the
+/// orphaned entry unreachable.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_add_configures_carry_and_entry_survives_amend() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    backend
+        .add(note_input("decision", PRECIOUS))
+        .await
+        .expect("add");
+
+    assert_eq!(
+        rewrite_ref_values(root),
+        vec!["refs/notes/spelunk"],
+        "the backend write path must configure the carry ref too"
+    );
+
+    let before = git_stdout_ok(root, &["rev-parse", "HEAD"]);
+    git_ok(
+        root,
+        &[
+            "commit",
+            "--amend",
+            "--no-gpg-sign",
+            "-m",
+            "amended subject",
+        ],
+    );
+    assert_ne!(
+        before,
+        git_stdout_ok(root, &["rev-parse", "HEAD"]),
+        "the amend must actually have rewritten the commit"
+    );
+
+    let entries = backend
+        .list(Some("decision"), 100, false, None)
+        .await
+        .expect("list");
+    assert_eq!(
+        entries.iter().filter(|n| n.title == PRECIOUS).count(),
+        1,
+        "the entry must still be reachable after an amend; got: {:?}",
+        entries.iter().map(|n| &n.title).collect::<Vec<_>>()
+    );
+}
+
+/// The carry config is ensured even when the notes lock is unavailable. It runs
+/// before `lock_notes` and guards a write that proceeds either way, so moving it
+/// inside the lock-acquired branch would silently stop configuring it under
+/// contention, which is exactly when an entry is most at risk.
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_ensures_carry_config_even_when_the_lock_is_unusable() {
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+
+    std::fs::create_dir_all(notes_lock_path(root)).expect("place a directory at the lock path");
+    assert!(
+        lock_notes(Some(root)).await.is_none(),
+        "setup: an unopenable lock path must yield None"
+    );
+
+    append_to_git_notes(Some(root), &make_note_record(1, PRECIOUS))
+        .await
+        .expect("append should succeed");
+
+    assert_eq!(
+        rewrite_ref_values(root),
+        vec!["refs/notes/spelunk"],
+        "the carry config must be set even when the lock degrades to unlocked"
+    );
+}
+
+/// A carry config that cannot be written reports `Failed` and the write still
+/// proceeds: pre-`init` the entry has no other copy, so a config failure must
+/// never sink it.
+///
+/// A read-only `.git` blocks the config lock file while leaving object and ref
+/// writes working (they land in subdirectories), isolating a config failure from
+/// the note write. Unix-only: it turns on the directory mode.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn append_to_git_notes_proceeds_when_the_carry_config_cannot_be_written() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const ONLY_COPY: &str = "a config failure must not sink the entry";
+
+    let dir = rewrite_test_repo();
+    let root = dir.path();
+    let git_dir = root.join(".git");
+    let original = std::fs::metadata(&git_dir)
+        .expect("stat .git")
+        .permissions();
+
+    let mut read_only = original.clone();
+    read_only.set_mode(0o555);
+    std::fs::set_permissions(&git_dir, read_only).expect("make .git read-only");
+
+    // Probe with raw git, never with the code under test: root (or a mount that
+    // ignores the mode) can still write the config, and there is no failure to
+    // assert against then. Deciding that from the status would let a mutation
+    // that misreports failure as success route itself into the skip and pass.
+    let enforced = !std::process::Command::new("git")
+        .current_dir(root)
+        .args(["config", "--add", "notes.rewriteRefProbe", "x"])
+        .output()
+        .expect("git config probe")
+        .status
+        .success();
+    if !enforced {
+        std::fs::set_permissions(&git_dir, original).expect("restore .git permissions");
+        return;
+    }
+
+    let status = ensure_notes_rewrite_ref(Some(root)).await;
+    let write = append_to_git_notes(Some(root), &make_note_record(1, ONLY_COPY)).await;
+    let note = note_on_head(root);
+
+    // Restore before asserting: a panic below would otherwise leave a read-only
+    // directory behind that `TempDir` cannot clean up.
+    std::fs::set_permissions(&git_dir, original).expect("restore .git permissions");
+
+    assert_eq!(
+        status,
+        RewriteRefStatus::Failed,
+        "an unwritable config must report Failed"
+    );
+    assert_eq!(
+        write.expect("a config failure must never fail the write"),
+        RewriteRefStatus::Failed,
+        "the write must report the carry it could not make"
+    );
+    assert!(
+        note.is_some_and(|b| b.contains(ONLY_COPY)),
+        "the entry must still be written when the carry config fails"
     );
 }
