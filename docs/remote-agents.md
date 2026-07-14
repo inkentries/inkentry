@@ -16,7 +16,7 @@ The shapes we distinguish:
 | Shape | Where the agent runs | `SPELUNK_SERVER_URL` |
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
-| **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) — or `http://host.docker.internal:7777` on Docker Desktop only |
+| **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) |
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.spelunk.cloud` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://spelunk.your-domain` — see [Self-hosting](self-hosting.md) |
 
@@ -66,6 +66,31 @@ docker run --rm -it \
   path if your agent image runs as a non-root user — match its `$HOME`.)
 - `-w /work` runs the agent in the mounted repo.
 
+If the server's certificate chains to a publicly trusted CA, that is everything
+the container needs. If it is signed by a self-signed or internal CA (the usual
+case when you stand the server up yourself), the container must also be given
+the CA bundle, or the TLS handshake fails. Mount the bundle read-only and point
+`SPELUNK_SERVER_CA` at it:
+
+```bash
+docker run --rm -it \
+  -e SPELUNK_SERVER_URL=https://spelunk.example.com \
+  -e SPELUNK_SERVER_KEY=your-shared-api-key \
+  -e SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem \
+  -v /etc/spelunk/internal-ca.pem:/etc/spelunk/internal-ca.pem:ro \
+  -v "$PWD":/work \
+  -v "$HOME/.config/spelunk":/root/.config/spelunk \
+  -w /work \
+  your-agent-image
+```
+
+The bundle is added as a trust anchor on top of the built-in roots, and
+certificate verification stays on. It must contain the issuing **CA**
+certificate, not the server's leaf. `SPELUNK_SERVER_CA` overrides the
+`server_ca` config key; see
+[Trusting the server's certificate](self-hosting.md#trusting-the-servers-certificate-on-the-client)
+for how to generate the CA and issue the server a leaf from it.
+
 Inside the container, the CLI behaves exactly as it would on the host:
 
 ```bash
@@ -76,43 +101,43 @@ spelunk search "auth tokens"  # semantic search via the server
 The **server side** of this (the routable TLS bind and the systemd unit) is the
 bare-metal path in [Self-hosting](self-hosting.md).
 
-### Docker Desktop convenience (solo, non-portable)
+### No bridge shortcut, on any platform
 
-If you're a solo developer with only the auto-started local loopback server (no
-team server) and you're on **Docker Desktop** (macOS/Windows), Docker Desktop
-special-cases the DNS name `host.docker.internal` to reach the host's loopback,
-so you can skip the TLS endpoint and point straight at the host server:
+It is tempting to skip the TLS endpoint and point the container at the host over
+a Docker bridge address. There is no working version of that on any platform,
+including Docker Desktop. It fails on two independent counts.
 
-```bash
-docker run --rm -it \
-  -e SPELUNK_SERVER_URL=http://host.docker.internal:7777 \
-  -v "$PWD":/work \
-  -v "$HOME/.config/spelunk":/root/.config/spelunk \
-  -w /work \
-  your-agent-image
+**A bridge address does not reach a loopback-bound server.** On plain Linux
+Docker, the default bridge gateway (`172.17.0.1`) and
+`--add-host=host.docker.internal:host-gateway` both resolve to the host's
+**routable** interface, not its loopback, so a server bound to `127.0.0.1` is
+not listening where the container can reach it. On Docker Desktop,
+`host.docker.internal` resolves to the gateway of the Docker VM, so traffic
+crosses a virtual network that sibling containers share rather than staying on
+the host's loopback.
+
+**The CLI refuses plaintext to a non-loopback host anyway.** The transport check
+matches the literal host string and performs no DNS resolution: only `127.x`,
+`::1`, and `localhost` count as loopback. Docker's DNS special-casing therefore
+never enters into it, and both bridge addresses are rejected on every platform.
+Setting `SPELUNK_SERVER_URL=http://host.docker.internal:7777` (or
+`http://172.17.0.1:7777`) fails the moment the CLI needs the server:
+
+```
+error: invalid server URL "http://host.docker.internal:7777": plaintext http:// is only
+allowed to a loopback address (127.0.0.1/::1/localhost); use https:// for any other host
 ```
 
-This is a **Docker Desktop-only** convenience. It does not work on native Linux
-Docker (see below), so don't bake it into anything you also run on Linux.
+That refusal is deliberate, and it is not a false positive: those addresses
+genuinely are off-loopback, so the bearer key and your query content would cross
+a shared virtual network in cleartext. There is no opt-out. Binding the server
+to the bridge address over plaintext instead runs into the mirror-image rule on
+the server side, which refuses a non-loopback plaintext bind unconditionally; a
+routable bind is only allowed with `--tls-cert`/`--tls-key` and a key.
 
-### Native Linux: no loopback shortcut
-
-Plain Linux Docker (not Docker Desktop) has **no** way to reach a
-host-loopback-bound server from a container:
-
-- The default bridge gateway (`172.17.0.1`) and
-  `--add-host=host.docker.internal:host-gateway` both resolve to the host's
-  **routable** interface, not its loopback, so a local server bound to
-  `127.0.0.1` is not listening where the container can reach it.
-- Binding the server to the bridge address over plaintext instead is a
-  **non-loopback plaintext bind, which `spelunk-server` refuses
-  unconditionally**: there is no override. A routable bind is only allowed with
-  `--tls-cert`/`--tls-key` and a key, i.e. the HTTPS endpoint below.
-
-So on native Linux there is no bridge shortcut: use the recommended HTTPS-endpoint
-path above. The team server's own routable TLS listener (per
-[Self-hosting](self-hosting.md)) is what makes it reachable from a container, and
-it does so the same way on every platform.
+Use the recommended HTTPS-endpoint path above. The server's own routable TLS
+listener (per [Self-hosting](self-hosting.md)) is what makes it reachable from a
+container, and it does so the same way on every platform.
 
 ### Notes
 

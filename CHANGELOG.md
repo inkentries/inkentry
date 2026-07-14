@@ -123,6 +123,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The Debian package no longer installs a `spelunk` that cannot start.** The
+  `.deb` declared `libc6` as its only dependency, omitting `libdbus-1-3`, which
+  the `spelunk` binary dynamically links via the keyring's secret-service
+  backend. On a machine without libdbus already present the install *reported
+  success* and the binary then failed to load with `libdbus-1.so.3: cannot open
+  shared object file` (exit 127). `Depends:` is now derived from the packaged
+  binaries at release time with `dpkg-shlibdeps` instead of being hand-written,
+  so it lists every shared library they actually link (`libc6`, `libdbus-1-3`,
+  and `libgcc-s1`) and the package manager pulls them in. The declared `libc6`
+  floor now also reflects the glibc the release binaries are built against
+  (2.39), so a system with an older glibc gets an accurate refusal at install
+  time rather than a package that installs and then crashes. A release-pipeline
+  check now installs the `.deb` in a clean container and runs both binaries, so
+  a missing dependency fails the build instead of shipping.
 - **The self-hosted Docker Quick-Start builds and runs again.** The `Dockerfile`
   now builds the Cargo workspace (per-crate manifests, `crates/spelunk-server`
   binary) instead of the old single-crate layout, and installs the C/C++
@@ -139,6 +153,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   before storage, so overlapping generic and language-specific rules (for
   example `naming.functions` and `docs`) each surface once instead of two or
   three times.
+- **`spelunk context` no longer lists `.tsx` conventions twice, and no longer
+  overstates their confidence.** Conventions from `.tsx` files surfaced under
+  both a `typescript` and a `tsx` label, because the TypeScript rule set labelled
+  every record `typescript` while the generic rules labelled by the chunk's own
+  language. `.tsx` now folds onto the `typescript` label it already shares
+  heuristics with, so each convention appears once. The two labels had also held
+  separate partial views of a single language, and merging them kept the *higher*
+  of the two confidences: a project with 9 async functions out of 16 reported
+  `async` at 100% instead of 56%. Confidence is now pooled across all of a
+  language's chunks, so mixed `.ts`/`.tsx` projects may see reported confidence
+  drop. The lower figure is the accurate one, and no conventions are lost.
+  `spelunk plumbing read-conventions --lang tsx` now matches no rows (exit 1);
+  use `--lang typescript`.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung

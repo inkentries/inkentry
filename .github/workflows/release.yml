@@ -170,6 +170,16 @@ jobs:
           tar -xzf linux-amd64/spelunk-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz \
             -C linux-amd64
 
+      # dpkg-shlibdeps can only map a linked library to its owning package if
+      # that package is installed here, so the binaries' runtime libs must be
+      # present on this runner even though nothing is compiled in this job.
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            libdbus-1-3
+
       - name: Assemble deb layout
         run: |
           VERSION="${{ github.ref_name }}"
@@ -188,7 +198,20 @@ jobs:
           install -m 644 packaging/spelunk-server.service \
             BUILD/usr/lib/systemd/user/spelunk-server.service
 
+          # Depends is derived from the packaged binaries, never hardcoded.
+          # dpkg-shlibdeps needs a debian/control in its working dir, and errors
+          # out if a linked library maps to no installed package.
+          mkdir -p shlibdeps/debian
+          printf 'Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n' \
+            > shlibdeps/debian/control
+          DEB_DEPENDS="$(cd shlibdeps && dpkg-shlibdeps -O \
+            ../BUILD/usr/bin/spelunk \
+            ../BUILD/usr/bin/spelunk-server)"
+          rm -rf shlibdeps
+          echo "Derived ${DEB_DEPENDS}"
+
           # DEBIAN/control — written via JS to avoid YAML heredoc issues
+          DEB_DEPENDS="${DEB_DEPENDS}" \
           node .github/scripts/write-deb-control.js \
             --deb-version "${DEB_VERSION}" \
             --out BUILD/DEBIAN/control
@@ -198,6 +221,19 @@ jobs:
       - name: Build .deb
         run: |
           dpkg-deb --build BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
+
+      # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
+      # only executing the binary resolves its NEEDED libs and surfaces the gap.
+      # Pinned to 24.04: it supplies the GLIBC_2.39 the derived libc6 floor
+      # targets, so a failure here means the .deb no longer installs on it.
+      - name: Smoke-test the .deb in a clean container
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -euc '
+            apt-get update -qq
+            apt-get install -y -qq ./spelunk_${{ env.DEB_VERSION }}_amd64.deb
+            test -n "$(spelunk --version)"
+            test -n "$(spelunk-server --version)"
+          '
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v7

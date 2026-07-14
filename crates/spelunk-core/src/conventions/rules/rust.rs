@@ -39,8 +39,7 @@ impl RustPatterns {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
-    let lang = "rust";
+pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<ConventionRecord> {
     let mut records = Vec::new();
 
     // ── naming.functions ─────────────────────────────────────────────────────
@@ -67,17 +66,17 @@ pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
     }
 
     // ── error_handling ────────────────────────────────────────────────────────
-    if let Some(r) = error_handling_record(chunks, now) {
+    if let Some(r) = error_handling_record(chunks, lang, now) {
         records.push(r);
     }
 
     // ── async ─────────────────────────────────────────────────────────────────
-    if let Some(r) = async_record(chunks, now) {
+    if let Some(r) = async_record(chunks, lang, now) {
         records.push(r);
     }
 
     // ── testing ───────────────────────────────────────────────────────────────
-    if let Some(r) = testing_record(chunks, now) {
+    if let Some(r) = testing_record(chunks, lang, now) {
         records.push(r);
     }
 
@@ -100,7 +99,11 @@ pub fn extract(chunks: &[&ChunkSummary], now: i64) -> Vec<ConventionRecord> {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn error_handling_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord> {
+fn error_handling_record(
+    chunks: &[&ChunkSummary],
+    lang: &str,
+    now: i64,
+) -> Option<ConventionRecord> {
     let p = patterns();
     let mut anyhow_count = 0u32;
     let mut thiserror_count = 0u32;
@@ -143,7 +146,7 @@ fn error_handling_record(chunks: &[&ChunkSummary], now: i64) -> Option<Conventio
 
     let confidence = dominant_count as f32 / total as f32;
     Some(ConventionRecord {
-        language: "rust".to_string(),
+        language: lang.to_string(),
         category: "error_handling".to_string(),
         description,
         confidence,
@@ -152,7 +155,7 @@ fn error_handling_record(chunks: &[&ChunkSummary], now: i64) -> Option<Conventio
     })
 }
 
-fn async_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord> {
+fn async_record(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Option<ConventionRecord> {
     let p = patterns();
     let function_chunks: Vec<_> = chunks
         .iter()
@@ -184,7 +187,7 @@ fn async_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord> 
     let confidence = ratio;
 
     Some(ConventionRecord {
-        language: "rust".to_string(),
+        language: lang.to_string(),
         category: "async".to_string(),
         description: format!("Async runtime: {runtime}"),
         confidence,
@@ -193,7 +196,7 @@ fn async_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord> 
     })
 }
 
-fn testing_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord> {
+fn testing_record(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Option<ConventionRecord> {
     let p = patterns();
     // Detect files in test locations.
     let test_files_count = chunks
@@ -229,7 +232,7 @@ fn testing_record(chunks: &[&ChunkSummary], now: i64) -> Option<ConventionRecord
 
     let confidence = dominant_count as f32 / total as f32;
     Some(ConventionRecord {
-        language: "rust".to_string(),
+        language: lang.to_string(),
         category: "testing".to_string(),
         description,
         confidence,

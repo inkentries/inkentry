@@ -32,26 +32,27 @@ impl ConventionExtractor {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        // Group chunks by language.
+        // Group by canonical language, so every rule set sees one group per label.
         let mut by_lang: std::collections::HashMap<&str, Vec<&ChunkSummary>> =
             std::collections::HashMap::new();
         for c in chunks {
-            by_lang.entry(c.language.as_str()).or_default().push(c);
+            by_lang
+                .entry(canonical_language(&c.language))
+                .or_default()
+                .push(c);
         }
 
-        // Both the language-specific set and the always-run generic set emit
-        // overlapping categories (naming.functions, docs); tsx chunks also route
-        // through the typescript set, which self-labels every record "typescript",
-        // colliding with the typescript group. Tag each record with its source so
-        // the merge below can prefer language-specific over generic.
+        // The language-specific set and the always-run generic set emit
+        // overlapping categories (naming.functions, docs). Tag each record with
+        // its source so the merge below can prefer language-specific over generic.
         let mut tagged: Vec<(Source, ConventionRecord)> = Vec::new();
         for (lang, lang_chunks) in &by_lang {
-            let is_specific = matches!(*lang, "rust" | "typescript" | "tsx");
             let specific = match *lang {
-                "rust" => Some(rules::rust::extract(lang_chunks, now)),
-                "typescript" | "tsx" => Some(rules::typescript::extract(lang_chunks, now)),
+                "rust" => Some(rules::rust::extract(lang_chunks, lang, now)),
+                "typescript" => Some(rules::typescript::extract(lang_chunks, lang, now)),
                 _ => None,
             };
+            let is_specific = specific.is_some();
             if let Some(recs) = specific {
                 tagged.extend(recs.into_iter().map(|r| (Source::LanguageSpecific, r)));
             }
@@ -63,13 +64,23 @@ impl ConventionExtractor {
                 Source::LanguageSpecific
             };
             tagged.extend(
-                rules::generic::extract(lang_chunks, now)
+                rules::generic::extract(lang_chunks, lang, now)
                     .into_iter()
                     .map(|r| (source, r)),
             );
         }
 
         dedup_by_language_category(tagged)
+    }
+}
+
+/// Fold dialects onto the language they share conventions with.
+/// tsx is typescript plus JSX: naming, async, testing and docs are identical,
+/// so both surface under one label instead of duplicating every record.
+fn canonical_language(lang: &str) -> &str {
+    match lang {
+        "tsx" => "typescript",
+        other => other,
     }
 }
 
@@ -84,10 +95,10 @@ enum Source {
 
 /// Collapse records to one per `(language, category)`.
 ///
-/// Language-specific records win over generic ones. Between two records of the
-/// same source, the higher-confidence description is kept and evidence counts
-/// are summed (e.g. tsx chunks routed through the typescript set). Output is
-/// ordered by `(language, category)` for determinism.
+/// Language-specific records win over generic ones. Two records of the same
+/// source cannot collide: there is one group per canonical language, each rule
+/// set labels with that group's language and emits each category at most once.
+/// Output is ordered by `(language, category)` for determinism.
 fn dedup_by_language_category(tagged: Vec<(Source, ConventionRecord)>) -> Vec<ConventionRecord> {
     use std::collections::BTreeMap;
 
@@ -99,19 +110,14 @@ fn dedup_by_language_category(tagged: Vec<(Source, ConventionRecord)>) -> Vec<Co
                 merged.insert(key, (source, rec));
             }
             Some((kept_source, kept)) => {
+                // Language-specific replaces generic outright; the reverse is
+                // discarded. Never merge two partial views: confidence is a rate
+                // over a group's chunks, so it is only correct when pooled by the
+                // rule set itself, not recombined here.
                 if source == Source::LanguageSpecific && *kept_source == Source::Generic {
-                    // Language-specific replaces generic outright.
                     *kept_source = source;
                     *kept = rec;
-                } else if source == *kept_source {
-                    // Same source: aggregate evidence, keep higher-confidence fields.
-                    kept.evidence_count = kept.evidence_count.saturating_add(rec.evidence_count);
-                    if rec.confidence > kept.confidence {
-                        kept.description = rec.description;
-                        kept.confidence = rec.confidence;
-                    }
                 }
-                // else: incoming is Generic, kept is LanguageSpecific — discard.
             }
         }
     }

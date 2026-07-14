@@ -21,7 +21,11 @@
 # --- Shared team memory server -----------------------------------------------
 # When set, the CLI shares memory (decisions, requirements, context) through a
 # long-lived deployed server. Leave unset to keep every machine fully local.
-server_url = "http://spelunk.internal:7777"
+# Must be https:// for any non-loopback host: plaintext http:// is accepted only
+# to 127.0.0.1/::1/localhost, and there is no opt-out. If the server's
+# certificate is signed by an internal CA, set SPELUNK_SERVER_CA (or server_ca)
+# to the CA bundle on each machine.
+server_url = "https://spelunk.internal"
 
 # Human-readable project slug. Required when server_url points at a non-loopback
 # host. The CLI resolves the slug to the server's internal id on first use.

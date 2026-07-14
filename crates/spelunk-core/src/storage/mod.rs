@@ -21,7 +21,7 @@ pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::Database;
 pub use entity_id::{entity_id, note_entity_id};
 pub use files::FileRecord;
-pub use git_notes::{GitNotesBackend, append_to_git_notes};
+pub use git_notes::{GitNotesBackend, NotesLock, append_to_git_notes, lock_notes};
 pub use graph::GraphEdge;
 pub use memory::{MemoryEdge, MemoryStore, SyncRow};
 pub use note_record::{NoteRecord, now_millis, now_secs};
