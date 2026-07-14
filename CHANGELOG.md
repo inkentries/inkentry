@@ -97,6 +97,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Memory attached to a commit now survives `git commit --amend` and `git
+  rebase`.** git carries a note onto a rewritten commit only when
+  `notes.rewriteRef` names the ref, and it has no built-in default, so an
+  unconfigured repository silently orphaned every entry the rewrite touched: the
+  note stayed bound to the dead sha, and `memory list` never surfaced it again.
+  Pre-`init`, git notes is the sole store, so that was total loss of the only
+  copy. spelunk now points `notes.rewriteRef` at `refs/notes/spelunk` in the
+  repository's own config (never global) at `spelunk init`, at the first
+  pre-`init` note write, and on the `--backend git-notes` write path. It composes
+  with any value you set yourself rather than replacing it, honours an existing
+  value that already covers the ref, announces itself on the run that sets it,
+  and warns without failing when it cannot be written. `notes.rewriteMode` is
+  deliberately left at its `concatenate` default, which keeps both entries when
+  two noted commits are squashed together. Known gap: git honours the setting for
+  `amend` and `rebase` only, so `git merge --squash` and cherry-picking onto a
+  divergent base still do not carry notes. See
+  [docs/memory.md](#surviving-history-rewrites). (ADR-068)
 - **The self-hosted Docker Quick-Start builds and runs again.** The `Dockerfile`
   now builds the Cargo workspace (per-crate manifests, `crates/spelunk-server`
   binary) instead of the old single-crate layout, and installs the C/C++
