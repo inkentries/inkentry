@@ -304,8 +304,9 @@ returns a clear message pointing at the right next step — `spelunk init`,
 
 This amendment fixes the identity model that D3's git-notes carrier and the
 `init`-time git-notes import both depend on. It is recorded here, on ADR-068,
-because both consumers are ADR-068 work and the dedup logic in each is gated on
-the decision below. It refines the git-notes v1 surface frozen in
+because both consumers are ADR-068 work. Both **shipped** keyed on the model this
+amendment replaces, so it gates nothing: it supersedes code already on `main`, and
+A6 specifies the retrofit. It refines the git-notes v1 surface frozen in
 [ADR-059](059-git-notes-v1-format-freeze.md) (additive, backward-compatible) and
 the local identity columns added under
 [migration 020](../../crates/spelunk-core/migrations/020_memory_uuid.sql).
@@ -400,16 +401,30 @@ Everything else is **excluded**: `id`, `remote_id`, `uuid`, `schema_version`,
   admit it and then paper over the churn with a second id.) A6 specifies how the
   two fields reconcile on a dedup match.
 
-**This supersedes the existing `reconcile.rs` dedup hash (A0) and deliberately
-changes it in one respect.** That hash folds in `created_at` "so two distinct
-notes with identical text don't collapse". Under `entity_id` they *do* collapse:
-convergence across machines and across a re-`init` is only possible if identity
-is independent of when a copy happened to be written, and `created_at` is not
-reproducible by a second party recording the same decision. The accepted cost is
-narrow: deliberately recording a byte-identical `kind`/`title`/`body` twice now
-yields one entry rather than two. Implementing work replaces the `blake3`/`\x1f`
-hash and its reconcile↔init-import parity test with `entity_id`, keeping the two
-entry points keyed identically.
+**This supersedes the existing `reconcile.rs` dedup hash (A0) outright.** That
+hash keys on six fields — `kind`, `title`, `body`, normalized `tags`, normalized
+`linked_files`, `created_at` — where `entity_id` keys on three. **Three fields
+drop out of identity, and each drop collapses entries that are distinct today:**
+
+- **`created_at`.** The existing hash folds it in "so two distinct notes with
+  identical text don't collapse". Under `entity_id` they *do* collapse:
+  convergence across machines and across a re-`init` is only possible if identity
+  is independent of when a copy happened to be written, and `created_at` is not
+  reproducible by a second party recording the same decision. The accepted cost is
+  narrow: deliberately recording a byte-identical `kind`/`title`/`body` twice now
+  yields one entry rather than two.
+- **`tags` and `linked_files`.** Two entries agreeing on `kind`/`title`/`body` but
+  carrying different tags are two entries under the existing hash and **one**
+  under `entity_id`. In practice this is the larger of the two changes: the
+  existing hash normalizes tag *order*, so only a difference in tag *content*
+  forks the key today, and differing tags on the same recorded decision are far
+  more likely than byte-identical text recorded twice. So this, not `created_at`,
+  is the collapse a real store is most likely to see. It is accepted deliberately,
+  and it is the whole point of excluding the two fields above: the alternative is
+  that re-tagging fragments identity. Neither tagging is lost — on a match the two
+  sets merge by union (A6), so the surviving entry carries both.
+
+A6 specifies the retrofit of the code that computes the superseded hash today.
 
 **JSON canonicalization rules** (so the bytes are identical across the Rust
 client and the server, and reproducible by any third-party reader):
@@ -549,9 +564,19 @@ change to the canonical field set is a `schema_version` bump and a new ADR.
   canonical identity, mapped to the server's `remote_id` handle per A4. Additive
   and optional, consistent with ADR-059 D2's treatment of `remote_id`.
 
-### A6 – Gating rule for the downstream work
+### A6 – Retrofit of the shipped consumers
 
-Both ADR-068 consumers implement dedup against this model:
+Both ADR-068 consumers — the D3 git-notes carrier and the `init`-time git-notes
+import — **shipped before this amendment was written**, keyed on the identity
+model A0 describes. This section is therefore not a gate on upcoming work. It is
+the **specification of a retrofit** of code already on `main`.
+
+What is live on `main` today: `NoteRecord` (`note_record.rs`) still declares
+`pub id: i64` with no `skip_serializing_if`, so the machine-local rowid is
+serialized unconditionally into **every** git-notes blob the shipped carrier
+writes, alongside `pub superseded_by: Option<i64>`. The rowid leak that produced
+the observed `"id":1` collision (A0) is present and unfixed. The retrofit below is
+what closes it.
 
 - **git-notes carrier (D3):** each entry is identified in `refs/notes/spelunk` by
   its `entity_id`. Appending an entry whose `entity_id` is already present on the
@@ -563,6 +588,91 @@ Both ADR-068 consumers implement dedup against this model:
   body}` for any legacy line that lacks the stored field). An entry whose
   `entity_id` already exists locally is not re-inserted. Local rowids are
   assigned fresh on import and are never used to correlate.
+
+#### `note_dedup_hash` is replaced outright
+
+`note_dedup_hash` and its server-side twin `ServerNote::hash()`
+(`crates/spelunk-cli/src/cli/cmd/memory/reconcile.rs`) compute the superseded
+digest. **`entity_id` replaces both. There is no coexistence, no fallback path,
+and no second key**: one function, `entity_id(kind, title, body)` per A2, is the
+key at every site that keys a memory entry. The mechanical deltas are:
+
+- **Digest:** `blake3` becomes `sha256`.
+- **Input framing:** `\x1f`-delimited concatenation of six fields becomes the
+  canonical JSON of three fields (A2).
+- **Availability:** a value recomputed on demand, never stored and never
+  transmitted, becomes a value stored on the row, uniquely indexed, and
+  serialized on the wire (A5). Dedup sets are therefore read from the column
+  rather than recomputed over every local row.
+
+The call sites, and what each becomes (line numbers are indicative; the named
+function or binding is the durable anchor):
+
+- **Reconcile import dedup** — the `existing_hashes` set, ~`:273`, which filters
+  `server.db` candidates down to those absent from `memory.db`. Becomes a set of
+  `entity_id`s.
+- **Reconcile supersede link resolution** — the `hash_to_local` map, ~`:325`.
+  This is the site the identity change actually repairs; specified below.
+- **`init` git-notes import dedup** — the `existing` set and the `to_import`
+  filter, ~`:622` and ~`:627`, on the `init`-time hydration path. Same
+  substitution as reconcile's import dedup, and by the same function.
+- **Reconcile discovery-nudge count** — `count_reconcilable`, ~`:704`. Keys on
+  `entity_id`, with a user-visible consequence: a `server.db` row differing from a
+  local entry only in `created_at`, `tags`, or `linked_files` is no longer counted
+  as new, so on unchanged data the nudge count can fall, including from nonzero to
+  zero (suppressing the nudge entirely).
+- **`ServerNote::hash()`** — the same digest computed over a `server.db` row's raw
+  CSV fields. Retires with `note_dedup_hash`. The `ServerNote` fields that fed it
+  stay on the struct — `tags` and `linked_files` for the union merge below,
+  `created_at` for the created_at-ascending import ordering and for
+  `add_note_with_created_at` — but they no longer feed identity.
+
+**Supersede link resolution (~`:325`) — what changes.** This site exists precisely
+because server rowids aren't portable: it rebuilds a `hash → local rowid` map to
+relink supersede chains after import, because the `superseded_by` rowid read from
+`server.db` means nothing in `memory.db`. Under `entity_id` the edge references
+the successor's `entity_id` (A3), derivable from the successor's own
+`kind`/`title`/`body` — content reconcile already holds for every candidate it
+read. The map becomes `entity_id → local rowid`, answered from A5's unique index.
+Two behaviours change:
+
+- **A successor present in both stores links to the pre-existing local copy.**
+  Today, when the local and server copies of one successor were written at
+  different `created_at`s, they hash differently: the server copy fails the dedup
+  filter, imports as a *second* copy, and the edge is drawn to that duplicate.
+  Under `entity_id` the two copies are one entry and the edge lands on it.
+- **An unresolvable successor is counted, not passed over in silence.** Today,
+  when the successor is not among the rows read from `server.db`, the lookup guard
+  simply yields nothing: the entry imports archived with no link and
+  `skipped_archived_supersede_unresolved` is **not** incremented — that counter
+  covers only the narrower case where the map lookup itself misses. Identity does
+  not eliminate this residue. If the successor row is absent from both stores its
+  content, and therefore its `entity_id`, is not derivable by any scheme and the
+  edge genuinely cannot be drawn. The requirement is that the case is **reported**:
+  an unresolvable supersede target is counted in the reconcile summary rather than
+  dropped silently. Under `entity_id` a nonzero count means a real data gap rather
+  than an identity artifact.
+
+**The parity test's new invariant.** The existing
+`dedup_hash_parity_between_reconcile_and_init_import` test pins two independent
+digest computations against drift, asserting that `note_dedup_hash` (a local row)
+and `ServerNote::hash()` (a `server.db` row) agree for identical content whose CSV
+fields arrive in a different order. Under `entity_id` there are no longer two
+computations to reconcile: **both entry points call one shared
+`entity_id(kind, title, body)`, so they cannot drift by construction.** The
+replacement test asserts the stronger property that shared function makes
+available — two entries agreeing on `kind`/`title`/`body` and differing in *every*
+excluded field (tag *content*, not merely tag order; `linked_files`; `created_at`;
+`status`) yield the same `entity_id`, and the reconcile and `init`-import paths
+both key on that value.
+
+**Precondition: backfill.** This retrofit lands on stores already holding rows
+with no `entity_id`, and A5's unique index will collide with any pre-existing rows
+that agree on `kind`/`title`/`body` but are distinct today under the six-field
+hash — exactly the entries the three dropped fields (A2) used to keep apart.
+Populating the column on existing rows and resolving those collisions is being
+decided separately, is a precondition of this retrofit, and is deliberately not
+designed here.
 
 **Reconciling a dedup match.** On a match, the two copies agree on
 `kind`/`title`/`body` by construction and may differ on everything else. The
