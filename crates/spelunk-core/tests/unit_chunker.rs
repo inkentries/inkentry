@@ -85,7 +85,7 @@ fn embedding_text_prepends_docstring() {
     );
 }
 
-// ── MAX_CHUNK_TOKENS ceiling (oss^114) ───────────────────────────────────────
+// ── MAX_CHUNK_TOKENS ceiling ─────────────────────────────────────────────────
 
 /// A Rust function with `body_lines` short statements, guaranteed short enough
 /// per line that any 120-line window stays under the cap.

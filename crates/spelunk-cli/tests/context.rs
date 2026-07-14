@@ -196,7 +196,7 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
     (tmp, config_path)
 }
 
-// ── budget: durable priority end-to-end (spelunk-oss^149) ─────────────────────
+// ── budget: durable priority end-to-end ───────────────────────────────────────
 
 #[test]
 fn context_budget_keeps_durable_drops_questions_e2e() {

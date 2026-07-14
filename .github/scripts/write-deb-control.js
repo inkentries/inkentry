@@ -9,9 +9,13 @@
 // Usage:
 //   node write-deb-control.js \
 //     --deb-version 0.8.1 \
+//     --depends 'libc6 (>= 2.39), libdbus-1-3 (>= 1.9.14)' \
 //     [--out BUILD/DEBIAN/control]
 //
-// DEB_VERSION may also come from the DEB_VERSION env var (flag wins).
+// DEB_VERSION / DEB_DEPENDS may also come from the environment (flag wins).
+//
+// --depends is required and deliberately has no default: it must be derived
+// from the shipped binaries with dpkg-shlibdeps, never hardcoded here.
 //
 // Only Node.js builtins are used (fs, path) — no extra npm dependencies.
 
@@ -47,7 +51,21 @@ function requireValue(name, ...sources) {
   );
 }
 
-function buildControl(debVersion) {
+// Accepts raw `dpkg-shlibdeps -O` output ("shlibs:Depends=…") or a bare list.
+// Must fold to one line: a newline would truncate the field and silently drop
+// the remaining dependencies.
+function normaliseDepends(raw) {
+  const depends = raw
+    .replace(/^shlibs:Depends=/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (depends === "") {
+    throw new Error("--depends resolved to an empty dependency list");
+  }
+  return depends;
+}
+
+function buildControl(debVersion, depends) {
   // Leading whitespace matters for dpkg: field names must start at column 0.
   // The long-description line must be preceded by a single space and exactly
   // one blank line after the short description.
@@ -55,7 +73,7 @@ function buildControl(debVersion) {
 Version: ${debVersion}
 Architecture: amd64
 Maintainer: spelunk-cloud <hello@spelunk.cloud>
-Depends: libc6 (>= 2.17)
+Depends: ${depends}
 Description: Code intelligence for AI agents
  spelunk provides persistent memory, a code graph, and semantic search
  for AI coding agents. Includes the spelunk CLI and spelunk-server.
@@ -73,6 +91,10 @@ function main() {
     env.DEB_VERSION
   );
 
+  const depends = normaliseDepends(
+    requireValue("--depends", args.depends, env.DEB_DEPENDS)
+  );
+
   const outPath = path.resolve(
     requireValue("--out", args.out, "BUILD/DEBIAN/control")
   );
@@ -80,7 +102,7 @@ function main() {
   // Ensure parent directory exists
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
-  const control = buildControl(debVersion);
+  const control = buildControl(debVersion, depends);
 
   fs.writeFileSync(outPath, control, "utf8");
   process.stdout.write(`Wrote ${outPath}\n`);

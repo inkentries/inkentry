@@ -94,6 +94,10 @@ yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
 
+Summaries are the exception: a chunk whose summary failed (say the LLM was
+unreachable) is recorded as attempted rather than missing, so a plain re-run
+skips it. Use `--force` to retry those.
+
 The embed phase calibrates its own batch size instead of guessing: it times a
 1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
 their timeouts) from the observed per-chunk rate — smaller batches on slow

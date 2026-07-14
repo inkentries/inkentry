@@ -385,7 +385,7 @@ mod tests {
         });
     }
 
-    /// Regression guard for the opt-in fix (spelunk-oss^64 #5): a script left
+    /// Regression guard for the opt-in fix: a script left
     /// at the *old*, unguarded location (`~/scripts/web-to-md.ts`) must NOT be
     /// picked up any more — only the fixed `~/.config/spelunk/scripts/` path
     /// counts. Prior to the fix, any attacker-writable home-dir script at the

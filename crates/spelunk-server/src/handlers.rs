@@ -2702,9 +2702,9 @@ mod tests {
             Err(_elapsed) => panic!(
                 "the SSE connection was still open {overall_deadline:?} after a HangingLlm \
                  backend started generating — llm_generate_with_timeout did not cut it off \
-                 within its {generation_budget:?} budget. This is exactly the bug QA flagged \
-                 (spelunk-oss^60): /explore's TimeoutLayer can't see spawned generation work, \
-                 so a hung backend would otherwise hold the connection open indefinitely."
+                 within its {generation_budget:?} budget. /explore's TimeoutLayer can't see \
+                 spawned generation work, so a hung backend would otherwise hold the \
+                 connection open indefinitely."
             ),
         }
     }

@@ -114,6 +114,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `amend` and `rebase` only, so `git merge --squash` and cherry-picking onto a
   divergent base still do not carry notes. See
   [docs/memory.md](#surviving-history-rewrites). (ADR-068)
+- **The Debian package no longer installs a `spelunk` that cannot start.** The
+  `.deb` declared `libc6` as its only dependency, omitting `libdbus-1-3`, which
+  the `spelunk` binary dynamically links via the keyring's secret-service
+  backend. On a machine without libdbus already present the install *reported
+  success* and the binary then failed to load with `libdbus-1.so.3: cannot open
+  shared object file` (exit 127). `Depends:` is now derived from the packaged
+  binaries at release time with `dpkg-shlibdeps` instead of being hand-written,
+  so it lists every shared library they actually link (`libc6`, `libdbus-1-3`,
+  and `libgcc-s1`) and the package manager pulls them in. The declared `libc6`
+  floor now also reflects the glibc the release binaries are built against
+  (2.39), so a system with an older glibc gets an accurate refusal at install
+  time rather than a package that installs and then crashes. A release-pipeline
+  check now installs the `.deb` in a clean container and runs both binaries, so
+  a missing dependency fails the build instead of shipping.
 - **The self-hosted Docker Quick-Start builds and runs again.** The `Dockerfile`
   now builds the Cargo workspace (per-crate manifests, `crates/spelunk-server`
   binary) instead of the old single-crate layout, and installs the C/C++
@@ -152,6 +166,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   different port (which left two servers on one `server.db`), and fails loudly
   if an unrelated process holds the port. A single-instance guard prevents two
   servers running against the same `server.db`.
+- **`spelunk index` no longer silently drops LLM summaries.** The summary pass
+  ran detached from the rest of the run, so an index whose other phases finished
+  first could exit with summaries still in flight: they were never generated,
+  and nothing reported it. `index` now finishes summaries before it returns.
+  Generation stays best-effort (a failure warns and never fails the run, so git
+  hooks still exit 0), and `--detach` / `--detach-embed` still background the
+  whole run.
+- **`spelunk index` no longer reports success for summaries the LLM never
+  produced.** Against an unreachable or failing LLM the run printed `Summarised
+  1 batch(es).` and exited 0 while storing empty summaries. Failed batches are
+  now excluded from that count (`Summarised 0 batch(es).`) and a warning reports
+  how many produced nothing; `RUST_LOG=warn` shows the cause. Retrying needs
+  `spelunk index --force`, since a chunk whose summary failed is recorded as
+  attempted and a plain re-run skips it.
 
 ## [0.9.3] — 2026-07-08
 
@@ -798,7 +826,6 @@ to re-embed. (#439, #441)
 - **Auto-spawned `spelunk-server` now binds to `127.0.0.1` only.** Previously
   the server started by `spelunk init` / `ensure_server_running` defaulted to
   `0.0.0.0`, making the unauthenticated local server LAN-reachable.
-  (THREAT-MODEL req #9, decision #88)
 
 ### Added
 

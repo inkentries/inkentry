@@ -1,6 +1,6 @@
 //! Integration tests for `spelunk init` configuring the `origin` git-notes
 //! fetch refspec so `refs/notes/spelunk` (spelunk's memory) travels on
-//! clone/fetch (spelunk-oss^126, ADR-068).
+//! clone/fetch (ADR-068).
 //!
 //! Covered:
 //! - origin present: `remote.origin.fetch` gains `+refs/notes/spelunk:…` and

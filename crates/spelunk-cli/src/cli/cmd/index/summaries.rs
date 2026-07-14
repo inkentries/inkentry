@@ -48,6 +48,7 @@ pub(super) async fn generate_summaries(
     eprintln!("Generating summaries ({total_chunks} chunks, batch size {batch_size})\u{2026}");
 
     let mut batch_num = 0usize;
+    let mut failed_batches = 0usize;
     loop {
         let batch = db.chunks_without_summaries(batch_size)?;
         if batch.is_empty() {
@@ -58,6 +59,10 @@ pub(super) async fn generate_summaries(
 
         match crate::indexer::summariser::summarise_batch(&llm, &batch).await {
             Ok(summaries) => {
+                // summarise_batch reports LLM/transport failure as an empty result.
+                if summaries.is_empty() {
+                    failed_batches += 1;
+                }
                 let mut summarised_ids = std::collections::HashSet::new();
                 for (chunk_id, summary) in summaries {
                     // A secret can appear in an LLM-generated summary even when the
@@ -88,6 +93,7 @@ pub(super) async fn generate_summaries(
                 }
             }
             Err(e) => {
+                failed_batches += 1;
                 tracing::warn!("summarise_batch failed: {e}");
                 // Mark the batch as attempted so we don't loop forever.
                 for (id, _, _, _) in &batch {
@@ -97,6 +103,16 @@ pub(super) async fn generate_summaries(
         }
     }
 
-    eprintln!("  Summarised {batch_num} batch(es).");
+    let ok_batches = batch_num - failed_batches;
+    eprintln!("  Summarised {ok_batches} batch(es).");
+    if failed_batches > 0 {
+        // Failed chunks are stored as "" (not NULL), so a plain re-run skips
+        // them; --force reparses and clears the summary back to NULL.
+        eprintln!(
+            "Warning: {failed_batches} of {batch_num} summary batch(es) produced no summary; \
+             those chunks are indexed without one. Re-run with `spelunk index --force` to retry \
+             (`RUST_LOG=warn` shows the cause)."
+        );
+    }
     Ok(())
 }

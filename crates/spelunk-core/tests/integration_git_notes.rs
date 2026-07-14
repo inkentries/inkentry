@@ -408,7 +408,7 @@ async fn append_to_git_notes_returns_err_outside_git_repo() {
 
 // ── security regression: note bodies must go via stdin, never argv ──────────
 //
-// oss^61: `git notes add` used to receive the note body as a `-m <arg>` argv
+// `git notes add` used to receive the note body as a `-m <arg>` argv
 // value. A body that itself looked like a git option (e.g. starting with `-`)
 // could previously be misparsed as an option to `git notes add` rather than
 // literal note content. These tests prove (a) option-like / metacharacter-

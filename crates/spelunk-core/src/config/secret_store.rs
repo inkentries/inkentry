@@ -16,7 +16,7 @@
 //!
 //! The store holds **opaque string secrets keyed by name** — it does not know
 //! or care whether a value is today's `sk-sp-…` bearer key or a future WorkOS
-//! access/refresh token (spelunk-oss^22). Callers pick the key name; this module
+//! access/refresh token. Callers pick the key name; this module
 //! just persists and retrieves the bytes. That keeps the storage layer reusable
 //! when the credential format changes.
 //!
@@ -360,8 +360,8 @@ mod tests {
 
     #[test]
     fn file_store_is_format_agnostic_multiple_keys() {
-        // The store holds opaque values under arbitrary names — proving ^22 can
-        // reuse it for access/refresh tokens without code changes here.
+        // The store holds opaque values under arbitrary names, so a future
+        // access/refresh-token migration can reuse it with no changes here.
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path().join("secrets.toml"));
         store.set("access_token", "at-123").unwrap();

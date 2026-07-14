@@ -1,4 +1,4 @@
--- spelunk-oss^67: remove the snapshot storage layer.
+-- Remove the snapshot storage layer.
 --
 -- `spelunk search --as-of <sha>` was never wired to indexing: nothing ever
 -- called create_snapshot/insert_snapshot_*/update_snapshot_stats, so

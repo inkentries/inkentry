@@ -99,7 +99,7 @@ pub async fn open_memory_backend(
     // cloud; `offline` and `local_first` resolve to the local store.
     let route_remote = cfg.resolve_mode() == SyncMode::CloudFirst;
     if let Some(url) = cfg.server_url.as_ref().filter(|_| route_remote) {
-        // spelunk-oss^63 follow-up (^77): the cloud-routing path attaches
+        // The cloud-routing path attaches
         // `Authorization: Bearer {server_key}` to every memory request
         // (`RemoteMemoryBackend::authed`) and to the slug→UUID `GET
         // /v1/projects` lookup. A non-loopback plaintext `http://` `server_url`
@@ -291,9 +291,9 @@ mod backend_selection_tests {
         // ADR-005 D5: a `project_id` that is already a UUID is used directly,
         // so the remote backend is constructed without any slug→UUID lookup
         // (no network call against the unreachable team.example.com host).
-        // A non-loopback host must be `https://` to clear the transport guard
-        // (spelunk-oss^63/^77); the scheme is irrelevant to the raw-UUID path
-        // otherwise, since nothing is sent here.
+        // A non-loopback host must be `https://` to clear the transport guard;
+        // the scheme is irrelevant to the raw-UUID path otherwise, since
+        // nothing is sent here.
         let cfg = Config {
             server_url: Some("https://team.example.com:7777".to_string()),
             project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
@@ -330,7 +330,7 @@ mod backend_selection_tests {
     /// network or DNS.
     ///
     /// That same non-loopback plaintext `http://` url is now rejected by
-    /// `open_memory_backend`'s transport guard (spelunk-oss^63/^77), so this
+    /// `open_memory_backend`'s transport guard, so this
     /// test enters at the `open_remote_memory_backend` seam directly.
     /// Production reaches that seam only *after* the guard has passed; the guard
     /// itself is covered by `cloud_first_rejects_non_loopback_http` below.
@@ -420,7 +420,7 @@ mod backend_selection_tests {
         );
     }
 
-    /// spelunk-oss^63 follow-up (^77): a `cloud_first` config with a non-loopback
+    /// A `cloud_first` config with a non-loopback
     /// plaintext `http://` `server_url` must be rejected by `open_memory_backend`
     /// before any bearer token is sent — over the memory REST calls
     /// (`RemoteMemoryBackend::authed`) or the slug→UUID `GET /v1/projects`

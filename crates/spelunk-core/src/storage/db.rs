@@ -344,7 +344,7 @@ impl Database {
         Ok(())
     }
 
-    /// Drop the snapshot storage tables (spelunk-oss^67).
+    /// Drop the snapshot storage tables.
     ///
     /// `snapshots`/`snapshot_files`/`snapshot_chunks` were created by
     /// `016_snapshots.sql` and `snapshot_embeddings` by

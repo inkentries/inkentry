@@ -124,6 +124,18 @@ jobs:
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}
 
+  release-scripts:
+    name: Release script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # The packaging scripts only otherwise run at release-tag time, where a
+      # break is expensive. node:test is a builtin: nothing to install.
+      - name: Test packaging scripts
+        run: node --test .github/scripts/write-deb-control.test.js
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest

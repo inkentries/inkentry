@@ -34,9 +34,9 @@ pub(crate) fn open_project_db(
 /// `server_url` is not configured.
 pub(crate) fn require_server_client(cfg: &Config, feature: &str) -> Result<ServerInferenceClient> {
     // Inference-only feature: a local `spelunk server start` is enough, so the
-    // guidance must not tell a solo user to configure a team `server_url`
-    // (oss^133). `cfg.server_url` here is the effective config, so it is `None`
-    // for an auto-discovered loopback and `Some` only for an explicit team URL.
+    // guidance must not tell a solo user to configure a team `server_url`.
+    // `cfg.server_url` here is the effective config, so it is `None` for an
+    // auto-discovered loopback and `Some` only for an explicit team URL.
     ServerInferenceClient::from_config(cfg).ok_or_else(|| {
         anyhow::anyhow!(crate::capability::inference_server_required_message(
             feature
