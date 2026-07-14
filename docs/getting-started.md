@@ -102,9 +102,15 @@ for `<version>` (e.g. `0.8.0`). The download path is pinned to the release tag
 
 ```bash
 curl -fsSLO https://github.com/spelunk-cloud/spelunk/releases/download/v<version>/spelunk_<version>_amd64.deb
-sudo dpkg -i spelunk_<version>_amd64.deb
+sudo apt install ./spelunk_<version>_amd64.deb
 spelunk --version
 ```
+
+> Install with `apt`, not `dpkg -i`. The package declares the shared libraries
+> the binaries link against (including `libdbus-1-3`); `apt` pulls those in,
+> whereas `dpkg -i` does not resolve dependencies and leaves the package
+> unconfigured on a machine that lacks them. The leading `./` is required, or
+> `apt` treats the argument as a package name instead of a file.
 
 ### Manual tarball / zip (any platform)
 
