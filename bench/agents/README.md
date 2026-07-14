@@ -64,7 +64,19 @@ DeepSeek-vs-native-Claude distinction for the claude-code harness lives in
 the model sees `spelunk_search`; under the MCP harnesses it sees
 `mcp__spelunk__spelunk_search`. Names, descriptions, and schemas are
 otherwise identical because they are the same objects. Transport differs,
-capability does not — the one accepted, documented asymmetry.
+capability does not.
+
+**The system prompt is not identical across harnesses.** Each harness keeps
+its own base prompt; on a spelunk condition it appends a guidance sentence
+naming that harness's tool names rather than reusing `agent.py`'s whole
+`SYSTEM_PROMPT_SPELUNK`. That sentence is held as an exact substring of
+`SYSTEM_PROMPT_SPELUNK` and asserted by the offline suite, so an upstream
+reword fails loudly, but a spelunk arm's full prompt is *not* byte-identical
+to `agent.py`'s. Unlike the tool schemas, this is not equivalence by
+construction: it is the second accepted asymmetry alongside tool namespacing.
+Within a harness the baseline/spelunk contrast is unaffected (same base
+prompt on both sides); weigh it when comparing spelunk uplift *across*
+harnesses.
 
 **MCP hygiene (`--strict-mcp-config`).** The claude-code adapter passes
 `--strict-mcp-config` in *both* arms, so only the bench's own `--mcp-config`
