@@ -149,6 +149,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   different port (which left two servers on one `server.db`), and fails loudly
   if an unrelated process holds the port. A single-instance guard prevents two
   servers running against the same `server.db`.
+- **`spelunk index` no longer silently drops LLM summaries.** The summary pass
+  ran detached from the rest of the run, so an index whose other phases finished
+  first could exit with summaries still in flight: they were never generated,
+  and nothing reported it. `index` now finishes summaries before it returns.
+  Generation stays best-effort (a failure warns and never fails the run, so git
+  hooks still exit 0), and `--detach` / `--detach-embed` still background the
+  whole run.
+- **`spelunk index` no longer reports success for summaries the LLM never
+  produced.** Against an unreachable or failing LLM the run printed `Summarised
+  1 batch(es).` and exited 0 while storing empty summaries. Failed batches are
+  now excluded from that count (`Summarised 0 batch(es).`) and a warning reports
+  how many produced nothing; `RUST_LOG=warn` shows the cause. Retrying needs
+  `spelunk index --force`, since a chunk whose summary failed is recorded as
+  attempted and a plain re-run skips it.
 
 ## [0.9.3] — 2026-07-08
 
