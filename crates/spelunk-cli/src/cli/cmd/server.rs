@@ -82,63 +82,12 @@ fn create_state_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open `path` for a full-content (truncating) write, refusing to follow a
-/// symlink and creating the file `0600` (owner-only) on Unix.
-///
-/// State files (`server.pid`, `server.port`) live in a fixed, predictable
-/// location (`~/.local/state/spelunk/`); on a shared host an attacker could
-/// pre-create a symlink there pointing at an arbitrary file the spelunk user
-/// can write, turning a routine `server start` into an overwrite primitive.
-/// `O_NOFOLLOW` (Unix) makes the open fail instead of following such a link.
-fn open_state_file_for_write(path: &Path) -> Result<std::fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .custom_flags(libc_o_nofollow())
-            .open(path)
-            .with_context(|| format!("opening {}", path.display()))
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .with_context(|| format!("opening {}", path.display()))
-    }
-}
-
-/// `O_NOFOLLOW` — not exposed by `std`, so defined locally to avoid pulling
-/// in the `libc` crate for a single constant. Value is stable across Linux
-/// and macOS (both define it as `0o400000`, i.e. `0x0100`... — actual
-/// per-platform values below).
-#[cfg(unix)]
-fn libc_o_nofollow() -> i32 {
-    #[cfg(target_os = "macos")]
-    {
-        0x0000_0100 // O_NOFOLLOW on macOS/BSD
-    }
-    #[cfg(target_os = "linux")]
-    {
-        0o400_000 // O_NOFOLLOW on Linux
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        0
-    }
-}
-
 /// Write `contents` to a state file, creating it `0600` and refusing to
-/// follow an existing symlink at `path` (see [`open_state_file_for_write`]).
+/// follow an existing symlink at `path` (see
+/// [`super::helpers::open_private_file_for_write`]).
 fn write_state_file(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
-    let mut f = open_state_file_for_write(path)?;
+    let mut f = super::helpers::open_private_file_for_write(path)?;
     f.write_all(contents.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
@@ -154,7 +103,7 @@ fn open_log_file_for_append(path: &Path) -> Result<std::fs::File> {
             .create(true)
             .append(true)
             .mode(0o600)
-            .custom_flags(libc_o_nofollow())
+            .custom_flags(super::helpers::libc_o_nofollow())
             .open(path)
             .with_context(|| format!("opening {}", path.display()))
     }
