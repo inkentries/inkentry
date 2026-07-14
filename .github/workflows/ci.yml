@@ -124,6 +124,27 @@ jobs:
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}
 
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    # The image compiles the release server (candle embedder) from scratch with
+    # no cargo cache, so allow a generous ceiling.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t spelunk-server:ci .
+
+      # Assert the image ships the REAL server, not a placeholder: a no-op
+      # binary exits 0 on every flag, so check for actual OUTPUT. Running the
+      # binary also resolves every NEEDED shared lib at load, guarding the
+      # runtime stage's lib set (a `docker build` alone never runs it).
+      - name: Smoke-test the image
+        run: |
+          test -n "$(docker run --rm spelunk-server:ci --version)"
+          docker run --rm spelunk-server:ci --print-openapi | head -c1 | grep -q .
+
   openapi-snapshot:
     name: OpenAPI snapshot check
     runs-on: ubuntu-latest
