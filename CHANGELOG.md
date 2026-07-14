@@ -39,6 +39,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk init` no longer writes a `CLAUDE.md` into the target repository.**
   Users who want an agent guide should manually copy `docs/examples/AGENT.md`
   and rename it to `CLAUDE.md` or `AGENT.md` as needed.
+- **`spelunk index` embed-phase messages drop the pre-1.0 "older build /
+  upgrade the server" advice.** The three user-facing embed messages keep their
+  actionable guidance (the request-budget hint and the conservative-budget
+  fallback) but no longer suggest the server may be a legacy build or tell users
+  to upgrade or restart it. The request-budget fallback behaviour is unchanged.
 
 ### Added
 
