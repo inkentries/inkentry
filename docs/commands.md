@@ -677,6 +677,12 @@ like any other plumbing command; `--best-effort` downgrades that to a warning on
 stderr and exit 0, which is what the hook uses so a failed publish can never cost
 you your `git push`.
 
+If another process holds the notes lock, the merge cannot run, so the publish is
+skipped rather than pushed unmerged. That is reported on stderr and as
+`"skipped":"lock_unavailable"` on stdout, and exits 0 whether or not
+`--best-effort` was passed. Nothing is lost: your records stay on the local ref
+and publish on your next push.
+
 ---
 
 ## Environment variables
