@@ -69,6 +69,27 @@ fn git_out(dir: &Path, args: &[&str]) -> Output {
     git_out_with_path(dir, &path, args)
 }
 
+/// Like [`git_out`], but with the `HOME` a hook's spelunk child resolves its
+/// config under. The other helpers leave `HOME` alone, so a hook they spawn
+/// reads the developer's real `~/.config/spelunk`; a test that turns on the
+/// contents of that config has to point it somewhere it owns.
+fn git_push_with_home(dir: &Path, home: &Path, args: &[&str]) -> Output {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("HOME", home)
+        .env("SPELUNK_SECRET_STORE", "file")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("spawn git")
+}
+
 /// Like [`git_out`] but asserts the command succeeded.
 fn git(dir: &Path, args: &[&str]) -> Output {
     let out = git_out(dir, args);
@@ -394,6 +415,60 @@ fn failed_notes_push_does_not_block_the_branch_push() {
         line_count(&attempts),
         1,
         "a rejected notes push must be attempted exactly once, never retried"
+    );
+}
+
+/// A config that will not load must not cost the user their branch push either.
+///
+/// The config loads before the command dispatch, so a broken one aborted the
+/// push with a bare `?` before `--best-effort` was ever consulted. The failure
+/// mode reaches users through the keychain, the default store when
+/// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
+#[test]
+fn an_unloadable_config_does_not_block_the_branch_push() {
+    let home = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let (origin, dev) = origin_and_dev(tmp.path());
+
+    install_pre_push(home.path(), &dev);
+    memory_add(home.path(), &dev, "broken-config-decision");
+    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
+    commit(&dev, "payload");
+
+    // Broken only now: `memory add` above needs a config that loads.
+    let cfg_dir = home.path().join(".config").join("spelunk");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(cfg_dir.join("config.toml"), "not = valid toml [[[\n").unwrap();
+
+    let out = git_push_with_home(&dev, home.path(), &["push", "origin", "main"]);
+    assert!(
+        out.status.success(),
+        "the branch push must survive a config that will not load, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The commit really landed. Without this the assert above passes whenever
+    // the hook is simply not reached, which is what the bug did to the push.
+    assert_eq!(
+        git_stdout(&dev, &["rev-parse", "HEAD"]),
+        git_stdout(&origin, &["rev-parse", "refs/heads/main"]),
+        "origin must have received the branch commit"
+    );
+
+    // Tolerating the config must not degrade into skipping the publish: the
+    // command does not read `cfg`, so it still has everything it needs.
+    assert!(
+        note_lines(&origin, &annotated)
+            .iter()
+            .any(|l| l.contains("broken-config-decision")),
+        "the note must still publish despite the unloadable config"
+    );
+
+    // And the user is told why, rather than it passing in silence.
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("config.toml"),
+        "the hook should warn about the config on stderr, got: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
