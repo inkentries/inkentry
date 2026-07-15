@@ -89,7 +89,8 @@ which is automatic:
 - **Reading teammates' memory is automatic.** `spelunk init` configures the
   `origin` fetch refspec, so their notes arrive on your next `git fetch`, and
   spelunk merges them on its own read paths.
-- **Publishing your own memory is manual.** You push the notes ref yourself.
+- **Publishing your own memory is opt-in.** Your memory stays local until you
+  install the pre-push hook (or push the notes ref by hand).
 
 When you run `spelunk init` inside a git repository with an `origin` remote,
 spelunk automatically configures the fetch refspec for `origin` so that
@@ -98,7 +99,7 @@ the status:
 
 ```
 Memory:  configured notes fetch refspec on 'origin' (teammates' memory arrives on fetch)
-         push notes after each memory change: git push origin refs/notes/spelunk
+         your memory stays local until you install the pre-push hook: spelunk hooks install --pre-push
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
 
@@ -106,15 +107,65 @@ The last line is a separate setting, covered in [Surviving history
 rewrites](#surviving-history-rewrites) below. It is printed only by the run that
 sets it, so a re-run of `init` omits it.
 
-To publish your memory notes to the remote, push the notes ref:
+#### Publishing with the pre-push hook
+
+Install the hook once per clone:
+
+```bash
+spelunk hooks install --pre-push
+```
+
+From then on, every `git push` to a named remote publishes your memory there:
+spelunk fetches the remote's notes, merges them into yours (a union, so nothing
+is dropped), and pushes `refs/notes/spelunk`. Once it is installed, `init`
+reports that in place of the opt-in line:
+
+```
+Memory:  notes fetch refspec already configured on 'origin'
+         pre-push hook installed: your memory publishes on `git push`
+```
+
+**Publishing is tied to `git push` on purpose.** A note attached to a commit you
+have not pushed can reach the remote while the commit itself does not, and a
+teammate's clone then cannot resolve what the note is attached to, so the entry
+is orphaned: it is on the remote, and nobody ever sees it. Pushing is the moment
+that reliably coincides with "this code is being shared", which is why the hook
+runs there rather than on each `memory add` or on a timer.
+
+**The hook never blocks your push.** If publishing fails (offline, or the remote
+rejects the notes ref) it warns on stderr and exits 0, so your code push lands
+regardless. Only a lost race is retried, up to three times: that is a teammate
+publishing in the window between the fetch and the push, so re-merging theirs
+lets the next attempt through. Every other failure is attempted once, so an
+unreachable remote costs you one timeout rather than three. It never
+force-pushes: the union already carries both sides, so forcing could only discard
+a teammate's memory.
+
+The one thing that does stop your push is spelunk itself being gone. The hook
+records the absolute path of the binary that installed it, rather than looking
+`spelunk` up on `PATH`, because GUI git clients on macOS take their environment
+from launchd rather than your shell profile, and would otherwise publish nothing
+while appearing to work. If you move or reinstall spelunk, that path goes stale
+and the hook fails loudly; re-run `spelunk hooks install --pre-push` to
+re-resolve it. Remove it entirely with `spelunk hooks uninstall`.
+
+Teammates never receive the hook: git does not clone `.git/hooks`, so installing
+it affects only your own clone.
+
+#### Publishing without the hook
+
+If you would rather not install a hook, push the notes ref yourself:
 
 ```bash
 git push origin refs/notes/spelunk
 ```
 
-Re-run this push whenever you record memory: each `spelunk memory add` (or
-remove) creates a new notes commit that travels only once it is pushed. The
-fetch refspec, by contrast, is configured once, so teammates' (and later
+Re-run this whenever you record memory: each `spelunk memory add` (or remove)
+creates a new notes commit that travels only once it is pushed. Push it **after**
+you have pushed the commits your entries are attached to, or those entries arrive
+orphaned (see above). The hook exists to get that ordering right for you.
+
+The fetch refspec, by contrast, is configured once, so teammates' (and later
 clones') `git fetch` then pulls whatever notes you have already pushed.
 
 **How fetched notes become visible.** The refspec fetches into a *tracking* ref,
@@ -150,11 +201,11 @@ repository), `spelunk init` prints the commands to run later:
 ```
 Memory:  no 'origin' remote, so the notes refspec is not configured
          run later: git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'
-         push notes after each memory change: git push origin refs/notes/spelunk
+         your memory stays local until you install the pre-push hook: spelunk hooks install --pre-push
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
 
-Add the refspec when an `origin` is created, then push the notes as above. The
+Add the refspec when an `origin` is created, then publish as above. The
 `notes.rewriteRef` line appears here too: rewrites are purely local, so that
 setting is configured even in a repository with no remote.
 
@@ -487,6 +538,14 @@ Install the git hook and harvesting happens on every commit:
 
 ```bash
 spelunk hooks install
+```
+
+To also publish memory to your remote on every `git push`, install the pre-push
+hook (see [Sharing memory across
+clones](#sharing-memory-across-clones-via-git-notes)):
+
+```bash
+spelunk hooks install --pre-push
 ```
 
 ## Importing from a local server

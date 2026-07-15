@@ -43,8 +43,8 @@ slug.
 `refs/notes/spelunk` arrives on `git fetch`, landing on the tracking ref
 `refs/notes/origin/spelunk`. `memory list`, `context`, and `init` merge that
 tracking ref into your own notes, so *reading* teammates' memory needs no extra
-step. *Publishing* yours is still manual: the init output includes the push
-command; re-run it after each memory change so new notes commits travel. See
+step. *Publishing* yours is opt-in: your memory stays local until you install the
+pre-push hook, and the init output names the command that does it. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
 **Memory survives history rewrites:** `init` also points `notes.rewriteRef` at
@@ -402,10 +402,11 @@ spelunk autoclean
 
 ## spelunk hooks
 
-Manage git post-commit hooks.
+Manage spelunk's git hooks.
 
 ```
 spelunk hooks install [--ci]
+spelunk hooks install --pre-push
 spelunk hooks uninstall
 ```
 
@@ -413,6 +414,26 @@ spelunk hooks uninstall
 `spelunk memory harvest` after each commit (both `--detach` so git is not
 blocked). Developers without `spelunk` installed are unaffected. `--ci` prints a
 GitHub Actions workflow step instead of writing a hook.
+
+`install --pre-push` writes a pre-push hook that publishes your memory
+(`refs/notes/spelunk`) to the remote you are pushing to, so decisions travel with
+the code they describe. It merges the remote's notes into yours before pushing (a
+union, so neither side is dropped) and retries a lost race up to three times. It
+never blocks your push: on failure it warns on stderr and exits 0, and it never
+force-pushes. Publishing is opt-in, so your memory stays local until you install
+it. See [memory.md](memory.md#sharing-memory-across-clones-via-git-notes).
+
+The hook is a shim around [`spelunk plumbing
+publish-notes`](#spelunk-plumbing), with the absolute path of the installing
+binary embedded rather than a `PATH` lookup, so it keeps working under GUI git
+clients. If you move or reinstall spelunk the hook fails loudly; re-run
+`spelunk hooks install --pre-push` to re-resolve the path.
+
+Neither hook overwrites one it did not write: if a hook of that name already
+exists, `install` reports it and leaves the file alone. Git never clones
+`.git/hooks`, so installing either hook affects only your own clone.
+
+`uninstall` removes every hook spelunk installed, leaving any other hooks alone.
 
 ---
 
@@ -639,7 +660,19 @@ spelunk plumbing knn <query>           # KNN vector search
 spelunk plumbing embed                 # read stdin lines, emit vectors
 spelunk plumbing graph-edges           # code graph edges
 spelunk plumbing read-memory           # memory entries as JSONL
+spelunk plumbing publish-notes [remote]  # publish memory notes to a remote
 ```
+
+`publish-notes` fetches the remote's `refs/notes/spelunk` onto the tracking ref,
+merges it into yours with `cat_sort_uniq`, and pushes the result (defaulting to
+`origin`). It is the flow behind `spelunk hooks install --pre-push`, which is the
+command to reach for; this one is the plumbing underneath it.
+
+Unlike the rest of the namespace it **writes** and performs **network I/O**, so
+"plumbing is read-only" does not hold for it. It exits 2 on a publish failure
+like any other plumbing command; `--best-effort` downgrades that to a warning on
+stderr and exit 0, which is what the hook uses so a failed publish can never cost
+you your `git push`.
 
 ---
 

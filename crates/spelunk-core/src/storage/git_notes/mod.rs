@@ -11,8 +11,10 @@ use fold::fold_records;
 mod backend_impl;
 mod fold;
 mod lock;
+mod publish;
 
 pub use lock::{NotesLock, lock_notes};
+pub use publish::{PublishOutcome, SkipReason, publish_notes};
 
 // ── Carry config: surviving history rewrites ─────────────────────────────────
 
