@@ -48,8 +48,8 @@ impl MemoryBackend for GitNotesBackend {
         let effective_limit = limit.min(super::GIT_NOTES_MAX_LIST);
         if limit > super::GIT_NOTES_MAX_LIST {
             tracing::warn!(
-                "GitNotesBackend::list: caller requested {} entries; capped at {} to prevent \
-                 O(n) subprocess hang. Use --backend sqlite for unbounded listing.",
+                "GitNotesBackend::list: caller requested {} entries; capped at {}. \
+                 Use --backend sqlite for unbounded listing.",
                 limit,
                 super::GIT_NOTES_MAX_LIST
             );
@@ -69,8 +69,8 @@ impl MemoryBackend for GitNotesBackend {
     }
 
     async fn get(&self, id: i64) -> Result<Option<Note>> {
-        for (sha, _) in self.noted_commits().await? {
-            for record in self.read_records(&sha).await? {
+        for noted in self.noted_commits().await? {
+            for record in self.read_records(&noted.commit).await? {
                 if record.id == id {
                     return Ok(Some(record_to_note(record)));
                 }
@@ -84,8 +84,8 @@ impl MemoryBackend for GitNotesBackend {
     }
 
     async fn archive(&self, id: i64) -> Result<bool> {
-        for (sha, _) in self.noted_commits().await? {
-            if self.archive_record(&sha, id).await? {
+        for noted in self.noted_commits().await? {
+            if self.archive_record(&noted.commit, id).await? {
                 return Ok(true);
             }
         }

@@ -123,6 +123,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A decision recorded independently on two machines now lists once, not twice.**
+  Two machines that record the same decision (identical `kind`, `title`, and
+  `body`) derive the same identity from that content, but `spelunk memory list`
+  and `spelunk context` read every copy back and showed each one, so a decision
+  both teammates had recorded looked like two competing entries. Those reads now
+  fold copies by identity: one entry, `tags` and `linked_files` unioned across
+  the copies (added, never removed), and the earliest recording time kept. An
+  entry archived on any machine reads as archived everywhere. This matches the
+  identity-keyed dedup `memory reconcile` and `spelunk init` already do on
+  import.
+
+  Reads that walk every note are also substantially faster. The fold has to see
+  every copy of an entry before it can emit one, so a read can no longer stop as
+  soon as it has enough entries the way it did before; note blobs are therefore
+  read with a single `git cat-file --batch` rather than one `git notes show`
+  subprocess per note.
+
 - **`spelunk init` no longer breaks plain `git fetch` / `git pull`, and no
   longer lets a fetch destroy your unpushed memory.** The fetch refspec `init`
   configured, `+refs/notes/spelunk:refs/notes/spelunk`, had two failures. It is
