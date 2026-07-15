@@ -342,8 +342,12 @@ fn a_symlink_at_the_log_path_is_refused_and_does_not_fail_the_index() {
 
 /// The other detached child. `--detach-embed` runs the same phases (and so the
 /// same summary pass) in a subprocess whose stderr was closed identically.
+///
+/// Routing alone is not enough: a log nobody is told about leaves this path's
+/// output identical to the bug, which is what "written and reaches nobody"
+/// means. The pointer is as much the fix as the redirect.
 #[test]
-fn detached_embed_child_routes_diagnostics_to_the_log() {
+fn detached_embed_child_routes_diagnostics_to_the_log_and_points_at_it() {
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let f = fixture(&rt);
 
@@ -351,10 +355,26 @@ fn detached_embed_child_routes_diagnostics_to_the_log() {
         .arg("--detach-embed")
         .output()
         .expect("run spelunk index --detach-embed");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
         "--detach-embed must not fail the index ({})",
         out.status
+    );
+    assert!(
+        stdout.contains("Log: ") && stdout.contains("index-background.log"),
+        "the detached embed child's log must be named, or its diagnostics are \
+         undiscoverable:\n{stdout}"
+    );
+    // The pointer belongs after the status line, matching the other path's
+    // parent-then-indented-child shape.
+    let status_line = stdout
+        .find("Run `spelunk status`")
+        .expect("embed path must keep its status line");
+    let pointer = stdout.find("Log: ").expect("pointer present");
+    assert!(
+        status_line < pointer,
+        "the log pointer must follow the status line, not precede it:\n{stdout}"
     );
 
     let contents = wait_for_log_containing(&log_path(&f.spelunk_dir), "produced no summary");
@@ -362,5 +382,43 @@ fn detached_embed_child_routes_diagnostics_to_the_log() {
         contents.contains("summary batch(es) produced no summary"),
         "the detached embed child's warning must reach the log too:\n{contents}"
     );
+    drop(f.server);
+}
+
+/// The pointer is conditional on a log having actually opened, so the embed
+/// path must stay silent rather than name a log that does not exist.
+#[test]
+fn detached_embed_prints_no_pointer_when_the_log_cannot_be_opened() {
+    let rt = tokio::runtime::Runtime::new().expect("build test runtime");
+    let f = fixture(&rt);
+
+    std::fs::create_dir_all(log_path(&f.spelunk_dir)).expect("create dir at log path");
+
+    let out = index_command(&f.project_path)
+        .arg("--detach-embed")
+        .output()
+        .expect("run spelunk index --detach-embed");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert!(
+        out.status.success(),
+        "an unopenable log must not fail the index on the embed path ({})",
+        out.status
+    );
+    assert!(
+        !stdout.contains("Log:"),
+        "no log may be named when none was opened:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Run `spelunk status`"),
+        "the embed path must still report normally:\n{stdout}"
+    );
+
+    wait_for_child_via_db(&f.db);
+    let conn = rusqlite::Connection::open(&f.db).expect("open db");
+    let chunks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+        .expect("count chunks");
+    assert!(chunks > 0, "the index must still have been built");
     drop(f.server);
 }
