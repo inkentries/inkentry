@@ -41,6 +41,12 @@ changes its identity. (The numeric `id` in `memory list` output is a local row
 number rather than an identity: `spelunk init` renumbers it, and each machine
 assigns it independently.)
 
+When duplicate records of the same decision appear (for example, both machines
+pushing their notes to a shared repository), `memory list`, `memory context`,
+and `memory search` automatically fold them into one entry by identity, so you
+see each decision exactly once. Tags and linked_files are merged across copies
+(values are added, never removed), and the earliest creation time is preserved.
+
 **Before `spelunk init`**, `memory add` and `memory list` still work when you are
 inside a git repository: with no `.spelunk/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
