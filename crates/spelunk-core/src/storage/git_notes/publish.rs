@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use std::path::Path;
 use tokio::process::Command;
 
-use super::{SPELUNK_NOTES_REF, SPELUNK_TRACKING_REF, merge_tracking_notes};
+use super::{NotesMergeOutcome, SPELUNK_NOTES_REF, SPELUNK_TRACKING_REF, merge_tracking_notes};
 
 /// Set on the nested notes push. `--no-verify` is the real recursion guard; a
 /// hook that re-enters despite it stops here.
@@ -21,7 +21,7 @@ const MAX_PUSH_ATTEMPTS: u32 = 3;
 pub enum PublishOutcome {
     /// The notes ref reached the remote, on `attempts` pushes.
     Published { attempts: u32 },
-    /// There was nothing to do.
+    /// Nothing reached the remote; the reason says why.
     Skipped(SkipReason),
 }
 
@@ -34,6 +34,9 @@ pub enum SkipReason {
     NoLocalNotes,
     /// The named remote does not resolve. `git push <url>` reaches here.
     NoSuchRemote,
+    /// The notes lock was unavailable, so the merge did not run. Nothing is
+    /// lost: the records stay on the local ref and publish on the next push.
+    LockUnavailable,
 }
 
 impl SkipReason {
@@ -42,6 +45,7 @@ impl SkipReason {
             SkipReason::Recursion => "recursion",
             SkipReason::NoLocalNotes => "no_local_notes",
             SkipReason::NoSuchRemote => "no_such_remote",
+            SkipReason::LockUnavailable => "lock_unavailable",
         }
     }
 }
@@ -91,7 +95,14 @@ pub async fn publish_notes(git_root: Option<&Path>, remote: &str) -> Result<Publ
 
         // Takes the notes lock, so a concurrent `memory add` cannot overwrite
         // the merged entries with its read-modify-write (D6).
-        merge_tracking_notes(git_root).await;
+        //
+        // The merge is what carries the remote's side, so pushing without it
+        // offers a still-diverged ref: the rejection that follows describes a
+        // race that never happened. Skip instead, and never report the skip as
+        // a publish.
+        if merge_tracking_notes(git_root).await == NotesMergeOutcome::LockUnavailable {
+            return Ok(PublishOutcome::Skipped(SkipReason::LockUnavailable));
+        }
 
         // Never forced: the union above already carries both sides, so forcing
         // could only discard a teammate's memory.

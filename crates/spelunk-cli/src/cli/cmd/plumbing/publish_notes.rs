@@ -1,5 +1,5 @@
 use anyhow::Result;
-use spelunk_core::storage::{PublishOutcome, publish_notes as core_publish_notes};
+use spelunk_core::storage::{PublishOutcome, SkipReason, publish_notes as core_publish_notes};
 
 use super::PlumbingPublishNotesArgs;
 
@@ -22,6 +22,16 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             Ok(())
         }
         Ok(PublishOutcome::Skipped(reason)) => {
+            // The hook drops stdout, so a JSON-only skip reaches nobody. A user
+            // whose memory did not publish has to be told that it did not; the
+            // other skips had nothing to publish in the first place.
+            if reason == SkipReason::LockUnavailable {
+                eprintln!(
+                    "spelunk: memory not published: another spelunk process holds the \
+                     notes lock."
+                );
+                eprintln!("spelunk: your code push is unaffected; your next push publishes it.");
+            }
             emit(&serde_json::json!({
                 "published": false,
                 "remote": remote,

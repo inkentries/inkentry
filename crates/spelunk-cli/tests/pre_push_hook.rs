@@ -431,6 +431,16 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 /// push with a bare `?` before `--best-effort` was ever consulted. The failure
 /// mode reaches users through the keychain, the default store when
 /// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
+///
+/// Unix-only because the seeded config has to be the *ambient* one, which is the
+/// case the hook's child hits: it takes no `--config`. `spelunk_config_dir()`
+/// resolves that path through `dirs::home_dir()`, which reads `$HOME` on unix but
+/// calls `SHGetKnownFolderPath(FOLDERID_Profile)` on Windows, consulting no
+/// environment at all. There is no var to pin there, and seeding the real profile
+/// would break every other test in this suite.
+/// [`a_broken_config_is_tolerated_for_a_best_effort_publish`] covers the same
+/// arm on every platform through `--config`.
+#[cfg(unix)]
 #[test]
 fn an_unloadable_config_does_not_block_the_branch_push() {
     let home = TempDir::new().unwrap();
@@ -476,6 +486,53 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
         String::from_utf8_lossy(&out.stderr).contains("config.toml"),
         "the hook should warn about the config on stderr, got: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The `--best-effort` config tolerance itself, on every platform.
+///
+/// The end-to-end guard above can only isolate an ambient config on unix, so the
+/// arm that keeps a hook's push alive would otherwise go unexercised on Windows.
+/// `--config` reaches the same branch: the command ignores `cfg`, so the publish
+/// still runs and the exit stays 0.
+#[test]
+fn a_broken_config_is_tolerated_for_a_best_effort_publish() {
+    let home = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
+
+    let cfg = tmp.path().join("broken-config.toml");
+    std::fs::write(&cfg, "not = valid toml [[[\n").unwrap();
+
+    let out = bin(home.path(), &dev)
+        .arg("--config")
+        .arg(&cfg)
+        .args(["plumbing", "publish-notes", "--best-effort", "origin"])
+        .output()
+        .expect("run publish-notes");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a broken config must not fail a best-effort publish, got {:?}: {stderr}",
+        out.status.code()
+    );
+    assert!(
+        stderr.contains("config.toml"),
+        "the config must be warned about rather than passing in silence, got: {stderr}"
+    );
+
+    // Without the flag the same config still fails loudly: the tolerance is
+    // scoped to the hook's own invocation, not granted to every caller.
+    let strict = bin(home.path(), &dev)
+        .arg("--config")
+        .arg(&cfg)
+        .args(["plumbing", "publish-notes", "origin"])
+        .output()
+        .expect("run publish-notes");
+    assert!(
+        !strict.status.success(),
+        "a broken config must still fail a publish without --best-effort"
     );
 }
 
@@ -784,6 +841,87 @@ fn the_publish_path_takes_the_notes_lock() {
         "publish must contend on the notes lock; it returned in {contended:?} with the \
          lock held, so its merge ran unlocked and a concurrent `memory add` could eat it \
          (uncontended run took {free:?})"
+    );
+}
+
+/// A publish that could not take the lock skips, says so, and exits 0.
+///
+/// The merge is what carries the remote's side, so skipping it and pushing
+/// anyway offers the remote a ref that is still diverged: the push is rejected
+/// non-fast-forward and the user is handed a retry hint for a race that never
+/// happened. Reporting `published: true` for it is the worse half, claiming
+/// work that did not happen.
+///
+/// Diverged on purpose. Converged, the push succeeds and every wrong answer
+/// still looks like success, which is the vacuity this test exists to avoid.
+#[test]
+fn a_publish_that_cannot_lock_skips_rather_than_misreporting_a_push() {
+    let home1 = TempDir::new().unwrap();
+    let home2 = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let (origin, dev) = origin_and_dev(home1.path(), tmp.path());
+
+    // A teammate's entry on origin that we have never fetched, so our notes ref
+    // is genuinely non-fast-forward against it.
+    let dev2 = tmp.path().join("dev2");
+    let shared = teammate_publishes(home2.path(), &origin, &dev2, "teammate-decision");
+    memory_add(home1.path(), &dev, "our-decision");
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let held = rt
+        .block_on(spelunk_core::storage::lock_notes(Some(&dev)))
+        .expect("setup: the notes lock must be free to start with");
+
+    let out = bin(home1.path(), &dev)
+        .args(["plumbing", "publish-notes", "origin"])
+        .output()
+        .expect("run publish-notes");
+    drop(held);
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // D8: publish is idempotent, so contention skips. It never fails the caller,
+    // with or without --best-effort.
+    assert!(
+        out.status.success(),
+        "a contended publish must not fail the caller, got {:?}: {stderr}",
+        out.status.code()
+    );
+
+    let json: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .expect("publish-notes emits one JSON object");
+    assert_eq!(
+        json["published"], false,
+        "a skipped merge must not be reported as published: {json}"
+    );
+    assert_eq!(
+        json["skipped"], "lock_unavailable",
+        "the skip must name its reason: {json}"
+    );
+
+    // The hook drops stdout, so stderr is the only channel that reaches a user
+    // pushing through it.
+    assert!(
+        stderr.contains("lock"),
+        "the skip must reach the user on stderr, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("non-fast-forward"),
+        "a skipped merge must not push: the rejection and its retry hint describe \
+         a race that never happened, got: {stderr}"
+    );
+
+    // Nothing of the teammate's was touched, and ours stayed local to publish
+    // on the next push.
+    let on_origin = note_lines(home2.path(), &origin, &shared);
+    assert!(
+        on_origin.iter().any(|l| l.contains("teammate-decision")),
+        "a skipped publish must not disturb the teammate's entry: {on_origin:?}"
+    );
+    assert!(
+        !on_origin.iter().any(|l| l.contains("our-decision")),
+        "a skipped publish must not push: ours stays local until the next push, \
+         got: {on_origin:?}"
     );
 }
 
