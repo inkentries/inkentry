@@ -100,10 +100,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 - **`spelunk hooks install --pre-push` publishes your memory on `git push`.** The
   hook fetches the remote's `refs/notes/spelunk`, merges it into yours with
   `cat_sort_uniq` (a union, so neither side's entries are dropped), and pushes
-  the result to the remote you are pushing to, so decisions travel with the code
-  they describe. Publishing is **opt-in**: your memory stays local until you
+  the result to the named remote you are pushing to, so decisions travel with the
+  code they describe. Publishing is **opt-in**: your memory stays local until you
   install it, and `spelunk init` now says so and names the command. Reading a
-  teammate's memory needs no opt-in and is unchanged.
+  teammate's memory needs no opt-in and is unchanged. Publishing follows the
+  remote's *name*: a push that spells out a URL (`git push https://… main`) has no
+  name to resolve, so it pushes code without publishing memory and a later `git
+  push origin` publishes it.
 
   Publishing is tied to `git push` because that is the only moment that reliably
   coincides with "this code is being shared". An entry recorded against a commit

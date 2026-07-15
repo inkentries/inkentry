@@ -416,12 +416,15 @@ blocked). Developers without `spelunk` installed are unaffected. `--ci` prints a
 GitHub Actions workflow step instead of writing a hook.
 
 `install --pre-push` writes a pre-push hook that publishes your memory
-(`refs/notes/spelunk`) to the remote you are pushing to, so decisions travel with
-the code they describe. It merges the remote's notes into yours before pushing (a
-union, so neither side is dropped) and retries a lost race up to three times. It
-never blocks your push: on failure it warns on stderr and exits 0, and it never
-force-pushes. Publishing is opt-in, so your memory stays local until you install
-it. See [memory.md](memory.md#sharing-memory-across-clones-via-git-notes).
+(`refs/notes/spelunk`) to the named remote you are pushing to, so decisions travel
+with the code they describe. It merges the remote's notes into yours before
+pushing (a union, so neither side is dropped) and retries a lost race up to three
+times. It never blocks your push: on failure it warns on stderr and exits 0, and
+it never force-pushes. Publishing is opt-in, so your memory stays local until you
+install it. Publishing follows the remote's *name*, so a push that spells out a
+URL instead (`git push https://… main`) pushes your code without publishing your
+memory; a later `git push origin` publishes it. See
+[memory.md](memory.md#sharing-memory-across-clones-via-git-notes).
 
 The hook is a shim around [`spelunk plumbing
 publish-notes`](#spelunk-plumbing), with the absolute path of the installing

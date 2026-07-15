@@ -132,6 +132,23 @@ is orphaned: it is on the remote, and nobody ever sees it. Pushing is the moment
 that reliably coincides with "this code is being shared", which is why the hook
 runs there rather than on each `memory add` or on a timer.
 
+**Publishing needs a named remote.** git tells the hook the *name* of the remote
+you are pushing to, and spelunk publishes to that name. So a push that spells out
+a URL or a path instead of a remote name publishes nothing:
+
+```bash
+git push origin main                  # publishes your memory
+git push https://github.com/me/x main # pushes the code only
+```
+
+The second form has no remote name to resolve, so the hook skips publishing and
+lets your code push through: no error, and your memory simply stays where it was.
+This is deliberate. Fetching an arbitrary URL's notes would land them on the
+tracking ref reserved for `origin`, overwriting what your real remote put there.
+Pushing by URL is uncommon, and a later `git push origin` publishes everything
+you have recorded in the meantime. If you push by URL routinely, push the notes
+ref by hand (see below).
+
 **The hook never blocks your push.** If publishing fails (offline, or the remote
 rejects the notes ref) it warns on stderr and exits 0, so your code push lands
 regardless. Only a lost race is retried, up to three times: that is a teammate
