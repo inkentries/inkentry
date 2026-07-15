@@ -252,6 +252,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   how many produced nothing; `RUST_LOG=warn` shows the cause. Retrying needs
   `spelunk index --force`, since a chunk whose summary failed is recorded as
   attempted and a plain re-run skips it.
+- **Background-phase diagnostics are no longer discarded.** Errors and warnings
+  from the detached `--_background-phases` child (on repos over 100 files) and
+  `--_embed-phases` child (with `--detach-embed`), including LLM summary
+  failures and remedies, now route to `.spelunk/index-background.log` with a
+  user-visible pointer on the status line. The log is bounded (truncated per
+  run).
+
+  **Upgrade note:** existing projects must add `*.log` to `.spelunk/.gitignore`
+  by hand, since the template is written only on first init. Run:
+  ```bash
+  echo "*.log" >> .spelunk/.gitignore
+  ```
 
 ## [0.9.3] — 2026-07-08
 
