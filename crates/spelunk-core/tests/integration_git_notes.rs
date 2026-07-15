@@ -2645,6 +2645,61 @@ async fn a_legacy_line_folds_with_a_fresh_copy_of_the_same_entry() {
     assert_eq!(notes[0].tags, vec!["new", "old"], "tags merge by union");
 }
 
+/// `limit` keeps the **newest** entries, as the sqlite backend's
+/// `ORDER BY created_at DESC LIMIT` does, and still emits them ascending.
+///
+/// The failure this pins: a repo past the cap returning its oldest entries and
+/// hiding every recent decision.
+#[tokio::test]
+#[serial]
+async fn limit_keeps_the_newest_entries_and_emits_them_ascending() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let records: Vec<NoteRecord> = (1..=5)
+        .map(|i| entity_copy(&format!("decision {i}"), i, i * 100, &[]))
+        .collect();
+    write_lines(root, &records.iter().collect::<Vec<_>>());
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 2, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+
+    assert_eq!(
+        titles,
+        vec!["decision 4", "decision 5"],
+        "the newest N, oldest-first"
+    );
+}
+
+/// Folding before `limit` is what makes the count exact: were `limit` applied
+/// to raw records, an entity's copies would each spend a slot and the read
+/// would return fewer entries than asked for.
+#[tokio::test]
+#[serial]
+async fn duplicate_copies_do_not_spend_the_limit_budget() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // One decision recorded on three machines, plus two others.
+    let a1 = entity_copy("recorded thrice", 1, 100, &[]);
+    let a2 = entity_copy("recorded thrice", 2, 110, &[]);
+    let a3 = entity_copy("recorded thrice", 3, 120, &[]);
+    let b = entity_copy("second", 4, 200, &[]);
+    let c = entity_copy("third", 5, 300, &[]);
+    write_lines(root, &[&a1, &a2, &a3, &b, &c]);
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let notes = backend.list(None, 3, false, None).await.expect("list");
+    let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
+
+    assert_eq!(
+        titles,
+        vec!["recorded thrice", "second", "third"],
+        "three entities must fill a limit of three, got: {titles:?}"
+    );
+}
+
 /// The fold collapses copies, never distinct entries.
 #[tokio::test]
 #[serial]

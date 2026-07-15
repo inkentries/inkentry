@@ -718,3 +718,137 @@ fn parse_spelunk_line(line: &str) -> Option<NoteRecord> {
     }
     serde_json::from_value(value).ok()
 }
+
+/// The framing `git cat-file --batch` emits, pinned against git 2.55.
+#[cfg(test)]
+mod cat_file_batch {
+    use super::*;
+
+    /// One object: `<sha> <type> <size>\n<body>\n`.
+    fn framed(sha: &str, body: &str) -> String {
+        format!("{sha} blob {}\n{body}\n", body.len())
+    }
+
+    #[test]
+    fn empty_output_yields_no_bodies() {
+        assert!(parse_cat_file_batch(b"").expect("parse").is_empty());
+    }
+
+    /// A note body holds newlines of its own, so only the size header can
+    /// delimit it: a body line that mimics a header must not split it.
+    #[test]
+    fn a_body_that_mimics_a_header_is_not_split() {
+        let body = "line one\ndeadbeef blob 99\nline three";
+
+        assert_eq!(
+            parse_cat_file_batch(framed("aaa", body).as_bytes()).expect("parse"),
+            vec![body]
+        );
+    }
+
+    /// One unreadable note must not fail the whole read: git reports
+    /// `<sha> missing` with no body and still exits 0.
+    #[test]
+    fn a_missing_object_yields_an_empty_body_and_the_batch_survives() {
+        let out = format!(
+            "{}bbb missing\n{}",
+            framed("aaa", "first"),
+            framed("ccc", "third")
+        );
+
+        assert_eq!(
+            parse_cat_file_batch(out.as_bytes()).expect("parse"),
+            vec!["first", "", "third"]
+        );
+    }
+
+    /// `git notes add --allow-empty` writes the empty blob. Git still emits the
+    /// body's trailing newline, so a zero-length body must not read as truncated.
+    #[test]
+    fn an_empty_blob_parses_as_an_empty_body() {
+        assert_eq!(
+            parse_cat_file_batch(b"aaa blob 0\n\n").expect("parse"),
+            vec![""]
+        );
+    }
+
+    #[test]
+    fn a_body_shorter_than_its_header_claims_is_an_error() {
+        assert!(parse_cat_file_batch(b"aaa blob 99\nshort\n").is_err());
+    }
+
+    /// Records are consumed in request order, so a body can never be attributed
+    /// to the wrong note.
+    #[test]
+    fn bodies_come_back_in_request_order() {
+        let out = format!("{}{}", framed("aaa", "one"), framed("bbb", "two"));
+
+        assert_eq!(
+            parse_cat_file_batch(out.as_bytes()).expect("parse"),
+            vec!["one", "two"]
+        );
+    }
+
+    /// A repo carrying one note, and that note's blob sha.
+    fn repo_with_one_note() -> (tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out
+        };
+
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "T"]);
+        std::fs::write(dir.path().join("README.md"), "x").expect("write");
+        run(&["add", "."]);
+        run(&["commit", "--no-gpg-sign", "-m", "first"]);
+        run(&["notes", "--ref=spelunk", "add", "-m", "one\ntwo", "HEAD"]);
+
+        let listing =
+            String::from_utf8(run(&["notes", "--ref=spelunk", "list"]).stdout).expect("utf8");
+        let blob = listing
+            .split_whitespace()
+            .next()
+            .expect("a note blob sha")
+            .to_string();
+
+        (dir, blob)
+    }
+
+    /// The batch has to drain stdout while it writes stdin. Sending the whole
+    /// request first deadlocks: git stops reading once its stdout pipe fills,
+    /// and the fold reads every reachable blob, so `GIT_NOTES_MAX_LIST` does not
+    /// bound the request size.
+    ///
+    /// 5000 shas is ~205 KiB in and ~340 KiB out, past the 64 KiB pipe buffer
+    /// both ways. A regression here hangs, so the read is bounded to fail loudly.
+    #[tokio::test]
+    async fn a_request_past_the_pipe_buffer_does_not_deadlock() {
+        let (dir, blob) = repo_with_one_note();
+        let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+        let bodies = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            backend.read_note_blobs(&vec![blob; 5000]),
+        )
+        .await
+        .expect("deadlocked: stdout must drain while stdin is written")
+        .expect("read");
+
+        assert_eq!(bodies.len(), 5000, "one body per requested sha");
+        assert!(
+            bodies.iter().all(|b| b == "one\ntwo\n"),
+            "every body must survive the batch intact"
+        );
+    }
+}
