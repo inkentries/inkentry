@@ -54,6 +54,14 @@ fn spelunk_exe() -> PathBuf {
 /// `SPELUNK_SECRET_STORE` is unset. git is the only thing standing between a
 /// test and that child, so both have to be pinned here: pinning them on the
 /// spelunk commands a test runs directly leaves the hook's child ambient.
+///
+/// `HOME` redirects that config dir on unix only. `spelunk_config_dir()` goes
+/// through `dirs::home_dir()`, which on Windows is
+/// `SHGetKnownFolderPath(FOLDERID_Profile)` and reads no environment variable,
+/// so there is nothing to pin: a test whose premise needs the *ambient* config
+/// to be the seeded one has to be `#[cfg(unix)]`. `SPELUNK_SECRET_STORE=file`
+/// still keeps the child off the keychain everywhere, which is what the rest of
+/// this suite needs.
 fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
