@@ -3,8 +3,8 @@
 **Date:** 2026-07-14
 **Deciders:** founder (Johan); architect
 **Relationship to prior ADRs:** resolves the Open question
-[ADR-068](068-zero-setup-onboarding-git-notes-memory-fallback.md) deferred to
-^126 ("Does 'travels with the repo' require configuring the notes refspec?").
+[ADR-068](068-zero-setup-onboarding-git-notes-memory-fallback.md) deferred
+("Does 'travels with the repo' require configuring the notes refspec?").
 ADR-068 made `refs/notes/spelunk` the durable carrier for pre-`init` memory,
 which put the whole "travels with the repo" promise on that ref being visible
 across clones. The answer is yes, and the mechanism currently on `main` (#582)
@@ -35,13 +35,22 @@ observed behaviour, not projections.
 
 ## Decision
 
-**Publish notes on `git push` through an opt-in, non-blocking pre-push hook;
-merge with `cat_sort_uniq`; fetch into a tracking ref rather than over the live
-one; have spelunk itself merge that tracking ref on its read paths, so reading a
-teammate's memory needs no opt-in; and put a lock around the note
-read-modify-write, without which the merge silently eats entries.**
+**Publish notes on `git push` through an opt-in pre-push hook that delegates to a
+spelunk plumbing command; merge with `cat_sort_uniq`; fetch into a tracking ref
+rather than over the live one; have spelunk itself merge that tracking ref on its
+read paths, so reading a teammate's memory needs no opt-in; and put a lock around
+the note read-modify-write, without which the merge silently eats entries.**
 
 ### D1 – notes sharing is coupled to `git push`, via an opt-in pre-push hook
+
+> **Amended after review of the first implementation (#617).** The trigger
+> decision below is unchanged and was not reconsidered: `git push` is still the
+> only correct moment to publish. What changed is **where the publish logic
+> lives**. As first drafted, D3 specified the flow as a shell hook body
+> (`fetch`, then `git notes merge -s cat_sort_uniq`, then `push --no-verify`).
+> That logic now moves into Rust behind a plumbing command (**D7**), and the hook
+> becomes a shim that calls it. The superseded flow is recorded in D3 rather than
+> edited away.
 
 Not to `memory add`, and not to a timer.
 
@@ -101,29 +110,76 @@ behaviour owned by an external tool, so the implementation must carry a
 **regression test** that would fail if that normalization ever changed. It must
 not be left as an implicit assumption.
 
-### D3 – opt-in, non-blocking, best-effort
+### D3 – opt-in, best-effort, and blocking only when spelunk itself is gone
+
+> **Amended after review of the first implementation (#617).** Two things in
+> this section changed, and both are recorded rather than edited away.
+>
+> **The `command -v spelunk` skip is withdrawn, and the reason it carried was
+> wrong.** As first written, this section justified the guard as a
+> `command -v spelunk` skip "so teammates without spelunk are unaffected."
+> **That case cannot occur:** `.git/hooks/` is never cloned, so a teammate never
+> receives the hook at all. This ADR was the sole carrier of that wrong fact,
+> the same failure mode #616 had to correct in D5. The guard is replaced by an
+> embedded absolute path, for a *different* reason that nothing had written
+> down (below).
+>
+> **"Exits `0` unconditionally" is now scoped, not deleted.** The empirical
+> finding behind it stands: a hook exiting `1` aborts the branch push outright,
+> and in the spike origin never received the commit. That still governs
+> **publish failures**. It no longer governs a **missing binary**, which is now
+> the one case allowed to fail loudly.
+>
+> The **hook flow** as first specified (`fetch`, then
+> `git notes merge -s cat_sort_uniq` from the tracking ref, then
+> `push --no-verify`) moves out of shell and into Rust behind a plumbing
+> command (**D7**). D1's trigger decision is untouched.
 
 - **Installed explicitly** (`spelunk hooks install --pre-push`), never silently.
   It reuses the guard pattern already established by the post-commit hook
   (`crates/spelunk-cli/src/cli/cmd/hooks.rs`,
   `crates/spelunk-cli/src/cli/cmd/init.rs`): bail if a non-spelunk pre-push hook
-  is present, keep an idempotent marker, and `command -v spelunk` skip so
-  teammates without spelunk are unaffected.
-- **Never blocks the user's `git push`.** A hook exiting `1` aborts the branch
-  push outright, and in the spike origin never received the commit. Memory
-  sharing must not be able to cost someone their push. The hook exits `0`
-  unconditionally and warns on stderr.
-- **A recursion guard is mandatory.** A naive pre-push hook that pushes the
-  notes ref recursed **740 levels deep** and stopped only by exhausting the
-  process table (`cannot fork() ... Resource temporarily unavailable`). All
-  outer pushes failed invisibly while the branch push still reported success.
-  The nested push MUST use `--no-verify`, which makes git skip pre-push
-  entirely; an env sentinel is belt-and-braces on top.
+  is present, and keep an idempotent marker.
+- **`hooks install` embeds the resolved absolute path of the binary**, rather
+  than looking spelunk up on `PATH`. The guard this replaces was load-bearing for
+  a reason never recorded: `install.sh` falls back to `${HOME}/.local/bin` when
+  `/usr/local/bin` is not writable (`install.sh:74-82`) and then tells the user to
+  add it to their **shell profile** (`install.sh:130-139`). macOS GUI apps inherit
+  their environment from launchd, not from a shell profile, so Tower, GitHub
+  Desktop, VS Code and IntelliJ run hooks **without** `~/.local/bin` on `PATH`.
+  Simply dropping the guard would therefore break `git push` from every GUI client
+  for anyone on that install path. Embedding the path separates the two cases,
+  which a `PATH` lookup could not:
+
+  | Case | Behaviour |
+  |---|---|
+  | spelunk genuinely removed | the absolute path fails, the hook exits non-zero, the push stops and says so |
+  | spelunk present, but absent from a GUI client's `PATH` | irrelevant: there is no `PATH` lookup |
+  | publish fails (offline, remote rejects) | exits `0`, the push proceeds |
+
+  **The cost is accepted, not absent:** the embedded path goes stale if the binary
+  is moved or reinstalled elsewhere. It then fails loudly, and
+  `spelunk hooks install --pre-push` re-resolves it. That was chosen over failing
+  silently: a user is better served by being told a tool it expected is gone than
+  by cruft sitting untidied forever.
+- **A publish failure never blocks the user's `git push`.** Memory sharing must
+  not be able to cost someone their push, so every failure to fetch, merge or
+  publish exits `0` and warns on stderr. Only a missing binary is exempt.
+- **A recursion guard is mandatory, and survives the move into Rust.** A naive
+  pre-push hook that pushes the notes ref recursed **740 levels deep** and stopped
+  only by exhausting the process table (`cannot fork() ... Resource temporarily
+  unavailable`). All outer pushes failed invisibly while the branch push still
+  reported success. The Rust command still runs `git push`, which still fires
+  pre-push, so the hazard is unchanged: the nested push MUST use `--no-verify`,
+  which makes git skip pre-push entirely, with the `SPELUNK_NOTES_PUSH` env
+  sentinel as belt-and-braces on top.
 - **Retry at most 3 times** on non-fast-forward. This is not a guess: under a
-  concurrent 3-way race the third developer only succeeded on attempt 3. Never
-  force-push.
-- **Hook flow:** `fetch`, then `git notes merge -s cat_sort_uniq` from the
-  tracking ref, then `push --no-verify`.
+  concurrent 3-way race the third developer only succeeded on attempt 3. The
+  retry predicate stays narrow: anything that is not a lost race (offline, a
+  rejecting remote) would fail identically three times. Never force-push.
+- **Hook flow:** the shim `exec`s the plumbing command (D7), which performs
+  `fetch`, then `git notes merge -s cat_sort_uniq` from the tracking ref, then
+  `push --no-verify`.
 - **`spelunk init` must announce the step.** Opt-in only works if it is
   discoverable, so `init`'s summary output must state that sharing memory with
   teammates requires installing the pre-push hook, and name the command. This is
@@ -318,6 +374,60 @@ a small budget, **skip the merge and read anyway**. That is safe because the
 merge is idempotent (D2), so the next read catches up. A read must **never**
 fail because it could not take the lock.
 
+### D7 – the publish flow is a spelunk plumbing command; the hook is a shim
+
+Added on review of the first implementation (#617), which put the flow in the
+hook body as shell.
+
+**The shim still needs `#!/bin/sh`, and that is not the problem.** A git hook
+must be an executable file, and Git for Windows ships its own `sh` and runs hooks
+through it. The existing `POST_COMMIT_HOOK` (`hooks.rs:32`) already relies on
+exactly this, and the `windows-latest` CI cell exercises it today on default
+features. "Windows has no `/bin/sh`" is not the reason to move, and this ADR
+should not be read as recording that. The reason is that **scripting logic** in
+shell is the wrong home for it, on three counts:
+
+- **The shell cannot take the D6 lock, and that is a correctness gap, not a
+  style objection.** The lock is a **cross-process** file lock on
+  `<git-common-dir>/spelunk-notes.lock`
+  (`crates/spelunk-core/src/storage/git_notes/lock.rs`), so in principle a hook
+  could take it. In practice it cannot do so portably: `flock(1)` is a
+  util-linux tool, absent from stock macOS and from Git for Windows' shell.
+  The shell hook's merge therefore ran **unlocked**, so a concurrent
+  `spelunk memory add` during a push could still lose a record by exactly the
+  read-modify-write in D6. Moving publish into Rust closes that gap rather than
+  relocating it: `File::try_lock` is available on every supported platform, and
+  the publish path takes the same lock as every other writer. The portability
+  argument and the lock argument are the same argument.
+- **The logic is duplicated outside the tested codebase.** The retry predicate,
+  the recursion sentinel and the explicit `-s cat_sort_uniq` are all decisions
+  this ADR makes, re-expressed in a second language that shares no types with
+  the Rust that makes them.
+- **The test cost is disproportionate.** #617's hook body is **58 lines (26 of
+  them executable)** and carries a **984-line** integration test
+  (`crates/spelunk-cli/tests/pre_push_hook.rs`) driving real git repositories to
+  cover it. In Rust the same logic is reachable by ordinary unit tests. (An
+  earlier note on #617 put the shell at "~200 lines"; measured, it is 58. The
+  smaller number is the honest one and it does not weaken the case.)
+
+**The command is `spelunk plumbing publish-notes`.** The verb-noun name matches
+the namespace's existing pattern and reuses this ADR's own vocabulary
+(*publishing*, as distinct from *reading*, per the first Consequence).
+
+**This changes what the plumbing namespace means, which is worth stating rather
+than slipping in.** All eight existing subcommands (`cat-chunks`, `ls-files`,
+`parse-file`, `hash-file`, `knn`, `embed`, `graph-edges`, `read-memory`) are
+**read-only JSONL emitters**. `publish-notes` is the first that **writes** and
+performs **network I/O**. That is still plumbing in git's sense, where
+`git update-ref` writes and `git send-pack` talks to a remote, so the namespace
+is the right home. But "plumbing == read-only" stops being true of it, and
+anything that assumed so needs to stop.
+
+**It is plumbing, and is treated as such: discoverable but not promoted.** Not
+hidden, and not shouted about. `spelunk hooks install --pre-push` stays the
+porcelain a user is pointed at (D3), and the `init` announcement names that
+command, not this one.
+
 ## Non-goals
 
 - ~~**Not** fixing #185, the read-modify-write race within a single repo.~~
@@ -366,6 +476,22 @@ fail because it could not take the lock.
 - **#185 moves from deferred to required, and a concurrency bug gets fixed on
   the way.** D6's lock is a precondition of D5, and it also closes a live
   entry-losing race that predates this ADR for parallel agents in worktrees.
+- **The publish path joins the lock protocol, closing a gap the shell left
+  open.** The shell hook of #617 could not portably take D6's lock, so its merge
+  ran unlocked and a concurrent `spelunk memory add` during a push could still
+  lose a record. That was accepted at the time as a tracked follow-up. D7 closes
+  it as a side effect: publish is now a Rust caller of the same
+  cross-process lock as every other writer, so it needs no separate fix.
+- **`spelunk plumbing` is no longer a read-only namespace.** `publish-notes`
+  (D7) is its first writing, network-touching subcommand. Anything that treated
+  the namespace as safe-by-construction for scripting or sandboxing needs to
+  account for it.
+- **The hook stops being a place where decisions live.** After D7 the installed
+  file is a shim, so changing the retry count, the merge strategy or the
+  recursion guard is a code change under test, not an edit to a string constant
+  that a user may already have on disk. Users who installed an older hook keep
+  the shell body until they re-run `spelunk hooks install --pre-push`, which is
+  the same re-resolution path the embedded absolute path already needs (D3).
 - **Note size is not the cost axis; divergence is.** Growing a note is nearly
   free (10 to 1000 entries moves the merge from 11.9ms to 14.9ms). The cost
   scales with **divergent annotated objects**, at roughly 0.6ms each: 5000
@@ -393,7 +519,11 @@ fail because it could not take the lock.
   than the alternatives rejected in D1: push-on-`memory add` and a timer would
   both send data at moments the user did not initiate. The hook adds no egress
   the user was not already performing, and to no host other than the remote they
-  chose.
+  chose. D7 makes the publish flow **directly invocable**
+  (`spelunk plumbing publish-notes`), which does not widen this bound: running it
+  is itself a user-initiated action, and it reaches only the remote it is given.
+  It is the first plumbing subcommand that touches the network at all, so the
+  namespace no longer implies "no egress" (see Consequences).
 - **D5's read-path merge does not fetch, and this was verified rather than
   assumed.** With the remote made unreachable the merge still succeeds (~12ms).
   `GIT_TRACE` and `GIT_TRACE_PACKET` show no transport. And the positive proof:
