@@ -35,6 +35,14 @@ emits an actionable error (`harvest_requires_server`).
 
 ## Migration — `lm_studio_url` users
 
+> **Superseded. Kept as the v0.8 record.** Both halves below have since been
+> overtaken: the shipped binary refuses a non-loopback plaintext `http://`
+> `server_url` (use `https://`, or a loopback host), and `api_base_url` /
+> `lm_studio_url` are now parsed but ignored rather than still serving
+> `explore` and `index --summarize`. All inference routes through
+> `spelunk-server`. For current `server_url` configuration see
+> [Team setup](../getting-started.md#team-setup-shared-memory-with-spelunk-server).
+
 If you previously used `lm_studio_url` (or `api_base_url`) in your config for
 `spelunk memory harvest`, update `~/.config/spelunk/config.toml`:
 
