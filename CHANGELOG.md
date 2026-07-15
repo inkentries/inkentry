@@ -123,23 +123,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **Duplicate memory entries no longer appear when machines record the same decision
-  independently.** When two machines independently record the same decision
-  (identical `kind`, `title`, and `body`), they compute the same `entity_id` from
-  their content hash. Previously, both records would appear in `memory list`,
-  `memory context`, and `memory search` output, giving a false impression of
-  disagreement or uncertainty. The read path now folds such duplicates into one
-  entry, merging `tags` and `linked_files` across copies (values added, never
-  removed) and keeping the earliest creation time. This brings the read-time
-  behaviour into line with the import-time deduplication already performed by
-  `memory reconcile` and `spelunk init`.
+- **A decision recorded independently on two machines now lists once, not twice.**
+  Two machines that record the same decision (identical `kind`, `title`, and
+  `body`) derive the same identity from that content, but `spelunk memory list`
+  and `spelunk context` read every copy back and showed each one, so a decision
+  both teammates had recorded looked like two competing entries. Those reads now
+  fold copies by identity: one entry, `tags` and `linked_files` unioned across
+  the copies (added, never removed), and the earliest recording time kept. An
+  entry archived on any machine reads as archived everywhere. This matches the
+  identity-keyed dedup `memory reconcile` and `spelunk init` already do on
+  import.
 
-  As a side effect of this change, `memory list` and `context` are now
-  substantially faster on note-heavy repositories. The list operation previously
-  made N separate `git notes show` subprocess calls (one per commit); it now
-  makes a single `git cat-file --batch` request to fetch all note blobs at once.
-  On a 500-note repository, this reduces the time from ~7.3 seconds to ~38
-  milliseconds (~190x faster).
+  Reads that walk every note are also substantially faster. The fold has to see
+  every copy of an entry before it can emit one, so a read can no longer stop as
+  soon as it has enough entries the way it did before; note blobs are therefore
+  read with a single `git cat-file --batch` rather than one `git notes show`
+  subprocess per note.
 
 - **`spelunk init` no longer breaks plain `git fetch` / `git pull`, and no
   longer lets a fetch destroy your unpushed memory.** The fetch refspec `init`

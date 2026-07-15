@@ -41,11 +41,14 @@ changes its identity. (The numeric `id` in `memory list` output is a local row
 number rather than an identity: `spelunk init` renumbers it, and each machine
 assigns it independently.)
 
-When duplicate records of the same decision appear (for example, both machines
-pushing their notes to a shared repository), `memory list`, `memory context`,
-and `memory search` automatically fold them into one entry by identity, so you
-see each decision exactly once. Tags and linked_files are merged across copies
-(values are added, never removed), and the earliest creation time is preserved.
+Because identity is content-derived, two clones can carry their own copy of the
+same entry, and once the notes refs meet, both copies are there. `spelunk memory
+list` and `spelunk context` therefore fold copies by identity as they read, so a
+decision two people recorded independently appears once rather than twice. The
+surviving entry carries the earliest recording time, and the union of the copies'
+`tags` and `linked_files` (values are added, never removed). An entry archived in
+any copy reads as archived everywhere, so archiving it on one machine does not
+un-archive when a still-active copy arrives from another.
 
 **Before `spelunk init`**, `memory add` and `memory list` still work when you are
 inside a git repository: with no `.spelunk/` project, `add` rides the same
