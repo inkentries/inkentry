@@ -297,7 +297,8 @@ pub struct Config {
     pub llm_model: Option<String>,
 
     // ── spelunk-server (optional) ─────────────────────────────────────────────
-    /// URL of the spelunk-server instance, e.g. `http://spelunk.internal:7777`.
+    /// URL of the spelunk-server instance, e.g. `https://spelunk.internal.example.com`
+    /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
     /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.

@@ -170,10 +170,9 @@ and [server.md → Local server](../server.md#local-server-automatic--no-setup).
 
 ```
 Capability tier:  Offline
-  search          ast-grep + text
+  search          ast-grep + text  [set server_url to enable semantic search]
   memory          sqlite (local)
   explore         unavailable  [set server_url to enable]
-  plan            unavailable  [set server_url to enable]
 ```
 
 The `memory` line reflects the resolved backend (`sqlite` / `git-notes` /
@@ -184,28 +183,31 @@ project, `spelunk status` reports `No spelunk project here` instead (see
 **Text output (Tier 1 — server connected):**
 
 ```
-Capability tier:  Server  (http://spelunk.internal:7777)
+Capability tier:  Server  (https://spelunk.internal.example.com)
   search          ast-grep + text + semantic
+  embedder        ready
   memory          sqlite (local)
   explore         available
-  plan            available
 ```
 
-**JSON output** (`spelunk status --format json`) adds a `capabilities` object:
+The `embedder` line reports the server's `embedder.state` from `/v1/health`; it
+is omitted when the server does not report that field.
+
+**JSON output** (`spelunk status --format json`) adds a `capabilities` object
+(other fields omitted):
 
 ```json
 {
   "tier": "server",
-  "server_url": "http://spelunk.internal:7777",
+  "server_url": "https://spelunk.internal.example.com",
   "capabilities": {
-    "search_semantic": true,
-    "index_embed": true,
-    "memory_push": true,
-    "memory_pull": true,
-    "memory_search": true,
-    "memory_harvest": true,
     "explore": true,
-    "plan": true
+    "index_embed": true,
+    "memory_harvest": true,
+    "memory_pull": true,
+    "memory_push": true,
+    "memory_search": true,
+    "search_semantic": true
   }
 }
 ```
@@ -219,14 +221,14 @@ Capability tier:  Server  (http://spelunk.internal:7777)
 
 ```
 Index is up to date. (412 files indexed)
-Server:  http://spelunk.internal:7777  ✓  (semantic search, explore, plan available)
+Server:  https://spelunk.internal.example.com  ✓  (semantic search, explore available)
 ```
 
 Or on failure:
 
 ```
 Index is up to date. (412 files indexed)
-Server:  http://spelunk.internal:7777  ✗  unreachable — offline mode
+Server:  https://spelunk.internal.example.com  ✗  unreachable — offline mode
 ```
 
 ---
@@ -237,16 +239,16 @@ When a Tier 1 feature is invoked but no server is reachable, exit 2 with a
 consistent message format:
 
 ```
-error: 'spelunk explore' requires spelunk-server.
-       Set server_url in ~/.config/spelunk/config.toml to enable this feature.
-       (Tried: http://spelunk.internal:7777 — connection refused)
+Error: 'spelunk explore' requires spelunk-server.
+Set server_url in ~/.config/spelunk/config.toml to enable this feature.
+       (Tried: https://spelunk.internal.example.com — connection refused)
 ```
 
 If `server_url` is not set at all:
 
 ```
-error: 'spelunk explore' requires spelunk-server.
-       Set server_url in ~/.config/spelunk/config.toml to enable this feature.
+Error: 'spelunk explore' requires spelunk-server.
+Set server_url in ~/.config/spelunk/config.toml to enable this feature.
 ```
 
 Use `eprintln!` to stderr. Do not panic.
