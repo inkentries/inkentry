@@ -345,6 +345,14 @@ lock is not optional.
 
 ### D6 – serialize note writes with a spelunk-owned lock
 
+> **The bounded-degradation clause below is superseded by D8.** Its closing
+> paragraph reads the budget's expiry as "skip the merge and read anyway," which
+> is right for the read-path merge it was written about and wrong for a writer:
+> a writer that proceeds past the budget performs the very read-modify-write
+> this section exists to prevent. D8 replaces that policy and states it per
+> caller. The rest of D6, including the decision to take a spelunk-owned lock
+> around the whole read-modify-write, stands and was not reconsidered.
+
 `append_to_git_notes` (`crates/spelunk-core/src/storage/git_notes/mod.rs:38-73`)
 is a **lock-free read-modify-write**: step 2 reads the note body
 (`notes show`), step 4 writes the whole body back (`notes add -f -F -`), and
@@ -427,6 +435,107 @@ anything that assumed so needs to stop.
 hidden, and not shouted about. `spelunk hooks install --pre-push` stays the
 porcelain a user is pointed at (D3), and the `init` announcement names that
 command, not this one.
+
+### D8 – a writer that cannot take the notes lock fails; it never proceeds unlocked
+
+Added on review of a `windows-latest` CI failure in D6's own regression guard.
+
+**The rule D6 left implicit, stated:** the contention policy is set by *what is
+lost when the lock is missing*, not by whether the caller is nominally a read or
+a write. Three cases, three answers:
+
+- **Proceeding unlocked can destroy a record.** `append_to_git_notes`,
+  `append_record` and `archive_record` are the exact read-modify-write #185
+  describes. They must hold the lock or **fail**. They never proceed unlocked.
+- **The work is idempotent and retried on the next invocation.** D5's read-path
+  merge and D7's publish lose nothing permanent by not running now. They
+  **skip**, report the skip, and never fail the caller.
+- **The lock cannot be established at all on this filesystem.** Serialization is
+  impossible there, so failing every write would make spelunk unusable on that
+  filesystem in order to prevent a race that needs a second concurrent writer to
+  matter. These **proceed unlocked, loudly**. This is the one degradation kept,
+  and it is kept narrow.
+
+**Why "never fail the caller" was the wrong reading for a writer.** D6 bounded
+the lock: "if it is contended or the wait exceeds a small budget, skip the merge
+and read anyway... A read must never fail because it could not take the lock."
+That clause is about **the merge on a read path**, where skipping costs
+freshness and nothing else. The implementation generalized it to writers.
+`lock_notes` returns `None` on a contended timeout and all three writer call
+sites discard it (`let _lock = lock_notes(...)`), so a writer that times out
+performs the unserialized read-modify-write D6 exists to prevent, and exits 0.
+"A command must never fail because of lock contention" is being bought with "a
+command sometimes silently loses the user's decision." For a tool whose promise
+is that it remembers why, that is the worse half of the trade. An error the user
+can see and retry costs them a command. A silent clobber costs them the record.
+
+**The wait budget is a watchdog, not a contention threshold.** `lock.rs`
+justifies its 5s budget by the holder cost ("~30ms"), which frames it as a
+number tuned against expected contention. That framing is wrong twice over.
+First, an OS advisory lock (`flock`, `LockFileEx`) is released by the kernel
+when the holding process dies, so a **stale lock cannot happen** and there is no
+crashed-holder case to time out for. The only thing a budget protects against is
+a live holder that never releases, which is a bug, or a deadlock. Second, a
+threshold tuned on one platform's timings becomes a correctness knob the moment
+its expiry silently changes behaviour.
+
+So the budget stays a **single constant**. It is *not* scaled per platform and
+*not* derived from observed holder cost: both add tuning to a number that should
+never be reached. It is set generously enough that reaching it means a bug
+rather than a busy repo, and its expiry is an **error**, never a downgrade.
+Making expiry loud is what makes a generous budget safe, and making the budget
+generous is what keeps the loud expiry rare enough that "a writer can fail" is
+not a practical regression.
+
+**`Option` is the wrong shape and is replaced.** `None` today means three
+different things: someone else holds the lock, the lock file cannot be opened,
+and the lock path could not be resolved. D8 gives those three different answers,
+so they cannot share one return value. `lock_notes` returns a three-way outcome
+(acquired, contended, unavailable-with-reason). The guard is `#[must_use]` so a
+caller cannot collapse the distinction back down with `let _`.
+
+**D7's publish path under contention: skip, report, do not fail the push.**
+Publishing is a fetch, a merge and a write-back, so by mechanism it is a writer.
+But its work is idempotent (D2), and records it did not publish stay in the
+local ref and publish on the next push, so a skipped publish loses nothing
+permanent. It therefore takes the second branch, not the first. This keeps D3's
+best-effort stance intact (spelunk does not block a push) without reintroducing
+the unlocked write-back that D7 moved publish into Rust to close. The skip is
+reported on the push output rather than swallowed: a user whose memory did not
+publish needs to know that it did not.
+
+**The degraded path must be observable, because its silence is why this needed a
+CI failure to surface.** Every branch above reports through `tracing::warn!`
+today. The integration tests install no subscriber, so those events go nowhere,
+and a test run cannot distinguish "the lock was held" from "the lock was skipped
+and the write raced." The outcome above is a returned value precisely so that
+callers and tests can assert on it directly rather than inferring it from
+damage.
+
+**What D8 does not do: it does not by itself fix the `windows-latest` failure
+that prompted it.** The evidence rules the timeout path out as that mechanism.
+In one run the cross-worktree guard
+(`append_to_git_notes_concurrent_worktrees_all_survive`) failed in **2.569s**,
+having lost 1 of 8 entries. In the same run, on the same runner,
+`append_to_git_notes_proceeds_when_lock_budget_is_exhausted` passed in
+**6.189s**. That test forces a real budget exhaustion, so it calibrates the cost
+of one: over 5s. A 2.569s failure cannot contain a 5s wait. In the same run the
+single-repo guard (`append_to_git_notes_concurrent_writers_all_survive`, eight
+concurrent writers in one process) **passed** in 2.460s, and the lock's own
+contract tests passed, which together show the primitive excludes and times out
+correctly on Windows.
+
+What is left is that two contenders do not converge on one lock file when they
+sit in **different worktrees** on Windows. `notes_lock_path` reaches that path by
+two different branches: a main worktree gets a relative answer from
+`git rev-parse --git-common-dir` (`.git`) and joins it against the repo root,
+while a linked worktree gets an absolute answer and uses it as-is. On unix both
+branches land on the same file, which is why only the Windows cell fails.
+Deciding which of those two strings is wrong on Windows needs a Windows host,
+and the warning that would say so is discarded, per the observability point
+above. That is a defect in lock **identity** and is fixed separately. D8 governs
+what a writer does once it knows it does not hold the lock, which is a question
+the identity fix does not answer and which the current code answers wrongly.
 
 ## Non-goals
 
