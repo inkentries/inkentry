@@ -112,6 +112,26 @@ fn bin_at(exe: &Path, home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
+/// The env var the nested notes push sets, mirrored from the command. A rename
+/// there must fail here rather than silently stop guarding anything.
+const NOTES_PUSH_SENTINEL: &str = "SPELUNK_NOTES_PUSH";
+
+/// `plumbing publish-notes <remote>` in `repo`, parsed. The hook drops stdout,
+/// so the reported outcome is only reachable by running the command directly.
+fn publish_notes_json(home: &Path, repo: &Path, remote: &str) -> serde_json::Value {
+    let out = bin(home, repo)
+        .args(["plumbing", "publish-notes", remote])
+        .output()
+        .expect("run publish-notes");
+    assert!(
+        out.status.success(),
+        "publish-notes failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+        .expect("publish-notes emits one JSON object")
+}
+
 /// Record one entry through the real `memory add`, so the notes carry the real
 /// record shape rather than a hand-rolled blob.
 fn memory_add(home: &Path, repo: &Path, title: &str) {
@@ -924,6 +944,11 @@ fn skips_gracefully_with_no_local_notes_ref() {
 
 /// Pushing by URL rather than by remote name: there is no named remote to
 /// resolve, so the flow skips instead of guessing, and the push is unaffected.
+///
+/// A surviving push cannot stand in for the skip: a URL fetches and pushes just
+/// as well as a remote name, so dropping the guard entirely also leaves the push
+/// green while publishing onto `origin`'s tracking ref from a remote the user
+/// never named. Both halves of the skip are asserted instead.
 #[test]
 fn skips_gracefully_when_pushing_without_a_named_remote() {
     let home = TempDir::new().unwrap();
@@ -939,6 +964,65 @@ fn skips_gracefully_when_pushing_without_a_named_remote() {
         out.status.success(),
         "a push by URL must still succeed: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Nothing was published: there was memory to publish and a reachable URL to
+    // publish it to, so an unguarded flow would have landed it here.
+    assert!(
+        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+            .status
+            .success(),
+        "a push by URL must publish nothing: the flow skips rather than resolving \
+         the URL itself"
+    );
+
+    // And it skipped for this reason, not incidentally.
+    assert_eq!(
+        publish_notes_json(home.path(), &dev, origin.to_str().unwrap())["skipped"],
+        "no_such_remote",
+        "a URL must skip as an unresolvable remote"
+    );
+}
+
+/// The recursion sentinel stops a publish that re-entered itself.
+///
+/// `--no-verify` on the nested notes push is the guard that actually holds, and
+/// `hook_publishes_notes_and_fires_exactly_once` pins it. This pins the backstop
+/// beneath it, for a client that runs the hook regardless: the second publish
+/// must not push. Driven at the command layer because, with `--no-verify`
+/// working, nothing reaches this through a real `git push`.
+#[test]
+fn a_re_entered_publish_stops_at_the_sentinel() {
+    let home = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
+    let (origin, dev) = origin_and_dev(tmp.path());
+
+    // Real memory and a reachable remote: without the sentinel this publishes.
+    memory_add(home.path(), &dev, "sentinel-decision");
+
+    let out = bin(home.path(), &dev)
+        .args(["plumbing", "publish-notes", "origin"])
+        .env(NOTES_PUSH_SENTINEL, "1")
+        .output()
+        .expect("run publish-notes");
+    assert!(
+        out.status.success(),
+        "a re-entered publish must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let reported: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim())
+            .expect("publish-notes emits one JSON object");
+    assert_eq!(
+        reported["skipped"], "recursion",
+        "a re-entered publish must report the recursion skip: {reported}"
+    );
+    assert!(
+        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+            .status
+            .success(),
+        "a re-entered publish must push nothing"
     );
 }
 
