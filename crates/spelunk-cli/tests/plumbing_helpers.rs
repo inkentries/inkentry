@@ -9,6 +9,54 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Drop the machine's global/system git config for every git this process
+/// spawns, including a setup git a test runs directly. Must be process-wide,
+/// not per-`Command`: a helper only controls the git it spawns itself, never
+/// one the code under test spawns for itself.
+///
+/// A temp repo's local config does not shadow an ambient value the repo never
+/// sets. A global `commit.gpgsign = true` makes setup commits sign as the
+/// fabricated test identity below, which no contributor holds a key for, so
+/// the commit exits non-zero.
+///
+/// `/dev/null` is not a Windows path, but git skips a scope whenever its var
+/// is set, whatever the path resolves to, so this isolates on Windows too.
+pub fn isolate_git_config() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: every git-touching helper here calls this first and `Once`
+        // blocks the rest until it returns, so no thread can be spawning git
+        // (reading environ) while these run.
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+        }
+    });
+}
+
+/// Create a git repo in `dir` with a fabricated identity and one initial
+/// commit, isolated from the developer's ambient git config.
+///
+/// Every setup git step is asserted: a silent setup failure surfaces later as
+/// an unrelated assertion on the command under test.
+pub fn init_git_repo(dir: &Path) {
+    isolate_git_config();
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    std::fs::write(dir.join("README.md"), "hello\n").expect("write README.md");
+    run(&["add", "."]);
+    run(&["commit", "-q", "-m", "initial commit"]);
+}
+
 /// Build a `spelunk` test command that never touches the OS keychain and never
 /// reads or writes the developer's real `~/.config/spelunk`.
 ///
