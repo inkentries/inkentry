@@ -8,11 +8,10 @@
 //! overwrite the target file.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::{init_git_repo, spelunk_bin};
 
 use predicates::prelude::*;
 use std::fs;
-use std::process::Command as StdCommand;
 use tempfile::tempdir;
 
 fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
@@ -28,20 +27,7 @@ fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBu
 
 /// Initialize a throwaway git repo with a single commit so a real HEAD exists.
 fn init_repo(dir: &std::path::Path) {
-    let run = |args: &[&str]| {
-        let status = StdCommand::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .expect("run git");
-        assert!(status.success(), "git {args:?} failed");
-    };
-    run(&["init", "-q"]);
-    run(&["config", "user.email", "test@example.com"]);
-    run(&["config", "user.name", "Test"]);
-    fs::write(dir.join("README.md"), "hello\n").unwrap();
-    run(&["add", "."]);
-    run(&["commit", "-q", "-m", "initial commit"]);
+    init_git_repo(dir);
     // ADR-067: `memory harvest` fails closed without a local `.spelunk/` project,
     // so make this repo a real project — otherwise the guard fires before the
     // ref-injection check under test is reached.
