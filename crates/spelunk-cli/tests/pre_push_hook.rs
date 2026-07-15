@@ -46,53 +46,54 @@ fn spelunk_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_spelunk"))
 }
 
-/// Run `git args` in `dir` with an explicit `PATH`, returning the `Output`
-/// without asserting. Isolated identity/config so it is hermetic.
-fn git_out_with_path(dir: &Path, path: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Output {
-    std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("PATH", path)
+/// A `git` invocation in `dir` with an isolated identity and config.
+///
+/// `git push` runs the pre-push hook, which execs a spelunk child. That child
+/// runs `Config::load`, which reads `<HOME>/.config/spelunk/config.toml` and
+/// resolves a secret store, defaulting to the OS keychain when
+/// `SPELUNK_SECRET_STORE` is unset. git is the only thing standing between a
+/// test and that child, so both have to be pinned here: pinning them on the
+/// spelunk commands a test runs directly leaves the hook's child ambient.
+fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(dir)
+        .env("HOME", home)
+        .env("SPELUNK_SECRET_STORE", "file")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("SPELUNK_SERVER_URL")
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@example.com")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    cmd
+}
+
+/// Run `git args` in `dir` with an explicit `PATH`, returning the `Output`
+/// without asserting.
+fn git_out_with_path(
+    home: &Path,
+    dir: &Path,
+    path: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+) -> Output {
+    git_cmd(home, dir)
+        .args(args)
+        .env("PATH", path)
         .output()
         .expect("spawn git")
 }
 
 /// Run `git args` in `dir`, returning the `Output` without asserting.
-fn git_out(dir: &Path, args: &[&str]) -> Output {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    git_out_with_path(dir, &path, args)
-}
-
-/// Like [`git_out`], but with the `HOME` a hook's spelunk child resolves its
-/// config under. The other helpers leave `HOME` alone, so a hook they spawn
-/// reads the developer's real `~/.config/spelunk`; a test that turns on the
-/// contents of that config has to point it somewhere it owns.
-fn git_push_with_home(dir: &Path, home: &Path, args: &[&str]) -> Output {
-    std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("HOME", home)
-        .env("SPELUNK_SECRET_STORE", "file")
-        .env_remove("XDG_CONFIG_HOME")
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git")
+fn git_out(home: &Path, dir: &Path, args: &[&str]) -> Output {
+    git_cmd(home, dir).args(args).output().expect("spawn git")
 }
 
 /// Like [`git_out`] but asserts the command succeeded.
-fn git(dir: &Path, args: &[&str]) -> Output {
-    let out = git_out(dir, args);
+fn git(home: &Path, dir: &Path, args: &[&str]) -> Output {
+    let out = git_out(home, dir, args);
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
@@ -103,8 +104,8 @@ fn git(dir: &Path, args: &[&str]) -> Output {
 
 /// `stdout` of `git args`, trimmed, whatever the exit status. Used for notes
 /// inspection where a missing ref is a legitimate empty result.
-fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    String::from_utf8_lossy(&git_out(dir, args).stdout)
+fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
+    String::from_utf8_lossy(&git_out(home, dir, args).stdout)
         .trim()
         .to_string()
 }
@@ -184,8 +185,8 @@ fn hook_path(repo: &Path) -> PathBuf {
 }
 
 /// A bare repo standing in for `origin`.
-fn bare_origin(dir: &Path) {
-    git(dir, &["init", "-q", "--bare", "-b", "main"]);
+fn bare_origin(home: &Path, dir: &Path) {
+    git(home, dir, &["init", "-q", "--bare", "-b", "main"]);
 }
 
 /// `path` for embedding in a shell script. Single quotes reach Git Bash with
@@ -231,9 +232,10 @@ fn line_count(path: &Path) -> usize {
 /// standing in for a teammate who shared memory first. Returns the annotated
 /// object, which is the commit both sides share.
 fn teammate_publishes(home: &Path, origin: &Path, dir: &Path, title: &str) -> String {
-    clone_dev(origin, dir);
+    clone_dev(home, origin, dir);
     memory_add(home, dir, title);
     git(
+        home,
         dir,
         &[
             "push",
@@ -242,29 +244,34 @@ fn teammate_publishes(home: &Path, origin: &Path, dir: &Path, title: &str) -> St
             "refs/notes/spelunk:refs/notes/spelunk",
         ],
     );
-    git_stdout(dir, &["rev-parse", "HEAD"])
+    git_stdout(home, dir, &["rev-parse", "HEAD"])
 }
 
 /// Commit `<name>.txt` in `dir`.
-fn commit(dir: &Path, name: &str) {
+fn commit(home: &Path, dir: &Path, name: &str) {
     std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
-    git(dir, &["add", "."]);
-    git(dir, &["commit", "-q", "-m", name]);
+    git(home, dir, &["add", "."]);
+    git(home, dir, &["commit", "-q", "-m", name]);
 }
 
 /// A dev clone of `origin` with an identity and one commit pushed to `main`.
-fn seed_origin(origin: &Path, dir: &Path) {
-    git(dir, &["init", "-q", "-b", "main"]);
-    git(dir, &["config", "user.email", "t@example.com"]);
-    git(dir, &["config", "user.name", "Test"]);
-    git(dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
-    commit(dir, "seed");
-    git(dir, &["push", "-q", "-u", "origin", "main"]);
+fn seed_origin(home: &Path, origin: &Path, dir: &Path) {
+    git(home, dir, &["init", "-q", "-b", "main"]);
+    git(home, dir, &["config", "user.email", "t@example.com"]);
+    git(home, dir, &["config", "user.name", "Test"]);
+    git(
+        home,
+        dir,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    commit(home, dir, "seed");
+    git(home, dir, &["push", "-q", "-u", "origin", "main"]);
 }
 
 /// Clone `origin` into `dir` with an identity, as a second developer.
-fn clone_dev(origin: &Path, dir: &Path) {
+fn clone_dev(home: &Path, origin: &Path, dir: &Path) {
     git(
+        home,
         dir.parent().unwrap(),
         &[
             "clone",
@@ -273,13 +280,13 @@ fn clone_dev(origin: &Path, dir: &Path) {
             dir.to_str().unwrap(),
         ],
     );
-    git(dir, &["config", "user.email", "t2@example.com"]);
-    git(dir, &["config", "user.name", "Test2"]);
+    git(home, dir, &["config", "user.email", "t2@example.com"]);
+    git(home, dir, &["config", "user.name", "Test2"]);
 }
 
 /// The note blob on `object`'s `refs/notes/spelunk`, or empty when absent.
-fn note_lines(dir: &Path, object: &str) -> Vec<String> {
-    git_stdout(dir, &["notes", "--ref=spelunk", "show", object])
+fn note_lines(home: &Path, dir: &Path, object: &str) -> Vec<String> {
+    git_stdout(home, dir, &["notes", "--ref=spelunk", "show", object])
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -309,13 +316,13 @@ fn fire_count(counter: &Path) -> usize {
 }
 
 /// A bare `origin` plus a seeded dev clone, the shape nearly every test needs.
-fn origin_and_dev(tmp: &Path) -> (PathBuf, PathBuf) {
+fn origin_and_dev(home: &Path, tmp: &Path) -> (PathBuf, PathBuf) {
     let origin = tmp.join("origin.git");
     let dev = tmp.join("dev");
     std::fs::create_dir_all(&origin).unwrap();
     std::fs::create_dir_all(&dev).unwrap();
-    bare_origin(&origin);
-    seed_origin(&origin, &dev);
+    bare_origin(home, &origin);
+    seed_origin(home, &origin, &dev);
     (origin, dev)
 }
 
@@ -331,16 +338,16 @@ fn origin_and_dev(tmp: &Path) -> (PathBuf, PathBuf) {
 fn hook_publishes_notes_and_fires_exactly_once() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let hook = install_pre_push(home.path(), &dev);
     let counter = tmp.path().join("fires");
     instrument_hook(&hook, &counter);
 
     memory_add(home.path(), &dev, "recursion-guard-decision");
-    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
-    commit(&dev, "second");
-    git(&dev, &["push", "-q", "origin", "main"]);
+    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    commit(home.path(), &dev, "second");
+    git(home.path(), &dev, &["push", "-q", "origin", "main"]);
 
     assert_eq!(
         fire_count(&counter),
@@ -351,11 +358,11 @@ fn hook_publishes_notes_and_fires_exactly_once() {
 
     // And it actually published: a guard that works by doing nothing is no good.
     assert!(
-        !git_stdout(&origin, &["rev-parse", "refs/notes/spelunk"]).is_empty(),
+        !git_stdout(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"]).is_empty(),
         "origin should carry refs/notes/spelunk after the push"
     );
     assert!(
-        note_lines(&origin, &annotated)
+        note_lines(home.path(), &origin, &annotated)
             .iter()
             .any(|l| l.contains("recursion-guard-decision")),
         "the pushed note should carry the recorded decision"
@@ -372,16 +379,16 @@ fn hook_publishes_notes_and_fires_exactly_once() {
 fn failed_notes_push_does_not_block_the_branch_push() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let attempts = tmp.path().join("attempts");
     reject_notes_and_count(&origin, &attempts);
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "rejected-notes-decision");
-    commit(&dev, "payload");
+    commit(home.path(), &dev, "payload");
 
-    let out = git_out(&dev, &["push", "origin", "main"]);
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         out.status.success(),
         "the branch push must survive a rejected notes push, got: {}",
@@ -390,14 +397,14 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 
     // The commit really landed, rather than the push merely reporting success.
     assert_eq!(
-        git_stdout(&dev, &["rev-parse", "HEAD"]),
-        git_stdout(&origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
     // The notes push failed, and the user was told rather than left guessing.
     assert!(
-        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
             .status
             .success(),
         "the rejected notes ref must not exist on origin"
@@ -428,19 +435,19 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 fn an_unloadable_config_does_not_block_the_branch_push() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "broken-config-decision");
-    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
-    commit(&dev, "payload");
+    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    commit(home.path(), &dev, "payload");
 
     // Broken only now: `memory add` above needs a config that loads.
     let cfg_dir = home.path().join(".config").join("spelunk");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(cfg_dir.join("config.toml"), "not = valid toml [[[\n").unwrap();
 
-    let out = git_push_with_home(&dev, home.path(), &["push", "origin", "main"]);
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         out.status.success(),
         "the branch push must survive a config that will not load, got: {}",
@@ -450,15 +457,15 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
     // The commit really landed. Without this the assert above passes whenever
     // the hook is simply not reached, which is what the bug did to the push.
     assert_eq!(
-        git_stdout(&dev, &["rev-parse", "HEAD"]),
-        git_stdout(&origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
     // Tolerating the config must not degrade into skipping the publish: the
     // command does not read `cfg`, so it still has everything it needs.
     assert!(
-        note_lines(&origin, &annotated)
+        note_lines(home.path(), &origin, &annotated)
             .iter()
             .any(|l| l.contains("broken-config-decision")),
         "the note must still publish despite the unloadable config"
@@ -485,7 +492,7 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
 fn a_removed_binary_stops_the_push() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     // Install from a copy, so the shim embeds a path we control and can remove.
     let copy = tmp
@@ -502,15 +509,15 @@ fn a_removed_binary_stops_the_push() {
 
     std::fs::remove_file(&copy).unwrap();
 
-    commit(&dev, "payload");
-    let out = git_out(&dev, &["push", "origin", "main"]);
+    commit(home.path(), &dev, "payload");
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         !out.status.success(),
         "a removed spelunk must stop the push rather than fail silently"
     );
     assert_ne!(
-        git_stdout(&dev, &["rev-parse", "HEAD"]),
-        git_stdout(&origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "the push must not have proceeded"
     );
 }
@@ -528,12 +535,12 @@ fn a_removed_binary_stops_the_push() {
 fn publishes_with_spelunk_absent_from_path() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "no-path-decision");
-    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
-    commit(&dev, "no-path");
+    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    commit(home.path(), &dev, "no-path");
 
     // A PATH holding nothing but git itself: spelunk is definitively not on it.
     let bin_dir = tmp.path().join("git-only-bin");
@@ -551,6 +558,7 @@ fn publishes_with_spelunk_absent_from_path() {
     std::os::unix::fs::symlink(&git_path, bin_dir.join("git")).unwrap();
 
     let out = git_out_with_path(
+        home.path(),
         &dev,
         bin_dir.display().to_string(),
         &["push", "origin", "main"],
@@ -561,7 +569,7 @@ fn publishes_with_spelunk_absent_from_path() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        note_lines(&origin, &annotated)
+        note_lines(home.path(), &origin, &annotated)
             .iter()
             .any(|l| l.contains("no-path-decision")),
         "publishing must not depend on a PATH lookup: a GUI client's PATH has no \
@@ -585,12 +593,13 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
     let home = TempDir::new().unwrap();
     let home2 = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
     let stale = tmp.path().join("stale.git");
     let teammate = tmp.path().join("teammate");
 
     // Snapshot origin before any notes exist: this is the stale view.
     git(
+        home.path(),
         tmp.path(),
         &[
             "clone",
@@ -604,7 +613,7 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
     let shared = teammate_publishes(home2.path(), &origin, &teammate, "teammate-raced-decision");
     assert_eq!(
         shared,
-        git_stdout(&dev, &["rev-parse", "HEAD"]),
+        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
         "setup: both sides must annotate the same commit"
     );
 
@@ -630,6 +639,7 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
         ),
     );
     git(
+        home.path(),
         &dev,
         &[
             "config",
@@ -638,8 +648,8 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
         ],
     );
 
-    commit(&dev, "raced");
-    let out = git_out(&dev, &["push", "origin", "main"]);
+    commit(home.path(), &dev, "raced");
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         out.status.success(),
         "the branch push must survive the race: {}",
@@ -654,7 +664,7 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
     );
 
     // Both entries reached origin, so the lost race cost nobody their memory.
-    let published = note_lines(&origin, &shared);
+    let published = note_lines(home.path(), &origin, &shared);
     assert!(
         published
             .iter()
@@ -685,7 +695,7 @@ fn a_fetch_failure_must_not_destroy_a_teammates_notes() {
     let home = TempDir::new().unwrap();
     let home2 = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
     let teammate = tmp.path().join("teammate");
 
     let shared = teammate_publishes(
@@ -700,6 +710,7 @@ fn a_fetch_failure_must_not_destroy_a_teammates_notes() {
 
     // Break only the fetch: push rides receive-pack and is unaffected.
     git(
+        home.path(),
         &dev,
         &[
             "config",
@@ -708,21 +719,21 @@ fn a_fetch_failure_must_not_destroy_a_teammates_notes() {
         ],
     );
 
-    commit(&dev, "payload");
-    let out = git_out(&dev, &["push", "origin", "main"]);
+    commit(home.path(), &dev, "payload");
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         out.status.success(),
         "the branch push must survive a broken fetch: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        git_stdout(&dev, &["rev-parse", "HEAD"]),
-        git_stdout(&origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
     // The whole point: their memory is still there.
-    let published = note_lines(&origin, &shared);
+    let published = note_lines(home.path(), &origin, &shared);
     assert!(
         published
             .iter()
@@ -745,7 +756,7 @@ fn a_fetch_failure_must_not_destroy_a_teammates_notes() {
 fn the_publish_path_takes_the_notes_lock() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
     memory_add(home.path(), &dev, "locked-decision");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -789,15 +800,15 @@ fn the_notes_merge_strands_no_merge_worktree() {
     let home = TempDir::new().unwrap();
     let home2 = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
     let teammate = tmp.path().join("teammate");
 
     let shared = teammate_publishes(home2.path(), &origin, &teammate, "their-decision");
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "our-decision");
 
-    commit(&dev, "payload");
-    git(&dev, &["push", "-q", "origin", "main"]);
+    commit(home.path(), &dev, "payload");
+    git(home.path(), &dev, &["push", "-q", "origin", "main"]);
 
     assert!(
         !dev.join(".git").join("NOTES_MERGE_WORKTREE").exists(),
@@ -809,7 +820,7 @@ fn the_notes_merge_strands_no_merge_worktree() {
         "a stuck partial merge must not be left behind"
     );
 
-    let merged = note_lines(&dev, &shared);
+    let merged = note_lines(home.path(), &dev, &shared);
     assert!(
         merged.iter().any(|l| l.contains("their-decision"))
             && merged.iter().any(|l| l.contains("our-decision")),
@@ -827,14 +838,17 @@ fn two_dev_divergence_converges_with_no_loss() {
     let home1 = TempDir::new().unwrap();
     let home2 = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev1) = origin_and_dev(tmp.path());
+    let (origin, dev1) = origin_and_dev(home1.path(), tmp.path());
     let dev2 = tmp.path().join("dev2");
-    clone_dev(&origin, &dev2);
+    clone_dev(home2.path(), &origin, &dev2);
 
     // Both annotate the shared seed commit: the divergence is one object with
     // two different note blobs, which is the case `cat_sort_uniq` exists for.
-    let shared = git_stdout(&dev1, &["rev-parse", "HEAD"]);
-    assert_eq!(shared, git_stdout(&dev2, &["rev-parse", "HEAD"]));
+    let shared = git_stdout(home1.path(), &dev1, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        shared,
+        git_stdout(home2.path(), &dev2, &["rev-parse", "HEAD"])
+    );
 
     install_pre_push(home1.path(), &dev1);
     install_pre_push(home2.path(), &dev2);
@@ -843,16 +857,16 @@ fn two_dev_divergence_converges_with_no_loss() {
 
     // Separate branches, so the branch pushes never conflict and the test is
     // about the notes ref alone.
-    git(&dev1, &["checkout", "-q", "-b", "feature-1"]);
-    commit(&dev1, "one");
-    git(&dev1, &["push", "-q", "origin", "feature-1"]);
+    git(home1.path(), &dev1, &["checkout", "-q", "-b", "feature-1"]);
+    commit(home1.path(), &dev1, "one");
+    git(home1.path(), &dev1, &["push", "-q", "origin", "feature-1"]);
 
-    git(&dev2, &["checkout", "-q", "-b", "feature-2"]);
-    commit(&dev2, "two");
-    git(&dev2, &["push", "-q", "origin", "feature-2"]);
+    git(home2.path(), &dev2, &["checkout", "-q", "-b", "feature-2"]);
+    commit(home2.path(), &dev2, "two");
+    git(home2.path(), &dev2, &["push", "-q", "origin", "feature-2"]);
 
     // dev2 pushed second, so its publish had to merge dev1's entry in first.
-    let merged = note_lines(&dev2, &shared);
+    let merged = note_lines(home2.path(), &dev2, &shared);
     assert!(
         merged.iter().any(|l| l.contains("dev1-only-decision")),
         "dev2 must have merged dev1's entry rather than replacing it: {merged:?}"
@@ -864,6 +878,7 @@ fn two_dev_divergence_converges_with_no_loss() {
 
     // And the union reached origin, so dev1 gets it back on fetch + merge.
     git(
+        home1.path(),
         &dev1,
         &[
             "fetch",
@@ -873,6 +888,7 @@ fn two_dev_divergence_converges_with_no_loss() {
         ],
     );
     git(
+        home1.path(),
         &dev1,
         &[
             "notes",
@@ -883,7 +899,7 @@ fn two_dev_divergence_converges_with_no_loss() {
             "refs/notes/origin/spelunk",
         ],
     );
-    let round_tripped = note_lines(&dev1, &shared);
+    let round_tripped = note_lines(home1.path(), &dev1, &shared);
     assert!(
         round_tripped
             .iter()
@@ -913,7 +929,7 @@ fn the_union_welds_no_records_together() {
     let home = TempDir::new().unwrap();
     let home2 = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
     let teammate = tmp.path().join("teammate");
 
     // Both sides annotate the same object, so the union has to concatenate two
@@ -922,10 +938,10 @@ fn the_union_welds_no_records_together() {
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "our-decision");
 
-    commit(&dev, "payload");
-    git(&dev, &["push", "-q", "origin", "main"]);
+    commit(home.path(), &dev, "payload");
+    git(home.path(), &dev, &["push", "-q", "origin", "main"]);
 
-    let merged = note_lines(&dev, &shared);
+    let merged = note_lines(home.path(), &dev, &shared);
     assert!(
         merged.len() >= 2,
         "the union must keep each record on its own line: {merged:?}"
@@ -946,15 +962,15 @@ fn the_union_welds_no_records_together() {
 fn repeated_syncs_are_idempotent() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "idempotent-decision");
-    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
 
     for i in 0..3 {
-        commit(&dev, &format!("push-{i}"));
-        let out = git_out(&dev, &["push", "origin", "main"]);
+        commit(home.path(), &dev, &format!("push-{i}"));
+        let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
         assert!(
             out.status.success(),
             "push {i} failed: {}",
@@ -962,7 +978,7 @@ fn repeated_syncs_are_idempotent() {
         );
     }
 
-    let lines = note_lines(&dev, &annotated);
+    let lines = note_lines(home.path(), &dev, &annotated);
     let hits = lines
         .iter()
         .filter(|l| l.contains("idempotent-decision"))
@@ -973,7 +989,7 @@ fn repeated_syncs_are_idempotent() {
     );
     assert_eq!(
         lines,
-        note_lines(&origin, &annotated),
+        note_lines(home.path(), &origin, &annotated),
         "local and origin notes must have converged"
     );
 }
@@ -987,25 +1003,29 @@ fn repeated_syncs_are_idempotent() {
 fn skips_gracefully_with_no_local_notes_ref() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     install_pre_push(home.path(), &dev);
     assert!(
-        !git_out(&dev, &["rev-parse", "--verify", "refs/notes/spelunk"])
-            .status
-            .success(),
+        !git_out(
+            home.path(),
+            &dev,
+            &["rev-parse", "--verify", "refs/notes/spelunk"]
+        )
+        .status
+        .success(),
         "setup: no notes recorded yet"
     );
 
-    commit(&dev, "no-notes");
-    let out = git_out(&dev, &["push", "origin", "main"]);
+    commit(home.path(), &dev, "no-notes");
+    let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         out.status.success(),
         "push must succeed with no notes to publish: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
             .status
             .success(),
         "an empty notes ref must not be invented on origin"
@@ -1028,13 +1048,17 @@ fn skips_gracefully_with_no_local_notes_ref() {
 fn skips_gracefully_when_pushing_without_a_named_remote() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "by-url-decision");
-    commit(&dev, "by-url");
+    commit(home.path(), &dev, "by-url");
 
-    let out = git_out(&dev, &["push", origin.to_str().unwrap(), "main"]);
+    let out = git_out(
+        home.path(),
+        &dev,
+        &["push", origin.to_str().unwrap(), "main"],
+    );
     assert!(
         out.status.success(),
         "a push by URL must still succeed: {}",
@@ -1044,7 +1068,7 @@ fn skips_gracefully_when_pushing_without_a_named_remote() {
     // Nothing was published: there was memory to publish and a reachable URL to
     // publish it to, so an unguarded flow would have landed it here.
     assert!(
-        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
             .status
             .success(),
         "a push by URL must publish nothing: the flow skips rather than resolving \
@@ -1070,7 +1094,7 @@ fn skips_gracefully_when_pushing_without_a_named_remote() {
 fn a_re_entered_publish_stops_at_the_sentinel() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (origin, dev) = origin_and_dev(tmp.path());
+    let (origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     // Real memory and a reachable remote: without the sentinel this publishes.
     memory_add(home.path(), &dev, "sentinel-decision");
@@ -1094,7 +1118,7 @@ fn a_re_entered_publish_stops_at_the_sentinel() {
         "a re-entered publish must report the recursion skip: {reported}"
     );
     assert!(
-        !git_out(&origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
             .status
             .success(),
         "a re-entered publish must push nothing"
@@ -1113,19 +1137,24 @@ fn publishes_to_the_remote_being_pushed_to() {
     let dev = tmp.path().join("dev");
     std::fs::create_dir_all(&upstream).unwrap();
     std::fs::create_dir_all(&dev).unwrap();
-    bare_origin(&upstream);
+    bare_origin(home.path(), &upstream);
 
-    git(&dev, &["init", "-q", "-b", "main"]);
-    git(&dev, &["config", "user.email", "t@example.com"]);
-    git(&dev, &["config", "user.name", "Test"]);
+    git(home.path(), &dev, &["init", "-q", "-b", "main"]);
     git(
+        home.path(),
+        &dev,
+        &["config", "user.email", "t@example.com"],
+    );
+    git(home.path(), &dev, &["config", "user.name", "Test"]);
+    git(
+        home.path(),
         &dev,
         &["remote", "add", "upstream", upstream.to_str().unwrap()],
     );
-    commit(&dev, "seed");
-    git(&dev, &["push", "-q", "-u", "upstream", "main"]);
+    commit(home.path(), &dev, "seed");
+    git(home.path(), &dev, &["push", "-q", "-u", "upstream", "main"]);
     assert!(
-        !git_out(&dev, &["remote", "get-url", "origin"])
+        !git_out(home.path(), &dev, &["remote", "get-url", "origin"])
             .status
             .success(),
         "setup: this repo must have no origin remote"
@@ -1133,9 +1162,9 @@ fn publishes_to_the_remote_being_pushed_to() {
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "upstream-decision");
-    let annotated = git_stdout(&dev, &["rev-parse", "HEAD"]);
-    commit(&dev, "payload");
-    let out = git_out(&dev, &["push", "upstream", "main"]);
+    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    commit(home.path(), &dev, "payload");
+    let out = git_out(home.path(), &dev, &["push", "upstream", "main"]);
     assert!(
         out.status.success(),
         "push failed: {}",
@@ -1143,7 +1172,7 @@ fn publishes_to_the_remote_being_pushed_to() {
     );
 
     assert!(
-        note_lines(&upstream, &annotated)
+        note_lines(home.path(), &upstream, &annotated)
             .iter()
             .any(|l| l.contains("upstream-decision")),
         "the notes must reach the remote being pushed to, not a hardcoded 'origin'"
@@ -1157,7 +1186,7 @@ fn publishes_to_the_remote_being_pushed_to() {
 fn install_bails_on_a_foreign_pre_push_hook() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let hook = hook_path(&dev);
     let foreign = "#!/bin/sh\necho someone else's hook\n";
@@ -1181,7 +1210,7 @@ fn installed_hook_is_executable() {
     use std::os::unix::fs::PermissionsExt;
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let hook = install_pre_push(home.path(), &dev);
     let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
@@ -1196,7 +1225,7 @@ fn installed_hook_is_executable() {
 fn install_is_idempotent() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let hook = install_pre_push(home.path(), &dev);
     let first = std::fs::read_to_string(&hook).unwrap();
@@ -1221,7 +1250,7 @@ fn install_is_idempotent() {
 fn install_re_resolves_a_moved_binary() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let old = tmp
         .path()
@@ -1259,7 +1288,7 @@ fn install_re_resolves_a_moved_binary() {
 fn uninstall_removes_the_pre_push_hook() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let hook = install_pre_push(home.path(), &dev);
     assert!(hook.exists());
@@ -1278,7 +1307,7 @@ fn uninstall_removes_the_pre_push_hook() {
 fn uninstall_leaves_a_foreign_hook_alone() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
-    let (_origin, dev) = origin_and_dev(tmp.path());
+    let (_origin, dev) = origin_and_dev(home.path(), tmp.path());
 
     let pre_push = install_pre_push(home.path(), &dev);
     let post_commit = dev.join(".git").join("hooks").join("post-commit");
