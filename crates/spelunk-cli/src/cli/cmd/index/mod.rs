@@ -182,7 +182,10 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         // queue from the DB, so nothing from `result` needs to cross the
         // process boundary. Confirm completion later with `spelunk status`.
         let embed_log = background_log_path(&db_path);
-        if args.detach_embed && spawn_embed_subprocess(&args, embed_log.as_deref())? {
+        if args.detach_embed
+            && let EmbedSpawn::Detached(log_in_use) =
+                spawn_embed_subprocess(&args, embed_log.as_deref())?
+        {
             let stats = db.stats()?;
             let pending = stats.chunk_count - stats.embedding_count;
             println!(
@@ -190,6 +193,9 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                 stats.file_count, stats.chunk_count, pending,
             );
             println!("Run `spelunk status` to check progress.");
+            if let Some(p) = log_in_use {
+                println!("  Log: {}", p.display());
+            }
             return Ok(());
         }
 
@@ -276,15 +282,23 @@ fn redirect_to_background_log<'a>(
     }
 }
 
+/// Outcome of the detached embed spawn.
+enum EmbedSpawn<'a> {
+    /// Spawn failed; caller embeds inline.
+    Inline,
+    /// Running detached, with the diagnostics log actually in use (if any) so
+    /// the caller can point the user at it.
+    Detached(Option<&'a std::path::Path>),
+}
+
 /// Spawn a detached background process to run the embed phase (plus phases 3–5)
 /// against the chunks the foreground run just parsed, reusing the internal
 /// `--_embed-phases` mode. Mirrors the phases-3–5 background spawn: the parent
 /// regains its prompt immediately and the child's diagnostics go to `log`.
-///
-/// Returns `Ok(true)` when the subprocess was launched (caller should return),
-/// `Ok(false)` when spawning failed (caller should fall back to embedding
-/// inline).
-fn spawn_embed_subprocess(args: &IndexArgs, log: Option<&std::path::Path>) -> Result<bool> {
+fn spawn_embed_subprocess<'a>(
+    args: &IndexArgs,
+    log: Option<&'a std::path::Path>,
+) -> Result<EmbedSpawn<'a>> {
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
     cmd.arg("index");
     cmd.arg(&args.path);
@@ -297,12 +311,12 @@ fn spawn_embed_subprocess(args: &IndexArgs, log: Option<&std::path::Path>) -> Re
         cmd.args(["--db", &db_arg.to_string_lossy()]);
     }
     cmd.stdin(std::process::Stdio::null());
-    redirect_to_background_log(&mut cmd, log);
+    let in_use = redirect_to_background_log(&mut cmd, log);
     match cmd.spawn() {
-        Ok(_) => Ok(true),
+        Ok(_) => Ok(EmbedSpawn::Detached(in_use)),
         Err(e) => {
             tracing::warn!("failed to spawn detached embed process; embedding inline: {e}");
-            Ok(false)
+            Ok(EmbedSpawn::Inline)
         }
     }
 }
