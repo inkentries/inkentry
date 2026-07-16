@@ -250,4 +250,26 @@ mod local_read_notice_tests {
         };
         assert_eq!(local_read_notice(&cfg, Some("git-notes")), None);
     }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn no_server_kill_switch_silences_notice_despite_server_url_and_default_mode() {
+        // SPELUNK_NO_SERVER=1 forces resolve_mode() to Offline (Config::resolve_mode,
+        // highest precedence) even though `mode` is unset and `server_url` is set,
+        // which would otherwise default to local_first and label the read.
+        clear_no_server_env();
+        let cfg = Config {
+            server_url: Some("https://team.example.com:7777".to_string()),
+            ..Default::default()
+        };
+        // SAFETY: serialised via #[serial(spelunk_no_server_env)]; cleared above
+        // and below so no other test in this group observes it set.
+        unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
+        assert_eq!(
+            local_read_notice(&cfg, None),
+            None,
+            "the offline kill-switch must win over the default local_first notice"
+        );
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    }
 }

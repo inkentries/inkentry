@@ -33,13 +33,13 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
 }
 
 /// Seed one local memory entry (no `server_url`: solo/local write path) and
-/// return `(tmp, mem_path)`.
-fn seeded_project() -> (TempDir, PathBuf) {
+/// return `(tmp, mem_path, id)`.
+fn seeded_project() -> (TempDir, PathBuf, i64) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
     let mem_path = db_path.with_file_name("memory.db");
     let cfg = write_cfg(tmp.path(), "config-seed.toml", &db_path, "");
-    spelunk_bin()
+    let out = spelunk_bin()
         // Not a git repo: the git-notes write-through is a no-op, so the entry
         // lands only in the local memory.db.
         .current_dir(tmp.path())
@@ -56,9 +56,18 @@ fn seeded_project() -> (TempDir, PathBuf) {
             "--body",
             "b",
         ])
-        .assert()
-        .success();
-    (tmp, mem_path)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // "Stored [note] #<id>: <title>"
+    let id: i64 = stdout
+        .split('#')
+        .nth(1)
+        .and_then(|s| s.split(':').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| panic!("could not parse stored id from: {stdout}"));
+    (tmp, mem_path, id)
 }
 
 fn memory_list(tmp: &TempDir, mem_path: &Path, cfg: &Path) -> std::process::Output {
@@ -77,7 +86,7 @@ fn memory_list(tmp: &TempDir, mem_path: &Path, cfg: &Path) -> std::process::Outp
 
 #[test]
 fn local_first_read_serves_data_with_stderr_notice_and_clean_stdout() {
-    let (tmp, mem_path) = seeded_project();
+    let (tmp, mem_path, _id) = seeded_project();
     // Non-loopback https passes the transport guard; local_first never contacts
     // it, so the host being unresolvable is irrelevant (and proves no probe).
     let cfg = write_cfg(
@@ -119,7 +128,7 @@ fn local_first_read_serves_data_with_stderr_notice_and_clean_stdout() {
 
 #[test]
 fn no_server_url_read_has_no_notice() {
-    let (tmp, mem_path) = seeded_project();
+    let (tmp, mem_path, _id) = seeded_project();
     let cfg = write_cfg(
         tmp.path(),
         "config-solo.toml",
@@ -142,7 +151,7 @@ fn no_server_url_read_has_no_notice() {
 
 #[test]
 fn explicit_offline_read_has_no_notice() {
-    let (tmp, mem_path) = seeded_project();
+    let (tmp, mem_path, _id) = seeded_project();
     let cfg = write_cfg(
         tmp.path(),
         "config-offline.toml",
@@ -165,7 +174,7 @@ fn explicit_offline_read_has_no_notice() {
 
 #[test]
 fn cloud_first_read_unreachable_server_errors_without_local_data() {
-    let (tmp, mem_path) = seeded_project();
+    let (tmp, mem_path, _id) = seeded_project();
     // Loopback http passes the transport guard; nothing listens on port 1, so
     // the read must fail. A raw-UUID project_id skips slug resolution, proving
     // the failure is the memory read itself.
@@ -292,4 +301,233 @@ fn status_has_no_mode_line_on_solo_default() {
     assert!(!stdout.contains("local_first"), "got: {stdout}");
     // And the set-server_url hints ARE correct here.
     assert!(stdout.contains("set server_url to enable"), "got: {stdout}");
+}
+
+// ── every one of the five read commands routes through the labeled seam ──────
+//
+// `open_read_backend` (helpers.rs) is a single seam, but each command wires it
+// in independently (see the `open_read_backend` vs `open_memory_backend`
+// imports in list.rs/show.rs/search.rs/timeline.rs/context.rs). A copy-paste
+// regression in any one of them (e.g. reverting to `open_memory_backend`)
+// would silently drop the notice for that command only; these drive the real
+// binary for the three not already covered by `memory_list` above.
+
+#[test]
+fn show_command_labels_local_read_and_keeps_json_stdout_clean() {
+    let (tmp, mem_path, id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-show-local-first.toml",
+        &tmp.path().join("spelunk.db"),
+        "server_url = \"https://team.invalid:7777\"\nproject_id = \"team/proj\"\n",
+    );
+
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["show", &id.to_string(), "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(NOTICE_SNIPPET),
+        "memory show must label the local read: {stderr}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert_eq!(parsed["title"], LOCAL_TITLE, "got: {stdout}");
+    assert!(
+        !stdout.contains(NOTICE_SNIPPET),
+        "notice leaked to stdout: {stdout}"
+    );
+}
+
+#[test]
+fn show_command_no_server_url_has_no_notice() {
+    let (tmp, mem_path, id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-show-solo.toml",
+        &tmp.path().join("spelunk.db"),
+        "",
+    );
+
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["show", &id.to_string()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains(NOTICE_SNIPPET), "got: {stderr}");
+}
+
+#[test]
+fn search_command_text_mode_labels_local_read_and_keeps_json_stdout_clean() {
+    let (tmp, mem_path, _id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-search-local-first.toml",
+        &tmp.path().join("spelunk.db"),
+        "server_url = \"https://team.invalid:7777\"\nproject_id = \"team/proj\"\n",
+    );
+
+    // `--mode text` never needs an inference server, isolating the notice from
+    // the (separately-tested) capability-tier probe / embedding path.
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["search", "local", "--mode", "text", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(NOTICE_SNIPPET),
+        "memory search must label the local read: {stderr}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert!(
+        parsed.as_array().is_some_and(|a| !a.is_empty()),
+        "expected the seeded entry: {stdout}"
+    );
+    assert!(
+        !stdout.contains(NOTICE_SNIPPET),
+        "notice leaked to stdout: {stdout}"
+    );
+}
+
+#[test]
+fn context_command_labels_local_read_and_keeps_json_stdout_clean() {
+    let (tmp, mem_path, _id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-context-local-first.toml",
+        &tmp.path().join("spelunk.db"),
+        "server_url = \"https://team.invalid:7777\"\nproject_id = \"team/proj\"\n",
+    );
+
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["context", "--db"])
+        .arg(&mem_path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(NOTICE_SNIPPET),
+        "context must label the local read: {stderr}"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert!(parsed.get("sections").is_some(), "got: {stdout}");
+    assert!(
+        !stdout.contains(NOTICE_SNIPPET),
+        "notice leaked to stdout: {stdout}"
+    );
+}
+
+#[test]
+fn context_command_no_server_url_has_no_notice() {
+    let (tmp, mem_path, _id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-context-solo.toml",
+        &tmp.path().join("spelunk.db"),
+        "",
+    );
+
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["context", "--db"])
+        .arg(&mem_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains(NOTICE_SNIPPET), "got: {stderr}");
+}
+
+// ── local_first labels even when the team server IS reachable ────────────────
+//
+// The prior local_first tests use an unresolvable host, so the capability
+// tier happens to be Offline too, never proving the notice fires when the
+// tier probe succeeds. `memory search` builds an effective config from the
+// probed tier (`capability::get_tier` + `Tier::effective_config`) before
+// calling `open_read_backend`; this exercises that interaction end to end and
+// pins the ADR-037 contract: sync mode and capability tier are independent
+// axes, so a reachable team server does not change local_first's local read.
+
+#[tokio::test]
+async fn local_first_labels_read_even_when_team_server_is_reachable() {
+    let (tmp, mem_path, _id) = seeded_project();
+
+    let mock_server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/health"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok",
+                "version": "0.9.0",
+                "capabilities": ["memory", "index.embed", "search.semantic"],
+                "instance_id": "00000000-0000-0000-0000-000000000002",
+                "started_by": null,
+                "embedding_dim": spelunk_core::embeddings::EMBEDDING_DIM,
+            })),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-search-local-first-reachable.toml",
+        &tmp.path().join("spelunk.db"),
+        &format!(
+            "server_url = {:?}\nproject_id = \"team/proj\"\n",
+            mock_server.uri()
+        ),
+    );
+
+    let out = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["search", "local", "--mode", "text", "--format", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(NOTICE_SNIPPET),
+        "a reachable team server must not silence the local_first notice: {stderr}"
+    );
+    assert!(stdout.contains(LOCAL_TITLE), "got: {stdout}");
 }

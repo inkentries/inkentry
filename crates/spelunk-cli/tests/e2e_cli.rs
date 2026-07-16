@@ -547,6 +547,10 @@ async fn test_status_json_includes_tier_fields() {
     // never surface in user-facing status JSON.
     assert!(body["capabilities"]["plan"].is_null());
     assert!(!body["capabilities"]["explore"].as_bool().unwrap());
+    // With an explicit server_url and no `mode` override, the default is
+    // local_first (ADR-037 D1) even though the tier probe found the server
+    // reachable: tier and sync mode are independent axes.
+    assert_eq!(body["mode"], "local_first", "got: {body}");
 }
 
 /// Validate the *stable* JSON schema introduced by issue #269.
@@ -679,6 +683,92 @@ async fn test_status_json_stable_schema() {
     assert!(
         body["memory_entries"].as_i64().is_some(),
         "memory_entries must be an integer"
+    );
+    // mode: additive field (no server_url configured -> resolve_mode() is
+    // offline, the same default as pre-existing behaviour).
+    assert_eq!(body["mode"], "offline", "got: {body}");
+}
+
+/// Locks the top-level key set of `status --format json` so a future change
+/// cannot silently rename, drop, or add a field outside the documented
+/// "additive extensions only" contract (issue #269 doc comment above
+/// `status()`). `mode` (this story) is the newest addition.
+#[tokio::test]
+async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let db_path = temp.path().join("index.db");
+    let config_path = temp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    spelunk_bin()
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    let output = spelunk_bin()
+        .env("SPELUNK_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let body: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let mut got: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    got.sort_unstable();
+
+    let mut want = vec![
+        "version",
+        "project",
+        "db_path",
+        "indexed_files",
+        "file_count",
+        "total_chunks",
+        "languages",
+        "embedding_dim",
+        "has_semantic_search",
+        "last_indexed_at",
+        "memory_entries",
+        "memory_backend",
+        "tier",
+        "mode",
+        "server_url",
+        "capabilities",
+        "embedder_state",
+        "embedding_count",
+        "drift_candidates",
+        "usage_7d",
+    ];
+    want.sort_unstable();
+    assert_eq!(
+        got, want,
+        "status --format json top-level key set changed; if this is an \
+         intentional additive field, add it to `want` here and to the doc \
+         comment on `status()`"
     );
 }
 
