@@ -440,6 +440,31 @@ command, not this one.
 
 Added on review of a `windows-latest` CI failure in D6's own regression guard.
 
+> **The closing diagnosis below ("What D8 does not do") is superseded by the
+> implementation's evidence.** It reasoned from a single run that lost 1 of 8
+> entries and concluded the defect was lock **identity** across worktrees.
+> Three further `windows-latest` failures refute that as the mechanism: one
+> lost **6 of 8** entries in the single-repo guard, one process, one repo, no
+> worktrees, where no identity split is possible. In every failing run the
+> survivors are a contiguous **tail** of the serialization order (ids `[6, 8]`;
+> `[8, 2, 4]`; and twice all-but-one), which is the fingerprint of exactly one
+> writer reading an **empty** note mid-sequence and rewriting the ref with only
+> its own line. The write path made that possible: `append_to_git_notes` read
+> the existing note with `git notes show` and treated **any** failure as "no
+> note yet" (`.unwrap_or_default()`), so one transient git failure inside the
+> guarded section wiped every prior entry, while the writer held the lock the
+> whole time, and the lock excluded correctly. The fix distinguishes "no note
+> found" (exit 1) from a failed read (anything else) and fails the writer
+> rather than guessing empty. The identity concern was real hygiene and is
+> hardened anyway (`--path-format=absolute` where git knows it, output-checked
+> because `rev-parse` **echoes** unknown flags with exit 0 rather than
+> rejecting them, then canonicalized), with a regression test pinning that
+> worktree contenders converge on one lock file. But note the OS primitive
+> locks the underlying **file**, not the path string, so two spellings of one
+> path never excluded nothing; only paths resolving to genuinely different
+> files could, and no failing run required that. D8's contention policy is
+> unchanged by this; what it governs was never the loss mechanism observed.
+
 **The rule D6 left implicit, stated:** the contention policy is set by *what is
 lost when the lock is missing*, not by whether the caller is nominally a read or
 a write. Three cases, three answers:

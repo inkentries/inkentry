@@ -179,7 +179,14 @@ pub(super) async fn memory_add(
                     "recording memory entry to git notes (no local project store to fall back on)",
                 ));
             }
-            Err(e) => tracing::warn!("git-notes write-through failed (non-fatal): {e}"),
+            // Visible without RUST_LOG: a swallowed carry failure is how an
+            // entry silently stops traveling with the repo (ADR-069 D8).
+            Err(e) => {
+                eprintln!(
+                    "Warning: entry stored locally, but the git-notes carry failed, \
+                     so it will not travel with the repo: {e:#}"
+                );
+            }
         }
     }
 
