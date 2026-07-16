@@ -70,7 +70,7 @@ fn log_path(state_dir: &Path) -> PathBuf {
 /// Create `dir` (and parents) with `0700` permissions on Unix so only the
 /// owner can read the PID/port/log files inside it. A no-op permission
 /// tightening on platforms without Unix perms.
-fn create_state_dir(dir: &Path) -> Result<()> {
+pub(super) fn create_state_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating state dir {}", dir.display()))?;
     #[cfg(unix)]
@@ -85,7 +85,7 @@ fn create_state_dir(dir: &Path) -> Result<()> {
 /// Write `contents` to a state file, creating it `0600` and refusing to
 /// follow an existing symlink at `path` (see
 /// [`super::helpers::open_private_file_for_write`]).
-fn write_state_file(path: &Path, contents: &str) -> Result<()> {
+pub(super) fn write_state_file(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     let mut f = super::helpers::open_private_file_for_write(path)?;
     f.write_all(contents.as_bytes())
@@ -132,7 +132,7 @@ fn read_port(state_dir: &Path) -> Option<u16> {
 }
 
 /// Return `true` when `pid` names a currently-running process.
-fn pid_is_alive(pid: u32) -> bool {
+pub(super) fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // kill(pid, 0) checks existence without sending a signal.

@@ -212,6 +212,9 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     if tier.is_server() && embed_ready {
+        // Liveness marker so `spelunk status` from another terminal reports a
+        // foreground embed as running rather than telling the user to resume.
+        let worker_guard = super::embed_worker::EmbedWorkerGuard::acquire(&db, &db_path);
         embed_phase::run_embed_phase(
             result.chunk_ids_and_texts,
             &db,
@@ -222,6 +225,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             &mp,
         )
         .await?;
+        drop(worker_guard);
     } else {
         eprint_embed_skipped_notice(tier, &cfg);
     }
@@ -419,6 +423,12 @@ async fn run_embed_phases(
     root_canonical: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<()> {
+    // Liveness marker for `spelunk status` (dropped on exit; a killed worker
+    // leaves it behind for status to classify as a dead pid). Held through the
+    // readiness wait too: a worker waiting on a loading embedder is running,
+    // and status must not advise a resume that would double it up.
+    let worker_guard = super::embed_worker::EmbedWorkerGuard::acquire(db, db_path);
+
     let tier = wait_for_embedder(cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
     if tier.is_server() && embed_ready {
@@ -439,6 +449,7 @@ async fn run_embed_phases(
     } else {
         eprint_embed_skipped_notice(&tier, cfg);
     }
+    drop(worker_guard);
 
     run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
 }
