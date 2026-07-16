@@ -102,75 +102,19 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         "not installed  (run `spelunk hooks install` to add)".to_string()
     };
 
-    // ── 5. Run initial index (unless --no-index) ──────────────────────────────
-    let (file_count, chunk_count) = if args.no_index {
-        println!("Skipping index (--no-index). Run `spelunk index .` when ready.");
-        // If the DB exists already, read its stats; otherwise report zeros.
-        if db_path.exists() {
-            match Database::open(&db_path) {
-                Ok(db) => match db.stats() {
-                    Ok(stats) => (stats.file_count, stats.chunk_count),
-                    Err(_) => (0, 0),
-                },
-                Err(_) => (0, 0),
-            }
-        } else {
-            (0, 0)
-        }
-    } else {
-        // Delegate to the real index command logic.
-        let index_args = super::index::IndexArgs {
-            path: project_root.clone(),
-            db: None,
-            batch_size: 32,
-            force: false,
-            recount: false,
-            no_summaries: true,
-            summary_batch_size: 10,
-            background_phases: false,
-            embed_phases: false,
-            detach: false,
-            detach_embed: false,
-        };
-        super::index::index(index_args, cfg.clone()).await?;
-
-        // Read fresh stats from the just-created DB.
-        match Database::open(&db_path) {
-            Ok(db) => match db.stats() {
-                Ok(stats) => (stats.file_count, stats.chunk_count),
-                Err(_) => (0, 0),
-            },
-            Err(_) => (0, 0),
-        }
-    };
-
-    // ── 5b. Import git-notes memory into the project memory.db ────────────────
-    // Entries recorded on `refs/notes/spelunk` before init (git-notes fallback
-    // or write-through) are invisible to the SQLite-backed `memory list` until
-    // imported. No enclosing git repo → nothing to import. Non-fatal: a failure
-    // here must not sink init.
-    let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
-        let mem_path = spelunk_dir.join("memory.db");
-        // Fold in anything a previous `git fetch` left on the tracking ref
-        // before hydrating, so teammates' entries import too (ADR-069 D5).
-        crate::storage::merge_tracking_notes(Some(git_root)).await;
-        match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
-            Ok(0) => None,
-            Ok(n) => Some(format!("imported {n} entries from git notes")),
-            Err(e) => {
-                tracing::warn!("git-notes memory import skipped (non-fatal): {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // ── 6. Auto-spawn server (TTY only) or probe for a running server ─────────
+    // ── 5. Auto-spawn server (TTY only) or probe for a running server ─────────
     //
     // Interactive (stdin is a TTY): attempt to start the server so semantic
     // search works immediately. Non-interactive (CI / hook): probe only —
     // never auto-spawn; print a skip notice if offline.
+    //
+    // This runs BEFORE the index step, and the index step below hands the
+    // embed pass to the detached worker. The two are one change (ADR-070 D1):
+    // starting the server first is what makes the detached embed reachable on
+    // a fresh machine (otherwise the embed probes for a server this very
+    // command has not started yet and silently ships a zero-embedding index),
+    // and detaching is what keeps the reorder from holding the terminal
+    // through the entire embed pass.
     let server_line: Option<String> = {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
@@ -193,6 +137,76 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
                 }
             }
         }
+    };
+
+    // ── 6. Run initial index (unless --no-index) ──────────────────────────────
+    let (file_count, chunk_count) = if args.no_index {
+        println!("Skipping index (--no-index). Run `spelunk index .` when ready.");
+        // If the DB exists already, read its stats; otherwise report zeros.
+        if db_path.exists() {
+            match Database::open(&db_path) {
+                Ok(db) => match db.stats() {
+                    Ok(stats) => (stats.file_count, stats.chunk_count),
+                    Err(_) => (0, 0),
+                },
+                Err(_) => (0, 0),
+            }
+        } else {
+            (0, 0)
+        }
+    } else {
+        // Delegate to the real index command logic. `detach_embed: true` hands
+        // the (usually long) embed pass to the detached background worker, so
+        // init returns the prompt after parsing instead of holding the
+        // terminal through the whole embed (ADR-070 D1; on the profiled repo
+        // that wait is ~103 minutes). The worker waits out a still-loading
+        // embedder, so this holds on a cold machine whose server step 5 only
+        // just started.
+        let index_args = super::index::IndexArgs {
+            path: project_root.clone(),
+            db: None,
+            batch_size: 32,
+            force: false,
+            recount: false,
+            no_summaries: true,
+            summary_batch_size: 10,
+            background_phases: false,
+            embed_phases: false,
+            detach: false,
+            detach_embed: true,
+        };
+        super::index::index(index_args, cfg.clone()).await?;
+
+        // Read fresh stats from the just-created DB.
+        match Database::open(&db_path) {
+            Ok(db) => match db.stats() {
+                Ok(stats) => (stats.file_count, stats.chunk_count),
+                Err(_) => (0, 0),
+            },
+            Err(_) => (0, 0),
+        }
+    };
+
+    // ── 6b. Import git-notes memory into the project memory.db ────────────────
+    // Entries recorded on `refs/notes/spelunk` before init (git-notes fallback
+    // or write-through) are invisible to the SQLite-backed `memory list` until
+    // imported. No enclosing git repo → nothing to import. Non-fatal: a failure
+    // here must not sink init.
+    let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
+        let mem_path = spelunk_dir.join("memory.db");
+        // Fold in anything a previous `git fetch` left on the tracking ref
+        // before hydrating, so teammates' entries import too (ADR-069 D5).
+        crate::storage::merge_tracking_notes(Some(git_root)).await;
+        match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
+            Ok(0) => None,
+            Ok(n) => Some(format!("imported {n} entries from git notes")),
+            Err(e) => {
+                tracing::warn!("git-notes memory import skipped (non-fatal): {e}");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     // ── 7. Configure git-notes refspec on `origin` (only inside a git repo) ───

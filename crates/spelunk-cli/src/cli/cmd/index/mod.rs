@@ -174,17 +174,23 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // notice rather than letting the embed request 503 out mid-index or
     // silently producing an unembedded index.
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
-    if tier.is_server() && embed_ready {
-        // ── Detached embed ───────────────────────────────────────────────────
-        // Parsing is done and the chunks are persisted; hand the (usually long)
-        // embedding phase to a background process so the user regains the
-        // prompt now. The subprocess (`--_embed-phases`) rebuilds the embed
-        // queue from the DB, so nothing from `result` needs to cross the
-        // process boundary. Confirm completion later with `spelunk status`.
+
+    // ── Detached embed ────────────────────────────────────────────────────────
+    // Parsing is done and the chunks are persisted; hand the (usually long)
+    // embedding phase to a background process so the user regains the prompt
+    // now. The subprocess (`--_embed-phases`) rebuilds the embed queue from the
+    // DB, so nothing from `result` needs to cross the process boundary. Confirm
+    // completion later with `spelunk status`.
+    //
+    // The spawn is gated on "worth waiting for" (ready OR still loading), not
+    // on ready alone: the worker owns the readiness wait, and a fresh install
+    // arrives here with the embedder still `loading`. Gating the spawn on
+    // `embed_ready` is exactly the no-op that ships a permanently unembedded
+    // index on a cold machine.
+    if args.detach_embed && tier.is_server() && detach_embed_eligible(tier) {
         let embed_log = background_log_path(&db_path);
-        if args.detach_embed
-            && let EmbedSpawn::Detached(log_in_use) =
-                spawn_embed_subprocess(&args, embed_log.as_deref())?
+        if let EmbedSpawn::Detached(log_in_use) =
+            spawn_embed_subprocess(&args, embed_log.as_deref())?
         {
             let stats = db.stats()?;
             let pending = stats.chunk_count - stats.embedding_count;
@@ -192,13 +198,20 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                 "Index: {} files, {} chunks. Embedding {} chunk(s) in the background\u{2026}",
                 stats.file_count, stats.chunk_count, pending,
             );
+            if !embed_ready {
+                println!("The embedder is still loading; the background worker waits for it.");
+            }
             println!("Run `spelunk status` to check progress.");
             if let Some(p) = log_in_use {
                 println!("  Log: {}", p.display());
             }
             return Ok(());
         }
+        // Spawn failed: fall through to the inline path (embeds now if ready,
+        // else prints the skip notice).
+    }
 
+    if tier.is_server() && embed_ready {
         embed_phase::run_embed_phase(
             result.chunk_ids_and_texts,
             &db,
@@ -321,9 +334,83 @@ fn spawn_embed_subprocess<'a>(
     }
 }
 
+/// True when handing the embed pass to the detached worker can do useful work:
+/// the embedder is `ready`, or still `loading` (the worker owns the readiness
+/// wait, see [`wait_for_embedder`]). `unavailable` and `disabled` are terminal
+/// for this server process, and an older server that never advertises
+/// `index.embed` has nothing to wait for.
+fn detach_embed_eligible(tier: &capability::Tier) -> bool {
+    matches!(tier.caps(), Some(c) if c.index_embed)
+        || matches!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Loading)
+        )
+}
+
+/// First delay of the embed worker's readiness-wait backoff.
+const EMBED_WAIT_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// Backoff growth is bounded at this interval; the wait itself is not
+/// time-bounded while the embedder reports `loading` (a model download can
+/// legitimately take many minutes, and the queue is durable).
+const EMBED_WAIT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+/// Consecutive offline probes tolerated before the worker concludes the server
+/// is gone (crashed after spawning us) rather than momentarily unreachable.
+const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
+
+/// Wait until the server's embedder can serve, polling `/v1/health` with a
+/// bounded backoff. Returns the final observed tier; the caller re-derives
+/// `index_embed` from it.
+///
+/// A not-ready embedder is a transient condition to wait on, not a terminal
+/// condition to skip: `ensure_server_running` waits for liveness only (health
+/// goes live at socket bind, before the model loads), so a fresh machine
+/// reaches the worker with the embedder still `loading`. Only `unavailable`
+/// and `disabled` (or a server with no embedder at all) are terminal; each
+/// keeps its distinct notice via `eprint_embed_skipped_notice`. `loading` is
+/// never a reason to abandon durable queued work.
+async fn wait_for_embedder(
+    cfg: &Config,
+    initial_backoff: std::time::Duration,
+    max_backoff: std::time::Duration,
+) -> capability::Tier {
+    let mut backoff = initial_backoff;
+    let mut offline_probes = 0u32;
+    let mut announced = false;
+    loop {
+        let tier = capability::probe_tier_fresh(cfg).await;
+        match &tier {
+            capability::Tier::Server { .. } => {
+                if matches!(tier.caps(), Some(c) if c.index_embed) {
+                    return tier;
+                }
+                if !matches!(
+                    tier.embedder_state(),
+                    Some(capability::EmbedderState::Loading)
+                ) {
+                    // unavailable / disabled / no embedder: terminal here.
+                    return tier;
+                }
+                offline_probes = 0;
+                if !announced {
+                    eprintln!("Waiting for the embedder to finish loading\u{2026}");
+                    announced = true;
+                }
+            }
+            capability::Tier::Offline => {
+                offline_probes += 1;
+                if offline_probes >= EMBED_WAIT_MAX_OFFLINE_PROBES {
+                    return tier;
+                }
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
 /// Embed-only entry point for the detached `--_embed-phases` subprocess: rebuild
-/// the embed queue from the chunks already in the DB (no re-parse), run the
-/// embed phase, then phases 3–5.
+/// the embed queue from the chunks already in the DB (no re-parse), wait for
+/// the embedder to become ready, run the embed phase, then phases 3–5.
 async fn run_embed_phases(
     args: &IndexArgs,
     cfg: &Config,
@@ -332,7 +419,7 @@ async fn run_embed_phases(
     root_canonical: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<()> {
-    let tier = capability::get_tier(cfg).await;
+    let tier = wait_for_embedder(cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
     if tier.is_server() && embed_ready {
         let chunk_ids_and_texts = parse_phase::missing_embedding_texts(db)?;
@@ -342,7 +429,7 @@ async fn run_embed_phases(
                 chunk_ids_and_texts,
                 db,
                 cfg,
-                tier,
+                &tier,
                 project_root,
                 args.batch_size,
                 &mp,
@@ -350,7 +437,7 @@ async fn run_embed_phases(
             .await?;
         }
     } else {
-        eprint_embed_skipped_notice(tier, cfg);
+        eprint_embed_skipped_notice(&tier, cfg);
     }
 
     run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
@@ -546,6 +633,179 @@ mod tests {
         let lines = embed_skipped_lines(None, None);
         let joined = lines.join("\n");
         assert!(joined.contains("spelunk server start"));
+    }
+
+    // ── detach_embed_eligible: the spawn gate must include `loading` ────────────
+
+    fn tier_with(embed_ready: bool, state: capability::EmbedderState) -> capability::Tier {
+        let mut caps = capability::Capabilities::all();
+        caps.index_embed = embed_ready;
+        capability::Tier::Server {
+            url: "http://127.0.0.1:7777".to_string(),
+            caps,
+            auto_discovered: true,
+            embedder_state: state,
+            server_limits: None,
+        }
+    }
+
+    #[test]
+    fn detach_eligible_when_embedder_ready() {
+        assert!(detach_embed_eligible(&tier_with(
+            true,
+            capability::EmbedderState::Ready
+        )));
+    }
+
+    #[test]
+    fn detach_eligible_when_embedder_still_loading() {
+        // The cold-start case ADR-070 D1/D2 exists for: a server started
+        // moments ago advertises no index.embed yet, but the worker can wait
+        // it out. Gating the spawn on readiness alone is the recorded no-op.
+        assert!(detach_embed_eligible(&tier_with(
+            false,
+            capability::EmbedderState::Loading
+        )));
+    }
+
+    #[test]
+    fn detach_not_eligible_for_terminal_embedder_states() {
+        for state in [
+            capability::EmbedderState::Unavailable,
+            capability::EmbedderState::Disabled,
+            capability::EmbedderState::Unknown,
+        ] {
+            assert!(
+                !detach_embed_eligible(&tier_with(false, state)),
+                "state {state:?} is terminal; spawning a worker would wait forever"
+            );
+        }
+    }
+
+    #[test]
+    fn detach_not_eligible_offline() {
+        assert!(!detach_embed_eligible(&capability::Tier::Offline));
+    }
+
+    // ── wait_for_embedder: the worker owns the readiness wait (ADR-070 D2) ────
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// `/v1/health` body for an embedder in `state`. `index.embed` is
+    /// advertised only when ready, mirroring the real server's contract.
+    fn health_body(state: &str) -> serde_json::Value {
+        let (caps, dim) = if state == "ready" {
+            (
+                vec!["memory", "index.embed", "search.semantic"],
+                spelunk_core::embeddings::EMBEDDING_DIM,
+            )
+        } else {
+            (vec!["memory"], 0)
+        };
+        serde_json::json!({
+            "status": "ok",
+            "version": "0.9.3",
+            "capabilities": caps,
+            "instance_id": "00000000-0000-0000-0000-000000000001",
+            "embedding_dim": dim,
+            "embedder": { "state": state, "detail": null }
+        })
+    }
+
+    fn cfg_for(url: String) -> Config {
+        Config {
+            server_url: Some(url),
+            project_id: Some("local/test".to_string()),
+            ..Default::default()
+        }
+    }
+
+    const TEST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
+
+    #[tokio::test]
+    async fn wait_for_embedder_outlasts_a_loading_embedder() {
+        // The readiness gate the cold-start bug lives behind: health reports
+        // `loading` (twice here) before flipping to `ready`. The wait must
+        // keep polling through `loading` and come back with `index.embed`.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("loading")))
+            .up_to_n_times(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&mock)
+            .await;
+
+        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert!(
+            matches!(tier.caps(), Some(c) if c.index_embed),
+            "the wait must return only once the embedder serves; got {tier:?}"
+        );
+        assert_eq!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Ready)
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_embedder_treats_unavailable_as_terminal() {
+        // A failed model load is terminal for this server process: return at
+        // the first probe (no retries burned) and preserve the state so the
+        // caller prints the distinct `unavailable` notice.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("unavailable")))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert_eq!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Unavailable)
+        );
+        assert!(!matches!(tier.caps(), Some(c) if c.index_embed));
+    }
+
+    #[tokio::test]
+    async fn wait_for_embedder_treats_disabled_as_terminal() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("disabled")))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert_eq!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Disabled)
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_embedder_gives_up_after_bounded_offline_probes() {
+        // A vanished server (crashed after spawning the worker) must not hang
+        // the worker forever: bounded consecutive offline probes, then return
+        // Offline so the skip notice prints and the durable queue stays put.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let dead_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        drop(listener); // port is real but nothing serves it
+
+        let started = std::time::Instant::now();
+        let tier = wait_for_embedder(&cfg_for(dead_url), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert!(matches!(tier, capability::Tier::Offline));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the offline give-up must be bounded"
+        );
     }
 
     #[test]
