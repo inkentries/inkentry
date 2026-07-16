@@ -1,0 +1,216 @@
+//! End-to-end CLI-to-OSS-server sync test.
+//!
+//! This is the test that has never existed: it drives a real bound
+//! `spelunk-server` instance (plaintext loopback) through the **actual CLI
+//! client code**: `spelunk_core::storage::{CloudSyncClient, BatchPushItem}`,
+//! the same types `spelunk memory push` / `spelunk sync` use, instead of a
+//! hand-rolled request. It exists so a future wire-contract drift between the
+//! CLI and this server fails a test instead of shipping silently (as the
+//! `POST /memory/batch` 405 did).
+//!
+//! Coverage:
+//! - push a batch of local-shaped memories → stored, per-entry "created".
+//! - re-push the same batch → idempotent on `external_id` (server-side
+//!   `remote_id`): all "skipped", zero duplicates.
+//! - since roundtrip: the pushed entries are retrievable via
+//!   `GET /memory/since`, proving the new `/memory/batch` literal route did
+//!   not shadow (or get shadowed by) the pre-existing `/memory/since` route.
+//!
+//! NOT covered here (a separate, pre-existing gap, not this story's bug):
+//! `CloudSyncClient::pull_since`, the half of `spelunk sync` that pulls,
+//! speaks `?since_id=<uuid>` and expects `{entries, count}`; this server's
+//! `/memory/since` (exercised below) speaks `?t=<unix_secs>` and returns a
+//! bare `Vec<ServerNote>` (the contract `spelunk memory since` actually
+//! uses). Those two CLI code paths disagree on this server's own wire
+//! format: `spelunk sync`'s pull half does not work against an OSS team
+//! server today. Flagged for follow-up, out of scope for the batch-push fix.
+
+mod common;
+
+use std::net::SocketAddr;
+
+use serde::Deserialize;
+use spelunk_core::storage::{BatchPushItem, CloudSyncClient};
+use spelunk_server::router;
+
+/// Bind a real ephemeral loopback listener, serve `state`'s router on it, and
+/// return the base URL. Mirrors the bind/serve pattern in `tls_serve.rs` minus
+/// TLS: plaintext loopback is the OSS team-server deployment this test
+/// targets (ADR-058).
+async fn spawn_plaintext_server(state: spelunk_server::AppState) -> String {
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral loopback port");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    format!("http://{addr}")
+}
+
+/// Minimal mirror of the server's `ServerNote` wire shape: just the fields
+/// this test asserts on. Matches what `spelunk memory since` (the CLI command
+/// that actually targets this endpoint's real `t=`/`Vec<ServerNote>`
+/// contract) deserializes.
+#[derive(Debug, Deserialize)]
+struct SinceNote {
+    title: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+async fn fetch_since(base_url: &str, project_slug: &str, t: i64) -> Vec<SinceNote> {
+    let url = format!(
+        "{base_url}/v1/projects/{}/memory/since",
+        urlencoding_slug(project_slug)
+    );
+    reqwest::Client::new()
+        .get(&url)
+        .query(&[("t", t.to_string())])
+        .send()
+        .await
+        .expect("GET /memory/since")
+        .error_for_status()
+        .expect("since must 200")
+        .json()
+        .await
+        .expect("parse /memory/since response")
+}
+
+/// The project slug in these tests has no reserved characters, so a plain
+/// pass-through is enough (avoids pulling in a percent-encoding dep just for
+/// the test).
+fn urlencoding_slug(slug: &str) -> &str {
+    slug
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
+    common::register_sqlite_vec();
+    let state = common::make_test_state(4, None);
+    let base_url = spawn_plaintext_server(state).await;
+    // No `/` in the slug: the manual `reqwest` assertion calls below build the
+    // URL by hand and don't go through the CLI's percent-encoding helper.
+    let project = "acme-widget";
+
+    // Real CLI client code path: the exact type `spelunk memory push` and
+    // `spelunk sync` construct.
+    let client = CloudSyncClient::new(&base_url, project, None, None)
+        .expect("CloudSyncClient::new against a keyless plaintext loopback server");
+
+    let items = |suffix: &str| {
+        vec![
+            BatchPushItem {
+                kind: "decision".into(),
+                title: format!("Decision {suffix}"),
+                body: Some("why we did it".into()),
+                external_id: format!("uuid-a-{suffix}"),
+                source_commit: Some("deadbeef".into()),
+            },
+            BatchPushItem {
+                kind: "note".into(),
+                title: format!("Note {suffix}"),
+                body: None,
+                external_id: format!("uuid-b-{suffix}"),
+                source_commit: None,
+            },
+        ]
+    };
+
+    // ── First push: both entries created ────────────────────────────────────
+    let res1 = client
+        .push_batch(items("1"))
+        .await
+        .expect("first push_batch must succeed against the OSS server");
+    assert_eq!(
+        (res1.created, res1.skipped, res1.failed),
+        (2, 0, 0),
+        "first push must create both entries: {res1:?}"
+    );
+    for r in &res1.results {
+        assert_eq!(r.status, "created", "result: {r:?}");
+        assert!(r.id.is_some(), "a created entry must carry a server id");
+    }
+
+    // ── Re-push the identical batch: idempotent, no duplicates ──────────────
+    let res2 = client
+        .push_batch(items("1"))
+        .await
+        .expect("re-push must succeed (idempotent, not an error)");
+    assert_eq!(
+        (res2.created, res2.skipped, res2.failed),
+        (0, 2, 0),
+        "re-push of the same external_ids must skip, not duplicate: {res2:?}"
+    );
+
+    // Confirm no duplicates server-side via the list endpoint.
+    let list_url = format!("{base_url}/v1/projects/{project}/memory?limit=50");
+    let notes: Vec<serde_json::Value> = reqwest::get(&list_url)
+        .await
+        .expect("GET /memory")
+        .json()
+        .await
+        .expect("parse /memory list");
+    assert_eq!(
+        notes.len(),
+        2,
+        "re-push must not create duplicate rows: {notes:?}"
+    );
+
+    // ── since roundtrip: the pushed entries are readable back out, and the
+    // new /memory/batch literal route did not shadow /memory/since. ────────
+    let since_notes = fetch_since(&base_url, project, 0).await;
+    assert_eq!(since_notes.len(), 2, "since must return both pushed notes");
+    let titles: Vec<&str> = since_notes.iter().map(|n| n.title.as_str()).collect();
+    assert!(titles.contains(&"Decision 1"));
+    assert!(titles.contains(&"Note 1"));
+    // `source_commit` has no dedicated column; it round-trips as a `git:`
+    // tag, the same convention `harvested_shas` reads.
+    let decision = since_notes
+        .iter()
+        .find(|n| n.title == "Decision 1")
+        .expect("decision note present");
+    assert!(
+        decision.tags.iter().any(|t| t == "git:deadbeef"),
+        "source_commit must round-trip as a git: tag: {:?}",
+        decision.tags
+    );
+
+    // ── A different, brand-new batch is still additive (not swallowed) ─────
+    let res3 = client
+        .push_batch(items("2"))
+        .await
+        .expect("push of a distinct batch must succeed");
+    assert_eq!((res3.created, res3.skipped, res3.failed), (2, 0, 0));
+}
+
+/// A batch push against an unknown project slug lazily creates the project,
+/// exactly like the single-note `add_note` route already does: batch push
+/// must not require the project to pre-exist.
+#[tokio::test]
+#[serial_test::serial]
+async fn cli_push_lazily_creates_the_project() {
+    common::register_sqlite_vec();
+    let state = common::make_test_state(4, None);
+    let base_url = spawn_plaintext_server(state).await;
+
+    let client = CloudSyncClient::new(&base_url, "brand-new/project", None, None).unwrap();
+    let res = client
+        .push_batch(vec![BatchPushItem {
+            kind: "note".into(),
+            title: "First ever entry".into(),
+            body: None,
+            external_id: "uuid-first".into(),
+            source_commit: None,
+        }])
+        .await
+        .expect("push to a not-yet-existing project must succeed (lazy create)");
+    assert_eq!((res.created, res.skipped, res.failed), (1, 0, 0));
+}

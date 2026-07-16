@@ -295,6 +295,7 @@ impl ServerDb {
         tags: &[String],
         linked_files: &[String],
         embedding: Option<&[f32]>,
+        remote_id: Option<&str>,
     ) -> Result<i64> {
         let tags_csv = if tags.is_empty() {
             None
@@ -307,9 +308,11 @@ impl ServerDb {
             Some(linked_files.join(","))
         };
         self.conn.execute(
-            "INSERT INTO notes (project_id, kind, title, body, tags, linked_files)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![project_id, kind, title, body, tags_csv, files_csv],
+            "INSERT INTO notes (project_id, kind, title, body, tags, linked_files, remote_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                project_id, kind, title, body, tags_csv, files_csv, remote_id
+            ],
         )?;
         let note_id = self.conn.last_insert_rowid();
 
@@ -321,6 +324,43 @@ impl ServerDb {
             )?;
         }
         Ok(note_id)
+    }
+
+    /// Bulk-lookup active notes by their cross-machine `remote_id` (the batch
+    /// push idempotency key). Scoped to the project and to live rows only:
+    /// an archived row with the same `remote_id` does not count as existing,
+    /// so a re-push after archiving creates a fresh row rather than a no-op.
+    /// Mirrors cloud-api's `find_by_external_ids`.
+    pub fn find_by_remote_ids(
+        &self,
+        project_id: i64,
+        remote_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        if remote_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders = remote_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT remote_id, id FROM notes
+             WHERE project_id = ? AND status = 'active' AND remote_id IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(remote_ids.len() + 1);
+        params.push(&project_id);
+        for id in remote_ids {
+            params.push(id);
+        }
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (remote_id, id) = row?;
+            if let Some(rid) = remote_id {
+                map.insert(rid, id);
+            }
+        }
+        Ok(map)
     }
 
     pub fn get_note(&self, project_id: i64, note_id: i64) -> Result<Option<ServerNote>> {
@@ -699,7 +739,7 @@ mod tests {
             let project = db
                 .upsert_project("acme/widget", 768, "test-model")
                 .expect("project");
-            db.add_note(project.id, "note", "t", "b", &[], &[], None)
+            db.add_note(project.id, "note", "t", "b", &[], &[], None, None)
                 .expect("add note");
         }
 

@@ -474,6 +474,77 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/memory/batch": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Batch-create memory entries. Idempotent on `external_id`: a live note\nalready carrying the given `external_id` is skipped, not duplicated.",
+        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `spelunk memory push`\nand `spelunk sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written.",
+        "operationId": "push_memory_batch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug (e.g. `usercise/spelunk`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "207": {
+            "description": "Per-entry outcomes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchPushResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (oversized batch, bad field length)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entry rejected: prompt injection detected"
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/memory/harvested-shas": {
       "get": {
         "tags": [
@@ -1239,6 +1310,122 @@
           "stored": {
             "type": "boolean",
             "description": "Whether the note was stored (always true for 201/409)."
+          }
+        }
+      },
+      "BatchItemResult": {
+        "type": "object",
+        "description": "Per-entry outcome in the batch response.",
+        "required": [
+          "status",
+          "external_id"
+        ],
+        "properties": {
+          "external_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The server-minted note id (stringified), present only for `\"created\"`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`\"created\"` or `\"skipped\"` (idempotent re-push)."
+          }
+        }
+      },
+      "BatchNoteItem": {
+        "type": "object",
+        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`spelunk-core/src/storage/remote/sync.rs`): the CLI\nnever sends `embedding` today (its push is text-only, ADR-037 D3), but the\nfield is accepted when present for forward compatibility with a future\npushed-vector optimization (ADR-053 #4b): the server must not require it.",
+        "required": [
+          "kind",
+          "title",
+          "external_id"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "embedding": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Optional pre-computed embedding. Tolerated, never required."
+          },
+          "external_id": {
+            "type": "string",
+            "description": "Stable cross-machine identity: the server's idempotency key. Stored as\n`notes.remote_id` (unique). A re-push of the same `external_id` against\na live note is skipped, not duplicated."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Git SHA provenance, if any. No dedicated column on this schema; stored\nas a `git:<sha>` tag, the same convention `harvested_shas` already reads."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "BatchPushRequest": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchNoteItem"
+            }
+          }
+        }
+      },
+      "BatchPushResponse": {
+        "type": "object",
+        "description": "Response body for `POST /memory/batch`; always `207 Multi-Status`.",
+        "required": [
+          "created",
+          "skipped",
+          "failed",
+          "results"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchItemResult"
+            }
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
