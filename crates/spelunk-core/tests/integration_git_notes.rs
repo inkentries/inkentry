@@ -1076,6 +1076,70 @@ async fn lock_notes_contends_across_worktrees() {
     );
 }
 
+/// The lock path itself is one identity: absolute, inside an existing git
+/// common dir, and byte-identical whether resolved from the main worktree or a
+/// linked one.
+///
+/// The contention test above proves the two exclude each other while both
+/// locks are live; this pins the path property directly, so a resolution
+/// change that happens to keep same-process exclusion (say, one spelling
+/// absolute and one relative to a shared cwd) still fails.
+#[tokio::test]
+#[serial]
+async fn lock_path_is_one_identity_from_main_and_linked_worktrees() {
+    let dir = make_temp_git_repo();
+    let main_root = dir.path();
+
+    let wt_parent = tempfile::TempDir::new().expect("tempdir");
+    let wt_root = wt_parent.path().join("wt");
+    let out = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            "wt-lock-path",
+            wt_root.to_str().unwrap(),
+        ])
+        .current_dir(main_root)
+        .output()
+        .expect("git worktree add");
+    assert!(
+        out.status.success(),
+        "worktree add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let from_main = match lock_notes(Some(main_root))
+        .await
+        .expect("resolve lock path")
+    {
+        LockAttempt::Acquired(guard) => guard.path().to_path_buf(),
+        other => panic!("main worktree must acquire the free lock, got {other:?}"),
+    };
+    // Sequential acquisitions: the first guard is dropped, so this re-acquires
+    // rather than contends, and only the resolved paths are compared.
+    let from_linked = match lock_notes(Some(&wt_root)).await.expect("resolve lock path") {
+        LockAttempt::Acquired(guard) => guard.path().to_path_buf(),
+        other => panic!("linked worktree must acquire the free lock, got {other:?}"),
+    };
+
+    assert!(
+        from_main.is_absolute(),
+        "the lock path must be absolute, got {}",
+        from_main.display()
+    );
+    assert_eq!(
+        from_main, from_linked,
+        "both worktrees must resolve one lock file identity"
+    );
+    assert!(
+        from_main.parent().is_some_and(|d| d.is_dir()),
+        "the lock must live in an existing directory (the git common dir), \
+         got {}",
+        from_main.display()
+    );
+}
+
 /// An unusable lock file degrades to an unlocked write, never an `Err`.
 ///
 /// ADR-069 D8's one kept degradation: where the lock cannot exist at all,
@@ -1160,6 +1224,63 @@ async fn append_to_git_notes_fails_when_the_lock_is_contended() {
         note_on_head(root).is_none(),
         "nothing may be written when the lock is contended; the unserialized \
          write is exactly the data loss D8 forbids"
+    );
+}
+
+/// The `--backend git-notes` writers carry the same D8 contract as the
+/// write-through helper: a contended lock fails `add` and `archive`, and
+/// nothing is written. Each call site matches on the lock outcome on its own,
+/// so one swallowed arm reopens the #185 unlocked write at that site only;
+/// this pins both sites, not just the shared helper.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let id = backend
+        .add(note_input("decision", "the sibling entry at stake"))
+        .await
+        .expect("seed");
+    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]);
+
+    let held = open_lock_file(&notes_lock_path(root));
+    held.lock().expect("hold the notes lock across both writes");
+
+    let started = std::time::Instant::now();
+    let err = backend
+        .add(note_input("decision", "must not land"))
+        .await
+        .expect_err("a contended lock must fail the backend add, never write unlocked (D8)");
+    let waited = started.elapsed();
+    // Negative control: too fast means the add failed for some unrelated
+    // reason instead of waiting out a held lock.
+    assert!(
+        waited >= LOCK_WAIT_BUDGET,
+        "the add must have waited out the {LOCK_WAIT_BUDGET:?} budget; \
+         returned after {waited:?}, so it never contended"
+    );
+    assert!(
+        format!("{err:#}").contains("notes lock"),
+        "the add error must name the lock; got: {err:#}"
+    );
+
+    let err = backend
+        .archive(id)
+        .await
+        .expect_err("a contended lock must fail the backend archive, never write unlocked (D8)");
+    assert!(
+        format!("{err:#}").contains("notes lock"),
+        "the archive error must name the lock; got: {err:#}"
+    );
+
+    drop(held);
+
+    assert_eq!(
+        git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]),
+        ref_before,
+        "the note ref must be untouched after both contended writes"
     );
 }
 
@@ -1276,6 +1397,281 @@ async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
         git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]),
         ref_before,
         "the note ref must be untouched after failed writes"
+    );
+}
+
+/// The in-lock read retry paces its attempts: a persistently failing read
+/// waits out the inter-attempt backoff before surfacing, never burns its
+/// attempts in one instant.
+///
+/// Four attempts with a linearly growing 50ms base backoff sleep 300ms in
+/// total, so the 250ms floor holds deterministically on the unmutated code,
+/// while a backoff zeroed out (or a loop that no longer retries) returns in
+/// the time of a few git spawns. Pins the retry pacing that keeps the
+/// windows-latest flake absorbable; a deliberate retuning of the constants
+/// updates this floor with it.
+#[tokio::test]
+#[serial]
+async fn append_read_retry_paces_its_attempts_before_surfacing_the_failure() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(
+        Some(root),
+        &make_note_record(1, "the sibling entry at stake"),
+    )
+    .await
+    .expect("seed");
+    corrupt_note_blob(root);
+
+    let started = std::time::Instant::now();
+    append_to_git_notes(Some(root), &make_note_record(2, "must not land"))
+        .await
+        .expect_err("a persistent read failure must still surface after the retries");
+    let took = started.elapsed();
+
+    assert!(
+        took >= std::time::Duration::from_millis(250),
+        "a persistently failing read must wait out ~300ms of backoff across \
+         its retries; returned after {took:?}, so it never retried or never \
+         slept between attempts"
+    );
+}
+
+// ── fault injection: a scripted `git` on PATH ─────────────────────────────────
+//
+// The corruption tests above can only make a read fail *persistently*; the
+// windows-latest loss was a *transient* failure, gone by the next attempt.
+// Only unix, because the shim is a shell script: the same retry code runs on
+// Windows, where the persistent-failure tests above still pin classification
+// and pacing.
+
+/// A `git` shim prepended to PATH. Pass-through except for one scripted
+/// behaviour scoped to a single repo (matched on the child's physical cwd),
+/// so concurrent git use elsewhere is untouched. Restores PATH on drop.
+#[cfg(unix)]
+mod git_shim {
+    use std::path::{Path, PathBuf};
+
+    pub struct ShimGuard {
+        original_path: std::ffi::OsString,
+        counter: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Drop for ShimGuard {
+        fn drop(&mut self) {
+            // SAFETY: every test in this binary is #[serial] (and nextest runs
+            // one process per test), so nothing reads the environment
+            // concurrently. Same argument as `isolate_git_config` above.
+            unsafe { std::env::set_var("PATH", &self.original_path) };
+        }
+    }
+
+    impl ShimGuard {
+        /// How many spelunk note reads the shim has intercepted so far.
+        pub fn note_reads(&self) -> u32 {
+            std::fs::read_to_string(&self.counter)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0)
+        }
+    }
+
+    /// The real git, resolved before the shim shadows the name.
+    fn real_git() -> String {
+        let out = std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("resolve the real git");
+        assert!(out.status.success(), "git must be on PATH");
+        String::from_utf8(out.stdout)
+            .expect("utf8 git path")
+            .trim()
+            .to_string()
+    }
+
+    fn install(dir: tempfile::TempDir, script: String, counter: PathBuf) -> ShimGuard {
+        use std::os::unix::fs::PermissionsExt;
+        let shim = dir.path().join("git");
+        std::fs::write(&shim, script).expect("write shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+
+        let original_path = std::env::var_os("PATH").expect("PATH is set");
+        let mut parts = vec![dir.path().to_path_buf()];
+        parts.extend(std::env::split_paths(&original_path));
+        let new_path = std::env::join_paths(parts).expect("join PATH");
+        // SAFETY: see Drop.
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        ShimGuard {
+            original_path,
+            counter,
+            _dir: dir,
+        }
+    }
+
+    /// Count every `notes --ref=spelunk show` in `repo`, failing the first
+    /// `fail_n` of them with exit 128 (the transient-infrastructure shape the
+    /// windows-latest losses had). Everything else passes through.
+    pub fn failing_note_reads(repo: &Path, fail_n: u32) -> ShimGuard {
+        let repo = std::fs::canonicalize(repo).expect("canonical repo path");
+        let real = real_git();
+        let dir = tempfile::TempDir::new().expect("shim dir");
+        let counter = dir.path().join("note-reads");
+        let script = format!(
+            "#!/bin/sh\n\
+             case \" $* \" in\n\
+               *\" notes --ref=spelunk show \"*)\n\
+                 if [ \"$(pwd -P)\" = \"{repo}\" ]; then\n\
+                   n=$(cat \"{counter}\" 2>/dev/null || echo 0)\n\
+                   n=$((n+1))\n\
+                   printf '%s\\n' \"$n\" > \"{counter}\"\n\
+                   if [ \"$n\" -le {fail_n} ]; then\n\
+                     echo 'shim: simulated transient note read failure' >&2\n\
+                     exit 128\n\
+                   fi\n\
+                 fi\n\
+                 ;;\n\
+             esac\n\
+             exec \"{real}\" \"$@\"\n",
+            repo = repo.display(),
+            counter = counter.display(),
+        );
+        install(dir, script, counter)
+    }
+
+    /// Emulate git < 2.31 for `repo`: `rev-parse --path-format=absolute
+    /// --git-common-dir` echoes the unknown flag back and exits 0, exactly the
+    /// output shape old git produces. Everything else passes through.
+    pub fn old_git_echoing_path_format(repo: &Path) -> ShimGuard {
+        let repo = std::fs::canonicalize(repo).expect("canonical repo path");
+        let real = real_git();
+        let dir = tempfile::TempDir::new().expect("shim dir");
+        let counter = dir.path().join("note-reads");
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$*\" = \"rev-parse --path-format=absolute --git-common-dir\" ] \
+                && [ \"$(pwd -P)\" = \"{repo}\" ]; then\n\
+               printf '%s\\n%s\\n' '--path-format=absolute' '.git'\n\
+               exit 0\n\
+             fi\n\
+             exec \"{real}\" \"$@\"\n",
+            repo = repo.display(),
+        );
+        install(dir, script, counter)
+    }
+}
+
+/// A transiently failing note read is absorbed by the in-lock retry: the
+/// append succeeds on a later attempt and every sibling entry survives. This
+/// is the windows-latest #185 shape itself: the same read succeeded for every
+/// sibling writer moments apart.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn append_read_retry_absorbs_a_transient_note_read_failure() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(
+        Some(root),
+        &make_note_record(1, "the sibling entry at stake"),
+    )
+    .await
+    .expect("seed");
+
+    // The first two reads fail, the third succeeds; well inside the four
+    // attempts the retry allows.
+    let shim = git_shim::failing_note_reads(root, 2);
+
+    append_to_git_notes(
+        Some(root),
+        &make_note_record(2, "lands on the third attempt"),
+    )
+    .await
+    .expect("a transient read failure must be absorbed by the in-lock retry, not surfaced");
+    let reads = shim.note_reads();
+    drop(shim);
+
+    assert!(
+        reads >= 3,
+        "the append must have read again past the two failed attempts; \
+         saw {reads} read(s)"
+    );
+    let blob = note_on_head(root).expect("note on HEAD");
+    assert!(
+        blob.contains("the sibling entry at stake") && blob.contains("lands on the third attempt"),
+        "both entries must survive the transient failure; note body:\n{blob}"
+    );
+}
+
+/// "No note yet" is a definitive answer and is not retried: the append's one
+/// read exits 1 and the write proceeds immediately. Retrying it would bill
+/// every first write on a commit the full retry backoff for nothing.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn a_missing_note_is_answered_in_one_read_without_retrying() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // Count only (fail_n = 0): HEAD has no note, so the read exits 1.
+    let shim = git_shim::failing_note_reads(root, 0);
+
+    append_to_git_notes(
+        Some(root),
+        &make_note_record(1, "first entry on a bare HEAD"),
+    )
+    .await
+    .expect("append");
+    let reads = shim.note_reads();
+    drop(shim);
+
+    assert_eq!(
+        reads, 1,
+        "a missing note must be read exactly once, never retried"
+    );
+    assert!(
+        note_on_head(root)
+            .expect("note on HEAD")
+            .contains("first entry on a bare HEAD"),
+        "the first entry must land"
+    );
+}
+
+/// Under git < 2.31 (the flag echoed back, exit 0) the lock still lands in
+/// the real common dir, canonicalized, and no path spelled after the echoed
+/// flag is ever used. The unit tests pin `parse_absolute_dir` itself; this
+/// pins that `notes_lock_path` actually routes through that validation and
+/// that its fallback converges on the same canonical identity.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn old_git_echoing_the_flag_still_locks_the_real_common_dir() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let shim = git_shim::old_git_echoing_path_format(root);
+    let attempt = lock_notes(Some(root)).await.expect("resolve lock path");
+    drop(shim);
+
+    let LockAttempt::Acquired(guard) = attempt else {
+        panic!("the fallback must still acquire a free lock under old git, got {attempt:?}");
+    };
+    let expected = std::fs::canonicalize(root.join(".git"))
+        .expect("the common dir exists")
+        .join("spelunk-notes.lock");
+    assert_eq!(
+        guard.path(),
+        expected.as_path(),
+        "old git's echoed flag must fall back to the real common dir, in the \
+         one canonical spelling every contender computes"
+    );
+    assert!(
+        !root.join("--path-format=absolute").exists(),
+        "no path spelled after the echoed flag may be created"
     );
 }
 
