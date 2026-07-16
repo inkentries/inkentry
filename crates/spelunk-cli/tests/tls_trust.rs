@@ -21,7 +21,7 @@ use plumbing_helpers::spelunk_bin;
 
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose,
+    KeyUsagePurpose, date_time_ymd,
 };
 use std::fs;
 use std::path::Path;
@@ -78,6 +78,29 @@ fn new_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     let cert = params
         .signed_by(&key_pair, issuer)
         .expect("sign leaf with CA");
+    (cert.pem(), key_pair.serialize_pem())
+}
+
+/// Issue a `127.0.0.1` leaf identical to `new_leaf`, except its validity
+/// window is entirely in the past (expired since 2001), for the "expired
+/// certificate" classification-matrix case.
+fn new_expired_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
+    let mut params = CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("valid leaf SAN");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "127.0.0.1");
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+    params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::ServerAuth);
+    params.not_before = date_time_ymd(2000, 1, 1);
+    params.not_after = date_time_ymd(2001, 1, 1);
+
+    let key_pair = KeyPair::generate().expect("generate leaf key");
+    let cert = params
+        .signed_by(&key_pair, issuer)
+        .expect("sign expired leaf with CA");
     (cert.pem(), key_pair.serialize_pem())
 }
 
@@ -179,6 +202,16 @@ fn write_tls_config(config_path: &Path, db_path: &Path, port: u16, ca_pem_path: 
     fs::write(config_path, cfg).expect("write tls config");
 }
 
+/// Same as `write_tls_config`, but deliberately omits `server_ca`: the CLI
+/// trusts only the default root store, so our in-test CA is untrusted.
+fn write_tls_config_no_ca(config_path: &Path, db_path: &Path, port: u16) {
+    let cfg = format!(
+        "db_path = {:?}\nserver_url = \"https://127.0.0.1:{port}\"\n",
+        db_path.display().to_string(),
+    );
+    fs::write(config_path, cfg).expect("write tls config with no server_ca");
+}
+
 // ── tests ────────────────────────────────────────────────────────────────────
 
 /// A properly issued CA -> leaf chain: the CLI's real client path must reach
@@ -272,9 +305,13 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
          '[unreachable]': that label is reserved for TCP/connect failures; stdout:\n{stdout}"
     );
     assert!(
-        combined.contains("CA certificate") && combined.contains("leaf certificate"),
-        "output must name the actual certificate cause (CA used as leaf), not \
-         collapse to a bare 'unreachable': {combined}"
+        combined.contains("was presented as the server's own leaf certificate"),
+        "output must name describe_rustls_error's CA-as-leaf sentence \
+         specifically, not just cert_trust_hint's similarly-worded text (the \
+         hint is present regardless of which cause matched, so checking only \
+         for 'CA certificate'/'leaf certificate' would pass even if the \
+         CaUsedAsEndEntity string-match broke and the cause fell through to \
+         the generic 'certificate rejected: ...' branch): {combined}"
     );
     // tracing's fmt subscriber writes to stdout by default, so the WARN lands
     // there, not on stderr; check the combined output either way.
@@ -287,5 +324,98 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
         combined.contains("self-hosting.md"),
         "with server_ca configured, the WARN must point at the client-trust \
          doc section: {combined}"
+    );
+}
+
+/// Expired-certificate classification: a properly CA-signed leaf whose
+/// validity window is entirely in the past. The CA is trusted (`server_ca`
+/// configured), so this exercises rustls's own expiry check rather than
+/// issuer trust; the cause must name "expired", not collapse to a generic
+/// TLS-handshake-failed message or, worse, `[unreachable]`.
+#[test]
+fn tls_server_with_expired_leaf_names_expired_cause() {
+    let ca = new_ca();
+    let (leaf_pem, leaf_key_pem) = new_expired_leaf(&ca.issuer);
+    let port = spawn_tls_server(leaf_pem, leaf_key_pem);
+
+    let (temp, project_dir, config_path) = setup_project();
+    let ca_pem_path = temp.path().join("ca.pem");
+    fs::write(&ca_pem_path, &ca.cert_pem).expect("write ca.pem");
+    write_tls_config(
+        &config_path,
+        &temp.path().join("index.db"),
+        port,
+        &ca_pem_path,
+    );
+
+    let output = spelunk_bin()
+        .current_dir(&project_dir)
+        .env_remove("SPELUNK_NO_SERVER")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .output()
+        .expect("run spelunk status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Offline"),
+        "must stay offline against an expired leaf; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[tls:") && stdout.to_lowercase().contains("expired"),
+        "status line must name the expired-certificate cause, not a generic \
+         label; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[unreachable]"),
+        "a reachable server with an expired cert is not '[unreachable]'; stdout:\n{stdout}"
+    );
+}
+
+/// `UnknownIssuer` classification: a properly-formed leaf signed by our
+/// in-test CA, but `server_ca` is deliberately left unset, so the CLI trusts
+/// only the default root store and our CA is unknown to it. The failure must
+/// still be named as a TLS cause (not `[unreachable]`), but the
+/// `server_ca`-specific hint must be ABSENT: it names a `server_ca`
+/// misconfiguration that does not apply here (`server_ca` isn't set at all).
+#[test]
+fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_without_hint() {
+    let ca = new_ca();
+    let (leaf_pem, leaf_key_pem) = new_leaf(&ca.issuer);
+    let port = spawn_tls_server(leaf_pem, leaf_key_pem);
+
+    let (temp, project_dir, config_path) = setup_project();
+    write_tls_config_no_ca(&config_path, &temp.path().join("index.db"), port);
+
+    let output = spelunk_bin()
+        .current_dir(&project_dir)
+        .env_remove("SPELUNK_NO_SERVER")
+        .env("RUST_LOG", "spelunk=warn")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .output()
+        .expect("run spelunk status");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+
+    assert!(
+        stdout.contains("Offline"),
+        "must stay offline against an untrusted issuer; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[tls:") && stdout.to_lowercase().contains("unknown issuer"),
+        "status line must name the unknown-issuer cause; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("[unreachable]"),
+        "a reachable server with an untrusted cert is not '[unreachable]'; stdout:\n{stdout}"
+    );
+    assert!(
+        !combined.contains("server_ca is configured") && !combined.contains("self-hosting.md"),
+        "the server_ca-specific hint must not appear when server_ca isn't set: {combined}"
     );
 }
