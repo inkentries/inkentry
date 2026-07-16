@@ -615,6 +615,11 @@ and `source_project` / `source_project_path` fields in JSON.
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
 `spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
 so memory travels with the code. Outside a git repo this is a graceful no-op.
+Concurrent writes are serialized by a cross-process lock, and a write that
+cannot take the lock in time fails rather than risk erasing a concurrent
+writer's entry: `memory add` warns on stderr that the entry is stored locally
+but will not travel with the repo (pre-`init`, where git notes is the sole
+store, it fails instead), and retrying the command is the remedy.
 
 **Entry identity:** entries are identified by a SHA-256 over exactly their
 `kind`, `title`, and `body`, so the same decision recorded on two machines

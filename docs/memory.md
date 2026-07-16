@@ -67,15 +67,20 @@ search and embed).
 5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
 6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
 
-**Known limitation:** git-notes writes are not atomic across concurrent `add`
-commands to the same commit (the read-modify-write can lose an entry if two
-agents write simultaneously). This is acceptable for the solo, pre-`init`
-quick-fix case; multi-agent workflows should `spelunk init` and use SQLite. Note
-also that notes under `refs/notes/spelunk` are **not** pushed or fetched by
-default, so pre-`init` entries stay on the machine that wrote them until the
-notes ref is pushed (see [Sharing memory across clones via
-git-notes](#sharing-memory-across-clones-via-git-notes) below, and the
-[git notes](https://git-scm.com/docs/git-notes) documentation).
+**Concurrent `add` commands are serialized.** git-notes writes take a
+cross-process lock (one lock file in the git common dir, shared across
+worktrees), so simultaneous writers append to the note instead of overwriting
+each other. A writer that cannot take the lock in time never writes unlocked,
+since an unserialized write can erase a concurrent writer's entry: pre-`init`,
+where git notes is the sole store, `memory add` fails with an error telling you
+to retry; post-`init` the entry is already in `memory.db`, and `memory add`
+warns on stderr that the carry to git notes failed. On the rare filesystem
+where the lock file cannot be created at all, the write proceeds unserialized
+and warns on stderr. Note also that notes under `refs/notes/spelunk` are
+**not** pushed or fetched by default, so pre-`init` entries stay on the machine
+that wrote them until the notes ref is pushed (see [Sharing memory across
+clones via git-notes](#sharing-memory-across-clones-via-git-notes) below, and
+the [git notes](https://git-scm.com/docs/git-notes) documentation).
 
 See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design
 and [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the

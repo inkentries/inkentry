@@ -157,6 +157,33 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Concurrent memory writes can no longer silently erase each other's
+  entries.** The git-notes write path is a read-modify-write of the note on
+  `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
+  could read the same note body, and the later write-back dropped the earlier
+  writer's entry, with both exiting 0. Worse, a writer treated *any* failure to
+  read the existing note as "no note yet", so one transient git failure inside
+  the write rewrote the whole note as just that writer's line, erasing every
+  prior entry (observed live on Windows CI, where it wiped 6 of 8 concurrent
+  entries). Three changes close this. Writes are now serialized end to end by a
+  cross-process lock file in the git common dir, one lock shared by all
+  worktrees because worktrees share the notes ref. A failed note read is
+  retried briefly and then fails the writer, rather than being mistaken for an
+  empty note. And a writer that cannot take the lock within its 5-second wait
+  fails with an error naming the lock file and telling you to retry; it never
+  writes unlocked. Many concurrent writers on a slow machine can exceed that
+  wait legitimately: every entry already written is intact, and retrying the
+  failed command is the remedy. What the failure looks like depends on the
+  store: after `spelunk init` the entry is already safe in `memory.db`, so
+  `memory add` exits 0 and prints `Warning: entry stored locally, but the
+  git-notes carry failed, so it will not travel with the repo: …` on stderr
+  (previously a failed carry was logged where nobody saw it); before `init`,
+  and with `--backend git-notes`, git notes is the primary store, so `memory
+  add` fails. On the rare filesystem where the lock file cannot be created at
+  all, the write-through proceeds unserialized and prints `Warning: wrote to
+  git notes without the cross-process lock …` on stderr: concurrent writes
+  there can still lose entries, and the warning says so. (#185, #632; ADR-069
+  D6/D8)
 - **A decision recorded independently on two machines now lists once, not twice.**
   Two machines that record the same decision (identical `kind`, `title`, and
   `body`) derive the same identity from that content, but `spelunk memory list`
