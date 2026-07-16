@@ -794,6 +794,10 @@ pub fn inference_server_required_message(feature: &str) -> String {
 /// Return `Ok(())` if the tier is `Server`, otherwise return an `anyhow::Error`
 /// with the standard locked-feature message format.
 ///
+/// The message is scoped to the actual failure state: with a configured
+/// `server_url` the fix is never "set server_url" (it already is), it is that
+/// the configured server could not be served from.
+///
 /// Callers append `?` to propagate the error:
 /// ```ignore
 /// require_tier1("explore", tier, cfg.server_url.as_deref())?;
@@ -802,13 +806,18 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
     if tier.is_server() {
         return Ok(());
     }
-    let tried = server_url
-        .map(|u| format!("\n       (Tried: {u} — connection refused)"))
-        .unwrap_or_default();
-    anyhow::bail!(
-        "'spelunk {feature}' requires spelunk-server.\n\
-         Set server_url in ~/.config/spelunk/config.toml to enable this feature.{tried}"
-    )
+    match server_url {
+        Some(url) => anyhow::bail!(
+            "'spelunk {feature}' requires spelunk-server.\n\
+             The configured server_url ({url}) did not respond to the health probe.\n\
+             Check that server and your network; for TLS trust failures see \
+             server_ca / SPELUNK_SERVER_CA."
+        ),
+        None => anyhow::bail!(
+            "'spelunk {feature}' requires spelunk-server.\n\
+             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1112,18 +1121,27 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("'spelunk explore'"));
         assert!(msg.contains("requires spelunk-server"));
-        assert!(msg.contains("server_url"));
+        assert!(msg.contains("Set server_url"));
     }
 
     #[test]
-    fn require_tier1_err_for_offline_with_url_includes_tried() {
+    fn require_tier1_err_for_offline_with_url_names_that_server() {
+        // server_url is already configured; the message must name the failing
+        // server, never tell the operator to set what is already set.
         let tier = Tier::Offline;
-        let err = require_tier1("plan", &tier, Some("http://bad:7777")).unwrap_err();
+        let err = require_tier1("plan", &tier, Some("https://bad:7777")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'spelunk plan'"));
         assert!(msg.contains("requires spelunk-server"));
-        assert!(msg.contains("http://bad:7777"));
-        assert!(msg.contains("connection refused"));
+        assert!(msg.contains("https://bad:7777"));
+        assert!(
+            !msg.contains("Set server_url"),
+            "must not suggest setting an already-set server_url: {msg}"
+        );
+        assert!(
+            msg.contains("server_ca"),
+            "must point at the TLS-trust knob for untrusted-cert failures: {msg}"
+        );
     }
 
     #[test]
@@ -1132,14 +1150,6 @@ mod tests {
         let err = require_tier1("memory push", &tier, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'spelunk memory push'"));
-    }
-
-    #[test]
-    fn require_tier1_no_tried_line_when_url_not_set() {
-        let tier = Tier::Offline;
-        let err = require_tier1("explore", &tier, None).unwrap_err();
-        let msg = err.to_string();
-        assert!(!msg.contains("Tried:"));
     }
 
     // ── read_server_port_file ────────────────────────────────────────────────

@@ -207,3 +207,89 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
         "error must carry the cause chain: {stderr}"
     );
 }
+
+// ── spelunk status: mode line + scope-aware offline hints ─────────────────────
+
+/// Minimal indexed project so `spelunk status` passes the ADR-067 project
+/// gate. Indexed with SPELUNK_NO_SERVER=1 (no embed phase, no probes).
+fn indexed_project() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("lib.rs"), "pub fn hello() {}").unwrap();
+    let db_path = tmp.path().join("index.db");
+    let cfg = write_cfg(tmp.path(), "config-index.toml", &db_path, "");
+    spelunk_bin()
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&cfg)
+        .arg("index")
+        .arg(&project)
+        .assert()
+        .success();
+    (tmp, project)
+}
+
+#[test]
+fn status_shows_mode_line_and_truthful_hints_with_unreachable_server_url() {
+    let (tmp, project) = indexed_project();
+    // Loopback https passes the transport guard; nothing listens on port 1, so
+    // the tier probe fails fast and the tier is Offline with server_url SET.
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-team.toml",
+        &tmp.path().join("index.db"),
+        "server_url = \"https://127.0.0.1:1\"\nproject_id = \"team/proj\"\n",
+    );
+
+    let out = spelunk_bin()
+        .current_dir(&project)
+        .arg("--config")
+        .arg(&cfg)
+        .arg("status")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout: {stdout}");
+
+    // The mode line distinguishes "local by design" from "local because broken".
+    assert!(stdout.contains("mode"), "got: {stdout}");
+    assert!(stdout.contains("local_first"), "got: {stdout}");
+    // Explore's hint must not tell the operator to set an already-set server_url.
+    assert!(
+        stdout.contains("configured server unreachable"),
+        "got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("set server_url to enable]"),
+        "explore hint must not suggest setting an already-set server_url: {stdout}"
+    );
+}
+
+#[test]
+fn status_has_no_mode_line_on_solo_default() {
+    let (tmp, project) = indexed_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-solo-status.toml",
+        &tmp.path().join("index.db"),
+        "",
+    );
+
+    let out = spelunk_bin()
+        .env("SPELUNK_NO_SERVER", "1") // hermetic: no loopback auto-discovery
+        .current_dir(&project)
+        .arg("--config")
+        .arg(&cfg)
+        .arg("status")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout: {stdout}");
+
+    // Solo default: no sync configuration, no mode line.
+    assert!(!stdout.contains("\n  mode"), "got: {stdout}");
+    assert!(!stdout.contains("local_first"), "got: {stdout}");
+    // And the set-server_url hints ARE correct here.
+    assert!(stdout.contains("set server_url to enable"), "got: {stdout}");
+}
