@@ -12,12 +12,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **`spelunk init` starts the server before indexing and detaches the embedding pass.**
-  On a fresh install, the prompt now returns after parsing (typically a few seconds
-  for medium codebases), with embeddings arriving in the background. A detached worker
+  On a fresh install, the prompt now returns after parsing (seconds on small projects,
+  around a minute on large ones), with embeddings arriving in the background. A detached worker
   polls the embedder readiness and runs the embed phase, resumable by re-running
   `spelunk index`. The server is auto-started before parsing begins (rather than after),
   and a not-yet-ready embedder is a transient condition to wait on rather than a
-  terminal reason to skip indexing. (ADR-070 D1, D2)
+  terminal reason to skip the embed pass. (ADR-070 D1, D2)
 - **Search over a warming index emits coverage-gated notices.** When KNN search runs
   over an incompletely-embedded corpus, a one-line stderr notice names the coverage
   percentage and its shape ("front-loaded by indexing order"). In `auto` mode on zero

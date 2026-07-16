@@ -27,8 +27,8 @@ const CALIBRATION_BATCH_1: usize = 1;
 /// one-off cold-start) before committing to a steady-state size.
 const CALIBRATION_BATCH_2: usize = 4;
 
-/// Wall-clock time each steady-state batch aims to stay under; batch size is
-/// this budget divided by the measured per-entry rate.
+/// Wall-clock time each steady-state batch aims to stay under; a batch is
+/// sized so its token sum fits this budget at the measured token rate.
 const TARGET_BATCH_SECONDS: u64 = 240;
 
 /// Floor for a calibrated per-request timeout, to absorb transient latency spikes.

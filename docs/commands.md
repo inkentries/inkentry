@@ -89,7 +89,7 @@ spelunk index <path> [options]
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
-| `--detach-embed` | false | Deprecated (parse auto-returns after embedding is handed off); ignored, kept for compatibility |
+| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`spelunk init` does this automatically) |
 
 A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
@@ -103,21 +103,24 @@ skips it. Use `--force` to retry those.
 
 The embed phase calibrates its own batch size instead of guessing: it times a
 1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
-their timeouts) from the observed per-chunk rate — smaller batches on slow
+their timeouts) from the observed token-weighted rate: smaller batches on slow
 hardware, larger ones (up to 256 chunks, or your `--batch-size` cap if lower)
-on fast hardware. It keeps re-measuring as the run progresses, so a rate that
+on fast hardware. Sizing by tokens rather than chunk count keeps the deadline
+honest when the queue crosses from small chunks into large ones. It keeps re-measuring as the run progresses, so a rate that
 drifts partway through is picked up rather than locked to the first sample.
 Each batch is written to the database as soon as it completes, so an
 interrupted run (timeout, machine sleep, process kill) never loses
 already-embedded chunks — re-run `spelunk index` to pick up where it left off.
 
-The embedding pass is always handed off to a detached background worker
-(returned via auto-spawn in `init` or explicit `--detach-embed` in `index`),
-so parsing finishes in the foreground (index is immediately usable for text and
-ast-grep search) and the long embedding pass continues in the background. Run
-`spelunk status` afterwards to check progress; it shows an "Embedding in progress"
-line with searchable chunks and work percentage until every chunk is embedded.
-If the background pass is interrupted, re-running `spelunk index` resumes it
+`spelunk init` always hands the embedding pass to a detached background worker,
+and `--detach-embed` opts a manual `spelunk index` run into the same behaviour:
+parsing finishes in the foreground (the index is immediately usable for text and
+ast-grep search) and the long embedding pass continues in the background, with
+the worker waiting out a still-loading embedder rather than skipping. A plain
+`spelunk index` without the flag embeds in the foreground. Run `spelunk status`
+to check a background pass; it shows an "Embedding in progress" line with
+searchable chunks and work percentage until every chunk is embedded. If the
+background pass is interrupted, re-running `spelunk index` resumes it
 (already-embedded chunks are skipped).
 
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
@@ -235,7 +238,8 @@ When embeddings are incomplete, `spelunk status` prints an "Embedding in progres
 line (when a live background worker is detected) or "Embedding incomplete" (when
 no worker is running but chunks remain unembedded). Coverage is shown as searchable
 chunks and percentage; progress is shown as percentage of work done, measured by
-token weight. An incomplete status includes the `spelunk index .` resume command.
+token weight. An incomplete status includes the `spelunk index .` resume command
+(or, when the embedder is unavailable, a pointer at the server logs instead).
 
 **Example:**
 
