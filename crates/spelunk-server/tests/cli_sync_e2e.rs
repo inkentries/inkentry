@@ -214,3 +214,60 @@ async fn cli_push_lazily_creates_the_project() {
         .expect("push to a not-yet-existing project must succeed (lazy create)");
     assert_eq!((res.created, res.skipped, res.failed), (1, 0, 0));
 }
+
+/// Two concurrent, identical batches against a real bound server. `AppState`
+/// guards the whole handler body behind one `tokio::Mutex<ServerDb>`, so in
+/// practice these fully serialize rather than racing inside SQLite — but
+/// that serialization is itself the thing under test: it must produce a
+/// clean 1-create/1-skip split with no 500s and no duplicate row, not a
+/// crash from two overlapping in-flight requests sharing state.
+#[tokio::test]
+#[serial_test::serial]
+async fn concurrent_identical_batches_settle_without_duplicates_or_500s() {
+    common::register_sqlite_vec();
+    let state = common::make_test_state(4, None);
+    let base_url = spawn_plaintext_server(state).await;
+    let project = "concurrent-proj";
+
+    let items = || {
+        vec![BatchPushItem {
+            kind: "note".into(),
+            title: "Racer".into(),
+            body: None,
+            external_id: "race-1".into(),
+            source_commit: None,
+        }]
+    };
+
+    let client_a = CloudSyncClient::new(&base_url, project, None, None).unwrap();
+    let client_b = CloudSyncClient::new(&base_url, project, None, None).unwrap();
+
+    let (res_a, res_b) = tokio::join!(client_a.push_batch(items()), client_b.push_batch(items()));
+
+    // Neither call may error (no 500 leaking through as a client-side error).
+    let res_a = res_a.expect("first concurrent push must not error/500");
+    let res_b = res_b.expect("second concurrent push must not error/500");
+
+    // Between the two racing requests, exactly one create and one skip.
+    let total_created = res_a.created + res_b.created;
+    let total_skipped = res_a.skipped + res_b.skipped;
+    assert_eq!(
+        (total_created, total_skipped, res_a.failed + res_b.failed),
+        (1, 1, 0),
+        "exactly one of the two racing pushes must create, the other must skip: a={res_a:?} b={res_b:?}"
+    );
+
+    // The store itself must never end up with two rows for one external_id.
+    let list_url = format!("{base_url}/v1/projects/{project}/memory?limit=50");
+    let notes: Vec<serde_json::Value> = reqwest::get(&list_url)
+        .await
+        .expect("GET /memory")
+        .json()
+        .await
+        .expect("parse /memory list");
+    assert_eq!(
+        notes.len(),
+        1,
+        "a race on the same external_id must never produce two rows: {notes:?}"
+    );
+}

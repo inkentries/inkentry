@@ -156,6 +156,12 @@ impl ServerDb {
             Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e).context("server migration 005"),
         }
+        // Migration 006: re-scope the remote_id uniqueness to per-project.
+        // `DROP INDEX IF EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS` are both
+        // naturally idempotent, so this can run unconditionally on every open.
+        self.conn
+            .execute_batch(include_str!("../migrations/server_006.sql"))
+            .context("server migration 006")?;
         Ok(())
     }
 
@@ -750,6 +756,180 @@ mod tests {
         let notes = db.list_notes(project.id, None, 10, true).expect("list");
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].remote_id, None, "existing row defaults to NULL");
+    }
+
+    /// Migration 006 must re-scope `remote_id` uniqueness to per-project: two
+    /// different projects reusing the same `remote_id` must both succeed at
+    /// the DB layer. Migration 004 indexed `remote_id` alone (global), which
+    /// collided here even though `find_by_remote_ids`'s idempotency lookup was
+    /// always scoped to `project_id`.
+    #[test]
+    fn remote_id_uniqueness_is_scoped_per_project_not_global() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let proj_a = db
+            .upsert_project("team/a", 4, "test-model")
+            .expect("proj a");
+        let proj_b = db
+            .upsert_project("team/b", 4, "test-model")
+            .expect("proj b");
+
+        db.add_note(
+            proj_a.id,
+            "note",
+            "A",
+            "body",
+            &[],
+            &[],
+            None,
+            Some("shared-ext-id"),
+        )
+        .expect("first project may claim the remote_id");
+        db.add_note(
+            proj_b.id,
+            "note",
+            "B",
+            "body",
+            &[],
+            &[],
+            None,
+            Some("shared-ext-id"),
+        )
+        .expect(
+            "a different project reusing the same remote_id must not collide \
+                 with project A's row (global unique index regression)",
+        );
+
+        // Each project's own lookup only ever sees its own row.
+        let found_a = db
+            .find_by_remote_ids(proj_a.id, &["shared-ext-id".to_string()])
+            .expect("lookup a");
+        let found_b = db
+            .find_by_remote_ids(proj_b.id, &["shared-ext-id".to_string()])
+            .expect("lookup b");
+        assert_eq!(found_a.len(), 1);
+        assert_eq!(found_b.len(), 1);
+        assert_ne!(
+            found_a["shared-ext-id"], found_b["shared-ext-id"],
+            "the two projects' rows must be distinct notes"
+        );
+    }
+
+    /// Within the SAME project, `remote_id` uniqueness must still be enforced
+    /// at the DB layer (the invariant migration 004 set out to establish is
+    /// not lost by narrowing its scope in migration 006).
+    #[test]
+    fn remote_id_uniqueness_still_enforced_within_same_project() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db.upsert_project("team/a", 4, "test-model").expect("proj");
+
+        db.add_note(
+            project.id,
+            "note",
+            "A",
+            "body",
+            &[],
+            &[],
+            None,
+            Some("dup-id"),
+        )
+        .expect("first insert succeeds");
+        let err = db
+            .add_note(
+                project.id,
+                "note",
+                "A2",
+                "body",
+                &[],
+                &[],
+                None,
+                Some("dup-id"),
+            )
+            .expect_err("same project, same remote_id must still violate the unique index");
+        assert!(
+            err.to_string().to_lowercase().contains("unique"),
+            "must fail on the unique constraint, not some other error: {err}"
+        );
+    }
+
+    /// `find_by_remote_ids` is active-only: an archived note's `remote_id`
+    /// does not count as "existing", so a re-push after archiving creates a
+    /// fresh live row (matches cloud-api's `archived_at IS NULL` filter in
+    /// `find_by_external_ids`).
+    #[test]
+    fn find_by_remote_ids_ignores_archived_notes() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db.upsert_project("team/a", 4, "test-model").expect("proj");
+
+        let id = db
+            .add_note(
+                project.id,
+                "note",
+                "A",
+                "body",
+                &[],
+                &[],
+                None,
+                Some("archived-id"),
+            )
+            .expect("insert");
+        let found = db
+            .find_by_remote_ids(project.id, &["archived-id".to_string()])
+            .expect("lookup before archive");
+        assert_eq!(
+            found.get("archived-id"),
+            Some(&id),
+            "live note must be found"
+        );
+
+        db.archive_note(project.id, id).expect("archive");
+        let found_after = db
+            .find_by_remote_ids(project.id, &["archived-id".to_string()])
+            .expect("lookup after archive");
+        assert!(
+            found_after.is_empty(),
+            "archived note's remote_id must not count as existing: {found_after:?}"
+        );
+    }
+
+    /// `find_by_remote_ids` must scope to `project_id`: a note in a different
+    /// project with the same `remote_id` string must never appear in another
+    /// project's idempotency lookup.
+    #[test]
+    fn find_by_remote_ids_scopes_to_project() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let proj_a = db
+            .upsert_project("team/a", 4, "test-model")
+            .expect("proj a");
+        let proj_b = db
+            .upsert_project("team/b", 4, "test-model")
+            .expect("proj b");
+        db.add_note(
+            proj_a.id,
+            "note",
+            "A",
+            "body",
+            &[],
+            &[],
+            None,
+            Some("cross-id"),
+        )
+        .expect("insert into project a");
+
+        let found_in_b = db
+            .find_by_remote_ids(proj_b.id, &["cross-id".to_string()])
+            .expect("lookup scoped to project b");
+        assert!(
+            found_in_b.is_empty(),
+            "project a's note must not leak into project b's idempotency lookup: {found_in_b:?}"
+        );
     }
 
     #[test]
