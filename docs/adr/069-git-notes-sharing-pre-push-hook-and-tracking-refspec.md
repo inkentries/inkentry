@@ -440,6 +440,47 @@ command, not this one.
 
 Added on review of a `windows-latest` CI failure in D6's own regression guard.
 
+> **The closing diagnosis below ("What D8 does not do") is superseded by the
+> implementation's evidence.** It reasoned from a single run that lost 1 of 8
+> entries and concluded the defect was lock **identity** across worktrees.
+> Three further `windows-latest` failures refute that as the mechanism: one
+> lost **6 of 8** entries in the single-repo guard, one process, one repo, no
+> worktrees, where no identity split is possible. In every failing run the
+> survivors are a contiguous **tail** of the serialization order (ids `[6, 8]`;
+> `[8, 2, 4]`; and twice all-but-one), which is the fingerprint of exactly one
+> writer reading an **empty** note mid-sequence and rewriting the ref with only
+> its own line. The write path made that possible: `append_to_git_notes` read
+> the existing note with `git notes show` and treated **any** failure as "no
+> note yet" (`.unwrap_or_default()`), so one transient git failure inside the
+> guarded section wiped every prior entry, while the writer held the lock the
+> whole time, and the lock excluded correctly. The fix distinguishes "no note
+> found" (exit 1) from a failed read (anything else); a failed read is retried
+> briefly (it is side-effect free, and every observed failure was transient:
+> the same read succeeded for sibling writers moments apart) and then fails
+> the writer rather than guessing empty. The identity concern was real hygiene and is
+> hardened anyway (`--path-format=absolute` where git knows it, output-checked
+> because `rev-parse` **echoes** unknown flags with exit 0 rather than
+> rejecting them, then canonicalized), with a regression test pinning that
+> worktree contenders converge on one lock file. But note the OS primitive
+> locks the underlying **file**, not the path string, so two spellings of one
+> path never excluded nothing; only paths resolving to genuinely different
+> files could, and no failing run required that. D8's contention policy is
+> unchanged by this; what it governs was never the loss mechanism observed.
+>
+> **A second premise below is also corrected by observation: budget expiry is
+> not always a bug's symptom.** This section argues the budget is "set
+> generously enough that reaching it means a bug rather than a busy repo". A
+> `windows-latest` run falsified that: eight legitimate concurrent writers
+> serialized correctly on a slow runner, and the back of the queue exceeded
+> the 5s budget with nothing pathological anywhere; every over-budget writer
+> failed visibly (~5.4s in, naming the lock) while every serialized entry
+> survived. The policy stands exactly as written, since expiry stays an error
+> and never a downgrade. What does not stand is reading that error as proof of
+> a stuck holder: heavy legitimate write concurrency can reach it, the normal
+> remedy is a retry, and the error text says so. The concurrency guards assert
+> the D8 invariant accordingly: every entry lands or its writer fails visibly,
+> never "all must land".
+
 **The rule D6 left implicit, stated:** the contention policy is set by *what is
 lost when the lock is missing*, not by whether the caller is nominally a read or
 a write. Three cases, three answers:
