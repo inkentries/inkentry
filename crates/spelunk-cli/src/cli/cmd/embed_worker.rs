@@ -11,8 +11,8 @@
 //! per-project while the state dir is per-machine.
 //!
 //! Two files per project:
-//! - `embed-worker-<key>.pid` — pid of the process running the embed phase
-//! - `embed-worker-<key>.baseline` — `<started_at_unix> <pending_tokens>` at
+//! - `embed-worker-<key>.pid`: pid of the process running the embed phase
+//! - `embed-worker-<key>.baseline`: `<started_at_unix> <pending_tokens>` at
 //!   worker start, letting `status` derive a measured-this-run,
 //!   token-weighted ETA (tokens drained since start over elapsed time). The
 //!   rate is never persisted across runs; a cached rate is a defect because

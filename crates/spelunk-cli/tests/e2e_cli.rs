@@ -1136,7 +1136,7 @@ fn test_init_non_tty_prints_skip_notice() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "server not running — semantic search skipped",
+            "server not running - semantic search skipped",
         ));
 }
 

@@ -105,7 +105,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 5. Auto-spawn server (TTY only) or probe for a running server ─────────
     //
     // Interactive (stdin is a TTY): attempt to start the server so semantic
-    // search works immediately. Non-interactive (CI / hook): probe only —
+    // search works immediately. Non-interactive (CI / hook): probe only,
     // never auto-spawn; print a skip notice if offline.
     //
     // This runs BEFORE the index step, and the index step below hands the
@@ -133,7 +133,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             match tier {
                 capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
                 capability::Tier::Offline => {
-                    Some("[server not running — semantic search skipped]".to_string())
+                    Some("[server not running - semantic search skipped]".to_string())
                 }
             }
         }

@@ -159,7 +159,7 @@ const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 /// stationary through an id-ordered queue (~4x growth), so a per-chunk rate is
 /// systematically biased in one direction across the run. The token estimate's
 /// own corpus-dependent bias cancels here because the rate is calibrated from
-/// estimated tokens and only ever multiplied by estimated tokens — the rate
+/// estimated tokens and only ever multiplied by estimated tokens; the rate
 /// must stay measured per-run, never cached across runs or repos.
 struct RateEstimate {
     /// Exponentially-weighted per-token duration. `None` until the first batch.
@@ -396,7 +396,7 @@ pub(super) async fn run_embed_phase(
     let remaining = chunk_ids_and_texts.len();
     // Token-weighted work totals: the ETA and the "of work done" percentage
     // run over these, never over chunk counts (chunk fraction is coverage, a
-    // different question — see `status`).
+    // different question; see `status`).
     let total_tokens: u64 = chunk_ids_and_texts
         .iter()
         .map(|(_, _, tc)| (*tc).max(1) as u64)
@@ -455,7 +455,7 @@ pub(super) async fn run_embed_phase(
             };
 
             // Show which chunks are in flight, prefixed with the `RateEstimate`
-            // ETA (not indicatif's `{eta}` — see `format_eta`). Work-fraction
+            // ETA (not indicatif's `{eta}`; see `format_eta`). Work-fraction
             // percentages are token-weighted and always name their denominator.
             let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
             let work_pct = pct(tokens_done, total_tokens);
