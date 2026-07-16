@@ -156,10 +156,12 @@ cd /path/to/your/project
 spelunk init
 ```
 
-That's the whole setup. `spelunk init` registers the project, parses and chunks
-every source file, starts the bundled `spelunk-server` in the background when run
-interactively (if one isn't already running), and embeds your code so semantic
-search works out of the box:
+That's the whole setup. `spelunk init` registers the project, starts the bundled
+`spelunk-server` in the background when run interactively (if one isn't already running),
+parses and chunks every source file, and hands the embedding pass to a detached background
+worker so the prompt returns after parsing (typically a few seconds) rather than after
+the full embed pass. Embeddings build in the background; full-text and ast-grep search
+work immediately, and semantic search becomes available as embeddings land.
 
 ```bash
 # Search by meaning, not just text

@@ -11,6 +11,30 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`spelunk init` starts the server before indexing and detaches the embedding pass.**
+  On a fresh install, the prompt now returns after parsing (typically a few seconds
+  for medium codebases), with embeddings arriving in the background. A detached worker
+  polls the embedder readiness and runs the embed phase, resumable by re-running
+  `spelunk index`. The server is auto-started before parsing begins (rather than after),
+  and a not-yet-ready embedder is a transient condition to wait on rather than a
+  terminal reason to skip indexing. (ADR-070 D1, D2)
+- **Search over a warming index emits coverage-gated notices.** When KNN search runs
+  over an incompletely-embedded corpus, a one-line stderr notice names the coverage
+  percentage and its shape ("front-loaded by indexing order"). In `auto` mode on zero
+  coverage, search falls back to ast-grep with a notice naming embeddings as building
+  in the background; in explicit `semantic`/`hybrid` mode, zero coverage produces an
+  actionable error naming the resume command instead of "No results found." Partial
+  coverage results stay served (KNN order-independence + useful prefix) and are labelled
+  accordingly. (ADR-070 D3)
+- **`spelunk status` reports the embed worker's recorded liveness and token-weighted
+  progress.** A live background worker triggers "Embedding in progress" (not a guess
+  from embedded counts); no live worker + pending work prints "Embedding incomplete"
+  plus the resume command. Coverage (chunks embedded / total chunks) and progress
+  (percentage of work done, measured by token weight) are two separately-named measures,
+  and a measured-this-run ETA derives from the worker's recorded baseline (never cached
+  across runs). The old hedging parenthetical is gone. JSON status gains
+  `embedding_pending`, `embed_worker_alive`, and `embed_tokens` fields. (ADR-070 D4, D6)
+
 - **Memory entries are now identified by their content.** An entry's canonical
   identity is a SHA-256 over exactly its `kind`, `title`, and `body`, so the
   same decision recorded independently on two machines converges on one
