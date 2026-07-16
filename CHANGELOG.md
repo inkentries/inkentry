@@ -11,6 +11,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Linux release binaries now target glibc 2.31 as the support floor.** Builds
+  run in a `debian:11` (Bullseye) container to ensure compatibility with Debian
+  11+ and Ubuntu 20.04+. Previously, releases silently required glibc 2.39
+  (Ubuntu 24.04-era), causing crashes on older distros. The `.deb` package
+  declares `libdbus-1-3` as a dependency; tarball users on minimal images must
+  install `libdbus-1-3` separately.
 - **Memory entries are now identified by their content.** An entry's canonical
   identity is a SHA-256 over exactly its `kind`, `title`, and `body`, so the
   same decision recorded independently on two machines converges on one

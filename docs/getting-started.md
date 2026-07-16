@@ -116,12 +116,12 @@ spelunk --version
 
 binaries on your `$PATH`. Supported targets:
 
-| Platform | Archive name |
-|----------|-------------|
-| macOS (Apple Silicon) | `spelunk-<version>-aarch64-apple-darwin.tar.gz` |
-| Linux x86_64 | `spelunk-<version>-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux ARM64 | `spelunk-<version>-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows x86_64 | `spelunk-<version>-x86_64-pc-windows-msvc.zip` |
+| Platform | Archive name | Notes |
+|----------|-------------|-------|
+| macOS (Apple Silicon) | `spelunk-<version>-aarch64-apple-darwin.tar.gz` | |
+| Linux x86_64 | `spelunk-<version>-x86_64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
+| Linux ARM64 | `spelunk-<version>-aarch64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
+| Windows x86_64 | `spelunk-<version>-x86_64-pc-windows-msvc.zip` | |
 
 > **Intel Macs (`x86_64-apple-darwin`):** prebuilt binaries are not published for
 > this target — Apple deprecated the architecture and Apple Silicon replaced it on
