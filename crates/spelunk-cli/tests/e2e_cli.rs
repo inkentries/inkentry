@@ -983,6 +983,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
     // (ADR-004: inference-only routing; fallback is resolved at capability detection,
     // no per-query notice is emitted).
     spelunk_bin()
+        .env("SPELUNK_NO_SERVER", "1") // prevent accidental loopback auto-discovery
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)

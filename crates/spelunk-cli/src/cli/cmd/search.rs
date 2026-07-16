@@ -173,6 +173,50 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
+    // ── Embedding coverage is a first-class search input (chunk-shaped) ──────
+    // A just-built, unembedded index is not stale, so the staleness probe can
+    // never see the warmup window; the empty-result path below gates on
+    // coverage instead. Invariant: `No results found.` is only ever printed
+    // when the corpus that was searched was complete; whenever coverage is
+    // partial, the output names what was incomplete. Notices go to stderr so
+    // json/jsonl stdout stays machine-clean. No threshold: "incomplete" is a
+    // fact, the percentage is reported, and the user judges.
+    let coverage: Option<(i64, i64)> = if mode == "text" {
+        // FTS is written at parse time and covers every chunk.
+        None
+    } else {
+        Database::open(&db_path)
+            .and_then(|db| db.stats())
+            .ok()
+            .map(|s| (s.embedding_count, s.chunk_count))
+    };
+
+    if let Some((embedded, total)) = coverage {
+        match coverage_disposition(embedded, total, auto_mode) {
+            CoverageDisposition::Complete => {}
+            CoverageDisposition::PartialNotice => {
+                eprintln!("{}", warmup_notice_partial(embedded, total));
+            }
+            CoverageDisposition::ZeroFallBack => {
+                eprintln!("{}", warmup_notice_zero_auto(total));
+                return search_live(
+                    &args.query,
+                    &args.format,
+                    std::path::Path::new("."),
+                    args.limit,
+                );
+            }
+            CoverageDisposition::ZeroExplicitError => {
+                return Err(anyhow::anyhow!(warmup_error_zero_explicit(mode, total)));
+            }
+        }
+    }
+    let coverage_partial = matches!(coverage, Some((e, t)) if e < t);
+    // Set when an empty semantic result over a partial corpus was re-run as
+    // text search: the FTS corpus is complete, so the plain empty-result line
+    // becomes truthful again.
+    let mut fell_back_to_text = false;
+
     let mut results = if mode == "text" {
         // Text mode: FTS5 only, no embedding model required.
         let sp = spinner("Searching (text)…");
@@ -250,21 +294,42 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         )?;
         sp.finish_and_clear();
 
-        // Auto mode: stale index + empty results → fall back to ast-grep silently.
-        if auto_mode && res.is_empty() && !args.no_stale_check && index_is_stale(&db_path) {
+        // Auto mode, empty result set:
+        //  - partial coverage → re-run as text search over the complete FTS
+        //    corpus rather than reporting an absence KNN over a partial corpus
+        //    cannot substantiate (the warmup notice already went to stderr);
+        //  - full coverage → today's behaviour: stale index falls back to
+        //    ast-grep.
+        if auto_mode && res.is_empty() && coverage_partial {
+            eprintln!("[no semantic results in the embedded portion; using text search]");
+            fell_back_to_text = true;
+            let db = Database::open(&db_path)?;
+            db.search_text(&args.query, args.limit.min(100))
+                .unwrap_or_default()
+        } else if auto_mode && res.is_empty() && !args.no_stale_check && index_is_stale(&db_path) {
             return search_live(
                 &args.query,
                 &args.format,
                 std::path::Path::new("."),
                 args.limit,
             );
+        } else {
+            res
         }
-
-        res
     };
 
     if results.is_empty() {
-        println!("No results found.");
+        if coverage_partial && !fell_back_to_text {
+            // Explicit semantic/hybrid over a partial corpus: the plain
+            // absence claim is not substantiated, name the incompleteness.
+            let (e, t) = coverage.unwrap_or((0, 0));
+            println!(
+                "No results found in the embedded portion of the index \
+                 (searchable {e}/{t} chunks; the rest is not embedded yet)."
+            );
+        } else {
+            println!("No results found.");
+        }
         return Ok(());
     }
 
@@ -573,6 +638,83 @@ pub(crate) fn search_live(
     Ok(())
 }
 
+/// What the embedding coverage of the index means for this search
+/// (`spelunk search` warmup contract). Three coverage states by two mode
+/// classes, exhaustively; there is deliberately no coverage threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverageDisposition {
+    /// Every chunk is embedded (or the index is empty, handled earlier):
+    /// today's behaviour, no notice.
+    Complete,
+    /// `0 < coverage < 100`: run KNN and always emit the one-line warmup
+    /// notice, in auto and explicit modes alike, so a thin result set is
+    /// never mistaken for a complete one.
+    PartialNotice,
+    /// Zero coverage in `auto` mode: fall back to the live search, with a
+    /// notice naming warmup as the reason.
+    ZeroFallBack,
+    /// Zero coverage in an explicit `semantic`/`hybrid` mode: an actionable
+    /// error naming warmup and the resume command. Never `No results found.`.
+    ZeroExplicitError,
+}
+
+/// The three-state coverage table (`0` / partial / `100`, by auto vs explicit
+/// semantic/hybrid). `embedded >= total` covers the defensive over-count case.
+fn coverage_disposition(embedded: i64, total: i64, auto_mode: bool) -> CoverageDisposition {
+    if total <= 0 || embedded >= total {
+        return CoverageDisposition::Complete;
+    }
+    if embedded <= 0 {
+        if auto_mode {
+            CoverageDisposition::ZeroFallBack
+        } else {
+            CoverageDisposition::ZeroExplicitError
+        }
+    } else {
+        CoverageDisposition::PartialNotice
+    }
+}
+
+/// One-line warmup notice for a partially-embedded corpus: carries the
+/// coverage percentage AND its shape. The queue drains in indexing order, so
+/// a prefix is the first N files, not a sample across the repo: the user has
+/// a complete picture of some of the codebase and a systematic blind spot
+/// over the rest, and a bare percentage would read as the opposite failure
+/// mode (a uniformly thinner picture of everything).
+fn warmup_notice_partial(embedded: i64, total: i64) -> String {
+    let pct = if total > 0 {
+        (embedded.max(0) as u64).saturating_mul(100) / total as u64
+    } else {
+        0
+    };
+    format!(
+        "[warmup: searchable {embedded}/{total} chunks ({pct}%), front-loaded by indexing \
+         order; a missing result may mean \"not embedded yet\", not \"not in the codebase\" \
+         (check `spelunk status`)]"
+    )
+}
+
+/// Zero-coverage notice for `auto` mode, printed before the live-search
+/// fallback: names warmup as the reason.
+fn warmup_notice_zero_auto(total: i64) -> String {
+    format!(
+        "[semantic search is warming up: 0/{total} chunks embedded; using ast-grep. \
+         Embeddings build in the background (check `spelunk status`)]"
+    )
+}
+
+/// Zero-coverage error for explicit `semantic`/`hybrid`: actionable, naming
+/// warmup and the resume command.
+fn warmup_error_zero_explicit(mode: &str, total: i64) -> String {
+    format!(
+        "semantic search is still warming up: 0/{total} chunks are embedded, so a {mode} \
+         search would search nothing.\n\
+         Embeddings build in the background; check `spelunk status`. If no embed worker is \
+         running, resume with `spelunk index .`.\n\
+         Use `--mode text` or `--mode ast-grep` in the meantime."
+    )
+}
+
 /// Build the one-line notice explaining why `auto`-mode search is falling back
 /// from semantic to ast-grep, differentiating the cases the readiness contract
 /// exposes.
@@ -621,6 +763,118 @@ fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
 mod tests {
     use super::*;
     use crate::capability::EmbedderState;
+
+    // ── coverage_disposition: the three-state warmup table, all six cells ──────
+
+    #[test]
+    fn coverage_zero_auto_falls_back_with_notice() {
+        assert_eq!(
+            coverage_disposition(0, 100, true),
+            CoverageDisposition::ZeroFallBack
+        );
+    }
+
+    #[test]
+    fn coverage_zero_explicit_is_an_actionable_error() {
+        assert_eq!(
+            coverage_disposition(0, 100, false),
+            CoverageDisposition::ZeroExplicitError
+        );
+    }
+
+    #[test]
+    fn coverage_partial_auto_runs_knn_with_notice() {
+        assert_eq!(
+            coverage_disposition(40, 100, true),
+            CoverageDisposition::PartialNotice
+        );
+    }
+
+    #[test]
+    fn coverage_partial_explicit_runs_knn_with_the_same_notice() {
+        assert_eq!(
+            coverage_disposition(40, 100, false),
+            CoverageDisposition::PartialNotice
+        );
+    }
+
+    #[test]
+    fn coverage_full_auto_is_todays_behaviour_no_notice() {
+        assert_eq!(
+            coverage_disposition(100, 100, true),
+            CoverageDisposition::Complete
+        );
+    }
+
+    #[test]
+    fn coverage_full_explicit_is_todays_behaviour_no_notice() {
+        assert_eq!(
+            coverage_disposition(100, 100, false),
+            CoverageDisposition::Complete
+        );
+    }
+
+    #[test]
+    fn coverage_has_no_threshold() {
+        // "Incomplete" is a fact, not a tunable: 1 missing chunk out of 100k
+        // still notices, and 1 embedded chunk out of 100k still serves KNN.
+        assert_eq!(
+            coverage_disposition(99_999, 100_000, true),
+            CoverageDisposition::PartialNotice
+        );
+        assert_eq!(
+            coverage_disposition(1, 100_000, false),
+            CoverageDisposition::PartialNotice
+        );
+    }
+
+    #[test]
+    fn coverage_defensive_cases_are_complete() {
+        // Empty index (handled by earlier guards) and an over-count must not
+        // produce warmup output.
+        assert_eq!(
+            coverage_disposition(0, 0, true),
+            CoverageDisposition::Complete
+        );
+        assert_eq!(
+            coverage_disposition(120, 100, false),
+            CoverageDisposition::Complete
+        );
+    }
+
+    // ── warmup notices: percentage, shape, and actionability ───────────────────
+
+    #[test]
+    fn partial_notice_names_coverage_and_its_front_loaded_shape() {
+        let n = warmup_notice_partial(11_813, 27_734);
+        assert!(n.contains("11813/27734"), "labelled coverage: {n}");
+        assert!(n.contains("42%"), "carries the percentage: {n}");
+        assert!(
+            n.contains("front-loaded by indexing order"),
+            "names the shape so a subsystem miss reads as a blind spot, not a thin sample: {n}"
+        );
+        assert!(n.contains("spelunk status"), "actionable: {n}");
+    }
+
+    #[test]
+    fn zero_auto_notice_names_warmup_as_the_reason() {
+        let n = warmup_notice_zero_auto(27_734);
+        assert!(n.contains("warming up"));
+        assert!(n.contains("0/27734"));
+        assert!(n.contains("ast-grep"));
+    }
+
+    #[test]
+    fn zero_explicit_error_names_warmup_and_the_resume_command() {
+        let e = warmup_error_zero_explicit("semantic", 27_734);
+        assert!(e.contains("warming up"));
+        assert!(e.contains("spelunk index ."), "resume command: {e}");
+        assert!(e.contains("--mode text"), "usable alternative: {e}");
+        assert!(
+            !e.contains("No results found"),
+            "never the empty-result claim: {e}"
+        );
+    }
 
     // ── semantic_unavailable_message: auto-mode fallback notice (#5) ────────────
 
