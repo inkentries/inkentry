@@ -34,7 +34,9 @@ pub use remote::{
     RemoteMemoryBackend, resolve_cloud_project_uuid,
 };
 pub use specs::{SpecRecord, StaleSpec};
-pub use stats::{DriftCandidate, IndexStats, LanguageStat, StalenessReport, record_usage_at};
+pub use stats::{
+    DriftCandidate, EmbedTokenStats, IndexStats, LanguageStat, StalenessReport, record_usage_at,
+};
 
 use anyhow::Result;
 use std::path::Path;

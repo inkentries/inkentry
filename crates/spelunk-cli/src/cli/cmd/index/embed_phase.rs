@@ -82,11 +82,19 @@ fn resolve_target_batch_seconds(server_limits: Option<ServerLimits>) -> u64 {
 /// to in one step, so one fast sample can't leap to a size nothing has measured.
 const GROWTH_FACTOR: usize = 8;
 
-/// Choose the next steady-state batch size so a batch takes ~`target_seconds` at
-/// the measured `per_entry` rate. Clamped to `[1, ceiling]` and to at most
-/// `GROWTH_FACTOR × previous_batch_size`.
-fn next_batch_size(
-    per_entry: Duration,
+/// Choose the next steady-state batch length (in chunks) so the batch's
+/// **token** sum fits ~`target_seconds` at the measured `per_token` rate.
+/// `token_tail` is the per-chunk token counts of the queue from the cursor on.
+/// Clamped to `[1, ceiling]` and to at most `GROWTH_FACTOR ×
+/// previous_batch_size` (both in chunks).
+///
+/// Sizing by tokens rather than chunk count is what keeps the derived deadline
+/// honest across a size transition in the queue: per-chunk cost grows ~4x
+/// through an id-ordered queue, so a chunk-count budget calibrated on early
+/// (small) chunks over-fills a batch of late (large) ones.
+fn next_batch_len(
+    per_token: Duration,
+    token_tail: &[usize],
     ceiling: usize,
     previous_batch_size: usize,
     target_seconds: u64,
@@ -96,26 +104,35 @@ fn next_batch_size(
         .saturating_mul(GROWTH_FACTOR)
         .min(ceiling.max(1));
 
-    if per_entry.is_zero() {
-        return growth_cap;
+    if per_token.is_zero() {
+        return growth_cap.min(token_tail.len().max(1));
     }
-    let target = Duration::from_secs(target_seconds).as_secs_f64();
-    let size = (target / per_entry.as_secs_f64()).round();
-    if size < 1.0 {
-        1
-    } else if size >= growth_cap as f64 {
-        growth_cap
-    } else {
-        size as usize
+    let target_tokens = Duration::from_secs(target_seconds).as_secs_f64() / per_token.as_secs_f64();
+
+    // Take chunks while their cumulative token sum stays within the target;
+    // always at least one so progress can't stall.
+    let mut len = 0usize;
+    let mut tokens = 0f64;
+    for &tc in token_tail.iter().take(growth_cap) {
+        tokens += tc.max(1) as f64;
+        if len > 0 && tokens > target_tokens {
+            break;
+        }
+        len += 1;
     }
+    len.max(1)
 }
 
 /// Per-request timeout for a batch: `TIMEOUT_SAFETY_FACTOR ×` its expected
-/// duration at `per_entry`, clamped to `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`.
-fn batch_timeout(per_entry: Duration, batch_size: usize) -> Duration {
-    let expected = per_entry.saturating_mul(batch_size.max(1) as u32);
-    let budget = expected.saturating_mul(TIMEOUT_SAFETY_FACTOR);
-    budget.clamp(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT)
+/// duration at `per_token` over the batch's token sum, clamped to
+/// `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`. The rate and the deadline
+/// share the token unit, so a size transition in the queue moves the deadline
+/// with the batch's real cost instead of consuming the safety margin.
+fn batch_timeout(per_token: Duration, batch_tokens: u64) -> Duration {
+    let expected_secs = per_token.as_secs_f64() * batch_tokens.max(1) as f64;
+    let budget_secs = (expected_secs * TIMEOUT_SAFETY_FACTOR as f64)
+        .clamp(0.0, MAX_REQUEST_TIMEOUT.as_secs_f64());
+    Duration::from_secs_f64(budget_secs).clamp(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT)
 }
 
 /// Timeout for the very first (single-chunk) request, before any rate is known.
@@ -132,14 +149,21 @@ const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 /// Running estimate of this run's embedding throughput, refined after every
 /// batch so mid-run drift (thermal throttling, GPU contention) is picked up.
 ///
-/// Single authoritative rate source: `next_batch_size`, `batch_timeout`, and the
-/// displayed ETA (`format_eta`) all read `per_entry()` from the same instance so
+/// Single authoritative rate source: `next_batch_len`, `batch_timeout`, and the
+/// displayed ETA (`format_eta`) all read `per_token()` from the same instance so
 /// they can't disagree. Deliberately not indicatif's `{eta}`, which infers rate
 /// from `bar.inc(1)` timing — wrong for this phase's bursty increments (see
 /// `format_eta`).
+///
+/// The rate is **per estimated token**, not per chunk: per-chunk cost is not
+/// stationary through an id-ordered queue (~4x growth), so a per-chunk rate is
+/// systematically biased in one direction across the run. The token estimate's
+/// own corpus-dependent bias cancels here because the rate is calibrated from
+/// estimated tokens and only ever multiplied by estimated tokens — the rate
+/// must stay measured per-run, never cached across runs or repos.
 struct RateEstimate {
-    /// Exponentially-weighted per-entry duration. `None` until the first batch.
-    per_entry: Option<Duration>,
+    /// Exponentially-weighted per-token duration. `None` until the first batch.
+    per_token: Option<Duration>,
     /// Batches folded in so far, so `update` can tell the batch-1 cold sample
     /// (== 1) from later steady-state blends.
     samples_seen: u32,
@@ -148,21 +172,21 @@ struct RateEstimate {
 impl RateEstimate {
     fn new() -> Self {
         Self {
-            per_entry: None,
+            per_token: None,
             samples_seen: 0,
         }
     }
 
-    /// Fold in a batch: `elapsed` for `entries` chunks. First observation seeds
-    /// the estimate; the second de-weights the batch-1 cold sample
-    /// (`CALIBRATION_BATCH_1_WEIGHT`); from the third onward, a 50/50 EMA so
-    /// mid-run rate changes are reflected within a couple of batches.
-    fn update(&mut self, elapsed: Duration, entries: usize) {
-        if entries == 0 {
+    /// Fold in a batch: `elapsed` for `tokens` estimated tokens. First
+    /// observation seeds the estimate; the second de-weights the batch-1 cold
+    /// sample (`CALIBRATION_BATCH_1_WEIGHT`); from the third onward, a 50/50
+    /// EMA so mid-run rate changes are reflected within a couple of batches.
+    fn update(&mut self, elapsed: Duration, tokens: u64) {
+        if tokens == 0 {
             return;
         }
-        let sample = elapsed.div_f64(entries as f64);
-        self.per_entry = Some(match self.per_entry {
+        let sample = elapsed.div_f64(tokens as f64);
+        self.per_token = Some(match self.per_token {
             None => sample,
             Some(prev) if self.samples_seen == 1 => {
                 // Superseding the batch-1 cold sample: de-weight it.
@@ -180,8 +204,8 @@ impl RateEstimate {
     }
 
     /// Current best estimate, or `None` before the first batch has landed.
-    fn per_entry(&self) -> Option<Duration> {
-        self.per_entry
+    fn per_token(&self) -> Option<Duration> {
+        self.per_token
     }
 }
 
@@ -202,22 +226,23 @@ fn embed_progress_style() -> ProgressStyle {
 /// than a literal (possibly absurd) computed duration.
 const ETA_DISPLAY_CAP: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Render the displayed ETA from the measured `RateEstimate` and chunks remaining.
+/// Render the displayed ETA from the measured `RateEstimate` and estimated
+/// tokens remaining.
 ///
-/// - `None` per_entry (pre-first-batch): a calibrating placeholder, not a guess.
-/// - Else `per_entry * remaining`, computed in f64 and clamped BEFORE converting
-///   back to `Duration` (a pathological `per_entry` can overflow/produce `inf`),
-///   so a bad sample yields the `>24h` string, never a panic.
+/// - `None` per_token (pre-first-batch): a calibrating placeholder, not a guess.
+/// - Else `per_token * remaining tokens`, computed in f64 and clamped BEFORE
+///   converting back to `Duration` (a pathological rate can overflow/produce
+///   `inf`), so a bad sample yields the `>24h` string, never a panic.
 /// - Compact format: seconds / minutes(+seconds) / hours+minutes.
-fn format_eta(remaining: usize, per_entry: Option<Duration>) -> String {
-    let Some(per_entry) = per_entry else {
+fn format_eta(remaining_tokens: u64, per_token: Option<Duration>) -> String {
+    let Some(per_token) = per_token else {
         return "ETA calibrating…".to_string();
     };
-    if remaining == 0 {
+    if remaining_tokens == 0 {
         return "ETA 0s".to_string();
     }
 
-    let seconds = (per_entry.as_secs_f64() * remaining as f64).clamp(0.0, f64::MAX);
+    let seconds = (per_token.as_secs_f64() * remaining_tokens as f64).clamp(0.0, f64::MAX);
     if !seconds.is_finite() || seconds >= ETA_DISPLAY_CAP.as_secs_f64() {
         return "ETA >24h".to_string();
     }
@@ -239,6 +264,13 @@ fn format_eta(remaining: usize, per_entry: Option<Duration>) -> String {
     } else {
         format!("ETA {secs}s")
     }
+}
+
+/// Integer percentage of `done` over `total`, 0 when `total` is 0. Callers
+/// must label the result with its denominator; a bare percentage is banned
+/// from every embedding-state surface.
+fn pct(done: u64, total: u64) -> u64 {
+    done.saturating_mul(100).checked_div(total).unwrap_or(0)
 }
 
 #[derive(Serialize)]
@@ -281,11 +313,15 @@ fn report_embed_failure(
 /// Send pending chunks to `spelunk-server` for embedding and write the returned
 /// vectors into the local DB.
 ///
+/// `chunk_ids_and_texts` items are `(chunk_id, embedding_text, token_count)`;
+/// the token counts weight the progress/ETA display, batch sizing, and request
+/// deadlines (all through the same `RateEstimate`).
+///
 /// Returns the number of chunks successfully embedded.
 ///
 /// Requires `Tier::Server`; returns `Ok(0)` immediately for `Tier::Offline`.
 pub(super) async fn run_embed_phase(
-    chunk_ids_and_texts: Vec<(i64, String)>,
+    chunk_ids_and_texts: Vec<(i64, String, usize)>,
     db: &Database,
     cfg: &Config,
     tier: &Tier,
@@ -358,6 +394,14 @@ pub(super) async fn run_embed_phase(
     let mut batch_num = 0u64;
     let mut previous_batch_size = 1usize;
     let remaining = chunk_ids_and_texts.len();
+    // Token-weighted work totals: the ETA and the "of work done" percentage
+    // run over these, never over chunk counts (chunk fraction is coverage, a
+    // different question — see `status`).
+    let total_tokens: u64 = chunk_ids_and_texts
+        .iter()
+        .map(|(_, _, tc)| (*tc).max(1) as u64)
+        .sum();
+    let mut tokens_done = 0u64;
     // Percent-encode the project_id segment: slugs contain `/`
     // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split the
     // segment and break axum routing → 404.
@@ -377,11 +421,16 @@ pub(super) async fn run_embed_phase(
             1 => CALIBRATION_BATCH_1,
             2 => CALIBRATION_BATCH_2,
             _ => {
-                let per_entry = rate
-                    .per_entry()
+                let per_token = rate
+                    .per_token()
                     .expect("rate is seeded after the first batch completes");
-                next_batch_size(
-                    per_entry,
+                let token_tail: Vec<usize> = chunk_ids_and_texts[cursor..]
+                    .iter()
+                    .map(|(_, _, tc)| *tc)
+                    .collect();
+                next_batch_len(
+                    per_token,
+                    &token_tail,
                     ceiling,
                     previous_batch_size,
                     target_batch_seconds,
@@ -395,25 +444,31 @@ pub(super) async fn run_embed_phase(
         // retry, rather than aborting at 0 embedded. Any other failure aborts.
         let mut escalated_calibration_once = false;
         let bytes = 'retry: loop {
-            let request_timeout = match rate.per_entry() {
-                Some(per_entry) => batch_timeout(per_entry, this_batch_size),
+            let batch_tokens: u64 = chunk_ids_and_texts[cursor..cursor + this_batch_size]
+                .iter()
+                .map(|(_, _, tc)| (*tc).max(1) as u64)
+                .sum();
+            let request_timeout = match rate.per_token() {
+                Some(per_token) => batch_timeout(per_token, batch_tokens),
                 None if escalated_calibration_once => MAX_REQUEST_TIMEOUT,
                 None => FIRST_REQUEST_TIMEOUT,
             };
 
             // Show which chunks are in flight, prefixed with the `RateEstimate`
-            // ETA (not indicatif's `{eta}` — see `format_eta`).
-            let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
+            // ETA (not indicatif's `{eta}` — see `format_eta`). Work-fraction
+            // percentages are token-weighted and always name their denominator.
+            let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
+            let work_pct = pct(tokens_done, total_tokens);
             bar.set_message(format!(
-                "{eta_str}  \u{00b7}  sent {this_batch_size} chunk(s) ({embedded}/{total} done \
-                 so far), awaiting response\u{2026}",
+                "{eta_str}  \u{00b7}  sent {this_batch_size} chunk(s) ({embedded}/{total} chunks, \
+                 {work_pct}% of work done), awaiting response\u{2026}",
             ));
 
             let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
             let req_chunks: Vec<ReqChunk> = batch
                 .iter()
-                .map(|(id, text)| ReqChunk {
+                .map(|(id, text, _)| ReqChunk {
                     chunk_id: id.to_string(),
                     content: text.clone(),
                 })
@@ -435,7 +490,7 @@ pub(super) async fn run_embed_phase(
                     // Fold this batch's rate in so later sizes/timeouts track
                     // the current rate. Also what the `bar.inc(1)` loop below
                     // reads for the displayed ETA (via `format_eta`).
-                    rate.update(started.elapsed(), batch.len());
+                    rate.update(started.elapsed(), batch_tokens);
                     break 'retry bytes;
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) if this_batch_size == 1 => {
@@ -444,7 +499,7 @@ pub(super) async fn run_embed_phase(
                     // (FIRST_REQUEST_TIMEOUT → MAX_REQUEST_TIMEOUT) before
                     // giving up: a cold single chunk on slow hardware may still
                     // finish given the full budget.
-                    if !escalated_calibration_once && rate.per_entry().is_none() {
+                    if !escalated_calibration_once && rate.per_token().is_none() {
                         escalated_calibration_once = true;
                         eprintln!(
                             "First embed request timed out (server request budget \
@@ -474,10 +529,10 @@ pub(super) async fn run_embed_phase(
                         "index/embed batch of {this_batch_size} chunks exceeded the server's \
                          request budget (408) — shrinking to {shrunk} chunk(s) and retrying: {e:#}",
                     );
-                    // Fold in a pessimistic per-entry sample (the failed timeout
-                    // over the batch) so future `next_batch_size` calls don't
-                    // re-derive the same too-large batch.
-                    rate.update(request_timeout, this_batch_size);
+                    // Fold in a pessimistic per-token sample (the failed timeout
+                    // over the batch's tokens) so future `next_batch_len` calls
+                    // don't re-derive the same too-large batch.
+                    rate.update(request_timeout, batch_tokens);
                     this_batch_size = shrunk;
                     continue 'retry;
                 }
@@ -495,16 +550,21 @@ pub(super) async fn run_embed_phase(
         let stride = dim * 4;
         let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
-        for (i, (row_id, _text)) in batch.iter().enumerate() {
+        for (i, (row_id, _text, token_count)) in batch.iter().enumerate() {
             let vector =
                 spelunk_core::embeddings::blob_to_vec(&bytes[i * stride..(i + 1) * stride]);
             db.insert_embedding(*row_id, &vector)?;
             embedded += 1;
+            tokens_done += (*token_count).max(1) as u64;
             bar.inc(1);
             // Refresh the displayed ETA from the updated `rate` as each chunk
             // lands, so it counts down through a batch, not once per request.
-            let eta_str = format_eta(total.saturating_sub(embedded) as usize, rate.per_entry());
-            bar.set_message(format!("{eta_str}  \u{00b7}  {embedded}/{total} embedded"));
+            let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
+            let work_pct = pct(tokens_done, total_tokens);
+            bar.set_message(format!(
+                "{eta_str}  \u{00b7}  {embedded}/{total} chunks embedded \
+                 ({work_pct}% of work done)"
+            ));
         }
 
         previous_batch_size = this_batch_size;
@@ -676,91 +736,190 @@ mod tests {
         );
     }
 
-    // ── next_batch_size: calibration-driven batch sizing ────────────────────
+    // ── next_batch_len: calibration-driven, token-weighted batch sizing ─────
+    //
+    // A tail of 1-token chunks makes token math equal chunk math, so these
+    // first cases pin the same behaviour the old chunk-count sizing had; the
+    // token-skew cases after them pin what changed.
+
+    /// A uniform queue tail of 1-token chunks.
+    fn unit_tail(n: usize) -> Vec<usize> {
+        vec![1; n]
+    }
 
     #[test]
-    fn next_batch_size_shrinks_for_slow_hardware() {
-        // ~60 s/entry ⇒ a 240 s budget fits ~4 entries per batch.
+    fn next_batch_len_shrinks_for_slow_hardware() {
+        // ~60 s/token over 1-token chunks: a 240 s budget fits ~4 chunks.
         // previous_batch_size=256 so the growth cap doesn't bind here.
         assert_eq!(
-            next_batch_size(Duration::from_secs(60), 256, 256, TARGET_BATCH_SECONDS),
+            next_batch_len(
+                Duration::from_secs(60),
+                &unit_tail(256),
+                256,
+                256,
+                TARGET_BATCH_SECONDS
+            ),
             4
         );
     }
 
     #[test]
-    fn next_batch_size_grows_for_fast_hardware_but_respects_growth_cap() {
-        // ~1 s/entry ⇒ a 240 s budget fits 240 entries, but growth from a
-        // previous batch of 4 is capped to GROWTH_FACTOR (8) × 4 = 32.
+    fn next_batch_len_grows_for_fast_hardware_but_respects_growth_cap() {
+        // ~1 s/token over 1-token chunks: a 240 s budget fits 240 chunks, but
+        // growth from a previous batch of 4 is capped to GROWTH_FACTOR (8) × 4.
         assert_eq!(
-            next_batch_size(Duration::from_secs(1), 256, 4, TARGET_BATCH_SECONDS),
+            next_batch_len(
+                Duration::from_secs(1),
+                &unit_tail(256),
+                256,
+                4,
+                TARGET_BATCH_SECONDS
+            ),
             32
         );
     }
 
     #[test]
-    fn next_batch_size_reaches_ceiling_once_previous_batch_is_already_large() {
-        // Once the previous batch was already large enough that
-        // GROWTH_FACTOR × it exceeds the ceiling, the ceiling (not the growth
-        // cap) is the binding constraint — growth isn't artificially
-        // stalled forever once it has ramped up.
+    fn next_batch_len_reaches_budget_once_previous_batch_is_already_large() {
+        // Once the previous batch was large enough that GROWTH_FACTOR × it
+        // exceeds the ceiling, the token budget (not the growth cap) is the
+        // binding constraint, so growth isn't artificially stalled forever.
         assert_eq!(
-            next_batch_size(Duration::from_secs(1), 256, 64, TARGET_BATCH_SECONDS),
+            next_batch_len(
+                Duration::from_secs(1),
+                &unit_tail(256),
+                256,
+                64,
+                TARGET_BATCH_SECONDS
+            ),
             240 // budget-derived value, below both the 512 growth cap and the 256 ceiling
         );
     }
 
     #[test]
-    fn next_batch_size_clamps_to_ceiling() {
+    fn next_batch_len_clamps_to_ceiling() {
         // A very fast rate would derive a batch above the ceiling; the ceiling
         // wins even when the growth cap would otherwise allow more.
-        let t = next_batch_size(Duration::from_millis(1), 256, 256, TARGET_BATCH_SECONDS);
+        let t = next_batch_len(
+            Duration::from_millis(1),
+            &unit_tail(512),
+            256,
+            256,
+            TARGET_BATCH_SECONDS,
+        );
         assert_eq!(t, 256);
-        let t = next_batch_size(Duration::from_millis(1), 32, 32, TARGET_BATCH_SECONDS);
+        let t = next_batch_len(
+            Duration::from_millis(1),
+            &unit_tail(512),
+            32,
+            32,
+            TARGET_BATCH_SECONDS,
+        );
         assert_eq!(t, 32);
     }
 
     #[test]
-    fn next_batch_size_floors_at_one_for_extremely_slow_hardware() {
-        // If a single entry alone blows the whole per-batch budget, we still
-        // must send at least one entry per request.
-        let t = next_batch_size(Duration::from_secs(10_000), 256, 4, TARGET_BATCH_SECONDS);
+    fn next_batch_len_floors_at_one_for_extremely_slow_hardware() {
+        // If a single chunk alone blows the whole per-batch budget, we still
+        // must send at least one chunk per request.
+        let t = next_batch_len(
+            Duration::from_secs(10_000),
+            &unit_tail(256),
+            256,
+            4,
+            TARGET_BATCH_SECONDS,
+        );
         assert_eq!(t, 1);
     }
 
     #[test]
-    fn next_batch_size_handles_zero_duration_without_panicking() {
+    fn next_batch_len_handles_zero_duration_without_panicking() {
         // A degenerate zero-duration sample (e.g. a clock quirk) must not
         // divide-by-zero; falls back to the growth cap since the rate is
-        // unmeasurably fast (not directly to the ceiling — growth is still
-        // capped per step even in this degenerate case).
-        let t = next_batch_size(Duration::ZERO, 256, 4, TARGET_BATCH_SECONDS);
+        // unmeasurably fast (growth is still capped per step even here).
+        let t = next_batch_len(
+            Duration::ZERO,
+            &unit_tail(256),
+            256,
+            4,
+            TARGET_BATCH_SECONDS,
+        );
         assert_eq!(t, 32); // growth_cap = 4 * GROWTH_FACTOR(8)
     }
 
     #[test]
-    fn next_batch_size_uses_smaller_clamped_target_when_passed() {
+    fn next_batch_len_uses_smaller_clamped_target_when_passed() {
         // A caller passing a smaller target_seconds (e.g. because
         // resolve_target_batch_seconds clamped it down for a small-budget
         // server) must derive a proportionally smaller batch, not always
         // TARGET_BATCH_SECONDS.
-        let t = next_batch_size(Duration::from_secs(1), 256, 256, 20);
+        let t = next_batch_len(Duration::from_secs(1), &unit_tail(256), 256, 256, 20);
         assert_eq!(t, 20);
+    }
+
+    #[test]
+    fn next_batch_len_fills_by_token_sum_not_chunk_count() {
+        // 100-token chunks at 1 s/token: the 240 s budget fits 2 whole chunks
+        // (300 tokens would overshoot), NOT the 240 chunks a chunk-count
+        // budget calibrated on small chunks would have asked for. This is the
+        // sizing half of the D6 wasted-GPU defect.
+        let tail = vec![100usize; 256];
+        let t = next_batch_len(
+            Duration::from_secs(1),
+            &tail,
+            256,
+            256,
+            TARGET_BATCH_SECONDS,
+        );
+        assert_eq!(t, 2);
+    }
+
+    #[test]
+    fn next_batch_len_stops_at_a_size_transition_in_the_queue() {
+        // A queue crossing from tiny chunks into huge ones (the measured 7.4x
+        // jump) must not fill the batch past the transition: three 1-token
+        // chunks fit, and the 1000-token chunk that follows is left for the
+        // next batch instead of silently consuming the deadline's margin.
+        let mut tail = vec![1usize, 1, 1];
+        tail.extend(vec![1000usize; 64]);
+        let t = next_batch_len(
+            Duration::from_secs(1),
+            &tail,
+            256,
+            256,
+            TARGET_BATCH_SECONDS,
+        );
+        assert_eq!(t, 3);
+    }
+
+    #[test]
+    fn next_batch_len_zero_token_chunks_are_floored_not_free() {
+        // A pre-backfill row can carry token_count 0; it must cost at least 1
+        // token so a run of zeros can't derive an unbounded batch.
+        let tail = vec![0usize; 512];
+        let t = next_batch_len(
+            Duration::from_secs(60),
+            &tail,
+            256,
+            256,
+            TARGET_BATCH_SECONDS,
+        );
+        assert_eq!(t, 4); // identical to the 1-token case
     }
 
     // ── batch_timeout: derive a per-request deadline from the measured rate ──
 
     #[test]
     fn batch_timeout_scales_with_expected_batch_duration() {
-        // At 60 s/entry, a batch of 4 is expected to take 240 s; with the 4x
-        // safety factor that's 960 s, clamped to the 1800 s ceiling.
+        // At 60 s/token, a 4-token batch is expected to take 240 s; with the
+        // 4x safety factor that's 960 s, inside the 1800 s ceiling.
         let t = batch_timeout(Duration::from_secs(60), 4);
         assert_eq!(t, Duration::from_secs(960));
     }
 
     #[test]
     fn batch_timeout_clamps_to_floor_for_fast_hardware() {
-        // At 1 s/entry, a batch of 4 is expected to take 4 s; even with the
+        // At 1 s/token, a 4-token batch is expected to take 4 s; even with the
         // 4x safety factor (16 s) that's far below the floor, which must win
         // so transient latency spikes are still absorbed.
         let t = batch_timeout(Duration::from_secs(1), 4);
@@ -779,25 +938,40 @@ mod tests {
         assert!(t >= MIN_REQUEST_TIMEOUT && t <= MAX_REQUEST_TIMEOUT);
     }
 
-    // ── RateEstimate: continuously re-estimate the per-entry rate ───────────
+    #[test]
+    fn batch_timeout_tracks_batch_token_sum_not_chunk_count() {
+        // The deadline is derived from the batch's token sum, so two batches
+        // of equal chunk count but 10x different token weight get 10x
+        // different deadlines. Under chunk-count sizing both would have shared
+        // one deadline and the heavy batch would consume its entire safety
+        // margin (the D6 field failure).
+        let per_token = Duration::from_secs(1);
+        let light = batch_timeout(per_token, 100);
+        let heavy = batch_timeout(per_token, 1000);
+        assert_eq!(light, Duration::from_secs(400));
+        assert_eq!(heavy, MAX_REQUEST_TIMEOUT); // 4000s clamped to 1800s
+        assert!(heavy > light);
+    }
+
+    // ── RateEstimate: continuously re-estimate the per-token rate ───────────
 
     #[test]
     fn rate_estimate_seeds_from_first_observation() {
         let mut r = RateEstimate::new();
-        assert!(r.per_entry().is_none());
+        assert!(r.per_token().is_none());
         r.update(Duration::from_secs(2), 1);
-        assert_eq!(r.per_entry(), Some(Duration::from_secs(2)));
+        assert_eq!(r.per_token(), Some(Duration::from_secs(2)));
     }
 
     #[test]
     fn rate_estimate_deweights_the_batch_1_cold_sample_on_second_observation() {
-        // Batch 1: 1 entry in 10 s ⇒ 10 s/entry (cold). Batch 2 (1 s/entry) must
-        // dominate — only CALIBRATION_BATCH_1_WEIGHT (0.1) of the cold sample
-        // survives, not a 50/50 split.
+        // Batch 1: 1 token in 10 s ⇒ 10 s/token (cold). Batch 2 (1 s/token)
+        // must dominate: only CALIBRATION_BATCH_1_WEIGHT (0.1) of the cold
+        // sample survives, not a 50/50 split.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1);
-        r.update(Duration::from_secs(4), 4); // 1 s/entry
-        let blended = r.per_entry().unwrap();
+        r.update(Duration::from_secs(4), 4); // 1 s/token
+        let blended = r.per_token().unwrap();
         // Exact expected value: 10*0.1 + 1*0.9 = 1.9s.
         assert!(
             (blended.as_secs_f64() - 1.9).abs() < 1e-9,
@@ -814,10 +988,10 @@ mod tests {
         // From the third observation onward (batch-1 cold sample already
         // superseded), later samples blend evenly with the running estimate.
         let mut r = RateEstimate::new();
-        r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/entry
-        r.update(Duration::from_secs(4), 4); // batch 2: 1s/entry -> blended 1.9s/entry
-        r.update(Duration::from_secs(3), 1); // batch 3: 3s/entry -> 50/50 blend with 1.9
-        let blended = r.per_entry().unwrap();
+        r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/token
+        r.update(Duration::from_secs(4), 4); // batch 2: 1s/token -> blended 1.9s/token
+        r.update(Duration::from_secs(3), 1); // batch 3: 3s/token -> 50/50 blend with 1.9
+        let blended = r.per_token().unwrap();
         let expected = (1.9 + 3.0) / 2.0;
         assert!(
             (blended.as_secs_f64() - expected).abs() < 1e-9,
@@ -827,22 +1001,22 @@ mod tests {
 
     #[test]
     fn rate_estimate_reproduces_field_failure_scenario_with_fix() {
-        // Batch 1 (1 chunk) ~25s cold; batch 2 (4 chunks) ~4.8s (~1.2s/entry
+        // Batch 1 (1 token) ~25s cold; batch 2 (4 tokens) ~4.8s (~1.2s/token
         // warm). The single shared estimate (de-weighted + growth-capped) must
-        // derive a small, internally consistent batch — not the unblended
+        // derive a small, internally consistent batch, not the unblended
         // ~50x leap an earlier build produced.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(25), 1); // batch 1: cold
-        r.update(Duration::from_millis(4800), 4); // batch 2: 1.2s/entry warm
-        let per_entry = r.per_entry().unwrap();
-        // 25*0.1 + 1.2*0.9 = 3.58s/entry.
+        r.update(Duration::from_millis(4800), 4); // batch 2: 1.2s/token warm
+        let per_token = r.per_token().unwrap();
+        // 25*0.1 + 1.2*0.9 = 3.58s/token.
         assert!(
-            (per_entry.as_secs_f64() - 3.58).abs() < 1e-9,
-            "expected 3.58s/entry, got {per_entry:?}"
+            (per_token.as_secs_f64() - 3.58).abs() < 1e-9,
+            "expected 3.58s/token, got {per_token:?}"
         );
-        // The same estimate feeds next_batch_size, growth-capped from the
-        // previous batch of 4.
-        let batch_3_size = next_batch_size(per_entry, 256, 4, TARGET_BATCH_SECONDS);
+        // The same estimate feeds next_batch_len, growth-capped from the
+        // previous batch of 4 (1-token chunks keep token math == chunk math).
+        let batch_3_size = next_batch_len(per_token, &unit_tail(256), 256, 4, TARGET_BATCH_SECONDS);
         assert_eq!(
             batch_3_size, 32,
             "growth-capped (GROWTH_FACTOR=8 * previous batch of 4) at 32, not the raw \
@@ -851,19 +1025,67 @@ mod tests {
         );
         // The resulting batch's expected duration must stay well under ~240s;
         // uses the uncapped TARGET_BATCH_SECONDS so the growth cap alone is under test.
-        let expected_duration = per_entry.as_secs_f64() * batch_3_size as f64;
+        let expected_duration = per_token.as_secs_f64() * batch_3_size as f64;
         assert!(
             expected_duration < 150.0,
             "batch 3's expected duration ({expected_duration:.1}s) must be far below the \
-             field failure's ~240s (200 chunks @ ~1.2s/entry)"
+             field failure's ~240s (200 chunks @ ~1.2s/token)"
         );
     }
 
     #[test]
-    fn rate_estimate_ignores_zero_length_batches() {
+    fn rate_estimate_ignores_zero_token_batches() {
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(1), 0);
-        assert!(r.per_entry().is_none());
+        assert!(r.per_token().is_none());
+    }
+
+    // ── pct + token-weighted progress: work fraction ≠ chunk fraction ───────
+
+    #[test]
+    fn work_fraction_diverges_from_chunk_fraction_on_a_token_skewed_queue() {
+        // The D4/D6 estimator defect in miniature: a queue whose late chunks
+        // are far heavier than its early ones. After the first two of four
+        // chunks land, HALF the chunks are searchable but almost none of the
+        // work is done; the two percentages must diverge, and each must be
+        // computed over its own denominator.
+        let queue: Vec<(i64, String, usize)> = vec![
+            (1, "a".into(), 10),
+            (2, "b".into(), 10),
+            (3, "c".into(), 400),
+            (4, "d".into(), 400),
+        ];
+        let total_tokens: u64 = queue.iter().map(|(_, _, tc)| *tc as u64).sum();
+        let tokens_done: u64 = queue[..2].iter().map(|(_, _, tc)| *tc as u64).sum();
+
+        let chunk_pct = pct(2, queue.len() as u64);
+        let work_pct = pct(tokens_done, total_tokens);
+
+        assert_eq!(chunk_pct, 50);
+        assert_eq!(work_pct, 2); // 20 / 820
+        assert_ne!(
+            chunk_pct, work_pct,
+            "chunk fraction is coverage, token fraction is progress; on a skewed \
+             queue they must not coincide"
+        );
+    }
+
+    #[test]
+    fn pct_is_zero_over_an_empty_denominator() {
+        assert_eq!(pct(0, 0), 0);
+        assert_eq!(pct(5, 0), 0);
+    }
+
+    #[test]
+    fn eta_is_token_weighted_not_chunk_weighted() {
+        // Same rate, same remaining CHUNK count, 100x the remaining tokens:
+        // the displayed ETA must scale with tokens. A chunk-weighted ETA would
+        // print the same string for both (the 3.2x under-report in the field).
+        let per_token = Some(Duration::from_secs(1));
+        let light = format_eta(60, per_token);
+        let heavy = format_eta(6000, per_token);
+        assert_eq!(light, "ETA 1m");
+        assert_eq!(heavy, "ETA 1h40m");
     }
 
     // ── embed_progress_style: the message-only-ETA template must build ──────
@@ -947,7 +1169,7 @@ mod tests {
         // Duration::MAX times a large remaining count would overflow a naive
         // `Duration * u32`/`Duration::saturating_mul` computation; this must
         // still return the capped string without panicking.
-        let eta = format_eta(usize::MAX, Some(Duration::MAX));
+        let eta = format_eta(u64::MAX, Some(Duration::MAX));
         assert_eq!(eta, "ETA >24h");
     }
 
@@ -1060,8 +1282,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(6);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let tier = server_tier(mock.uri());
@@ -1107,8 +1331,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(50);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let tier = server_tier(mock.uri());
@@ -1144,8 +1370,10 @@ mod tests {
 
         for n in [1usize, 2, 3] {
             let (db, ids) = seed_chunks(n);
-            let chunk_ids_and_texts: Vec<(i64, String)> =
-                ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+            let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+                .iter()
+                .map(|id| (*id, format!("text {id}"), 3))
+                .collect();
 
             let cfg = Config::default();
             let tier = server_tier(mock.uri());
@@ -1221,8 +1449,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let tier = server_tier(mock.uri());
@@ -1261,8 +1491,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let tier = server_tier(mock.uri());
@@ -1326,8 +1558,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(20);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let tier = server_tier(mock.uri());
@@ -1397,8 +1631,10 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(30);
-        let chunk_ids_and_texts: Vec<(i64, String)> =
-            ids.iter().map(|id| (*id, format!("text {id}"))).collect();
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
 
         let cfg = Config::default();
         let limits = ServerLimits {

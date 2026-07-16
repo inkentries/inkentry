@@ -48,8 +48,9 @@ fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
 }
 
 pub(super) struct ParseResult {
-    /// (chunk_id, embedding_text) pairs awaiting embedding.
-    pub chunk_ids_and_texts: Vec<(i64, String)>,
+    /// (chunk_id, embedding_text, token_count) tuples awaiting embedding.
+    /// `token_count` mirrors the stored `chunks.token_count` (never 0 here).
+    pub chunk_ids_and_texts: Vec<(i64, String, usize)>,
     pub indexed: u64,
     pub removed: u64,
 }
@@ -57,7 +58,7 @@ pub(super) struct ParseResult {
 /// Mutable accumulators shared across per-file processor functions.
 /// Bundled into one struct so processor signatures stay under 7 arguments.
 struct ParseAcc {
-    out: Vec<(i64, String)>,
+    out: Vec<(i64, String, usize)>,
     indexed: u64,
     skipped: u64,
 }
@@ -151,14 +152,17 @@ pub(super) fn run_parse_phase(
     // appear here too; dedupe against the ids we already queued to avoid
     // embedding them twice.
     let already: std::collections::HashSet<i64> =
-        chunk_ids_and_texts.iter().map(|(id, _)| *id).collect();
-    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+        chunk_ids_and_texts.iter().map(|(id, ..)| *id).collect();
+    for (chunk_id, name, metadata, summary, content, token_count) in
+        db.chunks_missing_embeddings()?
+    {
         if already.contains(&chunk_id) {
             continue;
         }
+        let tokens = effective_token_count(token_count, &content);
         let text =
             reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
-        chunk_ids_and_texts.push((chunk_id, text));
+        chunk_ids_and_texts.push((chunk_id, text, tokens));
     }
 
     Ok(ParseResult {
@@ -174,14 +178,29 @@ pub(super) fn run_parse_phase(
 /// a backfill; exposed separately so a detached embed-only
 /// subprocess can rebuild the embed queue straight from the DB without
 /// re-parsing.
-pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String)>> {
+pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String, usize)>> {
     let mut out = Vec::new();
-    for (chunk_id, name, metadata, summary, content) in db.chunks_missing_embeddings()? {
+    for (chunk_id, name, metadata, summary, content, token_count) in
+        db.chunks_missing_embeddings()?
+    {
+        let tokens = effective_token_count(token_count, &content);
         let text =
             reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
-        out.push((chunk_id, text));
+        out.push((chunk_id, text, tokens));
     }
     Ok(out)
+}
+
+/// Token weight for a queue entry: the stored `chunks.token_count`, estimated
+/// on the fly for a pre-backfill row (stored 0), floored at 1 so token-weighted
+/// arithmetic never divides by zero.
+fn effective_token_count(stored: usize, content: &str) -> usize {
+    let tc = if stored == 0 {
+        estimate_tokens(content)
+    } else {
+        stored
+    };
+    tc.max(1)
 }
 
 /// Rebuild the exact document text that `Chunk::embedding_text()` produces,
@@ -480,7 +499,7 @@ fn store_chunks(
             Some(&metadata.to_string()),
             tc,
         )?;
-        acc.out.push((chunk_id, chunk.embedding_text()));
+        acc.out.push((chunk_id, chunk.embedding_text(), tc.max(1)));
     }
     Ok(())
 }
@@ -714,7 +733,7 @@ mod tests {
         let mut queued_run1: Vec<i64> = first
             .chunk_ids_and_texts
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, ..)| *id)
             .collect();
         queued_run1.sort();
         let mut missing_after_run1: Vec<i64> = db
@@ -748,7 +767,7 @@ mod tests {
         let mut backfilled: Vec<i64> = second
             .chunk_ids_and_texts
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, ..)| *id)
             .collect();
         backfilled.sort();
         assert_eq!(
@@ -758,10 +777,10 @@ mod tests {
 
         // The reconstructed embedding texts must also be byte-identical to what
         // the first (parse-time) run produced for those same chunks.
-        let mut texts_run1: Vec<(i64, String)> = first.chunk_ids_and_texts.clone();
-        texts_run1.sort_by_key(|(id, _)| *id);
-        let mut texts_run2: Vec<(i64, String)> = second.chunk_ids_and_texts.clone();
-        texts_run2.sort_by_key(|(id, _)| *id);
+        let mut texts_run1: Vec<(i64, String, usize)> = first.chunk_ids_and_texts.clone();
+        texts_run1.sort_by_key(|(id, ..)| *id);
+        let mut texts_run2: Vec<(i64, String, usize)> = second.chunk_ids_and_texts.clone();
+        texts_run2.sort_by_key(|(id, ..)| *id);
         assert_eq!(
             texts_run2, texts_run1,
             "backfilled embedding text must match the parse-time embedding text byte-for-byte"
@@ -839,7 +858,7 @@ mod tests {
 
         // Exactly the two un-embedded chunks, in ascending id order, and NOT the
         // embedded one.
-        let got_ids: Vec<i64> = missing.iter().map(|(id, _)| *id).collect();
+        let got_ids: Vec<i64> = missing.iter().map(|(id, ..)| *id).collect();
         assert_eq!(
             got_ids,
             vec![ids[0].0, ids[2].0],
@@ -852,7 +871,7 @@ mod tests {
 
         // Each queued text is reconstructed byte-for-byte to the parse-time
         // `embedding_text()` for that chunk.
-        for (queued_id, queued_text) in &missing {
+        for (queued_id, queued_text, _) in &missing {
             let (_, chunk) = ids.iter().find(|(id, _)| id == queued_id).unwrap();
             assert_eq!(
                 queued_text,
