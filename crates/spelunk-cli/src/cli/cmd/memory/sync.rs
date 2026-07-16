@@ -229,7 +229,17 @@ async fn push_local(
         // Record cloud ids for created entries so a later pull dedupes them and
         // a later archive can tombstone them by id.
         for item in &res.results {
-            if let (Some(ext), Some(cloud_id)) = (item.external_id.as_deref(), item.id.as_deref())
+            // Stamping `remote_id` is permanent (it's what excludes a row from
+            // `live` on every future push), so only do it for a status that
+            // affirmatively means the cloud durably has this row: `created`
+            // (just persisted) or `skipped` (already persisted — dedup on
+            // identity). Any other status — `failed`, or an id riding along
+            // with a status that doesn't mean persisted — must not stamp, or
+            // that row can never be retried again.
+            let durably_persisted = item.status == "created" || item.status == "skipped";
+            if durably_persisted
+                && let (Some(ext), Some(cloud_id)) =
+                    (item.external_id.as_deref(), item.id.as_deref())
                 && let Some(row) = chunk.iter().find(|r| r.uuid == ext)
             {
                 local.set_remote_id(row.local_id, cloud_id)?;
@@ -529,5 +539,63 @@ mod tests {
         );
         // No duplicate local rows introduced by the round trip.
         assert_eq!(store.count().unwrap(), 2);
+    }
+
+    // ── stamping must not trust a non-persisted status ─────────────────────
+    // Reproduces the reopened cloud-api^109 incident: the server returned a
+    // per-item `id` for an entry alongside a status that does not affirm
+    // durable persistence (aggregate `created: 0`). Stamping `remote_id`
+    // anyway would permanently exclude the row from `live` on every future
+    // push — the data could never be retried. Only `created`/`skipped` may
+    // stamp; a `failed` item carrying an `id` must be left unstamped.
+    #[tokio::test]
+    async fn push_local_does_not_stamp_remote_id_for_a_failed_status_item() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+
+        let rows = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows.len(), 1);
+        let ext_a = rows[0].uuid.clone();
+        // The server hands back an `id` even though the entry was not
+        // durably persisted (`created: 0`, status "failed") — exactly the
+        // shape of the reopened cloud-api^109 bug.
+        let cloud_a = "01890000-0000-7000-8000-0000000000b1";
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 1,
+                "results": [
+                    {"status": "failed", "external_id": ext_a, "id": cloud_a},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!((s1.attempted, s1.created, s1.skipped), (1, 0, 0));
+
+        // The row must NOT carry the id the server handed back — it stays
+        // retryable on the next push.
+        assert_eq!(store.note_id_for_remote_id(cloud_a).unwrap(), None);
+        let rows_after = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows_after[0].remote_id, None);
+
+        // A re-push must still consider this row live (not already-synced).
+        let live_again: Vec<_> = rows_after
+            .iter()
+            .filter(|r| !r.archived && r.remote_id.is_none())
+            .collect();
+        assert_eq!(live_again.len(), 1, "unstamped row must remain retryable");
     }
 }
