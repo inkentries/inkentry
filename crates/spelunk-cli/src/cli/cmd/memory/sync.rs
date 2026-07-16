@@ -133,18 +133,32 @@ pub async fn memory_sync(
     // ── Pull cloud → local (delta after the UUID cursor, keep-both) ─────────
     let pulled = pull_and_apply(&local, &client).await?;
 
-    println!(
-        "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
-        pushed.attempted, pushed.created, pushed.skipped, pulled
-    );
+    if pushed.attempted == 0 {
+        println!(
+            "Nothing to push — {} entries already synced. Applied {} new remote entries.",
+            pushed.already_synced, pulled
+        );
+    } else {
+        println!(
+            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
+            pushed.attempted, pushed.created, pushed.skipped, pulled
+        );
+    }
     Ok(())
 }
 
 /// Outcome of a push pass (shared by `sync` and the one-way `memory push`).
 pub(super) struct PushSummary {
+    /// Rows actually sent to `push_batch` (the `live` set) — not the raw
+    /// pre-filter row count, which would over-report when rows are already
+    /// synced (`remote_id` already set) and no request is made at all.
     pub attempted: usize,
     pub created: u32,
     pub skipped: u32,
+    /// Non-archived rows already carrying a `remote_id` — i.e. previously
+    /// synced and excluded from `attempted`. Lets callers report an honest
+    /// "nothing to push" message instead of implying a push happened.
+    pub already_synced: usize,
 }
 
 /// One-way push entry point reused by `spelunk memory push`.
@@ -164,12 +178,12 @@ async fn push_local(
     include_archived: bool,
 ) -> Result<PushSummary> {
     let rows = local.rows_for_sync(include_archived)?;
-    let attempted = rows.len();
     if rows.is_empty() {
         return Ok(PushSummary {
             attempted: 0,
             created: 0,
             skipped: 0,
+            already_synced: 0,
         });
     }
 
@@ -186,6 +200,11 @@ async fn push_local(
         .iter()
         .filter(|r| !r.archived && r.remote_id.is_none())
         .collect();
+    let already_synced = rows
+        .iter()
+        .filter(|r| !r.archived && r.remote_id.is_some())
+        .count();
+    let attempted = live.len();
     // Map external_id (local uuid) → local_id so we can record the cloud-minted
     // id returned in the 207 result back onto the local row.
     for chunk in live.chunks(200) {
@@ -239,6 +258,7 @@ async fn push_local(
         attempted,
         created,
         skipped,
+        already_synced,
     })
 }
 
@@ -497,9 +517,11 @@ mod tests {
         assert_eq!(store.max_remote_id().unwrap().as_deref(), Some(cloud_b));
 
         // Second push: every row carries a `remote_id`, so the live set is empty
-        // and no batch request is sent — the re-sync is a no-op.
+        // and no batch request is sent — the re-sync is a no-op. `attempted` must
+        // reflect that (not the raw row count), so callers never report "Pushed
+        // N" when nothing was sent.
         let s2 = push_local(&store, &client, false).await.unwrap();
-        assert_eq!(s2.created, 0);
+        assert_eq!((s2.attempted, s2.created, s2.already_synced), (0, 0, 2));
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             1,
