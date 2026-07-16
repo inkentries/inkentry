@@ -691,7 +691,8 @@
         "tags": [
           "memory"
         ],
-        "summary": "Return notes created after a given Unix timestamp. Archived entries are\nexcluded. Results are ordered `created_at ASC`.",
+        "summary": "Return notes newer than a cursor, in one of two modes:",
+        "description": "- `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;\n  `CloudSyncClient::pull_since`/`spelunk sync` targets this). Returns\n  `{entries, count}`, entries ordered by arrival at this server.\n- `?t=<unix_secs>`: legacy timestamp mode (`spelunk memory since`\n  targets this). Returns a bare array, ordered `created_at ASC`.\n\n`since_id` takes precedence when both are supplied. Archived entries are\nexcluded in both modes.",
         "operationId": "memory_since",
         "parameters": [
           {
@@ -706,11 +707,26 @@
           {
             "name": "t",
             "in": "query",
-            "description": "Unix epoch seconds (exclusive lower bound).",
-            "required": true,
+            "description": "Unix epoch seconds (exclusive lower bound). Required unless `since_id`\nis given; ignored when `since_id` is present.",
+            "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
+            }
+          },
+          {
+            "name": "since_id",
+            "in": "query",
+            "description": "UUID cursor (exclusive lower bound, arrival-ordered — see\n`ServerDb::notes_since_id`). Takes precedence over `t` when both are\nsupplied. Selects the delta-pull response shape (`{entries, count}`)\ninstead of the bare array `t` returns.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -726,7 +742,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Notes newer than `t`",
+            "description": "Notes newer than `t` (bare array) or `since_id` (`{entries, count}`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -739,7 +755,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid `t` parameter",
+            "description": "Neither `t` nor `since_id` given",
             "content": {
               "application/json": {
                 "schema": {
@@ -1995,21 +2011,85 @@
           }
         }
       },
+      "SinceIdEntry": {
+        "type": "object",
+        "description": "One entry in the `since_id`-cursor response of `/memory/since`. `id` is\nthe note's server-minted `sync_id` (arrival-ordered), never its integer\n`id`, which has no meaning to a puller on a different machine.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "created_at"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp."
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "SinceIdResponse": {
+        "type": "object",
+        "description": "Response body for the `since_id`-cursor mode of `/memory/since`.",
+        "required": [
+          "entries",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SinceIdEntry"
+            }
+          }
+        }
+      },
       "SinceQuery": {
         "type": "object",
-        "required": [
-          "t"
-        ],
         "properties": {
           "limit": {
             "type": "integer",
             "format": "int64",
             "description": "Maximum number of results (default: 100, max: 500)."
           },
+          "since_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "UUID cursor (exclusive lower bound, arrival-ordered — see\n`ServerDb::notes_since_id`). Takes precedence over `t` when both are\nsupplied. Selects the delta-pull response shape (`{entries, count}`)\ninstead of the bare array `t` returns."
+          },
           "t": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "Unix epoch seconds (exclusive lower bound)."
+            "description": "Unix epoch seconds (exclusive lower bound). Required unless `since_id`\nis given; ignored when `since_id` is present."
           }
         }
       },
