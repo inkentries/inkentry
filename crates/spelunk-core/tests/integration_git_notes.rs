@@ -1678,15 +1678,18 @@ async fn old_git_echoing_the_flag_still_locks_the_real_common_dir() {
 // ── the `--backend git-notes` path (append_record / archive_record) ───────────
 
 /// `GitNotesBackend::add` → `append_record` carries the same read-modify-write
-/// as the write-through helper, so it needs the same guarantee: N concurrent
-/// adds against one HEAD all survive.
+/// as the write-through helper, so it gets the same D8 invariant as the
+/// free-function guards: every add lands or fails visibly, disjoint and
+/// complete, and at least one lands. "All succeed" is deliberately not
+/// asserted: on a slow runner N queued writers legitimately exceed the lock's
+/// wait budget and the back of the queue fails with the D8 error.
 ///
 /// Asserted on titles, not ids: `add` mints its id from `now_millis()` *before*
 /// taking the lock, so adds landing in one millisecond can share an id. Entry
 /// survival is what the lock guarantees.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
-async fn git_notes_backend_concurrent_adds_all_survive() {
+async fn git_notes_backend_concurrent_adds_land_or_fail_visibly() {
     const WRITERS: usize = 8;
 
     let dir = make_temp_git_repo();
@@ -1696,15 +1699,21 @@ async fn git_notes_backend_concurrent_adds_all_survive() {
     for n in 1..=WRITERS {
         let root = root.clone();
         tasks.push(tokio::spawn(async move {
-            GitNotesBackend::with_root(root)
+            let result = GitNotesBackend::with_root(root)
                 .add(note_input("decision", &format!("backend writer {n}")))
-                .await
+                .await;
+            (n, result)
         }));
     }
+
+    let mut failed: Vec<usize> = Vec::new();
+    let mut failure_msgs = Vec::new();
     for task in tasks {
-        task.await
-            .expect("writer task should not panic")
-            .expect("backend add should succeed");
+        let (n, result) = task.await.expect("writer task should not panic");
+        if let Err(e) = result {
+            failed.push(n);
+            failure_msgs.push(format!("backend writer {n} failed: {e:#}"));
+        }
     }
 
     let notes = GitNotesBackend::with_root(root)
@@ -1712,25 +1721,46 @@ async fn git_notes_backend_concurrent_adds_all_survive() {
         .await
         .expect("list");
     let titles: std::collections::HashSet<String> = notes.into_iter().map(|n| n.title).collect();
-
-    let missing: Vec<String> = (1..=WRITERS)
-        .map(|n| format!("backend writer {n}"))
-        .filter(|t| !titles.contains(t))
+    let landed: Vec<usize> = (1..=WRITERS)
+        .filter(|n| titles.contains(&format!("backend writer {n}")))
         .collect();
+
+    let silent: Vec<usize> = (1..=WRITERS)
+        .filter(|n| !landed.contains(n) && !failed.contains(n))
+        .collect();
+    let both: Vec<usize> = landed
+        .iter()
+        .copied()
+        .filter(|n| failed.contains(n))
+        .collect();
+
     assert!(
-        missing.is_empty(),
-        "lost {} of {WRITERS} concurrent backend adds ({missing:?}); surviving {titles:?}",
-        missing.len(),
+        silent.is_empty(),
+        "SILENT LOSS of {} of {WRITERS} backend adds ({silent:?}): neither landed \
+         {landed:?} nor failed visibly {failed:?}\nfailures: {failure_msgs:#?}",
+        silent.len(),
+    );
+    assert!(
+        both.is_empty(),
+        "backend adds {both:?} reported failure but their entries landed; an \
+         `Err` add must not write\nfailures: {failure_msgs:#?}"
+    );
+    assert!(
+        !landed.is_empty(),
+        "no backend add landed at all; the first holder takes a free lock, so \
+         this means the lock or the write path is wedged\nfailures: {failure_msgs:#?}"
     );
 }
 
 /// `GitNotesBackend::archive` → `archive_record` is the same read-modify-write
-/// in reverse, and needs the same guarantee. Concurrent archives of distinct
-/// entries must each land: unserialized, each writer's write-back would revive
-/// the entries its peers had just archived.
+/// in reverse, with the same D8 invariant: each archive of a distinct seeded
+/// entry either lands (the entry ends archived) or fails visibly (the entry
+/// stays active), the two sets are exactly complementary, and at least one
+/// lands. Unserialized, each writer's write-back would revive the entries its
+/// peers had just archived, silently.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
-async fn git_notes_backend_concurrent_archives_all_land() {
+async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
     const ENTRIES: usize = 6;
 
     let dir = make_temp_git_repo();
@@ -1756,26 +1786,31 @@ async fn git_notes_backend_concurrent_archives_all_land() {
     for id in ids {
         let root = root.clone();
         tasks.push(tokio::spawn(async move {
-            GitNotesBackend::with_root(root).archive(id).await
+            let result = GitNotesBackend::with_root(root).archive(id).await;
+            (id, result)
         }));
     }
-    for task in tasks {
-        assert!(
-            task.await
-                .expect("archive task should not panic")
-                .expect("archive should succeed"),
-            "each archive must find and rewrite its entry"
-        );
-    }
 
-    let active = backend
-        .list(Some("decision"), 100, false, None)
-        .await
-        .expect("list active");
+    let mut failed: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut failure_msgs = Vec::new();
+    let mut not_found: Vec<i64> = Vec::new();
+    for task in tasks {
+        let (id, result) = task.await.expect("archive task should not panic");
+        match result {
+            Ok(true) => {}
+            Ok(false) => not_found.push(id),
+            Err(e) => {
+                failed.insert(id);
+                failure_msgs.push(format!("archive of {id} failed: {e:#}"));
+            }
+        }
+    }
+    // Every id was seeded, so "entry not found" is neither a landing nor a
+    // visible failure: it is a silent anomaly.
     assert!(
-        active.is_empty(),
-        "every concurrently archived entry must stay archived; still active: {:?}",
-        active.iter().map(|n| &n.title).collect::<Vec<_>>()
+        not_found.is_empty(),
+        "archives {not_found:?} reported their entry missing; every id exists, \
+         so a miss is a silently lost archive"
     );
 
     let all = backend
@@ -1786,6 +1821,26 @@ async fn git_notes_backend_concurrent_archives_all_land() {
         all.len(),
         ENTRIES,
         "archiving must rewrite entries in place, never drop them"
+    );
+
+    // Exactly the visibly-failed archives may remain active: an active entry
+    // whose archive reported success is a silently revived/lost archive, and
+    // an archived entry whose archive reported failure wrote after erroring.
+    let active: std::collections::HashSet<i64> = backend
+        .list(Some("decision"), 100, false, None)
+        .await
+        .expect("list active")
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(
+        active, failed,
+        "the active set must be exactly the visibly-failed set\nfailures: {failure_msgs:#?}"
+    );
+    assert!(
+        failed.len() < ENTRIES,
+        "no archive landed at all; the first holder takes a free lock, so this \
+         means the lock or the write path is wedged\nfailures: {failure_msgs:#?}"
     );
 }
 
@@ -2363,7 +2418,9 @@ async fn append_to_git_notes_proceeds_when_the_carry_config_cannot_be_written() 
         "an unwritable config must report Failed"
     );
     assert_eq!(
-        write.expect("a config failure must never fail the write"),
+        write
+            .expect("a config failure must never fail the write")
+            .rewrite_ref,
         RewriteRefStatus::Failed,
         "the write must report the carry it could not make"
     );

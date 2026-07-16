@@ -901,3 +901,46 @@ fn contended_notes_lock_fails_the_pre_init_carry_and_writes_nothing() {
         "a contended carry must write nothing; got: {lines:?}"
     );
 }
+
+/// D8's one kept degradation must be **visible**, not merely traced: an
+/// unusable lock file makes the write proceed unserialized, and the user must
+/// be told on stderr even with `RUST_LOG` unset, because a warning routed only
+/// through `tracing` reaches nobody in the shipped binary.
+///
+/// A directory planted at the lock path makes the open fail deterministically
+/// on every platform (EISDIR on unix, access-denied on Windows).
+#[test]
+fn unusable_notes_lock_degradation_is_visible_without_rust_log() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+
+    std::fs::create_dir_all(notes_lock_path(repo.path()))
+        .expect("plant a directory at the notes lock path");
+
+    bin(home.path(), repo.path())
+        .env_remove("RUST_LOG")
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "note",
+            "--title",
+            "unusable-lock-still-stores",
+            "--body",
+            "b",
+        ])
+        .assert()
+        // The write itself proceeds: failing every write on a lock-hostile
+        // filesystem would make spelunk unusable there (ADR-069 D8).
+        .success()
+        .stdout(predicate::str::contains("Stored [note]"))
+        // And the degradation is surfaced, not swallowed.
+        .stderr(predicate::str::contains("without the cross-process lock"));
+
+    let lines = spelunk_note_lines(repo.path());
+    assert!(
+        lines.len() == 1 && lines[0].contains("unusable-lock-still-stores"),
+        "the degraded write must still land exactly one record; got: {lines:?}"
+    );
+}
