@@ -248,6 +248,14 @@ mod tests {
         assert_eq!(a.len(), 16);
     }
 
+    #[test]
+    fn worker_key_is_stable_for_the_same_path() {
+        // Writer (worker) and reader (status) derive the key independently;
+        // any nondeterminism here silently severs status from its worker.
+        let p = Path::new("/proj-a/.spelunk/index.db");
+        assert_eq!(worker_key(p), worker_key(p));
+    }
+
     // ── eta_from_baseline: measured-this-run token rate ─────────────────────
 
     #[test]
@@ -273,5 +281,15 @@ mod tests {
         // re-index) must yield None, not a negative/panicking duration.
         assert!(eta_from_baseline(200, 6000, 100, 5000).is_none());
         assert!(eta_from_baseline(0, 5000, 100, 6000).is_none());
+    }
+
+    #[test]
+    fn eta_survives_extreme_token_counts_without_panicking() {
+        // i64::MAX-scale token sums (a corrupt baseline file is user-writable
+        // input) must not overflow checked_sub or Duration::from_secs_f64.
+        let eta = eta_from_baseline(0, i64::MAX, 1, i64::MAX - 1000);
+        assert!(eta.is_some(), "a huge but finite ETA is still an ETA");
+        // Underflow direction: pending_at_start negative, pending_now MAX.
+        assert!(eta_from_baseline(0, i64::MIN, 1, i64::MAX).is_none());
     }
 }

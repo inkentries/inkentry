@@ -802,6 +802,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_for_embedder_loading_then_unavailable_is_terminal() {
+        // The embedder can flip loading -> unavailable mid-wait (model load
+        // fails after the worker started polling). The wait must exit at the
+        // transition with the terminal state preserved, so the caller prints
+        // the distinct `unavailable` notice; it must not keep polling.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("loading")))
+            .up_to_n_times(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("unavailable")))
+            .mount(&mock)
+            .await;
+
+        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert_eq!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Unavailable),
+            "the terminal state observed mid-wait must be returned as-is"
+        );
+        assert!(!matches!(tier.caps(), Some(c) if c.index_embed));
+    }
+
+    #[tokio::test]
+    async fn wait_for_embedder_offline_counter_resets_on_a_reachable_probe() {
+        // The give-up counter is CONSECUTIVE offline probes, not cumulative: a
+        // server that flaps (down, briefly back while loading, down again)
+        // must not have its earlier misses counted against the later ones.
+        // 7 offline + 1 loading + 7 offline = 14 cumulative misses, but never
+        // 10 in a row, so the wait must survive to the final `ready`.
+        // (A non-2xx health response probes as Tier::Offline.)
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(7)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("loading")))
+            .up_to_n_times(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(7)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&mock)
+            .await;
+
+        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        assert!(
+            matches!(tier.caps(), Some(c) if c.index_embed),
+            "14 cumulative but never {EMBED_WAIT_MAX_OFFLINE_PROBES} consecutive offline \
+             probes must not trip the give-up; got {tier:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn wait_for_embedder_gives_up_after_bounded_offline_probes() {
         // A vanished server (crashed after spawning the worker) must not hang
         // the worker forever: bounded consecutive offline probes, then return
