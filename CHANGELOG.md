@@ -157,6 +157,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk memory push` now works against OSS team servers.** The batch-push
+  endpoint (`POST /v1/projects/{id}/memory/batch`) was previously available only
+  on cloud-api, so `spelunk memory push` returned 405 Method Not Allowed against
+  a self-hosted `spelunk-server`. The OSS team server now implements the same
+  endpoint with idempotent re-push on `external_id`, enabling push-only workflows.
+  Note: the PULL leg of `spelunk sync` remains unsupported against the OSS server
+  due to a separate wire-format mismatch (follow-up planned).
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
