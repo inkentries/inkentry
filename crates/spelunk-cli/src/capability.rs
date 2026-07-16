@@ -64,6 +64,118 @@ fn read_server_port_file() -> Option<u16> {
 
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
+/// Cause recorded for the most recent EXPLICIT (non-auto-discovered)
+/// `server_url` probe failure, set at most once per process.
+static EXPLICIT_PROBE_FAILURE: OnceCell<ConnFailure> = OnceCell::const_new();
+
+/// How an explicitly-configured `server_url` probe failed: distinguishes a
+/// transport-level miss (refused, timed out, DNS, no route) from a connection
+/// that reached the server but failed TLS trust. `status`/`check` read this to
+/// annotate the offline line with `[unreachable]` vs `[tls: <cause>]` instead
+/// of collapsing both into "unreachable": a server that answers `curl` fine
+/// can still fail here on a certificate error that would otherwise never
+/// surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnFailure {
+    /// TCP/connect-level failure: refused, timed out, DNS, no route.
+    Unreachable,
+    /// The transport connected; TLS certificate trust failed. Carries the
+    /// short cause string used in `[tls: <cause>]`.
+    Tls(String),
+}
+
+/// Cause of the most recent explicit `server_url` probe failure, if any.
+/// `None` when no `server_url` is configured, when the tier is `Server`, when
+/// the only probes so far were loopback auto-discovery, or before the first
+/// probe has run.
+pub fn explicit_probe_failure() -> Option<&'static ConnFailure> {
+    EXPLICIT_PROBE_FAILURE.get()
+}
+
+/// Render `err`'s full `source()` chain, one cause per arrow. reqwest's
+/// `Display` only ever shows its own top-level message ("error sending
+/// request for url (...)"); the actual cause (a TLS handshake failure, a DNS
+/// error, ...) lives several `source()` levels down and is otherwise silently
+/// dropped from the WARN a user sees.
+fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        out.push_str(" -> ");
+        out.push_str(&e.to_string());
+        source = e.source();
+    }
+    out
+}
+
+/// Walk `err`'s source chain looking for a `rustls::Error`, which is how a TLS
+/// handshake/certificate failure surfaces underneath reqwest's generic
+/// "error sending request". tokio-rustls reports it boxed inside an
+/// `io::Error`, so both direct and `io::Error`-wrapped placements are checked
+/// at each level. Returns the short cause string used for `[tls: <cause>]`,
+/// or `None` when the chain carries no TLS error (a plain connect timeout or
+/// refusal, i.e. genuinely `[unreachable]`).
+fn find_rustls_cause(err: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(rustls_err) = e.downcast_ref::<rustls::Error>() {
+            return Some(describe_rustls_error(rustls_err));
+        }
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            // `io::Error::source()` skips its own boxed payload and jumps
+            // straight to the payload's source (see std's implementation), so
+            // a `rustls::Error` boxed inside, possibly through several nested
+            // `io::Error` layers (as hyper's client stack does on a TLS
+            // handshake failure), would never surface by following plain
+            // `.source()`. `get_ref()` un-boxes one layer at a time instead;
+            // loop it so any wrapping depth is handled, not just one level.
+            current = io_err
+                .get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static));
+            continue;
+        }
+        current = e.source();
+    }
+    None
+}
+
+/// Map a `rustls::Error` to a short, human-readable cause. Certificate errors
+/// get specific text; `CaUsedAsEndEntity` (a CA:TRUE certificate presented as
+/// the server's own leaf, the exact self-hosting.md client-trust trap) is
+/// detected by name inside `CertificateError::Other`, the bucket rustls maps
+/// it into (webpki's variant has no direct `CertificateError` counterpart).
+fn describe_rustls_error(e: &rustls::Error) -> String {
+    use rustls::CertificateError as CE;
+    match e {
+        rustls::Error::InvalidCertificate(ce) => match ce {
+            CE::Expired | CE::ExpiredContext { .. } => "certificate expired".to_string(),
+            CE::NotValidYet | CE::NotValidYetContext { .. } => {
+                "certificate not yet valid".to_string()
+            }
+            CE::UnknownIssuer => "unknown issuer, not signed by a trusted CA".to_string(),
+            CE::NotValidForName | CE::NotValidForNameContext { .. } => {
+                "certificate not valid for this hostname".to_string()
+            }
+            CE::Other(inner) if inner.to_string().contains("CaUsedAsEndEntity") => {
+                "a CA certificate was presented as the server's own leaf certificate".to_string()
+            }
+            other => format!("certificate rejected: {other:?}"),
+        },
+        other => format!("TLS handshake failed: {other}"),
+    }
+}
+
+/// Hint appended to a TLS WARN when `server_ca` / `SPELUNK_SERVER_CA` is
+/// configured: the two classic self-hosting.md client-trust traps, so a user
+/// does not have to rediscover them by trial and error.
+fn cert_trust_hint() -> String {
+    "\n  server_ca is configured; two classic misconfigurations cause this:\n  \
+     1) the file points at the server's own leaf certificate, not the issuing CA\n  \
+     2) the server is presenting a CA certificate (CA:TRUE) as its own leaf certificate\n  \
+     See docs/self-hosting.md, section \"Trusting the server's certificate on the client\"."
+        .to_string()
+}
+
 /// Server-side embedder readiness, mirrored from the `/v1/health` `embedder.state`
 /// field. The CLI uses this to distinguish, when semantic search is unavailable,
 /// between "no server reachable", "server up but the model is still warming up",
@@ -511,9 +623,27 @@ async fn probe_url(
         }
         Err(e) => {
             if !auto_discovered {
-                tracing::warn!(
-                    "spelunk-server at {url} unreachable — running in offline mode: {e}"
-                );
+                let chain = error_chain(&e);
+                match find_rustls_cause(&e) {
+                    Some(cause) => {
+                        let _ = EXPLICIT_PROBE_FAILURE.set(ConnFailure::Tls(cause.clone()));
+                        let hint = if server_ca.is_some() {
+                            cert_trust_hint()
+                        } else {
+                            String::new()
+                        };
+                        tracing::warn!(
+                            "spelunk-server at {url} reachable, but TLS trust failed: {cause}; \
+                             running in offline mode.\n  full error chain: {chain}{hint}"
+                        );
+                    }
+                    None => {
+                        let _ = EXPLICIT_PROBE_FAILURE.set(ConnFailure::Unreachable);
+                        tracing::warn!(
+                            "spelunk-server at {url} unreachable, running in offline mode: {chain}"
+                        );
+                    }
+                }
             }
             Ok(Tier::Offline)
         }
@@ -1451,4 +1581,141 @@ mod tests {
             .expect("probe ok");
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Unknown));
     }
+
+    // ── error_chain / find_rustls_cause / describe_rustls_error ─────────────
+
+    /// Minimal chained error for exercising `error_chain`/`find_rustls_cause`
+    /// without needing a real `reqwest::Error` (whose constructors are private).
+    #[derive(Debug)]
+    struct ChainErr(&'static str, Option<Box<dyn std::error::Error + 'static>>);
+
+    impl std::fmt::Display for ChainErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl std::error::Error for ChainErr {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref()
+        }
+    }
+
+    /// A fake error whose `Display` mimics webpki's `CaUsedAsEndEntity`, since
+    /// rustls buckets that variant into `CertificateError::Other` (no direct
+    /// counterpart) and detection matches on the rendered name.
+    #[derive(Debug)]
+    struct FakeCaUsedAsEndEntity;
+
+    impl std::fmt::Display for FakeCaUsedAsEndEntity {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CaUsedAsEndEntity")
+        }
+    }
+
+    impl std::error::Error for FakeCaUsedAsEndEntity {}
+
+    #[test]
+    fn error_chain_joins_every_source_level() {
+        let bottom = ChainErr("dns lookup failed", None);
+        let middle = ChainErr("connecting to socket", Some(Box::new(bottom)));
+        let top = ChainErr(
+            "error sending request for url (https://x/)",
+            Some(Box::new(middle)),
+        );
+
+        let chain = error_chain(&top);
+        assert_eq!(
+            chain,
+            "error sending request for url (https://x/) -> connecting to socket -> dns lookup failed"
+        );
+    }
+
+    #[test]
+    fn error_chain_single_level_is_just_the_message() {
+        let only = ChainErr("boom", None);
+        assert_eq!(error_chain(&only), "boom");
+    }
+
+    #[test]
+    fn find_rustls_cause_none_for_plain_io_error_chain() {
+        // Models a genuine connect-level failure (refused/timed out): no
+        // rustls::Error anywhere in the chain, so this must classify as
+        // `[unreachable]`, not `[tls: ...]`.
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let top = ChainErr(
+            "error sending request for url (https://x/)",
+            Some(Box::new(io_err)),
+        );
+        assert!(find_rustls_cause(&top).is_none());
+    }
+
+    #[test]
+    fn find_rustls_cause_detects_rustls_error_boxed_in_io_error() {
+        // tokio-rustls reports handshake failures as an io::Error wrapping a
+        // rustls::Error: the exact shape this function must see through.
+        let rustls_err = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        let io_err = std::io::Error::other(rustls_err);
+        let top = ChainErr(
+            "error sending request for url (https://x/)",
+            Some(Box::new(io_err)),
+        );
+
+        let cause = find_rustls_cause(&top).expect("must detect the boxed rustls::Error");
+        assert!(cause.contains("unknown issuer"), "got: {cause}");
+    }
+
+    #[test]
+    fn find_rustls_cause_detects_direct_rustls_error() {
+        let rustls_err =
+            rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName);
+        let top = ChainErr(
+            "error sending request for url (https://x/)",
+            Some(Box::new(rustls_err)),
+        );
+
+        let cause = find_rustls_cause(&top).expect("must detect a directly-chained rustls::Error");
+        assert!(cause.contains("hostname"), "got: {cause}");
+    }
+
+    #[test]
+    fn describe_rustls_error_names_ca_used_as_end_entity() {
+        let err = rustls::Error::InvalidCertificate(rustls::CertificateError::Other(
+            rustls::OtherError(std::sync::Arc::new(FakeCaUsedAsEndEntity)),
+        ));
+        let cause = describe_rustls_error(&err);
+        assert!(
+            cause.contains("CA certificate") && cause.contains("leaf"),
+            "got: {cause}"
+        );
+    }
+
+    #[test]
+    fn describe_rustls_error_expired() {
+        let err = rustls::Error::InvalidCertificate(rustls::CertificateError::Expired);
+        assert_eq!(describe_rustls_error(&err), "certificate expired");
+    }
+
+    #[test]
+    fn describe_rustls_error_non_certificate_variant_falls_back_generically() {
+        let err = rustls::Error::NoCertificatesPresented;
+        let cause = describe_rustls_error(&err);
+        assert!(cause.starts_with("TLS handshake failed:"), "got: {cause}");
+    }
+
+    #[test]
+    fn cert_trust_hint_mentions_both_classic_traps_and_the_doc_section() {
+        let hint = cert_trust_hint();
+        assert!(hint.contains("leaf certificate, not the issuing CA"));
+        assert!(hint.contains("CA:TRUE"));
+        assert!(hint.contains("Trusting the server's certificate on the client"));
+    }
+
+    // Note: a real end-to-end TLS-trust failure (genuine rustls handshake
+    // against a proper CA→leaf chain, and against a CA:TRUE-as-leaf
+    // misconfiguration) is exercised in `tests/tls_trust.rs`, which asserts
+    // `explicit_probe_failure()` reports `ConnFailure::Tls` and that the
+    // status/WARN output names the certificate cause. That is the level this
+    // bug actually lives at: reqwest's real error chain through hyper/rustls
+    // isn't reproducible with a hand-built chain here.
 }

@@ -157,6 +157,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A TLS certificate failure against a configured `server_url` no longer
+  reports "unreachable".** When the capability probe's TLS handshake failed,
+  the WARN printed only reqwest's flattened top-level message ("error sending
+  request for url (...)") and `spelunk status`/`spelunk check` showed
+  `[unreachable]`, exactly as if the server were down, even though it was
+  reachable and only certificate trust had failed. The probe now walks the
+  full error chain and prints it, special-cases the classic self-hosting.md
+  client-trust traps (a CA:TRUE certificate served as its own leaf, or a
+  `server_ca` file that is the server's leaf rather than the issuing CA), and
+  distinguishes the two failure modes in output: `[unreachable]` for a
+  TCP/connect-level miss (refused, timed out), `[tls: <cause>]` for a
+  connection that reached the server but failed TLS trust.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
