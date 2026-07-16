@@ -177,6 +177,14 @@ Or use the environment variable:
 export SPELUNK_SERVER_KEY=your-shared-api-key
 ```
 
+By default a configured `server_url` runs in `local_first` mode: reads and
+writes stay in each developer's local `memory.db` (read commands say so with a
+one-line stderr note) and the server is converged explicitly with `spelunk
+sync`. Add `mode = "cloud_first"` to the same config to make the server
+authoritative for reads and writes; an unreachable server is then a hard error
+rather than a silent local read. See [Team server and sync
+modes](memory.md#team-server-and-sync-modes).
+
 ## Migrating existing local memory
 
 If team members have existing local `memory.db` entries, push them to the server:

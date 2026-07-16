@@ -1,8 +1,9 @@
 use anyhow::Result;
 
+use super::super::helpers::open_read_backend;
 use super::super::status::format_age;
 use super::MemoryShowArgs;
-use crate::{config::Config, storage::open_memory_backend};
+use crate::config::Config;
 
 pub(super) async fn memory_show(
     args: MemoryShowArgs,
@@ -10,7 +11,7 @@ pub(super) async fn memory_show(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
+    let backend = open_read_backend(cfg, mem_path, backend_override).await?;
     match backend.get(args.id).await? {
         None => anyhow::bail!("No memory entry with id {}.", args.id),
         Some(n) => match crate::utils::effective_format(&args.format) {

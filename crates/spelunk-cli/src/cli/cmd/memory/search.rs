@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use super::super::helpers::{embed_query, require_server_client};
+use super::super::helpers::{embed_query, open_read_backend, require_server_client};
 use super::MemorySearchArgs;
 use super::{backend_err, parse_as_of, print_note_summary};
-use crate::{capability, config::Config, storage::open_memory_backend};
+use crate::{capability, config::Config};
 
 pub(super) async fn memory_search(
     args: MemorySearchArgs,
@@ -28,7 +28,7 @@ pub(super) async fn memory_search(
     let cfg = &eff_cfg;
 
     let mode = args.mode.as_str();
-    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
+    let backend = open_read_backend(cfg, mem_path, backend_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
 
     let notes = if mode == "text" {

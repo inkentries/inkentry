@@ -1,8 +1,9 @@
 use anyhow::Result;
 
+use super::super::helpers::open_read_backend;
 use super::MemoryListArgs;
 use super::{parse_as_of, print_note_summary};
-use crate::{config::Config, storage::open_memory_backend};
+use crate::config::Config;
 
 pub(super) async fn memory_list(
     args: MemoryListArgs,
@@ -32,7 +33,7 @@ pub(super) async fn memory_list(
         super::reconcile::maybe_emit_nudge(mem_path, cfg);
     }
 
-    let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
+    let backend = open_read_backend(cfg, mem_path, effective_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let mut notes = if let Some(ref sha_prefix) = args.source_ref {
         backend

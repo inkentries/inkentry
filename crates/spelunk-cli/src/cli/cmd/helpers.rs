@@ -30,6 +30,45 @@ pub(crate) fn open_project_db(
     Ok((db_path, database))
 }
 
+/// The stderr label for a read served from the local store while a team
+/// `server_url` is configured (ADR-037: the default `local_first` mode reads
+/// locally and converges the server replica via `spelunk sync`).
+///
+/// `None` when no `server_url` is set (solo path stays silent), when reads
+/// route to the server (`cloud_first`), when the user explicitly opted out of
+/// server contact (`offline`), or when git notes is the read source.
+pub(crate) fn local_read_notice(
+    cfg: &Config,
+    backend_override: Option<&str>,
+) -> Option<&'static str> {
+    use crate::config::SyncMode;
+    if backend_override == Some("git-notes")
+        || cfg.server_url.is_none()
+        || cfg.resolve_mode() != SyncMode::LocalFirst
+    {
+        return None;
+    }
+    Some(
+        "note: showing local data (mode \"local_first\"); the team server was not \
+         consulted for these entries. Run \"spelunk sync\" to converge, or set \
+         mode = \"cloud_first\" in .spelunk/config.toml.",
+    )
+}
+
+/// Open the memory backend for a READ command, labeling on stderr when local
+/// data is served despite a configured team `server_url`. stderr only:
+/// stdout stays machine-clean for `--format json`/`jsonl`.
+pub(crate) async fn open_read_backend(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    backend_override: Option<&str>,
+) -> Result<Box<dyn crate::storage::MemoryBackend + Send>> {
+    if let Some(notice) = local_read_notice(cfg, backend_override) {
+        eprintln!("{notice}");
+    }
+    crate::storage::open_memory_backend(cfg, mem_path, backend_override).await
+}
+
 /// Build a `ServerInferenceClient` from config, returning an error if
 /// `server_url` is not configured.
 pub(crate) fn require_server_client(cfg: &Config, feature: &str) -> Result<ServerInferenceClient> {
@@ -142,5 +181,73 @@ pub(crate) fn open_private_file_for_write(path: &std::path::Path) -> Result<std:
             .truncate(true)
             .open(path)
             .with_context(|| format!("opening {}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod local_read_notice_tests {
+    use super::local_read_notice;
+    use crate::config::{Config, SyncMode};
+
+    fn clear_no_server_env() {
+        // SAFETY: serialised via #[serial] on every test in this module, so no
+        // other test reads/writes this env var concurrently.
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn no_server_url_is_silent() {
+        clear_no_server_env();
+        let cfg = Config::default();
+        assert_eq!(local_read_notice(&cfg, None), None);
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn server_url_default_mode_labels_local_read() {
+        clear_no_server_env();
+        let cfg = Config {
+            server_url: Some("https://team.example.com:7777".to_string()),
+            ..Default::default()
+        };
+        let notice = local_read_notice(&cfg, None).expect("local_first read must be labeled");
+        assert!(notice.contains("local_first"), "got: {notice}");
+        assert!(notice.contains("spelunk sync"), "got: {notice}");
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn cloud_first_is_silent_reads_route_remote() {
+        clear_no_server_env();
+        let cfg = Config {
+            server_url: Some("https://team.example.com:7777".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        assert_eq!(local_read_notice(&cfg, None), None);
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn explicit_offline_is_silent() {
+        clear_no_server_env();
+        let cfg = Config {
+            server_url: Some("https://team.example.com:7777".to_string()),
+            mode: Some(SyncMode::Offline),
+            ..Default::default()
+        };
+        assert_eq!(local_read_notice(&cfg, None), None);
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn git_notes_override_is_silent() {
+        clear_no_server_env();
+        let cfg = Config {
+            server_url: Some("https://team.example.com:7777".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(local_read_notice(&cfg, Some("git-notes")), None);
     }
 }

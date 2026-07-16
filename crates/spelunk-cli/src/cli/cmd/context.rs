@@ -2,10 +2,11 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
+use super::helpers::open_read_backend;
 use super::memory::cross_project::collect_dep_cross_cutting;
 use super::memory::print_note_summary;
+use crate::config::Config;
 use crate::storage::memory::Note;
-use crate::{config::Config, storage::open_memory_backend};
 
 /// Fallback per-section limit when `--kind` names a kind not in SECTIONS.
 const DEFAULT_UNKNOWN_KIND_LIMIT: usize = 20;
@@ -183,7 +184,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         "git-notes" => Some("git-notes"),
         _ => None,
     };
-    let backend = open_memory_backend(&cfg, &mem_path, be).await?;
+    let backend = open_read_backend(&cfg, &mem_path, be).await?;
 
     let mut sections = collect_sections(
         &*backend,
