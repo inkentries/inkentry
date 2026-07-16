@@ -18,10 +18,12 @@ const LOCK_FILE_NAME: &str = "spelunk-notes.lock";
 
 /// Bounded wait before giving up on a contended lock.
 ///
-/// A watchdog, not a contention threshold (ADR-069 D8): the OS releases an
-/// advisory lock when its holder exits, so there is no crashed-holder case to
-/// time out for. Reaching this means a live holder is stuck, which is a bug,
-/// and the expiry is reported to the caller, never silently downgraded.
+/// The OS releases an advisory lock when its holder exits, so there is no
+/// crashed-holder case to time out for. Reaching this means either a stuck
+/// live holder or a queue of legitimate writers on a slow machine (observed
+/// on CI: 8 serialized appends exceed 5s when process spawns are expensive).
+/// Either way expiry is reported to the caller, never silently downgraded
+/// (ADR-069 D8); a failed writer retries, a wedged holder is a bug.
 pub const LOCK_WAIT_BUDGET: Duration = Duration::from_secs(5);
 
 /// Poll interval while the lock is held by another process.

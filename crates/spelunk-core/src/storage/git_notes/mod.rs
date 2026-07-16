@@ -110,11 +110,12 @@ async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<Option<NotesL
     match lock_notes(git_root).await? {
         LockAttempt::Acquired(guard) => Ok(Some(guard)),
         LockAttempt::Contended { path } => Err(anyhow!(
-            "another process has held the git notes lock ({}) for over {:?}; \
+            "the git notes lock ({}) stayed held by other writers for over {:?}; \
              not writing without it, because an unserialized write can silently \
-             erase a concurrent writer's entry. Retry the command; if this \
-             persists, a spelunk or git process is stuck holding the lock \
-             (it frees itself when that process exits)",
+             erase a concurrent writer's entry. Retry the command (many \
+             concurrent writers can exceed the wait legitimately); if it \
+             persists with nothing else running, a spelunk or git process is \
+             stuck holding the lock (it frees itself when that process exits)",
             path.display(),
             lock::LOCK_WAIT_BUDGET,
         )),

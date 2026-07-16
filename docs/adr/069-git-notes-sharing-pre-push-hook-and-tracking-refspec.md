@@ -466,6 +466,20 @@ Added on review of a `windows-latest` CI failure in D6's own regression guard.
 > path never excluded nothing; only paths resolving to genuinely different
 > files could, and no failing run required that. D8's contention policy is
 > unchanged by this; what it governs was never the loss mechanism observed.
+>
+> **A second premise below is also corrected by observation: budget expiry is
+> not always a bug's symptom.** This section argues the budget is "set
+> generously enough that reaching it means a bug rather than a busy repo". A
+> `windows-latest` run falsified that: eight legitimate concurrent writers
+> serialized correctly on a slow runner, and the back of the queue exceeded
+> the 5s budget with nothing pathological anywhere; every over-budget writer
+> failed visibly (~5.4s in, naming the lock) while every serialized entry
+> survived. The policy stands exactly as written, since expiry stays an error
+> and never a downgrade. What does not stand is reading that error as proof of
+> a stuck holder: heavy legitimate write concurrency can reach it, the normal
+> remedy is a retry, and the error text says so. The concurrency guards assert
+> the D8 invariant accordingly: every entry lands or its writer fails visibly,
+> never "all must land".
 
 **The rule D6 left implicit, stated:** the contention policy is set by *what is
 lost when the lock is missing*, not by whether the caller is nominally a read or

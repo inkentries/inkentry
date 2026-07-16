@@ -9,8 +9,11 @@
 //! Writes are a read-modify-write that rewrites the HEAD note with
 //! `git notes add -f` (replace semantics). Two agents writing to the *same
 //! HEAD* concurrently would race, and the loser's entry would vanish silently
-//! with both exiting 0. ADR-069 (D6) closes that: every read-modify-write is
-//! serialized by a lock in the git common dir, so all writers survive.
+//! with both exiting 0. ADR-069 (D6) serializes every read-modify-write with a
+//! lock in the git common dir; D8 makes a writer that cannot take it fail
+//! visibly. The invariant is therefore "every entry lands or its writer fails
+//! loudly", never "all must land": heavy legitimate contention may exceed the
+//! wait budget, and that surfaces as an error, not a loss.
 
 mod common;
 
@@ -751,17 +754,26 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }
 
-// ── concurrent append safety (#185) ──────────────────────────────────────────
+// ── concurrent append safety (#185 / ADR-069 D8) ─────────────────────────────
 
-/// N concurrent `append_to_git_notes` calls against one HEAD must all survive.
+/// The D8 invariant for N concurrent writers: every writer's entry **lands or
+/// its writer fails visibly**, and the two sets are disjoint and complete.
 ///
-/// Regression guard for #185: the read-modify-write is only safe while every
-/// writer holds the notes lock across all four steps. Without it, two writers
-/// read the same body and the later write-back drops the earlier entry, both
-/// exiting 0.
+/// Regression guard for #185, where an unserialized read-modify-write dropped
+/// entries with every writer exiting 0. "All must land" is deliberately NOT
+/// the invariant: on a slow runner, N queued writers legitimately exceed the
+/// lock's wait budget and the back of the queue fails with the D8 error. That
+/// is the designed outcome; silence is the bug.
+///
+/// Asserts, given landed = ids read back and failed = ids whose append
+/// returned `Err`:
+/// - silent loss is zero: every id is in landed or in failed,
+/// - no false failure: no id is in both (an `Err` writer must not have written),
+/// - landed is non-empty: the first holder takes a free lock, so a wedged
+///   lock cannot vacuously pass as eight visible failures.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
-async fn append_to_git_notes_concurrent_writers_all_survive() {
+async fn append_to_git_notes_concurrent_writers_land_or_fail_visibly() {
     const WRITERS: i64 = 8;
 
     let dir = make_temp_git_repo();
@@ -778,34 +790,53 @@ async fn append_to_git_notes_concurrent_writers_all_survive() {
         }));
     }
 
-    // Collect every writer's outcome before asserting: when this fails on CI,
-    // the per-writer report below is the only diagnostic there is.
-    let mut failures = Vec::new();
+    let mut failed: Vec<i64> = Vec::new();
+    let mut failure_msgs = Vec::new();
     for task in tasks {
         let (id, result, took) = task.await.expect("writer task should not panic");
         if let Err(e) = result {
-            failures.push(format!("writer {id} failed after {took:?}: {e:#}"));
+            failed.push(id);
+            failure_msgs.push(format!("writer {id} failed after {took:?}: {e:#}"));
         }
     }
 
-    // Every writer's entry must be present in the final note body.
     let blob = note_on_head(&root).unwrap_or_default();
-    let found: Vec<i64> = blob
+    let landed: Vec<i64> = blob
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
         .filter_map(|v| v["id"].as_i64())
         .collect();
 
-    let missing: Vec<i64> = (1..=WRITERS).filter(|id| !found.contains(id)).collect();
+    let silent: Vec<i64> = (1..=WRITERS)
+        .filter(|id| !landed.contains(id) && !failed.contains(id))
+        .collect();
+    let both: Vec<i64> = landed
+        .iter()
+        .copied()
+        .filter(|id| failed.contains(id))
+        .collect();
+
     assert!(
-        missing.is_empty() && failures.is_empty(),
-        "lost {} of {WRITERS} concurrent entries (ids {missing:?}); surviving ids {found:?}\n\
-         writer failures: {failures:#?}\nfinal note body:\n{blob}",
-        missing.len(),
+        silent.is_empty(),
+        "SILENT LOSS of {} of {WRITERS} entries (ids {silent:?}): neither landed \
+         {landed:?} nor failed visibly {failed:?}\n\
+         failures: {failure_msgs:#?}\nfinal note body:\n{blob}",
+        silent.len(),
+    );
+    assert!(
+        both.is_empty(),
+        "writers {both:?} reported failure but their entries landed; an `Err` \
+         append must not write\nfailures: {failure_msgs:#?}"
+    );
+    assert!(
+        !landed.is_empty(),
+        "no writer landed at all; the first holder takes a free lock, so this \
+         means the lock or the write path is wedged\nfailures: {failure_msgs:#?}"
     );
 }
 
-/// Concurrent writers in **separate worktrees** must all survive.
+/// The same D8 invariant across **separate worktrees**: land or fail visibly,
+/// disjoint and complete, at least one landing.
 ///
 /// Worktrees share one `refs/notes/spelunk` (it resolves through the git
 /// common dir to the main repo's copy), so they are real contenders on one
@@ -814,7 +845,7 @@ async fn append_to_git_notes_concurrent_writers_all_survive() {
 /// serializing nothing here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
-async fn append_to_git_notes_concurrent_worktrees_all_survive() {
+async fn append_to_git_notes_concurrent_worktrees_land_or_fail_visibly() {
     const PER_TREE: i64 = 4;
 
     let dir = make_temp_git_repo();
@@ -864,30 +895,49 @@ async fn append_to_git_notes_concurrent_worktrees_all_survive() {
         }
     }
 
-    // Collect every writer's outcome before asserting: when this fails on CI,
-    // the per-writer report below is the only diagnostic there is.
-    let mut failures = Vec::new();
+    let mut failed: Vec<i64> = Vec::new();
+    let mut failure_msgs = Vec::new();
     for task in tasks {
         let (id, result, took) = task.await.expect("writer task should not panic");
         if let Err(e) = result {
-            failures.push(format!("writer {id} failed after {took:?}: {e:#}"));
+            failed.push(id);
+            failure_msgs.push(format!("writer {id} failed after {took:?}: {e:#}"));
         }
     }
 
     let total = PER_TREE * 2;
     let blob = note_on_head(&main_root).unwrap_or_default();
-    let found: Vec<i64> = blob
+    let landed: Vec<i64> = blob
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
         .filter_map(|v| v["id"].as_i64())
         .collect();
 
-    let missing: Vec<i64> = (1..=total).filter(|id| !found.contains(id)).collect();
+    let silent: Vec<i64> = (1..=total)
+        .filter(|id| !landed.contains(id) && !failed.contains(id))
+        .collect();
+    let both: Vec<i64> = landed
+        .iter()
+        .copied()
+        .filter(|id| failed.contains(id))
+        .collect();
+
     assert!(
-        missing.is_empty() && failures.is_empty(),
-        "lost {} of {total} cross-worktree entries (ids {missing:?}); surviving ids {found:?}\n\
-         writer failures: {failures:#?}\nfinal note body:\n{blob}",
-        missing.len(),
+        silent.is_empty(),
+        "SILENT LOSS of {} of {total} cross-worktree entries (ids {silent:?}): \
+         neither landed {landed:?} nor failed visibly {failed:?}\n\
+         failures: {failure_msgs:#?}\nfinal note body:\n{blob}",
+        silent.len(),
+    );
+    assert!(
+        both.is_empty(),
+        "writers {both:?} reported failure but their entries landed; an `Err` \
+         append must not write\nfailures: {failure_msgs:#?}"
+    );
+    assert!(
+        !landed.is_empty(),
+        "no writer landed at all; the first holder takes a free lock, so this \
+         means the lock or the write path is wedged\nfailures: {failure_msgs:#?}"
     );
 }
 
