@@ -537,6 +537,62 @@ above. That is a defect in lock **identity** and is fixed separately. D8 governs
 what a writer does once it knows it does not hold the lock, which is a question
 the identity fix does not answer and which the current code answers wrongly.
 
+### D9 – the notes lock covers the merge only, never the fetch or the push
+
+Added on review of D7's implementation (#630), which has this right and records
+nothing about why.
+
+D7 puts a fetch, a merge and a push behind one command, and D8 makes a writer
+that cannot take the lock fail. Together they make the lock's **scope** inside
+`publish-notes` load-bearing in a way neither section states. Taking the lock
+once around the whole operation is the tidier-looking code and is the bug.
+
+**The budget is bounded; network I/O is not.** D8 sets the wait budget as a
+watchdog, "generously enough that reaching it means a bug rather than a busy
+repo", and rests its case that "a writer can fail" is not a practical regression
+on exactly that rarity. A `fetch` or a `push` against a slow or unreachable
+remote outlasts any budget chosen on that reasoning. A lock spanning either does
+not merely stretch D8's premise, it **falsifies** it: budget expiry stops meaning
+a bug and starts meaning a slow network, and a `memory add` that happens to
+coincide with such a push fails for a reason that is not a bug. D8's error is
+correct because it is rare. D9 is what keeps it rare.
+
+`lock.rs` shows how directly this is load-bearing. It justifies its budget by the
+holder cost, "a few git subprocesses, ~30ms", and concludes that the budget is
+"orders of magnitude above realistic contention". That holds only while a holder
+does local git work and nothing else. Scope the lock over a fetch or a push and
+the holder cost stops being a spelunk constant and becomes the remote's latency.
+
+The constraint outlives the policy it was first drafted against. Under D6's
+withdrawn proceed-unlocked clause a network-spanning lock converted a rare race
+into a reliable one; under D8 it converts a rare failure into a reliable one. It
+is the same defect either way, which is why the scope rule is stated separately
+from the contention policy: the lock's hold time stops being a property of
+spelunk's own work and becomes a property of the network.
+
+**Neither network step needs the lock.** `fetch` writes only the tracking ref
+(D4), so it never contends for the working ref's content. `push` only reads the
+working ref, and git's ref locking already makes that read atomic; the worst case
+is that it publishes a state one entry stale, which the next push carries.
+Staleness is not loss.
+
+**Per attempt, not around the retry loop.** D3 retries a lost race up to 3 times,
+and each attempt is a fetch, a merge and a push. The lock is taken and released
+inside each attempt's merge. A guard hoisted out of the loop would hold it across
+up to three network round trips, which is the same defect three times over.
+
+**#630 satisfies this by reuse rather than by intent, which is the reason to
+record it.** `publish_notes` runs `fetch` and `push` itself and delegates the
+merge to `merge_tracking_notes`, which takes `lock_notes` in its own body and
+drops the guard on return, so no lock is held across either network call. Nothing
+at that call site says the arrangement is load-bearing. The obvious tidy-up,
+hoisting the lock to the top of `publish_notes` so that the whole flow is
+"properly" serialized, removes it silently and reads as an improvement.
+
+D8 governs what publish does when it **cannot** take the lock: skip, report, do
+not fail the push. D9 governs how much of publish the lock covers when it
+**can**.
+
 ## Non-goals
 
 - ~~**Not** fixing #185, the read-modify-write race within a single repo.~~
