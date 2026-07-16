@@ -115,14 +115,22 @@ jobs:
 
       # The whole point of the container build: fail the release if either
       # binary needs a glibc symbol newer than the 2.31 floor. Pinned forever,
-      # not measured once: must keep failing even after toolchain bumps.
+      # not measured once: must keep failing even after toolchain bumps. A
+      # missing, empty, or non-numeric ceiling is treated as a broken check,
+      # never as proof of compliance (a bare GLIBC_PRIVATE match, or no
+      # GLIBC_ symbols at all, would otherwise slip through as a false pass).
       - name: Enforce glibc ceiling (Linux)
         if: matrix.container != ''
         run: |
           set -euo pipefail
           for bin in spelunk spelunk-server; do
             path="target/${{ matrix.target }}/release/${bin}"
-            ceiling="$(objdump -T "$path" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+            raw="$(objdump -T "$path")"
+            ceiling="$(printf '%s\n' "$raw" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
+            if ! [[ "$ceiling" =~ ^GLIBC_[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::${bin}: no valid versioned GLIBC symbol found (got '${ceiling}')"
+              exit 1
+            fi
             echo "${bin}: max versioned glibc symbol = ${ceiling}"
             max="$(printf '%s\nGLIBC_2.31\n' "$ceiling" | sort -V | tail -1)"
             if [ "$max" != "GLIBC_2.31" ]; then
@@ -238,18 +246,37 @@ jobs:
           dpkg-deb --build BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
 
       # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
-      # only executing the binary resolves its NEEDED libs and surfaces the gap.
-      # debian:11 and ubuntu:20.04 are the support floor (glibc 2.31);
-      # ubuntu:24.04 guards the forward direction.
+      # only executing real subcommands (a git-backed memory round trip
+      # included) surfaces that gap and proves the installed binary runs, not
+      # just links. debian:11 and ubuntu:20.04 are the support floor (glibc
+      # 2.31); ubuntu:24.04 guards the forward direction. The package is
+      # mounted read-only; the scratch repo lives in the container's own
+      # filesystem so the smoke test never writes into the runner's checkout.
       - name: Smoke-test the .deb in clean containers (floor and current)
         run: |
+          set -euo pipefail
           for image in debian:11 ubuntu:20.04 ubuntu:24.04; do
             echo "=== ${image} ==="
-            docker run --rm -v "$PWD:/w" -w /w "$image" bash -euc '
+            docker run --rm -v "$PWD:/pkg:ro" -e SPELUNK_SECRET_STORE=file "$image" bash -euc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              apt-get install -y -qq ./spelunk_${{ env.DEB_VERSION }}_amd64.deb
+              apt-get install -y -qq /pkg/spelunk_${{ env.DEB_VERSION }}_amd64.deb
+              apt-get install -y -qq --no-install-recommends git ca-certificates
               test -n "$(spelunk --version)"
               test -n "$(spelunk-server --version)"
+
+              mkdir -p /w && cd /w
+              git init -q .
+              git config user.email t@t
+              git config user.name t
+              echo "fn main() {}" > main.rs
+              git add . && git commit -qm init
+
+              spelunk status
+              spelunk init --no-index
+              spelunk memory add --kind note --title "deb smoke" --body "runs on this image"
+              spelunk memory list | grep -q "deb smoke"
             '
           done
 
