@@ -364,25 +364,53 @@ whose unit does not match the cost it is predicting.
 
 The second face is measured. On a 581-chunk index the CLI sent **837 chunks
 across 7 requests**; `837 − 581 = 256`, exactly one batch computed by the server
-and then discarded:
+and then discarded. `RateEstimate` is an EMA, so the state that set batch 5's
+deadline is the blend of every sample before it, not the latest sample.
+Reconstructed from the request arrival times (the audit log fires on handler
+entry, and the global concurrency cap of 256 means the retry never queued, so
+each timestamp is a send time):
 
-1. Batch 4 was 256 tiny chunks (192 chars each) and ran in 7s, so `per_entry`
-   calibrated to **27ms**.
-2. `next_batch_size` divided the 240s target by 27ms, asked for far more than the
-   `MAX_BATCH = 256` ceiling, and got 256.
-3. `batch_timeout` = `TIMEOUT_SAFETY_FACTOR (4) × 0.027 × 256` = **28s**, floored
-   up to `MIN_REQUEST_TIMEOUT` = **60s**.
-4. Batch 5 was 256 chunks at **7.4x the size** and needed **73s**. At 73s > 60s
-   the client abandoned it, halved to 128 and retried. The server never learns a
-   client gave up: it finished all 73s of GPU work and threw the result away.
+| batch | chunks | took | sample | `per_entry` (EMA) | `batch_timeout` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 0.054s | 54.0ms | 54.0ms | 60.0s (floored) |
+| 2 | 4 | 0.219s | 54.8ms | 54.7ms | 60.0s (floored) |
+| 3 | 32 | 5.717s | 178.7ms | 116.7ms | 119.5s |
+| 4 | 256 | 6.795s | 26.5ms | **71.6ms** | **73.3s** |
+| 5 | 256 | **≥73.076s** | **≥285.5ms** | - | - |
+
+1. After four batches the EMA sits at `per_entry` = **71.6ms**. Batch 4's raw
+   sample was 26.5ms, but the blend is dominated by batch 3's slow 178.7ms
+   sample.
+2. `next_batch_size` divided the 240s target by 71.6ms, asked for 3,352 chunks,
+   far more than the `MAX_BATCH = 256` ceiling, and got 256.
+3. `batch_timeout` = `TIMEOUT_SAFETY_FACTOR (4) × 0.0716 × 256` = **73.3s**,
+   comfortably inside the `[60s, 1800s]` clamp range: **no clamping occurred,
+   and the `MIN_REQUEST_TIMEOUT` floor never engaged.**
+4. Batch 5 was 256 chunks at **7.4x the size** (192 to 1,415 chars/chunk, as
+   the queue crosses from tiny chunks into 120-line windowed ones), and its
+   real cost was **≥285.5ms/chunk**. At 73.3s the client abandoned it, halved
+   to 128 and retried. The server never learns a client gave up: it finished
+   all ~73s of GPU work and threw the result away.
+
+The predicted 73.3s deadline matches the observed 73.076s gap between the
+abandoning request and its retry to **0.3%**, which is strong evidence this
+reconstruction is the actual mechanism and not a story fitted after the fact.
 
 **~73s of a 198.2s run is wasted GPU: 37%.** Reproduced on an idle box, so it is
-not contention. Note which guard saved it: the 4x safety factor did **not**. It
-computed 28s for a batch that needed 73s, because a 4x margin on a rate that is
-wrong by 7.4x is still wrong. Only the 60s floor, which is not derived from the
-rate at all, bounded the damage. And the sizing consumer is not an innocent
-bystander here: the same bad rate is what selected an oversized batch *and* then
-under-budgeted the time for it.
+not contention. Note which guard saved it: **none did.** The 4x safety factor
+did not, because batch 5's real cost was a **4.0x** under-estimate
+(285.5 / 71.6) against a 4x margin: the margin was consumed exactly, leaving
+zero. The floor did nothing; it was never reached. Nothing bounded the damage.
+The deadline landed essentially on the batch's own completion time, which is
+the *maximal-waste* case: the client waits the full duration and then throws
+the result away anyway. And the sizing consumer is not an innocent bystander
+here: the same rate selected an oversized batch *and* set the deadline that
+batch's own cost would consume to the wire.
+
+That the server computes an abandoned batch to completion regardless is an
+**independent fault (no request cancellation on client disconnect) with an
+independent fix**: a token-weighted rate makes spurious timeouts rarer, not
+impossible, so this is out of scope here and tracked as issue #631.
 
 So the estimator defect and the timeout defect are **one defect with two faces**,
 and a token-weighted rate addresses both. This is why the fix belongs in D6's
@@ -390,10 +418,15 @@ fold into D4 rather than in a separate throughput ticket: an engineer sent to fi
 "the ETA" would correct the user-visible number and leave a timeout running on
 the same broken input, still burning a batch of GPU per size transition. The
 estimator is not only the user's window onto a detached pass; it is also feeding
-a deadline that is wrong by more than 2x on a realistic queue. This is plausibly
-also the mechanism behind the connect-timeout reports on large repos, which are
-tracked separately; that link is offered as a lead, not as an established
-diagnosis.
+a deadline whose entire safety margin had been consumed by the rate error. The
+exposed case is scoped by the data: **abrupt per-batch cost transitions, not
+repo size.** The large repo behind this cluster ran its full 102.9-minute embed
+with zero retries, because its per-batch cost changes gradually across ~108
+batches and the EMA tracks it; the small repo above jumps 7.4x in a single
+batch. This is plausibly also the mechanism behind the connect-timeout reports
+on large repos, which are tracked separately; if so, the trigger there was a
+local transition in the queue rather than the repo's scale, which is a testable
+prediction. That link is offered as a lead, not as an established diagnosis.
 
 #### One boundary the fix must respect: ratios cancel the bias, budgets do not.
 
