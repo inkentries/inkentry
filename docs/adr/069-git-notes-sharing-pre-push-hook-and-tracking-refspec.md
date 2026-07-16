@@ -454,8 +454,10 @@ Added on review of a `windows-latest` CI failure in D6's own regression guard.
 > note yet" (`.unwrap_or_default()`), so one transient git failure inside the
 > guarded section wiped every prior entry, while the writer held the lock the
 > whole time, and the lock excluded correctly. The fix distinguishes "no note
-> found" (exit 1) from a failed read (anything else) and fails the writer
-> rather than guessing empty. The identity concern was real hygiene and is
+> found" (exit 1) from a failed read (anything else); a failed read is retried
+> briefly (it is side-effect free, and every observed failure was transient:
+> the same read succeeded for sibling writers moments apart) and then fails
+> the writer rather than guessing empty. The identity concern was real hygiene and is
 > hardened anyway (`--path-format=absolute` where git knows it, output-checked
 > because `rev-parse` **echoes** unknown flags with exit 0 rather than
 > rejecting them, then canonicalized), with a regression test pinning that

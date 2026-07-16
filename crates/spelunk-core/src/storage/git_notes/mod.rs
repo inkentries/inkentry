@@ -129,6 +129,44 @@ async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<Option<NotesL
     }
 }
 
+/// Attempts for [`read_note_body`] before its failure is surfaced. The
+/// windows-latest losses were transient: the same read succeeded for every
+/// sibling writer moments apart, so a brief, bounded retry of a side-effect
+/// free read absorbs the flake without hiding a persistent failure.
+const NOTE_READ_ATTEMPTS: u32 = 4;
+
+/// Base backoff between read attempts; grows linearly per attempt.
+const NOTE_READ_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// [`read_note_body`], retried up to [`NOTE_READ_ATTEMPTS`] times.
+///
+/// Retries only genuine failures, never "no note found": the read has no side
+/// effects, so retrying cannot double-apply anything, and a persistent failure
+/// still reaches the caller as the `Err` that keeps a writer from wiping the
+/// note. Total added wait is bounded well under the lock budget, so a holder's
+/// cost stays local work (ADR-069 D9).
+async fn read_note_body_with_retry(
+    git_root: Option<&std::path::Path>,
+    object: &str,
+) -> Result<Option<String>> {
+    let mut last_err = None;
+    for attempt in 1..=NOTE_READ_ATTEMPTS {
+        match read_note_body(git_root, object).await {
+            Ok(body) => return Ok(body),
+            Err(e) => {
+                tracing::warn!(
+                    "reading existing note failed (attempt {attempt}/{NOTE_READ_ATTEMPTS}): {e}"
+                );
+                last_err = Some(e);
+                if attempt < NOTE_READ_ATTEMPTS {
+                    tokio::time::sleep(NOTE_READ_BACKOFF * attempt).await;
+                }
+            }
+        }
+    }
+    Err(last_err.expect("at least one attempt ran"))
+}
+
 /// Read the spelunk note body on `object`, distinguishing "no note" (`None`)
 /// from a failed read (`Err`).
 ///
@@ -199,7 +237,7 @@ pub async fn append_to_git_notes(
         .map(|s| s.trim().to_string())?;
 
     // ── 2. Read existing note (may not exist) ─────────────────────────────────
-    let existing = read_note_body(git_root, &head)
+    let existing = read_note_body_with_retry(git_root, &head)
         .await
         .context("could not read the existing note, so not overwriting it")?;
 
@@ -578,9 +616,11 @@ impl GitNotesBackend {
     /// `archive_record` write back what this returns, so conflating the two
     /// turns one transient git failure into a wiped note (#185).
     async fn read_note_blob(&self, commit_sha: &str) -> Result<String> {
-        Ok(read_note_body(self.git_root.as_deref(), commit_sha)
-            .await?
-            .unwrap_or_default())
+        Ok(
+            read_note_body_with_retry(self.git_root.as_deref(), commit_sha)
+                .await?
+                .unwrap_or_default(),
+        )
     }
 
     /// Permissively parse the spelunk records from a commit's note blob.
