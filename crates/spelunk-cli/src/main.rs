@@ -6,6 +6,7 @@ mod cli;
 mod server_client;
 
 use clap::{CommandFactory, FromArgMatches};
+use cli::cmd::plumbing::PlumbingCommand;
 use cli::{Cli, Command};
 use spelunk_core::{
     config, conventions, embeddings, error, indexer, registry, search, storage, utils,
@@ -47,7 +48,20 @@ async fn main() -> Result<()> {
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
-    let cfg = config::Config::load(cli.config.as_deref())?;
+    // Config loads before dispatch, so `--best-effort` has to be honoured here
+    // or a publish never reaches the arm that keeps a hook's push alive (D3).
+    // That command ignores `cfg`, so defaults are inert; every other command
+    // still fails loudly on a config it cannot load.
+    let best_effort_publish = matches!(&cli.command, Command::Plumbing(p)
+        if matches!(&p.command, PlumbingCommand::PublishNotes(a) if a.best_effort));
+    let cfg = match config::Config::load(cli.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) if best_effort_publish => {
+            eprintln!("spelunk: {e:#}");
+            config::Config::default()
+        }
+        Err(e) => return Err(e),
+    };
 
     match cli.command {
         Command::Init(args) => cli::cmd::init(args, cfg).await,
