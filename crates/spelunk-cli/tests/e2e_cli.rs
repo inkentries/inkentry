@@ -760,6 +760,9 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "capabilities",
         "embedder_state",
         "embedding_count",
+        "embedding_pending",
+        "embed_worker_alive",
+        "embed_tokens",
         "drift_candidates",
         "usage_7d",
     ];

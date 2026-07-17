@@ -45,12 +45,18 @@ use crate::{
 /// - `memory_backend` — stable identifier for the active memory backend:
 ///   `"sqlite"`, `"git-notes"`, or `"remote"` (see issue #308)
 ///
-/// Additional fields (`tier`, `server_url`, `capabilities`, `embedder_state`,
-/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
-/// richer tooling; treat them as unstable extensions.
+/// Additional fields (`tier`, `mode`, `server_url`, `capabilities`,
+/// `embedder_state`, `embedding_count`, `embedding_pending`,
+/// `embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`) are
+/// present for backward compatibility and richer tooling; treat them as
+/// unstable extensions.
 /// `embedder_state` mirrors the server's `/v1/health` readiness
 /// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
 /// offline or when the reachable server pre-dates the readiness field.
+/// `embedding_pending` is the chunk count still awaiting an embedding;
+/// `embed_worker_alive` and `embed_tokens` describe the recorded embed
+/// worker's liveness and token-weighted progress and are `null` when no embed
+/// work is pending.
 pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let fmt = crate::utils::effective_format(&args.format);
 
