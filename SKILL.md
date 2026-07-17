@@ -62,7 +62,7 @@ spelunk index <path> --force   # full re-index (after changing embedding model)
 spelunk check                  # verify the index is fresh before starting work
 ```
 
-Add a `.spelunkignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`.
+Add a `.spelunkignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, self-declared `@generated`); override it with the `[index]` table in config.
 
 ---
 

@@ -152,7 +152,7 @@ spelunk graph validate_token --kind calls
 spelunk index .
 ```
 
-To exclude files or directories from indexing, add a `.spelunkignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`.
+To exclude files or directories from indexing, add a `.spelunkignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, and files that self-declare `@generated`); tune it with the `[index]` table in config. See [File filtering](commands.md#file-filtering).
 
 **Note:** Indexing is optional and only needed if you use semantic search. If you only use `spelunk graph` and full-text search, there's nothing to rebuild after changes.
 
