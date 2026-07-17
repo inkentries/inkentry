@@ -69,6 +69,11 @@ pub async fn memory_push(
         } else {
             println!("No local memory entries to push.");
         }
+    } else if summary.failed > 0 {
+        println!(
+            "Done. Pushed {} entries (created {}, skipped {}, {} failed).",
+            summary.attempted, summary.created, summary.skipped, summary.failed
+        );
     } else {
         println!(
             "Done. Pushed {} entries (created {}, skipped {}).",
