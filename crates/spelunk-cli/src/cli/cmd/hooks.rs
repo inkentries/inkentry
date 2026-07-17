@@ -149,15 +149,28 @@ fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
 /// the pre-commit framework) and follows a linked worktree back to its shared
 /// hooks directory. Reading `$GIT_DIR/hooks` directly, as this used to, agrees
 /// with git only when `core.hooksPath` is unset.
+///
+/// The result is canonicalized (via [`spelunk_core::utils::canonicalize`], so
+/// symlinks are resolved and, on Windows, the `\\?\` prefix is stripped)
+/// before it is returned. `hooks_dir_is_tracked` compares this value against
+/// git's own `--show-toplevel` / `--git-common-dir` output with a plain
+/// `PathBuf::starts_with`, which is a component-wise comparison with no
+/// tolerance for two paths naming the same directory in different forms -
+/// resolved vs. un-resolved symlinks, a differently-cased Windows drive
+/// letter, or a `\\?\`-prefixed path next to a plain one. Canonicalizing both
+/// sides is what makes that comparison meaningful.
 fn resolve_hooks_dir(dir: &Path) -> Result<std::path::PathBuf> {
     let raw = git_output(dir, &["rev-parse", "--git-path", "hooks"])?;
     let path = std::path::PathBuf::from(raw);
     // A relative result is relative to `dir`, the cwd git was invoked from
-    // (matches how git itself resolves a relative core.hooksPath).
+    // (matches how git itself resolves a relative core.hooksPath). The
+    // target itself (e.g. a `core.hooksPath` that has never been created)
+    // may not exist yet, so canonicalize the base - which always exists -
+    // before joining, rather than the full result.
     Ok(if path.is_absolute() {
-        path
+        spelunk_core::utils::canonicalize(&path)
     } else {
-        dir.join(path)
+        spelunk_core::utils::canonicalize(dir).join(path)
     })
 }
 
@@ -171,7 +184,13 @@ fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
         // No working tree (bare repo): nothing to be "inside".
         return Ok(false);
     };
-    let toplevel = std::path::PathBuf::from(toplevel);
+    // `--show-toplevel` is always absolute and always names a directory that
+    // exists, so canonicalizing it is safe unconditionally. `hooks_dir`
+    // (from `resolve_hooks_dir`) is canonicalized the same way, so this
+    // `starts_with` compares two paths in the same normalized form rather
+    // than risking a resolved-vs-unresolved-symlink or Windows case/`\\?\`
+    // mismatch between git's notion of the path and ours.
+    let toplevel = spelunk_core::utils::canonicalize(&std::path::PathBuf::from(toplevel));
 
     let common_dir = git_output(dir, &["rev-parse", "--git-common-dir"])?;
     let common_dir = std::path::PathBuf::from(common_dir);
@@ -180,6 +199,8 @@ fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
     } else {
         dir.join(common_dir)
     };
+    // The `.git` directory always exists, so this is always safe too.
+    let common_dir = spelunk_core::utils::canonicalize(&common_dir);
 
     Ok(hooks_dir.starts_with(&toplevel) && !hooks_dir.starts_with(&common_dir))
 }
@@ -512,5 +533,29 @@ mod tests {
         let hooks_dir = resolve_hooks_dir(&repo).unwrap();
 
         assert!(!hooks_dir_is_tracked(&repo, &hooks_dir).unwrap());
+    }
+
+    /// `dir` reaches these functions as `std::env::current_dir()` in real use,
+    /// which does not resolve symlinks. On a machine where the OS temp dir has
+    /// a symlinked component (e.g. macOS, where `$TMPDIR` sits under `/var`,
+    /// itself a symlink to `/private/var`), git resolves that away when it
+    /// prints `--show-toplevel` / `--git-common-dir`, while a hooks_dir built
+    /// by joining onto the raw, un-resolved `dir` does not. A component-wise
+    /// `starts_with` between the two then fails even though both name the
+    /// same real directory - the same class of bug as a Windows drive-letter
+    /// case or `\\?\`-prefix mismatch, reproduced here without needing Windows.
+    #[test]
+    fn hooks_dir_is_tracked_true_with_an_unresolved_symlinked_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf(); // deliberately NOT canonicalized
+        init_repo(&dir);
+        set_hooks_path(&dir, ".husky");
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(
+            hooks_dir_is_tracked(&dir, &hooks_dir).unwrap(),
+            "must detect the tracked hooks dir even when `dir` itself was \
+             never canonicalized by the caller"
+        );
     }
 }
