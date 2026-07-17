@@ -213,6 +213,39 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   alongside the existing `t` timestamp parameter and returns the matching
   envelope shape when it is used; `spelunk memory since` (which still uses
   `t`) is unaffected.
+- **`spelunk memory watch` no longer panics when only an auto-discovered
+  loopback server is available.** `require_tier1` gates on the probed
+  capability tier, which also passes for an auto-discovered inference-only
+  loopback server (ADR-004) whose `server_url` is unset; `memory watch`
+  unwrapped that case with `.expect("require_tier1 passed")` and crashed
+  instead of reporting the missing configuration. It now returns the same
+  actionable "requires `server_url` to be configured" error that `memory
+  push` and `sync` already use for this case.
+- **`spelunk memory push` and `spelunk memory sync` no longer claim to have
+  pushed entries that were never sent, never durably persisted, or that the
+  server rejected.** Three bugs in the same push path could each make "Done.
+  Pushed N entries" (or `sync`'s equivalent) print when nothing meaningful had
+  happened. The reported count was the number of sync-eligible rows rather
+  than the rows actually included in the batch request, so a push where every
+  row was already synced — no HTTP request sent at all — still printed
+  "Pushed N entries." Separately, a batch item was stamped with the local
+  `remote_id` that permanently excludes a row from all future pushes as soon
+  as the server's response carried an id for it, without checking the item's
+  own reported status first; a response that returned an id for an entry it
+  had not actually persisted would silently and permanently take that row out
+  of every future retry. And the summary trusted the server's aggregate
+  `created`/`skipped` counters instead of the authoritative per-item
+  `results[]` list, so a batch whose aggregate counters understated what
+  happened (observed: a server reporting `created: 0` for entries it had in
+  fact persisted) was reported exactly as understated, not as what actually
+  happened. All three are fixed: the reported count now reflects rows
+  actually sent, a row is only stamped as synced when its own status
+  affirmatively means the server durably has it, and created/skipped/failed
+  counts are reconciled from per-item results (the aggregate counters are used
+  only as a fallback when the server sends no per-item detail at all). A push
+  where nothing was sent now reads "Nothing to push — N entries already
+  synced." instead of implying work was done, and a batch with a partial
+  failure reports the real successes and failures instead of masking them.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
@@ -362,8 +395,6 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `async` at 100% instead of 56%. Confidence is now pooled across all of a
   language's chunks, so mixed `.ts`/`.tsx` projects may see reported confidence
   drop. The lower figure is the accurate one, and no conventions are lost.
-  `spelunk plumbing read-conventions --lang tsx` now matches no rows (exit 1);
-  use `--lang typescript`.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung
@@ -423,6 +454,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   resolves the bearer; and the keychain-backed store now caches each key's
   value process-wide, so a key that is read is fetched from the OS keychain
   at most once per invocation no matter how many call sites ask for it.
+- **`spelunk index` on repos over 100 files could summarize against the wrong
+  config, or silently ignore `--no-summaries`/`--summary-batch-size`, once
+  indexing continued in its detached background phase.** Above the 100-file
+  threshold, indexing hands graph rank, spec discovery, and LLM summaries to a
+  detached child process; that child (and the separate one spawned by
+  `--detach-embed`) rebuilt its own command line from scratch instead of
+  forwarding the parent's, so it re-resolved the default config in place of
+  whatever `--config` the parent had resolved (summarizing against the wrong
+  config, or skipping the pass entirely if that default config has no chat
+  model configured), and dropped `--summary-batch-size` from both spawns and
+  `--no-summaries` from the background-phases spawn (so a run given
+  `--no-summaries` could still generate them in the background). All three are
+  now forwarded through one shared argv-building function used by both spawn
+  sites. `spelunk index` still exits 0 if summarization fails in the child;
+  this only changes what the child is given, not what it does with a failure.
 
 ## [0.9.3] — 2026-07-08
 
@@ -861,6 +907,17 @@ to re-embed. (#439, #441)
   local and cloud memory. The default preserves existing behaviour: with no
   `server_url` the CLI is `offline`; with a `server_url` set it is `local_first`.
   `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (ADR-037 P1, #425)
+- **Sync-mode indicator and state-scoped capability hints.** `spelunk status`
+  gains a neutral one-word `mode` line reporting the active sync mode
+  (`local_first`, `cloud_first`, or `offline`) whenever a `server_url` or an
+  explicit `mode` is configured; it carries no call to action. Capability hints
+  are now scoped to the configuration: the embedder hint points at the team
+  server when an explicit `server_url` is configured (not the auto-discovered
+  loopback); the explore hint truthfully names an unreachable configured server
+  instead of suggesting to set one that is already set. `cloud_first` mode pins
+  hard-error behavior: reads and writes fail loudly when the server is
+  unreachable or untrusted, and local data is never silently substituted as a
+  fallback. (ADR-037)
 
 ### Changed
 

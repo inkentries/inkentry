@@ -133,18 +133,49 @@ pub async fn memory_sync(
     // ── Pull cloud → local (delta after the UUID cursor, keep-both) ─────────
     let pulled = pull_and_apply(&local, &client).await?;
 
-    println!(
-        "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
-        pushed.attempted, pushed.created, pushed.skipped, pulled
-    );
+    if pushed.attempted == 0 {
+        println!(
+            "Nothing to push — {} entries already synced. Applied {} new remote entries.",
+            pushed.already_synced, pulled
+        );
+    } else if pushed.failed > 0 {
+        println!(
+            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.",
+            pushed.attempted, pushed.created, pushed.skipped, pushed.failed, pulled
+        );
+    } else {
+        println!(
+            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
+            pushed.attempted, pushed.created, pushed.skipped, pulled
+        );
+    }
     Ok(())
 }
 
 /// Outcome of a push pass (shared by `sync` and the one-way `memory push`).
 pub(super) struct PushSummary {
+    /// Rows actually sent to `push_batch` (the `live` set) — not the raw
+    /// pre-filter row count, which would over-report when rows are already
+    /// synced (`remote_id` already set) and no request is made at all.
     pub attempted: usize,
+    /// Tallied from `results[].status`, not the server's own aggregate
+    /// `created`/`skipped` ints — the two are independent wire fields
+    /// (`BatchPushResult`) and can diverge (a server has been observed
+    /// reporting aggregate `created: 0` for a batch whose per-item results
+    /// showed entries durably persisted). `results[]` is the reconciled
+    /// signal.
     pub created: u32,
     pub skipped: u32,
+    /// Items whose status did not affirmatively mean "durably persisted"
+    /// — anything other than `created`/`skipped` (`failed`, or an
+    /// unrecognized status riding along with a result). Kept separate so a
+    /// partial-failure batch still reports its real successes instead of
+    /// reading as "nothing happened".
+    pub failed: u32,
+    /// Non-archived rows already carrying a `remote_id` — i.e. previously
+    /// synced and excluded from `attempted`. Lets callers report an honest
+    /// "nothing to push" message instead of implying a push happened.
+    pub already_synced: usize,
 }
 
 /// One-way push entry point reused by `spelunk memory push`.
@@ -164,12 +195,13 @@ async fn push_local(
     include_archived: bool,
 ) -> Result<PushSummary> {
     let rows = local.rows_for_sync(include_archived)?;
-    let attempted = rows.len();
     if rows.is_empty() {
         return Ok(PushSummary {
             attempted: 0,
             created: 0,
             skipped: 0,
+            failed: 0,
+            already_synced: 0,
         });
     }
 
@@ -177,6 +209,7 @@ async fn push_local(
     // archived entries already known to the cloud (tombstoned via DELETE).
     let mut created = 0u32;
     let mut skipped = 0u32;
+    let mut failed = 0u32;
 
     // Push set (decision #183): live entries not yet on the cloud — i.e.
     // `WHERE remote_id IS NULL`. Already-synced rows carry a `remote_id` and are
@@ -186,6 +219,11 @@ async fn push_local(
         .iter()
         .filter(|r| !r.archived && r.remote_id.is_none())
         .collect();
+    let already_synced = rows
+        .iter()
+        .filter(|r| !r.archived && r.remote_id.is_some())
+        .count();
+    let attempted = live.len();
     // Map external_id (local uuid) → local_id so we can record the cloud-minted
     // id returned in the 207 result back onto the local row.
     for chunk in live.chunks(200) {
@@ -204,13 +242,43 @@ async fn push_local(
             })
             .collect();
         let res = client.push_batch(items).await?;
-        created += res.created;
-        skipped += res.skipped;
+
+        // `created`/`skipped`/`failed` (aggregate ints) and `results[]`
+        // (per-item) are independent fields on `BatchPushResult` — nothing on
+        // the wire guarantees they agree, and a server can send an aggregate
+        // `created: 0` for a batch whose `results[]` shows the entries
+        // durably persisted. The aggregate ints are NOT trusted here: tally
+        // from `results[].status`, the reconciled signal, and only fall back
+        // to the aggregate when the server sent no per-item detail at all to
+        // reconcile against.
+        if res.results.is_empty() {
+            created += res.created;
+            skipped += res.skipped;
+            failed += res.failed;
+        }
 
         // Record cloud ids for created entries so a later pull dedupes them and
         // a later archive can tombstone them by id.
         for item in &res.results {
-            if let (Some(ext), Some(cloud_id)) = (item.external_id.as_deref(), item.id.as_deref())
+            match item.status.as_str() {
+                "created" => created += 1,
+                "skipped" => skipped += 1,
+                // Anything else — `"failed"`, or an unrecognized status — did
+                // not affirmatively land; count it as failed rather than
+                // silently dropping it from every tally.
+                _ => failed += 1,
+            }
+            // Stamping `remote_id` is permanent (it's what excludes a row from
+            // `live` on every future push), so only do it for a status that
+            // affirmatively means the cloud durably has this row: `created`
+            // (just persisted) or `skipped` (already persisted — dedup on
+            // identity). Any other status — `failed`, or an id riding along
+            // with a status that doesn't mean persisted — must not stamp, or
+            // that row can never be retried again.
+            let durably_persisted = item.status == "created" || item.status == "skipped";
+            if durably_persisted
+                && let (Some(ext), Some(cloud_id)) =
+                    (item.external_id.as_deref(), item.id.as_deref())
                 && let Some(row) = chunk.iter().find(|r| r.uuid == ext)
             {
                 local.set_remote_id(row.local_id, cloud_id)?;
@@ -239,6 +307,8 @@ async fn push_local(
         attempted,
         created,
         skipped,
+        failed,
+        already_synced,
     })
 }
 
@@ -497,9 +567,11 @@ mod tests {
         assert_eq!(store.max_remote_id().unwrap().as_deref(), Some(cloud_b));
 
         // Second push: every row carries a `remote_id`, so the live set is empty
-        // and no batch request is sent — the re-sync is a no-op.
+        // and no batch request is sent — the re-sync is a no-op. `attempted` must
+        // reflect that (not the raw row count), so callers never report "Pushed
+        // N" when nothing was sent.
         let s2 = push_local(&store, &client, false).await.unwrap();
-        assert_eq!(s2.created, 0);
+        assert_eq!((s2.attempted, s2.created, s2.already_synced), (0, 0, 2));
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             1,
@@ -507,5 +579,185 @@ mod tests {
         );
         // No duplicate local rows introduced by the round trip.
         assert_eq!(store.count().unwrap(), 2);
+    }
+
+    // ── stamping must not trust a non-persisted status ─────────────────────
+    // A server can return a per-item `id` for an entry alongside a status
+    // that does not affirm durable persistence (aggregate `created: 0`).
+    // Stamping `remote_id` anyway would permanently exclude the row from
+    // `live` on every future push — the data could never be retried. Only
+    // `created`/`skipped` may stamp; a `failed` item carrying an `id` must be
+    // left unstamped.
+    #[tokio::test]
+    async fn push_local_does_not_stamp_remote_id_for_a_failed_status_item() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+
+        let rows = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows.len(), 1);
+        let ext_a = rows[0].uuid.clone();
+        // The server hands back an `id` even though the entry was not
+        // durably persisted (`created: 0`, status "failed").
+        let cloud_a = "01890000-0000-7000-8000-0000000000b1";
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 1,
+                "results": [
+                    {"status": "failed", "external_id": ext_a, "id": cloud_a},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!((s1.attempted, s1.created, s1.skipped), (1, 0, 0));
+
+        // The row must NOT carry the id the server handed back — it stays
+        // retryable on the next push.
+        assert_eq!(store.note_id_for_remote_id(cloud_a).unwrap(), None);
+        let rows_after = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows_after[0].remote_id, None);
+
+        // A re-push must still consider this row live (not already-synced).
+        let live_again: Vec<_> = rows_after
+            .iter()
+            .filter(|r| !r.archived && r.remote_id.is_none())
+            .collect();
+        assert_eq!(live_again.len(), 1, "unstamped row must remain retryable");
+    }
+
+    // ── counts must reconcile against results[], not the aggregate ints ────
+    // `BatchPushResult`'s `created`/`skipped` ints and its `results[]` array
+    // are independent wire fields — a server can send an aggregate
+    // `created: 0` for a batch whose `results[]` shows every entry durably
+    // persisted. A push summary built from the aggregate ints alone would
+    // read as "nothing landed"; it must instead read the true outcome off
+    // `results[].status`.
+    #[tokio::test]
+    async fn push_local_reconciles_counts_from_results_not_aggregate_ints() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+        store
+            .add_note("note", "Two", "second", &[], &[], None, None)
+            .unwrap();
+
+        let rows = store.rows_for_sync(false).unwrap();
+        let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+        let cloud_a = "01890000-0000-7000-8000-0000000000c1";
+        let cloud_b = "01890000-0000-7000-8000-0000000000c2";
+
+        let server = MockServer::start().await;
+        // The aggregate ints understate what happened (`created: 0, skipped:
+        // 0`), but `results[]` shows both entries durably persisted.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 0,
+                "results": [
+                    {"status": "created", "external_id": ext_a, "id": cloud_a},
+                    {"status": "skipped", "external_id": ext_b, "id": cloud_b},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        // Reconciled from `results[]`, not the misleading aggregate zeros.
+        assert_eq!(
+            (s1.attempted, s1.created, s1.skipped, s1.failed),
+            (2, 1, 1, 0)
+        );
+        assert_eq!(
+            store.note_id_for_remote_id(cloud_a).unwrap(),
+            Some(rows[0].local_id)
+        );
+        assert_eq!(
+            store.note_id_for_remote_id(cloud_b).unwrap(),
+            Some(rows[1].local_id)
+        );
+    }
+
+    // ── a failed item must not mask other successes in the same batch ─────
+    // Mixed outcome: one entry lands, one doesn't. The failed item must stay
+    // unstamped (retryable) while the successful one is recorded — and the
+    // summary must show the real partial success, not a false "nothing
+    // happened" (which is what reading only the aggregate `created` count
+    // for a batch containing any failure could produce).
+    #[tokio::test]
+    async fn push_local_partial_failure_reports_the_real_successes() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+        store
+            .add_note("note", "Two", "second", &[], &[], None, None)
+            .unwrap();
+
+        let rows = store.rows_for_sync(false).unwrap();
+        let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+        let cloud_a = "01890000-0000-7000-8000-0000000000d1";
+        let cloud_b = "01890000-0000-7000-8000-0000000000d2";
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 1,
+                "results": [
+                    {"status": "created", "external_id": ext_a, "id": cloud_a},
+                    {"status": "failed", "external_id": ext_b, "id": cloud_b},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!(
+            (s1.attempted, s1.created, s1.skipped, s1.failed),
+            (2, 1, 0, 1),
+            "attempted must stay 2 (not read as nothing-to-push) and the \
+             genuine success must be visible alongside the failure"
+        );
+        // The successful row is stamped...
+        assert_eq!(
+            store.note_id_for_remote_id(cloud_a).unwrap(),
+            Some(rows[0].local_id)
+        );
+        // ...the failed one is not, and remains retryable.
+        assert_eq!(store.note_id_for_remote_id(cloud_b).unwrap(), None);
+        let rows_after = store.rows_for_sync(false).unwrap();
+        let live_again: Vec<_> = rows_after
+            .iter()
+            .filter(|r| !r.archived && r.remote_id.is_none())
+            .collect();
+        assert_eq!(live_again.len(), 1, "failed row must remain retryable");
     }
 }

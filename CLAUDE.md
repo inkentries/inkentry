@@ -49,7 +49,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Semantic search via spelunk-server:** from v0.9.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
-**Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db` — it relocates the store of record to the shared server. Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) When a team server routes projects by an internal UUID, a human `project_id` slug is auto-resolved to that UUID on first use and cached in `.spelunk/cloud-project-id.lock` (see ADR-005); a raw UUID `project_id` is used directly.
+**Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (ADR-037): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) When a team server routes projects by an internal UUID, a human `project_id` slug is auto-resolved to that UUID on first use and cached in `.spelunk/cloud-project-id.lock` (see ADR-005); a raw UUID `project_id` is used directly.
 
 You search with spelunk, then reason over the results yourself.
 
@@ -209,7 +209,6 @@ cli/
       knn.rs               — KNN vector search, JSONL output
       ls_files.rs          — list indexed files as JSONL; exit 1 if no results
       parse_file.rs        — parse a file and emit chunks as JSONL (no DB write)
-      read_conventions.rs  — emit stored convention records as JSONL
       read_memory.rs       — emit memory entries as JSONL
 ```
 
@@ -268,7 +267,7 @@ HTTP embedder shim live in spelunk-server (`main.rs`).
 `capability.rs` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
 
-**Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured. See `docs/adr/004-unified-memory-storage.md`.
+**Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config.rs`.
 
 ---
 

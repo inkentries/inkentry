@@ -25,7 +25,12 @@ fn backoff_secs(attempt: u32) -> u64 {
 pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<()> {
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("memory watch", tier, cfg.server_url.as_deref())?;
-    let base_url = cfg.server_url.as_deref().expect("require_tier1 passed");
+    // `require_tier1` also passes for an auto-discovered loopback server
+    // (inference-only, ADR-004) whose `server_url` is unset; watching a team
+    // stream needs the explicit team server, so check for it separately.
+    let base_url = cfg.server_url.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("`spelunk memory watch` requires `server_url` to be configured.")
+    })?;
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. \
