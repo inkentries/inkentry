@@ -209,7 +209,6 @@ cli/
       knn.rs               — KNN vector search, JSONL output
       ls_files.rs          — list indexed files as JSONL; exit 1 if no results
       parse_file.rs        — parse a file and emit chunks as JSONL (no DB write)
-      read_conventions.rs  — emit stored convention records as JSONL
       read_memory.rs       — emit memory entries as JSONL
 ```
 
