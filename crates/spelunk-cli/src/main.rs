@@ -38,9 +38,7 @@ async fn main() -> Result<()> {
             .find(|w| w[0] == "--config" || w[0] == "-c")
             .map(|w| std::path::PathBuf::from(&w[1]))
     };
-    let llm_configured = config::Config::load(pre_config_path.as_deref())
-        .map(|c| c.llm_model.is_some())
-        .unwrap_or(false);
+    let llm_configured = config::Config::llm_model_configured(pre_config_path.as_deref());
 
     // Hide `explore` from help when no chat model is configured.
     let matches = Cli::command()

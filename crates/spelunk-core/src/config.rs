@@ -506,6 +506,26 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Cheaply check whether the personal config sets `llm_model`, without
+    /// resolving the bearer credential or touching the secret store.
+    ///
+    /// Callers that only need this one field (the CLI's pre-parse help gate,
+    /// run ahead of and in addition to the real [`Config::load`]) must not pay
+    /// for a full load, which pulls the secret store into the process for a
+    /// value they never use.
+    pub fn llm_model_configured(path: Option<&Path>) -> bool {
+        let global_path = match path {
+            Some(p) => p.to_path_buf(),
+            None => spelunk_config_dir().join("config.toml"),
+        };
+        let Ok(raw) = std::fs::read_to_string(&global_path) else {
+            return false;
+        };
+        toml::from_str::<Config>(&raw)
+            .map(|c| c.llm_model.is_some())
+            .unwrap_or(false)
+    }
+
     /// Load config with layered overrides:
     ///   1. Defaults
     ///   2. `~/.config/spelunk/config.toml` (global personal)
@@ -608,10 +628,6 @@ impl Config {
             );
         }
 
-        // The stored credential (post-migration) is the personal-tier fallback
-        // bearer, below env and `[auth]` but above the project-level team key.
-        let stored_server_key = store.get(KEY_SERVER_KEY)?;
-
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
             cfg.server_url = Some(v);
@@ -648,14 +664,17 @@ impl Config {
         // The `[auth]` tokens are kept in `cfg.auth` so the refresh-on-expiry /
         // org-switch paths can reach the refresh token; every other call site
         // only ever reads the resolved `cfg.server_key`.
+        //
+        // Tiers 1-2 resolve without the secret store at all, so the store is
+        // only actually read when neither is present: a value that would be
+        // discarded anyway is never fetched, which spares a keychain prompt
+        // on every `spelunk login`'d or `SPELUNK_SERVER_KEY` invocation.
         cfg.server_key = if let Some(v) = env_server_key {
             Some(v)
         } else if let Some(auth) = &cfg.auth {
             Some(auth.access_token.clone())
-        } else if let Some(v) = stored_server_key {
-            Some(v)
         } else {
-            project_server_key
+            store.get(KEY_SERVER_KEY)?.or(project_server_key)
         };
 
         Ok(cfg)
@@ -2309,6 +2328,115 @@ project_id = "team/new"
         let store = MemoryStore::default();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert_eq!(cfg.server_key, None);
+    }
+
+    /// A `SecretStore` test double that counts `get` calls per key, wrapping a
+    /// `MemoryStore`. Used to assert that `load_with_store` never reads the
+    /// personal store when a higher-precedence credential (env var or
+    /// `[auth]` token) already resolves the bearer — a value that would only
+    /// be discarded must never cost a keychain round-trip on real hosts.
+    #[derive(Default)]
+    struct CountingStore {
+        inner: MemoryStore,
+        get_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SecretStore for CountingStore {
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            self.get_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            self.inner.set(key, value)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+
+        fn kind(&self) -> &'static str {
+            "counting-test-double"
+        }
+    }
+
+    /// `SPELUNK_SERVER_KEY` outranks the personal store, so the store must
+    /// never be asked for `server_key` at all — not just overridden after the
+    /// fact. Regression test for the redundant-keychain-read fix.
+    #[test]
+    #[serial_test::serial]
+    fn env_server_key_skips_store_read_entirely() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+
+        let store = CountingStore::default();
+        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "sk-from-env") };
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+
+        assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(
+            store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the personal secret store must not be read when SPELUNK_SERVER_KEY \
+             already resolves the bearer"
+        );
+    }
+
+    /// A WorkOS `[auth]` access token outranks the personal store the same
+    /// way the env var does: the store must never be queried for
+    /// `server_key` when `[auth]` already resolves the bearer.
+    #[test]
+    #[serial_test::serial]
+    fn auth_token_skips_store_read_entirely() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+
+        let store = CountingStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+
+        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
+        assert_eq!(
+            store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the personal secret store must not be read when a WorkOS [auth] \
+             token already resolves the bearer"
+        );
+    }
+
+    // ── llm_model_configured (pre-parse help gate) ────────────────────────────
+    //
+    // `llm_model_configured` takes no `SecretStore` at all — its signature is
+    // `fn(path: Option<&Path>) -> bool`, so there is no store to inject or
+    // instrument. Reading its body confirms it only calls
+    // `std::fs::read_to_string` + `toml::from_str`, with no reference to
+    // `secret_store`/`SecretStore`/`default_store` anywhere: it is
+    // structurally incapable of constructing a secret store. These tests
+    // cover its actual file-parsing contract, which is what the CLI's
+    // pre-parse help gate depends on now that it no longer calls the full
+    // `Config::load`.
+
+    /// Resolves purely from the config file on disk: present + non-empty
+    /// `llm_model` ⇒ true, absent ⇒ false, missing file ⇒ false (no error).
+    #[test]
+    fn llm_model_configured_reads_only_the_config_file() {
+        let tmp = TempDir::new().unwrap();
+
+        let with_model = tmp.path().join("with_model.toml");
+        std::fs::write(&with_model, "llm_model = \"gpt-x\"\n").unwrap();
+        assert!(Config::llm_model_configured(Some(&with_model)));
+
+        let without_model = tmp.path().join("without_model.toml");
+        std::fs::write(&without_model, "server_url = \"http://x\"\n").unwrap();
+        assert!(!Config::llm_model_configured(Some(&without_model)));
+
+        let missing = tmp.path().join("does_not_exist.toml");
+        assert!(!Config::llm_model_configured(Some(&missing)));
     }
 
     // ── find_project_dir / require_project_db_at (ADR-067) ───────────────────
