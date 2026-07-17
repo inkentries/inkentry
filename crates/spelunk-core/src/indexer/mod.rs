@@ -1,6 +1,7 @@
 pub mod chunker;
 #[cfg(feature = "rich-formats")]
 pub mod docparser;
+pub mod filter;
 pub mod graph;
 pub mod pagerank;
 pub mod parser;

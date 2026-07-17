@@ -52,6 +52,20 @@ pub(super) struct ParseResult {
     pub chunk_ids_and_texts: Vec<(i64, String)>,
     pub indexed: u64,
     pub removed: u64,
+    /// Count of files skipped by the built-in index filter (generated/vendored/
+    /// machine-data). Distinct from the hash/oversized `skipped` counter.
+    /// Surfaced to the user via the post-parse notice; retained for assertions.
+    #[allow(dead_code)]
+    pub filtered: u64,
+}
+
+/// The single-line notice printed after the parse bar when the index filter
+/// dropped at least one file. Pure so it can be unit-tested verbatim.
+fn filtered_notice(filtered: u64) -> String {
+    format!(
+        "Filtered out {filtered} generated/vendored/data file(s) \
+         (built-in index filter; override in [index] of .spelunk/config.toml)"
+    )
 }
 
 /// Mutable accumulators shared across per-file processor functions.
@@ -69,15 +83,25 @@ pub(super) fn run_parse_phase(
     db: &Database,
     args: &IndexArgs,
     mp: &MultiProgress,
+    cfg: &crate::config::Config,
 ) -> Result<ParseResult> {
-    let files = collect_files(root)?;
+    let filter = spelunk_core::indexer::filter::IndexFilter::build(
+        &cfg.index.exclude,
+        cfg.index.use_default_excludes,
+        cfg.index.detect_generated,
+    )?;
+    let (files, filtered) = collect_files(root, &filter)?;
 
     if files.is_empty() {
+        if filtered > 0 {
+            println!("{}", filtered_notice(filtered));
+        }
         println!("No supported source files found in {}", root.display());
         return Ok(ParseResult {
             chunk_ids_and_texts: vec![],
             indexed: 0,
             removed: 0,
+            filtered,
         });
     }
 
@@ -133,6 +157,10 @@ pub(super) fn run_parse_phase(
         acc.indexed, acc.skipped, acc.indexed
     ));
 
+    if filtered > 0 {
+        println!("{}", filtered_notice(filtered));
+    }
+
     let removed = cleanup_stale(&files, root, db)?;
     let ParseAcc {
         out: mut chunk_ids_and_texts,
@@ -165,6 +193,7 @@ pub(super) fn run_parse_phase(
         chunk_ids_and_texts,
         indexed,
         removed,
+        filtered,
     })
 }
 
@@ -214,7 +243,24 @@ pub(super) fn reconstruct_embedding_text(
 
 // ── File collection ───────────────────────────────────────────────────────────
 
-fn collect_files(root: &std::path::Path) -> Result<Vec<ignore::DirEntry>> {
+/// Walk `root` collecting the files the indexer should ingest, returning them
+/// alongside a count of files dropped by the built-in index filter.
+///
+/// Two independent exclusion layers apply:
+///   1. The **sensitive** `OverrideBuilder` (`.env*`, `*.pem`, private keys):
+///      unconditional and NOT user-overridable. Sensitive files are dropped by
+///      the walk before `filter` ever sees them, so nothing in `[index]` can
+///      re-include them.
+///   2. The **index `filter`** (generated/vendored/machine-data): user-tunable
+///      via `[index]` in config. Excluded directories are pruned from the walk
+///      (perf); individual excluded files (and generated-marker survivors) are
+///      counted.
+fn collect_files(
+    root: &std::path::Path,
+    filter: &spelunk_core::indexer::filter::IndexFilter,
+) -> Result<(Vec<ignore::DirEntry>, u64)> {
+    use spelunk_core::indexer::filter::Decision;
+
     let sensitive_patterns = [
         "!.env",
         "!.env.*",
@@ -247,17 +293,73 @@ fn collect_files(root: &std::path::Path) -> Result<Vec<ignore::DirEntry>> {
         walk.overrides(ov);
     }
 
-    Ok(walk
-        .build()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| {
-            let p = e.path();
-            detect_language(p).is_some()
-                || detect_text_language(p).is_some()
-                || detect_doc_language(p).is_some()
-        })
-        .collect())
+    // Prune index-filter-excluded directories during the walk so we never
+    // descend into node_modules/, vendor/, dist/, etc. Files are left to the
+    // collect loop below so they can be classified and counted individually.
+    let root_owned = root.to_path_buf();
+    let dir_filter = filter.clone();
+    walk.filter_entry(move |entry| {
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        if !is_dir {
+            return true;
+        }
+        match entry.path().strip_prefix(&root_owned) {
+            // Never prune the root itself (empty relative path).
+            Ok(rel) if !rel.as_os_str().is_empty() => !dir_filter.prune_dir(rel),
+            _ => true,
+        }
+    });
+
+    let mut files = Vec::new();
+    let mut filtered = 0u64;
+    for entry in walk.build().filter_map(|e| e.ok()) {
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let p = entry.path();
+        // Only weigh files the indexer would otherwise ingest, so the filtered
+        // count reflects real embed/parse work avoided.
+        if !(detect_language(p).is_some()
+            || detect_text_language(p).is_some()
+            || detect_doc_language(p).is_some())
+        {
+            continue;
+        }
+        let rel = p.strip_prefix(root).unwrap_or(p);
+        match filter.decide(rel, false) {
+            Decision::Exclude(mi) => {
+                tracing::debug!(
+                    "index filter: excluding {} (matched {:?}, {})",
+                    rel.display(),
+                    mi.pattern,
+                    if mi.from_default { "default" } else { "user" },
+                );
+                filtered += 1;
+                continue;
+            }
+            // A user `!` re-include keeps the file AND exempts it from
+            // generated-marker detection.
+            Decision::ForceInclude(_) => {
+                files.push(entry);
+                continue;
+            }
+            Decision::Keep => {}
+        }
+        // Generated-marker detection on glob survivors (self-declaration only).
+        if filter.detect_generated()
+            && let Some(marker) = spelunk_core::indexer::filter::generated_marker(p)
+        {
+            tracing::debug!(
+                "index filter: excluding {} (generated marker: {})",
+                rel.display(),
+                marker,
+            );
+            filtered += 1;
+            continue;
+        }
+        files.push(entry);
+    }
+    Ok((files, filtered))
 }
 
 // ── Per-file processors ───────────────────────────────────────────────────────
@@ -699,7 +801,8 @@ mod tests {
         let mp = MultiProgress::new();
 
         // ── Run 1: parse + store chunks. No embeddings are ever written here. ──
-        let first = run_parse_phase(dir.path(), &db, &args, &mp).expect("first parse phase");
+        let cfg = crate::config::Config::default();
+        let first = run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("first parse phase");
         assert!(
             first.indexed >= 2,
             "both fixture files must be indexed on the first run"
@@ -731,7 +834,8 @@ mod tests {
 
         // ── Run 2: no file changed, so nothing is reparsed. The backfill union
         //    must still surface the unembedded chunks for the embed phase. ──────
-        let second = run_parse_phase(dir.path(), &db, &args, &mp).expect("second parse phase");
+        let second =
+            run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("second parse phase");
         assert_eq!(
             second.indexed, 0,
             "no file changed — the hash-based skip must reparse nothing on the second run"
@@ -949,5 +1053,196 @@ mod tests {
         // Exactly at the cap: must NOT be flagged as too large.
         file.as_file().set_len(MAX_FILE_BYTES).unwrap();
         assert!(!is_file_too_large(file.path(), "boundary.bin"));
+    }
+
+    // ── Index filter: collect_files exclusion + counting ─────────────────────
+
+    use spelunk_core::indexer::filter::IndexFilter;
+
+    fn collected_names(files: &[ignore::DirEntry]) -> Vec<String> {
+        files
+            .iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect()
+    }
+
+    /// Junk (lockfiles, minified, protobuf codegen) is excluded with the correct
+    /// count; vendored directories are pruned (their contents never counted);
+    /// real source survives.
+    #[test]
+    fn collect_files_excludes_junk_with_correct_count() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("app.min.js"), "var x=1;\n").unwrap();
+        std::fs::write(dir.path().join("user.pb.go"), "package x\n").unwrap();
+        std::fs::create_dir(dir.path().join("node_modules")).unwrap();
+        std::fs::write(dir.path().join("node_modules/index.js"), "var y=2;\n").unwrap();
+
+        let filter = IndexFilter::build(&[], true, true).unwrap();
+        let (files, filtered) = collect_files(dir.path(), &filter).unwrap();
+        let names = collected_names(&files);
+
+        assert!(names.contains(&"lib.rs".to_string()));
+        assert!(names.contains(&"package.json".to_string()));
+        assert!(!names.contains(&"package-lock.json".to_string()));
+        assert!(!names.contains(&"app.min.js".to_string()));
+        assert!(!names.contains(&"user.pb.go".to_string()));
+        // node_modules is pruned, so its file never appears.
+        assert!(!names.contains(&"index.js".to_string()));
+        // The three file-level excludes are counted; the pruned dir's contents
+        // are not (that is the walk-time performance win).
+        assert_eq!(filtered, 3);
+    }
+
+    /// Survivors listed in the spec pass the filter untouched (incl. a `.ts`
+    /// under `i18n/`, since that default only excludes `*.json`).
+    #[test]
+    fn collect_files_keeps_spec_survivors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/i18n")).unwrap();
+        std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("tsconfig.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# hi\n").unwrap();
+        std::fs::write(dir.path().join("tests/foo_test.rs"), "fn t() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/i18n/index.ts"), "export const x=1;\n").unwrap();
+
+        let filter = IndexFilter::build(&[], true, true).unwrap();
+        let (files, filtered) = collect_files(dir.path(), &filter).unwrap();
+        let names = collected_names(&files);
+
+        for expected in [
+            "lib.rs",
+            "package.json",
+            "tsconfig.json",
+            "README.md",
+            "foo_test.rs",
+            "index.ts",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "{expected} must survive"
+            );
+        }
+        assert_eq!(filtered, 0);
+    }
+
+    /// A generated-marker file is filtered when `detect_generated` is on, and
+    /// survives when it is off.
+    #[test]
+    fn collect_files_generated_marker_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("normal.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("gen.rs"),
+            "// Code generated by tool. DO NOT EDIT.\nfn a() {}\n",
+        )
+        .unwrap();
+
+        let on = IndexFilter::build(&[], true, true).unwrap();
+        let (files, filtered) = collect_files(dir.path(), &on).unwrap();
+        let names = collected_names(&files);
+        assert!(names.contains(&"normal.rs".to_string()));
+        assert!(!names.contains(&"gen.rs".to_string()));
+        assert_eq!(filtered, 1);
+
+        let off = IndexFilter::build(&[], true, false).unwrap();
+        let (files_off, filtered_off) = collect_files(dir.path(), &off).unwrap();
+        assert!(collected_names(&files_off).contains(&"gen.rs".to_string()));
+        assert_eq!(filtered_off, 0);
+    }
+
+    /// HARD INVARIANT: the sensitive-file layer (`.env`) is independent of the
+    /// index filter and NOT user-overridable. `[index].exclude = ["!.env"]` must
+    /// have no effect: the sensitive `OverrideBuilder` drops `.env` before the
+    /// index filter can re-include it.
+    #[test]
+    fn sensitive_env_not_reincludable_via_index_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
+
+        let filter = IndexFilter::build(&["!.env".to_string()], true, true).unwrap();
+        let (files, _filtered) = collect_files(dir.path(), &filter).unwrap();
+        let names = collected_names(&files);
+
+        assert!(
+            names.contains(&"keep.rs".to_string()),
+            "normal file collected"
+        );
+        assert!(
+            !names.contains(&".env".to_string()),
+            "[index].exclude=[\"!.env\"] must NOT re-include the sensitive file"
+        );
+    }
+
+    // ── Cleanup: flipping the filter on removes previously-indexed junk ──────
+
+    /// Cleanup already exists (`cleanup_stale` + `delete_file` cascade). Index
+    /// junk with the filter OFF, then re-index with it ON: the now-excluded file
+    /// is no longer visited, so `cleanup_stale` deletes its rows.
+    #[test]
+    fn reindex_with_filter_on_cleans_up_previously_indexed_junk() {
+        use indicatif::MultiProgress;
+
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("app.min.js"),
+            "var x=1;\nfunction f(){return x;}\n",
+        )
+        .unwrap();
+        let args = default_args(dir.path().to_path_buf());
+        let mp = MultiProgress::new();
+
+        // Filter fully off: the minified file is indexed like any JS file.
+        let mut cfg_off = crate::config::Config::default();
+        cfg_off.index.use_default_excludes = false;
+        cfg_off.index.detect_generated = false;
+        let r1 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
+        assert_eq!(r1.filtered, 0);
+        let indexed_off: Vec<String> = db
+            .file_paths_under("")
+            .unwrap()
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+        assert!(
+            indexed_off.iter().any(|p| p == "app.min.js"),
+            "junk is indexed while the filter is off"
+        );
+
+        // Filter on (defaults): re-index; the excluded junk row is cleaned up.
+        let cfg_on = crate::config::Config::default();
+        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
+        assert!(r2.filtered >= 1, "app.min.js filtered on re-index");
+        let indexed_on: Vec<String> = db
+            .file_paths_under("")
+            .unwrap()
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+        assert!(
+            !indexed_on.iter().any(|p| p == "app.min.js"),
+            "excluded junk must be removed from the index on re-index"
+        );
+        assert!(
+            indexed_on.iter().any(|p| p == "lib.rs"),
+            "the real source file remains indexed"
+        );
+    }
+
+    // ── Output: the filtered-count notice line ───────────────────────────────
+
+    #[test]
+    fn filtered_notice_names_count_and_override_location() {
+        let s = filtered_notice(7);
+        assert!(s.contains("Filtered out 7"));
+        assert!(s.contains("[index]"));
+        assert!(s.contains(".spelunk/config.toml"));
     }
 }

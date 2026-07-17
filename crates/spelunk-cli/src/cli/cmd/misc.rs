@@ -38,7 +38,14 @@ pub fn chunks(args: ChunksArgs, cfg: Config) -> Result<()> {
     let results = db.chunks_for_file(&spelunk_core::utils::normalize_index_path(&args.path))?;
 
     if results.is_empty() {
-        println!("No chunks found for '{}'.", args.path);
+        // A file with no chunks may simply be un-indexed, but if the built-in
+        // index filter excludes it the bare "No chunks found" is misleading:
+        // explain the exclusion and how to re-include it.
+        if let Some(explanation) = index_filter_explanation(&cfg, &args.path) {
+            print!("{explanation}");
+        } else {
+            println!("No chunks found for '{}'.", args.path);
+        }
         return Ok(());
     }
 
@@ -48,4 +55,74 @@ pub fn chunks(args: ChunksArgs, cfg: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// If `path` is excluded by the built-in index filter, return a message that
+/// names the matched pattern and shows the `[index]` re-include recipe;
+/// otherwise `None` (the caller falls back to the bare "No chunks found").
+///
+/// Detects two exclusion routes: a glob match (deterministic from the path) and
+/// a generated-marker (best-effort, only when the file resolves on disk).
+fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
+    use spelunk_core::indexer::filter::{Decision, IndexFilter, generated_marker};
+
+    let filter = IndexFilter::build(
+        &cfg.index.exclude,
+        cfg.index.use_default_excludes,
+        cfg.index.detect_generated,
+    )
+    .ok()?;
+    let norm = spelunk_core::utils::normalize_index_path(path);
+
+    // Parent-aware: catches a file nested under an excluded dir (e.g.
+    // `node_modules/...`) as well as a direct glob match.
+    let reason = match filter.classify(std::path::Path::new(&norm), false) {
+        Decision::Exclude(mi) => format!("it matches the exclude pattern `{}`", mi.pattern),
+        // Not a glob match: fall back to a marker sniff if the file is on disk.
+        Decision::Keep if filter.detect_generated() => {
+            let on_disk = std::env::current_dir().ok().map(|d| d.join(&norm));
+            let marker = on_disk.as_deref().and_then(generated_marker)?;
+            format!("its header declares it generated (`{marker}`)")
+        }
+        _ => return None,
+    };
+
+    Some(format!(
+        "No chunks found for '{path}': the built-in index filter skipped it because {reason}, \
+         so it was never indexed.\n\
+         To index it anyway, add a re-include to [index] in .spelunk/config.toml:\n\
+         \n  [index]\n  exclude = [\"!{norm}\"]\n"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A path excluded by the built-in filter yields an explanation naming the
+    /// matched pattern and the `[index]` re-include recipe.
+    #[test]
+    fn index_filter_explanation_explains_glob_match_with_recipe() {
+        let cfg = Config::default();
+        let msg = index_filter_explanation(&cfg, "node_modules/react/index.js")
+            .expect("excluded path must be explained");
+        assert!(msg.contains("built-in index filter"), "{msg}");
+        assert!(
+            msg.contains("node_modules/"),
+            "names the matched pattern: {msg}"
+        );
+        assert!(msg.contains("[index]"), "shows the config table: {msg}");
+        assert!(
+            msg.contains("exclude = [\"!node_modules/react/index.js\"]"),
+            "shows the ! re-include recipe: {msg}"
+        );
+    }
+
+    /// A normal source path is not filter-excluded, so there is no explanation
+    /// (the caller falls back to the bare "No chunks found").
+    #[test]
+    fn index_filter_explanation_none_for_normal_path() {
+        let cfg = Config::default();
+        assert!(index_filter_explanation(&cfg, "src/lib.rs").is_none());
+    }
 }
