@@ -408,6 +408,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   or warning. Anything pushed after that point landed in the wrong org.
   Refreshes now re-send the durably stored active org, so a switched org
   survives rotation and stays in effect until you switch again.
+- **`spelunk index` on repos over 100 files could summarize against the wrong
+  config, or silently ignore `--no-summaries`/`--summary-batch-size`, once
+  indexing continued in its detached background phase.** Above the 100-file
+  threshold, indexing hands graph rank, spec discovery, and LLM summaries to a
+  detached child process; that child (and the separate one spawned by
+  `--detach-embed`) rebuilt its own command line from scratch instead of
+  forwarding the parent's, so it re-resolved the default config in place of
+  whatever `--config` the parent had resolved (summarizing against the wrong
+  config, or skipping the pass entirely if that default config has no chat
+  model configured), and dropped `--summary-batch-size` from both spawns and
+  `--no-summaries` from the background-phases spawn (so a run given
+  `--no-summaries` could still generate them in the background). All three are
+  now forwarded through one shared argv-building function used by both spawn
+  sites. `spelunk index` still exits 0 if summarization fails in the child;
+  this only changes what the child is given, not what it does with a failure.
 
 ## [0.9.3] — 2026-07-08
 
