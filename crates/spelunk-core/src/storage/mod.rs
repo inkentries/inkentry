@@ -79,7 +79,8 @@ pub(super) fn escape_like(s: &str) -> String {
 /// 1. `backend_override = Some("git-notes")` → `GitNotesBackend`.
 /// 2. [`SyncMode::CloudFirst`](crate::config::SyncMode::CloudFirst) **and** an
 ///    explicit `server_url` → `RemoteMemoryBackend`. `cloud_first` is the
-///    debug/override tier: reads/writes go straight to the cloud.
+///    server-authoritative tier: reads/writes go straight to the cloud, and an
+///    unreachable server surfaces as an error (never a silent local read).
 /// 3. Otherwise → local SQLite `memory.db` at `mem_path`. This covers
 ///    [`SyncMode::Offline`] (provable no-cloud, even when `server_url` is set;
 ///    the `SPELUNK_NO_SERVER=1` kill-switch resolves here) and the default
@@ -100,8 +101,8 @@ pub async fn open_memory_backend(
     if backend_override == Some("git-notes") {
         return Ok(Box::new(GitNotesBackend::new()));
     }
-    // Only `cloud_first` (debug/override) routes memory CRUD straight to the
-    // cloud; `offline` and `local_first` resolve to the local store.
+    // Only `cloud_first` (server-authoritative) routes memory CRUD straight to
+    // the cloud; `offline` and `local_first` resolve to the local store.
     let route_remote = cfg.resolve_mode() == SyncMode::CloudFirst;
     if let Some(url) = cfg.server_url.as_ref().filter(|_| route_remote) {
         // The cloud-routing path attaches
@@ -311,7 +312,7 @@ mod backend_selection_tests {
         assert_eq!(
             be.backend_kind(),
             "remote",
-            "cloud_first (debug/override) routes memory CRUD to the cloud"
+            "cloud_first (server-authoritative) routes memory CRUD to the cloud"
         );
     }
 

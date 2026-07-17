@@ -45,12 +45,18 @@ use crate::{
 /// - `memory_backend` — stable identifier for the active memory backend:
 ///   `"sqlite"`, `"git-notes"`, or `"remote"` (see issue #308)
 ///
-/// Additional fields (`tier`, `server_url`, `capabilities`, `embedder_state`,
-/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
-/// richer tooling; treat them as unstable extensions.
+/// Additional fields (`tier`, `mode`, `server_url`, `capabilities`,
+/// `embedder_state`, `embedding_count`, `embedding_pending`,
+/// `embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`) are
+/// present for backward compatibility and richer tooling; treat them as
+/// unstable extensions.
 /// `embedder_state` mirrors the server's `/v1/health` readiness
 /// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
 /// offline or when the reachable server pre-dates the readiness field.
+/// `embedding_pending` is the chunk count still awaiting an embedding;
+/// `embed_worker_alive` and `embed_tokens` describe the recorded embed
+/// worker's liveness and token-weighted progress and are `null` when no embed
+/// work is pending.
 pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let fmt = crate::utils::effective_format(&args.format);
 
@@ -169,6 +175,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "memory_backend": memory_backend_kind,
                 // ── Extensions (backward-compat, may change) ─────────────────
                 "tier": tier_str,
+                "mode": cfg.resolve_mode().as_str(),
                 "server_url": tier_url,
                 "capabilities": caps_json,
                 "embedder_state": embedder_state_json,
@@ -400,9 +407,15 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
                 "  [set server_url to enable semantic search]".to_string()
             };
             println!("Capability tier:  \x1b[33mOffline\x1b[0m");
+            if let Some(line) = sync_mode_line(cfg) {
+                println!("{line}");
+            }
             println!("  search          ast-grep + text{server_hint}");
             println!("  memory          {mem_label}");
-            println!("  explore         unavailable  [set server_url to enable]");
+            println!(
+                "  explore         unavailable{}",
+                explore_offline_hint(cfg.server_url.is_some())
+            );
         }
         Tier::Server {
             url,
@@ -417,6 +430,9 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
                 url.clone()
             };
             println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url_label})\x1b[0m");
+            if let Some(line) = sync_mode_line(cfg) {
+                println!("{line}");
+            }
             let search_label = if caps.search_semantic {
                 "ast-grep + text + semantic"
             } else {
@@ -425,7 +441,11 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
             println!("  search          {search_label}");
             // Embedder readiness: explain *why* semantic search isn't in the
             // search line yet when the server is up but the model isn't ready.
-            if let Some(line) = embedder_status_line(embedder_state) {
+            // Log hints must point at the probed server: `spelunk server logs`
+            // reads the local daemon's logs, which are the wrong place when the
+            // failing embedder lives on an explicit remote server_url.
+            let remote_url = (!*auto_discovered).then_some(url.as_str());
+            if let Some(line) = embedder_status_line(embedder_state, remote_url) {
                 println!("{line}");
             }
             println!("  memory          {mem_label}");
@@ -438,6 +458,29 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
         }
     }
     println!();
+}
+
+/// The `mode` line for `spelunk status`: a neutral one-word sync-mode
+/// indicator. `None` on the solo default (no `server_url`, no explicit mode):
+/// there is no sync configuration to surface. No call to action: the background
+/// reconciler owns convergence, so status must not pre-teach a manual `spelunk
+/// sync` workflow.
+fn sync_mode_line(cfg: &Config) -> Option<String> {
+    if cfg.server_url.is_none() && cfg.mode.is_none() {
+        return None;
+    }
+    Some(format!("  {:<16}{}", "mode", cfg.resolve_mode().as_str()))
+}
+
+/// Hint for the `explore` line when the tier is Offline. With a configured
+/// `server_url` the fix is never "set server_url" (it already is); the truthful
+/// hint is that the configured server could not be reached.
+fn explore_offline_hint(server_url_configured: bool) -> &'static str {
+    if server_url_configured {
+        "  [configured server unreachable]"
+    } else {
+        "  [set server_url to enable]"
+    }
 }
 
 /// Human-readable label for a resolved memory `backend_kind()` (ADR-067 D3).
@@ -455,17 +498,31 @@ fn memory_backend_label(kind: &str) -> &str {
 /// server-side readiness state, or `None` when there is nothing useful to show
 /// (an older server that never reported readiness). Pure so it can be unit
 /// tested without capturing stdout.
-fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
+///
+/// `remote_url` is `Some` when the probed server came from an explicit
+/// `server_url` (not loopback auto-discovery). The failure-hint must then point
+/// at that server's own logs: `spelunk server logs` only reads the local
+/// daemon's log file, so with a healthy local daemon it shows clean logs for a
+/// failure that lives elsewhere.
+fn embedder_status_line(
+    state: &capability::EmbedderState,
+    remote_url: Option<&str>,
+) -> Option<String> {
     use capability::EmbedderState;
     let line = match state {
         EmbedderState::Loading => {
             "  embedder        \x1b[33mloading\x1b[0m  [model warming up — retry shortly]"
                 .to_string()
         }
-        EmbedderState::Unavailable => {
-            "  embedder        \x1b[31munavailable\x1b[0m  [model failed to load — see `spelunk server logs`]"
-                .to_string()
-        }
+        EmbedderState::Unavailable => match remote_url {
+            Some(url) => format!(
+                "  embedder        \x1b[31munavailable\x1b[0m  [model failed to load on team \
+                 server {url}; check that server's own logs]"
+            ),
+            None => "  embedder        \x1b[31munavailable\x1b[0m  [model failed to load; \
+                 see `spelunk server logs`]"
+                .to_string(),
+        },
         EmbedderState::Ready => "  embedder        ready".to_string(),
         EmbedderState::Disabled => {
             "  embedder        disabled  [external embedding backend]".to_string()
@@ -581,29 +638,51 @@ mod tests {
 
     #[test]
     fn embedder_line_loading_advises_warmup() {
-        let line = embedder_status_line(&EmbedderState::Loading).expect("loading renders a line");
+        let line =
+            embedder_status_line(&EmbedderState::Loading, None).expect("loading renders a line");
         assert!(line.contains("loading"));
         assert!(line.contains("warming up"));
     }
 
     #[test]
-    fn embedder_line_unavailable_points_at_logs() {
-        let line =
-            embedder_status_line(&EmbedderState::Unavailable).expect("unavailable renders a line");
+    fn embedder_line_unavailable_loopback_points_at_local_logs() {
+        // Loopback auto-discovery: the failing embedder IS the local daemon, so
+        // `spelunk server logs` is the right place to look.
+        let line = embedder_status_line(&EmbedderState::Unavailable, None)
+            .expect("unavailable renders a line");
         assert!(line.contains("unavailable"));
         assert!(line.contains("failed to load"));
         assert!(line.contains("spelunk server logs"));
     }
 
     #[test]
+    fn embedder_line_unavailable_remote_points_at_that_server_never_local_logs() {
+        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // log, which is clean when the failure lives on the team server. The
+        // hint must name the probed server instead.
+        let line = embedder_status_line(
+            &EmbedderState::Unavailable,
+            Some("https://team.example:7777"),
+        )
+        .expect("unavailable renders a line");
+        assert!(line.contains("unavailable"));
+        assert!(line.contains("https://team.example:7777"), "got: {line}");
+        assert!(
+            !line.contains("spelunk server logs"),
+            "must not point a remote failure at local logs: {line}"
+        );
+    }
+
+    #[test]
     fn embedder_line_ready_is_plain() {
-        let line = embedder_status_line(&EmbedderState::Ready).expect("ready renders a line");
+        let line = embedder_status_line(&EmbedderState::Ready, None).expect("ready renders a line");
         assert!(line.contains("ready"));
     }
 
     #[test]
     fn embedder_line_disabled_notes_external_backend() {
-        let line = embedder_status_line(&EmbedderState::Disabled).expect("disabled renders a line");
+        let line =
+            embedder_status_line(&EmbedderState::Disabled, None).expect("disabled renders a line");
         assert!(line.contains("disabled"));
         assert!(line.contains("external"));
     }
@@ -612,7 +691,82 @@ mod tests {
     fn embedder_line_unknown_renders_nothing() {
         // Older server without the readiness field: no line rather than a
         // confusing "unknown".
-        assert!(embedder_status_line(&EmbedderState::Unknown).is_none());
+        assert!(embedder_status_line(&EmbedderState::Unknown, None).is_none());
+        assert!(embedder_status_line(&EmbedderState::Unknown, Some("https://t:1")).is_none());
+    }
+
+    // ── explore_offline_hint: truthful in both offline states ───────────────────
+
+    #[test]
+    fn explore_hint_without_server_url_suggests_setting_it() {
+        assert!(explore_offline_hint(false).contains("set server_url"));
+    }
+
+    #[test]
+    fn explore_hint_with_server_url_says_unreachable_not_set_it() {
+        // server_url is already set; telling the operator to set it implies the
+        // config is missing and hides the real problem (server unreachable).
+        let hint = explore_offline_hint(true);
+        assert!(hint.contains("unreachable"), "got: {hint}");
+        assert!(!hint.contains("set server_url"), "got: {hint}");
+    }
+
+    // ── sync_mode_line: "local by design" vs "local because broken" ─────────────
+
+    fn clear_no_server_env() {
+        // SAFETY: serialised via #[serial] on every test that calls this, so no
+        // other test reads/writes this env var concurrently.
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn mode_line_absent_on_solo_default() {
+        clear_no_server_env();
+        // No server_url, no explicit mode: nothing to explain, output unchanged.
+        let cfg = crate::config::Config::default();
+        assert!(sync_mode_line(&cfg).is_none());
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
+        clear_no_server_env();
+        let cfg = crate::config::Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            ..Default::default()
+        };
+        let line = sync_mode_line(&cfg).expect("server_url set renders a mode line");
+        assert!(line.contains("local_first"), "got: {line}");
+        // Neutral indicator only: no manual-sync imperative (the background
+        // reconciler owns convergence).
+        assert!(!line.contains("spelunk sync"), "got: {line}");
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn mode_line_cloud_first_is_neutral_mode_word() {
+        clear_no_server_env();
+        let cfg = crate::config::Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            mode: Some(crate::config::SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        let line = sync_mode_line(&cfg).expect("mode line");
+        assert!(line.contains("cloud_first"), "got: {line}");
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    fn mode_line_explicit_offline_shown_even_without_server_url() {
+        clear_no_server_env();
+        // An explicit mode is sync configuration worth surfacing on its own.
+        let cfg = crate::config::Config {
+            mode: Some(crate::config::SyncMode::Offline),
+            ..Default::default()
+        };
+        let line = sync_mode_line(&cfg).expect("explicit mode renders a line");
+        assert!(line.contains("offline"), "got: {line}");
     }
 
     // ── embedding_state_line: what status knows about its own worker (no guessing) ──

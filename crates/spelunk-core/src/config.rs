@@ -24,12 +24,13 @@ use tempfile::TempDir;
 /// | mode          | reads          | writes                    | cloud contact            |
 /// |---------------|----------------|---------------------------|--------------------------|
 /// | `offline`     | local          | local                     | never (even if `server_url` set) |
-/// | `local_first` | local          | local, then async sync    | best-effort              |
-/// | `cloud_first` | cloud, local fallback | cloud, queue locally | required-ish (debug/override only) |
+/// | `local_first` | local          | local, then async background sync | best-effort              |
+/// | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 ///
-/// `cloud_first` is an **explicit debug/override mode only** — a deliberate,
-/// per-invocation override of ADR-005's local-as-source-of-truth invariant. It
-/// is not intended for day-to-day use.
+/// `cloud_first` is the **server-authoritative** option: it is a deliberate
+/// override of ADR-005's local-as-source-of-truth invariant, and an
+/// unreachable or untrusted server is a hard error. There is no silent local
+/// fallback and no local write queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
@@ -39,8 +40,9 @@ pub enum SyncMode {
     /// Default when `server_url` is set: reads and writes are local; a best-effort
     /// background sync converges the cloud replica. Offline-resilient.
     LocalFirst,
-    /// Debug/override only: reads prefer the cloud (local fallback) and writes go
-    /// to the cloud (queued locally if unreachable). Not for day-to-day use.
+    /// Server-authoritative: reads and writes go to the server, and an
+    /// unreachable or untrusted server is a hard error. No silent local
+    /// fallback, no local write queue.
     CloudFirst,
 }
 
