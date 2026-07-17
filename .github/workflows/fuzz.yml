@@ -14,6 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The fuzz targets link spelunk-core, which pulls keyring's
+      # sync-secret-service backend (libdbus-sys); without this its build script
+      # fails when pkg-config can't find dbus-1. Every Linux job in ci.yml
+      # installs the same package for this reason.
+      - name: Install libdbus (keyring sync-secret-service backend)
+        run: sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Install Rust nightly
         run: |
           rustup update nightly
