@@ -9,8 +9,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-07-17
+
 ### Changed
 
+- **`spelunk index` skips generated, vendored, and minified files.** Build output,
+  vendored dependencies, and minified assets are no longer parsed, chunked, or
+  embedded, so the index reflects source you wrote rather than machine-generated files.
 - **Linux release binaries now target glibc 2.31 as the support floor.** Builds
   run in a `debian:11` (Bullseye) container to ensure compatibility with Debian
   11+ and Ubuntu 20.04+. Previously, releases silently required glibc 2.39
@@ -187,6 +192,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk hooks install` honors `core.hooksPath`.** Hooks were previously written
+  to `.git/hooks` even when `core.hooksPath` pointed elsewhere, so git never ran them
+  while `init` reported them installed. Install now resolves the hooks directory via
+  git and writes where git will invoke them.
 - **A TLS certificate failure against a configured `server_url` no longer
   reports "unreachable".** When the capability probe's TLS handshake failed,
   the WARN printed only reqwest's flattened top-level message ("error sending
@@ -478,6 +487,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   now forwarded through one shared argv-building function used by both spawn
   sites. `spelunk index` still exits 0 if summarization fails in the child;
   this only changes what the child is given, not what it does with a failure.
+
+### Known issues
+
+- **`memory archive` and `supersede` do not yet travel via the git-notes carrier.**
+  Archiving or superseding an entry updates your local `memory.db`, but that state
+  change is not yet propagated through `refs/notes/spelunk` to teammates: entries
+  sync, their archived/superseded state does not. A fix is tracked for a follow-up
+  release.
 
 ## [0.9.3] — 2026-07-08
 
