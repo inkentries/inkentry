@@ -21,10 +21,14 @@ used; the binary is the same in both tiers.
 | **Memory search** | Not available | Server encodes query, does KNN over server-side memory DB |
 | **Memory harvest** | Not available | LLM extraction via server |
 | **Explore** | Not available | CLI pre-fetches context chunks locally, sends to server LLM loop |
-| **Plan** | Not available | LLM planning via server |
 
 **The CLI never calls embedding or LLM APIs directly, regardless of
 configuration.** All inference routes through `spelunk-server`.
+
+> **Reserved: Plan.** `/plan` is reserved as a server-owned route per ADR-002,
+> but nothing ships today: there is no `spelunk plan` subcommand and no `/plan`
+> server route. The CLI parses a `plan` capability from the server health
+> response but deliberately keeps it out of all output, so it never surfaces.
 
 **Tier 0 requires no external tools.** Uses `ast-grep` structural search.
 
@@ -104,8 +108,8 @@ newer endpoints.
 
 In v0.8.0 the common case is no `server_url` at all: the CLI discovers (or
 starts) a **local** server on the loopback address. This is what makes Tier 1
-the default for a fresh single-user install — semantic search, `explore`, and
-`plan` work out of the box without the user configuring or managing a server.
+the default for a fresh single-user install — semantic search and `explore`
+work out of the box without the user configuring or managing a server.
 
 Discovery runs before the configured-`server_url` probe and only on loopback:
 
@@ -149,7 +153,7 @@ Key points:
   `spelunk-server` as a background child owned by the current user, then waits
   for its health endpoint before proceeding.
 - **`SPELUNK_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
-  autostart. The CLI runs in Tier 0 and inference-only commands exit 2 with the
+  autostart. The CLI runs in Tier 0 and inference-only commands exit 1 with the
   locked-feature message.
 
 <!-- The discovery timeout (250 ms) and autostart/handshake UX are confirmed
@@ -235,8 +239,12 @@ Server:  https://spelunk.internal.example.com  ✗  unreachable — offline mode
 
 ## Error messages for locked features
 
-When a Tier 1 feature is invoked but no server is reachable, exit 2 with a
-consistent message format:
+When a Tier 1 feature is invoked but no server is reachable, the command exits
+1. Two deliberate message formats are used, selected by which command was run;
+both are written to stderr with `eprintln!` (never a panic).
+
+The `require_tier1` commands (`explore`, `memory push`, `memory pull`, `sync`,
+`memory watch`) point the user at `server_url`:
 
 ```
 Error: 'spelunk explore' requires spelunk-server.
@@ -244,14 +252,21 @@ Set server_url in ~/.config/spelunk/config.toml to enable this feature.
        (Tried: https://spelunk.internal.example.com — connection refused)
 ```
 
-If `server_url` is not set at all:
+The `(Tried: ...)` line is appended only when a `server_url` is configured but
+unreachable. If `server_url` is not set at all it is omitted:
 
 ```
 Error: 'spelunk explore' requires spelunk-server.
 Set server_url in ~/.config/spelunk/config.toml to enable this feature.
 ```
 
-Use `eprintln!` to stderr. Do not panic.
+The inference-only commands (`memory search`, `memory harvest`) point the user
+at the local server instead, and also exit 1:
+
+```
+Error: 'spelunk memory search' requires spelunk-server.
+Run `spelunk server start` to enable this feature.
+```
 
 ---
 
@@ -295,9 +310,9 @@ updated `SearchRequest` schema.
 
 ---
 
-## Explore and Plan — context assembly
+## Explore — context assembly
 
-For `spelunk explore` and `spelunk plan`, the CLI is responsible for context
+For `spelunk explore`, the CLI is responsible for context
 retrieval from the local index before calling the server. This preserves data
 ownership: chunk content is never pushed to the server for storage.
 
@@ -306,21 +321,9 @@ Flow:
 1. CLI runs local text + (if available) semantic search to assemble
    `context_chunks`.
 2. CLI sends `{query, context_chunks}` to `POST /v1/projects/{id}/explore`
-   (SSE) or `POST /v1/projects/{id}/plan`.
+   (SSE).
 3. Server runs LLM reasoning loop over the provided context.
 4. Server does not store the context chunks.
 
 `context_chunks` are ephemeral — they exist only for the duration of the
 request.
-
----
-
-## Definition of done
-
-- [ ] `Config` gains `server_url` / `server_key` fields
-- [ ] Capability probe implemented and cached per-process
-- [ ] `spelunk status` shows capability tier section
-- [ ] `spelunk check` shows server reachability line when `server_url` is set
-- [ ] Error messages follow the format above for all locked features
-- [ ] `spelunk index` Phase 2 implemented (embedding via server)
-- [ ] All existing `cargo test` suites pass; `cargo fmt` + `cargo clippy` clean
