@@ -504,6 +504,26 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Cheaply check whether the personal config sets `llm_model`, without
+    /// resolving the bearer credential or touching the secret store.
+    ///
+    /// Callers that only need this one field (the CLI's pre-parse help gate,
+    /// run ahead of and in addition to the real [`Config::load`]) must not pay
+    /// for a full load, which pulls the secret store into the process for a
+    /// value they never use.
+    pub fn llm_model_configured(path: Option<&Path>) -> bool {
+        let global_path = match path {
+            Some(p) => p.to_path_buf(),
+            None => spelunk_config_dir().join("config.toml"),
+        };
+        let Ok(raw) = std::fs::read_to_string(&global_path) else {
+            return false;
+        };
+        toml::from_str::<Config>(&raw)
+            .map(|c| c.llm_model.is_some())
+            .unwrap_or(false)
+    }
+
     /// Load config with layered overrides:
     ///   1. Defaults
     ///   2. `~/.config/spelunk/config.toml` (global personal)
@@ -606,10 +626,6 @@ impl Config {
             );
         }
 
-        // The stored credential (post-migration) is the personal-tier fallback
-        // bearer, below env and `[auth]` but above the project-level team key.
-        let stored_server_key = store.get(KEY_SERVER_KEY)?;
-
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
             cfg.server_url = Some(v);
@@ -646,14 +662,17 @@ impl Config {
         // The `[auth]` tokens are kept in `cfg.auth` so the refresh-on-expiry /
         // org-switch paths can reach the refresh token; every other call site
         // only ever reads the resolved `cfg.server_key`.
+        //
+        // Tiers 1-2 resolve without the secret store at all, so the store is
+        // only actually read when neither is present: a value that would be
+        // discarded anyway is never fetched, which spares a keychain prompt
+        // on every `spelunk login`'d or `SPELUNK_SERVER_KEY` invocation.
         cfg.server_key = if let Some(v) = env_server_key {
             Some(v)
         } else if let Some(auth) = &cfg.auth {
             Some(auth.access_token.clone())
-        } else if let Some(v) = stored_server_key {
-            Some(v)
         } else {
-            project_server_key
+            store.get(KEY_SERVER_KEY)?.or(project_server_key)
         };
 
         Ok(cfg)

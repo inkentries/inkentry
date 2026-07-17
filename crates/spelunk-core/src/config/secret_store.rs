@@ -40,7 +40,9 @@
 //! any diagnostic output.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// The keyring "service" name under which all spelunk secrets are grouped.
 ///
@@ -86,6 +88,21 @@ pub trait SecretStore: Send + Sync {
 // Keyring-backed store (OS keychain)
 // ───────────────────────────────────────────────────────────────────────────
 
+/// Process-wide cache of keychain reads, keyed by entry name.
+///
+/// One CLI invocation can end up calling [`Config::load`](crate::config::Config::load)
+/// (or otherwise resolving the secret store) more than once, and each
+/// *uncached* keychain read is a separate OS authorization, not a free
+/// in-memory lookup: on macOS a per-item ACL that hasn't been granted yet
+/// prompts again on every read. Caching here bounds a given entry to at most
+/// one real keychain access per process no matter how many call sites ask
+/// for it.
+static READ_CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+
+fn read_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// OS-keychain-backed [`SecretStore`] using the [`keyring`] crate.
 ///
 /// Each secret is a keyring entry `(service = "spelunk", user = <key>)`.
@@ -111,24 +128,39 @@ impl KeyringStore {
 
 impl SecretStore for KeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>> {
-        match Self::entry(key)?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("reading keychain entry {key}")),
+        if let Some(cached) = read_cache().lock().unwrap().get(key) {
+            return Ok(cached.clone());
         }
+        let value = match Self::entry(key)?.get_password() {
+            Ok(v) => Some(v),
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => return Err(e).with_context(|| format!("reading keychain entry {key}")),
+        };
+        read_cache()
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.clone());
+        Ok(value)
     }
 
     fn set(&self, key: &str, value: &str) -> Result<()> {
         Self::entry(key)?
             .set_password(value)
-            .with_context(|| format!("writing keychain entry {key}"))
+            .with_context(|| format!("writing keychain entry {key}"))?;
+        read_cache()
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), Some(value.to_string()));
+        Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<()> {
         match Self::entry(key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("deleting keychain entry {key}")),
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e).with_context(|| format!("deleting keychain entry {key}")),
         }
+        read_cache().lock().unwrap().insert(key.to_string(), None);
+        Ok(())
     }
 
     fn kind(&self) -> &'static str {
