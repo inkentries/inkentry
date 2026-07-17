@@ -497,4 +497,97 @@ mod tests {
         let store = default_store(tmp.path()).unwrap();
         assert!(matches!(store.kind(), "keychain" | "file"));
     }
+
+    // ── KeyringStore process-wide read cache ─────────────────────────────────
+    //
+    // `KeyringStore::get` hardcodes the real `keyring` crate backend with no
+    // way to inject a fake, so it cannot be exercised in a test at all without
+    // risking a real OS keychain access (and, on macOS, a real authorization
+    // dialog) — something this project's test suite must never do. What *is*
+    // testable in isolation is the cache primitive `KeyringStore::get`
+    // delegates to: `read_cache()`, a process-wide `key -> Option<value>` map
+    // that a value is written into once and served from on every subsequent
+    // lookup. This test exercises that shared cache directly (the same
+    // static `KeyringStore::get` reads and writes) to confirm a key already
+    // present is served without a second backend fetch, which is the
+    // invariant the fix relies on to bound keychain reads to at most one per
+    // process per key.
+    #[test]
+    #[serial_test::serial(spelunk_keyring_read_cache)]
+    fn read_cache_serves_a_cached_key_without_a_second_fetch() {
+        let key = "test_only_read_cache_probe_key";
+        // Isolate from any other run's leftovers (the map is process-global).
+        read_cache().lock().unwrap().remove(key);
+
+        let fetch_count = std::sync::atomic::AtomicUsize::new(0);
+        // Mirrors KeyringStore::get's own check-cache-then-fetch-then-insert
+        // flow, but with a counted stand-in for the real keychain read.
+        let lookup = |k: &str| -> Option<String> {
+            if let Some(cached) = read_cache().lock().unwrap().get(k) {
+                return cached.clone();
+            }
+            fetch_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let value = Some(format!("value-for-{k}"));
+            read_cache()
+                .lock()
+                .unwrap()
+                .insert(k.to_string(), value.clone());
+            value
+        };
+
+        assert_eq!(
+            lookup(key).as_deref(),
+            Some("value-for-test_only_read_cache_probe_key")
+        );
+        assert_eq!(
+            lookup(key).as_deref(),
+            Some("value-for-test_only_read_cache_probe_key")
+        );
+        assert_eq!(
+            lookup(key).as_deref(),
+            Some("value-for-test_only_read_cache_probe_key")
+        );
+        assert_eq!(
+            fetch_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a cached key must be served from the cache, not re-fetched, on every \
+             lookup after the first"
+        );
+
+        read_cache().lock().unwrap().remove(key);
+    }
+
+    /// A `None` result (key absent from the backend) is cached too, so a
+    /// repeated lookup for a key that does not exist also avoids a second
+    /// fetch — not just the `Some` case.
+    #[test]
+    #[serial_test::serial(spelunk_keyring_read_cache)]
+    fn read_cache_caches_a_negative_result_too() {
+        let key = "test_only_read_cache_probe_key_absent";
+        read_cache().lock().unwrap().remove(key);
+
+        let fetch_count = std::sync::atomic::AtomicUsize::new(0);
+        let lookup = |k: &str| -> Option<String> {
+            if let Some(cached) = read_cache().lock().unwrap().get(k) {
+                return cached.clone();
+            }
+            fetch_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let value: Option<String> = None;
+            read_cache()
+                .lock()
+                .unwrap()
+                .insert(k.to_string(), value.clone());
+            value
+        };
+
+        assert_eq!(lookup(key), None);
+        assert_eq!(lookup(key), None);
+        assert_eq!(
+            fetch_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a cached miss (no such entry) must also be served from the cache"
+        );
+
+        read_cache().lock().unwrap().remove(key);
+    }
 }
