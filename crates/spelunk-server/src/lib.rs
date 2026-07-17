@@ -227,6 +227,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::supersede_note,
         handlers::project_stats,
         handlers::harvested_shas,
+        handlers::push_memory_batch,
         handlers::memory_since,
         handlers::memory_stream,
         handlers::index_embed,
@@ -243,6 +244,10 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::BoolResponse,
         handlers::CountResponse,
         handlers::SupersedeRequest,
+        handlers::BatchNoteItem,
+        handlers::BatchPushRequest,
+        handlers::BatchItemResult,
+        handlers::BatchPushResponse,
         handlers::SinceQuery,
         handlers::StreamQuery,
         handlers::HealthResponse,
@@ -382,6 +387,16 @@ pub fn router_with_limits(
         .route(
             "/v1/projects/{project_id}/memory",
             get(handlers::list_notes),
+        )
+        // Literal siblings under `/memory/` (this route, `search`, `since`,
+        // `harvested-shas`) must stay registered here, in the same router as
+        // `/memory/{note_id}` below: matchit resolves a static segment over a
+        // param capture regardless of registration order, so `batch` never
+        // falls into `{note_id}` (which has no POST handler and would 405, not
+        // 404: that was this route's original bug, not a 404).
+        .route(
+            "/v1/projects/{project_id}/memory/batch",
+            post(handlers::push_memory_batch),
         )
         .route(
             "/v1/projects/{project_id}/memory/search",
