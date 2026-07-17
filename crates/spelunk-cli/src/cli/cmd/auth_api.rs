@@ -363,7 +363,8 @@ pub async fn poll_token(
 /// `POST /user_management/authenticate` with the refresh-token grant.
 ///
 /// With `organization_id` set this is a silent org-switch; without it, a plain
-/// refresh. A non-member / unknown organisation surfaces as a clear error.
+/// refresh reverts to the account's default org. A non-member / unknown
+/// organisation surfaces as a clear error.
 pub async fn refresh_token(
     client: &reqwest::Client,
     workos_url: &str,
@@ -400,6 +401,11 @@ pub async fn refresh_token(
 /// WorkOS (refresh grant, ADR-047), persists the rotated tokens to `[auth]`, and
 /// returns the tokens to use.
 ///
+/// The refresh re-sends `auth.org_id` as `organization_id` so a prior `org
+/// switch` survives rotation — WorkOS's refresh grant otherwise reverts to the
+/// account's default org when `organization_id` is omitted, silently undoing
+/// the switch on every expiry (see [`refresh_token`]).
+///
 /// When the token is still valid, `auth` is returned unchanged (no network
 /// call). A refresh failure (revoked/expired refresh token) surfaces a clear
 /// "run `spelunk login`" error rather than a raw 401 from the downstream call.
@@ -417,12 +423,26 @@ pub async fn ensure_fresh_token(
         return Ok(auth.clone());
     }
 
-    let rotated = refresh_token(client, workos_url, client_id, &auth.refresh_token, None)
-        .await
-        .map_err(|e| e.context("session expired and token refresh failed — run `spelunk login`"))?
-        .into_auth_tokens();
+    let rotated = refresh_token(
+        client,
+        workos_url,
+        client_id,
+        &auth.refresh_token,
+        org_id_for_refresh(&auth.org_id),
+    )
+    .await
+    .map_err(|e| e.context("session expired and token refresh failed — run `spelunk login`"))?
+    .into_auth_tokens();
     persist(&rotated)?;
     Ok(rotated)
+}
+
+/// The `organization_id` to re-request on a plain refresh: `auth.org_id` when
+/// set, `None` when empty (an orgless account, or tokens predating org
+/// tracking) so the refresh grant falls back to its default-org behaviour
+/// instead of sending an empty `organization_id` form field.
+pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
+    (!org_id.is_empty()).then_some(org_id)
 }
 
 /// Resolve the bearer token to send to cloud-api, refreshing the stored WorkOS
@@ -684,7 +704,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_fresh_token_refreshes_and_persists_when_expired() {
         use std::sync::{Arc, Mutex};
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_string_contains, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
@@ -692,6 +712,7 @@ mod tests {
             fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64, "org_id": "org_1" }));
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
+            .and(body_string_contains("organization_id=org_1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": fresh_jwt,
                 "refresh_token": "rt-rotated",
@@ -725,6 +746,108 @@ mod tests {
             "rt-rotated",
             "rotated tokens must be persisted"
         );
+    }
+
+    /// Regression test for the org-switch-doesn't-stick bug: a refresh of an
+    /// expired token scoped to a switched-to org (`auth.org_id`) must re-send
+    /// that same org as `organization_id`, so the session stays scoped to it
+    /// instead of silently reverting to the account's default org.
+    #[tokio::test]
+    async fn ensure_fresh_token_preserves_switched_org_across_refresh() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh_jwt =
+            fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64, "org_id": "org_switched" }));
+        // The mock only answers a request whose form body names the switched
+        // org; a plain refresh (no organization_id) would 404 here instead.
+        Mock::given(method("POST"))
+            .and(path("/user_management/authenticate"))
+            .and(body_string_contains("organization_id=org_switched"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": fresh_jwt,
+                "refresh_token": "rt-rotated",
+                "organization_id": "org_switched",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Simulates state right after `org switch org_switched`: the access
+        // token has since expired, but auth.org_id still names the switched org.
+        let expired_after_switch = AuthTokens {
+            access_token: "at-expired".into(),
+            refresh_token: "rt-old".into(),
+            expires_at: 0,
+            org_id: "org_switched".into(),
+        };
+
+        let client = build_client().unwrap();
+        let out = ensure_fresh_token(
+            &client,
+            &server.uri(),
+            "client_test",
+            &expired_after_switch,
+            |_| Ok(()),
+        )
+        .await
+        .expect("refresh scoped to the switched org should succeed");
+
+        assert_eq!(
+            out.org_id, "org_switched",
+            "the rotated token must stay scoped to the switched org, not revert to the default"
+        );
+    }
+
+    /// An account with no active org (`org_id` empty — e.g. tokens from before
+    /// `org switch` was ever used) falls back to a plain refresh: no
+    /// `organization_id` field is sent at all, matching prior behaviour.
+    #[tokio::test]
+    async fn ensure_fresh_token_empty_org_id_sends_plain_refresh() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+        struct AssertNoOrgId;
+        impl Respond for AssertNoOrgId {
+            fn respond(&self, request: &Request) -> ResponseTemplate {
+                let body = String::from_utf8_lossy(&request.body);
+                assert!(
+                    !body.contains("organization_id"),
+                    "an empty org_id must not send organization_id at all, got body: {body}"
+                );
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64 })),
+                    "refresh_token": "rt-rotated",
+                }))
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/user_management/authenticate"))
+            .respond_with(AssertNoOrgId)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let expired_no_org = AuthTokens {
+            access_token: "at-expired".into(),
+            refresh_token: "rt-old".into(),
+            expires_at: 0,
+            org_id: String::new(),
+        };
+
+        let client = build_client().unwrap();
+        ensure_fresh_token(
+            &client,
+            &server.uri(),
+            "client_test",
+            &expired_no_org,
+            |_| Ok(()),
+        )
+        .await
+        .expect("plain refresh with no org should still succeed");
     }
 
     /// When the refresh grant is rejected (revoked/expired refresh token), the
