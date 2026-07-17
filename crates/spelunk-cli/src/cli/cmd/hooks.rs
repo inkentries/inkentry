@@ -409,4 +409,108 @@ mod tests {
             "the embedded path must be absolute: {quoted}"
         );
     }
+
+    /// A repo with a real identity and one commit, isolated from the
+    /// developer's ambient git config.
+    fn init_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f.txt"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+    }
+
+    fn set_hooks_path(dir: &Path, path: &str) {
+        let status = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", path])
+            .current_dir(dir)
+            .status()
+            .expect("set core.hooksPath");
+        assert!(status.success());
+    }
+
+    /// A fresh temp dir, canonicalized. `resolve_hooks_dir`/`hooks_dir_is_tracked`
+    /// compare their `dir` argument against git's own output (`--show-toplevel`,
+    /// `--git-common-dir`), which git always reports symlink-resolved; every real
+    /// call site gets a `dir` the same way, via `std::env::current_dir()`, which
+    /// resolves symlinks for the same reason. `tempfile`'s raw path does not (on
+    /// macOS `$TMPDIR` is itself a symlink), so tests comparing paths must
+    /// canonicalize to match what these functions actually receive in practice.
+    fn canonical_tmp_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        tmp.path().canonicalize().unwrap()
+    }
+
+    #[test]
+    fn resolve_hooks_dir_defaults_to_dot_git_hooks_when_core_hooks_path_is_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+
+        assert_eq!(
+            resolve_hooks_dir(&dir).unwrap(),
+            dir.join(".git").join("hooks")
+        );
+    }
+
+    #[test]
+    fn resolve_hooks_dir_honors_a_relative_core_hooks_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        set_hooks_path(&dir, ".githooks-custom");
+
+        assert_eq!(
+            resolve_hooks_dir(&dir).unwrap(),
+            dir.join(".githooks-custom")
+        );
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_false_for_the_default_git_hooks_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(!hooks_dir_is_tracked(&dir, &hooks_dir).unwrap());
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_true_for_a_directory_inside_the_working_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        set_hooks_path(&dir, ".husky");
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(hooks_dir_is_tracked(&dir, &hooks_dir).unwrap());
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_false_for_a_hooks_path_outside_the_repository() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = canonical_tmp_dir(&tmp);
+        let repo = base.join("repo");
+        let outside = base.join("outside-hooks");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        init_repo(&repo);
+        set_hooks_path(&repo, outside.to_str().unwrap());
+        let hooks_dir = resolve_hooks_dir(&repo).unwrap();
+
+        assert!(!hooks_dir_is_tracked(&repo, &hooks_dir).unwrap());
+    }
 }
