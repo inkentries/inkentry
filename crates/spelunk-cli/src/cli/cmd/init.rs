@@ -403,57 +403,19 @@ fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// Install the git post-commit hook, returning a short status string.
+///
+/// Shares `hooks.rs`'s resolution logic rather than re-implementing it: a
+/// second hardcoded `$GIT_DIR/hooks` here previously disagreed with
+/// `core.hooksPath` in exactly the same way `spelunk hooks install` did.
 fn install_hook_for_init() -> Result<String> {
-    // Re-use the hook installation logic from hooks.rs by calling the same
-    // underlying helper used there: replicate it inline to avoid making private
-    // functions pub, keeping the hook module self-contained.
     let cwd = std::env::current_dir().context("getting current directory")?;
-    let git_dir = gix::discover(&cwd)
-        .context("not inside a git repository")?
-        .git_dir()
-        .to_path_buf();
-    let hooks_dir = git_dir.join("hooks");
-    std::fs::create_dir_all(&hooks_dir)?;
-    let hook_path = hooks_dir.join("post-commit");
-
-    if hook_path.exists() {
-        let existing = std::fs::read_to_string(&hook_path)?;
-        if existing.contains("spelunk post-commit hook") {
-            return Ok(format!("already installed at {}", hook_path.display()));
+    match super::hooks::install_post_commit_hook(&cwd)? {
+        super::hooks::Installed::Wrote(p) => Ok(format!("installed at {}", p.display())),
+        super::hooks::Installed::Updated(p) => Ok(format!("updated at {}", p.display())),
+        super::hooks::Installed::AlreadyPresent(p) => {
+            Ok(format!("already installed at {}", p.display()))
         }
-        anyhow::bail!(
-            "a post-commit hook already exists at {} and was not installed by spelunk; \
-             merge manually or remove it first",
-            hook_path.display()
-        );
     }
-
-    const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-# spelunk post-commit hook — installed by `spelunk hooks install`
-# Keeps the spelunk index in sync and harvests memory from new commits.
-# Silently skips if `spelunk` is not in PATH, so teammates without spelunk are unaffected.
-
-if ! command -v spelunk >/dev/null 2>&1; then
-  exit 0
-fi
-
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-
-spelunk index "$PROJECT_ROOT"
-spelunk memory harvest --git-range HEAD~1..HEAD
-"#;
-
-    std::fs::write(&hook_path, POST_COMMIT_HOOK)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&hook_path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&hook_path, perms)?;
-    }
-
-    Ok(format!("installed at {}", hook_path.display()))
 }
 
 #[cfg(test)]

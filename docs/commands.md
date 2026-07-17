@@ -541,9 +541,21 @@ binary embedded rather than a `PATH` lookup, so it keeps working under GUI git
 clients. If you move or reinstall spelunk the hook fails loudly; re-run
 `spelunk hooks install --pre-push` to re-resolve the path.
 
+`install` resolves the hooks directory the way git itself does
+(`git rev-parse --git-path hooks`), so it honors `core.hooksPath` if you have
+one set (as husky, lefthook, and the pre-commit framework do) and follows a
+linked worktree back to its shared hooks directory.
+
 Neither hook overwrites one it did not write: if a hook of that name already
-exists, `install` reports it and leaves the file alone. Git never clones
-`.git/hooks`, so installing either hook affects only your own clone.
+exists, `install` reports it and leaves the file alone. If the resolved hooks
+directory sits inside the repository's tracked working tree (the husky/lefthook
+pattern, where `core.hooksPath` points at a committed directory such as
+`.husky/`), `install` refuses instead of writing there: that directory is
+shared with every clone, so a silent write would commit spelunk's hook to the
+whole team rather than just this machine. Add the hook to that directory
+yourself, or point `core.hooksPath` at an untracked location and re-run.
+Otherwise, git never clones `.git/hooks`, so installing either hook affects
+only your own clone.
 
 `uninstall` removes every hook spelunk installed, leaving any other hooks alone.
 

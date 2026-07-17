@@ -122,35 +122,115 @@ fn pre_push_hook_body() -> Result<String> {
 /// Whether spelunk's own pre-push hook is installed in the repo holding `dir`.
 /// False for a foreign pre-push hook: that one publishes nothing.
 pub fn pre_push_installed(dir: &Path) -> bool {
-    let Ok(git_dir) = find_git_dir_in(dir) else {
+    let Ok(hooks_dir) = resolve_hooks_dir(dir) else {
         return false;
     };
-    std::fs::read_to_string(git_dir.join("hooks").join(PRE_PUSH.name))
+    std::fs::read_to_string(hooks_dir.join(PRE_PUSH.name))
         .is_ok_and(|body| body.contains(PRE_PUSH.marker))
 }
 
-fn find_git_dir() -> Result<std::path::PathBuf> {
-    let cwd = std::env::current_dir().context("getting current directory")?;
-    find_git_dir_in(&cwd)
+/// Run `git <args>` in `dir` and return trimmed stdout, erroring on a non-zero
+/// exit.
+fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        anyhow::bail!("Not inside a git repository.");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn find_git_dir_in(dir: &Path) -> Result<std::path::PathBuf> {
-    let repo = gix::discover(dir).context("Not inside a git repository.")?;
-    Ok(repo.git_dir().to_path_buf())
+/// Resolve the hooks directory the way git itself would run hooks from:
+/// `git rev-parse --git-path hooks`, run from `dir`. This is the only correct
+/// resolution because it honors `core.hooksPath` (set by husky, lefthook, and
+/// the pre-commit framework) and follows a linked worktree back to its shared
+/// hooks directory. Reading `$GIT_DIR/hooks` directly, as this used to, agrees
+/// with git only when `core.hooksPath` is unset.
+///
+/// The result is canonicalized (via [`spelunk_core::utils::canonicalize`], so
+/// symlinks are resolved and, on Windows, the `\\?\` prefix is stripped)
+/// before it is returned. `hooks_dir_is_tracked` compares this value against
+/// git's own `--show-toplevel` / `--git-common-dir` output with a plain
+/// `PathBuf::starts_with`, which is a component-wise comparison with no
+/// tolerance for two paths naming the same directory in different forms -
+/// resolved vs. un-resolved symlinks, a differently-cased Windows drive
+/// letter, or a `\\?\`-prefixed path next to a plain one. Canonicalizing both
+/// sides is what makes that comparison meaningful.
+fn resolve_hooks_dir(dir: &Path) -> Result<std::path::PathBuf> {
+    let raw = git_output(dir, &["rev-parse", "--git-path", "hooks"])?;
+    let path = std::path::PathBuf::from(raw);
+    // A relative result is relative to `dir`, the cwd git was invoked from
+    // (matches how git itself resolves a relative core.hooksPath). The
+    // target itself (e.g. a `core.hooksPath` that has never been created)
+    // may not exist yet, so canonicalize the base - which always exists -
+    // before joining, rather than the full result.
+    Ok(if path.is_absolute() {
+        spelunk_core::utils::canonicalize(&path)
+    } else {
+        spelunk_core::utils::canonicalize(dir).join(path)
+    })
+}
+
+/// Whether `hooks_dir` sits inside the repository's tracked working tree
+/// rather than under its git directory. True for the husky/lefthook pattern:
+/// `core.hooksPath` pointing at a directory (e.g. `.husky/`) that is itself
+/// committed and shared with every clone. False for the default `.git/hooks`
+/// and for a `core.hooksPath` pointing outside the repo entirely.
+fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
+    let Ok(toplevel) = git_output(dir, &["rev-parse", "--show-toplevel"]) else {
+        // No working tree (bare repo): nothing to be "inside".
+        return Ok(false);
+    };
+    // `--show-toplevel` is always absolute and always names a directory that
+    // exists, so canonicalizing it is safe unconditionally. `hooks_dir`
+    // (from `resolve_hooks_dir`) is canonicalized the same way, so this
+    // `starts_with` compares two paths in the same normalized form rather
+    // than risking a resolved-vs-unresolved-symlink or Windows case/`\\?\`
+    // mismatch between git's notion of the path and ours.
+    let toplevel = spelunk_core::utils::canonicalize(&std::path::PathBuf::from(toplevel));
+
+    let common_dir = git_output(dir, &["rev-parse", "--git-common-dir"])?;
+    let common_dir = std::path::PathBuf::from(common_dir);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        dir.join(common_dir)
+    };
+    // The `.git` directory always exists, so this is always safe too.
+    let common_dir = spelunk_core::utils::canonicalize(&common_dir);
+
+    Ok(hooks_dir.starts_with(&toplevel) && !hooks_dir.starts_with(&common_dir))
 }
 
 /// What [`write_hook`] did.
-enum Installed {
+pub(crate) enum Installed {
     Wrote(std::path::PathBuf),
     /// Ours, but the body changed: a moved binary re-resolves through here.
     Updated(std::path::PathBuf),
     AlreadyPresent(std::path::PathBuf),
 }
 
-/// Write `body` to `<git-dir>/hooks/<spec.name>`, refusing to clobber a hook
-/// spelunk did not write.
-fn write_hook(spec: &HookSpec, body: &str) -> Result<Installed> {
-    let hooks_dir = find_git_dir()?.join("hooks");
+/// Write `body` to the git-resolved hooks directory for the repo at `dir`,
+/// refusing to clobber a hook spelunk did not write.
+fn write_hook(dir: &Path, spec: &HookSpec, body: &str) -> Result<Installed> {
+    let hooks_dir = resolve_hooks_dir(dir)?;
+
+    // A tracked hooks directory is shared with every teammate on clone: writing
+    // into it is committing spelunk's hook to the team, not to this machine, so
+    // it needs the user's own commit rather than a silent write on their behalf.
+    if hooks_dir_is_tracked(dir, &hooks_dir)? {
+        anyhow::bail!(
+            "core.hooksPath resolves to {}, which is inside this repository's tracked \
+             working tree, so it is shared with every clone. spelunk will not write a hook \
+             there on your behalf; add it to that directory yourself, or point \
+             core.hooksPath at an untracked location and re-run this command.",
+            hooks_dir.display()
+        );
+    }
+
     std::fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join(spec.name);
 
@@ -200,8 +280,19 @@ fn hooks_install(args: HooksInstallArgs) -> Result<()> {
     install_post_commit()
 }
 
+/// Install the post-commit hook in the repo at `dir`. Exposed so `spelunk
+/// init --hook` shares this resolution logic rather than re-implementing it
+/// against a hardcoded `$GIT_DIR/hooks`.
+pub(crate) fn install_post_commit_hook(dir: &Path) -> Result<Installed> {
+    write_hook(dir, &POST_COMMIT, POST_COMMIT_HOOK)
+}
+
+fn cwd() -> Result<std::path::PathBuf> {
+    std::env::current_dir().context("getting current directory")
+}
+
 fn install_post_commit() -> Result<()> {
-    match write_hook(&POST_COMMIT, POST_COMMIT_HOOK)? {
+    match install_post_commit_hook(&cwd()?)? {
         Installed::AlreadyPresent(p) => {
             println!("Hook already installed at {}", p.display());
             return Ok(());
@@ -217,7 +308,7 @@ fn install_post_commit() -> Result<()> {
 }
 
 fn install_pre_push() -> Result<()> {
-    match write_hook(&PRE_PUSH, &pre_push_hook_body()?)? {
+    match write_hook(&cwd()?, &PRE_PUSH, &pre_push_hook_body()?)? {
         Installed::AlreadyPresent(p) => {
             println!("Hook already installed at {}", p.display());
             return Ok(());
@@ -234,7 +325,7 @@ fn install_pre_push() -> Result<()> {
 }
 
 fn hooks_uninstall() -> Result<()> {
-    let hooks_dir = find_git_dir()?.join("hooks");
+    let hooks_dir = resolve_hooks_dir(&cwd()?)?;
     let mut removed = 0usize;
     let mut foreign: Vec<std::path::PathBuf> = Vec::new();
 
@@ -337,6 +428,145 @@ mod tests {
         assert!(
             Path::new(quoted.trim_matches('\'')).is_absolute(),
             "the embedded path must be absolute: {quoted}"
+        );
+    }
+
+    /// A repo with a real identity and one commit, isolated from the
+    /// developer's ambient git config.
+    fn init_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f.txt"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+    }
+
+    fn set_hooks_path(dir: &Path, path: &str) {
+        let status = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", path])
+            .current_dir(dir)
+            .status()
+            .expect("set core.hooksPath");
+        assert!(status.success());
+    }
+
+    /// A fresh temp dir, canonicalized. `resolve_hooks_dir`/`hooks_dir_is_tracked`
+    /// compare their `dir` argument against git's own output (`--show-toplevel`,
+    /// `--git-common-dir`), which git always reports symlink-resolved; every real
+    /// call site gets a `dir` the same way, via `std::env::current_dir()`, which
+    /// resolves symlinks for the same reason. `tempfile`'s raw path does not (on
+    /// macOS `$TMPDIR` is itself a symlink), so tests comparing paths must
+    /// canonicalize to match what these functions actually receive in practice.
+    ///
+    /// This must go through [`spelunk_core::utils::canonicalize`] (the `dunce`
+    /// wrapper), not `Path::canonicalize`/`std::fs::canonicalize` directly: on
+    /// Windows the std version returns the verbatim `\\?\`-prefixed form, while
+    /// `resolve_hooks_dir` and `hooks_dir_is_tracked` canonicalize through the
+    /// `dunce` wrapper and so never produce that prefix. Building an expected
+    /// path from the verbatim form and comparing it against the non-verbatim
+    /// form those functions actually return compares two different spellings
+    /// of the same real directory and fails `assert_eq!`/`PathBuf` equality
+    /// even though nothing is wrong - the fix is to canonicalize both sides
+    /// through the identical helper, not to chase the `\\?\` prefix itself.
+    fn canonical_tmp_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        spelunk_core::utils::canonicalize(tmp.path())
+    }
+
+    #[test]
+    fn resolve_hooks_dir_defaults_to_dot_git_hooks_when_core_hooks_path_is_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+
+        assert_eq!(
+            resolve_hooks_dir(&dir).unwrap(),
+            dir.join(".git").join("hooks")
+        );
+    }
+
+    #[test]
+    fn resolve_hooks_dir_honors_a_relative_core_hooks_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        set_hooks_path(&dir, ".githooks-custom");
+
+        assert_eq!(
+            resolve_hooks_dir(&dir).unwrap(),
+            dir.join(".githooks-custom")
+        );
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_false_for_the_default_git_hooks_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(!hooks_dir_is_tracked(&dir, &hooks_dir).unwrap());
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_true_for_a_directory_inside_the_working_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        set_hooks_path(&dir, ".husky");
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(hooks_dir_is_tracked(&dir, &hooks_dir).unwrap());
+    }
+
+    #[test]
+    fn hooks_dir_is_tracked_false_for_a_hooks_path_outside_the_repository() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = canonical_tmp_dir(&tmp);
+        let repo = base.join("repo");
+        let outside = base.join("outside-hooks");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        init_repo(&repo);
+        set_hooks_path(&repo, outside.to_str().unwrap());
+        let hooks_dir = resolve_hooks_dir(&repo).unwrap();
+
+        assert!(!hooks_dir_is_tracked(&repo, &hooks_dir).unwrap());
+    }
+
+    /// `dir` reaches these functions as `std::env::current_dir()` in real use,
+    /// which does not resolve symlinks. On a machine where the OS temp dir has
+    /// a symlinked component (e.g. macOS, where `$TMPDIR` sits under `/var`,
+    /// itself a symlink to `/private/var`), git resolves that away when it
+    /// prints `--show-toplevel` / `--git-common-dir`, while a hooks_dir built
+    /// by joining onto the raw, un-resolved `dir` does not. A component-wise
+    /// `starts_with` between the two then fails even though both name the
+    /// same real directory - the same class of bug as a Windows drive-letter
+    /// case or `\\?\`-prefix mismatch, reproduced here without needing Windows.
+    #[test]
+    fn hooks_dir_is_tracked_true_with_an_unresolved_symlinked_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf(); // deliberately NOT canonicalized
+        init_repo(&dir);
+        set_hooks_path(&dir, ".husky");
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+
+        assert!(
+            hooks_dir_is_tracked(&dir, &hooks_dir).unwrap(),
+            "must detect the tracked hooks dir even when `dir` itself was \
+             never canonicalized by the caller"
         );
     }
 }
