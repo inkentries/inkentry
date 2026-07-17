@@ -1236,6 +1236,251 @@ mod tests {
         );
     }
 
+    // ── Dir-prune re-include at the walk level: matches git ──────────────────
+
+    /// A `!file` re-include CANNOT escape an excluded parent directory (the walk
+    /// never descends into node_modules/), but a `!dir/` re-include of the
+    /// directory itself DOES bring its contents back. This is the walk-level
+    /// counterpart to filter.rs's `dir_prune_reinclude_semantics`, exercised
+    /// end-to-end through `collect_files`.
+    #[test]
+    fn collect_files_reinclude_respects_pruned_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::create_dir(dir.path().join("node_modules")).unwrap();
+        std::fs::write(dir.path().join("node_modules/keep.js"), "var x=1;\n").unwrap();
+        std::fs::create_dir(dir.path().join("vendor")).unwrap();
+        std::fs::write(dir.path().join("vendor/util.rs"), "fn v() {}\n").unwrap();
+
+        // A `!file` inside a pruned dir does not resurrect it.
+        let file_reinclude =
+            IndexFilter::build(&["!node_modules/keep.js".to_string()], true, true).unwrap();
+        let (files, _) = collect_files(dir.path(), &file_reinclude).unwrap();
+        let names = collected_names(&files);
+        assert!(
+            !names.contains(&"keep.js".to_string()),
+            "a !file line must not re-include a file under a pruned directory"
+        );
+        assert!(names.contains(&"lib.rs".to_string()));
+
+        // A `!dir/` re-include of the directory brings its contents back.
+        let dir_reinclude = IndexFilter::build(&["!vendor/".to_string()], true, true).unwrap();
+        let (files2, _) = collect_files(dir.path(), &dir_reinclude).unwrap();
+        let names2 = collected_names(&files2);
+        assert!(
+            names2.contains(&"util.rs".to_string()),
+            "a !dir/ line must re-include the directory's contents"
+        );
+    }
+
+    // ── Filtered-count contract: pruned-dir contents are never counted ───────
+
+    /// The documented count semantics: files inside a pruned directory are NOT
+    /// added to `filtered` (the walk never descends, so there is no per-file
+    /// decision to count). Only file-level excludes at reachable depths are
+    /// counted. Pins the contract so a later change to walk pruning can't
+    /// silently start (or stop) counting descendants.
+    #[test]
+    fn collect_files_pruned_dir_contents_never_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        // One reachable, file-level exclude: counted.
+        std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+        // Many files (and a nested subdir) inside a pruned directory: none counted.
+        std::fs::create_dir_all(dir.path().join("node_modules/react/lib")).unwrap();
+        std::fs::write(dir.path().join("node_modules/a.js"), "1\n").unwrap();
+        std::fs::write(dir.path().join("node_modules/b.js"), "2\n").unwrap();
+        std::fs::write(dir.path().join("node_modules/react/index.js"), "3\n").unwrap();
+        std::fs::write(dir.path().join("node_modules/react/lib/c.js"), "4\n").unwrap();
+
+        let filter = IndexFilter::build(&[], true, true).unwrap();
+        let (files, filtered) = collect_files(dir.path(), &filter).unwrap();
+
+        assert!(collected_names(&files).contains(&"lib.rs".to_string()));
+        assert_eq!(
+            filtered, 1,
+            "only the reachable file-level exclude is counted; the 4 files under \
+             the pruned node_modules/ are never descended into, so never counted"
+        );
+    }
+
+    // ── Marker exemption: a `!`-re-included file skips generated-marker sniff ──
+
+    /// A user `!` re-include yields `ForceInclude`, which the collect loop treats
+    /// as "keep AND skip the generated-marker check". So a re-included file that
+    /// carries a `@generated` header still survives, whereas the identical file
+    /// without the re-include is dropped by marker detection.
+    #[test]
+    fn collect_files_reincluded_file_exempt_from_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("gen.js"),
+            "// @generated\nfunction f(){return 1;}\n",
+        )
+        .unwrap();
+
+        // Without a re-include: the marker drops it.
+        let plain = IndexFilter::build(&[], true, true).unwrap();
+        let (files, filtered) = collect_files(dir.path(), &plain).unwrap();
+        assert!(!collected_names(&files).contains(&"gen.js".to_string()));
+        assert_eq!(filtered, 1);
+
+        // With `!gen.js`: ForceInclude exempts it from marker detection.
+        let reincluded = IndexFilter::build(&["!gen.js".to_string()], true, true).unwrap();
+        let (files2, filtered2) = collect_files(dir.path(), &reincluded).unwrap();
+        assert!(
+            collected_names(&files2).contains(&"gen.js".to_string()),
+            "a !re-included file must be exempt from generated-marker detection"
+        );
+        assert_eq!(filtered2, 0);
+    }
+
+    // ── Sensitive-layer defense-in-depth: non-dotfile key materials ──────────
+
+    /// The sensitive `OverrideBuilder` (not the index filter) drops key-material
+    /// files. `[index].exclude` re-include attempts have no effect, and turning
+    /// the whole index filter off (`use_default_excludes=false`) does not expose
+    /// them either - proving the two layers are independent. Complements the
+    /// `.env` case with non-dotfile patterns (`*.pem`, private keys) so the
+    /// invariant isn't only tested on hidden files.
+    #[test]
+    fn sensitive_key_material_never_reincludable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.path().join("server.pem"), "-----BEGIN-----\n").unwrap();
+        std::fs::write(dir.path().join("id_rsa"), "-----BEGIN-----\n").unwrap();
+        std::fs::write(dir.path().join("tls.key"), "-----BEGIN-----\n").unwrap();
+
+        // Filter off entirely, plus explicit re-include attempts for each.
+        let filter = IndexFilter::build(
+            &[
+                "!server.pem".to_string(),
+                "!id_rsa".to_string(),
+                "!tls.key".to_string(),
+            ],
+            false,
+            false,
+        )
+        .unwrap();
+        let (files, _) = collect_files(dir.path(), &filter).unwrap();
+        let names = collected_names(&files);
+
+        assert!(names.contains(&"keep.rs".to_string()));
+        for secret in ["server.pem", "id_rsa", "tls.key"] {
+            assert!(
+                !names.contains(&secret.to_string()),
+                "sensitive file {secret} must stay excluded regardless of [index] config"
+            );
+        }
+    }
+
+    // ── Cleanup-on-reindex: full cascade across every table ──────────────────
+
+    /// Strengthens the file-row cleanup test: after flipping the filter on and
+    /// re-indexing, the previously-indexed junk must be gone from files, chunks,
+    /// embeddings, AND graph_edges - not just the files row - while the real
+    /// source file's rows in every table survive. Embeddings are inserted by
+    /// hand after run 1 (the parse phase never embeds), so the assertion proves
+    /// the `delete_file` cascade clears the embeddings table too.
+    #[test]
+    fn reindex_with_filter_on_cleans_up_all_tables() {
+        use indicatif::MultiProgress;
+
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn real() {}\n").unwrap();
+        // A JS file that parses into named chunks (so graph/mention edges exist)
+        // and is dropped by the default `*.min.js` glob once the filter is on.
+        std::fs::write(
+            dir.path().join("app.min.js"),
+            "function junk(){return 1;}\nfunction more(){return junk();}\n",
+        )
+        .unwrap();
+        let args = default_args(dir.path().to_path_buf());
+        let mp = MultiProgress::new();
+
+        // Run 1: filter off; the junk is indexed like any JS file.
+        let mut cfg_off = crate::config::Config::default();
+        cfg_off.index.use_default_excludes = false;
+        cfg_off.index.detect_generated = false;
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
+
+        // The junk has chunks and graph edges before cleanup.
+        let junk_chunks = db.chunks_for_file("app.min.js").unwrap();
+        assert!(
+            !junk_chunks.is_empty(),
+            "junk must have chunk rows while the filter is off"
+        );
+        assert!(
+            !db.edges_for_file("app.min.js").unwrap().is_empty(),
+            "junk must have graph/mention edge rows while the filter is off"
+        );
+
+        // Embed both files by hand (the parse phase never writes embeddings).
+        for c in db.chunks_for_file("app.min.js").unwrap() {
+            db.insert_embedding(
+                c.chunk_id,
+                &vec![0.1f32; spelunk_core::embeddings::EMBEDDING_DIM],
+            )
+            .unwrap();
+        }
+        for c in db.chunks_for_file("lib.rs").unwrap() {
+            db.insert_embedding(
+                c.chunk_id,
+                &vec![0.2f32; spelunk_core::embeddings::EMBEDDING_DIM],
+            )
+            .unwrap();
+        }
+        let embeddings_before = db.stats().unwrap().embedding_count;
+        assert_eq!(
+            embeddings_before as usize,
+            db.chunks_for_file("app.min.js").unwrap().len()
+                + db.chunks_for_file("lib.rs").unwrap().len(),
+            "both files' chunks are embedded before cleanup"
+        );
+
+        // Run 2: filter on; app.min.js is excluded, so cleanup_stale purges it.
+        let cfg_on = crate::config::Config::default();
+        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
+        assert!(r2.filtered >= 1, "app.min.js is filtered on re-index");
+
+        // Files row gone.
+        let files_now: Vec<String> = db
+            .file_paths_under("")
+            .unwrap()
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+        assert!(!files_now.iter().any(|p| p == "app.min.js"));
+        assert!(files_now.iter().any(|p| p == "lib.rs"));
+
+        // Chunks gone for junk, kept for the real file.
+        assert!(
+            db.chunks_for_file("app.min.js").unwrap().is_empty(),
+            "junk chunk rows must be deleted on cleanup"
+        );
+        let real_chunks = db.chunks_for_file("lib.rs").unwrap();
+        assert!(!real_chunks.is_empty(), "real file's chunks survive");
+
+        // Graph edges gone for junk.
+        assert!(
+            db.edges_for_file("app.min.js").unwrap().is_empty(),
+            "junk graph/mention edge rows must be deleted on cleanup"
+        );
+
+        // Embeddings: only the real file's remain.
+        let embeddings_after = db.stats().unwrap().embedding_count;
+        assert_eq!(
+            embeddings_after as usize,
+            real_chunks.len(),
+            "the junk's embedding rows must be gone; only the real file's remain"
+        );
+        assert!(
+            embeddings_after < embeddings_before,
+            "cleanup must reduce the embedding count"
+        );
+    }
+
     // ── Output: the filtered-count notice line ───────────────────────────────
 
     #[test]
