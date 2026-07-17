@@ -470,8 +470,19 @@ mod tests {
     /// resolves symlinks for the same reason. `tempfile`'s raw path does not (on
     /// macOS `$TMPDIR` is itself a symlink), so tests comparing paths must
     /// canonicalize to match what these functions actually receive in practice.
+    ///
+    /// This must go through [`spelunk_core::utils::canonicalize`] (the `dunce`
+    /// wrapper), not `Path::canonicalize`/`std::fs::canonicalize` directly: on
+    /// Windows the std version returns the verbatim `\\?\`-prefixed form, while
+    /// `resolve_hooks_dir` and `hooks_dir_is_tracked` canonicalize through the
+    /// `dunce` wrapper and so never produce that prefix. Building an expected
+    /// path from the verbatim form and comparing it against the non-verbatim
+    /// form those functions actually return compares two different spellings
+    /// of the same real directory and fails `assert_eq!`/`PathBuf` equality
+    /// even though nothing is wrong - the fix is to canonicalize both sides
+    /// through the identical helper, not to chase the `\\?\` prefix itself.
     fn canonical_tmp_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
-        tmp.path().canonicalize().unwrap()
+        spelunk_core::utils::canonicalize(tmp.path())
     }
 
     #[test]
