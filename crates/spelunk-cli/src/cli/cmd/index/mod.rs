@@ -664,6 +664,92 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detached_child_command_forwards_config_path_when_resolved() {
+        // Before the fix, `IndexArgs` had no config-path field at all, so
+        // neither spawn could forward a resolved `--config` override and the
+        // child re-resolved the default config instead.
+        let mut args = sample_index_args();
+        args.config_path = Some(std::path::PathBuf::from("/tmp/custom-config.toml"));
+        let cmd = build_detached_child_command(
+            std::path::Path::new("/usr/bin/spelunk"),
+            "--_background-phases",
+            &args,
+        );
+        let argv: Vec<_> = cmd.get_args().collect();
+        let pos = argv
+            .iter()
+            .position(|a| *a == "--config")
+            .expect("--config must be forwarded when the parent resolved an override");
+        assert_eq!(argv[pos + 1], "/tmp/custom-config.toml");
+    }
+
+    #[test]
+    fn detached_child_command_omits_config_flag_when_not_resolved() {
+        // A default-config run must not force an explicit `--config` onto the
+        // child: `config_path` is `None` when the user passed no override, and
+        // an unconditional `--config` would stop the child from resolving its
+        // own default the way the parent did.
+        let args = sample_index_args();
+        assert!(args.config_path.is_none());
+        let cmd = build_detached_child_command(
+            std::path::Path::new("/usr/bin/spelunk"),
+            "--_background-phases",
+            &args,
+        );
+        let argv: Vec<_> = cmd.get_args().collect();
+        assert!(
+            !argv.iter().any(|a| *a == "--config"),
+            "must not add --config when the parent had no override"
+        );
+    }
+
+    #[test]
+    fn detached_child_command_forwards_no_summaries_to_both_spawn_sites() {
+        // Before the fix the phases-3-5 background spawn built its argv
+        // independently and never included `--no-summaries` at all (only the
+        // embed-phase spawn did), so disabling summaries still let the
+        // background child generate them.
+        let mut args = sample_index_args();
+        args.no_summaries = true;
+        for mode_flag in ["--_background-phases", "--_embed-phases"] {
+            let cmd = build_detached_child_command(
+                std::path::Path::new("/usr/bin/spelunk"),
+                mode_flag,
+                &args,
+            );
+            let argv: Vec<_> = cmd.get_args().collect();
+            assert!(
+                argv.iter().any(|a| *a == "--no-summaries"),
+                "--no-summaries must reach the {mode_flag} child"
+            );
+        }
+    }
+
+    #[test]
+    fn detached_child_command_forwards_configured_summary_batch_size_to_both_spawn_sites() {
+        // Before the fix neither spawn forwarded `--summary-batch-size`, so a
+        // custom value silently reset to the default (10) in whichever child
+        // ran phase 4.
+        let args = TestCli::try_parse_from(["spelunk", "some/path", "--summary-batch-size", "42"])
+            .expect("parse")
+            .index;
+        assert_eq!(args.summary_batch_size, 42);
+        for mode_flag in ["--_background-phases", "--_embed-phases"] {
+            let cmd = build_detached_child_command(
+                std::path::Path::new("/usr/bin/spelunk"),
+                mode_flag,
+                &args,
+            );
+            let argv: Vec<_> = cmd.get_args().collect();
+            let pos = argv
+                .iter()
+                .position(|a| *a == "--summary-batch-size")
+                .expect("--summary-batch-size must be forwarded");
+            assert_eq!(argv[pos + 1], "42");
+        }
+    }
+
     // ── embed_skipped_lines: 0-chunks / offline notice (#5) ─────────────────────
 
     #[test]
