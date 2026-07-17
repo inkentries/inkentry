@@ -249,6 +249,8 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::BatchItemResult,
         handlers::BatchPushResponse,
         handlers::SinceQuery,
+        handlers::SinceIdEntry,
+        handlers::SinceIdResponse,
         handlers::StreamQuery,
         handlers::HealthResponse,
         handlers::EmbedderStatus,

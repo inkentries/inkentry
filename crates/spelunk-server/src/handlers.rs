@@ -1097,8 +1097,15 @@ pub async fn harvested_shas(
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct SinceQuery {
-    /// Unix epoch seconds (exclusive lower bound).
-    pub t: i64,
+    /// Unix epoch seconds (exclusive lower bound). Required unless `since_id`
+    /// is given; ignored when `since_id` is present.
+    pub t: Option<i64>,
+    /// UUID cursor (exclusive lower bound, arrival-ordered — see
+    /// `ServerDb::notes_since_id`). Takes precedence over `t` when both are
+    /// supplied. Selects the delta-pull response shape (`{entries, count}`)
+    /// instead of the bare array `t` returns.
+    #[serde(default)]
+    pub since_id: Option<String>,
     /// Maximum number of results (default: 100, max: 500).
     #[serde(default = "default_since_limit")]
     pub limit: i64,
@@ -1107,14 +1114,45 @@ fn default_since_limit() -> i64 {
     100
 }
 
+/// One entry in the `since_id`-cursor response of `/memory/since`. `id` is
+/// the note's server-minted `sync_id` (arrival-ordered), never its integer
+/// `id`, which has no meaning to a puller on a different machine.
+#[derive(Serialize, ToSchema)]
+pub struct SinceIdEntry {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<String>,
+    /// RFC 3339 timestamp.
+    pub created_at: String,
+}
+
+/// Response body for the `since_id`-cursor mode of `/memory/since`.
+#[derive(Serialize, ToSchema)]
+pub struct SinceIdResponse {
+    pub entries: Vec<SinceIdEntry>,
+    pub count: usize,
+}
+
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct StreamQuery {
     /// Unix epoch seconds to start from (inclusive). Defaults to now.
     pub t: Option<i64>,
 }
 
-/// Return notes created after a given Unix timestamp. Archived entries are
-/// excluded. Results are ordered `created_at ASC`.
+/// Return notes newer than a cursor, in one of two modes:
+///
+/// - `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;
+///   `CloudSyncClient::pull_since`/`spelunk sync` targets this). Returns
+///   `{entries, count}`, entries ordered by arrival at this server.
+/// - `?t=<unix_secs>`: legacy timestamp mode (`spelunk memory since`
+///   targets this). Returns a bare array, ordered `created_at ASC`.
+///
+/// `since_id` takes precedence when both are supplied. Archived entries are
+/// excluded in both modes.
 #[utoipa::path(
     get,
     path = "/v1/projects/{project_id}/memory/since",
@@ -1123,8 +1161,8 @@ pub struct StreamQuery {
         SinceQuery,
     ),
     responses(
-        (status = 200, description = "Notes newer than `t`", body = Vec<super::db::ServerNote>),
-        (status = 400, description = "Missing or invalid `t` parameter", body = ErrorBody),
+        (status = 200, description = "Notes newer than `t` (bare array) or `since_id` (`{entries, count}`)", body = Vec<super::db::ServerNote>),
+        (status = 400, description = "Neither `t` nor `since_id` given", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
     ),
@@ -1135,11 +1173,34 @@ pub async fn memory_since(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
     Query(params): Query<SinceQuery>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    let notes = db.notes_since(project.id, params.t, params.limit)?;
-    Ok(Json(notes))
+
+    if let Some(cursor) = params.since_id.as_deref() {
+        let rows = db.notes_since_id(project.id, cursor, params.limit)?;
+        let entries: Vec<SinceIdEntry> = rows
+            .into_iter()
+            .map(|r| SinceIdEntry {
+                id: r.sync_id,
+                kind: r.kind,
+                title: r.title,
+                body: (!r.body.is_empty()).then_some(r.body),
+                source_commit: r.source_commit,
+                created_at: chrono::DateTime::from_timestamp(r.created_at, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+            })
+            .collect();
+        let count = entries.len();
+        return Ok(Json(SinceIdResponse { entries, count }).into_response());
+    }
+
+    let t = params
+        .t
+        .ok_or_else(|| AppError::BadRequest("missing `t` or `since_id` query parameter".into()))?;
+    let notes = db.notes_since(project.id, t, params.limit)?;
+    Ok(Json(notes).into_response())
 }
 
 /// Stream new memory entries as Server-Sent Events. Each event carries a
@@ -3070,6 +3131,152 @@ mod tests {
             resp.status(),
             http::StatusCode::OK,
             "GET /memory/{{note_id}} must still resolve for a real numeric id"
+        );
+    }
+
+    // ── GET /memory/since — dual mode (`t` legacy vs `since_id` cursor) ────────
+
+    async fn get_status_and_json(app: axum::Router, uri: &str) -> (http::StatusCode, Value) {
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    /// Regression: the pre-existing `?t=` mode must still return a bare
+    /// array, unchanged by the new `since_id` mode.
+    #[tokio::test]
+    async fn memory_since_t_mode_still_returns_bare_array() {
+        let (app, _dim) = make_app(0.92);
+        let (status, body) =
+            post_note(app.clone(), "since-t-proj", "A", vec![1.0, 0.0, 0.0, 0.0]).await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+
+        let (status, body) =
+            get_status_and_json(app, "/v1/projects/since-t-proj/memory/since?t=0").await;
+        assert_eq!(status, http::StatusCode::OK, "body: {body}");
+        assert!(
+            body.is_array(),
+            "`t` mode must return a bare array, not an object: {body}"
+        );
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["title"], json!("A"));
+        assert!(
+            body[0].get("entries").is_none(),
+            "must not be wrapped in the since_id envelope: {body}"
+        );
+    }
+
+    /// A request with neither `t` nor `since_id` is a 400, matching the
+    /// pre-existing "missing `t`" contract (now generalized to either param).
+    #[tokio::test]
+    async fn memory_since_missing_both_params_returns_400() {
+        let (app, _dim) = make_app(0.92);
+        // Seed the project first: an unknown project 404s before the
+        // t/since_id check ever runs, which would test the wrong thing.
+        let (status, body) = post_note(
+            app.clone(),
+            "since-missing-proj",
+            "A",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+
+        let (status, body) =
+            get_status_and_json(app, "/v1/projects/since-missing-proj/memory/since").await;
+        assert_eq!(status, http::StatusCode::BAD_REQUEST, "body: {body}");
+    }
+
+    /// `since_id` mode returns `{entries, count}`, with `id` set to the
+    /// note's `sync_id` (a UUID), not its integer note id — this is the
+    /// shape `CloudSyncClient::pull_since`/`RemoteEntry` expects.
+    #[tokio::test]
+    async fn memory_since_id_mode_returns_entries_envelope() {
+        let (app, _dim) = make_app(0.92);
+        let (status, body) =
+            post_note(app.clone(), "since-id-proj", "A", vec![1.0, 0.0, 0.0, 0.0]).await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+
+        let (status, body) = get_status_and_json(
+            app,
+            "/v1/projects/since-id-proj/memory/since?since_id=00000000-0000-0000-0000-000000000000",
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::OK, "body: {body}");
+        assert_eq!(body["count"], json!(1), "body: {body}");
+        let entries = body["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["title"], json!("A"));
+        let id = entries[0]["id"].as_str().expect("id must be a string");
+        assert_eq!(
+            id.len(),
+            36,
+            "id must be a UUID (sync_id), not an integer: {id}"
+        );
+    }
+
+    /// `since_id` takes precedence when both `t` and `since_id` are
+    /// supplied: a `t` far in the past must not switch the response back to
+    /// the bare-array shape.
+    #[tokio::test]
+    async fn memory_since_id_takes_precedence_over_t_when_both_given() {
+        let (app, _dim) = make_app(0.92);
+        let (status, body) = post_note(
+            app.clone(),
+            "since-both-proj",
+            "A",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+
+        let (status, body) = get_status_and_json(
+            app,
+            "/v1/projects/since-both-proj/memory/since?t=0&since_id=00000000-0000-0000-0000-000000000000",
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::OK, "body: {body}");
+        assert!(
+            body.get("entries").is_some(),
+            "since_id must win over t when both are given: {body}"
+        );
+    }
+
+    /// The `since_id` cursor is exclusive and advances correctly: pulling
+    /// again with the previous response's max id returns nothing further.
+    #[tokio::test]
+    async fn memory_since_id_cursor_advances_and_is_exclusive() {
+        let (app, _dim) = make_app(0.92);
+        let (status, body) = post_note(
+            app.clone(),
+            "since-cursor-proj",
+            "A",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+
+        let nil = "/v1/projects/since-cursor-proj/memory/since?since_id=00000000-0000-0000-0000-000000000000";
+        let (status, body) = get_status_and_json(app.clone(), nil).await;
+        assert_eq!(status, http::StatusCode::OK);
+        let cursor = body["entries"][0]["id"].as_str().expect("id").to_string();
+
+        let uri = format!("/v1/projects/since-cursor-proj/memory/since?since_id={cursor}");
+        let (status, body) = get_status_and_json(app, &uri).await;
+        assert_eq!(status, http::StatusCode::OK, "body: {body}");
+        assert_eq!(
+            body["count"],
+            json!(0),
+            "re-querying with the last-seen cursor must return nothing further: {body}"
         );
     }
 

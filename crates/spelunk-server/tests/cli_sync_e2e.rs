@@ -12,18 +12,15 @@
 //! - push a batch of local-shaped memories → stored, per-entry "created".
 //! - re-push the same batch → idempotent on `external_id` (server-side
 //!   `remote_id`): all "skipped", zero duplicates.
-//! - since roundtrip: the pushed entries are retrievable via
-//!   `GET /memory/since`, proving the new `/memory/batch` literal route did
-//!   not shadow (or get shadowed by) the pre-existing `/memory/since` route.
-//!
-//! NOT covered here (a separate, pre-existing gap, not this story's bug):
-//! `CloudSyncClient::pull_since`, the half of `spelunk sync` that pulls,
-//! speaks `?since_id=<uuid>` and expects `{entries, count}`; this server's
-//! `/memory/since` (exercised below) speaks `?t=<unix_secs>` and returns a
-//! bare `Vec<ServerNote>` (the contract `spelunk memory since` actually
-//! uses). Those two CLI code paths disagree on this server's own wire
-//! format: `spelunk sync`'s pull half does not work against an OSS team
-//! server today. Flagged for follow-up, out of scope for the batch-push fix.
+//! - since roundtrip (`?t=`, `spelunk memory since`'s contract): the pushed
+//!   entries are retrievable via `GET /memory/since`, proving the
+//!   `/memory/batch` literal route did not shadow (or get shadowed by) the
+//!   pre-existing `/memory/since` route.
+//! - since roundtrip (`?since_id=`, `spelunk sync`'s pull-half contract):
+//!   `CloudSyncClient::pull_since` — the same client code `spelunk sync`
+//!   uses — retrieves pushed entries via the cursor mode, including an entry
+//!   created via the single-note POST route (`remote_id = NULL`), and a
+//!   second pull with the advanced cursor returns nothing further.
 
 mod common;
 
@@ -269,5 +266,104 @@ async fn concurrent_identical_batches_settle_without_duplicates_or_500s() {
         notes.len(),
         1,
         "a race on the same external_id must never produce two rows: {notes:?}"
+    );
+}
+
+// ── `spelunk sync` pull half: CloudSyncClient::pull_since ──────────────────
+
+/// Create a note via the single-note `POST /memory` route (not batch), the
+/// same shape a pre-existing note on an OSS server would have: `remote_id`
+/// stays NULL, since only a batch push (or a future sync) ever sets it.
+async fn post_single_note(base_url: &str, project: &str, title: &str) {
+    let url = format!("{base_url}/v1/projects/{project}/memory");
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({"kind": "note", "title": title, "body": ""}))
+        .send()
+        .await
+        .expect("POST /memory");
+    assert!(
+        resp.status().is_success(),
+        "seeding a single note must succeed: {}",
+        resp.status()
+    );
+}
+
+/// The full pull-side round trip through the real CLI client code:
+/// `CloudSyncClient::pull_since` must retrieve entries pushed via
+/// `POST /memory/batch` (this is the bug the batch-push story didn't fix —
+/// pull spoke a different contract than this server's `/memory/since`
+/// handler understood). Also covers the `remote_id = NULL` gap: a note
+/// created via the single-note POST route (predating any batch push, so it
+/// never got a client-supplied `external_id`) must still surface, because
+/// `sync_id` — the identity `pull_since` actually cursors on — is minted
+/// server-side for every note regardless of how it was created.
+#[tokio::test]
+#[serial_test::serial]
+async fn cli_pull_since_retrieves_pushed_and_legacy_entries_then_cursor_advances() {
+    common::register_sqlite_vec();
+    let state = common::make_test_state(4, None);
+    let base_url = spawn_plaintext_server(state).await;
+    let project = "pull-proj";
+
+    // A "legacy" entry: created before any batch push ever touched this
+    // project, so it has no `remote_id` — this is the gap the contract
+    // mismatch left unhandled.
+    post_single_note(&base_url, project, "Legacy note").await;
+
+    let push_client = CloudSyncClient::new(&base_url, project, None, None).unwrap();
+    let res = push_client
+        .push_batch(vec![BatchPushItem {
+            kind: "decision".into(),
+            title: "Pushed decision".into(),
+            body: Some("why we did it".into()),
+            external_id: "uuid-pushed-1".into(),
+            source_commit: Some("cafef00d".into()),
+        }])
+        .await
+        .expect("push_batch must succeed");
+    assert_eq!((res.created, res.skipped, res.failed), (1, 0, 0));
+
+    // ── Pull from scratch (no cursor yet): both entries must come back ─────
+    let pull_client = CloudSyncClient::new(&base_url, project, None, None).unwrap();
+    let entries = pull_client
+        .pull_since(None)
+        .await
+        .expect("pull_since must succeed against the OSS server");
+    assert_eq!(
+        entries.len(),
+        2,
+        "both the legacy (remote_id=NULL) note and the pushed entry must surface: {entries:?}"
+    );
+    let titles: std::collections::HashSet<&str> =
+        entries.iter().map(|e| e.title.as_str()).collect();
+    assert!(titles.contains("Legacy note"), "entries: {entries:?}");
+    assert!(titles.contains("Pushed decision"), "entries: {entries:?}");
+
+    // Every entry's `id` must be a UUID (the sync_id), not a small integer
+    // string — proves the response is the since_id-mode envelope, not the
+    // legacy `?t=` shape.
+    for e in &entries {
+        assert_eq!(e.id.len(), 36, "id must be a UUID: {e:?}");
+    }
+    assert!(!entries.iter().any(|e| e.is_archived()));
+
+    // source_commit round-trips through the git:<sha> tag convention.
+    let pushed = entries
+        .iter()
+        .find(|e| e.title == "Pushed decision")
+        .expect("pushed entry present");
+    assert_eq!(pushed.source_commit.as_deref(), Some("cafef00d"));
+
+    // ── Cursor advances: pulling again with the max id seen returns nothing
+    // further, proving the cursor is exclusive and doesn't loop forever. ───
+    let max_id = entries.iter().map(|e| e.id.as_str()).max().unwrap();
+    let further = pull_client
+        .pull_since(Some(max_id))
+        .await
+        .expect("second pull_since must succeed");
+    assert!(
+        further.is_empty(),
+        "re-pulling from the max already-seen id must return nothing further: {further:?}"
     );
 }

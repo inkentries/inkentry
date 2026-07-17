@@ -162,8 +162,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   on cloud-api, so `spelunk memory push` returned 405 Method Not Allowed against
   a self-hosted `spelunk-server`. The OSS team server now implements the same
   endpoint with idempotent re-push on `external_id`, enabling push-only workflows.
-  Note: the PULL leg of `spelunk sync` remains unsupported against the OSS server
-  due to a separate wire-format mismatch (follow-up planned).
+- **`spelunk sync`'s pull leg now works against OSS team servers.** The
+  pull half spoke a different wire format than the OSS server's
+  `/memory/since` endpoint understood (a UUID cursor and an `{entries,
+  count}` envelope vs. the endpoint's timestamp-only, bare-array contract),
+  so `spelunk sync` could push but not pull against a self-hosted
+  `spelunk-server`. `/memory/since` now accepts an optional `since_id` cursor
+  alongside the existing `t` timestamp parameter and returns the matching
+  envelope shape when it is used; `spelunk memory since` (which still uses
+  `t`) is unaffected.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
