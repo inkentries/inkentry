@@ -171,8 +171,17 @@ while appearing to work. If you move or reinstall spelunk, that path goes stale
 and the hook fails loudly; re-run `spelunk hooks install --pre-push` to
 re-resolve it. Remove it entirely with `spelunk hooks uninstall`.
 
-Teammates never receive the hook: git does not clone `.git/hooks`, so installing
-it affects only your own clone.
+The hook is written to whatever directory `git rev-parse --git-path hooks`
+reports, so it honors `core.hooksPath` if you have one set (as husky, lefthook,
+and the pre-commit framework do) rather than assuming `.git/hooks`. If that
+directory turns out to be tracked and shared (a committed `core.hooksPath`
+target like `.husky/`), `install` refuses rather than writing there: a silent
+write there would commit spelunk's hook for every teammate on clone instead of
+just this machine. Install it into that directory by hand in that case, or
+point `core.hooksPath` at an untracked location first.
+
+Teammates never receive the hook otherwise: git does not clone `.git/hooks`, so
+installing it affects only your own clone.
 
 #### Publishing without the hook
 
