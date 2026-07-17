@@ -86,14 +86,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # The `-bullseye2.31-` component keeps container-built artifacts
+          # The `${{ matrix.container }}` component keeps container-built artifacts
           # separate from caches produced by builds on the runner VM. cc-built
           # static archives (ring, bundled sqlite, blake3) do not refingerprint
           # on the C toolchain's glibc, so restoring a VM-era cache into the
           # container would silently re-raise the binaries' glibc ceiling.
-          key: ${{ runner.os }}-bullseye2.31-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bullseye2.31-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
 
       - name: Build release binaries
         shell: bash
