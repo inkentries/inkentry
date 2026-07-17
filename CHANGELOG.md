@@ -408,6 +408,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   or warning. Anything pushed after that point landed in the wrong org.
   Refreshes now re-send the durably stored active org, so a switched org
   survives rotation and stays in effect until you switch again.
+- **macOS no longer prompts for keychain authorization multiple times per
+  `spelunk` invocation.** `Config::load` read the personal-store `server_key`
+  unconditionally, even when an environment variable or a WorkOS `[auth]`
+  token already outranked it and made the read pointless, and the CLI's
+  pre-parse `--help` gate ran a full `Config::load` of its own ahead of the
+  real one, so a single command could touch the keychain several times with
+  nothing cached in between (each uncached read is a separate OS
+  authorization on macOS; per-item ACLs don't dedupe across accesses). Three
+  changes close this: the pre-parse gate now checks only whether `llm_model`
+  is configured, read straight from the config file, without constructing a
+  secret store at all; `Config::load`'s `server_key` resolution skips the
+  personal-store read entirely once an env var or `[auth]` token already
+  resolves the bearer; and the keychain-backed store now caches each key's
+  value process-wide, so a key that is read is fetched from the OS keychain
+  at most once per invocation no matter how many call sites ask for it.
 
 ## [0.9.3] — 2026-07-08
 
