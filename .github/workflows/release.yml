@@ -225,16 +225,24 @@ jobs:
           install -m 644 packaging/spelunk-server.service \
             BUILD/usr/lib/systemd/user/spelunk-server.service
 
-          # Depends is derived from the packaged binaries, never hardcoded.
-          # dpkg-shlibdeps needs a debian/control in its working dir, and errors
-          # out if a linked library maps to no installed package.
-          mkdir -p shlibdeps/debian
-          printf 'Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n' \
-            > shlibdeps/debian/control
-          DEB_DEPENDS="$(cd shlibdeps && dpkg-shlibdeps -O \
-            ../BUILD/usr/bin/spelunk \
-            ../BUILD/usr/bin/spelunk-server)"
-          rm -rf shlibdeps
+          # Depends is derived from the packaged binaries, never hardcoded, and
+          # derived INSIDE debian:11 (the build floor), not on the ubuntu runner.
+          # On ubuntu-24.04 (glibc 2.39) the binaries' link against the pre-merge
+          # libpthread.so.0 / libdl.so.2 resolves to libc's merged (>= 2.34)
+          # symbols, so dpkg-shlibdeps derives libc6 (>= 2.34) — which then cannot
+          # install on the glibc-2.31 floor the release targets. debian:11 derives
+          # libc6 (>= 2.30). The container needs dpkg-dev plus every linked
+          # library's package (libdbus-1-3); libc6/libgcc-s1 are in the base
+          # image. dpkg-shlibdeps needs a debian/control in its working dir.
+          DEB_DEPENDS="$(docker run --rm -v "$PWD:/w:ro" debian:11 bash -c '
+            set -euo pipefail
+            apt-get update -qq >/dev/null
+            apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
+            mkdir -p /tmp/sd/debian
+            printf "Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
+            cd /tmp/sd
+            dpkg-shlibdeps -O /w/BUILD/usr/bin/spelunk /w/BUILD/usr/bin/spelunk-server
+          ')"
           echo "Derived ${DEB_DEPENDS}"
 
           # DEBIAN/control — written via JS to avoid YAML heredoc issues
