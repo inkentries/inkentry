@@ -338,7 +338,16 @@ fn hooks_resolve_to_the_shared_main_repo_hooks_dir_from_a_linked_worktree() {
     // (macOS `$TMPDIR` is itself a symlink), and the real command always sees a
     // canonical cwd via `std::env::current_dir()`, so comparisons below must
     // use the same resolved form to compare like with like.
-    let base = tmp.path().canonicalize().unwrap();
+    //
+    // `spelunk_core::utils::canonicalize` (backed by `dunce`) rather than
+    // `Path::canonicalize`: on Windows CI runners the plain std canonicalize
+    // returns a `\\?\`-prefixed verbatim path, and passing that straight to
+    // `git worktree add <path>` as an argv string fails ("Invalid argument")
+    // because this git-for-windows version does not accept the `\\?\` form
+    // there. `dunce::canonicalize` still resolves symlinks (so the macOS
+    // `$TMPDIR` case above is unaffected) but de-UNCs the Windows result back
+    // to a plain `C:\…` path, which `git worktree add` accepts.
+    let base = spelunk_core::utils::canonicalize(tmp.path());
     let main_root = base.join("main");
     std::fs::create_dir_all(&main_root).unwrap();
     init_repo(&main_root);
