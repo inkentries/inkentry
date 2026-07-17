@@ -33,8 +33,8 @@ Two install paths live outside this workflow:
 
 | Target | Runner | Archive format | Notes |
 |--------|--------|---------------|-------|
-| `x86_64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Native build; binaries stripped |
-| `aarch64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Cross-compiled via gcc-aarch64 toolchain |
+| `x86_64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Built in a `debian:11` container; binaries stripped |
+| `aarch64-unknown-linux-gnu` | ubuntu-24.04-arm | `.tar.gz` | Native arm64 runner, built in a `debian:11` container |
 | `aarch64-apple-darwin` | macos-latest | `.tar.gz` | Native build (Apple Silicon) |
 | `x86_64-pc-windows-msvc` | windows-latest | `.zip` | Native build; produces `.exe` binaries |
 

@@ -11,6 +11,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Linux release binaries now target glibc 2.31 as the support floor.** Builds
+  run in a `debian:11` (Bullseye) container to ensure compatibility with Debian
+  11+ and Ubuntu 20.04+. Previously, releases silently required glibc 2.39
+  (Ubuntu 24.04-era), causing crashes on older distros. The `.deb` package
+  declares `libdbus-1-3` as a dependency; tarball users on minimal images must
+  install `libdbus-1-3` separately.
 - **`spelunk init` starts the server before indexing and detaches the embedding pass.**
   On a fresh install, the prompt now returns after parsing (seconds on small projects,
   around a minute on large ones), with embeddings arriving in the background. A detached worker
