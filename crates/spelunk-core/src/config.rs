@@ -24,7 +24,7 @@ use tempfile::TempDir;
 /// | mode          | reads          | writes                    | cloud contact            |
 /// |---------------|----------------|---------------------------|--------------------------|
 /// | `offline`     | local          | local                     | never (even if `server_url` set) |
-/// | `local_first` | local          | local; converge via `spelunk sync` | explicit (`sync`/`push`/`pull`) |
+/// | `local_first` | local          | local, then async background sync | best-effort              |
 /// | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 ///
 /// `cloud_first` is the **server-authoritative** option: it is a deliberate

@@ -6,7 +6,7 @@ Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
 `refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a replica you converge with `spelunk sync` (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
+`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
@@ -99,21 +99,17 @@ variable) controls how the CLI reconciles the local store and the server:
 | `mode` | reads | writes | when the server is unreachable |
 |---|---|---|---|
 | `offline` | local | local | never contacted, even with `server_url` set |
-| `local_first` (default when `server_url` is set) | local | local | everything keeps working; `spelunk sync` fails until it is back |
+| `local_first` (default when `server_url` is set) | local | local | everything keeps working; the local store is unaffected |
 | `cloud_first` | server | server | commands fail with an error; local data is never silently substituted |
 
 **`local_first`** is the default whenever `server_url` is configured. Reads
-and writes stay in the project's local `memory.db`, and the server replica is
-converged explicitly with `spelunk sync` (or one-way with `spelunk memory
-push` / `spelunk memory pull`). This keeps every command working offline, but
-it means local results can be ahead of or behind the team server until you
-sync. To make that visible, read commands (`memory list` / `show` / `search` /
-`timeline` and `spelunk context`) print a one-line note on stderr whenever a
-`server_url` is configured (stdout stays clean for `--format json`/`jsonl`):
-
-```text
-note: showing local data (mode "local_first"); the team server was not consulted for these entries. Run "spelunk sync" to converge, or set mode = "cloud_first" in .spelunk/config.toml.
-```
+and writes stay in the project's local `memory.db`, so every command keeps
+working offline and the team server is a converging replica rather than the
+store of record. Because reads never block on the network, local results can
+be ahead of or behind the server. `spelunk status` prints the active mode (a
+neutral one-word `mode` line) so it is clear which store you are reading. Use
+`spelunk sync` (or the one-way `spelunk memory push` / `spelunk memory pull`)
+to exchange entries with the server when you want to reconcile the two.
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause

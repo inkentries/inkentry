@@ -846,19 +846,17 @@ to re-embed. (#439, #441)
   local and cloud memory. The default preserves existing behaviour: with no
   `server_url` the CLI is `offline`; with a `server_url` set it is `local_first`.
   `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (ADR-037 P1, #425)
-- **Local-read notice and state-scoped hints for sync modes.** When a team
-  `server_url` is configured in `local_first` mode, read commands (`memory
-  list`, `show`, `search`, `timeline`, and `context`) now print a one-line
-  stderr notice naming the mode and advising how to converge the server copy
-  with `spelunk sync`. `spelunk status` gains a `mode:` line distinguishing
-  "memory is local by design" (`local_first`) from "local because the server is
-  broken" (offline). Capability hints are now scoped to the configuration: the
-  embedder hint points at the team server when an explicit `server_url` is
-  configured (not the auto-discovered loopback); the explore hint truthfully
-  names an unreachable configured server instead of suggesting to set one that
-  is already set. `cloud_first` mode now pins hard-error behavior: reads and
-  writes fail loudly when the server is unreachable or untrusted, and local data
-  is never silently substituted as a fallback. (ADR-037)
+- **Sync-mode indicator and state-scoped capability hints.** `spelunk status`
+  gains a neutral one-word `mode` line reporting the active sync mode
+  (`local_first`, `cloud_first`, or `offline`) whenever a `server_url` or an
+  explicit `mode` is configured; it carries no call to action. Capability hints
+  are now scoped to the configuration: the embedder hint points at the team
+  server when an explicit `server_url` is configured (not the auto-discovered
+  loopback); the explore hint truthfully names an unreachable configured server
+  instead of suggesting to set one that is already set. `cloud_first` mode pins
+  hard-error behavior: reads and writes fail loudly when the server is
+  unreachable or untrusted, and local data is never silently substituted as a
+  fallback. (ADR-037)
 
 ### Changed
 
