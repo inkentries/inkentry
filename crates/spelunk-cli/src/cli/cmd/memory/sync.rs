@@ -775,15 +775,15 @@ mod tests {
         assert_eq!(live_again.len(), 1, "failed row must remain retryable");
     }
 
-    // ── total push failure must surface as an error, not a success message ─
-    // `push_local` itself just reports honest counts (that's Bug 1/3's fix);
-    // it's the command layer (`memory_push` / `memory_sync`) that decides
-    // whether those counts mean "Done"/"Sync complete" or a hard failure. A
-    // batch where every attempted row comes back `failed` (nothing created,
-    // nothing skipped) must make the command return `Err`, which is what
-    // gives the CLI a non-zero exit — `push_local` returning `Ok` with
-    // `failed == attempted` is the correct, honest signal for the command
-    // layer to act on, not a bug in `push_local` itself.
+    // ── push_local's counting stays honest on a total-failure batch ────────
+    // `push_local` itself just reports honest counts (Bug 1/3's fix); it is
+    // the command layer (`memory_push` / `memory_sync`) that decides whether
+    // those counts mean "Done"/"Sync complete" or a hard failure, and that
+    // command-layer decision (the `bail!` that gives the CLI its non-zero
+    // exit) is covered end to end by the subprocess tests in
+    // `crates/spelunk-cli/tests/memory_push_sync_total_failure.rs`, not here.
+    // This test only pins `push_local`'s own return value for the all-failed
+    // shape those command-layer tests depend on.
     #[tokio::test]
     async fn push_local_total_failure_reports_zero_created_and_skipped() {
         use tempfile::TempDir;
@@ -826,40 +826,5 @@ mod tests {
         // Neither row is stamped — both remain retryable.
         let rows_after = store.rows_for_sync(false).unwrap();
         assert!(rows_after.iter().all(|r| r.remote_id.is_none()));
-    }
-
-    // ── memory push / memory sync: total failure must exit non-zero ───────
-    // `memory_push` and `memory_sync` are the command-layer callers of
-    // `push_local`; this exercises the message-and-exit-code decision they
-    // make on top of an all-failed `PushSummary`, using the same shape as
-    // the test above (built directly, no need to re-hit the mock server).
-    fn all_failed_summary(attempted: usize) -> PushSummary {
-        PushSummary {
-            attempted,
-            created: 0,
-            skipped: 0,
-            failed: attempted as u32,
-            already_synced: 0,
-        }
-    }
-
-    #[test]
-    fn command_layer_treats_total_failure_summary_as_error_condition() {
-        // Mirrors the exact predicate `memory_push` / `memory_sync` use to
-        // decide "total failure": attempted work happened, but nothing was
-        // durably created or deduped as a skip.
-        let summary = all_failed_summary(3);
-        assert!(summary.attempted > 0 && summary.created == 0 && summary.skipped == 0);
-
-        // A partial failure (something landed) must NOT trip the same
-        // predicate — Bug 3's honest partial-failure reporting stays intact.
-        let partial = PushSummary {
-            attempted: 2,
-            created: 1,
-            skipped: 0,
-            failed: 1,
-            already_synced: 0,
-        };
-        assert!(!(partial.attempted > 0 && partial.created == 0 && partial.skipped == 0));
     }
 }
