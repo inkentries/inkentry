@@ -69,6 +69,16 @@ pub async fn memory_push(
         } else {
             println!("No local memory entries to push.");
         }
+    } else if summary.created == 0 && summary.skipped == 0 {
+        // Total failure: nothing durably landed. Must not read as success —
+        // a caller skimming for "Done" or checking only the exit code would
+        // otherwise miss a fully-failed batch (this is the data-loss shape
+        // the bug was filed over).
+        anyhow::bail!(
+            "Push failed: 0 of {} entries reached the server ({} failed).",
+            summary.attempted,
+            summary.failed
+        );
     } else if summary.failed > 0 {
         println!(
             "Done. Pushed {} entries (created {}, skipped {}, {} failed).",
