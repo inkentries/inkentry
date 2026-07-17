@@ -362,8 +362,6 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `async` at 100% instead of 56%. Confidence is now pooled across all of a
   language's chunks, so mixed `.ts`/`.tsx` projects may see reported confidence
   drop. The lower figure is the accurate one, and no conventions are lost.
-  `spelunk plumbing read-conventions --lang tsx` now matches no rows (exit 1);
-  use `--lang typescript`.
 - **`spelunk server stop` reliably terminates a wedged local server.** A daemon
   whose `/v1/health` had stopped responding could not be stopped and was
   silently orphaned across a `stop && start`. `stop` now recognises a hung
