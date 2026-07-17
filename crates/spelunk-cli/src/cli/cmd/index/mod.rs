@@ -150,7 +150,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     let mp = MultiProgress::new();
 
     // ── Phase 1: parse + store chunks ────────────────────────────────────────
-    let result = parse_phase::run_parse_phase(&root_canonical, &db, &args, &mp)?;
+    let result = parse_phase::run_parse_phase(&root_canonical, &db, &args, &mp, &cfg)?;
     if result.removed > 0 {
         eprintln!("Removed {} stale file(s) from index.", result.removed);
     }

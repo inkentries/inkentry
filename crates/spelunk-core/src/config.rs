@@ -250,6 +250,50 @@ fn find_project_config(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Serde default helper: `true`.
+fn default_true() -> bool {
+    true
+}
+
+/// The `[index]` config table: controls the built-in index-time file filter that
+/// skips generated/vendored/minified/machine-data files (see
+/// `spelunk_core::indexer::filter`). Distinct from the unconditional
+/// sensitive-file exclusion (`.env`, keys), which is not configurable here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexConfig {
+    /// Extra gitignore-syntax exclude lines layered on top of the built-ins.
+    /// A `!pattern` line re-includes a path the defaults would drop (last match
+    /// wins). Cannot re-include a sensitive file (that layer is separate).
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Whether to apply the built-in default exclude set. Default `true`.
+    #[serde(default = "default_true")]
+    pub use_default_excludes: bool,
+    /// Whether to skip files whose head self-declares as generated
+    /// (`@generated` or `// Code generated ... DO NOT EDIT.`). Default `true`.
+    #[serde(default = "default_true")]
+    pub detect_generated: bool,
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        Self {
+            exclude: Vec::new(),
+            use_default_excludes: true,
+            detect_generated: true,
+        }
+    }
+}
+
+/// Per-field override of [`IndexConfig`] from a project `.spelunk/config.toml`.
+/// Every field is `Option` so an absent key leaves the layered value untouched.
+#[derive(Debug, Default, Deserialize)]
+struct ProjectIndexConfig {
+    exclude: Option<Vec<String>>,
+    use_default_excludes: Option<bool>,
+    detect_generated: Option<bool>,
+}
+
 /// Fields that can be set in `.spelunk/config.toml` (project-level, checked-in).
 /// Only contains fields safe to share with the team (no secrets).
 #[derive(Debug, Default, Deserialize)]
@@ -263,6 +307,8 @@ struct ProjectConfig {
     /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
     /// team server presenting a self-signed / internal-CA certificate.
     server_ca: Option<String>,
+    /// `[index]` table: per-field override of the built-in file filter.
+    index: Option<ProjectIndexConfig>,
 }
 
 /// Resolve the database path.
@@ -380,6 +426,12 @@ pub struct Config {
     /// token via this field only in the token-refresh path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthTokens>,
+
+    /// `[index]` table: built-in index-time file filter settings. Project
+    /// `.spelunk/config.toml` overrides the global value per field (see
+    /// [`Config::load_with_store`]).
+    #[serde(default)]
+    pub index: IndexConfig,
 }
 
 /// WorkOS tokens persisted under the `[auth]` table of the global config.
@@ -446,6 +498,7 @@ impl Default for Config {
             llm_context_length: Self::default_llm_context_length(),
             store_in_git_notes: Self::default_store_in_git_notes(),
             auth: None,
+            index: IndexConfig::default(),
         }
     }
 }
@@ -513,6 +566,19 @@ impl Config {
             }
             if let Some(v) = proj.server_ca {
                 cfg.server_ca = Some(v);
+            }
+            // `[index]` overrides the global value per field: an absent key in the
+            // project table leaves the global (or default) value in place.
+            if let Some(pidx) = proj.index {
+                if let Some(v) = pidx.exclude {
+                    cfg.index.exclude = v;
+                }
+                if let Some(v) = pidx.use_default_excludes {
+                    cfg.index.use_default_excludes = v;
+                }
+                if let Some(v) = pidx.detect_generated {
+                    cfg.index.detect_generated = v;
+                }
             }
         }
 
