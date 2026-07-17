@@ -213,6 +213,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   alongside the existing `t` timestamp parameter and returns the matching
   envelope shape when it is used; `spelunk memory since` (which still uses
   `t`) is unaffected.
+- **`spelunk memory watch` no longer panics when only an auto-discovered
+  loopback server is available.** `require_tier1` gates on the probed
+  capability tier, which also passes for an auto-discovered inference-only
+  loopback server (ADR-004) whose `server_url` is unset; `memory watch`
+  unwrapped that case with `.expect("require_tier1 passed")` and crashed
+  instead of reporting the missing configuration. It now returns the same
+  actionable "requires `server_url` to be configured" error that `memory
+  push` and `sync` already use for this case.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands

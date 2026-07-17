@@ -291,7 +291,8 @@ When using a shared memory server (`server_url` in config), agents can coordinat
 # Poll for new entries since a given timestamp
 spelunk memory since <epoch>
 
-# Stream entries as they arrive (requires a configured server)
+# Stream entries as they arrive (requires an explicit `server_url`; an
+# auto-discovered loopback server does not satisfy this)
 spelunk memory watch
 ```
 
