@@ -357,6 +357,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   ```bash
   echo "*.log" >> .spelunk/.gitignore
   ```
+- **`spelunk org switch` now stays in effect after the access token expires.**
+  The switched-to org lived only in the short-lived (~5 minute) WorkOS access
+  token; nothing re-applied it when that token was refreshed. The first token
+  refresh after any `org switch` — triggered by the next `spelunk memory push`,
+  `sync`, or other cloud-api/team-server call — silently reverted the session
+  to the account's default org and persisted the reverted token, with no error
+  or warning. Anything pushed after that point landed in the wrong org.
+  Refreshes now re-send the durably stored active org, so a switched org
+  survives rotation and stays in effect until you switch again.
 
 ## [0.9.3] — 2026-07-08
 
