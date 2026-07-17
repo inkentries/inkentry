@@ -61,7 +61,19 @@ pub async fn memory_push(
     println!("Pushing local memory to {base_url}…");
     let summary = push_local_oneway(&local, &client, args.include_archived).await?;
     if summary.attempted == 0 {
-        println!("No local memory entries to push.");
+        if summary.already_synced > 0 {
+            println!(
+                "Nothing to push — {} entries already synced.",
+                summary.already_synced
+            );
+        } else {
+            println!("No local memory entries to push.");
+        }
+    } else if summary.failed > 0 {
+        println!(
+            "Done. Pushed {} entries (created {}, skipped {}, {} failed).",
+            summary.attempted, summary.created, summary.skipped, summary.failed
+        );
     } else {
         println!(
             "Done. Pushed {} entries (created {}, skipped {}).",

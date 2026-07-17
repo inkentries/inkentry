@@ -6,7 +6,7 @@ Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
 `refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search) — it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url`. Entries
+`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
@@ -27,7 +27,8 @@ for memory and `.spelunk/memory.db` as the queryable *index* built over it. Ever
 `memory add` appends its entry to the carrier through one write-through path;
 `spelunk init` hydrates the index by importing those notes, adding the embeddings
 semantic search needs. Both live in the repo, and the store of record stays local
-unless you configure a team `server_url`. The carrier reaches teammates only once
+unless you configure a team `server_url` with `mode = "cloud_first"` (see [Team
+server and sync modes](#team-server-and-sync-modes)). The carrier reaches teammates only once
 the notes ref is pushed and fetched (see [Sharing memory across clones via
 git-notes](#sharing-memory-across-clones-via-git-notes) below).
 
@@ -62,7 +63,10 @@ search and embed).
 
 1. Explicit `--db <path>` (always wins)
 2. Explicit `--backend git-notes` (git notes is the primary store)
-3. Explicit team `server_url` in config (remote server)
+3. Explicit team `server_url` in config with `mode = "cloud_first"` (remote
+   server; under the default `local_first` mode a configured `server_url` does
+   *not* redirect reads or writes, see [Team server and sync
+   modes](#team-server-and-sync-modes))
 4. A local `.spelunk/memory.db` (after `spelunk init`)
 5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
 6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
@@ -85,6 +89,41 @@ the [git notes](https://git-scm.com/docs/git-notes) documentation).
 See [ADR-067](adr/067-fail-closed-no-local-project.md) for the fail-closed design
 and [ADR-068](adr/068-zero-setup-onboarding-git-notes-memory-fallback.md) for the
 git-notes carrier rationale.
+
+### Team server and sync modes
+
+Configuring a team `server_url` does not, by itself, redirect reads or writes
+to the server. The `mode` config field (or the `SPELUNK_MODE` environment
+variable) controls how the CLI reconciles the local store and the server:
+
+| `mode` | reads | writes | when the server is unreachable |
+|---|---|---|---|
+| `offline` | local | local | never contacted, even with `server_url` set |
+| `local_first` (default when `server_url` is set) | local | local | everything keeps working; the local store is unaffected |
+| `cloud_first` | server | server | commands fail with an error; local data is never silently substituted |
+
+**`local_first`** is the default whenever `server_url` is configured. Reads
+and writes stay in the project's local `memory.db`, so every command keeps
+working offline and the team server is a converging replica rather than the
+store of record. Because reads never block on the network, local results can
+be ahead of or behind the server. `spelunk status` prints the active mode (a
+neutral one-word `mode` line) so it is clear which store you are reading. Use
+`spelunk sync` (or the one-way `spelunk memory push` / `spelunk memory pull`)
+to exchange entries with the server when you want to reconcile the two.
+
+**`cloud_first`** makes the server authoritative: reads and writes go straight
+to it, and an unreachable or untrusted server is a hard error naming the cause
+(for certificate trust, see `server_ca` / `SPELUNK_SERVER_CA`). The CLI never
+falls back to local data in this mode. Configure it in `.spelunk/config.toml`:
+
+```toml
+server_url = "https://spelunk.internal.example.com"
+project_id = "my-awesome-app"
+mode = "cloud_first"
+```
+
+**`offline`** guarantees no server contact at all, even with `server_url`
+set. `SPELUNK_NO_SERVER=1` forces it regardless of config.
 
 ### Sharing memory across clones via git-notes
 
