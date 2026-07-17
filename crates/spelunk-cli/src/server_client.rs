@@ -259,11 +259,12 @@ impl ServerInferenceClient {
     /// is no refresh state (a bare `server_key` — nothing to refresh). Errors
     /// carry a clear "re-run `spelunk login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
-        let (refresh_token, workos_url, client_id, config_path) = {
+        let (refresh_token, org_id, workos_url, client_id, config_path) = {
             let guard = self.auth.lock().expect("auth mutex poisoned");
             match &guard.refresh {
                 Some(r) => (
                     r.tokens.refresh_token.clone(),
+                    r.tokens.org_id.clone(),
                     r.workos_url.clone(),
                     r.client_id.clone(),
                     r.config_path.clone(),
@@ -272,12 +273,20 @@ impl ServerInferenceClient {
             }
         };
 
-        let rotated =
-            auth_api::refresh_token(&self.client, &workos_url, &client_id, &refresh_token, None)
-                .await
-                .map_err(|e| {
-                    e.context("session expired and token refresh failed — re-run `spelunk login`")
-                })?;
+        // Re-send the active org so a prior `org switch` survives rotation
+        // instead of reverting to the account's default org (see auth_api::
+        // ensure_fresh_token, which has the same requirement).
+        let rotated = auth_api::refresh_token(
+            &self.client,
+            &workos_url,
+            &client_id,
+            &refresh_token,
+            auth_api::org_id_for_refresh(&org_id),
+        )
+        .await
+        .map_err(|e| {
+            e.context("session expired and token refresh failed — re-run `spelunk login`")
+        })?;
         let new_tokens = rotated.into_auth_tokens();
 
         // Persist rotated tokens so the next process starts authenticated.
@@ -616,7 +625,7 @@ pub fn harvest_requires_server() -> anyhow::Error {
 mod tests {
     use super::*;
     use spelunk_core::config::AuthTokens;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn expiring_tokens(expires_at: i64) -> AuthTokens {
@@ -740,8 +749,11 @@ mod tests {
 
         let at_fresh = jwt("fresh", "org_1", 5_000_000_000);
 
+        // The refresh request must carry the stored `org_1` scope, so it never
+        // silently reverts to the account's default org on rotation.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
+            .and(body_string_contains("organization_id=org_1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": at_fresh,
                 "refresh_token": "rt-fresh",
