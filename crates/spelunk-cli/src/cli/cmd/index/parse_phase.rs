@@ -669,6 +669,7 @@ mod tests {
             embed_phases: false,
             detach: false,
             detach_embed: false,
+            config_path: None,
         }
     }
 
