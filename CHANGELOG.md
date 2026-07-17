@@ -246,6 +246,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   where nothing was sent now reads "Nothing to push — N entries already
   synced." instead of implying work was done, and a batch with a partial
   failure reports the real successes and failures instead of masking them.
+  A fourth gap in the same path is also fixed: a push where every attempted
+  entry failed (nothing created, nothing skipped) previously still printed
+  "Done."/"Sync complete." with a failed count appended and exited 0. Both
+  commands now treat a total failure as a hard error — the message leads
+  with "Push failed"/"Sync failed" instead of success framing, and the
+  process exits non-zero, so a caller checking the exit code or skimming
+  for "Done" can no longer mistake a fully-failed batch for a completed one.
+  `spelunk sync`'s pull step still runs and its results are still reported
+  even when the push half fails outright.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands

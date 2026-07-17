@@ -138,6 +138,20 @@ pub async fn memory_sync(
             "Nothing to push — {} entries already synced. Applied {} new remote entries.",
             pushed.already_synced, pulled
         );
+    } else if pushed.created == 0 && pushed.skipped == 0 {
+        // Total push failure: nothing durably landed cloud-side. The pull
+        // already ran (it's an independent, unconditionally useful step —
+        // there's no reason to withhold remote changes just because the push
+        // half failed), but the command must still fail loud: a caller
+        // skimming for "Sync complete" or checking only the exit code must
+        // not read this as success.
+        anyhow::bail!(
+            "Sync failed: 0 of {} push entries reached the server ({} failed); \
+             pull still applied {} new remote entries.",
+            pushed.attempted,
+            pushed.failed,
+            pulled
+        );
     } else if pushed.failed > 0 {
         println!(
             "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.",
@@ -759,5 +773,58 @@ mod tests {
             .filter(|r| !r.archived && r.remote_id.is_none())
             .collect();
         assert_eq!(live_again.len(), 1, "failed row must remain retryable");
+    }
+
+    // ── push_local's counting stays honest on a total-failure batch ────────
+    // `push_local` itself just reports honest counts (Bug 1/3's fix); it is
+    // the command layer (`memory_push` / `memory_sync`) that decides whether
+    // those counts mean "Done"/"Sync complete" or a hard failure, and that
+    // command-layer decision (the `bail!` that gives the CLI its non-zero
+    // exit) is covered end to end by the subprocess tests in
+    // `crates/spelunk-cli/tests/memory_push_sync_total_failure.rs`, not here.
+    // This test only pins `push_local`'s own return value for the all-failed
+    // shape those command-layer tests depend on.
+    #[tokio::test]
+    async fn push_local_total_failure_reports_zero_created_and_skipped() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+        store
+            .add_note("note", "Two", "second", &[], &[], None, None)
+            .unwrap();
+
+        let rows = store.rows_for_sync(false).unwrap();
+        let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 2,
+                "results": [
+                    {"status": "failed", "external_id": ext_a, "id": serde_json::Value::Null},
+                    {"status": "failed", "external_id": ext_b, "id": serde_json::Value::Null},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s1 = push_local(&store, &client, false).await.unwrap();
+        assert_eq!(
+            (s1.attempted, s1.created, s1.skipped, s1.failed),
+            (2, 0, 0, 2),
+            "total failure: attempted > 0 but nothing durably landed"
+        );
+        // Neither row is stamped — both remain retryable.
+        let rows_after = store.rows_for_sync(false).unwrap();
+        assert!(rows_after.iter().all(|r| r.remote_id.is_none()));
     }
 }
