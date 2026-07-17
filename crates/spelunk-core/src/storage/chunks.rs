@@ -58,8 +58,9 @@ impl Database {
     /// table, i.e. chunks that were parsed/stored but never embedded (e.g. an
     /// `init`/`index` run where the embedder wasn't ready yet, so the embed
     /// phase was skipped). Returns the raw fields needed to reconstruct the
-    /// exact `Chunk::embedding_text()` document format: `(chunk_id, name,
-    /// metadata_json, summary, content)`.
+    /// exact `Chunk::embedding_text()` document format plus the stored token
+    /// estimate: `(chunk_id, name, metadata_json, summary, content,
+    /// token_count)`. `token_count` may be 0 on a pre-backfill index.
     ///
     /// A plain re-`index` skips unchanged files by file-hash, so those chunks
     /// never reach the embed phase on their own; the index command unions the
@@ -68,9 +69,18 @@ impl Database {
     #[allow(clippy::type_complexity)]
     pub fn chunks_missing_embeddings(
         &self,
-    ) -> Result<Vec<(i64, Option<String>, Option<String>, Option<String>, String)>> {
+    ) -> Result<
+        Vec<(
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            usize,
+        )>,
+    > {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT c.id, c.name, c.metadata, c.summary, c.content
+            "SELECT c.id, c.name, c.metadata, c.summary, c.content, c.token_count
              FROM chunks c
              LEFT JOIN embeddings e ON e.chunk_id = c.id
              WHERE e.chunk_id IS NULL
@@ -83,6 +93,7 @@ impl Database {
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)? as usize,
             ))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

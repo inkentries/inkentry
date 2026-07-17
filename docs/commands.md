@@ -15,10 +15,11 @@ always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 
 ## spelunk init
 
-Initialise spelunk for the current project: register it, parse and chunk the
-source tree, start the local server if needed, embed the code, and (when inside
-a git repo with an `origin` remote) configure the fetch refspec so project
-memory notes travel automatically on `git fetch`.
+Initialise spelunk for the current project: register it, start the local server
+if needed, parse and chunk the source tree, hand the embedding pass to a
+detached background worker, and (when inside a git repo with an `origin` remote)
+configure the fetch refspec so project memory notes travel automatically on
+`git fetch`.
 
 ```
 spelunk init [options]
@@ -88,7 +89,7 @@ spelunk index <path> [options]
 | `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
-| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a background process and return the prompt |
+| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`spelunk init` does this automatically) |
 
 A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
@@ -102,21 +103,25 @@ skips it. Use `--force` to retry those.
 
 The embed phase calibrates its own batch size instead of guessing: it times a
 1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
-their timeouts) from the observed per-chunk rate — smaller batches on slow
+their timeouts) from the observed token-weighted rate: smaller batches on slow
 hardware, larger ones (up to 256 chunks, or your `--batch-size` cap if lower)
-on fast hardware. It keeps re-measuring as the run progresses, so a rate that
+on fast hardware. Sizing by tokens rather than chunk count keeps the deadline
+honest when the queue crosses from small chunks into large ones. It keeps re-measuring as the run progresses, so a rate that
 drifts partway through is picked up rather than locked to the first sample.
 Each batch is written to the database as soon as it completes, so an
 interrupted run (timeout, machine sleep, process kill) never loses
 already-embedded chunks — re-run `spelunk index` to pick up where it left off.
 
-`--detach-embed` is useful when embedding a large codebase on slow hardware:
-parsing finishes in the foreground (so the index is immediately usable for
-text and ast-grep search) and the long embedding pass continues in the
-background. Run `spelunk status` afterwards to check progress; it shows an
-"Embedding in progress" line with the embedded/total count until every chunk
-is embedded. If the background pass is interrupted, re-running `spelunk index`
-resumes it (already-embedded chunks are skipped).
+`spelunk init` always hands the embedding pass to a detached background worker,
+and `--detach-embed` opts a manual `spelunk index` run into the same behaviour:
+parsing finishes in the foreground (the index is immediately usable for text and
+ast-grep search) and the long embedding pass continues in the background, with
+the worker waiting out a still-loading embedder rather than skipping. A plain
+`spelunk index` without the flag embeds in the foreground. Run `spelunk status`
+to check a background pass; it shows an "Embedding in progress" line with
+searchable chunks and work percentage until every chunk is embedded. If the
+background pass is interrupted, re-running `spelunk index` resumes it
+(already-embedded chunks are skipped).
 
 Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
@@ -133,8 +138,11 @@ spelunk index ./myproject --force --batch-size 16
 ## spelunk search
 
 Search the index. In `auto` mode (the default) spelunk uses semantic/hybrid
-search when an index and server are available and silently falls back to
-ast-grep otherwise.
+search when an index and server are available. During embeddings warmup, a
+coverage notice is printed to stderr naming the percentage and shape of
+embedded chunks; on zero coverage `auto` falls back to ast-grep. Explicit
+`semantic`/`hybrid` on a warming index returns an actionable error naming the
+resume command instead of an absence claim.
 
 ```
 spelunk search <query> [options]
@@ -226,10 +234,12 @@ spelunk status [options]
 | `-l, --list` | false | One-line-per-project format (implies `--all`) |
 | `--format text\|json` | text | Output format |
 
-When chunks outnumber embeddings, `spelunk status` prints an "Embedding in
-progress" line showing the embedded/total count. This covers both an active
-background embed (e.g. `spelunk index --detach-embed` still running) and an
-interrupted run that can be resumed with `spelunk index`.
+When embeddings are incomplete, `spelunk status` prints an "Embedding in progress"
+line (when a live background worker is detected) or "Embedding incomplete" (when
+no worker is running but chunks remain unembedded). Coverage is shown as searchable
+chunks and percentage; progress is shown as percentage of work done, measured by
+token weight. An incomplete status includes the `spelunk index .` resume command
+(or, when the embedder is unavailable, a pointer at the server logs instead).
 
 **Example:**
 
@@ -615,6 +625,11 @@ and `source_project` / `source_project_path` fields in JSON.
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
 `spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
 so memory travels with the code. Outside a git repo this is a graceful no-op.
+Concurrent writes are serialized by a cross-process lock, and a write that
+cannot take the lock in time fails rather than risk erasing a concurrent
+writer's entry: `memory add` warns on stderr that the entry is stored locally
+but will not travel with the repo (pre-`init`, where git notes is the sole
+store, it fails instead), and retrying the command is the remedy.
 
 **Entry identity:** entries are identified by a SHA-256 over exactly their
 `kind`, `title`, and `body`, so the same decision recorded on two machines

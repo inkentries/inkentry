@@ -474,6 +474,77 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/memory/batch": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Batch-create memory entries. Idempotent on `external_id`: a live note\nalready carrying the given `external_id` is skipped, not duplicated.",
+        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `spelunk memory push`\nand `spelunk sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written.",
+        "operationId": "push_memory_batch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug (e.g. `usercise/spelunk`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "207": {
+            "description": "Per-entry outcomes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchPushResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (oversized batch, bad field length)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entry rejected: prompt injection detected"
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/memory/harvested-shas": {
       "get": {
         "tags": [
@@ -620,7 +691,8 @@
         "tags": [
           "memory"
         ],
-        "summary": "Return notes created after a given Unix timestamp. Archived entries are\nexcluded. Results are ordered `created_at ASC`.",
+        "summary": "Return notes newer than a cursor, in one of two modes:",
+        "description": "- `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;\n  `CloudSyncClient::pull_since`/`spelunk sync` targets this). Returns\n  `{entries, count}`, entries ordered by arrival at this server.\n- `?t=<unix_secs>`: legacy timestamp mode (`spelunk memory since`\n  targets this). Returns a bare array, ordered `created_at ASC`.\n\n`since_id` takes precedence when both are supplied. Archived entries are\nexcluded in both modes.",
         "operationId": "memory_since",
         "parameters": [
           {
@@ -635,11 +707,26 @@
           {
             "name": "t",
             "in": "query",
-            "description": "Unix epoch seconds (exclusive lower bound).",
-            "required": true,
+            "description": "Unix epoch seconds (exclusive lower bound). Required unless `since_id`\nis given; ignored when `since_id` is present.",
+            "required": false,
             "schema": {
-              "type": "integer",
+              "type": [
+                "integer",
+                "null"
+              ],
               "format": "int64"
+            }
+          },
+          {
+            "name": "since_id",
+            "in": "query",
+            "description": "UUID cursor (exclusive lower bound, arrival-ordered — see\n`ServerDb::notes_since_id`). Takes precedence over `t` when both are\nsupplied. Selects the delta-pull response shape (`{entries, count}`)\ninstead of the bare array `t` returns.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -655,7 +742,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Notes newer than `t`",
+            "description": "Notes newer than `t` (bare array) or `since_id` (`{entries, count}`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -668,7 +755,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid `t` parameter",
+            "description": "Neither `t` nor `since_id` given",
             "content": {
               "application/json": {
                 "schema": {
@@ -1242,6 +1329,122 @@
           }
         }
       },
+      "BatchItemResult": {
+        "type": "object",
+        "description": "Per-entry outcome in the batch response.",
+        "required": [
+          "status",
+          "external_id"
+        ],
+        "properties": {
+          "external_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The server-minted note id (stringified), present only for `\"created\"`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`\"created\"` or `\"skipped\"` (idempotent re-push)."
+          }
+        }
+      },
+      "BatchNoteItem": {
+        "type": "object",
+        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`spelunk-core/src/storage/remote/sync.rs`): the CLI\nnever sends `embedding` today (its push is text-only, ADR-037 D3), but the\nfield is accepted when present for forward compatibility with a future\npushed-vector optimization (ADR-053 #4b): the server must not require it.",
+        "required": [
+          "kind",
+          "title",
+          "external_id"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "embedding": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Optional pre-computed embedding. Tolerated, never required."
+          },
+          "external_id": {
+            "type": "string",
+            "description": "Stable cross-machine identity: the server's idempotency key. Stored as\n`notes.remote_id` (unique). A re-push of the same `external_id` against\na live note is skipped, not duplicated."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Git SHA provenance, if any. No dedicated column on this schema; stored\nas a `git:<sha>` tag, the same convention `harvested_shas` already reads."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "BatchPushRequest": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchNoteItem"
+            }
+          }
+        }
+      },
+      "BatchPushResponse": {
+        "type": "object",
+        "description": "Response body for `POST /memory/batch`; always `207 Multi-Status`.",
+        "required": [
+          "created",
+          "skipped",
+          "failed",
+          "results"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchItemResult"
+            }
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "BoolResponse": {
         "type": "object",
         "required": [
@@ -1808,21 +2011,85 @@
           }
         }
       },
+      "SinceIdEntry": {
+        "type": "object",
+        "description": "One entry in the `since_id`-cursor response of `/memory/since`. `id` is\nthe note's server-minted `sync_id` (arrival-ordered), never its integer\n`id`, which has no meaning to a puller on a different machine.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "created_at"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp."
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "SinceIdResponse": {
+        "type": "object",
+        "description": "Response body for the `since_id`-cursor mode of `/memory/since`.",
+        "required": [
+          "entries",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SinceIdEntry"
+            }
+          }
+        }
+      },
       "SinceQuery": {
         "type": "object",
-        "required": [
-          "t"
-        ],
         "properties": {
           "limit": {
             "type": "integer",
             "format": "int64",
             "description": "Maximum number of results (default: 100, max: 500)."
           },
+          "since_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "UUID cursor (exclusive lower bound, arrival-ordered — see\n`ServerDb::notes_since_id`). Takes precedence over `t` when both are\nsupplied. Selects the delta-pull response shape (`{entries, count}`)\ninstead of the bare array `t` returns."
+          },
           "t": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "Unix epoch seconds (exclusive lower bound)."
+            "description": "Unix epoch seconds (exclusive lower bound). Required unless `since_id`\nis given; ignored when `since_id` is present."
           }
         }
       },

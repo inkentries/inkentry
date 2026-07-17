@@ -41,6 +41,12 @@ indicatif = "0.18"
 futures-util = "0.3"
 ignore = "0.4"
 reqwest = { workspace = true }
+# Named directly so `capability.rs` can downcast a probe failure's error
+# chain to `rustls::Error`/`CertificateError` and classify TLS trust failures
+# separately from a transport-level unreachable. Same resolved version as
+# reqwest's own rustls-tls stack (workspace-pinned); no crypto operations of
+# our own, so features only need to satisfy the enum types compiling.
+rustls = { workspace = true }
 percent-encoding = "2.3"
 blake3 = "1"
 regex = { version = "1", default-features = false, features = ["std"] }
@@ -64,3 +70,9 @@ predicates = "3.1"
 wiremock = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+# TLS-trust e2e test only: an in-test axum-server TLS listener plus rcgen-generated
+# CA/leaf certs, to exercise the CLI's real client path against a proper chain and
+# against the classic CA-cert-as-leaf misconfiguration.
+axum = { version = "0.8", features = ["macros"] }
+axum-server = { workspace = true }
+rcgen = "0.14"

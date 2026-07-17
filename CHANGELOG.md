@@ -17,6 +17,30 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   (Ubuntu 24.04-era), causing crashes on older distros. The `.deb` package
   declares `libdbus-1-3` as a dependency; tarball users on minimal images must
   install `libdbus-1-3` separately.
+- **`spelunk init` starts the server before indexing and detaches the embedding pass.**
+  On a fresh install, the prompt now returns after parsing (seconds on small projects,
+  around a minute on large ones), with embeddings arriving in the background. A detached worker
+  polls the embedder readiness and runs the embed phase, resumable by re-running
+  `spelunk index`. The server is auto-started before parsing begins (rather than after),
+  and a not-yet-ready embedder is a transient condition to wait on rather than a
+  terminal reason to skip the embed pass. (ADR-070 D1, D2)
+- **Search over a warming index emits coverage-gated notices.** When KNN search runs
+  over an incompletely-embedded corpus, a one-line stderr notice names the coverage
+  percentage and its shape ("front-loaded by indexing order"). In `auto` mode on zero
+  coverage, search falls back to ast-grep with a notice naming embeddings as building
+  in the background; in explicit `semantic`/`hybrid` mode, zero coverage produces an
+  actionable error naming the resume command instead of "No results found." Partial
+  coverage results stay served (KNN order-independence + useful prefix) and are labelled
+  accordingly. (ADR-070 D3)
+- **`spelunk status` reports the embed worker's recorded liveness and token-weighted
+  progress.** A live background worker triggers "Embedding in progress" (not a guess
+  from embedded counts); no live worker + pending work prints "Embedding incomplete"
+  plus the resume command. Coverage (chunks embedded / total chunks) and progress
+  (percentage of work done, measured by token weight) are two separately-named measures,
+  and a measured-this-run ETA derives from the worker's recorded baseline (never cached
+  across runs). The old hedging parenthetical is gone. JSON status gains
+  `embedding_pending`, `embed_worker_alive`, and `embed_tokens` fields. (ADR-070 D4, D6)
+
 - **Memory entries are now identified by their content.** An entry's canonical
   identity is a SHA-256 over exactly its `kind`, `title`, and `body`, so the
   same decision recorded independently on two machines converges on one
@@ -163,6 +187,59 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A TLS certificate failure against a configured `server_url` no longer
+  reports "unreachable".** When the capability probe's TLS handshake failed,
+  the WARN printed only reqwest's flattened top-level message ("error sending
+  request for url (...)") and `spelunk status`/`spelunk check` showed
+  `[unreachable]`, exactly as if the server were down, even though it was
+  reachable and only certificate trust had failed. The probe now walks the
+  full error chain and prints it, special-cases the classic self-hosting.md
+  client-trust traps (a CA:TRUE certificate served as its own leaf, or a
+  `server_ca` file that is the server's leaf rather than the issuing CA), and
+  distinguishes the two failure modes in output: `[unreachable]` for a
+  TCP/connect-level miss (refused, timed out), `[tls: <cause>]` for a
+  connection that reached the server but failed TLS trust.
+- **`spelunk memory push` now works against OSS team servers.** The batch-push
+  endpoint (`POST /v1/projects/{id}/memory/batch`) was previously available only
+  on cloud-api, so `spelunk memory push` returned 405 Method Not Allowed against
+  a self-hosted `spelunk-server`. The OSS team server now implements the same
+  endpoint with idempotent re-push on `external_id`, enabling push-only workflows.
+- **`spelunk sync`'s pull leg now works against OSS team servers.** The
+  pull half spoke a different wire format than the OSS server's
+  `/memory/since` endpoint understood (a UUID cursor and an `{entries,
+  count}` envelope vs. the endpoint's timestamp-only, bare-array contract),
+  so `spelunk sync` could push but not pull against a self-hosted
+  `spelunk-server`. `/memory/since` now accepts an optional `since_id` cursor
+  alongside the existing `t` timestamp parameter and returns the matching
+  envelope shape when it is used; `spelunk memory since` (which still uses
+  `t`) is unaffected.
+- **Concurrent memory writes can no longer silently erase each other's
+  entries.** The git-notes write path is a read-modify-write of the note on
+  `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
+  could read the same note body, and the later write-back dropped the earlier
+  writer's entry, with both exiting 0. Worse, a writer treated *any* failure to
+  read the existing note as "no note yet", so one transient git failure inside
+  the write rewrote the whole note as just that writer's line, erasing every
+  prior entry (observed live on Windows CI, where it wiped 6 of 8 concurrent
+  entries). Three changes close this. Writes are now serialized end to end by a
+  cross-process lock file in the git common dir, one lock shared by all
+  worktrees because worktrees share the notes ref. A failed note read is
+  retried briefly and then fails the writer, rather than being mistaken for an
+  empty note. And a writer that cannot take the lock within its 5-second wait
+  fails with an error naming the lock file and telling you to retry; it never
+  writes unlocked. Many concurrent writers on a slow machine can exceed that
+  wait legitimately: every entry already written is intact, and retrying the
+  failed command is the remedy. What the failure looks like depends on the
+  store: after `spelunk init` the entry is already safe in `memory.db`, so
+  `memory add` exits 0 and prints `Warning: entry stored locally, but the
+  git-notes carry failed, so it will not travel with the repo: …` on stderr
+  (previously a failed carry was logged where nobody saw it); before `init`,
+  and with `--backend git-notes`, git notes is the primary store, so `memory
+  add` fails. On the rare filesystem where the lock file cannot be created at
+  all, the write-through proceeds unserialized and prints `Warning: wrote to
+  git notes without the cross-process lock …` on stderr: concurrent writes
+  there can still lose entries, and the warning says so. (#185, #632; ADR-069
+  D6/D8)
 - **A decision recorded independently on two machines now lists once, not twice.**
   Two machines that record the same decision (identical `kind`, `title`, and
   `body`) derive the same identity from that content, but `spelunk memory list`

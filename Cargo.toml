@@ -24,6 +24,11 @@ reqwest     = { version = "0.12", default-features = false, features = ["json", 
 # rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
 # startup instead — already the resolved provider via reqwest/hf-hub.
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+# Named directly (not just pulled in transitively via reqwest/axum-server) so
+# spelunk-cli can match on `rustls::Error`/`CertificateError` variants when
+# classifying a probe failure. default-features off keeps aws-lc-rs out of the
+# tree; `ring`/`tls12` match the provider already resolved via reqwest.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 uuid        = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile    = "3"
 pretty_assertions = "1"

@@ -1,5 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -13,7 +14,7 @@ mod fold;
 mod lock;
 mod publish;
 
-pub use lock::{NotesLock, lock_notes};
+pub use lock::{LOCK_WAIT_BUDGET, LockAttempt, NotesLock, lock_notes};
 pub use publish::{PublishOutcome, SkipReason, publish_notes};
 
 // ── Carry config: surviving history rewrites ─────────────────────────────────
@@ -100,6 +101,137 @@ fn rewrite_ref_covers_spelunk(value: &str) -> bool {
 
 // ── Write-through helper (free function) ─────────────────────────────────────
 
+/// How a writer holds, or legitimately does not hold, the notes lock.
+///
+/// `Unlocked` is ADR-069 D8's one kept degradation, and it is a **returned
+/// value** so a caller can surface it: a `tracing::warn!` reaches nobody
+/// without `RUST_LOG`, and a degradation no caller can see is how silent data
+/// loss stayed invisible in the first place.
+#[must_use]
+enum WriterLock {
+    /// Held until dropped; the guard is retained only for its `Drop`.
+    Held { _guard: NotesLock },
+    /// The lock cannot exist here; the write proceeds unserialized.
+    Unlocked { path: PathBuf, reason: String },
+}
+
+/// Take the notes lock for a writer, per ADR-069 D8: hold it or fail, except
+/// where the lock cannot exist at all, which degrades unlocked and loudly.
+///
+/// `Ok(WriterLock::Unlocked { .. })` is that one degradation. `Err` is
+/// contention (someone else holds the lock; writing anyway is the #185 loss)
+/// or a failed path resolution (git itself is failing, and the writer's own
+/// git calls are next).
+async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<WriterLock> {
+    match lock_notes(git_root).await? {
+        LockAttempt::Acquired(guard) => Ok(WriterLock::Held { _guard: guard }),
+        LockAttempt::Contended { path } => Err(anyhow!(
+            "the git notes lock ({}) stayed held by other writers for over {:?}; \
+             not writing without it, because an unserialized write can silently \
+             erase a concurrent writer's entry. Retry the command (many \
+             concurrent writers can exceed the wait legitimately); if it \
+             persists with nothing else running, a spelunk or git process is \
+             stuck holding the lock (it frees itself when that process exits)",
+            path.display(),
+            lock::LOCK_WAIT_BUDGET,
+        )),
+        LockAttempt::Unusable { path, reason } => {
+            tracing::warn!(
+                "git notes lock {} unusable ({reason}); writing without \
+                 serialization, so a concurrent memory write could be lost",
+                path.display()
+            );
+            Ok(WriterLock::Unlocked { path, reason })
+        }
+    }
+}
+
+/// Attempts for [`read_note_body`] before its failure is surfaced. The
+/// windows-latest losses were transient: the same read succeeded for every
+/// sibling writer moments apart, so a brief, bounded retry of a side-effect
+/// free read absorbs the flake without hiding a persistent failure.
+const NOTE_READ_ATTEMPTS: u32 = 4;
+
+/// Base backoff between read attempts; grows linearly per attempt.
+const NOTE_READ_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// [`read_note_body`], retried up to [`NOTE_READ_ATTEMPTS`] times.
+///
+/// Retries only genuine failures, never "no note found": the read has no side
+/// effects, so retrying cannot double-apply anything, and a persistent failure
+/// still reaches the caller as the `Err` that keeps a writer from wiping the
+/// note. Total added wait is bounded well under the lock budget, so a holder's
+/// cost stays local work (ADR-069 D9).
+async fn read_note_body_with_retry(
+    git_root: Option<&std::path::Path>,
+    object: &str,
+) -> Result<Option<String>> {
+    let mut last_err = None;
+    for attempt in 1..=NOTE_READ_ATTEMPTS {
+        match read_note_body(git_root, object).await {
+            Ok(body) => return Ok(body),
+            Err(e) => {
+                tracing::warn!(
+                    "reading existing note failed (attempt {attempt}/{NOTE_READ_ATTEMPTS}): {e}"
+                );
+                last_err = Some(e);
+                if attempt < NOTE_READ_ATTEMPTS {
+                    tokio::time::sleep(NOTE_READ_BACKOFF * attempt).await;
+                }
+            }
+        }
+    }
+    Err(last_err.expect("at least one attempt ran"))
+}
+
+/// Read the spelunk note body on `object`, distinguishing "no note" (`None`)
+/// from a failed read (`Err`).
+///
+/// The distinction is load-bearing: a writer that mistakes a failed read for
+/// "no note yet" rewrites the whole note as just its own line, erasing every
+/// sibling entry. Seen live on Windows CI, where a transient git failure
+/// inside the guarded section wiped 6 of 8 concurrent entries (#185).
+///
+/// Matches on the exit code, not the message: "no note found" exits 1, while
+/// infrastructure failures die with 128, and the message text is localized.
+async fn read_note_body(
+    git_root: Option<&std::path::Path>,
+    object: &str,
+) -> Result<Option<String>> {
+    let mut cmd = Command::new("git");
+    if let Some(d) = git_root {
+        cmd.current_dir(d);
+    }
+    let out = cmd
+        .args(["notes", "--ref=spelunk", "show", "--", object])
+        .output()
+        .await?;
+
+    if out.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()));
+    }
+    if out.status.code() == Some(1) {
+        return Ok(None);
+    }
+    Err(anyhow!(
+        "git notes show -- {object}: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
+}
+
+/// What [`append_to_git_notes`] did, beyond writing the entry.
+#[derive(Debug)]
+pub struct AppendOutcome {
+    /// The carry-config status ensured along the way; a CLI caller announces
+    /// it once.
+    pub rewrite_ref: RewriteRefStatus,
+    /// Set when the write proceeded **without** the notes lock (ADR-069 D8's
+    /// one kept degradation, on a filesystem where the lock cannot exist).
+    /// The caller must show it to the user: this return value is the only
+    /// channel that works without `RUST_LOG`.
+    pub lock_degradation: Option<String>,
+}
+
 /// Append a `NoteRecord` as a JSON line to `refs/notes/spelunk` on HEAD.
 ///
 /// Read-modify-write with append semantics: the existing blob is read and its
@@ -109,10 +241,9 @@ fn rewrite_ref_covers_spelunk(value: &str) -> bool {
 ///
 /// Serialized end to end by [`lock_notes`]; without it a concurrent writer
 /// reads the same body and silently drops this entry on write-back (#185).
-///
-/// Errors are intentionally non-fatal: the caller should log `tracing::warn!`
-/// and continue.  On success it returns the [`RewriteRefStatus`] of the carry
-/// config ensured along the way, so a CLI caller can announce it once.
+/// Per ADR-069 D8 a contended lock is an `Err` and nothing is written; only a
+/// lock that cannot exist on this filesystem degrades to an unlocked write,
+/// reported in [`AppendOutcome::lock_degradation`].
 ///
 /// # Arguments
 /// * `git_root` — directory passed to `git -C`; `None` uses the process CWD.
@@ -120,14 +251,23 @@ fn rewrite_ref_covers_spelunk(value: &str) -> bool {
 pub async fn append_to_git_notes(
     git_root: Option<&std::path::Path>,
     record: &NoteRecord,
-) -> Result<RewriteRefStatus> {
+) -> Result<AppendOutcome> {
     // Touches `git config` only, never the notes ref, so it stays outside the
     // lock: serializing it would widen the guarded section for nothing.
     let rewrite_ref = ensure_notes_rewrite_ref(git_root).await;
 
-    // Guard all four steps. Contention must never fail the caller's write, so
-    // an unavailable lock degrades to the pre-#185 unserialized behaviour.
-    let _lock = lock_notes(git_root).await;
+    // Guards all four steps (D8). Bind the whole enum: `Held`'s guard must
+    // live to the end of the function.
+    let lock = writer_lock(git_root).await?;
+    let lock_degradation = match &lock {
+        WriterLock::Held { .. } => None,
+        WriterLock::Unlocked { path, reason } => Some(format!(
+            "wrote to git notes without the cross-process lock (lock file {} \
+             unusable: {reason}); concurrent memory writes in this repo can \
+             lose entries",
+            path.display()
+        )),
+    };
 
     // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
     let head = run_git(git_root, &["rev-parse", "HEAD"])
@@ -135,17 +275,18 @@ pub async fn append_to_git_notes(
         .map(|s| s.trim().to_string())?;
 
     // ── 2. Read existing note (may not exist) ─────────────────────────────────
-    let existing = run_git(git_root, &["notes", "--ref=spelunk", "show", "--", &head])
+    let existing = read_note_body_with_retry(git_root, &head)
         .await
-        .unwrap_or_default();
+        .context("could not read the existing note, so not overwriting it")?;
 
     // ── 3. Append new entry ───────────────────────────────────────────────────
     let new_line = serde_json::to_string(record)?;
 
-    let combined = if existing.trim().is_empty() {
-        new_line
-    } else {
-        format!("{}\n{}", existing.trim_end_matches('\n'), new_line)
+    let combined = match existing {
+        Some(body) if !body.trim().is_empty() => {
+            format!("{}\n{}", body.trim_end_matches('\n'), new_line)
+        }
+        _ => new_line,
     };
 
     // ── 4. Write back ─────────────────────────────────────────────────────────
@@ -172,7 +313,10 @@ pub async fn append_to_git_notes(
     )
     .await?;
 
-    Ok(rewrite_ref)
+    Ok(AppendOutcome {
+        rewrite_ref,
+        lock_degradation,
+    })
 }
 
 // ── Read-path merge: making fetched notes visible ────────────────────────────
@@ -202,9 +346,18 @@ pub enum NotesMergeOutcome {
 /// the merge rather than waiting the caller out.
 pub async fn merge_tracking_notes(git_root: Option<&std::path::Path>) -> NotesMergeOutcome {
     // Without this, a concurrent `append_to_git_notes` read-modify-write
-    // silently overwrites the merged entries (#185 / ADR-069 D6).
-    let Some(_lock) = lock_notes(git_root).await else {
-        return NotesMergeOutcome::LockUnavailable;
+    // silently overwrites the merged entries (#185 / ADR-069 D6). Unlike a
+    // writer, every non-acquired outcome skips: the union is idempotent, so
+    // the next read catches up, and a read must never fail over the lock.
+    let _lock = match lock_notes(git_root).await {
+        Ok(LockAttempt::Acquired(guard)) => guard,
+        Ok(LockAttempt::Contended { .. }) | Ok(LockAttempt::Unusable { .. }) => {
+            return NotesMergeOutcome::LockUnavailable;
+        }
+        Err(e) => {
+            tracing::debug!("notes merge skipped, lock path unresolved: {e}");
+            return NotesMergeOutcome::LockUnavailable;
+        }
     };
 
     // `-s` is explicit on every call: the `notes.mergeStrategy` default is
@@ -499,16 +652,16 @@ impl GitNotesBackend {
     }
 
     /// Read the raw note blob for `commit_sha` (empty string if no note).
+    ///
+    /// A failed read is an `Err`, never an empty blob: `append_record` and
+    /// `archive_record` write back what this returns, so conflating the two
+    /// turns one transient git failure into a wiped note (#185).
     async fn read_note_blob(&self, commit_sha: &str) -> Result<String> {
-        let out = self
-            .git()
-            .args(["notes", "--ref=spelunk", "show", "--", commit_sha])
-            .output()
-            .await?;
-        if !out.status.success() {
-            return Ok(String::new());
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(
+            read_note_body_with_retry(self.git_root.as_deref(), commit_sha)
+                .await?
+                .unwrap_or_default(),
+        )
     }
 
     /// Permissively parse the spelunk records from a commit's note blob.
@@ -533,7 +686,7 @@ impl GitNotesBackend {
         // this path has no command output to announce on.
         ensure_notes_rewrite_ref(self.git_root.as_deref()).await;
 
-        let _lock = lock_notes(self.git_root.as_deref()).await;
+        let _lock = writer_lock(self.git_root.as_deref()).await?;
 
         let existing = self.read_note_blob(object).await?;
         let new_line = serde_json::to_string(record)?;
@@ -551,7 +704,7 @@ impl GitNotesBackend {
     /// the matched record's line is re-serialized. Returns whether a match was
     /// rewritten.
     async fn archive_record(&self, object: &str, id: i64) -> Result<bool> {
-        let _lock = lock_notes(self.git_root.as_deref()).await;
+        let _lock = writer_lock(self.git_root.as_deref()).await?;
 
         let blob = self.read_note_blob(object).await?;
         let mut out_lines: Vec<String> = Vec::new();
