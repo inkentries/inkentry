@@ -213,6 +213,31 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   alongside the existing `t` timestamp parameter and returns the matching
   envelope shape when it is used; `spelunk memory since` (which still uses
   `t`) is unaffected.
+- **`spelunk memory push` and `spelunk memory sync` no longer claim to have
+  pushed entries that were never sent, never durably persisted, or that the
+  server rejected.** Three bugs in the same push path could each make "Done.
+  Pushed N entries" (or `sync`'s equivalent) print when nothing meaningful had
+  happened. The reported count was the number of sync-eligible rows rather
+  than the rows actually included in the batch request, so a push where every
+  row was already synced — no HTTP request sent at all — still printed
+  "Pushed N entries." Separately, a batch item was stamped with the local
+  `remote_id` that permanently excludes a row from all future pushes as soon
+  as the server's response carried an id for it, without checking the item's
+  own reported status first; a response that returned an id for an entry it
+  had not actually persisted would silently and permanently take that row out
+  of every future retry. And the summary trusted the server's aggregate
+  `created`/`skipped` counters instead of the authoritative per-item
+  `results[]` list, so a batch whose aggregate counters understated what
+  happened (observed: a server reporting `created: 0` for entries it had in
+  fact persisted) was reported exactly as understated, not as what actually
+  happened. All three are fixed: the reported count now reflects rows
+  actually sent, a row is only stamped as synced when its own status
+  affirmatively means the server durably has it, and created/skipped/failed
+  counts are reconciled from per-item results (the aggregate counters are used
+  only as a fallback when the server sends no per-item detail at all). A push
+  where nothing was sent now reads "Nothing to push — N entries already
+  synced." instead of implying work was done, and a batch with a partial
+  failure reports the real successes and failures instead of masking them.
 - **Concurrent memory writes can no longer silently erase each other's
   entries.** The git-notes write path is a read-modify-write of the note on
   `HEAD`, and nothing serialized it: two simultaneous `memory add` commands
