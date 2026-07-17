@@ -54,6 +54,7 @@ jobs:
       # keyring crate's sync-secret-service feature (links libdbus, a C lib).
       - name: Install build dependencies (Linux container)
         if: matrix.container != ''
+        shell: bash
         run: |
           set -euo pipefail
           apt-get update
@@ -64,6 +65,7 @@ jobs:
 
       - name: Install Rust stable (Linux container)
         if: matrix.container != ''
+        shell: bash
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -108,6 +110,7 @@ jobs:
 
       - name: Strip binaries (Linux)
         if: contains(matrix.target, 'linux')
+        shell: bash
         run: |
           set -euo pipefail
           strip "target/${{ matrix.target }}/release/spelunk"
@@ -121,6 +124,7 @@ jobs:
       # GLIBC_ symbols at all, would otherwise slip through as a false pass).
       - name: Enforce glibc ceiling (Linux)
         if: matrix.container != ''
+        shell: bash
         run: |
           set -euo pipefail
           for bin in spelunk spelunk-server; do
