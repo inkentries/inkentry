@@ -123,6 +123,23 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             Some(s) => serde_json::Value::String(s.as_str().to_string()),
         };
 
+        // Embed-state extensions: worker liveness is read from the recorded
+        // pid (never inferred from counts) and only meaningful while work is
+        // pending; token sums carry their own denominators.
+        let pending_chunks = stats.chunk_count - stats.embedding_count;
+        let (embed_worker_alive_json, embed_tokens_json) = if pending_chunks > 0 {
+            let alive = super::embed_worker::worker_liveness(&db_path)
+                == super::embed_worker::WorkerLiveness::Alive;
+            let tokens = db
+                .embed_token_stats()
+                .ok()
+                .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+                .unwrap_or(serde_json::Value::Null);
+            (serde_json::json!(alive), tokens)
+        } else {
+            (serde_json::Value::Null, serde_json::Value::Null)
+        };
+
         // Serialize languages as [{name, file_count}, ...]
         let languages_json: Vec<serde_json::Value> = languages
             .iter()
@@ -156,6 +173,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "capabilities": caps_json,
                 "embedder_state": embedder_state_json,
                 "embedding_count": stats.embedding_count,
+                "embedding_pending": pending_chunks,
+                "embed_worker_alive": embed_worker_alive_json,
+                "embed_tokens": embed_tokens_json,
                 "drift_candidates": drift,
                 "usage_7d": {
                     "search": usage_map.get("search").copied().unwrap_or(0),
@@ -281,12 +301,34 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     println!("Files:      {}", s.file_count);
     println!("Chunks:     {}", s.chunk_count);
     println!("Embeddings: {}", s.embedding_count);
-    // Surface an in-progress (or interrupted) embed pass: when chunks outnumber
-    // embeddings there is embedding work left, e.g. a detached `--detach-embed`
-    // run still working through batches, or an interrupted run to resume. This
-    // is the completion check for a backgrounded embed.
-    if let Some(line) = embedding_progress_line(s.chunk_count, s.embedding_count) {
-        println!("{line}");
+    // Surface remaining embed work from what the process actually knows: the
+    // worker's recorded pid liveness (not a guess from two integers), chunk
+    // coverage, and the token-weighted work fraction. Coverage and progress
+    // are two measures in two units under two names; on a real repo they
+    // diverge by 2x and that divergence is the fact being reported.
+    if s.chunk_count > s.embedding_count {
+        let tokens = db.embed_token_stats().ok();
+        let worker = super::embed_worker::worker_liveness(&db_path);
+        let worker_alive = worker == super::embed_worker::WorkerLiveness::Alive;
+        let eta = match (&tokens, worker_alive) {
+            (Some(t), true) => super::embed_worker::worker_eta(&db_path, t.pending_tokens),
+            _ => None,
+        };
+        let embedder_unavailable = matches!(
+            tier.embedder_state(),
+            Some(capability::EmbedderState::Unavailable)
+        );
+        if let Some(line) = embedding_state_line(
+            worker_alive,
+            embedder_unavailable,
+            s.chunk_count,
+            s.embedding_count,
+            tokens.as_ref().map(|t| t.total_tokens).unwrap_or(0),
+            tokens.as_ref().map(|t| t.pending_tokens).unwrap_or(0),
+            eta,
+        ) {
+            println!("{line}");
+        }
     }
     if let Some(ts) = s.last_indexed {
         println!("Last index: {}", format_age(ts));
@@ -435,21 +477,82 @@ fn embedder_status_line(state: &capability::EmbedderState) -> Option<String> {
     Some(line)
 }
 
-/// Render the "embedding in progress" line for `spelunk status` when the index
-/// has more chunks than embeddings, i.e. an embed pass is still running (e.g. a
-/// detached `--detach-embed` subprocess) or was interrupted and can be resumed.
-/// Returns `None` when every chunk is embedded (or the index is empty), so a
-/// fully-embedded index prints nothing extra. Pure so it can be unit tested.
-fn embedding_progress_line(chunk_count: i64, embedding_count: i64) -> Option<String> {
+/// Integer percentage with an explicit denominator; `None` when the
+/// denominator is empty (the caller omits the clause rather than printing a
+/// made-up number).
+fn labelled_pct(done: i64, total: i64) -> Option<u64> {
+    (done.max(0) as u64)
+        .saturating_mul(100)
+        .checked_div(u64::try_from(total).ok().filter(|t| *t > 0)?)
+}
+
+/// `~54 min left` style rendering for the status ETA.
+fn humanize_eta(eta: std::time::Duration) -> String {
+    let secs = eta.as_secs();
+    if secs < 60 {
+        format!("~{secs}s left")
+    } else if secs < 3600 {
+        format!("~{} min left", secs.div_ceil(60))
+    } else {
+        format!("~{}h{:02}m left", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// Render the embedding-state line for `spelunk status` when the index has
+/// more chunks than embeddings. Pure so the state matrix is unit testable.
+///
+/// The line reports what the process knows, never a guess:
+/// - a live recorded worker: `Embedding in progress`
+/// - no live worker but pending work: `Embedding incomplete` plus the resume
+///   command (or, when the embedder is unavailable, a pointer at the server
+///   logs instead, since resuming cannot help until the server is fixed)
+///
+/// Two measures, two units, two names: `searchable` is chunk coverage (what
+/// KNN can see), `of work done` is token-weighted progress (how much of the
+/// wait is behind you). They are supposed to diverge; a single unlabelled
+/// percentage serving both questions is the defect this replaces. On an index
+/// whose token counts are not backfilled (total 0) the work clause is omitted
+/// rather than fabricated.
+fn embedding_state_line(
+    worker_alive: bool,
+    embedder_unavailable: bool,
+    chunk_count: i64,
+    embedding_count: i64,
+    total_tokens: i64,
+    pending_tokens: i64,
+    eta: Option<std::time::Duration>,
+) -> Option<String> {
     if chunk_count <= 0 || embedding_count >= chunk_count {
         return None;
     }
-    let pending = chunk_count - embedding_count;
-    Some(format!(
-        "  \x1b[33mEmbedding in progress\x1b[0m  {embedding_count}/{chunk_count} embedded \
-         ({pending} pending) \x1b[2m(a background embed may be running; re-run \
-         `spelunk index` to resume if not)\x1b[0m"
-    ))
+    let coverage = labelled_pct(embedding_count, chunk_count).unwrap_or(0);
+    let searchable = format!("searchable {embedding_count}/{chunk_count} chunks ({coverage}%)");
+
+    let mut progress = match labelled_pct(
+        (total_tokens - pending_tokens).clamp(0, total_tokens),
+        total_tokens,
+    ) {
+        Some(work) => format!("{work}% of work done"),
+        None => "work remaining unknown (run `spelunk index --recount` to backfill token counts)"
+            .to_string(),
+    };
+    if worker_alive && let Some(eta) = eta {
+        progress = format!("{progress}, {}", humanize_eta(eta));
+    }
+
+    Some(if worker_alive {
+        format!("  \x1b[33mEmbedding in progress\x1b[0m   {searchable}  \u{00b7}  {progress}")
+    } else if embedder_unavailable {
+        format!(
+            "  \x1b[33mEmbedding incomplete\x1b[0m   {searchable}  \u{00b7}  {progress}; \
+             the embedder is unavailable, see `spelunk server logs`"
+        )
+    } else {
+        format!(
+            "  \x1b[33mEmbedding incomplete\x1b[0m   {searchable}  \u{00b7}  {progress}; \
+             resume with `spelunk index .`"
+        )
+    })
 }
 
 pub(crate) fn format_age(unix_ts: i64) -> String {
@@ -512,26 +615,129 @@ mod tests {
         assert!(embedder_status_line(&EmbedderState::Unknown).is_none());
     }
 
-    // ── embedding_progress_line: detached / interrupted embed signal ────────────
+    // ── embedding_state_line: what status knows about its own worker (no guessing) ──
+
+    /// Numbers mirroring the recorded field repro: 42% of chunks searchable
+    /// while only 21% of the token-weighted work is done.
+    fn skewed_line(worker_alive: bool, embedder_unavailable: bool) -> Option<String> {
+        embedding_state_line(
+            worker_alive,
+            embedder_unavailable,
+            27_734,
+            11_813,
+            10_000_000,
+            7_900_000,
+            None,
+        )
+    }
 
     #[test]
-    fn embedding_progress_shown_when_chunks_outnumber_embeddings() {
-        let line = embedding_progress_line(100, 40).expect("partial embed shows a line");
+    fn live_worker_reports_in_progress_with_both_labelled_measures() {
+        let line = skewed_line(true, false).expect("pending work renders a line");
         assert!(line.contains("Embedding in progress"));
-        assert!(line.contains("40/100"));
-        assert!(line.contains("60 pending"));
+        assert!(
+            line.contains("searchable 11813/27734 chunks (42%)"),
+            "coverage stays chunk-shaped and labelled: {line}"
+        );
+        assert!(
+            line.contains("21% of work done"),
+            "progress is token-weighted and labelled: {line}"
+        );
+        assert!(
+            !line.contains("may be running"),
+            "the hedging parenthetical is deleted, not reworded: {line}"
+        );
+        assert!(
+            !line.contains("resume"),
+            "a live worker needs no resume advice: {line}"
+        );
     }
 
     #[test]
-    fn embedding_progress_hidden_when_fully_embedded() {
-        assert!(embedding_progress_line(100, 100).is_none());
+    fn no_worker_with_pending_work_reports_incomplete_and_the_resume_command() {
+        let line = skewed_line(false, false).expect("pending work renders a line");
+        assert!(
+            line.contains("Embedding incomplete"),
+            "a dead worker is not 'in progress': {line}"
+        );
+        assert!(!line.contains("Embedding in progress"));
+        assert!(
+            line.contains("spelunk index ."),
+            "must name the resume command: {line}"
+        );
+        assert!(!line.contains("may be running"));
+    }
+
+    #[test]
+    fn unavailable_embedder_points_at_server_logs_instead_of_resume() {
+        let line = skewed_line(false, true).expect("pending work renders a line");
+        assert!(line.contains("Embedding incomplete"));
+        assert!(line.contains("unavailable"), "must say so: {line}");
+        assert!(
+            line.contains("spelunk server logs"),
+            "must point at the server logs: {line}"
+        );
+        assert!(
+            !line.contains("resume with"),
+            "resuming cannot help while the embedder is unavailable: {line}"
+        );
+    }
+
+    #[test]
+    fn coverage_and_progress_percentages_diverge_and_are_never_bare() {
+        // The two measures answer different questions and must be rendered
+        // under their own names; the field repro diverges 2x.
+        let line = skewed_line(true, false).unwrap();
+        assert!(line.contains("(42%)") && line.contains("21%"));
+        assert!(line.contains("searchable") && line.contains("of work done"));
+    }
+
+    #[test]
+    fn live_worker_line_carries_the_measured_eta_when_available() {
+        let line = embedding_state_line(
+            true,
+            false,
+            27_734,
+            11_813,
+            10_000_000,
+            7_900_000,
+            Some(std::time::Duration::from_secs(54 * 60)),
+        )
+        .unwrap();
+        assert!(line.contains("~54 min left"), "got: {line}");
+    }
+
+    #[test]
+    fn pre_backfill_index_omits_the_work_clause_instead_of_fabricating_it() {
+        // total_tokens == 0: no denominator to weight work by, so the clause
+        // is omitted (with the backfill hint), never rendered as a fake 0/100%.
+        let line = embedding_state_line(false, false, 100, 40, 0, 0, None).unwrap();
+        assert!(line.contains("searchable 40/100 chunks (40%)"));
+        assert!(!line.contains("% of work done"));
+        assert!(line.contains("--recount"), "hint at the backfill: {line}");
+    }
+
+    #[test]
+    fn embedding_state_hidden_when_fully_embedded() {
+        assert!(embedding_state_line(true, false, 100, 100, 10, 0, None).is_none());
         // Defensive: never render a negative pending count.
-        assert!(embedding_progress_line(100, 120).is_none());
+        assert!(embedding_state_line(true, false, 100, 120, 10, 0, None).is_none());
     }
 
     #[test]
-    fn embedding_progress_hidden_for_empty_index() {
-        assert!(embedding_progress_line(0, 0).is_none());
+    fn embedding_state_hidden_for_empty_index() {
+        assert!(embedding_state_line(false, false, 0, 0, 0, 0, None).is_none());
+    }
+
+    // ── humanize_eta ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn humanize_eta_scales_units() {
+        use std::time::Duration;
+        assert_eq!(humanize_eta(Duration::from_secs(30)), "~30s left");
+        assert_eq!(humanize_eta(Duration::from_secs(54 * 60)), "~54 min left");
+        assert_eq!(humanize_eta(Duration::from_secs(3_300)), "~55 min left");
+        assert_eq!(humanize_eta(Duration::from_secs(6_000)), "~1h40m left");
     }
 
     // ── memory_backend_label: resolved-backend memory line (ADR-067 D3) ─────────

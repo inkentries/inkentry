@@ -476,6 +476,26 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
     .await
 }
 
+/// One fresh, uncached tier probe, honouring the same explicit-offline
+/// short-circuits as [`get_tier`].
+///
+/// For pollers only: `get_tier`'s process-lifetime cache pins whatever state
+/// the first probe saw, so a caller that must observe a *transition* (the
+/// detached embed worker waiting for the embedder to finish loading) has to
+/// re-probe. Everything else should keep using [`get_tier`].
+pub async fn probe_tier_fresh(cfg: &Config) -> Tier {
+    let explicit_offline = spelunk_core::config::no_server_env_set()
+        || cfg.mode == Some(spelunk_core::config::SyncMode::Offline);
+    if explicit_offline {
+        return Tier::Offline;
+    }
+    probe(
+        cfg.server_url.as_deref(),
+        cfg.server_ca.as_deref().map(std::path::Path::new),
+    )
+    .await
+}
+
 /// Remote-server probe timeout (explicit `server_url` in config/env).
 const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 

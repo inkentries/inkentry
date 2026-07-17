@@ -5349,6 +5349,7 @@ dependencies = [
  "axum-server",
  "blake3",
  "candle-core",
+ "chrono",
  "clap",
  "constant_time_eq 0.5.0",
  "dirs",

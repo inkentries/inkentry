@@ -1,6 +1,7 @@
 pub mod auth_api;
 pub mod check;
 pub mod context;
+mod embed_worker;
 pub mod explore;
 pub mod graph;
 pub mod helpers;

@@ -102,7 +102,44 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         "not installed  (run `spelunk hooks install` to add)".to_string()
     };
 
-    // ── 5. Run initial index (unless --no-index) ──────────────────────────────
+    // ── 5. Auto-spawn server (TTY only) or probe for a running server ─────────
+    //
+    // Interactive (stdin is a TTY): attempt to start the server so semantic
+    // search works immediately. Non-interactive (CI / hook): probe only,
+    // never auto-spawn; print a skip notice if offline.
+    //
+    // This runs BEFORE the index step, and the index step below hands the
+    // embed pass to the detached worker. The two are one change (ADR-070 D1):
+    // starting the server first is what makes the detached embed reachable on
+    // a fresh machine (otherwise the embed probes for a server this very
+    // command has not started yet and silently ships a zero-embedding index),
+    // and detaching is what keeps the reorder from holding the terminal
+    // through the entire embed pass.
+    let server_line: Option<String> = {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            match super::server::ensure_server_running(7777).await {
+                Ok((port, true)) => Some(format!(
+                    "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
+                )),
+                Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
+                Err(e) => {
+                    tracing::debug!("server auto-start skipped: {e}");
+                    None
+                }
+            }
+        } else {
+            let tier = capability::get_tier(&cfg).await;
+            match tier {
+                capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
+                capability::Tier::Offline => {
+                    Some("[server not running - semantic search skipped]".to_string())
+                }
+            }
+        }
+    };
+
+    // ── 6. Run initial index (unless --no-index) ──────────────────────────────
     let (file_count, chunk_count) = if args.no_index {
         println!("Skipping index (--no-index). Run `spelunk index .` when ready.");
         // If the DB exists already, read its stats; otherwise report zeros.
@@ -118,7 +155,13 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             (0, 0)
         }
     } else {
-        // Delegate to the real index command logic.
+        // Delegate to the real index command logic. `detach_embed: true` hands
+        // the (usually long) embed pass to the detached background worker, so
+        // init returns the prompt after parsing instead of holding the
+        // terminal through the whole embed (ADR-070 D1; on the profiled repo
+        // that wait is ~103 minutes). The worker waits out a still-loading
+        // embedder, so this holds on a cold machine whose server step 5 only
+        // just started.
         let index_args = super::index::IndexArgs {
             path: project_root.clone(),
             db: None,
@@ -130,7 +173,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             background_phases: false,
             embed_phases: false,
             detach: false,
-            detach_embed: false,
+            detach_embed: true,
         };
         super::index::index(index_args, cfg.clone()).await?;
 
@@ -144,7 +187,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 5b. Import git-notes memory into the project memory.db ────────────────
+    // ── 6b. Import git-notes memory into the project memory.db ────────────────
     // Entries recorded on `refs/notes/spelunk` before init (git-notes fallback
     // or write-through) are invisible to the SQLite-backed `memory list` until
     // imported. No enclosing git repo → nothing to import. Non-fatal: a failure
@@ -164,35 +207,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     } else {
         None
-    };
-
-    // ── 6. Auto-spawn server (TTY only) or probe for a running server ─────────
-    //
-    // Interactive (stdin is a TTY): attempt to start the server so semantic
-    // search works immediately. Non-interactive (CI / hook): probe only —
-    // never auto-spawn; print a skip notice if offline.
-    let server_line: Option<String> = {
-        use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() {
-            match super::server::ensure_server_running(7777).await {
-                Ok((port, true)) => Some(format!(
-                    "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
-                )),
-                Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
-                Err(e) => {
-                    tracing::debug!("server auto-start skipped: {e}");
-                    None
-                }
-            }
-        } else {
-            let tier = capability::get_tier(&cfg).await;
-            match tier {
-                capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
-                capability::Tier::Offline => {
-                    Some("[server not running — semantic search skipped]".to_string())
-                }
-            }
-        }
     };
 
     // ── 7. Configure git-notes refspec on `origin` (only inside a git repo) ───
