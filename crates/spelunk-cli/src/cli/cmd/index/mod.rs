@@ -58,6 +58,14 @@ pub struct IndexArgs {
     /// detached run has chunks left to embed).
     #[arg(long, default_value_t = false)]
     pub detach_embed: bool,
+
+    /// The `--config` override this process itself resolved, if any. Not part
+    /// of the `index` subcommand's own argv: `--config` is a global `Cli`-level
+    /// flag, so `main` fills this in after parsing. Threaded through so the
+    /// detached-child spawns below can forward the same override rather than
+    /// have the child re-resolve the default config.
+    #[arg(skip)]
+    pub config_path: Option<PathBuf>,
 }
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
@@ -242,14 +250,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     if result.indexed > 100 {
         eprintln!("Spawning background job for graph rank, spec discovery, and summaries\u{2026}");
         let log = background_log_path(&db_path);
-        let mut cmd = std::process::Command::new(std::env::current_exe()?);
-        cmd.arg("index");
-        cmd.arg(&args.path);
-        cmd.arg("--_background-phases");
-        if let Some(db_arg) = &args.db {
-            cmd.args(["--db", &db_arg.to_string_lossy()]);
-        }
-        cmd.stdin(std::process::Stdio::null());
+        let mut cmd =
+            build_detached_child_command(&std::env::current_exe()?, "--_background-phases", &args);
         let in_use = redirect_to_background_log(&mut cmd, log.as_deref());
         if let Some(p) = in_use {
             eprintln!("  Log: {}", p.display());
@@ -308,6 +310,42 @@ enum EmbedSpawn<'a> {
     Detached(Option<&'a std::path::Path>),
 }
 
+/// Build the argv shared by every detached re-exec that continues indexing in
+/// a child process: the child parses its own fresh `IndexArgs`/`Config` from
+/// this argv rather than inheriting the parent's already-parsed values, so
+/// anything the parent resolved that isn't a plain pass-through of `args`
+/// itself (the global `--config` override) or on this list (`--no-summaries`,
+/// `--summary-batch-size`) would otherwise silently reset to its default in
+/// the child. `mode_flag` selects which internal phase-only mode the child
+/// runs (`--_background-phases` or `--_embed-phases`); callers append any
+/// mode-specific flags (e.g. `--batch-size` for the embed phase) afterwards.
+///
+/// Env vars and cwd are not part of this contract: `std::process::Command`
+/// inherits both by default and nothing here calls `.env_clear()` or
+/// `.current_dir()` to opt out (see the regression test below).
+fn build_detached_child_command(
+    exe: &std::path::Path,
+    mode_flag: &str,
+    args: &IndexArgs,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("index");
+    cmd.arg(&args.path);
+    cmd.arg(mode_flag);
+    if let Some(db_arg) = &args.db {
+        cmd.args(["--db", &db_arg.to_string_lossy()]);
+    }
+    if let Some(cfg_path) = &args.config_path {
+        cmd.args(["--config", &cfg_path.to_string_lossy()]);
+    }
+    if args.no_summaries {
+        cmd.arg("--no-summaries");
+    }
+    cmd.args(["--summary-batch-size", &args.summary_batch_size.to_string()]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd
+}
+
 /// Spawn a detached background process to run the embed phase (plus phases 3–5)
 /// against the chunks the foreground run just parsed, reusing the internal
 /// `--_embed-phases` mode. Mirrors the phases-3–5 background spawn: the parent
@@ -316,18 +354,8 @@ fn spawn_embed_subprocess<'a>(
     args: &IndexArgs,
     log: Option<&'a std::path::Path>,
 ) -> Result<EmbedSpawn<'a>> {
-    let mut cmd = std::process::Command::new(std::env::current_exe()?);
-    cmd.arg("index");
-    cmd.arg(&args.path);
-    cmd.arg("--_embed-phases");
+    let mut cmd = build_detached_child_command(&std::env::current_exe()?, "--_embed-phases", args);
     cmd.args(["--batch-size", &args.batch_size.to_string()]);
-    if args.no_summaries {
-        cmd.arg("--no-summaries");
-    }
-    if let Some(db_arg) = &args.db {
-        cmd.args(["--db", &db_arg.to_string_lossy()]);
-    }
-    cmd.stdin(std::process::Stdio::null());
     let in_use = redirect_to_background_log(&mut cmd, log);
     match cmd.spawn() {
         Ok(_) => Ok(EmbedSpawn::Detached(in_use)),
@@ -606,6 +634,34 @@ mod tests {
         // `resolve_batch_ceiling` in embed_phase.rs).
         let cli = TestCli::try_parse_from(["spelunk", "some/path"]).expect("parse");
         assert_eq!(cli.index.batch_size, 0);
+    }
+
+    // ── build_detached_child_command: shared re-exec contract ───────────────────
+
+    fn sample_index_args() -> IndexArgs {
+        TestCli::try_parse_from(["spelunk", "some/path"])
+            .expect("parse")
+            .index
+    }
+
+    #[test]
+    fn detached_child_command_inherits_cwd_and_env() {
+        // `std::process::Command` inherits both by default; this only breaks
+        // if a future edit adds `.current_dir(...)` or `.env_clear()`/`.env(...)`
+        // to the shared builder.
+        let cmd = build_detached_child_command(
+            std::path::Path::new("/usr/bin/spelunk"),
+            "--_background-phases",
+            &sample_index_args(),
+        );
+        assert!(
+            cmd.get_current_dir().is_none(),
+            "must inherit the parent's cwd rather than pin one"
+        );
+        assert!(
+            cmd.get_envs().next().is_none(),
+            "must inherit the parent's environment rather than clear or override it"
+        );
     }
 
     // ── embed_skipped_lines: 0-chunks / offline notice (#5) ─────────────────────

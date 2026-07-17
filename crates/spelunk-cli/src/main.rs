@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
     // still fails loudly on a config it cannot load.
     let best_effort_publish = matches!(&cli.command, Command::Plumbing(p)
         if matches!(&p.command, PlumbingCommand::PublishNotes(a) if a.best_effort));
+    let cli_config_path = cli.config.clone();
     let cfg = match config::Config::load(cli.config.as_deref()) {
         Ok(c) => c,
         Err(e) if best_effort_publish => {
@@ -65,7 +66,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init(args) => cli::cmd::init(args, cfg).await,
-        Command::Index(args) => cli::cmd::index(args, cfg).await,
+        Command::Index(mut args) => {
+            args.config_path = cli_config_path;
+            cli::cmd::index(args, cfg).await
+        }
         Command::Search(args) => cli::cmd::search(args, cfg).await,
         Command::Status(args) => cli::cmd::status(args, cfg).await,
         Command::Check(args) => cli::cmd::check(args, cfg).await,

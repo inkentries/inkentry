@@ -174,6 +174,11 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             embed_phases: false,
             detach: false,
             detach_embed: true,
+            // `init` has no global `--config` override of its own to forward
+            // (it isn't threaded through `InitArgs`); a detached embed child
+            // spawned from here falls back to the default config, same as
+            // before this field existed.
+            config_path: None,
         };
         super::index::index(index_args, cfg.clone()).await?;
 
