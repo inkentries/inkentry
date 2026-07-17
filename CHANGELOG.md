@@ -213,6 +213,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   alongside the existing `t` timestamp parameter and returns the matching
   envelope shape when it is used; `spelunk memory since` (which still uses
   `t`) is unaffected.
+- **`spelunk memory watch` no longer panics when only an auto-discovered
+  loopback server is available.** `require_tier1` gates on the probed
+  capability tier, which also passes for an auto-discovered inference-only
+  loopback server (ADR-004) whose `server_url` is unset; `memory watch`
+  unwrapped that case with `.expect("require_tier1 passed")` and crashed
+  instead of reporting the missing configuration. It now returns the same
+  actionable "requires `server_url` to be configured" error that `memory
+  push` and `sync` already use for this case.
 - **`spelunk memory push` and `spelunk memory sync` no longer claim to have
   pushed entries that were never sent, never durably persisted, or that the
   server rejected.** Three bugs in the same push path could each make "Done.
