@@ -76,13 +76,27 @@ fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
 
     // Parent-aware: catches a file nested under an excluded dir (e.g.
     // `node_modules/...`) as well as a direct glob match.
-    let reason = match filter.classify(std::path::Path::new(&norm), false) {
-        Decision::Exclude(mi) => format!("it matches the exclude pattern `{}`", mi.pattern),
+    let (reason, recipe) = match filter.classify(std::path::Path::new(&norm), false) {
+        Decision::Exclude(mi) => {
+            let reason = format!("it matches the exclude pattern `{}`", mi.pattern);
+            // A directory-prune match (pattern ends in `/`) cannot be re-included
+            // by a `!file` line under the pruned dir (git parity); the recipe must
+            // re-include the directory itself instead.
+            let recipe = if mi.pattern.ends_with('/') {
+                format!("[\"!{p}\", \"!{p}**\"]", p = mi.pattern)
+            } else {
+                format!("[\"!{norm}\"]")
+            };
+            (reason, recipe)
+        }
         // Not a glob match: fall back to a marker sniff if the file is on disk.
         Decision::Keep if filter.detect_generated() => {
             let on_disk = std::env::current_dir().ok().map(|d| d.join(&norm));
             let marker = on_disk.as_deref().and_then(generated_marker)?;
-            format!("its header declares it generated (`{marker}`)")
+            (
+                format!("its header declares it generated (`{marker}`)"),
+                format!("[\"!{norm}\"]"),
+            )
         }
         _ => return None,
     };
@@ -91,7 +105,7 @@ fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
         "No chunks found for '{path}': the built-in index filter skipped it because {reason}, \
          so it was never indexed.\n\
          To index it anyway, add a re-include to [index] in .spelunk/config.toml:\n\
-         \n  [index]\n  exclude = [\"!{norm}\"]\n"
+         \n  [index]\n  exclude = {recipe}\n"
     ))
 }
 
@@ -99,22 +113,42 @@ fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A path excluded by the built-in filter yields an explanation naming the
-    /// matched pattern and the `[index]` re-include recipe.
+    /// A file excluded because its parent directory was pruned yields the
+    /// **directory-form** re-include recipe: a `!file` line cannot re-include a
+    /// path under an already-excluded dir (git parity), so the recipe must name
+    /// the directory that was pruned, not the full file path.
     #[test]
-    fn index_filter_explanation_explains_glob_match_with_recipe() {
+    fn index_filter_explanation_pruned_dir_uses_directory_recipe() {
         let cfg = Config::default();
-        let msg = index_filter_explanation(&cfg, "node_modules/react/index.js")
+        let msg = index_filter_explanation(&cfg, "vendor/lib/pkg.js")
             .expect("excluded path must be explained");
         assert!(msg.contains("built-in index filter"), "{msg}");
-        assert!(
-            msg.contains("node_modules/"),
-            "names the matched pattern: {msg}"
-        );
+        assert!(msg.contains("vendor/"), "names the matched pattern: {msg}");
         assert!(msg.contains("[index]"), "shows the config table: {msg}");
         assert!(
-            msg.contains("exclude = [\"!node_modules/react/index.js\"]"),
-            "shows the ! re-include recipe: {msg}"
+            msg.contains("exclude = [\"!vendor/\", \"!vendor/**\"]"),
+            "shows the directory-form re-include recipe: {msg}"
+        );
+        // The non-functional full-path recipe must NOT be emitted for a
+        // pruned-dir exclusion.
+        assert!(
+            !msg.contains("[\"!vendor/lib/pkg.js\"]"),
+            "must not emit the non-functional full-path recipe: {msg}"
+        );
+    }
+
+    /// A direct-glob match (e.g. `*.min.js`) is re-includable by its full path,
+    /// so the recipe keeps the file-path form.
+    #[test]
+    fn index_filter_explanation_direct_glob_uses_file_recipe() {
+        let cfg = Config::default();
+        let msg =
+            index_filter_explanation(&cfg, "app.min.js").expect("excluded path must be explained");
+        assert!(msg.contains("built-in index filter"), "{msg}");
+        assert!(msg.contains("*.min.js"), "names the matched pattern: {msg}");
+        assert!(
+            msg.contains("exclude = [\"!app.min.js\"]"),
+            "shows the file-form re-include recipe: {msg}"
         );
     }
 
