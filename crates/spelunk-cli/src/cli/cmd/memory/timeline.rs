@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use super::super::helpers::{embed_query, open_read_backend, require_server_client};
+use super::super::helpers::{embed_query, require_server_client};
 use super::super::status::format_age;
 use super::{MemoryTimelineArgs, backend_err};
-use crate::{capability, config::Config};
+use crate::{capability, config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_timeline(
     args: MemoryTimelineArgs,
@@ -29,7 +29,7 @@ pub(super) async fn memory_timeline(
     .await?;
     sp.finish_and_clear();
 
-    let backend = open_read_backend(cfg, mem_path, backend_override).await?;
+    let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let notes = backend
         .search_timeline(&blob, &args.query, args.limit)
         .await

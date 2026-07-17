@@ -454,26 +454,16 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
     println!();
 }
 
-/// The `mode` line for `spelunk status`: lets an operator distinguish "memory
-/// is local by design" (`local_first`) from "local because something broke".
-/// `None` on the solo default (no `server_url`, no explicit mode): there is no
-/// sync configuration to explain.
+/// The `mode` line for `spelunk status`: a neutral one-word sync-mode
+/// indicator. `None` on the solo default (no `server_url`, no explicit mode):
+/// there is no sync configuration to surface. No call to action: the background
+/// reconciler owns convergence, so status must not pre-teach a manual `spelunk
+/// sync` workflow.
 fn sync_mode_line(cfg: &Config) -> Option<String> {
-    use crate::config::SyncMode;
     if cfg.server_url.is_none() && cfg.mode.is_none() {
         return None;
     }
-    let mode = cfg.resolve_mode();
-    let hint = match mode {
-        SyncMode::Offline => "[server contact disabled]",
-        SyncMode::LocalFirst => "[memory reads/writes are local; converge with `spelunk sync`]",
-        SyncMode::CloudFirst => "[server is the memory store of record]",
-    };
-    Some(format!(
-        "  {:<16}{}  \x1b[2m{hint}\x1b[0m",
-        "mode",
-        mode.as_str()
-    ))
+    Some(format!("  {:<16}{}", "mode", cfg.resolve_mode().as_str()))
 }
 
 /// Hint for the `explore` line when the tier is Offline. With a configured
@@ -734,7 +724,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_local_first_names_mode_and_sync() {
+    fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
         clear_no_server_env();
         let cfg = crate::config::Config {
             server_url: Some("https://team.example:7777".to_string()),
@@ -742,12 +732,14 @@ mod tests {
         };
         let line = sync_mode_line(&cfg).expect("server_url set renders a mode line");
         assert!(line.contains("local_first"), "got: {line}");
-        assert!(line.contains("spelunk sync"), "got: {line}");
+        // Neutral indicator only: no manual-sync imperative (the background
+        // reconciler owns convergence).
+        assert!(!line.contains("spelunk sync"), "got: {line}");
     }
 
     #[test]
     #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_cloud_first_names_store_of_record() {
+    fn mode_line_cloud_first_is_neutral_mode_word() {
         clear_no_server_env();
         let cfg = crate::config::Config {
             server_url: Some("https://team.example:7777".to_string()),
@@ -756,7 +748,6 @@ mod tests {
         };
         let line = sync_mode_line(&cfg).expect("mode line");
         assert!(line.contains("cloud_first"), "got: {line}");
-        assert!(line.contains("store of record"), "got: {line}");
     }
 
     #[test]
