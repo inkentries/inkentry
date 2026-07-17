@@ -392,9 +392,12 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
     match tier {
         Tier::Offline => {
             let server_hint = if cfg.server_url.is_some() {
-                "  [unreachable]"
+                match capability::explicit_probe_failure() {
+                    Some(capability::ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
+                    _ => "  [unreachable]".to_string(),
+                }
             } else {
-                "  [set server_url to enable semantic search]"
+                "  [set server_url to enable semantic search]".to_string()
             };
             println!("Capability tier:  \x1b[33mOffline\x1b[0m");
             println!("  search          ast-grep + text{server_hint}");
