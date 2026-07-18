@@ -79,7 +79,7 @@ async fn sync_target(
         )
     })?;
     let project_id = resolve_sync_project(cli_project, cfg)?;
-    let key = auth_api::ensure_fresh_server_key(cfg).await?;
+    let key = auth_api::ensure_fresh_server_key(cfg, &base_url).await?;
     Ok((base_url, project_id, key))
 }
 

@@ -154,11 +154,42 @@ impl ServerInferenceClient {
     /// loopback server sets `inference_url` while leaving `server_url` unset, so
     /// inference reaches the server even though memory stays local. An explicit
     /// team `server_url` is used for both.
+    ///
+    /// The bearer is resolved per-origin via `Config::bearer_for` (ADR-071
+    /// D2): a self-hosted server never receives a cloud `[auth]` token meant
+    /// for a different origin, and vice versa.
     pub fn from_config(cfg: &Config) -> Option<Self> {
         let base_url = cfg
             .resolve_inference_url()?
             .trim_end_matches('/')
             .to_string();
+        let bearer = cfg
+            .bearer_for(&base_url)
+            .expect("resolving per-server bearer credential");
+        Some(Self::build(cfg, base_url, bearer))
+    }
+
+    /// Same as [`from_config`](Self::from_config) but with an injected
+    /// [`SecretStore`](spelunk_core::config::secret_store::SecretStore), so
+    /// in-process tests can exercise bearer resolution without touching the
+    /// real default secret store.
+    #[cfg(test)]
+    fn from_config_with_store(
+        cfg: &Config,
+        store: &dyn spelunk_core::config::secret_store::SecretStore,
+    ) -> Option<Self> {
+        let base_url = cfg
+            .resolve_inference_url()?
+            .trim_end_matches('/')
+            .to_string();
+        let bearer = cfg
+            .bearer_for_with_store(&base_url, store)
+            .expect("resolving per-server bearer credential");
+        Some(Self::build(cfg, base_url, bearer))
+    }
+
+    /// Shared construction once `base_url` and `bearer` are resolved.
+    fn build(cfg: &Config, base_url: String, bearer: Option<String>) -> Self {
         if let Err(msg) = spelunk_core::config::validate_transport_url(&base_url) {
             // Fail loudly and immediately: the alternative is silently sending a
             // bearer token in the clear. No opt-out: the fix is always "use
@@ -176,15 +207,16 @@ impl ServerInferenceClient {
         .build()
         .expect("building HTTP client for server inference");
 
-        // Carry WorkOS refresh state only when the bearer comes from `[auth]`
-        // (i.e. `server_key` was resolved from the access token). A bare
-        // `server_key` / env token is not refreshable here. Refresh targets
-        // WorkOS directly (ADR-047): the WorkOS base URL and the embedded public
-        // client_id (derived from the default cloud host) are captured here.
+        // Carry WorkOS refresh state only when the resolved bearer came from
+        // `[auth]`, i.e. `base_url`'s origin is the cloud kind (ADR-071 D2).
+        // A self-hosted server-key / env token is not refreshable here.
+        // Refresh targets WorkOS directly (ADR-047): the WorkOS base URL and
+        // the embedded public client_id (derived from the default cloud
+        // host) are captured here.
         let refresh = cfg
             .auth
             .as_ref()
-            .filter(|a| Some(a.access_token.as_str()) == cfg.server_key.as_deref())
+            .filter(|a| Some(a.access_token.as_str()) == bearer.as_deref())
             .map(|tokens| RefreshState {
                 tokens: tokens.clone(),
                 workos_url: auth_api::workos_url(),
@@ -192,7 +224,7 @@ impl ServerInferenceClient {
                 config_path: None,
             });
 
-        Some(Self {
+        Self {
             client,
             base_url,
             project_id,
@@ -200,11 +232,8 @@ impl ServerInferenceClient {
             // `server_url` is unset (ADR-004), so a set `server_url` here
             // means `base_url` resolved from it, i.e. an explicit remote.
             is_explicit_remote: cfg.server_url.is_some(),
-            auth: Mutex::new(BearerState {
-                bearer: cfg.server_key.clone(),
-                refresh,
-            }),
-        })
+            auth: Mutex::new(BearerState { bearer, refresh }),
+        }
     }
 
     /// Test-only constructor wiring an explicit base URL, bearer, and refresh
@@ -907,7 +936,9 @@ mod tests {
     }
 
     /// `from_config` carries refresh state ONLY when the bearer was resolved from
-    /// the `[auth]` access token — so a `spelunk login` session can refresh.
+    /// the `[auth]` access token, so a `spelunk login` session can refresh. That
+    /// only happens for a cloud-origin target (ADR-071 D2); a self-hosted origin
+    /// never resolves to the cloud token, whatever `[auth]` holds.
     #[test]
     #[serial_test::serial]
     fn from_config_attaches_refresh_state_for_auth_token_bearer() {
@@ -924,14 +955,12 @@ mod tests {
         };
         spelunk_core::config::save_auth_tokens_to(&tokens, &path).unwrap();
 
-        let mut cfg = crate::config::Config::load_with_store(
-            Some(&path),
-            &spelunk_core::config::secret_store::MemoryStore::default(),
-        )
-        .unwrap();
-        // from_config needs an inference URL to build a client at all.
-        cfg.inference_url = Some("http://127.0.0.1:7777".into());
-        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
+        // The cloud kind only applies for the cloud origin (ADR-071 D2).
+        cfg.inference_url = Some(auth_api::DEFAULT_CLOUD_URL.to_string());
+        let client =
+            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
 
         let guard = client.auth.lock().unwrap();
         assert!(
@@ -955,13 +984,11 @@ mod tests {
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
 
-        let mut cfg = crate::config::Config::load_with_store(
-            Some(&path),
-            &spelunk_core::config::secret_store::MemoryStore::default(),
-        )
-        .unwrap();
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
         cfg.inference_url = Some("http://127.0.0.1:7777".into());
-        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        let client =
+            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
 
         let guard = client.auth.lock().unwrap();
         assert!(
@@ -1078,14 +1105,11 @@ mod tests {
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        let mut cfg = crate::config::Config::load_with_store(
-            Some(&path),
-            &spelunk_core::config::secret_store::MemoryStore::default(),
-        )
-        .unwrap();
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
         cfg.inference_url = Some("http://127.0.0.1:7777".into());
         assert!(
-            ServerInferenceClient::from_config(&cfg).is_some(),
+            ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
             "loopback http:// inference URL must be accepted"
         );
     }
@@ -1098,14 +1122,11 @@ mod tests {
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        let mut cfg = crate::config::Config::load_with_store(
-            Some(&path),
-            &spelunk_core::config::secret_store::MemoryStore::default(),
-        )
-        .unwrap();
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
         cfg.inference_url = Some("https://team-server:7777".into());
         assert!(
-            ServerInferenceClient::from_config(&cfg).is_some(),
+            ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
             "https:// inference URL (any host) must be accepted"
         );
     }

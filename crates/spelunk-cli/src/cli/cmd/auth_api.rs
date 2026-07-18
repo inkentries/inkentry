@@ -24,8 +24,13 @@ use serde::Deserialize;
 
 use spelunk_core::config::{AuthTokens, Config};
 
-/// Default cloud API base URL (used only for `GET /v1/me`).
-pub const DEFAULT_CLOUD_URL: &str = "https://api.spelunk.cloud";
+/// Default cloud API base URL (used for `GET /v1/me`, and as the cloud-vs-
+/// self-hosted origin boundary for bearer resolution, ADR-071 D2). Single
+/// source of truth lives in `spelunk_core::config::server_keys`, which also
+/// reads it (and its `SPELUNK_CLOUD_URL` override) when deciding credential
+/// kind; re-exported here so every existing `auth_api::DEFAULT_CLOUD_URL`
+/// call site keeps working unchanged.
+pub use spelunk_core::config::server_keys::DEFAULT_CLOUD_URL;
 
 /// Default WorkOS User Management API base URL.
 pub const DEFAULT_WORKOS_URL: &str = "https://api.workos.com";
@@ -445,36 +450,42 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
     (!org_id.is_empty()).then_some(org_id)
 }
 
-/// Resolve the bearer token to send to cloud-api, refreshing the stored WorkOS
-/// access token first if it has expired.
+/// Resolve the bearer token to send to `server_url`, refreshing the stored
+/// WorkOS access token first if it has expired.
 ///
-/// The CLI's effective bearer (`cfg.server_key`) is the `[auth]` access token
-/// when the user logged in via WorkOS. Because access tokens are short-lived,
-/// commands that hit cloud-api directly (e.g. `spelunk sync`, `spelunk memory
-/// pull`) must guard against using an already-expired token, which would 401.
+/// Resolution goes through [`Config::bearer_for`] (ADR-071 D2): only a
+/// cloud-origin `server_url` can ever resolve to the `[auth]` access token,
+/// so a self-hosted `server_url` never mistakes an unrelated cloud login for
+/// its own credential. Because access tokens are short-lived, commands that
+/// hit cloud-api directly (e.g. `spelunk sync`, `spelunk memory pull`) must
+/// guard against using an already-expired token, which would 401.
 ///
 /// Behaviour:
-///   - When `[auth]` tokens are present AND the bearer was derived from them
-///     (the WorkOS-login case) AND they are expired, refresh directly against
-///     WorkOS, persist the rotated tokens, and return the fresh access token.
-///   - Otherwise return `cfg.server_key` unchanged — a bare/team `server_key`
-///     or an env override is not refreshable here, and a still-valid token needs
-///     no network round-trip.
+///   - When `[auth]` tokens are present AND the resolved bearer was derived
+///     from them (i.e. `server_url` is the cloud origin) AND they are
+///     expired, refresh directly against WorkOS, persist the rotated tokens,
+///     and return the fresh access token.
+///   - Otherwise return the resolved bearer unchanged: a self-hosted
+///     server-key or an env override is not refreshable here, and a
+///     still-valid token needs no network round-trip.
 ///
 /// A refresh failure surfaces a clear "run `spelunk login`" error.
-pub async fn ensure_fresh_server_key(cfg: &Config) -> Result<Option<String>> {
-    // Only the WorkOS-login bearer (server_key derived from [auth].access_token)
-    // is refreshable; a team/env key is returned as-is.
+pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
+    let resolved = cfg.bearer_for(server_url)?;
+
+    // Only the WorkOS-login bearer (the cloud kind, resolved from
+    // [auth].access_token) is refreshable; a self-hosted server-key is
+    // returned as-is.
     let Some(auth) = cfg
         .auth
         .as_ref()
-        .filter(|a| Some(a.access_token.as_str()) == cfg.server_key.as_deref())
+        .filter(|a| Some(a.access_token.as_str()) == resolved.as_deref())
     else {
-        return Ok(cfg.server_key.clone());
+        return Ok(resolved);
     };
 
     if !auth.is_expired() {
-        return Ok(cfg.server_key.clone());
+        return Ok(resolved);
     }
 
     let client = build_client()?;

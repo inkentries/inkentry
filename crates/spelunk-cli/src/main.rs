@@ -104,7 +104,8 @@ async fn main() -> Result<()> {
         }
         Command::Server(args) => cli::cmd::server(args).await,
         Command::Login(args) => cli::cmd::login(args).await,
-        Command::Logout => cli::cmd::logout().await,
+        Command::Logout(args) => cli::cmd::logout(args).await,
         Command::Org(args) => cli::cmd::org(args).await,
+        Command::Auth(args) => cli::cmd::auth(args).await,
     }
 }
