@@ -10,13 +10,16 @@
 //!
 //! ## State directory
 //!
-//! All runtime state lives under `~/.local/state/spelunk/`:
+//! All runtime state lives under `~/.local/state/spelunk/` (or
+//! `SPELUNK_STATE_DIR` when set; see `capability::spelunk_state_dir`, the
+//! single resolver every reader and writer of this directory shares):
 //! - `server.pid`  — PID of the running daemon process
 //! - `server.port` — TCP port the daemon is listening on (read by `capability.rs`)
 //! - `server.log`  — stdout + stderr of the daemon process
 //!
 //! The port file is read by `capability.rs` for loopback auto-discovery
-//! (spelunk#316).  The writer here **must** use the same path.
+//! (spelunk#316).  The writer here **must** use the same path, enforced by
+//! both going through the shared resolver rather than each defining their own.
 //!
 //! ## Spawned-binary resolution (PATH vs. sibling/absolute)
 //!
@@ -45,17 +48,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
-// ── State dir helpers ─────────────────────────────────────────────────────────
+use crate::capability::spelunk_state_dir;
 
-/// `~/.local/state/spelunk/` on all platforms.
-///
-/// Mirrors `spelunk_state_dir()` in `capability.rs` — both reader and writer
-/// must use the same path.
-pub fn spelunk_state_dir() -> Result<PathBuf> {
-    dirs::home_dir()
-        .map(|h| h.join(".local").join("state").join("spelunk"))
-        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
-}
+// ── State dir helpers ─────────────────────────────────────────────────────────
 
 fn pid_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.pid")
