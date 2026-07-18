@@ -801,6 +801,10 @@ mod init_import_tests {
     }
 
     fn make_temp_git_repo() -> tempfile::TempDir {
+        // Process-wide: this repo's own `commit` below runs through the
+        // ambient global git config if it isn't neutralized first, so an
+        // ambient `core.hooksPath` fires a foreign pre-commit hook here.
+        crate::cli::cmd::test_support::isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let p = dir.path();
         let run = |args: &[&str]| {

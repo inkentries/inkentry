@@ -944,8 +944,33 @@ mod cat_file_batch {
         );
     }
 
+    /// Drop the machine's global/system git config for every git this
+    /// process spawns, including a setup git this test module runs
+    /// directly. Must be process-wide, not per-`Command`: a helper that
+    /// only sets env on the `Command` it builds itself never reaches git
+    /// spawned by the code under test (`run_git`/`run_git_with_stdin`
+    /// inherit the process environment like any other `Command`).
+    ///
+    /// A temp repo's local config does not shadow an ambient value the
+    /// repo never sets, so an ambient `core.hooksPath` (husky, lefthook,
+    /// the pre-commit framework) fires a foreign pre-commit hook on the
+    /// commit below.
+    fn isolate_git_config() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // SAFETY: every caller here calls this first and `Once` blocks
+            // the rest until it returns, so no thread can be spawning git
+            // (reading environ) while these run.
+            unsafe {
+                std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+                std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+            }
+        });
+    }
+
     /// A repo carrying one note, and that note's blob sha.
     fn repo_with_one_note() -> (tempfile::TempDir, String) {
+        isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let run = |args: &[&str]| {
             let out = std::process::Command::new("git")

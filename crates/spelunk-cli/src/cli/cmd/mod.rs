@@ -19,6 +19,8 @@ pub mod plumbing;
 pub mod search;
 pub mod server;
 pub mod status;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod ui;
 
 pub use check::check;
