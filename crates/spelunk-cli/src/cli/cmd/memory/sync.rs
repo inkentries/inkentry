@@ -60,27 +60,24 @@ fn resolve_sync_project(cli_project: Option<&str>, cfg: &Config) -> Result<Strin
 
 /// Resolve the cloud sync target (base URL, server-side project id, key).
 ///
-/// Sync always speaks to an explicit `server_url` — it is the cloud-convergence
-/// path, not the inference loopback. Errors with actionable guidance when the
-/// server is missing, or when no project slug is available (see
-/// [`resolve_sync_project`]).
+/// Sync always speaks to an explicit `server_url`, not the inference loopback.
+/// Errors with actionable guidance when the server is missing (via
+/// [`capability::require_team_server`], the same guard `memory push` uses),
+/// or when no project slug is available (see [`resolve_sync_project`]).
 ///
-/// `cli_project` is the optional `--project <slug>` override; when `None` the
-/// configured `project_id` is used.
+/// `feature` names the calling command (`"sync"` or `"memory pull"`) for the
+/// error message. `cli_project` is the optional `--project <slug>` override;
+/// when `None` the configured `project_id` is used.
 ///
 /// The bearer key is resolved through [`auth_api::ensure_fresh_server_key`] so a
 /// WorkOS access token that has expired since `spelunk login` is refreshed (and
 /// the rotated tokens persisted) before the cloud-api call, rather than 401-ing.
 async fn sync_target(
+    feature: &str,
     cfg: &Config,
     cli_project: Option<&str>,
 ) -> Result<(String, String, Option<String>)> {
-    let base_url = cfg.server_url.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "sync requires a server. Set `server_url` in your spelunk config \
-             (e.g. ~/.config/spelunk/config.toml or .spelunk/config.toml)."
-        )
-    })?;
+    let base_url = capability::require_team_server(feature, cfg)?;
     let project_id = resolve_sync_project(cli_project, cfg)?;
     let key = auth_api::ensure_fresh_server_key(cfg, &base_url).await?;
     Ok((base_url, project_id, key))
@@ -94,7 +91,7 @@ pub async fn memory_pull(
 ) -> Result<()> {
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("memory pull", tier, cfg.server_url.as_deref())?;
-    let (base_url, project_id, key) = sync_target(cfg, None).await?;
+    let (base_url, project_id, key) = sync_target("memory pull", cfg, None).await?;
 
     let local = MemoryStore::open(mem_path)
         .with_context(|| format!("opening local memory at {}", mem_path.display()))?;
@@ -118,7 +115,7 @@ pub async fn memory_sync(
 ) -> Result<()> {
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("sync", tier, cfg.server_url.as_deref())?;
-    let (base_url, project_id, key) = sync_target(cfg, args.project.as_deref()).await?;
+    let (base_url, project_id, key) = sync_target("sync", cfg, args.project.as_deref()).await?;
 
     let src_path = args.source.as_deref().unwrap_or(mem_path);
     let local = MemoryStore::open(src_path)
