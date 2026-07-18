@@ -51,6 +51,15 @@ surviving entry carries the earliest recording time, and the union of the copies
 any copy reads as archived everywhere, so archiving it on one machine does not
 un-archive when a still-active copy arrives from another.
 
+**Superseding travels too.** `--supersedes <old-id>` (on `memory add`) and
+`memory supersede` both append a state-update record for the *old* entry to the
+carrier — archived status, invalidation time, and an edge naming the new
+entry's identity — rather than editing the old entry's line in place, so the
+edge survives a re-`init` renumbering `id` and reaches teammates once the notes
+ref is fetched and merged. This works identically before and after `spelunk
+init`: a clone that never received the new entry still renders the old one as
+archived, just without a name for what replaced it.
+
 **Before `spelunk init`**, `memory add` and `memory list` still work when you are
 inside a git repository: with no `.spelunk/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
