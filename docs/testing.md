@@ -154,6 +154,16 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
   at runtime on first use, not at build time. No model is downloaded during
   `cargo build` or `cargo test` (tests use `embedder: None`).
 
+### Ubuntu (`ubuntu-latest`) caveats
+
+- **`check` job disk pressure.** The `check`/lint job builds the full
+  workspace (`--all-targets --features rich-formats`, which pulls in the
+  embedder dependency tree) and has intermittently exhausted the runner's
+  free disk space. The job sets `CARGO_PROFILE_DEV_DEBUG: 0` to drop
+  dev-profile debug info, and runs `df -h` before toolchain install, after
+  cache restore, and after the final build, so a recurrence is diagnosable
+  from the job log instead of vanishing with the runner.
+
 ---
 
 ## Planned additions
