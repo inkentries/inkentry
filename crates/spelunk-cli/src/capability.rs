@@ -65,8 +65,15 @@ fn read_server_port_file() -> Option<u16> {
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
 /// Cause recorded for the most recent EXPLICIT (non-auto-discovered)
-/// `server_url` probe failure, set at most once per process.
-static EXPLICIT_PROBE_FAILURE: OnceCell<ConnFailure> = OnceCell::const_new();
+/// `server_url` probe failure, set at most once per process (see
+/// `record_explicit_probe_failure`, which mirrors `OnceCell::set`'s
+/// first-write-wins behaviour).
+///
+/// Backed by a `Mutex` rather than `OnceCell` so `#[cfg(test)]` code can
+/// reset it between a test that legitimately populates the cell and a test
+/// that asserts it stays empty; both exist in this module's test suite and
+/// share this one process-global static. Production code never resets it.
+static EXPLICIT_PROBE_FAILURE: std::sync::Mutex<Option<ConnFailure>> = std::sync::Mutex::new(None);
 
 /// How an explicitly-configured `server_url` probe failed: distinguishes a
 /// transport-level miss (refused, timed out, DNS, no route) from a connection
@@ -88,8 +95,36 @@ pub enum ConnFailure {
 /// `None` when no `server_url` is configured, when the tier is `Server`, when
 /// the only probes so far were loopback auto-discovery, or before the first
 /// probe has run.
-pub fn explicit_probe_failure() -> Option<&'static ConnFailure> {
-    EXPLICIT_PROBE_FAILURE.get()
+pub fn explicit_probe_failure() -> Option<ConnFailure> {
+    EXPLICIT_PROBE_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Record `cause` as the explicit-probe failure, unless one is already
+/// recorded. Mirrors `OnceCell::set`'s first-write-wins semantics so this
+/// carries the same "set at most once per process" contract the previous
+/// `OnceCell`-backed static had.
+fn record_explicit_probe_failure(cause: ConnFailure) {
+    let mut slot = EXPLICIT_PROBE_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(cause);
+    }
+}
+
+/// Test-only: clear the recorded explicit-probe failure so a test that
+/// asserts the cell is empty isn't at the mercy of whatever other
+/// `capability::` test happened to populate it earlier in this process.
+/// Callers must pair this with `#[serial_test::serial(explicit_probe_failure)]`,
+/// since the static is shared by every test in this binary.
+#[cfg(test)]
+fn reset_explicit_probe_failure_for_test() {
+    *EXPLICIT_PROBE_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Render `err`'s full `source()` chain, one cause per arrow. reqwest's
@@ -646,7 +681,7 @@ async fn probe_url(
                 let chain = error_chain(&e);
                 match find_rustls_cause(&e) {
                     Some(cause) => {
-                        let _ = EXPLICIT_PROBE_FAILURE.set(ConnFailure::Tls(cause.clone()));
+                        record_explicit_probe_failure(ConnFailure::Tls(cause.clone()));
                         let hint = if server_ca.is_some() {
                             cert_trust_hint()
                         } else {
@@ -658,7 +693,7 @@ async fn probe_url(
                         );
                     }
                     None => {
-                        let _ = EXPLICIT_PROBE_FAILURE.set(ConnFailure::Unreachable);
+                        record_explicit_probe_failure(ConnFailure::Unreachable);
                         tracing::warn!(
                             "spelunk-server at {url} unreachable, running in offline mode: {chain}"
                         );
@@ -1791,7 +1826,9 @@ mod tests {
     /// that could silently swap a fresh success in underneath a stale failure
     /// annotation (or vice versa).
     #[tokio::test]
+    #[serial_test::serial(explicit_probe_failure)]
     async fn get_tier_probes_at_most_once_and_caches_the_result() {
+        reset_explicit_probe_failure_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
         let port = listener.local_addr().expect("local_addr").port();
         drop(listener); // nothing listens on `port` from here on: connection refused.
@@ -1805,7 +1842,7 @@ mod tests {
         assert!(matches!(first, Tier::Offline), "got {first:?}");
         assert_eq!(
             explicit_probe_failure(),
-            Some(&ConnFailure::Unreachable),
+            Some(ConnFailure::Unreachable),
             "connection-refused must classify as Unreachable, not Tls"
         );
 
@@ -1816,7 +1853,7 @@ mod tests {
         );
         assert_eq!(
             explicit_probe_failure(),
-            Some(&ConnFailure::Unreachable),
+            Some(ConnFailure::Unreachable),
             "a cached second get_tier call must not disturb the recorded probe failure"
         );
     }
@@ -1827,7 +1864,9 @@ mod tests {
     /// client must classify as `Unreachable`, never `Tls`: no TLS layer is
     /// ever reached, so `find_rustls_cause` must return `None` on it.
     #[tokio::test]
+    #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_connection_refused_sets_unreachable_not_tls() {
+        reset_explicit_probe_failure_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
         let port = listener.local_addr().expect("local_addr").port();
         drop(listener);
@@ -1837,7 +1876,7 @@ mod tests {
         assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
         assert_eq!(
             explicit_probe_failure(),
-            Some(&ConnFailure::Unreachable),
+            Some(ConnFailure::Unreachable),
             "connection-refused must not be mislabelled as a TLS trust failure"
         );
     }
@@ -1846,7 +1885,9 @@ mod tests {
     /// never answers) must also classify as `Unreachable`, not `Tls`: a slow
     /// or hung server is not a certificate problem.
     #[tokio::test]
+    #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_timeout_sets_unreachable_not_tls() {
+        reset_explicit_probe_failure_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
         let port = listener.local_addr().expect("local_addr").port();
         std::thread::spawn(move || {
@@ -1863,7 +1904,7 @@ mod tests {
         assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
         assert_eq!(
             explicit_probe_failure(),
-            Some(&ConnFailure::Unreachable),
+            Some(ConnFailure::Unreachable),
             "a timeout must not be mislabelled as a TLS trust failure"
         );
     }
@@ -1873,9 +1914,15 @@ mod tests {
     /// nor `[unreachable]`: the transport and TLS both worked fine. This
     /// path must leave `EXPLICIT_PROBE_FAILURE` unset entirely.
     #[tokio::test]
+    #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_non_success_status_does_not_set_any_probe_failure() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Must pass regardless of what other `capability::` test populated
+        // EXPLICIT_PROBE_FAILURE earlier in this process, so reset first
+        // rather than relying on execution order.
+        reset_explicit_probe_failure_for_test();
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1901,7 +1948,12 @@ mod tests {
     /// loopback miss must not leave behind a failure cause that a later
     /// status render could misattribute to an unrelated explicit `server_url`.
     #[tokio::test]
+    #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_auto_discovered_connection_refused_leaves_probe_failure_unset() {
+        // Must pass regardless of what other `capability::` test populated
+        // EXPLICIT_PROBE_FAILURE earlier in this process, so reset first
+        // rather than relying on execution order.
+        reset_explicit_probe_failure_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
         let port = listener.local_addr().expect("local_addr").port();
         drop(listener);
