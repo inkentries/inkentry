@@ -1607,9 +1607,10 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
 // re-run imports nothing (dedup by the same content key as `memory reconcile`).
 
 /// Init a git repo at `dir` with a committer identity AND one commit, so
-/// `refs/notes/spelunk` can be attached — git notes hang off a commit object,
+/// `refs/notes/spelunk` can be attached - git notes hang off a commit object,
 /// so the no-commit `git_init_repo` helper above is not enough here.
 fn git_init_repo_with_commit(dir: &std::path::Path) {
+    plumbing_helpers::isolate_git_config();
     for args in [
         &["init", "-q"][..],
         &["config", "user.email", "test@test.com"][..],

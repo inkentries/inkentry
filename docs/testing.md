@@ -92,6 +92,39 @@ Tests that open a database call `common::open_test_db()` and are annotated
 
 ---
 
+## Ambient git config in tests
+
+Tests that shell out to `git` in a temp repo do not start from a clean
+slate: git also reads the contributor's real **global** and **system**
+config. A repo's local config does not shadow a global value it never
+sets, so an ambient `core.hooksPath` (husky, lefthook, the `pre-commit`
+framework), `commit.gpgsign`, or `notes.rewriteRef` can make git behave
+differently inside a test's throwaway repo than it does in CI, where no
+ambient config exists.
+
+Every test that spawns git must call an `isolate_git_config()` helper
+first. It sets `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `/dev/null`
+for the whole process, guarded by `std::sync::Once` so it is safe to call
+from every test. The isolation must be process-wide, not scoped to one
+`Command`: a helper that only sets env on the `Command` it builds itself
+never reaches git that the code under test spawns for itself.
+
+Three call sites carry a copy of the same helper, because a unit test
+compiled into `src/` cannot reach a file under `tests/`:
+
+| Location | Covers |
+|------|---------------|
+| `crates/spelunk-cli/tests/plumbing_helpers.rs` | `tests/` integration binaries for `spelunk-cli` |
+| `crates/spelunk-cli/src/cli/cmd/test_support.rs` | `src/` unit tests for `spelunk-cli` |
+| `crates/spelunk-core/src/storage/git_notes/mod.rs` (local to the `cat_file_batch` test module) | `spelunk-core` unit tests |
+
+CI runners carry no ambient global config, so a missing call here never
+fails CI. It only surfaces as a local test failure for a contributor who
+has one of these settings configured globally, with no indication of the
+cause.
+
+---
+
 ## Running the tests
 
 ```bash

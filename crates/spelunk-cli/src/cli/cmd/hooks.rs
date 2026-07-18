@@ -433,7 +433,14 @@ mod tests {
 
     /// A repo with a real identity and one commit, isolated from the
     /// developer's ambient git config.
+    ///
+    /// The isolation has to be process-wide (see
+    /// `cli::cmd::test_support::isolate_git_config`), not just set on the
+    /// setup `Command`s here: `resolve_hooks_dir` (the function under test)
+    /// spawns its own git via `git_output`, uninstrumented, and inherits
+    /// whatever the process environment holds at that point.
     fn init_repo(dir: &Path) {
+        crate::cli::cmd::test_support::isolate_git_config();
         let run = |args: &[&str]| {
             let status = std::process::Command::new("git")
                 .args(args)
@@ -442,8 +449,6 @@ mod tests {
                 .env("GIT_AUTHOR_EMAIL", "t@example.com")
                 .env("GIT_COMMITTER_NAME", "t")
                 .env("GIT_COMMITTER_EMAIL", "t@example.com")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .status()
                 .expect("run git");
             assert!(status.success(), "git {args:?} failed");
