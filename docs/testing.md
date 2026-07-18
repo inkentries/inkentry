@@ -130,6 +130,16 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
 
 ### Windows (`windows-latest`) caveats
 
+- **One command per `run:` step.** GitHub wraps a Windows step in PowerShell,
+  which aborts on a failing cmdlet but not on a failing native executable
+  (`rustup`, `cargo`, etc.), since `$ErrorActionPreference='Stop'` +
+  `exit $LASTEXITCODE` doesn't cover native exit codes. A `run:` block
+  chaining two native commands can report success even when the first one
+  failed. Steps in this job's Windows-inclusive matrix keep one command per
+  step for that reason, e.g. the toolchain install is `Update stable
+  toolchain` and `Set default toolchain` as separate steps rather than one
+  `run: |` block.
+
 - **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls`,
   via `hf-hub`/`reqwest` in the `embed-native` stack) compiles from C source.
   Strawberry Perl is pre-installed on `windows-latest` runners so the build
