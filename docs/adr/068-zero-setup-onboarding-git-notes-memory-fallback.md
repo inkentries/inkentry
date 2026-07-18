@@ -726,3 +726,146 @@ replaced:
   accidental id clash between two genuinely different entries negligible. The
   existing pre-persistence secret scan is unaffected; identity is computed from
   the same fields that scan already gates.
+
+## Amendment (2026-07-18): entity_id backfill and uniqueness promotion for existing local stores
+
+**Date:** 2026-07-18
+**Deciders:** founder (Johan); architect
+
+A6's retrofit shipped with `entity_id` populated only on new rows: migration
+`023_memory_entity_id.sql` adds the column plus a **non-unique** index by
+explicit design, and its own comment names the reason: "the backfill rule is a
+separate open decision" and "a UNIQUE index would abort the migration." A6
+flagged the same gap directly: "Populating the column on existing rows and
+resolving those collisions is being decided separately, is a precondition of
+this retrofit, and is deliberately not designed here." This amendment is that
+decision.
+
+`reconcile.rs` already implements the collapse mechanics this backfill needs
+(`collapse_candidates`, `MergedNote::absorb`, `MemoryStore::union_tags_and_files`,
+`MemoryStore::set_superseded_by`), but only for *incoming* `server.db`
+candidates, before they are ever written to `memory.db`. Rows already resident
+in `memory.db` are, by that module's own design, left untouched: duplicates are
+folded into `entity_to_local` via `.entry().or_insert()` over rows ordered
+`created_at ASC`, so the oldest local row silently becomes the edge target and
+nothing merges or is deleted. This amendment applies the same merge rule
+intra-table, to rows already sitting in `memory.db`.
+
+### B1 – Collapse existing duplicates, not keep-both under a relaxed constraint
+
+Rows sharing an `entity_id` are merged, not left in place indefinitely under a
+non-unique index. Keeping both would key local dedup on something other than
+`entity_id`, reopening the cross-machine convergence problem A2 closes and
+leaving `memory.db` permanently out of step with the "entity_id is the key"
+contract that reconcile, init-import, and server sync already code against.
+
+For each group of `notes` rows sharing an `entity_id`:
+
+- **Survivor**: the row with the earliest `created_at` in the group, matching
+  the first-seen convention `all_notes_for_dedup` already uses (rows ordered
+  `created_at ASC`, folded via `entity_to_local.entry().or_insert()`).
+- **`tags` / `linked_files`**: union, add-wins, order of first appearance, the
+  same rule `union_tags_and_files` and A6 use for the incoming-candidate case.
+- **`status`**: archived sticks. If any row in the group is archived, the
+  survivor becomes archived; if none are, the survivor's own status is
+  unchanged.
+- **Survivor's own `superseded_by`**: if it is `NULL` and another row in the
+  group carries a non-null value, the survivor adopts it. If two rows in the
+  group carry conflicting non-null values, the earliest-created one wins
+  deterministically and the run logs a warning; it does not error (rows share
+  content by construction, so this is expected to be rare).
+- **`superseded_by` edges elsewhere in `notes` pointing at a loser**: every row
+  whose `superseded_by` targets a loser is rewritten to the survivor's id
+  before the loser is deleted, mirroring `set_superseded_by`.
+- **Self-edge guard**: a rewrite that would set a row's `superseded_by` to its
+  own id is dropped to `NULL` instead, mirroring reconcile's existing
+  `if succ_local_id == *local_id { continue; }` guard.
+- **Losers are deleted**, along with their `note_embeddings` row if present
+  (the `vec0` virtual table carries no foreign key, so this is an explicit
+  delete). No embedding merge: two vectors have no meaningful union, and
+  embeddings sit outside A6's merge scope.
+- The survivor's own `id` (rowid), `remote_id`, and sync bookkeeping are
+  untouched; per A4 the rowid is process-local, not identity, so which specific
+  row happens to survive does not matter downstream.
+
+### B2 – `spelunk memory dedupe`: explicit, not folded into a silent migration
+
+The collapse in B1 is the first operation in this codebase that deletes rows
+already resident in `memory.db`, so it ships as its own command rather than
+running invisibly inside routine `Database::open`. This is stricter than
+`memory reconcile`'s own posture, not merely consistent with it: reconcile's
+collapse only ever touches candidate rows before their first write to
+`memory.db`; it never deletes a row already stored there.
+
+A new `spelunk memory dedupe` subcommand, sibling to `reconcile`, with the same
+flag and summary shape as `MemoryReconcileArgs`:
+
+- `--dry-run` (bool, default false): detect and report duplicate groups, write
+  nothing.
+- `--format text|json`, the same convention `reconcile` uses.
+- Summary fields: `total_notes`, `duplicate_groups`, `rows_collapsed`,
+  `tags_merged`, `linked_files_merged`, `supersede_edges_repointed`,
+  `supersede_self_edges_dropped`.
+- One `BEGIN IMMEDIATE` / `COMMIT` transaction per run, mirroring
+  `import_batch`. Any error mid-run rolls back: `memory.db` is left exactly as
+  it was, and the command reports the error rather than a partial summary.
+- Never invoked automatically. `spelunk init`, `spelunk memory add`, and every
+  other automatic path continue to leave existing duplicate rows alone, exactly
+  as migration 023's own comment already documents ("those duplicates are
+  harmless and are left in place").
+
+### B3 – Migration shape: two independently-safe steps, no hard-abort
+
+Split into a step that is always safe to run automatically and a step that is
+conditional on the first having fully resolved duplicates. Reuses the
+`apply_dim_upgrade_migration` idiom already in `db.rs` (the 768-to-896
+embedding-dimension upgrade): a Rust-side, marker-guarded, conditional step
+that runs at `Database::open` and never issues a blind SQL `ALTER` /
+`CREATE UNIQUE INDEX` that can hard-fail the whole open.
+
+**Step A, populate `entity_id` (unconditional, no decision risk).** At
+`Database::open`, after existing migrations: select rows where `entity_id IS
+NULL`, compute `entity_id()` in Rust (`sha256` is unavailable to raw SQL, so
+this cannot be a plain `.sql` migration file), `UPDATE notes SET entity_id =
+?1 WHERE id = ?2`. Idempotent: an interrupted run simply leaves the remaining
+rows `NULL` for the next open to pick up. Cannot fail on a constraint, because
+migration 023's index stays non-unique for this step.
+
+**Step B, promote the index to UNIQUE (conditional).** After Step A, at
+`Database::open`: scan for any `entity_id` shared by more than one row.
+
+- **Zero duplicate groups**: `DROP INDEX idx_notes_entity_id; CREATE UNIQUE
+  INDEX idx_notes_entity_id ON notes(entity_id) WHERE entity_id IS NOT NULL;`,
+  then record a marker (mirroring the `schema_int8_embeddings` marker table) so
+  later opens skip the scan.
+- **One or more duplicate groups**: no-op. The existing non-unique index stays
+  in place (no regression versus today), and one actionable line is logged
+  naming `spelunk memory dedupe` as the next step. This is what satisfies "must
+  not hard-abort and brick an existing `memory.db`": the store stays fully
+  functional indefinitely until the user opts into `dedupe`.
+- Both checks re-run on every open until promotion succeeds; the row-scan cost
+  is bounded, and Step A already makes the steady-state case a fast no-op
+  query.
+
+### B4 – Non-goals, consequences, security
+
+- **Non-goal:** an automatic backfill-and-delete inside routine `Database::open`
+  with no explicit user action. B2 makes the deletion deliberate and
+  user-invoked.
+- **Non-goal:** merging or deduplicating embeddings. Losing a loser's embedding
+  on collapse is accepted; the survivor's own embedding, if it has one, is
+  untouched.
+- **Consequence:** a store with duplicate `entity_id` groups keeps its
+  non-unique index and keeps working exactly as it does today; every command
+  that does not call `dedupe` is unaffected by this amendment. Uniqueness is
+  opt-in, not forced on an existing store.
+- **Consequence:** once `dedupe` collapses a store to zero duplicate groups and
+  the store is reopened, `idx_notes_entity_id` promotes to UNIQUE and stays
+  enforced from then on; a later insert that would collide is a constraint
+  violation, not a silent duplicate.
+- **Security:** `dedupe` deletes rows the user already owns locally; there is
+  no new trust boundary and no data leaves the machine. The transaction posture
+  (a single `BEGIN IMMEDIATE` / `COMMIT`, no partial summary on error) is the
+  control against a partially-applied merge corrupting `memory.db`; no further
+  mitigation is needed because the operation is local, explicit, and confined
+  to a single all-or-nothing write.
