@@ -478,4 +478,179 @@ mod tests {
         store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
         assert_eq!(count(&store).unwrap(), 2);
     }
+
+    // ── adversarial: independent test-engineer coverage ──────────────────────
+    //
+    // The tests above are the Engineer's own suite. These probe cases their
+    // own tests don't: a corrupted store payload, and a map entry coexisting
+    // with the legacy tier for a *different* origin than the one already
+    // migrated (the scenario the ADR's "no cross-origin leak" claim rests on
+    // but the Engineer's `..._does_not_leak_to_a_second_unmapped_origin` test
+    // only exercises with an *empty* map, not a map that already has an
+    // unrelated origin in it).
+
+    /// A corrupted `server_keys` payload must fail resolution loudly (`Err`),
+    /// never silently fall through to "no credential" or, worse, to the
+    /// legacy tier. A silent fallthrough here would be the dangerous case: an
+    /// operator could believe a server is unauthenticated-safe (loopback,
+    /// firewalled) when in fact resolution swallowed a real error and just
+    /// returned `None`, or could get a stale/wrong key from the legacy tier
+    /// instead of a clear "your credential store is broken" signal.
+    #[test]
+    #[serial_test::serial]
+    fn corrupted_map_json_fails_resolution_loudly_not_silently() {
+        clear_env();
+        let store = MemoryStore::default();
+        // Not valid JSON at all.
+        store.set(KEY_SERVER_KEYS_MAP, "{not valid json").unwrap();
+        // A legacy entry is also present: a silent-fallthrough implementation
+        // could mistakenly hand this out instead of surfacing the corruption.
+        store
+            .set(KEY_SERVER_KEY, "sk-legacy-should-not-be-returned")
+            .unwrap();
+
+        let result = bearer_for(None, "https://team.example:7777", &store);
+        assert!(
+            result.is_err(),
+            "a corrupted map must fail loudly, not resolve to Some/None silently; got {result:?}"
+        );
+
+        // Same for the JSON tools directly: a valid JSON value of the wrong
+        // shape (an array, not an object) must also fail, not deserialize
+        // into an empty/default map.
+        store
+            .set(KEY_SERVER_KEYS_MAP, "[\"not\", \"a\", \"map\"]")
+            .unwrap();
+        let result2 = bearer_for(None, "https://team.example:7777", &store);
+        assert!(
+            result2.is_err(),
+            "a wrong-shaped-but-valid-JSON map must also fail loudly; got {result2:?}"
+        );
+    }
+
+    /// `set_key_for_origin` / `list_origins` must likewise surface a
+    /// corrupted map rather than silently treating it as empty and
+    /// overwriting it (which would quietly discard whatever the corrupted
+    /// payload's other origins were, destroying credentials for servers the
+    /// corruption didn't even touch).
+    #[test]
+    fn corrupted_map_json_fails_set_and_list_loudly() {
+        let store = MemoryStore::default();
+        store.set(KEY_SERVER_KEYS_MAP, "{not valid json").unwrap();
+
+        assert!(set_key_for_origin("https://a.example", "sk-a", &store).is_err());
+        assert!(list_origins(&store).is_err());
+    }
+
+    /// Both a per-origin map entry AND the legacy flat key exist
+    /// simultaneously (the realistic post-partial-migration state: one
+    /// origin was already explicitly `auth set-key`'d while another is still
+    /// waiting on its first-use migration). Resolving the *already-mapped*
+    /// origin must return the map's value and must NOT touch or delete the
+    /// legacy entry, since it isn't this origin's to consume. Resolving the
+    /// *unmapped* origin afterward must migrate the legacy entry, and must
+    /// leave the first origin's map entry untouched (no cross-origin
+    /// overwrite of an unrelated key while writing the map back).
+    #[test]
+    #[serial_test::serial]
+    fn mapped_origin_and_legacy_entry_coexist_without_leaking_or_clobbering() {
+        clear_env();
+        let store = MemoryStore::default();
+        // Origin A was explicitly set via `auth set-key`.
+        set_key_for_origin("https://a.example:7777", "sk-a-explicit", &store).unwrap();
+        // A legacy flat key also still exists (not yet migrated, so it belongs
+        // to whichever origin first resolves through the fallback tier).
+        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+
+        // Resolving A must return A's own key, untouched by the legacy tier.
+        let a = bearer_for(None, "https://a.example:7777", &store).unwrap();
+        assert_eq!(a.as_deref(), Some("sk-a-explicit"));
+        assert_eq!(
+            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-legacy"),
+            "resolving an already-mapped origin must not touch the legacy entry"
+        );
+
+        // Resolving a second, unmapped origin B migrates the legacy entry
+        // into B's slot...
+        let b = bearer_for(None, "https://b.example:7777", &store).unwrap();
+        assert_eq!(b.as_deref(), Some("sk-legacy"));
+        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None, "legacy consumed");
+
+        // ...and A's own key must be exactly what it was before, not
+        // overwritten by the read-modify-write that added B.
+        let (mut origins, legacy) = list_origins(&store).unwrap();
+        origins.sort();
+        assert_eq!(
+            origins,
+            vec![
+                "https://a.example:7777".to_string(),
+                "https://b.example:7777".to_string(),
+            ]
+        );
+        assert!(!legacy);
+        assert_eq!(
+            bearer_for(None, "https://a.example:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-a-explicit"),
+            "A's key must survive B's migration write unchanged"
+        );
+    }
+
+    /// `clear_origin` on an origin that is present in the map must remove
+    /// only the map entry, even when a legacy entry also still exists
+    /// (serving some *other*, not-yet-migrated origin); it must not
+    /// mistakenly delete the legacy entry too, which would strand whichever
+    /// other origin is still relying on it.
+    #[test]
+    fn clear_origin_on_mapped_origin_does_not_touch_an_unrelated_legacy_entry() {
+        let store = MemoryStore::default();
+        set_key_for_origin("https://a.example:7777", "sk-a", &store).unwrap();
+        store
+            .set(KEY_SERVER_KEY, "sk-legacy-for-someone-else")
+            .unwrap();
+
+        clear_origin("https://a.example:7777", &store).unwrap();
+
+        assert_eq!(
+            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-legacy-for-someone-else"),
+            "clearing a mapped origin must leave an unrelated legacy entry intact"
+        );
+        let (origins, _) = list_origins(&store).unwrap();
+        assert!(origins.is_empty());
+    }
+
+    /// The two-server, two-key motivating case (task's acceptance sketch),
+    /// driven purely through the public resolution/storage API with no env
+    /// var involved at any point: both origins resolve to their own key on
+    /// repeated, interleaved lookups, with no state that could cause a
+    /// second read to see the first origin's key.
+    #[test]
+    #[serial_test::serial]
+    fn two_projects_two_origins_two_keys_resolve_independently_interleaved() {
+        clear_env();
+        let store = MemoryStore::default();
+        set_key_for_origin("https://proj-a.example:7777", "sk-proj-a", &store).unwrap();
+        set_key_for_origin("https://proj-b.example:9443", "sk-proj-b", &store).unwrap();
+
+        // Interleave lookups (A, B, A, B) to catch any accidental
+        // last-write-wins / shared-mutable-state bug a naive cache could
+        // introduce.
+        for _ in 0..3 {
+            assert_eq!(
+                bearer_for(None, "https://proj-a.example:7777", &store)
+                    .unwrap()
+                    .as_deref(),
+                Some("sk-proj-a")
+            );
+            assert_eq!(
+                bearer_for(None, "https://proj-b.example:9443", &store)
+                    .unwrap()
+                    .as_deref(),
+                Some("sk-proj-b")
+            );
+        }
+    }
 }
