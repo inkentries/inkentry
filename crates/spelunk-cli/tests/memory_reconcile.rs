@@ -1695,7 +1695,7 @@ fn sql_injection_payload_in_body_does_not_break_import() {
 /// `capability::spelunk_state_dir` resolver, which honors `SPELUNK_STATE_DIR`.
 /// Reconcile's default source path (used whenever `--source-db` is omitted)
 /// must resolve through that same function rather than reconstructing
-/// `~/.local/state/spelunk/` from `dirs::home_dir()` on its own — otherwise a
+/// `~/.local/state/spelunk/` from `dirs::home_dir()` on its own. Otherwise a
 /// daemon run under a `SPELUNK_STATE_DIR` override is invisible to reconcile:
 /// it hits the "server.db absent" no-op branch instead of importing.
 #[test]
