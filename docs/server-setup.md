@@ -256,9 +256,37 @@ you want a stable owner for backup/inspection or a stable `started_by` UID.
 
 ## 4. Docker: a team server or a local scaffold
 
-With in-process TLS, a container is a real team-server vehicle. Build the image,
-then bind the container's routable interface, mount a certificate and key,
-publish the port, and set an API key:
+With in-process TLS, a container is a real team-server vehicle: bind the
+container's routable interface, mount a certificate and key, publish the port,
+and set an API key. **`docker compose` is the recommended path**:
+[`docker-compose.yml`](../docker-compose.yml) already ships a `team-server`
+profile that wires this up declaratively, so it is the primary walkthrough
+below; a bare `docker run` invocation follows as a manual alternative for
+readers not using Compose.
+
+### Recommended: `docker compose --profile team-server`
+
+```bash
+git clone https://github.com/spelunk-cloud/spelunk
+cd spelunk
+
+SPELUNK_SERVER_KEY=$(openssl rand -hex 32) \
+SPELUNK_TLS_CERT=/etc/spelunk/tls-cert SPELUNK_TLS_KEY=/etc/spelunk/tls-key \
+docker compose --profile team-server up -d
+```
+
+`docker compose`'s `pull_policy: build` builds the image for you, no separate
+`docker build` step needed. The `team-server` service mounts the cert/key from
+the host paths above, publishes the container's routable TLS port on the
+host's `443`, and refuses to bind without `SPELUNK_SERVER_KEY` set (ADR-066).
+`https://<host>` now answers, keyed, with the container serving TLS itself.
+
+The `team-server` service runs with `restart: unless-stopped` (not
+auto-removed), so if it isn't answering, `docker compose ps` shows its state
+and `docker compose logs team-server` shows why, including an ADR-066
+bind/TLS refusal.
+
+### Manual alternative: bare `docker run`
 
 ```bash
 git clone https://github.com/spelunk-cloud/spelunk
@@ -272,7 +300,10 @@ docker build -t spelunk-server .
 export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
 
 # Team server: routable TLS bind, cert + key mounted, port published.
-docker run --rm -d --name spelunk-server \
+# No --rm here: this is a long-lived server, and --rm deletes the container
+# (and its only diagnostic output) the moment it exits, including on an
+# ADR-066 fail-fast bind/TLS refusal.
+docker run -d --name spelunk-server \
   -p 443:7777 \
   -v spelunk-data:/data \
   -v /etc/spelunk/tls-cert:/tls/cert:ro \
@@ -283,11 +314,12 @@ docker run --rm -d --name spelunk-server \
   spelunk-server --host 0.0.0.0 --port 7777
 ```
 
-`https://<host>` now answers, keyed, with the container serving TLS itself. The
-`team-server` profile in [`docker-compose.yml`](../docker-compose.yml) wires the
-same thing up declaratively, and `docker compose`'s `pull_policy: build` handles
-the build step for you; the explicit `docker build` above is only needed for
-the bare `docker run` path.
+`https://<host>` now answers, keyed, with the container serving TLS itself.
+
+A `docker run -d` prints a container ID immediately whether or not the server
+actually stays up, so an ID alone is not confirmation it is serving. If
+nothing answers, or `docker ps` no longer lists it, run `docker logs
+spelunk-server` to see why (for example, an ADR-066 bind/TLS refusal).
 
 `docker-compose.yml`'s **default** service is still a **local scaffold**: it
 builds the image and runs `spelunk-server` on loopback with a persistent named
@@ -328,13 +360,20 @@ resolve and the server to answer.
 
 ## Client configuration
 
-Each developer adds a `.spelunk/config.toml` at the project root (commit it):
+Add a `.spelunk/config.toml` at the project root and commit it (it contains no
+secrets): one person on the team does this once per repo, and every other
+developer picks it up on their next `git pull`, no per-developer setup step for
+this file.
 
 ```toml
 # .spelunk/config.toml: commit this, it's not a secret
 server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 ```
+
+Each developer then supplies only the key, which is the actual per-developer
+secret (via the environment variable or personal config file below, or the OS
+keychain).
 
 > **`server_url` must be `https://` unless it points at loopback**
 > (`127.0.0.1` / `::1` / `localhost`). The CLI attaches your bearer token to
