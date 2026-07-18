@@ -23,8 +23,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   declares `libdbus-1-3` as a dependency; tarball users on minimal images must
   install `libdbus-1-3` separately.
 - **`spelunk init` starts the server before indexing and detaches the embedding pass.**
-  On a fresh install, the prompt now returns after parsing (seconds on small projects,
-  around a minute on large ones), with embeddings arriving in the background. A detached worker
+  On a fresh install, the prompt now returns after parsing, with embeddings arriving in the background. A detached worker
   polls the embedder readiness and runs the embed phase, resumable by re-running
   `spelunk index`. The server is auto-started before parsing begins (rather than after),
   and a not-yet-ready embedder is a transient condition to wait on rather than a
