@@ -43,7 +43,15 @@ src/
     mod.rs             Clap structs (Cli, Command, *Args)
     cmd/               One file per subcommand (index.rs, search.rs, etc.)
 
-  config.rs            Config struct, loads from ~/.config/spelunk/config.toml
+  config/
+    mod.rs             Config struct, loads from ~/.config/spelunk/config.toml
+    sync_mode.rs       SyncMode enum (ADR-037 D1)
+    project_id.rs      project-id derivation from git remote / local fallback
+    paths.rs           config-dir + project/db discovery
+    persist.rs         config.toml / secret-store read-write
+    predicates.rs      URL/UUID/env predicates
+    tls.rs             custom CA trust-anchor application
+    secret_store.rs    OS keychain / file secret-store backend
 
   backends.rs          Re-exports ActiveEmbedder / ActiveLlm (feature-gated)
 
