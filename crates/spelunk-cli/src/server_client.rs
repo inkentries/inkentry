@@ -971,6 +971,33 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("sk-legacy"));
     }
 
+    /// `is_explicit_remote` keys off whether `server_url` was set by the
+    /// operator, never off what host it resolves to: an explicitly
+    /// configured `server_url = http://127.0.0.1:PORT` is still "explicit"
+    /// even though the host is loopback. `spelunk server logs` only ever
+    /// reads the fixed auto-daemon log path and cannot tell this loopback
+    /// address was hand-configured, so the inference-error hint must still
+    /// name it. Mirrors `capability::tests::
+    /// tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
+    /// which pins the same invariant on the `Tier` side of this contract.
+    #[test]
+    #[serial_test::serial]
+    fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let cfg = crate::config::Config {
+            server_url: Some("http://127.0.0.1:9797".to_string()),
+            project_id: Some("proj".to_string()),
+            ..Default::default()
+        };
+        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        assert!(
+            client.is_explicit_remote,
+            "an explicitly configured server_url must count as explicit even when it is loopback"
+        );
+    }
+
     /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`
     /// must become `%2F` so the whole slug occupies one URL path segment
     /// (IMP-1 / spelunk decision #106).

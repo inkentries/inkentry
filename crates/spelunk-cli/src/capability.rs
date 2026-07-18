@@ -1081,6 +1081,31 @@ mod tests {
         assert_eq!(Tier::Offline.explicit_remote_url(), None);
     }
 
+    #[test]
+    fn tier_explicit_remote_url_is_explicit_even_when_host_is_loopback() {
+        // `explicit_remote_url` keys off *how the URL was reached*
+        // (`auto_discovered`), never off the host it resolves to. An operator
+        // can hand-configure `server_url = http://127.0.0.1:PORT`; it is
+        // still `auto_discovered: false` because it went through the
+        // `Some(url)` probe branch, not loopback auto-discovery (see
+        // `probe()`). `spelunk server logs` only ever reads the fixed
+        // auto-daemon log path and has no idea this loopback address was
+        // hand-configured, so the hint must still name it rather than assume
+        // "loopback implies safe to point at the local log".
+        let explicit_loopback = Tier::Server {
+            url: "http://127.0.0.1:9797".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
+            server_limits: None,
+        };
+        assert_eq!(
+            explicit_loopback.explicit_remote_url(),
+            Some("http://127.0.0.1:9797"),
+            "an explicitly configured server_url must count as explicit even when its host is loopback"
+        );
+    }
+
     // ── effective_config (ADR-004 inference-vs-memory routing) ───────────────
 
     #[test]
