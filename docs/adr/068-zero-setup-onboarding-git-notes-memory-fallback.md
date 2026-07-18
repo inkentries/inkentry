@@ -869,3 +869,85 @@ migration 023's index stays non-unique for this step.
   control against a partially-applied merge corrupting `memory.db`; no further
   mitigation is needed because the operation is local, explicit, and confined
   to a single all-or-nothing write.
+
+## Amendment (2026-07-18): `add_note` collision handling once `entity_id` is UNIQUE
+
+**Date:** 2026-07-18
+**Deciders:** founder (Johan); architect
+
+The previous amendment promotes `idx_notes_entity_id` to UNIQUE once a store
+reaches zero duplicate `entity_id` groups, and accepts as a consequence that
+"a later insert that would collide is a constraint violation, not a silent
+duplicate." It fully specified the collapse of existing duplicates
+(`spelunk memory dedupe`), but left one path unspecified: an ordinary
+`MemoryStore::add_note` or `add_note_with_created_at` call for content whose
+`kind`/`title`/`body` already matches a stored row, submitted after the index
+has promoted. Review of the implementation found that this path hits the bare
+SQL error directly: `spelunk memory add` for byte-identical content returns
+`Error: UNIQUE constraint failed: notes.entity_id` and exits 1, contradicting
+this ADR's own framing that recording identical content twice "yields one
+entry."
+
+### C1 - Reuse the existing row instead of erroring
+
+`add_note` and `add_note_with_created_at` catch a UNIQUE-constraint failure on
+`notes.entity_id` specifically (matched by the SQLite error message; no other
+column either function populates carries a colliding UNIQUE index, since
+`uuid` and `remote_id` are both left `NULL` on these insert paths and their own
+partial UNIQUE indexes exclude `NULL`), and recover rather than propagate:
+
+- Look up the existing row's id by `entity_id`.
+- Merge the call's `tags` and `linked_files` into that row via the existing
+  `union_tags_and_files` (add-wins, order of first appearance), the same rule
+  this ADR already uses for reconcile's incoming-candidate collisions and for
+  B1's intra-table collapse.
+- Return the existing row's id instead of inserting a new row.
+- Do not touch the existing row's `status` or `superseded_by`. A plain `add`
+  call carries neither as an update target the way B1's intra-table collapse
+  does for two independently-created rows already resident in the store, so
+  there is nothing to reconcile there beyond tags and linked_files.
+
+This is an insert-then-recover design, not a lookup-then-skip one: the
+function still attempts the INSERT first and falls back to the merge path
+only if SQLite actually rejects it. A proactive lookup before every insert
+would also silently change behavior before the index is promoted, when a
+store can legitimately hold several rows sharing one `entity_id` (the exact
+condition `dedupe` exists to resolve). The test suite for B1-B3 builds such
+rows directly via `add_note`/`add_note_with_created_at` against a
+not-yet-promoted index and must keep doing so unchanged; an insert-then-recover
+design only ever activates once SQLite's own UNIQUE index actually rejects a
+write, so it cannot fire before promotion regardless of how many rows already
+share an `entity_id`.
+
+`add_note_superseding` (the `--supersedes` path) is out of scope here: its
+INSERT statement does not populate `entity_id` at all, so it cannot violate
+this index today. That is a related gap in the identity model, not a
+consequence of this decision, and is tracked as a separate follow-up.
+
+### C2 - CLI output distinguishes the two outcomes
+
+`MemoryBackend::add`, and the underlying `add_note`/`add_note_with_created_at`,
+report whether the call inserted a new row or reused an existing one, so
+`spelunk memory add` can tell the user which happened:
+
+- New row: unchanged, `Stored [{kind}] #{id}: {title}`.
+- Reused row: `Already recorded as [{kind}] #{id}: {title}`, using the
+  existing row's id.
+
+The git-notes write-through carrier is unaffected: it appends unconditionally
+regardless of whether the SQLite store deduped, matching its existing role as
+an append-only audit trail that `reconcile` already knows how to collapse on
+import.
+
+### C3 - Consequences
+
+- A `memory add` call is idempotent on content identity once a store's index
+  has promoted: repeating the same `kind`/`title`/`body` never errors,
+  extending this ADR's "yields one entry" framing to every insert path, not
+  only to `dedupe`'s collapse of rows already resident in the store.
+- Before promotion, behavior is unchanged: a store may still accumulate
+  duplicate rows exactly as it does today, resolved later by an explicit
+  `spelunk memory dedupe` run.
+- `add_note_superseding` colliding with the promoted index remains possible in
+  principle once its own identity gap (not setting `entity_id` on insert) is
+  closed; that gap is not closed by this amendment.
