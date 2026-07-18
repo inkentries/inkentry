@@ -23,8 +23,17 @@ jobs:
     name: Check & Lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # clippy/check/build in this job need no debug info from the dev
+      # profile; the full workspace build (all-targets, rich-formats, incl.
+      # the embedder dep tree) has been observed to exhaust runner disk
+      # (ENOSPC) with debug info on. Mirrors CARGO_PROFILE_TEST_DEBUG below.
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
+
+      - name: Disk usage (baseline)
+        run: df -h
 
       - name: Install libdbus (keyring sync-secret-service backend)
         run: sudo apt-get install -y libdbus-1-dev pkg-config
@@ -46,6 +55,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Disk usage (after cache restore)
+        run: df -h
+
       - name: Rustfmt
         run: cargo fmt --all -- --check
 
@@ -57,6 +69,10 @@ jobs:
 
       - name: Build (rich-formats)
         run: cargo build --all-targets --features rich-formats
+
+      - name: Disk usage (after build)
+        if: always()
+        run: df -h
 
   test:
     name: Test
