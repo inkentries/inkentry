@@ -76,7 +76,15 @@ crates/
 ```
 lib.rs           — crate root; re-exports public modules
 error.rs         — SpelunkError enum
-config.rs        — Config struct; load from ~/.config/spelunk/config.toml
+config/
+  mod.rs         — Config struct; load from ~/.config/spelunk/config.toml
+  sync_mode.rs   — SyncMode enum (ADR-037 D1)
+  project_id.rs  — project-id derivation from git remote / local fallback
+  paths.rs       — config-dir + project/db discovery
+  persist.rs     — config.toml / secret-store read-write
+  predicates.rs  — URL/UUID/env predicates
+  tls.rs         — custom CA trust-anchor application
+  secret_store.rs — OS keychain / file secret-store backend
 utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
@@ -267,7 +275,7 @@ HTTP embedder shim live in spelunk-server (`main.rs`).
 `capability.rs` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
 
-**Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config.rs`.
+**Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config/sync_mode.rs`.
 
 ---
 
