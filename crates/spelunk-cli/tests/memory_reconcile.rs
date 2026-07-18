@@ -14,7 +14,7 @@
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::{spelunk_bin, spelunk_bin_in};
 
 use assert_cmd::Command;
 use rusqlite::Connection;
@@ -1687,4 +1687,71 @@ fn sql_injection_payload_in_body_does_not_break_import() {
 
     assert_eq!(title, injection_title, "title stored verbatim");
     assert_eq!(body, injection_body, "body stored verbatim");
+}
+
+// ── Regression: default source path must honor SPELUNK_STATE_DIR ────────────
+
+/// `spelunk server start` writes `server.db` through the shared
+/// `capability::spelunk_state_dir` resolver, which honors `SPELUNK_STATE_DIR`.
+/// Reconcile's default source path (used whenever `--source-db` is omitted)
+/// must resolve through that same function rather than reconstructing
+/// `~/.local/state/spelunk/` from `dirs::home_dir()` on its own — otherwise a
+/// daemon run under a `SPELUNK_STATE_DIR` override is invisible to reconcile:
+/// it hits the "server.db absent" no-op branch instead of importing.
+#[test]
+fn default_source_db_honors_state_dir_override() {
+    let home = TempDir::new().unwrap();
+    let state_override = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let db_path = project.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(project.path(), &db_path);
+
+    // Write server.db directly into the override dir, NOT under
+    // `<home>/.local/state/spelunk/`.
+    let (server_db, project_id) = create_server_db(state_override.path(), "override-project");
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Use SQLite for storage",
+        "SQLite is the right choice because it is zero-infrastructure.",
+        None,
+        None,
+        1_700_000_000,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    // Sanity: nothing exists under HOME's default location.
+    let home_default = home
+        .path()
+        .join(".local")
+        .join("state")
+        .join("spelunk")
+        .join("server.db");
+    assert!(
+        !home_default.exists(),
+        "fixture bug: server.db must only exist under the override"
+    );
+
+    // No --source-db: exercises default_server_db_path().
+    let mut cmd = spelunk_bin_in(home.path());
+    cmd.current_dir(project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .env("SPELUNK_NO_RECONCILE_NUDGE", "1")
+        .env("SPELUNK_STATE_DIR", state_override.path())
+        .arg("--config")
+        .arg(&config_path)
+        .arg("memory")
+        .arg("reconcile")
+        .arg("--all-projects");
+    cmd.assert().success();
+
+    assert_eq!(
+        count_memory_notes(&mem_path),
+        1,
+        "reconcile must resolve server.db through SPELUNK_STATE_DIR when --source-db is omitted"
+    );
 }
