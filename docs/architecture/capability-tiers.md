@@ -55,8 +55,7 @@ server_url = "https://spelunk.internal.example.com"   # key via SPELUNK_SERVER_K
 > (`127.0.0.1` / `::1` / `localhost`); a non-loopback `http://` value is
 > rejected at config-load time with no override, since the bearer token is
 > attached to every server-mediated request. See
-> [Server setup → Trust model](../server.md#trust-model) and
-> [Self-hosting](../self-hosting.md).
+> [Server setup → Trust model](../server-setup.md#trust-model).
 
 Environment variable overrides:
 
@@ -161,8 +160,7 @@ Key points:
      (PRs #329/#333). -->
 
 User-facing behaviour for these tiers is documented in
-[getting-started.md → Capability tiers](../getting-started.md#capability-tiers-where-inference-and-memory-live)
-and [server.md → Local server](../server.md#local-server-automatic--no-setup).
+[getting-started.md → Capability tiers](../getting-started.md#capability-tiers-where-inference-and-memory-live).
 
 ---
 

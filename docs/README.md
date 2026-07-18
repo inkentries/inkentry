@@ -100,7 +100,7 @@ for that. Only memory does.
 
 - [Getting Started → capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live): the tier table in context
 - [Getting Started → team setup](getting-started.md#team-setup-shared-memory-with-spelunk-server): how to set `server_url` and sync
-- [Server setup](server.md) and [Self-hosting](self-hosting.md): deploy and expose a team server
+- [Server setup](server-setup.md): deploy and expose a team server (Docker, systemd, TLS, client config)
 - [Remote agents](remote-agents.md): run an agent in a container against your server
 
 ---

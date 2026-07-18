@@ -289,7 +289,7 @@ process), set `SPELUNK_NO_SERVER=1`: spelunk then runs built-in only, and
 inference-only commands exit with a clear message instead of starting anything.
 
 For how discovery works and how to point the CLI at a remote server, see
-**[Server setup](server.md)** and
+**[Server setup](server-setup.md)** and
 [CLI capability tiers](architecture/capability-tiers.md).
 
 ### Using your own inference server (advanced)
@@ -309,6 +309,13 @@ variables (each has an equivalent flag):
 | `SPELUNK_EMBEDDING_URL` | `--embedding-url` | Base URL of an OpenAI-compatible embedding endpoint serving F2LLM-v2-330M. When set, the server embeds through it instead of computing embeddings itself. |
 | `SPELUNK_LLM_URL` | `--llm-url` | Base URL of an OpenAI-compatible chat-completions endpoint for LLM features (`explore`, summaries, `memory harvest`). |
 | `SPELUNK_LLM_MODEL` | `--llm-model` | Chat model id to send to that endpoint. |
+
+`explore` and `memory harvest` pick up an LLM-configured local daemon
+automatically. Index-time chunk summaries are the exception: they additionally
+need an *explicit* `server_url` in `.spelunk/config.toml` (even a loopback one),
+not just a reachable server — see
+[Third-party models](third-party-models.md#what-this-unlocks) for the full
+absence-behavior and the team-server equivalent.
 
 For the auto-started local daemon, export the variables and then restart the
 server so it picks them up. The daemon inherits your shell environment, but a
@@ -337,7 +344,7 @@ warning, rather than honoured.) `--embedding-dim` still exists so an endpoint
 whose vectors differ in dimension can be matched, but changing it means you are
 running a different model at your own risk — the server records the dimension on
 the first write and rejects later writes that disagree (see
-[Embedding dimension](server.md#embedding-dimension)). Re-embedding an existing
+[Embedding dimension](server-setup.md#embedding-dimension)). Re-embedding an existing
 index through a new endpoint needs a full re-index (`spelunk index --force`),
 since unchanged files are otherwise skipped.
 
@@ -424,7 +431,7 @@ spelunk check --format porcelain --files    # list files that need re-indexing
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
 - [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
-- [Self-hosting](self-hosting.md) — exposing spelunk-server to remote agents over TLS
+- [Server setup](server-setup.md) — exposing spelunk-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders
 
 ---
@@ -448,7 +455,7 @@ project_id = "my-awesome-app"
 > **`server_url` must be `https://` unless it points at loopback**
 > (`127.0.0.1` / `::1` / `localhost`) — a non-loopback `http://` URL is
 > rejected at startup, with no opt-out, because the CLI attaches your bearer
-> token to these requests. See [Self-hosting](self-hosting.md) for putting TLS
+> token to these requests. See [Server setup](server-setup.md) for putting TLS
 > in front of a deployed server.
 
 Each developer provides their own key with `spelunk auth set-key`, scoped to
@@ -480,7 +487,7 @@ credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
 `project_id` stays a human-readable slug. If the server routes projects by an
 internal UUID (as a team/cloud memory server does), the CLI resolves the slug
 for you on first use and caches the result locally, so no manual UUID lookup is
-needed. See [Server setup](server.md#client-configuration) for details.
+needed. See [Server setup](server-setup.md#client-configuration) for details.
 
 After setup, all `spelunk memory` commands transparently use the server. Seed it
 with your existing local memory, then keep the two in step as you and your
@@ -495,7 +502,7 @@ spelunk sync           # two-way: push local entries and pull teammates' entries
 recorded and pulls what everyone else did, so the team reads and writes one
 shared memory. Code never travels; only memory does.
 
-For full setup and deployment guide: **[Server setup](server.md)** — Docker, configuration, API reference.
+For full setup and deployment guide: **[Server setup](server-setup.md)** — Docker, configuration, API reference.
 
 ### Enterprise / MDM deployment
 
