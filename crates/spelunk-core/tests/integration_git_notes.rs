@@ -3478,3 +3478,318 @@ async fn three_distinct_entities_stay_three_entries() {
         "distinct entities must not collapse"
     );
 }
+
+// ── ADR-068 A6 retrofit: supersede edges travel via the carrier ─────────────
+//
+// `memory supersede` and `memory add --supersedes` append a state-update
+// record for the OLD entity rather than rewriting it in place — a live-git
+// experiment showed an in-place rewrite does not converge under a genuine
+// merge (a second clone holding the original line plus a divergent note of
+// its own keeps both the stale original and the rewrite after
+// `cat_sort_uniq`). These tests exercise `append_state_update`'s write shape
+// together with the fold above, the way a receiving clone actually sees it.
+
+use spelunk_core::storage::append_state_update;
+use spelunk_core::storage::memory::Note;
+
+/// A `Note` as `backend.get()` would hand back right after an entry is
+/// created — the shape `append_state_update`'s `base` parameter expects.
+fn note_for(title: &str, id: i64, created_at: i64) -> Note {
+    Note {
+        id,
+        kind: "decision".to_string(),
+        title: title.to_string(),
+        body: format!("body for {title}"),
+        tags: vec![],
+        linked_files: vec![],
+        created_at,
+        status: "active".to_string(),
+        superseded_by: None,
+        source_ref: None,
+        valid_at: None,
+        invalid_at: None,
+        distance: None,
+        score: None,
+        source_project: None,
+        source_project_path: None,
+        remote_id: None,
+    }
+}
+
+/// `append_state_update` appends a new line; it never touches the entity's
+/// existing one. Pinning "the original line survives byte-for-byte" is what
+/// rules out the in-place rewrite the spec's live-git experiment showed does
+/// not converge.
+#[tokio::test]
+#[serial]
+async fn append_state_update_appends_never_rewrites() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
+        .await
+        .expect("seed original");
+    let original = read_raw_note(root);
+    let original_line = original
+        .lines()
+        .next()
+        .expect("one seeded line")
+        .to_string();
+
+    let old = note_for("decision X", 1, 100);
+    append_state_update(
+        Some(root),
+        &old,
+        "archived",
+        Some(900),
+        Some("succ-entity".to_string()),
+    )
+    .await
+    .expect("append state update");
+
+    let after = read_raw_note(root);
+    let lines: Vec<&str> = after.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "a state update must be a second line, not a rewrite of the first: {after}"
+    );
+    assert_eq!(
+        lines[0], original_line,
+        "the original line must survive byte-for-byte"
+    );
+
+    let updated: NoteRecord = serde_json::from_str(lines[1]).expect("parse state update");
+    assert_eq!(updated.status, "archived");
+    assert_eq!(updated.invalid_at, Some(900));
+    assert_eq!(
+        updated.superseded_by_entity_id.as_deref(),
+        Some("succ-entity")
+    );
+}
+
+/// The edge direction is the easy mistake to get backwards: it must land on
+/// OLD's appended record, pointing at NEW's `entity_id` — never on NEW's own
+/// record.
+#[tokio::test]
+#[serial]
+async fn supersede_edge_lands_on_old_record_not_new() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
+        .await
+        .expect("seed X");
+    append_to_git_notes(Some(root), &make_note_record(2, "decision Y"))
+        .await
+        .expect("seed Y");
+
+    let old = note_for("decision X", 1, 100);
+    let new = note_for("decision Y", 2, 200);
+    let new_entity_id = spelunk_core::storage::note_entity_id(&new);
+    let old_entity_id = spelunk_core::storage::note_entity_id(&old);
+
+    append_state_update(
+        Some(root),
+        &old,
+        "archived",
+        Some(500),
+        Some(new_entity_id.clone()),
+    )
+    .await
+    .expect("append state update");
+
+    let blob = read_raw_note(root);
+    let records: Vec<NoteRecord> = blob
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("parse"))
+        .collect();
+
+    for r in &records {
+        if r.resolve_entity_id() == new_entity_id {
+            assert!(
+                r.superseded_by_entity_id.is_none(),
+                "the edge must never land on NEW's record: {r:?}"
+            );
+        }
+    }
+    let old_update = records
+        .iter()
+        .find(|r| r.resolve_entity_id() == old_entity_id && r.status == "archived")
+        .expect("OLD's state-update record must exist");
+    assert_eq!(
+        old_update.superseded_by_entity_id.as_deref(),
+        Some(new_entity_id.as_str()),
+        "the edge must land on OLD's record, pointing at NEW's entity_id"
+    );
+}
+
+/// A clone that received X's supersede state-update but never received Y's
+/// own record must still show X archived, never live: `status` travels on
+/// X's own record rather than being inferred from whether the edge resolves
+/// (ADR-068 A3/A6). X is still counted — not silently dropped just because
+/// its successor is unresolvable.
+#[tokio::test]
+#[serial]
+async fn unresolved_successor_never_renders_as_live_and_is_counted() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
+        .await
+        .expect("seed X");
+    let old = note_for("decision X", 1, 100);
+
+    // Y's entity_id, computed the same way a real successor's would be, but Y's
+    // own record never lands on this clone.
+    let missing_successor = entity_id("decision", "decision Y", "body for decision Y");
+
+    append_state_update(
+        Some(root),
+        &old,
+        "archived",
+        Some(900),
+        Some(missing_successor),
+    )
+    .await
+    .expect("append state update");
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let live = backend
+        .list(None, 50, false, None)
+        .await
+        .expect("list live");
+    assert!(
+        live.is_empty(),
+        "X must never render as live once archived, got: {live:?}"
+    );
+
+    let all = backend.list(None, 50, true, None).await.expect("list all");
+    assert_eq!(
+        all.len(),
+        1,
+        "X must still be counted, not silently dropped: {all:?}"
+    );
+    assert_eq!(all[0].status, "archived");
+    assert_eq!(all[0].title, "decision X");
+}
+
+/// The headline test: clone A records X, then supersedes it with Y; clone B —
+/// holding a divergent local note of its own so the merge genuinely unions
+/// rather than fast-forwards — fetches and merges. B's `list` must show X
+/// archived (superseded by Y) exactly once, and Y live exactly once.
+///
+/// A test that fast-forwards here "passes while proving nothing": with no
+/// divergent content on B's side, `git notes merge` never has to invoke
+/// `cat_sort_uniq`'s union at all, so it would never exercise the fold this
+/// task's writes depend on.
+#[tokio::test]
+#[serial]
+async fn supersede_edge_travels_across_a_genuinely_diverging_merge() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    // ── Clone A's history, about to be "fetched" onto B's tracking ref ───────
+    append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
+        .await
+        .expect("A: record X");
+    append_to_git_notes(Some(root), &make_note_record(2, "decision Y"))
+        .await
+        .expect("A: record Y");
+    let old = note_for("decision X", 1, 100);
+    let new = note_for("decision Y", 2, 200);
+    let new_entity_id = spelunk_core::storage::note_entity_id(&new);
+    append_state_update(Some(root), &old, "archived", Some(300), Some(new_entity_id))
+        .await
+        .expect("A: supersede X with Y");
+
+    // "git fetch" lands A's whole history on the tracking ref.
+    park_working_ref_as_tracking(root);
+
+    // B's own, never-pushed local note — genuine divergence: without this the
+    // merge below fast-forwards and the test would prove nothing.
+    append_to_git_notes(Some(root), &make_note_record(3, "decision Z"))
+        .await
+        .expect("B: local decision Z");
+
+    assert_eq!(
+        merge_tracking_notes(Some(root)).await,
+        NotesMergeOutcome::Merged,
+        "setup: the merge must be a genuine union, not a no-op"
+    );
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let live = backend
+        .list(None, 50, false, None)
+        .await
+        .expect("list live");
+    let live_titles: Vec<&str> = live.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(
+        live_titles.iter().filter(|&&t| t == "decision X").count(),
+        0,
+        "X must not render as live after being superseded: {live_titles:?}"
+    );
+    assert_eq!(
+        live_titles.iter().filter(|&&t| t == "decision Y").count(),
+        1,
+        "Y must be live exactly once: {live_titles:?}"
+    );
+    assert!(
+        live_titles.contains(&"decision Z"),
+        "B's own note must survive the merge: {live_titles:?}"
+    );
+
+    let all = backend.list(None, 50, true, None).await.expect("list all");
+    let x_entries: Vec<_> = all.iter().filter(|n| n.title == "decision X").collect();
+    assert_eq!(
+        x_entries.len(),
+        1,
+        "X must fold to exactly one entry, archived, superseded by Y, not duplicated: {all:?}"
+    );
+    assert_eq!(x_entries[0].status, "archived");
+}
+
+/// Idempotence: the same supersede recorded twice (e.g. a retried carrier
+/// write, or two machines independently linking the same pair) still
+/// converges to one folded entry, never two.
+#[tokio::test]
+#[serial]
+async fn supersede_is_idempotent_across_repeated_state_updates() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
+        .await
+        .expect("record X");
+    append_to_git_notes(Some(root), &make_note_record(2, "decision Y"))
+        .await
+        .expect("record Y");
+    let old = note_for("decision X", 1, 100);
+    let new = note_for("decision Y", 2, 200);
+    let new_entity_id = spelunk_core::storage::note_entity_id(&new);
+
+    for _ in 0..2 {
+        append_state_update(
+            Some(root),
+            &old,
+            "archived",
+            Some(300),
+            Some(new_entity_id.clone()),
+        )
+        .await
+        .expect("append state update");
+    }
+
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+    let all = backend.list(None, 50, true, None).await.expect("list all");
+    let x_entries: Vec<_> = all.iter().filter(|n| n.title == "decision X").collect();
+    assert_eq!(
+        x_entries.len(),
+        1,
+        "repeating the identical state update must still fold to one entry: {all:?}"
+    );
+    assert_eq!(x_entries[0].status, "archived");
+}

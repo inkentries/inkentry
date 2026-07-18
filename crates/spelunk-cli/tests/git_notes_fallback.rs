@@ -944,3 +944,178 @@ fn unusable_notes_lock_degradation_is_visible_without_rust_log() {
         "the degraded write must still land exactly one record; got: {lines:?}"
     );
 }
+
+// ── ADR-068 A6 retrofit: supersede edges travel via the carrier ───────────────
+//
+// Both `memory add --supersedes` and `memory supersede` archive the OLD entry
+// in the SQLite primary already; what was missing is carrying that edge to
+// git notes too, via a second, appended record for OLD (never a rewrite of
+// its original line — see `append_state_update`'s doc in
+// `storage/git_notes/mod.rs`). The gap this closes: `add.rs` already passed
+// `--supersedes` through to the SQLite backend, then wrote
+// `superseded_by_entity_id: None` on the write-through record regardless, so
+// the edge was silently dropped even when explicitly requested.
+
+/// A JSON-Lines record's `title` and `status`, read together since several
+/// assertions below need both to pick the right line out of a note with more
+/// than one record for the same title (the OLD entity's original record and
+/// its later state-update).
+fn title_and_status(line: &str) -> (String, String) {
+    (record_field(line, "title"), record_field(line, "status"))
+}
+
+/// `memory add --supersedes OLD` must carry OLD's edge to git notes, not just
+/// write the NEW entry: OLD's original record stays untouched (append-only),
+/// and a second record for OLD lands with `status: archived` and
+/// `superseded_by_entity_id` pointing at NEW's `entity_id` — never the other
+/// way around.
+#[test]
+fn post_init_add_supersedes_carries_edge_for_old_entry() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+
+    bin(home.path(), repo.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "decision",
+            "--title",
+            "old-decision",
+            "--body",
+            "b1",
+        ])
+        .assert()
+        .success();
+    let old_lines = spelunk_note_lines(repo.path());
+    assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
+    let old_id = record_field(&old_lines[0], "id");
+    let old_entity_id = record_field(&old_lines[0], "entity_id");
+
+    bin(home.path(), repo.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "decision",
+            "--title",
+            "new-decision",
+            "--body",
+            "b2",
+            "--supersedes",
+            &old_id,
+        ])
+        .assert()
+        .success();
+
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(
+        lines.len(),
+        3,
+        "OLD's untouched original, NEW's record, and OLD's state-update; got: {lines:?}"
+    );
+
+    let new_line = lines
+        .iter()
+        .find(|l| title_and_status(l) == ("new-decision".to_string(), "active".to_string()))
+        .unwrap_or_else(|| panic!("no active new-decision record in {lines:?}"));
+    let new_entity_id = record_field(new_line, "entity_id");
+    assert!(
+        !new_line.contains("superseded_by_entity_id"),
+        "the edge must never land on NEW's record; got: {new_line}"
+    );
+
+    let old_original = lines
+        .iter()
+        .find(|l| title_and_status(l) == ("old-decision".to_string(), "active".to_string()))
+        .unwrap_or_else(|| {
+            panic!("OLD's original active record must survive untouched: {lines:?}")
+        });
+    assert_eq!(
+        record_field(old_original, "entity_id"),
+        old_entity_id,
+        "OLD's original record must be byte-identical in identity, never rewritten"
+    );
+
+    let old_update = lines
+        .iter()
+        .find(|l| title_and_status(l) == ("old-decision".to_string(), "archived".to_string()))
+        .unwrap_or_else(|| panic!("OLD's state-update record is missing: {lines:?}"));
+    assert_eq!(
+        record_field(old_update, "entity_id"),
+        old_entity_id,
+        "the state-update record must carry OLD's own entity_id, not NEW's"
+    );
+    assert_eq!(
+        record_field(old_update, "superseded_by_entity_id"),
+        new_entity_id,
+        "the edge must point at NEW's entity_id"
+    );
+    assert!(
+        !record_field(old_update, "invalid_at").is_empty(),
+        "the state-update record must set invalid_at"
+    );
+}
+
+/// `memory supersede OLD NEW` carries the same edge, via the same shared
+/// carrier helper, when both entries already exist as separate `add`s.
+#[test]
+fn post_init_supersede_command_carries_edge_to_git_notes() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    init_git_repo_with_commit(repo.path());
+    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+
+    let add = |title: &str, body: &str| {
+        bin(home.path(), repo.path())
+            .args([
+                "memory", "add", "--kind", "decision", "--title", title, "--body", body,
+            ])
+            .assert()
+            .success();
+    };
+    add("old-via-supersede", "b1");
+    add("new-via-supersede", "b2");
+
+    let seeded = spelunk_note_lines(repo.path());
+    assert_eq!(seeded.len(), 2, "setup: two independent adds");
+    let old_id = record_field(&seeded[0], "id");
+    let new_id = record_field(&seeded[1], "id");
+    let new_entity_id = record_field(&seeded[1], "entity_id");
+
+    bin(home.path(), repo.path())
+        .args(["memory", "supersede", &old_id, &new_id])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Archived #").and(predicate::str::contains("superseded by #")),
+        );
+
+    let lines = spelunk_note_lines(repo.path());
+    assert_eq!(
+        lines.len(),
+        3,
+        "OLD's untouched original, NEW's record, and OLD's state-update; got: {lines:?}"
+    );
+
+    let old_update = lines
+        .iter()
+        .find(|l| title_and_status(l) == ("old-via-supersede".to_string(), "archived".to_string()))
+        .unwrap_or_else(|| panic!("OLD's state-update record is missing: {lines:?}"));
+    assert_eq!(
+        record_field(old_update, "superseded_by_entity_id"),
+        new_entity_id,
+        "the edge must point at NEW's entity_id"
+    );
+
+    let new_line = lines
+        .iter()
+        .find(|l| title_and_status(l) == ("new-via-supersede".to_string(), "active".to_string()))
+        .unwrap_or_else(|| panic!("NEW's record is missing: {lines:?}"));
+    assert!(
+        !new_line.contains("superseded_by_entity_id"),
+        "the edge must never land on NEW's record; got: {new_line}"
+    );
+}
