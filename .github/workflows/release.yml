@@ -255,7 +255,12 @@ jobs:
 
       - name: Build .deb
         run: |
-          dpkg-deb --build BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
+          # -Zxz: this runner is ubuntu-24.04, whose dpkg-deb defaults to zstd
+          # (control.tar.zst / data.tar.zst). debian:11's dpkg (1.20) cannot read
+          # zstd members, so a default-built .deb fails to install on the
+          # glibc-2.31 floor with "unknown compression for member 'control.tar.zst'".
+          # xz members install everywhere from the floor up.
+          dpkg-deb --build -Zxz BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
 
       # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
       # only executing real subcommands (a git-backed memory round trip
