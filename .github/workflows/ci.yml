@@ -110,10 +110,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - name: Install stable toolchain
-        run: |
-          rustup update stable
-          rustup default stable
+      # One command per step: this job's matrix includes windows-latest, and a
+      # Windows step's exit status does not reflect a failing native
+      # executable (only a failing PowerShell cmdlet), so chaining two rustup
+      # invocations in one run block would mask a failure in the first.
+      - name: Update stable toolchain
+        run: rustup update stable
+
+      - name: Set default toolchain
+        run: rustup default stable
 
       - name: Cache
         uses: actions/cache@v6
