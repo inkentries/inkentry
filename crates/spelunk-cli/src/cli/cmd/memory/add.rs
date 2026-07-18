@@ -7,8 +7,8 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus, append_state_update,
-        append_to_git_notes, now_millis, now_secs, open_memory_backend,
+        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
+        append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
     },
 };
 
@@ -213,8 +213,22 @@ pub(super) async fn memory_add(
         // record (the one just written above) would be backwards. Best-effort
         // and non-fatal like the write above: SQLite already holds the
         // authoritative archive.
-        if let (Some(old_id), Some(backend)) = (args.supersedes, primary_backend.as_ref()) {
-            match backend.get(old_id).await {
+        //
+        // Pre-`init` there is no SQLite primary to re-read OLD from (`primary_backend`
+        // is `None`), but OLD was never in SQLite anyway — it only ever lived in
+        // git notes, via this same write-through, so a fresh `GitNotesBackend`
+        // (its `get` reads purely off `refs/notes/spelunk`, no SQLite involved)
+        // resolves it the same way. Without this, `--supersedes` pre-init used to
+        // silently drop the edge: the block below never ran because
+        // `primary_backend` was always `None`, yet the command still printed a
+        // plain "Stored" success line.
+        if let Some(old_id) = args.supersedes {
+            let old_lookup = if let Some(backend) = primary_backend.as_ref() {
+                backend.get(old_id).await
+            } else {
+                GitNotesBackend::new().get(old_id).await
+            };
+            match old_lookup {
                 Ok(Some(old_note)) => {
                     let invalid_at = old_note.invalid_at.or_else(|| Some(now_secs()));
                     if let Err(e) = append_state_update(
