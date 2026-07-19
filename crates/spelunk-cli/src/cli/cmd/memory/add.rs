@@ -7,8 +7,8 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        NoteInput, NoteRecord, RewriteRefStatus, append_to_git_notes, now_millis, now_secs,
-        open_memory_backend,
+        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
+        append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
     },
 };
 
@@ -106,11 +106,17 @@ pub(super) async fn memory_add(
     // server, or (with `--backend git-notes`) git notes itself. Pre-init there
     // is no primary; the write-through carrier below is the sole writer, so mint
     // an id the same way the backends do (`now_millis`).
+    //
+    // The backend handle is kept (not just its returned id) so that, when
+    // `--supersedes` is given, the write-through carrier below can read back
+    // the OLD entry (now archived by the `add` call) and carry its supersede
+    // edge to git notes too.
+    let mut primary_backend: Option<Box<dyn MemoryBackend + Send>> = None;
     let id = if pre_init_notes {
         now_millis()
     } else {
         let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
-        backend
+        let id = backend
             .add(NoteInput {
                 kind: args.kind.clone(),
                 title: title.clone(),
@@ -122,7 +128,9 @@ pub(super) async fn memory_add(
                 valid_at,
                 supersedes: args.supersedes,
             })
-            .await?
+            .await?;
+        primary_backend = Some(backend);
+        id
     };
 
     // ── Git-notes write-through carrier ──────────────────────────────────────
@@ -135,6 +143,7 @@ pub(super) async fn memory_add(
         pre_init_notes || (cfg.store_in_git_notes && backend_override != Some("git-notes"));
     let mut notes_rewrite_note: Option<&str> = None;
     if write_through {
+        let new_entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
         let record = NoteRecord {
             schema_version: 1,
             id,
@@ -151,9 +160,7 @@ pub(super) async fn memory_add(
             superseded_by: None,
             // Never-synced local row: no cross-machine id yet.
             remote_id: None,
-            entity_id: Some(crate::storage::entity_id::entity_id(
-                &args.kind, &title, &body,
-            )),
+            entity_id: Some(new_entity_id.clone()),
             superseded_by_entity_id: None,
         };
         // Use process CWD (None) — the CLI is always run from the project root.
@@ -196,6 +203,62 @@ pub(super) async fn memory_add(
                     "Warning: entry stored locally, but the git-notes carry failed, \
                      so it will not travel with the repo: {e:#}"
                 );
+            }
+        }
+
+        // ── Carry the OLD entity's supersede edge too ────────────────────────
+        // `--supersedes` already archived OLD in the primary store above; the
+        // edge itself only travels once a state-update record is appended for
+        // OLD's own entry, pointing at NEW's `entity_id` — writing it on NEW's
+        // record (the one just written above) would be backwards. Best-effort
+        // and non-fatal like the write above: SQLite already holds the
+        // authoritative archive.
+        //
+        // Pre-`init` there is no SQLite primary to re-read OLD from (`primary_backend`
+        // is `None`), but OLD was never in SQLite anyway — it only ever lived in
+        // git notes, via this same write-through, so a fresh `GitNotesBackend`
+        // (its `get` reads purely off `refs/notes/spelunk`, no SQLite involved)
+        // resolves it the same way. Without this, `--supersedes` pre-init used to
+        // silently drop the edge: the block below never ran because
+        // `primary_backend` was always `None`, yet the command still printed a
+        // plain "Stored" success line.
+        if let Some(old_id) = args.supersedes {
+            let old_lookup = if let Some(backend) = primary_backend.as_ref() {
+                backend.get(old_id).await
+            } else {
+                GitNotesBackend::new().get(old_id).await
+            };
+            match old_lookup {
+                Ok(Some(old_note)) => {
+                    let invalid_at = old_note.invalid_at.or_else(|| Some(now_secs()));
+                    if let Err(e) = append_state_update(
+                        None,
+                        &old_note,
+                        "archived",
+                        invalid_at,
+                        Some(new_entity_id),
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "Warning: entry stored locally, but carrying #{old_id}'s \
+                             supersede edge to git notes failed, so it will not travel \
+                             with the repo: {e:#}"
+                        );
+                    }
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "Warning: --supersedes {old_id} not found; no supersede edge was \
+                         carried to git notes."
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not re-read #{old_id} to carry its supersede edge \
+                         to git notes: {e:#}"
+                    );
+                }
             }
         }
     }
