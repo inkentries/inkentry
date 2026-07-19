@@ -419,6 +419,28 @@ impl Database {
         Ok(())
     }
 
+    /// Insert or replace a whole batch of embeddings in a single transaction.
+    ///
+    /// Same per-row statement as [`insert_embedding`], but one commit for the
+    /// batch instead of one implicit autocommit per row (mirrors the
+    /// `update_graph_ranks` batch pattern). The embed phase already holds the
+    /// whole batch's vectors in memory by the time it writes them, so the
+    /// commit boundary is the batch: on an untimely kill the transaction is
+    /// rolled back atomically and `chunks_missing_embeddings` re-queues the
+    /// entire batch, never a partial one.
+    pub fn insert_embeddings(&self, rows: &[(i64, Vec<f32>)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (chunk_id, vector) in rows {
+            let blob = crate::embeddings::vec_to_int8_blob(vector);
+            tx.execute(
+                "INSERT OR REPLACE INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
+                rusqlite::params![chunk_id, blob],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Delete all embeddings associated with chunks of a given file.
     pub fn delete_embeddings_for_file(&self, file_id: i64) -> Result<()> {
         self.conn.execute(
@@ -574,6 +596,51 @@ mod tests {
         assert!(
             msg.to_lowercase().contains("re-index"),
             "message must instruct re-index: {msg}"
+        );
+    }
+
+    fn embedding_count(db: &Database) -> i64 {
+        db.conn
+            .query_row("SELECT count(*) FROM embeddings", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// The batch insert writes every row of a batch in one call.
+    #[test]
+    fn insert_embeddings_commits_the_whole_batch() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let rows = vec![
+            (1i64, vec![0.1f32; crate::embeddings::EMBEDDING_DIM]),
+            (2i64, vec![0.1f32; crate::embeddings::EMBEDDING_DIM]),
+            (3i64, vec![0.1f32; crate::embeddings::EMBEDDING_DIM]),
+        ];
+        db.insert_embeddings(&rows).expect("batch insert");
+        assert_eq!(embedding_count(&db), 3, "all three rows persist");
+    }
+
+    /// The batch is a single transaction: if any row fails, none commit. This
+    /// is the guarantee the resume story rests on — a process killed while a
+    /// batch is being written leaves zero partial rows behind, so
+    /// `chunks_missing_embeddings` re-queues the whole batch cleanly. A per-row
+    /// autocommit loop would instead leak the rows written before the failure.
+    #[test]
+    fn insert_embeddings_is_atomic_a_failing_row_rolls_back_the_whole_batch() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        // The second row has the wrong dimension; sqlite-vec rejects it at
+        // insert time, aborting the transaction after the first row was staged.
+        let rows = vec![
+            (1i64, vec![0.1f32; crate::embeddings::EMBEDDING_DIM]),
+            (2i64, vec![0.1f32; crate::embeddings::EMBEDDING_DIM - 1]),
+        ];
+        db.insert_embeddings(&rows)
+            .expect_err("a wrong-dimension row must fail the whole batch");
+        assert_eq!(
+            embedding_count(&db),
+            0,
+            "an atomic batch leaves zero rows when any row fails; the first, valid \
+             row must not survive the aborted transaction"
         );
     }
 }
