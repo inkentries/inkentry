@@ -298,6 +298,14 @@ pub struct Capabilities {
     #[serde(skip_serializing)]
     #[allow(dead_code)]
     pub plan: bool,
+    /// The server accepts a client-pushed embedding vector on `POST
+    /// /memory/batch` (ADR-053 #4b), advertised as a top-level `bool` in
+    /// `/v1/health` (NOT an entry in the `capabilities` array). When set, the
+    /// sync push may send the locally-computed fp32/896 vector instead of making
+    /// the server re-embed; when unset (older server / OSS team server) the push
+    /// stays text-only. Not surfaced in user-facing output.
+    #[serde(skip_serializing)]
+    pub accepts_pushed_vectors: bool,
 }
 
 impl Capabilities {
@@ -313,6 +321,9 @@ impl Capabilities {
             memory_harvest: memory,
             explore: has("explore"),
             plan: has("plan"),
+            // Not derivable from the `capabilities` array — it is a separate
+            // top-level bool set by `parse_health` from the health body.
+            accepts_pushed_vectors: false,
         }
     }
 
@@ -328,6 +339,8 @@ impl Capabilities {
             memory_harvest: false,
             explore: false,
             plan: false,
+            // A legacy plain-text server pre-dates the pushed-vector accept side.
+            accepts_pushed_vectors: false,
         }
     }
 
@@ -343,6 +356,7 @@ impl Capabilities {
             memory_harvest: true,
             explore: true,
             plan: true,
+            accepts_pushed_vectors: true,
         }
     }
 }
@@ -783,6 +797,12 @@ async fn parse_health(
         /// Absent on older servers → `server_limits` stays `None`.
         #[serde(default)]
         limits: Option<ServerLimits>,
+        /// Whether the server accepts a client-pushed embedding vector on
+        /// `POST /memory/batch` (ADR-053 #4b). Top-level bool, not a
+        /// `capabilities` entry. Absent on servers without the accept side
+        /// (older servers, the OSS team server) → defaults false.
+        #[serde(default)]
+        accepts_pushed_vectors: bool,
     }
 
     match resp.json::<HealthBody>().await {
@@ -809,12 +829,11 @@ async fn parse_health(
                 tracing::debug!("server instance_id: {id}");
             }
             let cap_strs: Vec<&str> = body.capabilities.iter().map(String::as_str).collect();
-            (
-                Capabilities::from_server_caps(&cap_strs),
-                body.embedding_dim,
-                embedder_state,
-                body.limits,
-            )
+            let mut caps = Capabilities::from_server_caps(&cap_strs);
+            // `accepts_pushed_vectors` is a top-level health bool, not a
+            // `capabilities` array entry, so it is applied after the array parse.
+            caps.accepts_pushed_vectors = body.accepts_pushed_vectors;
+            (caps, body.embedding_dim, embedder_state, body.limits)
         }
         Err(_) => {
             // Legacy server returns plain-text "ok" — conservative fallback.
@@ -1379,6 +1398,61 @@ mod tests {
         assert!(
             matches!(result, Ok(Tier::Server { .. })),
             "auto-discovered loopback with correct dim must return Server; got {result:?}"
+        );
+    }
+
+    // ── accepts_pushed_vectors (top-level health bool, ADR-053 #4b) ────────────
+
+    /// A server advertising `accepts_pushed_vectors: true` must parse into
+    /// `caps.accepts_pushed_vectors == true` — the gate the sync push reads
+    /// before attaching a client-computed vector.
+    #[tokio::test]
+    async fn probe_url_parses_accepts_pushed_vectors_true() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut body = health_body(&["memory"], spelunk_core::embeddings::EMBEDDING_DIM);
+        body["accepts_pushed_vectors"] = serde_json::json!(true);
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
+            .await
+            .expect("probe must succeed");
+        assert!(
+            tier.caps().unwrap().accepts_pushed_vectors,
+            "health `accepts_pushed_vectors: true` must set the capability"
+        );
+    }
+
+    /// A server that omits the field (older server, or the OSS team server)
+    /// must default to `false` — the push stays text-only there.
+    #[tokio::test]
+    async fn probe_url_accepts_pushed_vectors_defaults_false_when_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // `health_body` carries no `accepts_pushed_vectors` field.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory"],
+                spelunk_core::embeddings::EMBEDDING_DIM,
+            )))
+            .mount(&server)
+            .await;
+
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
+            .await
+            .expect("probe must succeed");
+        assert!(
+            !tier.caps().unwrap().accepts_pushed_vectors,
+            "absent `accepts_pushed_vectors` must default to false (text-only)"
         );
     }
 

@@ -16,19 +16,45 @@
 //! entries carry the cloud `id` (a UUID), which we record as the local
 //! `remote_id` and dedupe on, so a subsequent push of the same entry is a no-op.
 //!
-//! Embedding conformance (ADR-010/ADR-020, ADR-037 D3): pushes are **text only**
-//! — the `vector` field is always omitted and the server backfills with its
-//! configured model. There is deliberately no client-vector send path here.
+//! Embedding conformance (ADR-010/ADR-020, ADR-053): a push is **text-only by
+//! default** — the `vector` field is omitted and the server backfills the
+//! embedding with its configured model. As a compute/bandwidth optimization,
+//! when the destination advertises the `accepts_pushed_vectors` capability the
+//! CLI MAY attach the locally-computed full-precision (fp32/896) vector it
+//! already holds, tagged with the model and precision the accept side
+//! validates. A server without the capability (an older server, or the OSS team
+//! server) never receives a vector and re-embeds — so text-only remains the
+//! universal fallback.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::encode_project_id;
 
+/// Precision tag sent alongside a client-pushed memory vector. Memory vectors
+/// cross to the cloud, so they are ALWAYS full-precision fp32 — never the
+/// int8/halfvec quantisation used for the local code index. The accept side
+/// rejects (4xx) any other precision, so it is never sent.
+const PUSHED_VECTOR_PRECISION: &str = "fp32";
+
+/// The `vector_model` tag a vector-accepting server validates for exact string
+/// equality. It is the model *family* portion of [`crate::embeddings::MODEL_ID`]
+/// (`"F2LLM-v2-330M@896"`) with the `@<dim>` suffix stripped — the dimension is
+/// carried by the fixed 896-dim contract, and the accept side compares only the
+/// family string (its own model constant has no `@<dim>` suffix). Deriving it
+/// from `MODEL_ID` keeps a single source of truth for the model identity.
+fn pushed_vector_model_tag() -> &'static str {
+    let id = crate::embeddings::MODEL_ID;
+    id.split('@').next().unwrap_or(id)
+}
+
 /// One entry pushed to `POST /memory/batch`.
 ///
 /// `external_id` carries the local entry's stable UUID — the server's
-/// idempotency key. `vector` is intentionally absent (text-only; ADR-037 D3).
+/// idempotency key. `vector`/`vector_model`/`vector_precision` are the optional
+/// client-pushed embedding fast path (ADR-053 #4b): omitted for a text-only
+/// push (the default), populated only for a server advertising
+/// `accepts_pushed_vectors` via [`BatchPushItem::maybe_attach_vector`].
 #[derive(Debug, Serialize)]
 pub struct BatchPushItem {
     pub kind: String,
@@ -39,6 +65,45 @@ pub struct BatchPushItem {
     pub external_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_commit: Option<String>,
+    /// Locally-computed full-precision (fp32) embedding. Present only when the
+    /// destination advertises `accepts_pushed_vectors`; otherwise omitted so the
+    /// server re-embeds (text-only fallback).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Vec<f32>>,
+    /// Model tag for a pushed `vector` (accept-side field `vector_model`).
+    /// Required by the server whenever `vector` is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_model: Option<String>,
+    /// Precision of a pushed `vector` (accept-side field `vector_precision`);
+    /// always `"fp32"` when present. Required by the server whenever `vector`
+    /// is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_precision: Option<String>,
+}
+
+impl BatchPushItem {
+    /// Attach a locally-computed embedding to this item, gated on the
+    /// destination server advertising `accepts_pushed_vectors`.
+    ///
+    /// When `server_accepts_vectors` is false (an older server, or the OSS team
+    /// server) or `vector` is `None` (the local row has no embedding), the item
+    /// is left text-only — the server re-embeds. When both hold, the fp32 vector
+    /// is attached alongside its model tag and `vector_precision = "fp32"`, and
+    /// the server stores it verbatim (no re-embed). Precision is ALWAYS fp32;
+    /// reduced precision is never sent because memory vectors cross to the
+    /// cloud.
+    pub fn maybe_attach_vector(
+        mut self,
+        server_accepts_vectors: bool,
+        vector: Option<Vec<f32>>,
+    ) -> Self {
+        if let (true, Some(v)) = (server_accepts_vectors, vector) {
+            self.vector = Some(v);
+            self.vector_model = Some(pushed_vector_model_tag().to_string());
+            self.vector_precision = Some(PUSHED_VECTOR_PRECISION.to_string());
+        }
+        self
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -240,13 +305,28 @@ mod tests {
             body: Some("B".into()),
             external_id: ext.into(),
             source_commit: None,
+            vector: None,
+            vector_model: None,
+            vector_precision: None,
         }
     }
 
+    /// A valid L2-normalised fp32/896 vector (norm == 1.0), the shape a local
+    /// `note_embeddings` row holds.
+    fn unit_vec_896() -> Vec<f32> {
+        let n = spelunk_core_embedding_dim();
+        vec![1.0 / (n as f32).sqrt(); n]
+    }
+
+    fn spelunk_core_embedding_dim() -> usize {
+        crate::embeddings::EMBEDDING_DIM
+    }
+
+    /// The push is text-only by default, and carries the fp32/896 vector + model
+    /// tag ONLY for a server advertising `accepts_pushed_vectors` (ADR-053 #4b).
     #[tokio::test]
     async fn push_batch_is_text_only_no_vector() {
         let server = MockServer::start().await;
-        // The pushed body must NOT contain a vector/embedding field (ADR-037 D3).
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
             .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
@@ -255,21 +335,54 @@ mod tests {
             })))
             .mount(&server)
             .await;
-
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let res = client.push_batch(vec![item("e1")]).await.unwrap();
-        assert_eq!(res.created, 1);
 
-        // Inspect the recorded request body — it must carry external_id but no
-        // vector/embedding key at all.
+        // ── Case A: server WITHOUT the capability → text-only, no vector at all,
+        // even though a local vector is available to attach. ──────────────────
+        let text_only = item("e1").maybe_attach_vector(false, Some(unit_vec_896()));
+        client.push_batch(vec![text_only]).await.unwrap();
+
+        // ── Case B: server WITH the capability → fp32/896 vector + model tag. ──
+        let with_vec = item("e2").maybe_attach_vector(true, Some(unit_vec_896()));
+        client.push_batch(vec![with_vec]).await.unwrap();
+
         let reqs = server.received_requests().await.unwrap();
-        let body = String::from_utf8(reqs[0].body.clone()).unwrap();
-        assert!(body.contains("\"external_id\":\"e1\""), "body: {body}");
-        assert!(!body.contains("vector"), "push must be text-only: {body}");
+        assert_eq!(reqs.len(), 2);
+
+        // Case A body: external_id present, no vector/model/precision keys.
+        let body_a = String::from_utf8(reqs[0].body.clone()).unwrap();
+        assert!(body_a.contains("\"external_id\":\"e1\""), "body: {body_a}");
         assert!(
-            !body.contains("embedding"),
-            "push must be text-only: {body}"
+            !body_a.contains("vector"),
+            "no-capability push must be text-only: {body_a}"
         );
+
+        // Case B body: fp32/896 vector + exact model tag + precision "fp32".
+        let json_b: serde_json::Value =
+            serde_json::from_slice(&reqs[1].body).expect("valid JSON body");
+        let entry = &json_b["entries"][0];
+        let vec = entry["vector"]
+            .as_array()
+            .expect("vector must be a JSON array when the server accepts it");
+        assert_eq!(
+            vec.len(),
+            spelunk_core_embedding_dim(),
+            "pushed vector must be 896-dim"
+        );
+        assert!(
+            vec.iter().all(|v| v.is_number()),
+            "vector components must be fp32 numbers: {entry}"
+        );
+        // The tag is the model family with no `@<dim>` suffix (accept-side
+        // contract); the dim travels separately.
+        assert_eq!(entry["vector_model"], "F2LLM-v2-330M");
+        assert!(
+            entry["vector_model"]
+                .as_str()
+                .is_some_and(|s| !s.contains('@')),
+            "model tag must not carry the @<dim> suffix: {entry}"
+        );
+        assert_eq!(entry["vector_precision"], "fp32");
     }
 
     #[tokio::test]
