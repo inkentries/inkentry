@@ -134,13 +134,18 @@ The recovery path has always worked. It was only ever undiscoverable.
 
 Resume granularity is **per batch, not per chunk**. `insert_embeddings` writes
 each batch's rows in a single transaction (matching the `update_graph_ranks`
-batch pattern), so a batch either lands whole or not at all. The queue-durability
-argument holds unchanged: a worker killed mid-batch keeps every batch it had
-already committed, the interrupted batch commits nothing, and the `LEFT JOIN`
-re-queues exactly that batch on the next run, with no duplicate row (the insert
-is keyed on `chunk_id`) and no silent gap. The trade this buys is bounded: the
-worst case on an untimely kill is recomputing one batch's embeddings, capped by
-the calibrated batch size (at most 256 chunks, and usually the smaller
+batch pattern), so a batch either lands whole or not at all. Each row within
+that transaction is written via an atomic delete-then-insert, not a bare
+`INSERT OR REPLACE` — the `embeddings` table is a `vec0` virtual table, which
+does not honour that conflict clause, so a repeated `chunk_id` (within or
+across batches) genuinely replaces the existing row instead of raising a
+UNIQUE-constraint error. The queue-durability argument holds unchanged: a
+worker killed mid-batch keeps every batch it had already committed, the
+interrupted batch commits nothing, and the `LEFT JOIN` re-queues exactly that
+batch on the next run, with no duplicate row (the insert is keyed on
+`chunk_id`) and no silent gap. The trade this buys is bounded: the worst case
+on an untimely kill is recomputing one batch's embeddings, capped by the
+calibrated batch size (at most 256 chunks, and usually the smaller
 duration-calibrated size rather than the ceiling), not unbounded work. This
 supersedes an earlier per-chunk autocommit whose per-row transaction commit
 bought finer resumability than this ADR requires; batching the commits trades
