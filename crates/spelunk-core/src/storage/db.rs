@@ -12,7 +12,7 @@ pub struct Database {
 /// The runner in `Database::open` gates each migration on this via
 /// `PRAGMA user_version`; steps are numbered in the order they run (the field
 /// order), not filename order.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 15;
 
 /// One entry in the migration runner: (target version, migration body).
 type MigrationStep = (i32, fn(&Database) -> Result<()>);
@@ -74,6 +74,7 @@ impl Database {
             (12, Self::apply_dim_upgrade_migration),
             (13, Self::apply_drop_snapshots_migration),
             (14, Self::apply_index_meta_migration),
+            (15, Self::apply_file_mtime_migration),
         ];
         debug_assert_eq!(
             steps.last().map(|(v, _)| *v),
@@ -147,8 +148,18 @@ impl Database {
             }
             Ok(false)
         };
+        let files_has_column = |col: &str| -> Result<bool> {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(files)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                if row.get::<_, String>(1)? == col {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
 
-        let ladder: [(i32, bool); 14] = [
+        let ladder: [(i32, bool); 15] = [
             (1, has_table("chunks")?),
             (2, has_table("embeddings")?),
             (3, has_table("graph_edges")?),
@@ -163,6 +174,7 @@ impl Database {
             (12, has_table("schema_int8_embeddings")?),
             (13, !has_table("snapshots")?),
             (14, has_table("index_meta")?),
+            (15, files_has_column("mtime")?),
         ];
         // Highest version whose predicate and all lower ones hold.
         let mut version = 0;
@@ -359,6 +371,21 @@ impl Database {
         Ok(())
     }
 
+    /// Add the `mtime` column to the files table (unix seconds; recency signal
+    /// for the embed queue). `ALTER TABLE` has no `IF NOT EXISTS`, so only the
+    /// already-applied error is tolerated; a genuine failure propagates.
+    pub fn apply_file_mtime_migration(&self) -> Result<()> {
+        match self
+            .conn
+            .execute_batch(include_str!("../../migrations/024_file_mtime.sql"))
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e).context("running file mtime migration"),
+        }
+        Ok(())
+    }
+
     /// Create the index_meta KV table (embedding provenance). Idempotent.
     pub fn apply_index_meta_migration(&self) -> Result<()> {
         self.conn
@@ -456,7 +483,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::{CURRENT_SCHEMA_VERSION, Database};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OptionalExtension};
     use std::sync::OnceLock;
 
     fn register_sqlite_vec() {
@@ -568,6 +595,164 @@ mod tests {
         assert!(
             msg.contains("no such table") || msg.contains("token_count migration"),
             "a real migration failure must propagate, got: {msg}"
+        );
+    }
+
+    /// The `files.mtime` migration is idempotent: applying it to a pre-existing
+    /// (pre-column) index adds the column with default 0 without error, and
+    /// applying it again on an already-migrated DB is a tolerated no-op.
+    #[test]
+    fn file_mtime_migration_is_idempotent() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+
+        let has_mtime = |db: &Database| -> bool {
+            let mut stmt = db.conn.prepare("PRAGMA table_info(files)").unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                if row.get::<_, String>(1).unwrap() == "mtime" {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Fresh DB already has the column from the full migration run.
+        assert!(has_mtime(&db), "fresh DB has the mtime column");
+
+        // Simulate a pre-column index: drop the column, then re-run the migration.
+        db.conn
+            .execute_batch("ALTER TABLE files DROP COLUMN mtime")
+            .expect("drop mtime to simulate a pre-migration index");
+        assert!(!has_mtime(&db), "column dropped to model a legacy index");
+
+        db.apply_file_mtime_migration()
+            .expect("migration must add the column to a pre-column index without error");
+        assert!(has_mtime(&db), "migration re-added the mtime column");
+
+        // A legacy row inserted before the column existed reads back as 0.
+        db.conn
+            .execute(
+                "INSERT INTO files (path, language, hash, indexed_at) VALUES ('legacy.rs', 'rust', 'h', 1)",
+                [],
+            )
+            .unwrap();
+        let mtime: i64 = db
+            .conn
+            .query_row(
+                "SELECT mtime FROM files WHERE path = 'legacy.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mtime, 0, "a row lacking an explicit mtime defaults to 0");
+
+        // Re-applying on the already-migrated DB is a tolerated no-op.
+        db.apply_file_mtime_migration()
+            .expect("re-applying the migration on a migrated DB is a no-op");
+        assert!(has_mtime(&db));
+    }
+
+    /// Exercises the actual legacy-inference rung for this migration (ladder
+    /// entry `(15, files_has_column("mtime"))`), not just the direct
+    /// `apply_file_mtime_migration` idempotency check above. A DB frozen at v14
+    /// (every table/column through `index_meta` present, `files.mtime` not yet
+    /// added, `user_version` reset to 0 — the real shape of an index built by
+    /// the previous binary) must be inferred at exactly 14 through
+    /// `Database::open`'s normal migration runner, and only step 15 must run to
+    /// bring it current.
+    #[test]
+    fn legacy_db_frozen_at_v14_infers_14_and_applies_only_mtime_step() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
+            // Roll back to the pre-024 shape: drop only the mtime column,
+            // leaving every other v1..14 table/column intact, then reset the
+            // version stamp so `Database::open` must re-infer it from shape.
+            db.conn
+                .execute_batch("ALTER TABLE files DROP COLUMN mtime; PRAGMA user_version = 0;")
+                .expect("roll back to pre-mtime shape");
+            assert_eq!(
+                Database::infer_legacy_version(&db).unwrap(),
+                14,
+                "with every v1..14 predicate true and only the mtime rung false, \
+                 inference must land exactly at 14"
+            );
+            // A row inserted while at this legacy shape has no mtime column at
+            // all yet (pre-migration data).
+            db.conn
+                .execute(
+                    "INSERT INTO files (path, language, hash, indexed_at) VALUES ('old.rs', 'rust', 'h', 1)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // Reopen through the normal runner (not calling apply_file_mtime_migration
+        // directly): this is the real "agent upgrades the binary" path.
+        let db = Database::open(tmp.path()).expect("reopen legacy v14 DB");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+
+        let mtime: i64 = db
+            .conn
+            .query_row("SELECT mtime FROM files WHERE path = 'old.rs'", [], |r| {
+                r.get(0)
+            })
+            .expect("mtime column must exist and be queryable after inferred upgrade");
+        assert_eq!(
+            mtime, 0,
+            "a pre-existing row defaults to mtime 0, not an error"
+        );
+    }
+
+    /// Defends the ladder's early-break behaviour against a hand-tampered /
+    /// corrupted DB where a *later* rung's predicate is true but an *earlier*
+    /// one is false — a state the normal forward-only migration path can never
+    /// produce, but one a manual `ALTER TABLE` (or a hand-restored backup)
+    /// could. `Database::open` must still complete without error or data
+    /// corruption: the ladder takes the lowest satisfied version (ignoring the
+    /// spuriously-true later rung), and every step from there re-applies
+    /// idempotently rather than double-erroring on the already-present column.
+    #[test]
+    fn migration_ladder_tolerates_out_of_order_manually_tampered_state() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
+            // Simulate tampering: drop the `usage` table (rung 9) while
+            // `files.mtime` (rung 15) is left present — a combination the real
+            // forward-only runner would never produce on its own.
+            db.conn
+                .execute_batch("DROP TABLE IF EXISTS usage; PRAGMA user_version = 0;")
+                .expect("tamper: drop usage, keep mtime");
+            assert_eq!(
+                Database::infer_legacy_version(&db).unwrap(),
+                8,
+                "the ladder must break at the first false predicate (rung 9, usage table) \
+                 and ignore the spuriously-true rung 15"
+            );
+        }
+
+        // Reopening must not error even though this replays step 15
+        // (files.mtime already exists) on top of a version-8 inference.
+        let db = Database::open(tmp.path())
+            .expect("reopening a tampered-but-recoverable DB must not error or corrupt state");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+
+        let has_usage: bool = db
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(
+            has_usage,
+            "the usage table must be recreated by the replayed step 9"
         );
     }
 
