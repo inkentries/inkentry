@@ -410,21 +410,45 @@ impl Database {
     /// `embeddings` `int8[896]` column (see `embeddings::vec_to_int8_blob`).
     pub fn insert_embedding(&self, chunk_id: i64, vector: &[f32]) -> Result<()> {
         let blob = crate::embeddings::vec_to_int8_blob(vector);
+        // The `embeddings` table is a sqlite-vec `vec0` virtual table, which does
+        // not honour `INSERT OR REPLACE`/`ON CONFLICT`: a second insert for an
+        // existing `chunk_id` raises a hard UNIQUE-constraint error instead of
+        // overwriting. Emulate replace with an explicit delete-then-insert, kept
+        // atomic under one transaction so a repeated `chunk_id` is genuine
+        // last-write-wins (re-embed-on-change, `index --force`). When a caller
+        // already holds a transaction (batch flush) we join it rather than
+        // nesting a BEGIN, which vec0/SQLite would reject.
         // sqlite-vec treats a raw BLOB as float32; vec_int8() reinterprets the
         // bytes as the int8 vector the column expects.
-        self.conn.execute(
-            "INSERT OR REPLACE INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
-            rusqlite::params![chunk_id, blob],
-        )?;
+        let write = |conn: &Connection| -> rusqlite::Result<()> {
+            conn.execute(
+                "DELETE FROM embeddings WHERE chunk_id = ?1",
+                rusqlite::params![chunk_id],
+            )?;
+            conn.execute(
+                "INSERT INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
+                rusqlite::params![chunk_id, blob],
+            )?;
+            Ok(())
+        };
+        if self.conn.is_autocommit() {
+            let tx = self.conn.unchecked_transaction()?;
+            write(&tx)?;
+            tx.commit()?;
+        } else {
+            write(&self.conn)?;
+        }
         Ok(())
     }
 
     /// Insert or replace a whole batch of embeddings in a single transaction.
     ///
-    /// Same per-row statement as [`insert_embedding`], but one commit for the
-    /// batch instead of one implicit autocommit per row (mirrors the
-    /// `update_graph_ranks` batch pattern). The embed phase already holds the
-    /// whole batch's vectors in memory by the time it writes them, so the
+    /// Same per-row replace shape as [`insert_embedding`] (the `embeddings`
+    /// vec0 table doesn't honour `INSERT OR REPLACE`, so a repeated
+    /// `chunk_id` is emulated with delete-then-insert), but one commit for
+    /// the whole batch instead of one implicit autocommit per row (mirrors
+    /// the `update_graph_ranks` batch pattern). The embed phase already holds
+    /// the whole batch's vectors in memory by the time it writes them, so the
     /// commit boundary is the batch: on an untimely kill the transaction is
     /// rolled back atomically and `chunks_missing_embeddings` re-queues the
     /// entire batch, never a partial one.
@@ -433,7 +457,11 @@ impl Database {
         for (chunk_id, vector) in rows {
             let blob = crate::embeddings::vec_to_int8_blob(vector);
             tx.execute(
-                "INSERT OR REPLACE INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
+                "DELETE FROM embeddings WHERE chunk_id = ?1",
+                rusqlite::params![chunk_id],
+            )?;
+            tx.execute(
+                "INSERT INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
                 rusqlite::params![chunk_id, blob],
             )?;
         }
@@ -669,28 +697,16 @@ mod tests {
         assert_eq!(embedding_count(&db), 1);
     }
 
-    /// BUG, pre-existing and NOT introduced by this story (found during
-    /// test-hardening; not fixed here — see the story's handback comment):
-    /// `insert_embedding`'s own doc-comment promises "insert or replace", but
-    /// `INSERT OR REPLACE` against the `embeddings` vec0 virtual table does
-    /// not actually replace anything — even here, across two separate,
-    /// fully-autocommitted calls with nothing else in flight, the second call
-    /// raises `UNIQUE constraint failed on embeddings primary key` instead of
-    /// overwriting the first row. sqlite-vec's vec0 module does not honour
-    /// `OR REPLACE` conflict resolution against an already-committed row
-    /// either. This has no observed production impact today only because
-    /// every real caller (`embed_phase.rs`, `parse_phase.rs`) inserts
-    /// exclusively for `chunk_id`s drawn from `chunks_missing_embeddings`
-    /// (never-yet-embedded) or after `delete_embeddings_for_file`, so a
-    /// same-key collision never actually reaches this call. It matters to
-    /// *this* story specifically because the run-level resume test's own
-    /// comment ("`INSERT OR REPLACE` keyed on chunk_id is what makes a
-    /// re-embed idempotent") and the batch engineer's handoff note both cite
-    /// OR-REPLACE idempotency as a safety property to lean on — it is not
-    /// actually true at the DB layer, so neither should keep relying on it as
-    /// stated. Left failing deliberately; do not weaken this assertion.
+    /// Was a bug (see `git blame`/ADR-070): `insert_embedding`'s doc-comment
+    /// promises "insert or replace", but plain `INSERT OR REPLACE` against the
+    /// `embeddings` vec0 virtual table does not honour the conflict clause —
+    /// a second call for the same `chunk_id` raised `UNIQUE constraint
+    /// failed` instead of overwriting. This mattered because the run-level
+    /// resume test's own comment and the batch engineer's handoff note both
+    /// cited OR-REPLACE idempotency as a safety property to lean on. Fixed by
+    /// emulating replace with an explicit delete-then-insert (see
+    /// `insert_embedding`); this test now pins the fixed, promised behaviour.
     #[test]
-    #[ignore = "known bug: INSERT OR REPLACE does not replace on the embeddings vec0 table, tracked separately"]
     fn insert_embedding_single_row_path_does_not_actually_replace_a_repeated_chunk_id() {
         register_sqlite_vec();
         let db = Database::open(std::path::Path::new(":memory:")).expect("open");
@@ -707,15 +723,13 @@ mod tests {
     /// Same underlying bug as the test above, exercised through the batch
     /// path this story added: a batch containing the same `chunk_id` twice
     /// (still legitimate input — nothing in `insert_embeddings`'s contract
-    /// forbids it) hits the identical `UNIQUE constraint failed` error,
-    /// because it is the same OR-REPLACE-against-vec0 gap, not something the
-    /// transaction wrapper introduced. Left failing deliberately; do not
-    /// weaken this assertion to match the buggy behaviour — the fix belongs
-    /// in `insert_embedding`/`insert_embeddings` (e.g. dedup a batch's rows
-    /// keeping the last write, or an explicit delete-then-insert), not in a
-    /// relaxed test.
+    /// forbids it) used to hit the identical `UNIQUE constraint failed`
+    /// error, because it was the same OR-REPLACE-against-vec0 gap, not
+    /// something the transaction wrapper introduced. `insert_embeddings` now
+    /// applies the same delete-then-insert-per-row fix inside its batch
+    /// transaction, so a repeated id within one batch collapses to a single
+    /// last-write-wins row instead of erroring.
     #[test]
-    #[ignore = "known bug: INSERT OR REPLACE does not replace on the embeddings vec0 table, tracked separately"]
     fn insert_embeddings_duplicate_chunk_id_within_one_batch_last_write_wins() {
         register_sqlite_vec();
         let db = Database::open(std::path::Path::new(":memory:")).expect("open");
@@ -940,6 +954,104 @@ mod tests {
             0,
             "a batch abandoned by a hard process exit before commit must leave zero rows — the \
              literal 'kill mid-batch' scenario, not just an in-process Err short-circuit"
+        );
+    }
+
+    /// Two independent, fully-committed `insert_embedding` calls for the same
+    /// `chunk_id` must leave exactly one row holding the *second* vector — the
+    /// re-embed-on-content-change idempotency the resume/`index --force` paths
+    /// assume. On a `vec0` virtual table plain `INSERT OR REPLACE` silently
+    /// fails to do this (the conflict clause isn't honoured), so this pins the
+    /// delete-then-insert fix.
+    #[test]
+    fn insert_embedding_single_row_path_replaces_a_repeated_chunk_id() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+
+        let mut first = vec![0f32; dim];
+        first[0] = 1.0;
+        let mut second = vec![0f32; dim];
+        second[10] = 1.0;
+
+        db.insert_embedding(1, &first).expect("first insert");
+        db.insert_embedding(1, &second)
+            .expect("second insert (replace)");
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE chunk_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "a repeated chunk_id must leave exactly one row");
+
+        let stored: Vec<u8> = db
+            .conn
+            .query_row(
+                "SELECT embedding FROM embeddings WHERE chunk_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            crate::embeddings::vec_to_int8_blob(&second),
+            "the second insert must overwrite the first (last-write-wins)"
+        );
+    }
+
+    /// The same duplicate-`chunk_id` sequence inside a single explicit
+    /// transaction (mirroring a batch embed that flushes many rows under one
+    /// `BEGIN`) must also collapse to one last-write-wins row.
+    #[test]
+    fn insert_embedding_duplicate_chunk_id_within_one_transaction_last_write_wins() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+
+        let mut a = vec![0f32; dim];
+        a[1] = 1.0;
+        let mut b = vec![0f32; dim];
+        b[2] = 1.0;
+        let mut c = vec![0f32; dim];
+        c[3] = 1.0;
+
+        {
+            let tx = db.conn.unchecked_transaction().unwrap();
+            db.insert_embedding(7, &a).unwrap();
+            db.insert_embedding(7, &b).unwrap();
+            db.insert_embedding(7, &c).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE chunk_id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "duplicate chunk_ids in one batch collapse to one row"
+        );
+
+        let stored: Vec<u8> = db
+            .conn
+            .query_row(
+                "SELECT embedding FROM embeddings WHERE chunk_id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            crate::embeddings::vec_to_int8_blob(&c),
+            "the last write in the batch must win"
         );
     }
 }

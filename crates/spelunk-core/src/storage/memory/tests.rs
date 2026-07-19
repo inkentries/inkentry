@@ -472,3 +472,52 @@ fn entity_id_migration_is_additive_on_a_store_with_duplicates() {
     drop(store);
     MemoryStore::open(&path).expect("re-open must be idempotent");
 }
+
+/// `note_embeddings` is a `vec0` virtual table, so like the code `embeddings`
+/// table it does not honour `INSERT OR REPLACE`: re-embedding an existing
+/// `note_id` must overwrite in place (one last-write-wins row), not error or
+/// duplicate.
+#[test]
+fn insert_embedding_replaces_a_repeated_note_id() {
+    let store = open_store();
+    let id = store
+        .add_note("note", "N", "b", &[], &[], None, None)
+        .unwrap();
+
+    let dim = crate::embeddings::EMBEDDING_DIM;
+    let mut first = vec![0f32; dim];
+    first[0] = 1.0;
+    let mut second = vec![0f32; dim];
+    second[5] = 1.0;
+
+    store
+        .insert_embedding(id, &crate::embeddings::vec_to_blob(&first))
+        .expect("first note embedding");
+    store
+        .insert_embedding(id, &crate::embeddings::vec_to_blob(&second))
+        .expect("second note embedding (replace)");
+
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM note_embeddings WHERE note_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "a repeated note_id must leave exactly one row");
+
+    let stored: Vec<u8> = store
+        .conn
+        .query_row(
+            "SELECT embedding FROM note_embeddings WHERE note_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        crate::embeddings::vec_to_blob(&second),
+        "the second embedding must overwrite the first"
+    );
+}
