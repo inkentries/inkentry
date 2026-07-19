@@ -143,21 +143,75 @@ Given the org resolved by D2's precedence, bearer resolution:
    org**, a same-org refresh, and writes the rotated pair back into that
    same slot; no other org's entry is read or written;
 4. if absent (this org has never been cached on this machine), it is
-   onboarded: either an explicit `spelunk login --org <target>` (an
-   independent WorkOS device-authorization grant, so it depends on no
-   existing token at all), or today's existing fork, refreshing
+   onboarded by one of two paths, and the choice matters for concurrency,
+   not just convenience (see the spike below): the **recommended** path is
+   an explicit `spelunk login --org <target>`, an independent WorkOS
+   device-authorization grant that depends on no existing token at all and
+   mints its own session, so it never touches whatever org is currently
+   `active`. The **fallback** path is today's existing fork, refreshing
    whatever's currently `active` with the new `organization_id`, which
    mints tokens for the target org but, since WorkOS refresh tokens are
    single-use, costs the previously-`active` org its current token in the
-   process. That cost is paid once, at first encounter with a new org, not
-   on every subsequent switch between two already-cached orgs, which is
-   the actual pattern the consultant case complains about.
+   process. Either way the cost is paid once, at first encounter with a new
+   org, not on every subsequent switch between two already-cached orgs,
+   which is the actual pattern the consultant case complains about, but only
+   the independent-login path leaves the previously-active org's session
+   untouched while onboarding the new one.
 
 This is the property that answers Q2: once two orgs both have entries in the
 cache, moving between them never touches the other's entry, so a
 long-running agent scoped to org A is unaffected by a switch to org B that
 happens elsewhere on the same machine, as long as org A was already onboarded
 before that switch.
+
+**Spike (2026-07-19): does WorkOS actually let two orgs be independently
+refreshable, or is there only one refresh lineage per user?** Before this
+ADR merged, a review comment raised exactly this doubt: WorkOS might tie
+refresh tokens to a single per-user lineage rather than a per-session one, in
+which case refreshing org A would silently cost org B's token too, and D3's
+"never forking from a sibling" property would not hold in practice. Checked
+against WorkOS's published API reference:
+
+- The refresh grant
+  (`POST /user_management/authenticate`, `grant_type=refresh_token`) accepts
+  an optional `organization_id` used to select which org's authorization the
+  new access token carries; if omitted, the existing scope is kept. Refresh
+  tokens are documented as single-use and rotating: each successful refresh
+  returns a **replacement** refresh token, and the used one stops working.
+  This confirms the "single-use, rotating" premise D1's rationale already
+  assumes, and it confirms the *fork* mechanism in D3.4 (refresh org A's
+  token while asking for org B's `organization_id`) really does consume org
+  A's token to mint org B's, exactly as D3.4 already documents as a one-time,
+  not-glossed-over cost.
+- WorkOS's session-listing endpoint
+  (`GET /user_management/users/{id}/sessions`, listing "all active sessions
+  for a specific user") returns a **set** of sessions
+  per user, each with its own `id`, `organization_id`, `auth_method`, and
+  timestamps, individually revocable by the session id carried in an access
+  token's `sid` claim. A user is not limited to one active session; each
+  successful `authenticate()` call (a fresh device-authorization exchange,
+  in particular) mints its own session, and the refresh grant's own
+  documentation ties a refresh's success to "the session" (singular) behind
+  the token being refreshed, not to the user account as a whole.
+
+Read together, these confirm D3's assumption **for the specific onboarding
+path this ADR already recommends first in D3.4**: an independent
+`spelunk login --org <target>` (its own device-authorization exchange, no
+existing token involved) mints a session, and therefore a refresh lineage,
+that is distinct from any other org's session for the same user, so
+refreshing it neither reads nor rotates a sibling org's token. The doubt
+raised in review is correct about the *fork* path specifically (D3.4's
+second, explicitly-costed option), not about the design as a whole: forking
+shares one lineage and pays for it once; independent per-org login does not
+share a lineage and is what makes ongoing, side-effect-free switching between
+already-cached orgs possible. Nothing here required changing D1 through D4;
+it sharpens which of D3.4's two onboarding paths actually earns the
+no-cross-talk property the rest of the ADR relies on. Implementation should
+include a live-WorkOS check (two independent `login --org` exchanges for the
+same test user, then a refresh of each) alongside the local-cache simulation
+already called for, since that specific cross-session claim is inferred from
+WorkOS's documented session model rather than stated in so many words on a
+single page.
 
 **Migration.** The legacy single `[auth]` entry, if found on upgrade, is
 migrated into `orgs[<its org_id>]` (and set as `active`) the first time
