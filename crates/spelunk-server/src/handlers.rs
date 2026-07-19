@@ -4174,6 +4174,213 @@ mod tests {
         );
     }
 
+    /// Edge case: cancellation observed on exactly the **last** iteration of a
+    /// batch  -  the boundary the sub-batch/per-chunk checks are meant to catch
+    /// early elsewhere, but here there is no "next" chunk left to abandon into.
+    /// Deterministic (no HTTP, no timing race): a watcher task flips `cancel`
+    /// as soon as `progress` reaches `ITERATIONS - 2`, i.e. once every chunk
+    /// but the last *two* has completed. That leaves a full iteration's sleep
+    /// (`step`) as slack for the watcher to actually act before the check that
+    /// matters: the loop's own check-then-sleep-then-increment body has no
+    /// `.await` between one iteration's increment and the next iteration's
+    /// check, so a watcher targeting `ITERATIONS - 1` directly can never win
+    /// that race under a single-threaded runtime  -  it would only ever be
+    /// woken up (and act) *after* the following check had already run.
+    /// Targeting one iteration earlier gives the watcher the preceding
+    /// iteration's whole `step` duration to act, so the final iteration is the
+    /// one deterministically guaranteed to observe cancellation. Proves the
+    /// loop bails out cleanly (an `Err`, no panic, no double-counted progress)
+    /// rather than e.g. running one past the check or leaving the
+    /// `JoinHandle` unresolved.
+    #[tokio::test]
+    async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
+        use spelunk_core::embeddings::EmbeddingBackend;
+
+        const ITERATIONS: usize = 5;
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let embedder = CancelAwareEmbedder {
+            iterations: ITERATIONS,
+            step: std::time::Duration::from_millis(20),
+            dim: 4,
+            progress: Arc::clone(&progress),
+            observed_cancel: Arc::clone(&observed_cancel),
+        };
+
+        let watch_progress = Arc::clone(&progress);
+        let watch_cancel = Arc::clone(&cancel);
+        let watcher = tokio::spawn(async move {
+            loop {
+                if watch_progress.load(std::sync::atomic::Ordering::Relaxed) >= ITERATIONS - 2 {
+                    watch_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        });
+
+        let result = embedder
+            .embed_with_cancel(&["fn f() {}"], Arc::clone(&cancel))
+            .await;
+        watcher.await.expect("watcher task panicked");
+
+        assert!(
+            result.is_err(),
+            "cancellation observed on the final chunk must still bail out cleanly \
+             with an error, not silently return a (now-meaningless) success"
+        );
+        assert_eq!(
+            progress.load(std::sync::atomic::Ordering::Relaxed),
+            ITERATIONS - 1,
+            "the final iteration must be the one that observes cancellation and \
+             never runs  -  no off-by-one either completing one extra iteration or \
+             stopping one short"
+        );
+        assert!(
+            observed_cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "the embedder must have observed the cancellation flag itself on the \
+             final iteration"
+        );
+    }
+
+    /// Edge case explicitly called out alongside T2: a solo request  -  no
+    /// other batch ever holds the embedder, so there is no queue delay for
+    /// the client's disconnect to race against  -  that is abandoned as early
+    /// as physically possible. This is deliberately **not** asserting zero
+    /// forward passes: `queued_request_abandoned_while_waiting_does_zero_forward_passes`
+    /// (T2, above) proves zero waste specifically for a ghost that loses a
+    /// race for the mutex to a live occupier, because the wait for the lock
+    /// gives the disconnect time to land before the ghost's own check runs.
+    /// A solo request has no such delay to exploit: the mutex-acquire check
+    /// fires essentially instantly, almost certainly before the disconnect
+    /// (which has to round-trip a real TCP close) can possibly have
+    /// propagated, so it inevitably starts its first chunk. What's
+    /// guaranteed here is acceptance criterion #1  -  bounded to at most one
+    /// wasted chunk, then stopped for good  -  not criterion #2's "zero,"
+    /// which is scoped to the queued-behind-another-batch case. This test
+    /// pins that distinction down so it isn't mistaken for a regression
+    /// later.
+    #[tokio::test]
+    async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(CancelAwareEmbedder {
+            iterations: 100,
+            // Deliberately long relative to the client's timeout below, so the
+            // first check-before-sleep is essentially certain to run before the
+            // client would ever have given the loop a chance to advance.
+            step: std::time::Duration::from_millis(200),
+            dim: 4,
+            progress: Arc::clone(&progress),
+            observed_cancel: Arc::clone(&observed_cancel),
+        }));
+        let (base, _db) = spawn_test_server_with_embed(
+            embedder,
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(10))
+            .build()
+            .expect("building client with short timeout");
+        let result = client
+            .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({
+                "chunks": [{"chunk_id": "1", "content": "fn f() {}"}],
+            }))
+            .send()
+            .await;
+        assert!(
+            result.is_err(),
+            "the client's own very short timeout must abort the connection long \
+             before the (much longer) embed loop's first sleep completes"
+        );
+
+        // Settle past the first step so the in-flight (already-started) chunk
+        // finishes, then confirm progress goes no further  -  same
+        // settling rationale as `client_disconnect_stops_embedder_progress`.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let settled = progress.load(std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let after_wait = progress.load(std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(
+            settled, after_wait,
+            "progress must stop for good once cancellation is observed, not merely \
+             pause"
+        );
+        assert!(
+            settled <= 1,
+            "a solo (uncontended) request must be bounded to at most one wasted \
+             chunk's forward pass (acceptance criterion #1)  -  got {settled}"
+        );
+        assert!(
+            observed_cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "the embedder must have observed the cancellation flag itself"
+        );
+    }
+
+    /// The abandon guard must be a no-op when dropped already-disarmed (the
+    /// ordinary "request completed" path, success or a real embed error
+    /// alike) — and must be safe to fire on a flag that was *already* true,
+    /// without panicking or otherwise corrupting state. Two independent
+    /// guards sharing one flag is the closest reachable proxy in safe Rust for
+    /// "the guard fires twice": Rust's ownership model makes a literal double
+    /// `Drop::drop` call on one guard instance unreachable, but nothing stops
+    /// two guards (e.g. from two abandonment sources racing) from firing on
+    /// the same shared `Arc<AtomicBool>`.
+    #[test]
+    fn embed_abandon_guard_drop_is_idempotent_when_flag_already_set() {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let disarmed = super::EmbedAbandonGuard {
+            cancel: Arc::clone(&cancel),
+            armed: false,
+            project_id: "p".to_string(),
+            batch_size: 1,
+            started: std::time::Instant::now(),
+        };
+        drop(disarmed);
+        assert!(
+            !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "a disarmed guard (the normal completed-request path) must never touch \
+             the flag"
+        );
+
+        let first = super::EmbedAbandonGuard {
+            cancel: Arc::clone(&cancel),
+            armed: true,
+            project_id: "p".to_string(),
+            batch_size: 1,
+            started: std::time::Instant::now(),
+        };
+        drop(first);
+        assert!(
+            cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "an armed guard must set the flag on drop"
+        );
+
+        // A second, independent armed guard firing on an already-cancelled flag
+        // must not panic and must leave the flag exactly as-is (true).
+        let second = super::EmbedAbandonGuard {
+            cancel: Arc::clone(&cancel),
+            armed: true,
+            project_id: "p".to_string(),
+            batch_size: 1,
+            started: std::time::Instant::now(),
+        };
+        drop(second);
+        assert!(
+            cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "a second armed guard firing on an already-set flag must be idempotent, \
+             not panic or clear it"
+        );
+    }
+
     // ── ConcurrencyLimitLayer under concurrent load ───────────────────────────
 
     /// Proves `tower::limit::ConcurrencyLimitLayer` backpressures concurrent
