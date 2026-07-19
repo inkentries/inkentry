@@ -91,7 +91,7 @@ Architectural decisions are recorded in [docs/adr/](adr/). Key ones:
 
 Tree-sitter parses source code into an AST and spelunk extracts named semantic nodes (functions, structs, classes, methods, traits, impls) as individual chunks. This means each chunk is a meaningful unit of code with a name, type, and scope — not an arbitrary 100-line window.
 
-Fallback: sliding window (120 lines, 15-line overlap) for unsupported languages. Markdown uses heading-based chunking.
+Fallback: a token-aware sliding window for unsupported languages and for oversized semantic nodes that need re-windowing. Each window accumulates whole lines up to `MAX_CHUNK_TOKENS` (2048), with ~12.5% token overlap between adjacent windows (the ratio behind the historical 120-line/15-line-overlap split); a single line that alone exceeds the budget becomes its own window so the cap always binds. Re-windowed chunks carry the source node's `name`/`docstring`/`parent_scope` so they still embed with their symbol identity rather than `title: none`. Markdown uses heading-based chunking.
 
 ### Storage: SQLite + sqlite-vec, nothing else
 

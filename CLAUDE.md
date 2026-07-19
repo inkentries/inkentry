@@ -283,9 +283,14 @@ enum so commands degrade gracefully when no server is configured.
 
 ### Chunking strategy
 Tree-sitter extracts **named semantic nodes** (functions, structs, impls, etc.)
-rather than naive line splits. Sliding-window (120 lines, 15-line overlap) is
-the fallback for unsupported file types. Markdown uses ATX heading-based
-chunking (each `# Heading` + body = one `ChunkKind::Section`).
+rather than naive line splits. A token-aware sliding window is the fallback
+for unsupported file types and for re-windowing oversized semantic nodes:
+whole lines accumulate up to `MAX_CHUNK_TOKENS` (2048) with ~12.5% token
+overlap between windows, and the source node's `name`/`docstring`/
+`parent_scope` are copied onto every window it produces (so a re-windowed
+function still embeds with its symbol name instead of `title: none`). Markdown
+uses ATX heading-based chunking (each `# Heading` + body = one
+`ChunkKind::Section`).
 
 ### Embedding input format
 F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:

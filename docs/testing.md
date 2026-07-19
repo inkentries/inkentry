@@ -33,7 +33,8 @@ Pure-logic functions. Cheapest to write and maintain.
 
 | File | What is tested |
 |------|---------------|
-| `tests/unit_chunker.rs` | `sliding_window`: empty source, single chunk, overlap boundaries, verbatim content |
+| `tests/unit_chunker.rs` | `sliding_window`: empty source, single chunk, cap-bound windows, forward progress on over-budget single lines, token overlap, identity (name/docstring/parent_scope) threading, verbatim content |
+| `tests/adversarial_chunker.rs` | `sliding_window` under adversarial input: sibling oversized nodes don't cross-contaminate identity, a genuinely anonymous node degrades to `name: None` cleanly, multi-section markdown windows attribute the correct heading, worst-case estimate/real-token bias stays within the accepted overshoot, non-oversized nodes bypass windowing entirely |
 | `tests/unit_embeddings.rs` | `vec_to_blob` / `blob_to_vec` roundtrip; empty vec; multi-value; blob length |
 | `tests/unit_graph.rs` | `EdgeKind` display and parse; unknown kind falls back to `Imports` |
 | `src/utils.rs` | `strip_ansi`: clean strings, colour codes, OSC sequences, C0 controls, newline/tab preservation |
