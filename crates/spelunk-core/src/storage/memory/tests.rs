@@ -91,6 +91,102 @@ fn supersede_idempotent() {
     );
 }
 
+// ── add_note_superseding() ──────────────────────────────────────────────────
+
+#[test]
+fn add_note_superseding_happy_path_archives_old_and_links_new() {
+    let store = open_store();
+
+    let old_id = store
+        .add_note("decision", "Old decision", "old body", &[], &[], None, None)
+        .unwrap();
+
+    let new_id = store
+        .add_note_superseding(
+            "decision",
+            "New decision",
+            "new body",
+            &[],
+            &[],
+            None,
+            old_id,
+        )
+        .unwrap();
+
+    let old_note = store.get(old_id).unwrap().expect("old note must exist");
+    assert_eq!(old_note.status, "archived");
+    assert_eq!(old_note.superseded_by, Some(new_id));
+
+    assert_eq!(
+        count_edges(&store, new_id, old_id, "supersedes"),
+        1,
+        "expected exactly one supersedes edge"
+    );
+}
+
+/// ADR-068 amendment E4: re-superseding an already-archived OLD (via a second
+/// `add_note_superseding` call naming a different successor) must reject with
+/// an error and roll back the whole transaction — no orphaned new note, no
+/// second supersedes edge, OLD's existing successor link untouched.
+#[test]
+fn add_note_superseding_rejects_already_archived_old_and_writes_nothing() {
+    let store = open_store();
+
+    let old_id = store
+        .add_note("decision", "Old decision", "old body", &[], &[], None, None)
+        .unwrap();
+    let successor_a = store
+        .add_note_superseding("decision", "Successor A", "body a", &[], &[], None, old_id)
+        .unwrap();
+
+    let count_before = store.count().unwrap();
+
+    let result =
+        store.add_note_superseding("decision", "Successor B", "body b", &[], &[], None, old_id);
+    assert!(
+        result.is_err(),
+        "re-superseding an already-archived OLD must error, not silently succeed"
+    );
+
+    assert_eq!(
+        store.count().unwrap(),
+        count_before,
+        "a rejected supersede must not leave an orphaned new note row"
+    );
+
+    let old_note = store.get(old_id).unwrap().expect("old note must exist");
+    assert_eq!(
+        old_note.superseded_by,
+        Some(successor_a),
+        "OLD's successor link must still point at the first, not the rejected second, successor"
+    );
+
+    assert_eq!(
+        count_edges(&store, successor_a, old_id, "supersedes"),
+        1,
+        "the original supersedes edge must be untouched"
+    );
+}
+
+/// Superseding a nonexistent OLD id must also error, not silently create an
+/// unlinked new note (the archive-`OLD` `UPDATE` matches zero rows either way).
+#[test]
+fn add_note_superseding_rejects_nonexistent_old() {
+    let store = open_store();
+    let count_before = store.count().unwrap();
+
+    let result = store.add_note_superseding("decision", "New", "new body", &[], &[], None, 999_999);
+    assert!(
+        result.is_err(),
+        "superseding a nonexistent OLD id must error"
+    );
+    assert_eq!(
+        store.count().unwrap(),
+        count_before,
+        "no note must be created when OLD does not exist"
+    );
+}
+
 // ── add_edge() ───────────────────────────────────────────────────────────────
 
 #[test]

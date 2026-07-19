@@ -3291,7 +3291,7 @@ async fn same_head_duplicate_folds_to_one_entry() {
 /// so only a fold that sees every commit can collapse them.
 ///
 /// This is the test that pins the fold's placement: it fails if the fold moves
-/// into `read_records`, which sees one commit's blob at a time.
+/// into a per-commit blob read, which sees one commit's blob at a time.
 #[tokio::test]
 #[serial]
 async fn different_head_duplicate_folds_to_one_entry() {
