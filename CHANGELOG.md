@@ -62,6 +62,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   old model, treat it as compromised: rotate it on the server and re-set it
   on every machine that used the old one. (ADR-071 D4)
 
+### Fixed
+
+- **`memory add --supersedes OLD` against an already-archived OLD no longer
+  writes conflicting git-notes carrier records.** The SQL layer's archive-OLD
+  update already silently no-ops when OLD is not active, but the CLI never
+  checked that outcome before appending a state-update record to the git-notes
+  carrier, so running `--supersedes OLD` twice with two different successors
+  left two conflicting `archived` records for OLD's entity, each naming a
+  different successor — and the read-time fold picked between them by
+  lexicographic string comparison, not recency, so the wrong successor could
+  silently display. `--supersedes` now checks OLD is active *before* any
+  write (SQLite or git-notes), on both storage paths, and fails with the same
+  "No active memory entry with id `<old-id>` (old)." error `memory supersede`
+  already gives for the same case — this is a deliberate behavior change: the
+  command used to succeed against a stale OLD, and now it errors instead.
+  Fold-time resolution of any conflicting records written before this fix
+  (or by a lost cross-machine race) is also hardened: `superseded_by_entity_id`
+  now resolves to the record with the greatest `created_at`, not the smallest
+  `entity_id` string. (ADR-068 E4/E5)
+
 ## [0.9.4] — 2026-07-17
 
 ### Changed
