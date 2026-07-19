@@ -721,20 +721,31 @@ fn warmup_error_zero_explicit(mode: &str, total: i64) -> String {
 ///
 /// Pure so it can be unit-tested without capturing stderr; `has_server_url` is
 /// `cfg.server_url.is_some()`.
+///
+/// `remote_url` is `Some` when the probed server came from an explicit
+/// `server_url` (not loopback auto-discovery). The unavailable-embedder
+/// notice must then name that server instead of pointing at `spelunk server
+/// logs`, which only reads the local auto-daemon's log and would show clean
+/// logs for a failure that lives on the remote server.
 fn semantic_unavailable_message(
     embedder_state: Option<capability::EmbedderState>,
     has_server_url: bool,
+    remote_url: Option<&str>,
 ) -> String {
     use capability::EmbedderState;
     match embedder_state {
         Some(EmbedderState::Loading) => "[semantic search unavailable: model still warming up — \
              retry shortly (`spelunk server status`); using ast-grep]"
             .to_string(),
-        Some(EmbedderState::Unavailable) => {
-            "[semantic search unavailable: embedder failed to load — \
-             see `spelunk server logs`; using ast-grep]"
-                .to_string()
-        }
+        Some(EmbedderState::Unavailable) => match remote_url {
+            Some(url) => format!(
+                "[semantic search unavailable: embedder failed to load on team server {url}; \
+                 check that server's own logs; using ast-grep]"
+            ),
+            None => "[semantic search unavailable: embedder failed to load; \
+                 see `spelunk server logs`; using ast-grep]"
+                .to_string(),
+        },
         Some(_) => "[semantic search unavailable on this server; using ast-grep]".to_string(),
         None => {
             if has_server_url {
@@ -755,7 +766,11 @@ fn semantic_unavailable_message(
 fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
     eprintln!(
         "{}",
-        semantic_unavailable_message(tier.embedder_state(), cfg.server_url.is_some())
+        semantic_unavailable_message(
+            tier.embedder_state(),
+            cfg.server_url.is_some(),
+            tier.explicit_remote_url(),
+        )
     );
 }
 
@@ -880,30 +895,50 @@ mod tests {
 
     #[test]
     fn notice_loading_advises_retry() {
-        let msg = semantic_unavailable_message(Some(EmbedderState::Loading), true);
+        let msg = semantic_unavailable_message(Some(EmbedderState::Loading), true, None);
         assert!(msg.contains("warming up"));
         assert!(msg.contains("ast-grep"));
     }
 
     #[test]
-    fn notice_unavailable_points_at_logs() {
-        let msg = semantic_unavailable_message(Some(EmbedderState::Unavailable), true);
+    fn notice_unavailable_loopback_points_at_logs() {
+        // Loopback auto-discovery: the failing embedder IS the local daemon,
+        // so `spelunk server logs` is the right place to look.
+        let msg = semantic_unavailable_message(Some(EmbedderState::Unavailable), true, None);
         assert!(msg.contains("failed to load"));
         assert!(msg.contains("spelunk server logs"));
+    }
+
+    #[test]
+    fn notice_unavailable_remote_names_that_server_never_local_logs() {
+        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // log, which is clean when the failure lives on the team server. The
+        // notice must name the probed server instead.
+        let msg = semantic_unavailable_message(
+            Some(EmbedderState::Unavailable),
+            true,
+            Some("https://team.example:7777"),
+        );
+        assert!(msg.contains("failed to load"));
+        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
+        assert!(
+            !msg.contains("spelunk server logs"),
+            "must not point a remote failure at local logs: {msg}"
+        );
     }
 
     #[test]
     fn notice_no_server_with_configured_url_mentions_firewall() {
         // Offline (no reachable server) but a server_url was configured →
         // the likely Windows cause is a blocked loopback listener.
-        let msg = semantic_unavailable_message(None, true);
+        let msg = semantic_unavailable_message(None, true, None);
         assert!(msg.contains("no server reachable"));
         assert!(msg.contains("Firewall"));
     }
 
     #[test]
     fn notice_no_server_no_url_suggests_starting_one() {
-        let msg = semantic_unavailable_message(None, false);
+        let msg = semantic_unavailable_message(None, false, None);
         assert!(msg.contains("spelunk server start"));
     }
 
@@ -920,7 +955,9 @@ mod tests {
             None,
         ] {
             for has_url in [true, false] {
-                assert!(!semantic_unavailable_message(state, has_url).is_empty());
+                for remote_url in [None, Some("https://team.example:7777")] {
+                    assert!(!semantic_unavailable_message(state, has_url, remote_url).is_empty());
+                }
             }
         }
     }

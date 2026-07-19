@@ -72,7 +72,8 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
         .build()
         .context("building HTTP client for memory watch")?;
         let mut req = client.get(&url);
-        if let Some(key) = cfg.server_key.as_deref() {
+        let bearer = cfg.bearer_for(base_url)?;
+        if let Some(key) = bearer.as_deref() {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
         if let Some(ref id) = last_event_id {

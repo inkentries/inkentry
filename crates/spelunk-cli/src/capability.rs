@@ -26,7 +26,17 @@ use tokio::sync::OnceCell;
 
 use crate::config::Config;
 
-/// State file directory: `~/.local/state/spelunk/`.
+/// The single state file directory resolver for the whole CLI:
+/// `~/.local/state/spelunk/`, or `SPELUNK_STATE_DIR` when set.
+///
+/// Every reader and writer of runtime state goes through this one function:
+/// `spelunk server start/stop/status/logs` (server pid/port/log/db-path
+/// files, `cli/cmd/server.rs`), the embed worker's liveness files
+/// (`cli/cmd/embed_worker.rs`), and this module's own loopback
+/// auto-discovery probe below. A second, independent resolution here was a
+/// real bug: it let the override apply to some readers/writers and not
+/// others, so a status reader could miss a worker's pid file written to a
+/// different directory (or vice versa) and misreport liveness.
 ///
 /// On all platforms we use `~/.local/state` rather than the OS-native state dir.
 /// This mirrors the deliberate choice made for the config dir
@@ -37,27 +47,30 @@ use crate::config::Config;
 /// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
 /// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
 /// silently disabled loopback auto-discovery on the primary dev platform
-/// (spelunk#316). Returns `None` only when the home directory can't be resolved.
+/// (spelunk#316).
 ///
-/// NOTE for spelunk#317 (writer side, `spelunk server start`): the writer MUST
-/// write `server.port` into this exact directory so reader and writer agree.
-/// Use the same `~/.local/state/spelunk/` path on every platform.
+/// `SPELUNK_STATE_DIR` is a supported override of the entire path, not
+/// dev-only cruft: it is load-bearing on Windows CI, where `dirs::home_dir()`
+/// 6.x calls `SHGetKnownFolderPath` (a Windows Registry lookup) rather than
+/// reading `USERPROFILE`, making per-process environment overrides of `HOME`
+/// ineffective. It is also used directly by end users who want state files
+/// somewhere other than the default (e.g. an ephemeral or sandboxed HOME).
 ///
-/// `SPELUNK_STATE_DIR` overrides the entire path. Useful in tests and on
-/// Windows CI where `dirs::home_dir()` 6.x calls `SHGetKnownFolderPath` (a
-/// Windows Registry lookup) rather than reading `USERPROFILE`, making
-/// per-process environment overrides ineffective.
-fn spelunk_state_dir() -> Option<std::path::PathBuf> {
+/// Errors only when the home directory can't be resolved and no override is
+/// set.
+pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("SPELUNK_STATE_DIR") {
-        return Some(std::path::PathBuf::from(p));
+        return Ok(std::path::PathBuf::from(p));
     }
-    dirs::home_dir().map(|home| home.join(".local").join("state").join("spelunk"))
+    dirs::home_dir()
+        .map(|home| home.join(".local").join("state").join("spelunk"))
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
 /// Read the port written by `spelunk server start` into
 /// `~/.local/state/spelunk/server.port`. Returns `None` if absent or unreadable.
 fn read_server_port_file() -> Option<u16> {
-    let path = spelunk_state_dir()?.join("server.port");
+    let path = spelunk_state_dir().ok()?.join("server.port");
     let content = std::fs::read_to_string(&path).ok()?;
     content.trim().parse::<u16>().ok()
 }
@@ -421,6 +434,27 @@ impl Tier {
                 ..
             }
         )
+    }
+
+    /// `Some(url)` when this tier reached `Server` via an **explicit**
+    /// `server_url` (not loopback auto-discovery); `None` for `Offline` and
+    /// for the auto-discovered loopback case.
+    ///
+    /// `spelunk server logs` only ever reads the local auto-daemon's log
+    /// file. A command-output hint that names a server to check must use
+    /// this instead of unconditionally pointing at that command: with an
+    /// explicit remote `server_url`, `spelunk server logs` reads a healthy
+    /// local daemon's log while the real failure lives on the named server
+    /// (the pattern `embedder_status_line` in `status.rs` established).
+    pub fn explicit_remote_url(&self) -> Option<&str> {
+        match self {
+            Tier::Server {
+                url,
+                auto_discovered: false,
+                ..
+            } => Some(url),
+            _ => None,
+        }
     }
 
     /// Return a `Config` whose server fields reflect this tier, so that
@@ -1034,6 +1068,55 @@ mod tests {
         assert!(auto.is_auto_discovered());
         assert!(!explicit.is_auto_discovered());
         assert!(!Tier::Offline.is_auto_discovered());
+    }
+
+    #[test]
+    fn tier_explicit_remote_url_only_for_explicit_server() {
+        let auto = Tier::Server {
+            url: "http://127.0.0.1:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: true,
+            embedder_state: EmbedderState::Ready,
+            server_limits: None,
+        };
+        let explicit = Tier::Server {
+            url: "http://server.example.com:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
+            server_limits: None,
+        };
+        assert_eq!(auto.explicit_remote_url(), None);
+        assert_eq!(
+            explicit.explicit_remote_url(),
+            Some("http://server.example.com:7777")
+        );
+        assert_eq!(Tier::Offline.explicit_remote_url(), None);
+    }
+
+    #[test]
+    fn tier_explicit_remote_url_is_explicit_even_when_host_is_loopback() {
+        // `explicit_remote_url` keys off *how the URL was reached*
+        // (`auto_discovered`), never off the host it resolves to. An operator
+        // can hand-configure `server_url = http://127.0.0.1:PORT`; it is
+        // still `auto_discovered: false` because it went through the
+        // `Some(url)` probe branch, not loopback auto-discovery (see
+        // `probe()`). `spelunk server logs` only ever reads the fixed
+        // auto-daemon log path and has no idea this loopback address was
+        // hand-configured, so the hint must still name it rather than assume
+        // "loopback implies safe to point at the local log".
+        let explicit_loopback = Tier::Server {
+            url: "http://127.0.0.1:9797".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: false,
+            embedder_state: EmbedderState::Ready,
+            server_limits: None,
+        };
+        assert_eq!(
+            explicit_loopback.explicit_remote_url(),
+            Some("http://127.0.0.1:9797"),
+            "an explicitly configured server_url must count as explicit even when its host is loopback"
+        );
     }
 
     // ── effective_config (ADR-004 inference-vs-memory routing) ───────────────

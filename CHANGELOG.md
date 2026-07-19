@@ -24,6 +24,43 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   remain valid — this changes neither the DB schema nor the embedding format — but a
   `spelunk index --force` re-index is recommended (not required) to pick up the
   improved chunk shape on already-indexed repos with large, long-line files.
+### Security
+
+- **Self-hosted server bearer credentials are now scoped per server, not
+  global.** Previously a single flat `server_key` served every configured
+  `server_url`, so a developer working on two projects that each point at a
+  different self-hosted server (the topology [ADR-056](docs/adr/056-oss-server-tenancy-model.md)
+  recommends over multi-tenancy) had one key slot for two servers, with
+  whichever key lost getting 401s. The bearer for a request is now resolved
+  per the target server's origin, so keys for distinct self-hosted servers
+  coexist without collision or manual env-var juggling. A pre-existing flat
+  key migrates into the new per-server store automatically the first time
+  it's needed. See [ADR-071](docs/adr/071-per-server-client-bearer-scoping.md).
+
+### Added
+
+- **`spelunk auth set-key --server <url>` and `spelunk auth list-servers`.**
+  `set-key` stores a bearer key for a self-hosted server, scoped to its
+  origin; the key is read from stdin or an interactive prompt only, never
+  from a flag or positional argument, so it never lands in shell history or
+  `ps` output. `list-servers` prints the origins with a stored key (never the
+  key material itself). (ADR-071)
+- **`spelunk logout --servers` / `spelunk logout --server <url>`.** Clearing
+  self-hosted server keys is now an explicit, separate action from clearing
+  the spelunk.cloud login: bare `spelunk logout` clears only the `[auth]`
+  token pair, so recovering from a broken cloud login no longer has the side
+  effect of deleting server keys used on other projects. (ADR-071 D3)
+
+### Removed
+
+- **`server_key` is no longer read from a project's committed
+  `.spelunk/config.toml`.** That field let a plaintext credential live in a
+  file the docs otherwise say is safe to commit. It is now silently ignored
+  (matching the earlier `memory_server_*` alias removal precedent) rather
+  than migrated or warned about; use `spelunk auth set-key --server <url>` to
+  store the key per-developer instead. If a key was ever committed under the
+  old model, treat it as compromised: rotate it on the server and re-set it
+  on every machine that used the old one. (ADR-071 D4)
 
 ## [0.9.4] — 2026-07-17
 

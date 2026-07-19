@@ -5,8 +5,9 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use super::entity_id::note_entity_id;
 use super::memory::Note;
-use super::note_record::{NoteRecord, record_to_note};
+use super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
 use fold::fold_records;
 
 mod backend_impl;
@@ -317,6 +318,62 @@ pub async fn append_to_git_notes(
         rewrite_ref,
         lock_degradation,
     })
+}
+
+/// Append a state-update record for an entity that already exists on the
+/// carrier: `base` supplies its content (`kind`/`title`/`body`/`tags`/
+/// `linked_files`/`source_ref`/`valid_at`) unchanged, while `status`,
+/// `invalid_at` and `superseded_by_entity_id` override its mutable state.
+///
+/// **Never rewrites the entity's existing line(s) in place.** A live-git
+/// experiment (three-repo harness) showed why: a rewrite leaves a second
+/// machine, which holds the original line plus a divergent local note of its
+/// own, with both the rewritten and the stale original line after
+/// `cat_sort_uniq` unions them — the entity appears twice, with conflicting
+/// `status`. Appending a new line instead, and folding same-`entity_id` copies
+/// at read time ([`fold_records`]), converges regardless of merge order
+/// (ADR-068 A6): the fold's archival rule is monotonic, so whichever copy
+/// carries `status: "archived"` wins.
+///
+/// This append is **not** the "re-recording an unchanged entry" case ADR-068
+/// A6 calls a no-op — that no-op is scoped to a byte-for-byte-unchanged
+/// re-record, and does not apply here since this call always changes mutable
+/// state. Nothing in this module suppresses same-`entity_id` appends; keep it
+/// that way; a guard that did would silently swallow every state update this
+/// function writes.
+///
+/// Shared by `memory supersede` and `memory add --supersedes` (the two
+/// carriers of a supersede edge); shaped so `memory archive`'s carrier
+/// write-through, tracked as separate follow-up work, can call it too with
+/// `superseded_by_entity_id: None`.
+pub async fn append_state_update(
+    git_root: Option<&std::path::Path>,
+    base: &Note,
+    status: &str,
+    invalid_at: Option<i64>,
+    superseded_by_entity_id: Option<String>,
+) -> Result<AppendOutcome> {
+    let record = NoteRecord {
+        schema_version: 1,
+        id: now_millis(),
+        kind: base.kind.clone(),
+        title: base.title.clone(),
+        body: base.body.clone(),
+        tags: base.tags.clone(),
+        linked_files: base.linked_files.clone(),
+        created_at: now_secs(),
+        status: status.to_string(),
+        source_ref: base.source_ref.clone(),
+        valid_at: base.valid_at,
+        invalid_at,
+        // Machine-local rowid link: never populated by this path, which keys
+        // entities by `entity_id` only (ADR-068 A6).
+        superseded_by: None,
+        remote_id: None,
+        entity_id: Some(note_entity_id(base)),
+        superseded_by_entity_id,
+    };
+    append_to_git_notes(git_root, &record).await
 }
 
 // ── Read-path merge: making fetched notes visible ────────────────────────────

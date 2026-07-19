@@ -451,21 +451,31 @@ project_id = "my-awesome-app"
 > token to these requests. See [Self-hosting](self-hosting.md) for putting TLS
 > in front of a deployed server.
 
-Each developer provides their API key. Prefer the `SPELUNK_SERVER_KEY`
-environment variable, which works everywhere (including CI / headless):
+Each developer provides their own key with `spelunk auth set-key`, scoped to
+this server's URL:
+
+```bash
+spelunk auth set-key --server https://spelunk.internal.example.com
+```
+
+The key is stored in your OS keychain (macOS Keychain, Linux Secret Service,
+Windows Credential Manager) rather than in plaintext, keyed by the server's
+origin so a second project's server key never collides with this one. For CI /
+headless use, the `SPELUNK_SERVER_KEY` environment variable works everywhere
+and takes precedence over the stored key:
 
 ```bash
 export SPELUNK_SERVER_KEY="your-shared-api-key"
 ```
 
-The credential is otherwise stored in your OS keychain (macOS Keychain, Linux
-Secret Service, Windows Credential Manager) rather than in plaintext. If you
-have an old personal `~/.config/spelunk/config.toml` with a bare
-`server_key = "…"`, it is migrated into the keychain and stripped from the file
-automatically on the next run. On a host with no keychain, spelunk falls back to
-an owner-only `~/.config/spelunk/secrets.toml`. For the full credential-storage
-rules and the `SPELUNK_SECRET_STORE` override, see the
-[Commands reference](commands.md#spelunk-login).
+If you have an old personal `~/.config/spelunk/config.toml` with a bare
+`server_key = "..."`, it is picked up and migrated into the per-server store
+automatically the first time it's needed; no action required. A `server_key`
+line in a project's checked-in `.spelunk/config.toml` is no longer read at all,
+so remove it if one is still there. On a host with no keychain, spelunk falls
+back to an owner-only `~/.config/spelunk/secrets.toml`. For the full
+credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
+[Commands reference](commands.md#spelunk-auth).
 
 `project_id` stays a human-readable slug. If the server routes projects by an
 internal UUID (as a team/cloud memory server does), the CLI resolves the slug

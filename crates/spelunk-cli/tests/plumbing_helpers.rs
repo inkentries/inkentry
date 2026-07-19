@@ -104,6 +104,16 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         // XDG_CONFIG_HOME so the file store lands under `<home>/.config/spelunk`
         // and never the developer's real config dir.
         .env_remove("XDG_CONFIG_HOME")
+        // `dirs::home_dir()` 6.x on Windows calls `SHGetKnownFolderPath` (a
+        // Registry lookup) rather than reading `HOME`/`USERPROFILE`, so the
+        // `HOME` redirect above is a no-op there: every subprocess this spawns
+        // would otherwise land on the same real `%USERPROFILE%\.config\spelunk`,
+        // and concurrent tests racing on one `secrets.toml` corrupt it (see the
+        // identical, already-documented gap on `SPELUNK_STATE_DIR` in
+        // `capability.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
+        // `SPELUNK_CONFIG_DIR` bypasses `dirs::home_dir()` entirely and works
+        // identically on every platform.
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
         // The HOME redirect above hides `~/.gitconfig` from the git this child
         // spawns, but an exported GIT_CONFIG_GLOBAL outranks HOME and would
         // still reach it. Not a Windows path, but git skips a scope whenever

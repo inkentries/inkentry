@@ -50,7 +50,7 @@ pub async fn memory_push(
     let local = MemoryStore::open(src_path)
         .with_context(|| format!("opening local memory at {}", src_path.display()))?;
     // Refresh a stale WorkOS access token before the cloud-api call.
-    let key = auth_api::ensure_fresh_server_key(cfg).await?;
+    let key = auth_api::ensure_fresh_server_key(cfg, &base_url).await?;
     let client = CloudSyncClient::new(
         &base_url,
         &project_id,

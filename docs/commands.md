@@ -624,31 +624,35 @@ resolves one for you instead of leaving a session that needs a follow-up
   no-org session is persisted.
 
 Tokens are written to the `[auth]` table of `~/.config/spelunk/config.toml`
-(file mode `0600`). Existing setups that use a static `server_key` (or the
-`SPELUNK_SERVER_KEY` environment variable) keep working unchanged until you next
-run `spelunk login`; `SPELUNK_SERVER_KEY` continues to take precedence, which is
-handy for CI.
+(file mode `0600`). Existing setups that use a self-hosted server key (stored via
+`spelunk auth set-key`, or the `SPELUNK_SERVER_KEY` environment variable) keep
+working unchanged; `SPELUNK_SERVER_KEY` continues to take precedence, which is
+handy for CI. See `spelunk auth` below for the self-hosted credential itself;
+`spelunk login` only ever manages the `[auth]` cloud token pair.
 
-### Where the `server_key` credential is stored
+### Where the self-hosted server key is stored
 
-The static `server_key` bearer credential is **not** kept in plaintext in
-`config.toml`. It lives in your operating system's secret store:
+See [`spelunk auth`](#spelunk-auth) below for the full per-server credential
+story (ADR-071). In short: a self-hosted server's bearer key is **not** kept in
+plaintext anywhere. It lives in your operating system's secret store:
 
-- **macOS** — Keychain
-- **Linux** — Secret Service (libsecret / `org.freedesktop.secrets`)
-- **Windows** — Credential Manager
+- **macOS**: Keychain
+- **Linux**: Secret Service (libsecret / `org.freedesktop.secrets`)
+- **Windows**: Credential Manager
 
-The first time you run any command after upgrading, a `server_key` previously
-written to `~/.config/spelunk/config.toml` is migrated into the OS keychain and
-removed from the file automatically — no action required. (A shared
-`server_key` set in a project's checked-in `.spelunk/config.toml` is left as-is;
-it is a team key by design, not a personal credential.)
+keyed by the server's origin, so keys for two different self-hosted servers
+never collide. A flat `server_key` from an install predating this scheme is
+migrated in automatically the first time it's needed for a given server; no
+action required. A `server_key` line in a project's checked-in
+`.spelunk/config.toml` is no longer read at all (it was a plaintext-in-a-committed-file
+footgun); if a project config still has that line, remove it and have each
+developer run `spelunk auth set-key --server <url>` instead.
 
 **Headless / CI / containers.** When no OS keychain backend is available, the
 credential never causes a hard failure:
 
 - `SPELUNK_SERVER_KEY` remains the non-interactive escape hatch and always takes
-  precedence — set it in CI and you never touch the keychain.
+  precedence: set it in CI and you never touch the keychain.
 - Otherwise spelunk falls back to an owner-only (`0600`) file at
   `~/.config/spelunk/secrets.toml`.
 
@@ -661,6 +665,36 @@ credential never causes a hard failure:
 | `file` | Always use the `secrets.toml` file store (e.g. a container that mounts secrets from elsewhere). |
 
 The credential is never logged.
+
+---
+
+## spelunk auth
+
+Manage the per-server bearer credentials a self-hosted `server_url` resolves
+through (ADR-071). Distinct from `spelunk login`, which manages the
+spelunk.cloud `[auth]` token pair.
+
+```
+spelunk auth set-key --server <url>
+spelunk auth list-servers
+```
+
+| Subcommand | Notes |
+|------------|-------|
+| `set-key --server <url>` | Store a bearer key for the given server, keyed by its origin (scheme + host + non-default port). The key is read from stdin if piped, otherwise from an interactive prompt; it is never accepted as a flag value or positional argument. |
+| `list-servers` | Print every server origin with a stored key, one per line. Never prints key material. Notes if a legacy flat key is still present and pending migration. |
+
+```bash
+echo "$SERVER_KEY" | spelunk auth set-key --server https://spelunk.internal.example.com
+spelunk auth list-servers
+```
+
+Resolution precedence for a given request's `server_url`: the `SPELUNK_SERVER_KEY`
+environment variable (if set, always wins, regardless of origin) takes priority
+over the per-origin store; a spelunk.cloud origin instead resolves through the
+`[auth]` token pair from `spelunk login`. This lets CI pin a single key for the
+one server it talks to without touching the keychain, while a developer's
+machine holds separate keys per self-hosted server.
 
 ---
 
@@ -684,13 +718,26 @@ spelunk org switch acme
 
 ## spelunk logout
 
-Remove stored spelunk.cloud credentials. Clears the `[auth]` tokens written by
-`spelunk login` from `~/.config/spelunk/config.toml`, the `server_key` from the
-OS keychain (or `secrets.toml` fallback), and any legacy plaintext `server_key`
-still left in `config.toml`.
+Remove stored spelunk.cloud credentials. Bare `spelunk logout` clears **only**
+the `[auth]` token pair written by `spelunk login`; it does not touch any
+self-hosted server key, so recovering from a broken cloud login never costs
+you the keys you use on other projects (ADR-071 D3). Clearing server keys is a
+separate, explicit action:
 
 ```
+spelunk logout [--servers | --server <url>]
+```
+
+| Flag | Notes |
+|------|-------|
+| (none) | Clears only the `[auth]` cloud token pair. If any server keys are still stored, prints how many and how to clear them. |
+| `--servers` | Also clears every stored server key: the per-origin map and any legacy flat entry. |
+| `--server <url>` | Also clears just the stored key for that one server's origin. Mutually exclusive with `--servers`. |
+
+```bash
 spelunk logout
+spelunk logout --server https://spelunk.internal.example.com
+spelunk logout --servers
 ```
 
 ---
@@ -822,5 +869,6 @@ and publish on your next push.
 | `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
 | `SPELUNK_SERVER_CA` | Path to a PEM CA bundle to trust for a `SPELUNK_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
 | `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
+| `SPELUNK_STATE_DIR` | Override the runtime state directory (default `~/.local/state/spelunk/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |

@@ -183,10 +183,12 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
 - **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
   spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
   full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
-  API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable. On
-  a clean CI runner (no pre-existing server state) these tests still pass, but
-  they may flake if parallel test workers race on the shared state directory.
-  A future improvement is a `SPELUNK_STATE_DIR` override environment variable.
+  API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable.
+  Tests that need deterministic isolation should set `SPELUNK_STATE_DIR`
+  directly instead of relying on `HOME`: it is a supported override of the
+  entire state directory, read by the single resolver
+  (`capability::spelunk_state_dir`) every reader and writer of runtime state
+  goes through, so it bypasses the Windows `HOME` gap entirely.
 
 - **`pid_is_alive` on Windows.** The Windows implementation uses
   `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
