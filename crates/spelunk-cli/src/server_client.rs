@@ -1023,7 +1023,7 @@ mod tests {
         // comment above and config.rs tests). This test previously called
         // the production `from_config` entry point directly, which resolves
         // the bearer via `Config::bearer_for` against the *real* default
-        // secret store — on macOS in a headless session that keychain
+        // secret store; on macOS in a headless session that keychain
         // lookup blocks indefinitely instead of failing fast, which is what
         // made this test (and the whole module) appear to hang "even in
         // isolation" without `SPELUNK_SECRET_STORE=file` set in the
