@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod auth_api;
 pub mod check;
 pub mod context;
@@ -23,6 +24,7 @@ pub mod status;
 pub(crate) mod test_support;
 mod ui;
 
+pub use auth::auth;
 pub use check::check;
 pub use context::context;
 pub use explore::explore;

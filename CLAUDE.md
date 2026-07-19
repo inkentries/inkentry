@@ -85,6 +85,7 @@ config/
   predicates.rs  — URL/UUID/env predicates
   tls.rs         — custom CA trust-anchor application
   secret_store.rs — OS keychain / file secret-store backend
+  server_keys.rs — per-origin server-key map + bearer_for() resolution (ADR-071)
 utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
@@ -170,6 +171,7 @@ cli/
   mod.rs         — clap structs (Cli, Command, *Args)
   cmd/
     mod.rs       — re-exports one pub fn per subcommand
+    auth.rs      — `spelunk auth set-key/list-servers` handlers (ADR-071)
     check.rs     — `spelunk check` handler
     context.rs   — `spelunk context` handler (agent session entry point)
     explore.rs   — `spelunk explore` handler

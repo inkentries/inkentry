@@ -10,6 +10,7 @@ mod sync_mode;
 mod tls;
 
 pub mod secret_store;
+pub mod server_keys;
 
 use paths::{find_project_config, spelunk_config_dir};
 use secret_store::{KEY_SERVER_KEY, SecretStore};
@@ -76,13 +77,17 @@ struct ProjectIndexConfig {
 
 /// Fields that can be set in `.spelunk/config.toml` (project-level, checked-in).
 /// Only contains fields safe to share with the team (no secrets).
+///
+/// `server_key` is deliberately absent (ADR-071 D4): a credential in a
+/// committed file is in the repo's history for good and readable by anyone
+/// with repo access. A file that still has a `server_key` line keeps working
+/// for its other fields: serde silently drops the unrecognized key, the
+/// same way the removed `memory_server_*` aliases are dropped. Use
+/// `spelunk auth set-key --server <url>` instead.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
     /// Canonical server URL (preferred).
     server_url: Option<String>,
-    /// Shared API key — acceptable if the server is behind a VPN/firewall.
-    /// For secrets, prefer `SPELUNK_SERVER_KEY` env var instead.
-    server_key: Option<String>,
     project_id: Option<String>,
     /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
     /// team server presenting a self-signed / internal-CA certificate.
@@ -116,11 +121,14 @@ pub struct Config {
     #[serde(default)]
     pub server_url: Option<String>,
 
-    /// Bearer token for cloud/spelunk-server auth — the single token every auth
-    /// path sends as `Authorization: Bearer …`.
-    /// Set in `~/.config/spelunk/config.toml` (personal), written by
-    /// `spelunk login`, or overridden via `SPELUNK_SERVER_KEY`.
-    /// Do NOT commit this to `.spelunk/config.toml`.
+    /// The **cloud-kind** bearer only (ADR-071 D2): `SPELUNK_SERVER_KEY` env
+    /// override, else the `[auth].access_token` written by `spelunk login`.
+    /// Resolved once at load time because both tiers are origin-independent.
+    ///
+    /// This is NOT the effective bearer for a self-hosted `server_url`:
+    /// that credential is scoped per server origin and resolved lazily via
+    /// [`Config::bearer_for`], which also branches to this same field for the
+    /// cloud origin. Do NOT commit any bearer to `.spelunk/config.toml`.
     #[serde(default)]
     pub server_key: Option<String>,
 
@@ -183,12 +191,12 @@ pub struct Config {
     /// `[auth]` table in the global config.
     ///
     /// When present and the access token is unexpired, it is the source of the
-    /// `Authorization: Bearer` token every cloud request sends — [`Config::load`]
-    /// copies the access token into [`Config::server_key`] so existing call
-    /// sites keep working unchanged. The `refresh_token` is used to rotate an
-    /// expired access token and to silently switch organisations. Read the
-    /// effective bearer through [`Config::server_key`]; reach for the refresh
-    /// token via this field only in the token-refresh path.
+    /// `Authorization: Bearer` token every cloud-origin request sends.
+    /// [`Config::load`] copies the access token into [`Config::server_key`]
+    /// (the cloud-kind bearer). A self-hosted `server_url` never consults
+    /// this field (ADR-071 D2); use [`Config::bearer_for`] there. The
+    /// `refresh_token` is used to rotate an expired access token and to
+    /// silently switch organisations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthTokens>,
 
@@ -327,10 +335,10 @@ impl Config {
         let global_bare_server_key = cfg.server_key.clone();
 
         // ── 2. Merge project-level config (.spelunk/config.toml) ─────────────
-        // A `server_key` here is a *shared team* key (acceptable behind a VPN);
-        // it is intentionally NOT migrated to the keychain — it lives in a
-        // checked-in file by design and is not personal to this user.
-        let mut project_server_key: Option<String> = None;
+        // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
+        // file never carries a credential. A file that still has a
+        // `server_key` line keeps working for its other fields: the parse
+        // above silently drops the unrecognized key.
         if let Ok(cwd) = std::env::current_dir()
             && let Some(proj_path) = find_project_config(&cwd)
         {
@@ -341,10 +349,6 @@ impl Config {
 
             if let Some(v) = proj.server_url {
                 cfg.server_url = Some(v);
-            }
-            if let Some(v) = proj.server_key {
-                project_server_key = Some(v.clone());
-                cfg.server_key = Some(v);
             }
             if let Some(v) = proj.project_id {
                 cfg.project_id = Some(v);
@@ -375,9 +379,8 @@ impl Config {
         if let Some(bare) = &global_bare_server_key {
             let already_in_store = store.get(KEY_SERVER_KEY)?.is_some();
             if !already_in_store {
-                store.set(KEY_SERVER_KEY, bare).with_context(|| {
-                    "migrating plaintext server_key into the secret store".to_string()
-                })?;
+                save_server_key_with(bare, store)
+                    .context("migrating plaintext server_key into the secret store")?;
             }
             // Strip the plaintext key from the personal config regardless: it is
             // now in the store (or was already there), so it must not linger in
@@ -417,32 +420,61 @@ impl Config {
             cfg.mode = Some(parsed);
         }
 
-        // ── 4. Resolve the effective Bearer token ────────────────────────────
-        // Precedence for `Authorization: Bearer` (highest first):
+        // ── 4. Resolve the cloud-kind bearer (ADR-071 D2) ────────────────────
+        // `cfg.server_key` is now the **cloud-kind** bearer only:
         //   1. `SPELUNK_SERVER_KEY` env var (CI / headless escape hatch) — wins.
         //   2. `[auth].access_token` from `spelunk login` (WorkOS device flow).
-        //   3. Secret-store `server_key` (the migrated home for the personal
-        //      bearer — keychain by default, file fallback when headless).
-        //   4. Project-level team `server_key` from `.spelunk/config.toml`.
-        // The `[auth]` tokens are kept in `cfg.auth` so the refresh-on-expiry /
-        // org-switch paths can reach the refresh token; every other call site
-        // only ever reads the resolved `cfg.server_key`.
-        //
-        // Tiers 1-2 resolve without the secret store at all, so the store is
-        // only actually read when neither is present: a value that would be
-        // discarded anyway is never fetched, which spares a keychain prompt
-        // on every `spelunk login`'d or `SPELUNK_SERVER_KEY` invocation.
+        // Both tiers are origin-independent, so resolving them once here (with
+        // no secret-store read at all) is correct and cheap. A self-hosted
+        // `server_url`'s bearer is a *different* credential, scoped to that
+        // server's origin, resolved lazily via [`Config::bearer_for`]. It is
+        // never derived from this field, so a cloud login can never leak to a
+        // self-hosted server (the bug this ADR fixes).
         cfg.server_key = if let Some(v) = env_server_key {
             Some(v)
-        } else if let Some(auth) = &cfg.auth {
-            Some(auth.access_token.clone())
         } else {
-            store.get(KEY_SERVER_KEY)?.or(project_server_key)
+            cfg.auth.as_ref().map(|auth| auth.access_token.clone())
         };
 
         Ok(cfg)
     }
 
+    /// Resolve the effective bearer for a request to `server_url` (ADR-071
+    /// D2), using the host's default secret store. See
+    /// [`Config::bearer_for_with_store`] for the resolution rules and the
+    /// testable, store-injected form.
+    pub fn bearer_for(&self, server_url: &str) -> Result<Option<String>> {
+        let store = secret_store::default_store(&spelunk_config_dir())?;
+        self.bearer_for_with_store(server_url, store.as_ref())
+    }
+
+    /// Same as [`Config::bearer_for`] but with an injected [`SecretStore`]
+    /// (tests, and callers that already resolved a store).
+    ///
+    /// Branches on credential kind by `server_url`'s origin before touching
+    /// any store (cloud vs. self-hosted server-key: see
+    /// [`server_keys::bearer_for`] for the full precedence and the legacy
+    /// migration it performs).
+    pub fn bearer_for_with_store(
+        &self,
+        server_url: &str,
+        store: &dyn SecretStore,
+    ) -> Result<Option<String>> {
+        server_keys::bearer_for(self.auth.as_ref(), server_url, store)
+    }
+}
+
+/// Resolve the host's default [`SecretStore`], honouring [`secret_store::ENV_SECRET_STORE`].
+///
+/// The public entry point for CLI commands that need to read or write the
+/// per-origin key map directly (`spelunk auth set-key` / `list-servers` /
+/// `logout --servers`), the same resolution [`Config::load`] and
+/// [`Config::bearer_for`] use internally.
+pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
+    secret_store::default_store(&spelunk_config_dir())
+}
+
+impl Config {
     /// Validate cross-field constraints. Call after `load()`.
     ///
     /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
@@ -696,8 +728,14 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn mixed_config_live_key_wins_over_deprecated() {
-        // Both the live key and its removed alias present: the live key resolves
-        // and the deprecated key is silently dropped (no error, no override).
+        // Both the live key and its removed alias present: the live server_url
+        // resolves and the deprecated alias is silently dropped (no error, no
+        // override). `server_key` is the legacy personal bearer (a bare
+        // `server_key` in the *global* config, not a `.spelunk/config.toml`
+        // credential; D4 is about the latter): it no longer feeds
+        // `cfg.server_key` (cloud-kind only, ADR-071 D2), but the migration
+        // into the secret store still runs and the value is still reachable
+        // through `bearer_for_with_store` for a self-hosted origin.
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -712,12 +750,19 @@ memory_server_key = "old-token"
         )
         .unwrap();
 
-        let cfg = load_hermetic(&config_path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&config_path), &store).unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://new.example.com:7777".to_string())
         );
-        assert_eq!(cfg.server_key, Some("new-token".to_string()));
+        assert_eq!(cfg.server_key, None);
+        assert_eq!(
+            cfg.bearer_for_with_store("http://new.example.com:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("new-token")
+        );
     }
 
     #[test]
@@ -1083,33 +1128,54 @@ project_id = "team/proj"
         unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
     }
 
-    /// A legacy bare `server_key` keeps working when no `[auth]` table exists.
+    /// A legacy bare `server_key` no longer feeds `cfg.server_key` (cloud-kind
+    /// only, ADR-071 D2) when no `[auth]` table exists, but it is still
+    /// migrated into the store and resolves via `bearer_for` for a
+    /// self-hosted origin.
     #[test]
     #[serial_test::serial]
-    fn legacy_server_key_used_when_no_auth_table() {
+    fn legacy_server_key_migrates_but_no_longer_feeds_server_key_field() {
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
 
-        let cfg = load_hermetic(&path).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-legacy"));
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        assert_eq!(cfg.server_key, None);
         assert!(cfg.auth.is_none());
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-legacy")
+        );
     }
 
-    /// `[auth]` access token takes precedence over a legacy bare `server_key`
-    /// present in the same file.
+    /// The `[auth]` access token (cloud kind) and a legacy bare `server_key`
+    /// (self-hosted kind) resolve independently by target origin (ADR-071
+    /// D2): they no longer compete in a single flat precedence chain.
     #[test]
     #[serial_test::serial]
-    fn auth_token_precedence_over_legacy_server_key() {
+    fn auth_token_and_legacy_server_key_resolve_by_kind_not_precedence() {
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        let cfg = load_hermetic(&path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        // Cloud-kind field resolves from [auth], unaffected by the legacy key.
         assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
+        // The legacy key is still migrated and reachable for a self-hosted
+        // origin; the cloud token never leaks to it.
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-legacy")
+        );
     }
 
     /// Writing auth tokens preserves other top-level keys (e.g. `server_url`).
@@ -1139,10 +1205,17 @@ project_id = "team/proj"
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         remove_auth_tokens_from(&path).unwrap();
-        let cfg = load_hermetic(&path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert!(cfg.auth.is_none());
-        // Legacy key still present and now resolves as the bearer fallback.
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-legacy"));
+        assert_eq!(cfg.server_key, None);
+        // Legacy key still present in the store, reachable via bearer_for.
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-legacy")
+        );
     }
 
     /// On Unix, the config file is written `0600` after persisting tokens.
@@ -1243,8 +1316,9 @@ project_id = "team/new"
     // no real keychain or Secret Service daemon is required (CI-safe).
 
     /// Migration: a bare `server_key` in the personal global config is moved
-    /// into the secret store and stripped from the file on next load. It still
-    /// resolves as the bearer (transparent to the user).
+    /// into the secret store and stripped from the file on next load. It no
+    /// longer feeds `cfg.server_key` (cloud-kind only, ADR-071 D2); it
+    /// resolves via `bearer_for` for a self-hosted origin instead.
     #[test]
     #[serial_test::serial]
     fn migration_moves_bare_server_key_into_store_and_strips_file() {
@@ -1260,11 +1334,17 @@ project_id = "team/new"
         let store = MemoryStore::default();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
 
-        // Still resolves transparently as the bearer.
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-sp-legacy"));
+        assert_eq!(cfg.server_key, None);
         // Moved into the store.
         assert_eq!(
             store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-sp-legacy")
+        );
+        // Resolves transparently through bearer_for for the configured server.
+        assert_eq!(
+            cfg.bearer_for_with_store("http://team:7777", &store)
+                .unwrap()
+                .as_deref(),
             Some("sk-sp-legacy")
         );
         // Stripped from the file, but other keys preserved.
@@ -1289,12 +1369,19 @@ project_id = "team/new"
 
         let store = MemoryStore::default();
         let first = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(first.server_key.as_deref(), Some("sk-sp-legacy"));
+        assert_eq!(first.server_key, None);
 
         let second = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(second.server_key.as_deref(), Some("sk-sp-legacy"));
+        assert_eq!(second.server_key, None);
         assert_eq!(
             store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-sp-legacy")
+        );
+        assert_eq!(
+            second
+                .bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap()
+                .as_deref(),
             Some("sk-sp-legacy")
         );
     }
@@ -1314,9 +1401,15 @@ project_id = "team/new"
         store.set(KEY_SERVER_KEY, "sk-fresh-store").unwrap();
 
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-fresh-store"));
+        assert_eq!(cfg.server_key, None);
         assert_eq!(
             store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            Some("sk-fresh-store")
+        );
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap()
+                .as_deref(),
             Some("sk-fresh-store")
         );
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -1345,9 +1438,15 @@ project_id = "team/new"
         assert!(!on_disk.contains("sk-sp-new"));
         assert!(!on_disk.contains("server_key"));
 
-        // Resolves from the store on load.
+        // Resolves from the store via bearer_for, not the eager server_key field.
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-sp-new"));
+        assert_eq!(cfg.server_key, None);
+        assert_eq!(
+            cfg.bearer_for_with_store("http://team:7777", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-sp-new")
+        );
     }
 
     /// `logout` (remove_server_key_with) clears the store entry AND any legacy
@@ -1411,19 +1510,22 @@ project_id = "team/new"
         assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
     }
 
-    /// Precedence: a stored `server_key` wins over a project-level team key in
-    /// `.spelunk/config.toml`.
+    /// ADR-071 D4: a `server_key` line in the project-level, checked-in
+    /// `.spelunk/config.toml` is dropped entirely: no read, no warning, no
+    /// effect on the resolved bearer at any tier. Mirrors the
+    /// `memory_server_*` silent-drop precedent.
     #[test]
     #[serial_test::serial]
-    fn store_key_wins_over_project_team_key() {
+    fn project_config_server_key_field_is_silently_dropped() {
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
         let spelunk_dir = proj_dir.join(".spelunk");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
+        let proj_cfg = spelunk_dir.join("config.toml");
         std::fs::write(
-            spelunk_dir.join("config.toml"),
-            "server_key = \"team-shared-key\"\n",
+            &proj_cfg,
+            "server_url = \"https://team.example:7777\"\nserver_key = \"team-shared-key\"\nproject_id = \"team/proj\"\n",
         )
         .unwrap();
 
@@ -1431,34 +1533,6 @@ project_id = "team/new"
         std::fs::write(&global_config, "").unwrap();
 
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "personal-store-key").unwrap();
-
-        let original_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&proj_dir).unwrap();
-        let cfg = Config::load_with_store(Some(&global_config), &store).unwrap();
-        if let Some(d) = original_cwd {
-            std::env::set_current_dir(d).unwrap();
-        }
-        assert_eq!(cfg.server_key.as_deref(), Some("personal-store-key"));
-    }
-
-    /// A project-level team `server_key` is the lowest-precedence fallback and
-    /// is NOT migrated to the store (it lives in a checked-in file by design).
-    #[test]
-    #[serial_test::serial]
-    fn project_team_key_used_as_fallback_and_not_migrated() {
-        clear_spelunk_env();
-        let tmp = TempDir::new().unwrap();
-        let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".spelunk");
-        std::fs::create_dir_all(&spelunk_dir).unwrap();
-        let proj_cfg = spelunk_dir.join("config.toml");
-        std::fs::write(&proj_cfg, "server_key = \"team-shared-key\"\n").unwrap();
-
-        let global_config = tmp.path().join("global.toml");
-        std::fs::write(&global_config, "").unwrap();
-
-        let store = MemoryStore::default();
         let original_cwd = std::env::current_dir().ok();
         std::env::set_current_dir(&proj_dir).unwrap();
         let cfg = Config::load_with_store(Some(&global_config), &store).unwrap();
@@ -1466,10 +1540,23 @@ project_id = "team/new"
             std::env::set_current_dir(d).unwrap();
         }
 
-        assert_eq!(cfg.server_key.as_deref(), Some("team-shared-key"));
-        // The team key must NOT have been migrated into the personal store.
+        // The file's other fields still load fine (no parse error from the
+        // now-unrecognized `server_key` key).
+        assert_eq!(
+            cfg.server_url,
+            Some("https://team.example:7777".to_string())
+        );
+        assert_eq!(cfg.project_id, Some("team/proj".to_string()));
+        // No credential resolves anywhere: not eagerly, not per-origin.
+        assert_eq!(cfg.server_key, None);
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &store)
+                .unwrap(),
+            None
+        );
+        // Never touches the personal secret store.
         assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
-        // …and the checked-in file is left untouched.
+        // The checked-in file itself is left untouched (D4 does not rewrite it).
         assert!(
             std::fs::read_to_string(&proj_cfg)
                 .unwrap()
@@ -1478,7 +1565,7 @@ project_id = "team/new"
     }
 
     /// No-keychain fallback contract: the file-backed store stands in for a
-    /// keychain when none exists, so `load_with_store` resolves the credential
+    /// keychain when none exists, so `bearer_for` resolves the credential
     /// identically. This mirrors what `default_store` does on a headless host.
     #[test]
     #[serial_test::serial]
@@ -1492,7 +1579,12 @@ project_id = "team/new"
         save_server_key_with("sk-headless", &file_store).unwrap();
 
         let cfg = Config::load_with_store(Some(&path), &file_store).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-headless"));
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:7777", &file_store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-headless")
+        );
     }
 
     /// No credential anywhere (empty config, empty store, no env) ⇒ no bearer,

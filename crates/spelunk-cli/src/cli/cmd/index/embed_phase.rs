@@ -330,7 +330,7 @@ pub(super) async fn run_embed_phase(
     mp: &MultiProgress,
 ) -> Result<u64> {
     let (server_url, server_key) = match tier {
-        Tier::Server { url, .. } => (url.clone(), cfg.server_key.clone()),
+        Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
         Tier::Offline => return Ok(0),
     };
     // Refuse to append vectors from a different model into an existing index;

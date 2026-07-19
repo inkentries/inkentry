@@ -5,16 +5,20 @@ use super::AuthTokens;
 use super::paths::spelunk_config_dir;
 use super::secret_store::{self, KEY_SERVER_KEY, SecretStore};
 
-/// Persist the CLI bearer credential (`server_key`) into the OS secret store.
+/// Persist a bearer into the **legacy flat** secret-store entry
+/// (`KEY_SERVER_KEY`, superseded by the per-origin map in
+/// [`super::server_keys`], ADR-071 D1).
 ///
-/// This is the token `spelunk login` persists. It is stored in the OS keychain
-/// (macOS Keychain / Linux Secret Service / Windows Credential Manager) by
-/// default, falling back to an owner-only file when no keychain backend is
-/// available (CI / headless). The credential is **never** written to
-/// `config.toml`.
-///
-/// The store is credential-format-agnostic, so the same call path serves a
-/// future WorkOS-token migration.
+/// `spelunk login` does NOT call this: it writes the `[auth]` table via
+/// [`save_auth_tokens`], and `cfg.server_key` derives from that at load time.
+/// The only production caller left is [`super::Config::load_with_store`]'s
+/// plaintext-file migration (moving a bare `server_key` out of
+/// `config.toml`); `spelunk auth set-key` writes the per-origin map instead
+/// (see [`super::server_keys::set_key_for_origin`]), never this flat entry. It
+/// is stored in the OS keychain (macOS Keychain / Linux Secret Service /
+/// Windows Credential Manager) by default, falling back to an owner-only file
+/// when no keychain backend is available (CI / headless). The credential is
+/// **never** written to `config.toml`.
 pub fn save_server_key(key: &str) -> Result<()> {
     let store = secret_store::default_store(&spelunk_config_dir())?;
     save_server_key_with(key, store.as_ref())
@@ -29,9 +33,12 @@ pub fn save_server_key_with(key: &str, store: &dyn SecretStore) -> Result<()> {
 
 /// Remove the CLI bearer credential everywhere it might live.
 ///
-/// What `spelunk logout` clears: the secret-store entry **and** any legacy
-/// plaintext `server_key` left in `~/.config/spelunk/config.toml`. No-op for any
-/// location where the credential is absent.
+/// What `spelunk logout --servers` clears (ADR-071 D3): the secret-store
+/// entry **and** any legacy plaintext `server_key` left in
+/// `~/.config/spelunk/config.toml`. Bare `spelunk logout` no longer calls
+/// this; it only clears the `[auth]` cloud token pair (see
+/// [`remove_auth_tokens`]). No-op for any location where the credential is
+/// absent.
 pub fn remove_server_key() -> Result<()> {
     let store = secret_store::default_store(&spelunk_config_dir())?;
     remove_server_key_with(store.as_ref(), &spelunk_config_dir().join("config.toml"))
@@ -103,8 +110,11 @@ pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()
 
 /// Remove the `[auth]` table from `~/.config/spelunk/config.toml`.
 ///
-/// What `spelunk logout` clears (alongside the legacy `server_key`). No-op if
-/// the file or the table is absent. Other keys are preserved.
+/// What bare `spelunk logout` clears (ADR-071 D3): only the `[auth]` cloud
+/// token pair. It no longer touches self-hosted server keys as a side
+/// effect; clearing those requires the explicit `--servers` or
+/// `--server <url>` flag (see [`remove_server_key`]). No-op if the file or
+/// the table is absent. Other keys are preserved.
 pub fn remove_auth_tokens() -> Result<()> {
     remove_auth_tokens_from(&spelunk_config_dir().join("config.toml"))
 }

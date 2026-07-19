@@ -156,11 +156,35 @@ project_id = "my-awesome-app"
 > TLS endpoint. Loopback `http://` (e.g. while developing against a server on
 > your own machine) is fine.
 
-Personal config (`~/.config/spelunk/config.toml` — never commit):
+Personal credential: set it with `spelunk auth set-key`, not a config file:
 
-```toml
-# ~/.config/spelunk/config.toml
-server_key = "your-shared-api-key"
+```bash
+spelunk auth set-key --server https://spelunk.internal.example.com
+```
+
+The key is read from stdin (piped, or an interactive prompt if you're on a
+terminal) and is never accepted as a command argument, so it never lands in
+shell history or `ps` output. It's stored in your OS secret store (Keychain /
+Secret Service / Credential Manager), keyed by the server's *origin*: see
+[ADR-071](adr/071-per-server-client-bearer-scoping.md). That means a
+developer working on two projects, each pointing at a different self-hosted
+server (the topology [ADR-056](adr/056-oss-server-tenancy-model.md)
+recommends over multi-tenancy), holds both keys at once with no collision and
+no env-var juggling between them.
+
+Check what's stored with `spelunk auth list-servers` (origins only, never key
+material):
+
+```
+$ spelunk auth list-servers
+https://spelunk.internal.example.com
+```
+
+For CI / headless use, the environment variable still works and takes
+precedence over any stored key:
+
+```bash
+export SPELUNK_SERVER_KEY=your-shared-api-key
 ```
 
 `project_id` is a human-readable slug. If the server routes projects by an
@@ -171,11 +195,20 @@ The cache is keyed on the slug, so renaming the project re-resolves it
 automatically; set `SPELUNK_NO_SLUG_CACHE=1` to force a fresh lookup. A raw UUID
 in `project_id` is used as-is. (See [ADR-005](adr/005-cli-slug-uuid-resolution.md).)
 
-Or use the environment variable:
-
-```bash
-export SPELUNK_SERVER_KEY=your-shared-api-key
-```
+> **Rotating a key you committed under the old model.** Earlier versions of
+> this doc suggested a plaintext `server_key = "..."` line in the personal
+> `~/.config/spelunk/config.toml`, and a committed project `.spelunk/config.toml`
+> used to accept the same field as a "shared team key". Neither path exists
+> any more: the personal file never stores the key in plaintext, and
+> `.spelunk/config.toml` silently ignores a `server_key` line if one is still
+> present. If a key was ever written to either file, especially if it reached
+> git history, treat it as compromised: issue a new key on the server (e.g.
+> `openssl rand -hex 32` for a self-managed instance, see
+> [Self-hosting](self-hosting.md)) and run `spelunk auth set-key --server
+> <url>` with the new value on every machine that had the old one. A flat key
+> from an even older install is picked up and migrated into the per-server
+> store automatically the first time it's needed; `auth list-servers` notes
+> when one is still pending migration.
 
 By default a configured `server_url` runs in `local_first` mode: reads and
 writes stay in each developer's local `memory.db` and the server is a

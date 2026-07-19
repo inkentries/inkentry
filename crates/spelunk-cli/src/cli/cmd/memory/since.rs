@@ -47,7 +47,8 @@ pub(super) async fn memory_since(
         let mut req = client
             .get(&url)
             .query(&[("t", args.since.to_string()), ("limit", limit.to_string())]);
-        if let Some(key) = cfg.server_key.as_deref() {
+        let bearer = cfg.bearer_for(base_url)?;
+        if let Some(key) = bearer.as_deref() {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
         let notes: Vec<NoteResponse> = req

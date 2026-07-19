@@ -124,20 +124,51 @@ pub async fn open_memory_backend(
 }
 
 /// Build the cloud-routing memory backend (slug→UUID resolution + REST client)
-/// for an already **transport-validated** `url`.
+/// for an already **transport-validated** `url`, using the host's default
+/// secret store to resolve the bearer (see [`open_remote_memory_backend_with_store`]
+/// for the store-injectable seam tests use).
 ///
 /// Split out of [`open_memory_backend`] as the test seam for the cloud-routing
 /// branch. Production reaches it only after `open_memory_backend` has enforced
 /// [`crate::config::validate_transport_url`], so a non-loopback plaintext
-/// `http://` url is rejected before any bearer is sent. Integration tests that
-/// must drive resolution against a plaintext-http mock addressed as a
-/// non-loopback host (wiremock via `0.0.0.0`) call this directly — the same
-/// reason [`remote::resolve_cloud_project_uuid`]'s `_inner` half exists, to
-/// bypass a guard the production entry point enforces.
+/// `http://` url is rejected before any bearer is sent.
 async fn open_remote_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
     url: &str,
+) -> Result<Box<dyn MemoryBackend + Send>> {
+    // Bearer resolved per-origin (ADR-071 D2): `url` may be a self-hosted team
+    // server (`cloud_first` mode routes any configured `server_url`, not only
+    // the cloud one), so `cfg.server_key` (cloud-kind only) is not the right
+    // credential here: a cloud login must never leak to a self-hosted server.
+    let bearer = cfg.bearer_for(url)?;
+    open_remote_memory_backend_with_bearer(cfg, mem_path, url, bearer).await
+}
+
+/// Same as [`open_remote_memory_backend`] but with an injected
+/// [`SecretStore`](crate::config::secret_store::SecretStore), so tests can
+/// drive the cloud-routing seam without touching the real default secret
+/// store. Integration tests that must drive resolution against a
+/// plaintext-http mock addressed as a non-loopback host (wiremock via
+/// `0.0.0.0`) call this directly, the same reason
+/// [`remote::resolve_cloud_project_uuid`]'s `_inner` half exists, to bypass a
+/// guard the production entry point enforces.
+#[cfg(test)]
+async fn open_remote_memory_backend_with_store(
+    cfg: &crate::config::Config,
+    mem_path: &Path,
+    url: &str,
+    store: &dyn crate::config::secret_store::SecretStore,
+) -> Result<Box<dyn MemoryBackend + Send>> {
+    let bearer = cfg.bearer_for_with_store(url, store)?;
+    open_remote_memory_backend_with_bearer(cfg, mem_path, url, bearer).await
+}
+
+async fn open_remote_memory_backend_with_bearer(
+    cfg: &crate::config::Config,
+    mem_path: &Path,
+    url: &str,
+    bearer: Option<String>,
 ) -> Result<Box<dyn MemoryBackend + Send>> {
     let project_id = cfg.project_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
@@ -166,7 +197,7 @@ async fn open_remote_memory_backend(
             let uuid = remote::resolve_cloud_project_uuid(
                 &project_id,
                 url,
-                cfg.server_key.as_deref(),
+                bearer.as_deref(),
                 cfg.server_ca.as_deref().map(std::path::Path::new),
                 spelunk_dir,
             )
@@ -183,7 +214,7 @@ async fn open_remote_memory_backend(
         client,
         base_url: url.to_string(),
         project_id,
-        api_key: cfg.server_key.clone(),
+        api_key: bearer,
     }))
 }
 
@@ -294,6 +325,17 @@ mod backend_selection_tests {
     #[serial_test::serial]
     async fn cloud_first_mode_routes_remote() {
         clear_env();
+        // This goes through the PUBLIC `open_memory_backend`, which resolves
+        // the bearer via `Config::bearer_for`: the host's *default* secret
+        // store. Isolate `HOME` + force the file backend so this never reads
+        // or writes the developer's real `~/.config/spelunk`.
+        let home = tempfile::TempDir::new().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("SPELUNK_SECRET_STORE", "file");
+        }
+
         // ADR-005 D5: a `project_id` that is already a UUID is used directly,
         // so the remote backend is constructed without any slug→UUID lookup
         // (no network call against the unreachable team.example.com host).
@@ -309,6 +351,15 @@ mod backend_selection_tests {
         let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
             .await
             .unwrap();
+
+        unsafe {
+            match original_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            std::env::remove_var("SPELUNK_SECRET_STORE");
+        }
+
         assert_eq!(
             be.backend_kind(),
             "remote",
@@ -392,7 +443,6 @@ mod backend_selection_tests {
         let cfg = Config {
             server_url: Some(url),
             project_id: Some("spelunk".to_string()),
-            server_key: Some("k".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
@@ -401,8 +451,11 @@ mod backend_selection_tests {
         // only after `open_memory_backend`'s transport guard passes, which this
         // non-loopback `http://` url would not (that guard is covered
         // separately). The seam exercises the same resolution + keying logic.
+        // The store-injecting variant keeps this hermetic (no real secret
+        // store touch); the mocks below don't assert on the bearer.
         let url = cfg.server_url.clone().unwrap();
-        let be = super::open_remote_memory_backend(&cfg, &mem_path, &url)
+        let store = crate::config::secret_store::MemoryStore::default();
+        let be = super::open_remote_memory_backend_with_store(&cfg, &mem_path, &url, &store)
             .await
             .unwrap();
         assert_eq!(be.backend_kind(), "remote");
