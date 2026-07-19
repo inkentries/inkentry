@@ -1809,19 +1809,26 @@ fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::
     (project_dir, config_path)
 }
 
-/// Path of the embed worker's pid state file for `db_path`, replicating the
-/// worker's own keying (blake3 of the canonicalised index path, first 16 hex
-/// chars). Deliberately duplicated here: if the writer's keying ever drifts
-/// from this, the reader/writer pair drifts too, and this test fails loudly.
-fn embed_worker_pid_file(home: &std::path::Path, db_path: &std::path::Path) -> std::path::PathBuf {
+/// Path of the embed worker's pid state file for `db_path` under a given
+/// state directory, replicating the worker's own keying (blake3 of the
+/// canonicalised index path, first 16 hex chars). Deliberately duplicated
+/// here: if the writer's keying ever drifts from this, the reader/writer
+/// pair drifts too, and this test fails loudly.
+fn embed_worker_pid_file_in(
+    state_dir: &std::path::Path,
+    db_path: &std::path::Path,
+) -> std::path::PathBuf {
     let canonical = spelunk_core::utils::canonicalize(db_path);
     let key = blake3::hash(canonical.to_string_lossy().as_bytes())
         .to_hex()
         .to_string();
-    home.join(".local")
-        .join("state")
-        .join("spelunk")
-        .join(format!("embed-worker-{}.pid", &key[..16]))
+    state_dir.join(format!("embed-worker-{}.pid", &key[..16]))
+}
+
+/// Same as [`embed_worker_pid_file_in`], for the default (no
+/// `SPELUNK_STATE_DIR`) state dir derived from `home`.
+fn embed_worker_pid_file(home: &std::path::Path, db_path: &std::path::Path) -> std::path::PathBuf {
+    embed_worker_pid_file_in(&home.join(".local").join("state").join("spelunk"), db_path)
 }
 
 /// ADR-070 D4: the `status --format json` embed-state extensions are additive
@@ -1984,6 +1991,60 @@ fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
     assert!(
         !pid_file.exists(),
         "a foreign (recycled) pid record must be cleaned up on read"
+    );
+}
+
+/// Regression: writer and reader of runtime state must agree on
+/// `SPELUNK_STATE_DIR`. `HOME` and `SPELUNK_STATE_DIR` are pointed at two
+/// *different* directories; the embed worker's pid file is written only into
+/// the override directory (as the writer does once it honours the override),
+/// never under `HOME`. `status` - the reader - must resolve the same
+/// override to find and clean it up. Before the fix, `status`'s read path
+/// (`cli/cmd/embed_worker.rs` -> `cli/cmd/server.rs::spelunk_state_dir()`)
+/// ignored `SPELUNK_STATE_DIR` and only ever looked under `HOME`, so a file
+/// written to the override would never be found.
+#[cfg(unix)]
+#[test]
+fn test_status_honors_state_dir_override_for_embed_worker_pid() {
+    let home = tempfile::TempDir::new().unwrap();
+    let state_override = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+    let db_path = project_dir.join(".spelunk").join("index.db");
+    assert!(db_path.exists(), "offline index must exist");
+
+    // A pid that was real and is now certainly dead.
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = child.id();
+    child.wait().unwrap();
+
+    // Write directly into the override dir - NOT `<home>/.local/state/spelunk`.
+    let pid_file = embed_worker_pid_file_in(state_override.path(), &db_path);
+    fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+    fs::write(&pid_file, format!("{dead_pid}\n")).unwrap();
+    fs::write(pid_file.with_extension("baseline"), "0 1000\n").unwrap();
+
+    // Sanity: nothing was written under the HOME-derived default location.
+    let home_pid_file = embed_worker_pid_file(home.path(), &db_path);
+    assert!(
+        !home_pid_file.exists(),
+        "fixture bug: pid file must only exist under the override"
+    );
+
+    spelunk_bin_in(home.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .env("SPELUNK_STATE_DIR", state_override.path())
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Embedding incomplete"))
+        .stdout(predicate::str::contains("Embedding in progress").not());
+
+    assert!(
+        !pid_file.exists(),
+        "the reader must resolve SPELUNK_STATE_DIR (not HOME) to find and clean up the stale pid record"
     );
 }
 

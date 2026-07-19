@@ -4,11 +4,13 @@
 //! abandoned one).
 //!
 //! Mirrors the server's own pid-file shape: one small state file per datum,
-//! written 0600 into the same `~/.local/state/spelunk/` directory (see
-//! `server.rs`), a `pid_is_alive` liveness check, and a foreign-pid
-//! classification so a recycled pid is never misreported as a live worker.
-//! Files are keyed by a hash of the index path because workers are
-//! per-project while the state dir is per-machine.
+//! written 0600 into the same state directory as the server's pid/port files
+//! (`capability::spelunk_state_dir`, the single resolver both share, so an
+//! `SPELUNK_STATE_DIR` override applies to worker and server files alike), a
+//! `pid_is_alive` liveness check, and a foreign-pid classification so a
+//! recycled pid is never misreported as a live worker. Files are keyed by a
+//! hash of the index path because workers are per-project while the state
+//! dir is per-machine.
 //!
 //! Two files per project:
 //! - `embed-worker-<key>.pid`: pid of the process running the embed phase
@@ -21,7 +23,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::server::{create_state_dir, pid_is_alive, spelunk_state_dir, write_state_file};
+use super::server::{create_state_dir, pid_is_alive, write_state_file};
+use crate::capability::spelunk_state_dir;
 use crate::storage::Database;
 
 /// Per-project key for the worker state files: hash of the canonicalised

@@ -822,5 +822,6 @@ and publish on your next push.
 | `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
 | `SPELUNK_SERVER_CA` | Path to a PEM CA bundle to trust for a `SPELUNK_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
 | `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
+| `SPELUNK_STATE_DIR` | Override the runtime state directory (default `~/.local/state/spelunk/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |

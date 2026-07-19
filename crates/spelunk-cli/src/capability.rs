@@ -26,7 +26,17 @@ use tokio::sync::OnceCell;
 
 use crate::config::Config;
 
-/// State file directory: `~/.local/state/spelunk/`.
+/// The single state file directory resolver for the whole CLI:
+/// `~/.local/state/spelunk/`, or `SPELUNK_STATE_DIR` when set.
+///
+/// Every reader and writer of runtime state goes through this one function:
+/// `spelunk server start/stop/status/logs` (server pid/port/log/db-path
+/// files, `cli/cmd/server.rs`), the embed worker's liveness files
+/// (`cli/cmd/embed_worker.rs`), and this module's own loopback
+/// auto-discovery probe below. A second, independent resolution here was a
+/// real bug: it let the override apply to some readers/writers and not
+/// others, so a status reader could miss a worker's pid file written to a
+/// different directory (or vice versa) and misreport liveness.
 ///
 /// On all platforms we use `~/.local/state` rather than the OS-native state dir.
 /// This mirrors the deliberate choice made for the config dir
@@ -37,27 +47,30 @@ use crate::config::Config;
 /// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
 /// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
 /// silently disabled loopback auto-discovery on the primary dev platform
-/// (spelunk#316). Returns `None` only when the home directory can't be resolved.
+/// (spelunk#316).
 ///
-/// NOTE for spelunk#317 (writer side, `spelunk server start`): the writer MUST
-/// write `server.port` into this exact directory so reader and writer agree.
-/// Use the same `~/.local/state/spelunk/` path on every platform.
+/// `SPELUNK_STATE_DIR` is a supported override of the entire path, not
+/// dev-only cruft: it is load-bearing on Windows CI, where `dirs::home_dir()`
+/// 6.x calls `SHGetKnownFolderPath` (a Windows Registry lookup) rather than
+/// reading `USERPROFILE`, making per-process environment overrides of `HOME`
+/// ineffective. It is also used directly by end users who want state files
+/// somewhere other than the default (e.g. an ephemeral or sandboxed HOME).
 ///
-/// `SPELUNK_STATE_DIR` overrides the entire path. Useful in tests and on
-/// Windows CI where `dirs::home_dir()` 6.x calls `SHGetKnownFolderPath` (a
-/// Windows Registry lookup) rather than reading `USERPROFILE`, making
-/// per-process environment overrides ineffective.
-fn spelunk_state_dir() -> Option<std::path::PathBuf> {
+/// Errors only when the home directory can't be resolved and no override is
+/// set.
+pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("SPELUNK_STATE_DIR") {
-        return Some(std::path::PathBuf::from(p));
+        return Ok(std::path::PathBuf::from(p));
     }
-    dirs::home_dir().map(|home| home.join(".local").join("state").join("spelunk"))
+    dirs::home_dir()
+        .map(|home| home.join(".local").join("state").join("spelunk"))
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
 /// Read the port written by `spelunk server start` into
 /// `~/.local/state/spelunk/server.port`. Returns `None` if absent or unreadable.
 fn read_server_port_file() -> Option<u16> {
-    let path = spelunk_state_dir()?.join("server.port");
+    let path = spelunk_state_dir().ok()?.join("server.port");
     let content = std::fs::read_to_string(&path).ok()?;
     content.trim().parse::<u16>().ok()
 }

@@ -25,6 +25,7 @@ use std::path::PathBuf;
 
 use super::MemoryReconcileArgs;
 use crate::{
+    capability::spelunk_state_dir,
     config::Config,
     server_client::ServerInferenceClient,
     storage::{MemoryStore, entity_id, note_entity_id},
@@ -463,13 +464,18 @@ async fn reconcile_project(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Default path for the daemon's server.db: `~/.local/state/spelunk/server.db`.
+/// Default path for the daemon's server.db: `~/.local/state/spelunk/server.db`,
+/// or `SPELUNK_STATE_DIR` when set.
+///
+/// Must go through the shared `capability::spelunk_state_dir` resolver, not
+/// reconstruct the path from `dirs::home_dir()` independently: the daemon
+/// (`spelunk server start`) writes `server.db` via that same resolver, so a
+/// second, hardcoded reconstruction here would silently stop finding it
+/// under `SPELUNK_STATE_DIR` while still reporting reconcile as a no-op
+/// success (the "server.db doesn't exist" branch) instead of an error.
 fn default_server_db_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".local")
-        .join("state")
-        .join("spelunk")
+    spelunk_state_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
         .join("server.db")
 }
 
