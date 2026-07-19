@@ -1687,8 +1687,13 @@ mod tests {
         // committed (per-batch transaction: it landed nothing). A re-run
         // rebuilds the queue from `chunks_missing_embeddings` and embeds exactly
         // the remainder — every chunk ends embedded once, none skipped, none
-        // duplicated. INSERT OR REPLACE keyed on chunk_id is what makes a
-        // re-embed idempotent rather than a second row.
+        // duplicated. This relies on `chunks_missing_embeddings` never
+        // re-sending a chunk_id that already has an embedding row, not on
+        // `INSERT OR REPLACE` actually replacing one — see
+        // `storage::db::tests::insert_embedding_single_row_path_does_not_actually_replace_a_repeated_chunk_id`
+        // (spelunk-core) for why that distinction matters: OR REPLACE against
+        // the `embeddings` vec0 table does not work today, so idempotency here
+        // depends entirely on the queue never producing a same-key collision.
         let (db, ids) = seed_chunks(6);
         let cfg = Config::default();
         let mp = MultiProgress::new();
