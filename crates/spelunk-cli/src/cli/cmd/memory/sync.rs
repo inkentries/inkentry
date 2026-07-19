@@ -19,8 +19,11 @@
 //!   ones; semantic-dup detection is the server's job (it flags `contradicts`).
 //! - **Lifecycle propagation.** `supersedes` and archive/tombstone state travel
 //!   in both directions (previously hard-coded `None`/dropped).
-//! - **Text-only.** Pushes never ship a vector; the server backfills embeddings
-//!   (ADR-010/ADR-020).
+//! - **Text-only by default; optional pushed vector.** A push ships no vector
+//!   and the server backfills the embedding (ADR-010/ADR-020) — unless the
+//!   server advertises `accepts_pushed_vectors` (ADR-053 #4b), in which case an
+//!   entry with a local fp32/896 embedding carries it so the server stores it
+//!   as-is instead of re-embedding.
 
 use anyhow::{Context, Result};
 
@@ -127,8 +130,17 @@ pub async fn memory_sync(
         cfg.server_ca.as_deref().map(std::path::Path::new),
     )?;
 
-    // ── Push local → cloud (batched, text-only, idempotent on UUID) ─────────
-    let pushed = push_local(&local, &client, args.include_archived).await?;
+    // ── Push local → cloud (batched, idempotent on UUID). Attaches the local
+    // fp32/896 vector when the server advertises `accepts_pushed_vectors`,
+    // otherwise text-only and the server re-embeds. ────────────────────────
+    let accepts_pushed_vectors = tier.caps().is_some_and(|c| c.accepts_pushed_vectors);
+    let pushed = push_local(
+        &local,
+        &client,
+        args.include_archived,
+        accepts_pushed_vectors,
+    )
+    .await?;
 
     // ── Pull cloud → local (delta after the UUID cursor, keep-both) ─────────
     let pulled = pull_and_apply(&local, &client).await?;
@@ -193,20 +205,30 @@ pub(super) struct PushSummary {
 }
 
 /// One-way push entry point reused by `spelunk memory push`.
+///
+/// `accepts_pushed_vectors` mirrors the destination server's `/v1/health`
+/// capability (ADR-053 #4b): when true, each entry that has a local embedding
+/// carries its fp32/896 vector so the server stores it as-is; when false the
+/// push is text-only and the server re-embeds.
 pub(super) async fn push_local_oneway(
     local: &MemoryStore,
     client: &CloudSyncClient,
     include_archived: bool,
+    accepts_pushed_vectors: bool,
 ) -> Result<PushSummary> {
-    push_local(local, client, include_archived).await
+    push_local(local, client, include_archived, accepts_pushed_vectors).await
 }
 
-/// Push local entries to the cloud as text-only batches, then propagate
-/// tombstones for any archived rows that exist cloud-side.
+/// Push local entries to the cloud in batches, then propagate tombstones for any
+/// archived rows that exist cloud-side. Each entry is text-only unless
+/// `accepts_pushed_vectors` is set and the row has a local fp32/896 embedding,
+/// in which case that vector is attached (the server stores it without
+/// re-embedding).
 async fn push_local(
     local: &MemoryStore,
     client: &CloudSyncClient,
     include_archived: bool,
+    accepts_pushed_vectors: bool,
 ) -> Result<PushSummary> {
     let rows = local.rows_for_sync(include_archived)?;
     if rows.is_empty() {
@@ -241,20 +263,39 @@ async fn push_local(
     // Map external_id (local uuid) → local_id so we can record the cloud-minted
     // id returned in the 207 result back onto the local row.
     for chunk in live.chunks(200) {
-        let items: Vec<BatchPushItem> = chunk
-            .iter()
-            .map(|r| BatchPushItem {
-                kind: r.kind.clone(),
-                title: r.title.clone(),
-                body: if r.body.is_empty() {
-                    None
-                } else {
-                    Some(r.body.clone())
-                },
-                external_id: r.uuid.clone(),
-                source_commit: r.source_ref.clone(),
-            })
-            .collect();
+        let mut items: Vec<BatchPushItem> = Vec::with_capacity(chunk.len());
+        for r in chunk {
+            // Only read the local embedding when the server can accept it. The
+            // stored blob is raw little-endian fp32 (`vec_to_blob`); decode it
+            // and only attach a correctly-dimensioned (896) vector — a
+            // wrong-length or missing embedding falls back to text-only rather
+            // than poisoning the whole batch with a 4xx.
+            let vector = if accepts_pushed_vectors {
+                local
+                    .get_embedding(r.local_id)?
+                    .map(|blob| spelunk_core::embeddings::blob_to_vec(&blob))
+                    .filter(|v| v.len() == spelunk_core::embeddings::EMBEDDING_DIM)
+            } else {
+                None
+            };
+            items.push(
+                BatchPushItem {
+                    kind: r.kind.clone(),
+                    title: r.title.clone(),
+                    body: if r.body.is_empty() {
+                        None
+                    } else {
+                        Some(r.body.clone())
+                    },
+                    external_id: r.uuid.clone(),
+                    source_commit: r.source_ref.clone(),
+                    vector: None,
+                    vector_model: None,
+                    vector_precision: None,
+                }
+                .maybe_attach_vector(accepts_pushed_vectors, vector),
+            );
+        }
         let res = client.push_batch(items).await?;
 
         // `created`/`skipped`/`failed` (aggregate ints) and `results[]`
@@ -498,6 +539,9 @@ mod tests {
                 body: Some("B".into()),
                 external_id: "e1".into(),
                 source_commit: None,
+                vector: None,
+                vector_model: None,
+                vector_precision: None,
             }])
             .await
             .expect("push to the lazily-created project must succeed");
@@ -567,7 +611,7 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
         // First push: creates both, persists the server-minted id on each row.
-        let s1 = push_local(&store, &client, false).await.unwrap();
+        let s1 = push_local(&store, &client, false, false).await.unwrap();
         assert_eq!((s1.attempted, s1.created, s1.skipped), (2, 2, 0));
         assert_eq!(
             store.note_id_for_remote_id(cloud_a).unwrap(),
@@ -584,7 +628,7 @@ mod tests {
         // and no batch request is sent — the re-sync is a no-op. `attempted` must
         // reflect that (not the raw row count), so callers never report "Pushed
         // N" when nothing was sent.
-        let s2 = push_local(&store, &client, false).await.unwrap();
+        let s2 = push_local(&store, &client, false, false).await.unwrap();
         assert_eq!((s2.attempted, s2.created, s2.already_synced), (0, 0, 2));
         assert_eq!(
             server.received_requests().await.unwrap().len(),
@@ -593,6 +637,99 @@ mod tests {
         );
         // No duplicate local rows introduced by the round trip.
         assert_eq!(store.count().unwrap(), 2);
+    }
+
+    // ── pushed-vector fast path (ADR-053 #4b) ──────────────────────────────
+    // A note with a local fp32/896 embedding carries that vector (+ model tag
+    // + precision "fp32") to a server advertising `accepts_pushed_vectors`, so
+    // the server stores it as-is; against a server without the capability the
+    // same note is pushed text-only even though the vector is available. This
+    // exercises the full `push_local` wiring: it reads the local embedding and
+    // consults the gate, which the `maybe_attach_vector` unit test cannot.
+
+    /// Insert an active note plus a valid L2-normalised fp32/896 embedding,
+    /// returning its local id + external uuid.
+    fn note_with_embedding(store: &MemoryStore) -> (i64, String) {
+        store
+            .add_note("decision", "One", "first", &[], &[], None, None)
+            .unwrap();
+        let dim = spelunk_core::embeddings::EMBEDDING_DIM;
+        let vec: Vec<f32> = vec![1.0 / (dim as f32).sqrt(); dim];
+        let blob = spelunk_core::embeddings::vec_to_blob(&vec);
+        let rows = store.rows_for_sync(false).unwrap();
+        assert_eq!(rows.len(), 1);
+        store.insert_embedding(rows[0].local_id, &blob).unwrap();
+        (rows[0].local_id, rows[0].uuid.clone())
+    }
+
+    #[tokio::test]
+    async fn push_local_attaches_vector_when_server_accepts() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        let (_id, uuid) = note_with_embedding(&store);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        // accepts_pushed_vectors = true → the fp32/896 vector reaches the wire.
+        push_local(&store, &client, false, true).await.unwrap();
+
+        let reqs = server.received_requests().await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        let entry = &json["entries"][0];
+        assert_eq!(
+            entry["vector"].as_array().map(Vec::len),
+            Some(spelunk_core::embeddings::EMBEDDING_DIM),
+            "server that accepts vectors must receive the 896-dim vector: {entry}"
+        );
+        assert_eq!(entry["vector_model"], "F2LLM-v2-330M");
+        assert_eq!(entry["vector_precision"], "fp32");
+    }
+
+    #[tokio::test]
+    async fn push_local_stays_text_only_when_server_declines() {
+        use tempfile::TempDir;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        let (_id, uuid) = note_with_embedding(&store);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        // accepts_pushed_vectors = false → text-only, despite a local vector.
+        push_local(&store, &client, false, false).await.unwrap();
+
+        let reqs = server.received_requests().await.unwrap();
+        let body = String::from_utf8(reqs[0].body.clone()).unwrap();
+        assert!(
+            !body.contains("vector"),
+            "server without the capability must get a text-only push: {body}"
+        );
     }
 
     // ── stamping must not trust a non-persisted status ─────────────────────
@@ -635,7 +772,7 @@ mod tests {
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-        let s1 = push_local(&store, &client, false).await.unwrap();
+        let s1 = push_local(&store, &client, false, false).await.unwrap();
         assert_eq!((s1.attempted, s1.created, s1.skipped), (1, 0, 0));
 
         // The row must NOT carry the id the server handed back — it stays
@@ -696,7 +833,7 @@ mod tests {
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-        let s1 = push_local(&store, &client, false).await.unwrap();
+        let s1 = push_local(&store, &client, false, false).await.unwrap();
         // Reconciled from `results[]`, not the misleading aggregate zeros.
         assert_eq!(
             (s1.attempted, s1.created, s1.skipped, s1.failed),
@@ -753,7 +890,7 @@ mod tests {
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-        let s1 = push_local(&store, &client, false).await.unwrap();
+        let s1 = push_local(&store, &client, false, false).await.unwrap();
         assert_eq!(
             (s1.attempted, s1.created, s1.skipped, s1.failed),
             (2, 1, 0, 1),
@@ -817,7 +954,7 @@ mod tests {
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-        let s1 = push_local(&store, &client, false).await.unwrap();
+        let s1 = push_local(&store, &client, false, false).await.unwrap();
         assert_eq!(
             (s1.attempted, s1.created, s1.skipped, s1.failed),
             (2, 0, 0, 2),

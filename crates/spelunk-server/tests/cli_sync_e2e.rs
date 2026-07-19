@@ -110,6 +110,9 @@ async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
                 body: Some("why we did it".into()),
                 external_id: format!("uuid-a-{suffix}"),
                 source_commit: Some("deadbeef".into()),
+                vector: None,
+                vector_model: None,
+                vector_precision: None,
             },
             BatchPushItem {
                 kind: "note".into(),
@@ -117,6 +120,9 @@ async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
                 body: None,
                 external_id: format!("uuid-b-{suffix}"),
                 source_commit: None,
+                vector: None,
+                vector_model: None,
+                vector_precision: None,
             },
         ]
     };
@@ -206,6 +212,9 @@ async fn cli_push_lazily_creates_the_project() {
             body: None,
             external_id: "uuid-first".into(),
             source_commit: None,
+            vector: None,
+            vector_model: None,
+            vector_precision: None,
         }])
         .await
         .expect("push to a not-yet-existing project must succeed (lazy create)");
@@ -233,6 +242,9 @@ async fn concurrent_identical_batches_settle_without_duplicates_or_500s() {
             body: None,
             external_id: "race-1".into(),
             source_commit: None,
+            vector: None,
+            vector_model: None,
+            vector_precision: None,
         }]
     };
 
@@ -319,6 +331,9 @@ async fn cli_pull_since_retrieves_pushed_and_legacy_entries_then_cursor_advances
             body: Some("why we did it".into()),
             external_id: "uuid-pushed-1".into(),
             source_commit: Some("cafef00d".into()),
+            vector: None,
+            vector_model: None,
+            vector_precision: None,
         }])
         .await
         .expect("push_batch must succeed");

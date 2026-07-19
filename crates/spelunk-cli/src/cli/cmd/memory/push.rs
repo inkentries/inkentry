@@ -1,10 +1,15 @@
 //! `spelunk memory push` — one-way push of local memory to the cloud.
 //!
 //! ADR-037 D2/D3 changes vs. the MVP placeholder:
-//! - **Text-only.** The client never ships a vector; the server backfills the
-//!   embedding with its configured model (ADR-010/ADR-020). The old
-//!   `local.get_embedding(...)` send path is gone — it carried the *local*
-//!   model's vectors into the cloud's space and broke KNN over synced rows.
+//! - **Text-only by default; optional pushed vector.** The client ships no
+//!   vector and the server backfills the embedding with its configured model
+//!   (ADR-010/ADR-020) — unless the server advertises `accepts_pushed_vectors`
+//!   (ADR-053 #4b), in which case an entry with a local fp32/896 embedding
+//!   carries it (same model + dim as the server), so the server stores it as-is
+//!   instead of re-embedding. The old unconditional `get_embedding` send path
+//!   (which carried a *mismatched* local model's vectors into the cloud's space
+//!   and broke KNN) stays gone; the gated path only sends a vector the server
+//!   has said it will accept for its own space.
 //! - **Batched.** Entries go via `POST /memory/batch`, not N single POSTs.
 //! - **Idempotent.** Each entry carries its stable UUID as the cloud
 //!   `external_id`, so re-pushing skips already-present entries instead of
@@ -59,7 +64,16 @@ pub async fn memory_push(
     )?;
 
     println!("Pushing local memory to {base_url}…");
-    let summary = push_local_oneway(&local, &client, args.include_archived).await?;
+    // Attach the local fp32/896 vector only when the server advertises it
+    // (ADR-053 #4b); otherwise the push is text-only and the server re-embeds.
+    let accepts_pushed_vectors = tier.caps().is_some_and(|c| c.accepts_pushed_vectors);
+    let summary = push_local_oneway(
+        &local,
+        &client,
+        args.include_archived,
+        accepts_pushed_vectors,
+    )
+    .await?;
     if summary.attempted == 0 {
         if summary.already_synced > 0 {
             println!(
