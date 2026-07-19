@@ -1068,3 +1068,150 @@ were produced by the bug E4 closes, a pre-fix client, or a lost-race write.
 - **Security:** no new trust boundary. E4's pre-flight read is a local
   SQLite/git-notes read already performed by the existing code, just
   reordered; no new data leaves the machine.
+
+## Amendment (2026-07-19): `apply_remote_note` gains `entity_id` and a pull-specific collision posture
+
+**Date:** 2026-07-19
+**Deciders:** founder (Johan); architect
+
+A fourth latent `entity_id` gap on the same identity-model surface these
+amendments already cover, found while auditing every `INSERT INTO notes` for
+the class of bug the earlier amendments fixed. `MemoryStore::apply_remote_note`
+(`crates/spelunk-core/src/storage/memory/sync.rs`) – the cloud-pull path used
+when an explicit team `server_url` is configured – inserts a new local row
+without populating `entity_id` at all. Its own doc comment states an
+Add-Wins/keep-both posture ("insert a new local row carrying `remote_id`...
+pulled entries are added, never overwriting local ones") written before
+`entity_id` existed as this codebase's canonical identity.
+
+This gap does not currently risk hard-failing `MemoryStore::open`: Step A's
+own hardening (the amendment above this one) already treats a NULL-`entity_id`
+row it cannot backfill as an expected, recoverable case regardless of which
+insert path produced it, and explicitly names this function as one reason that
+hardening is needed independent of any fix here. This amendment is a design
+decision, not an incident response.
+
+### F1 – Decision: `apply_remote_note` gets the same insert-then-recover treatment, extended with pull-specific recovery steps
+
+The base amendment's own "Reconciling a dedup match" rule (A6) already
+specifies, for a match on `kind`/`title`/`body`, that status and supersede
+links "reconcile as they do today: a tombstone archives the local copy and
+archival is never undone (`apply_remote_note`...)" and that `tags`/
+`linked_files` merge by union. A6 scoped its retrofit to the git-notes carrier
+and `init`-time import, the two consumers that predated that amendment; it did
+not extend to this SQLite-side cloud-pull path. This decision closes that gap
+by extending the same already-decided rule to `apply_remote_note`, rather than
+inventing a new posture for it.
+
+Concretely: the INSERT gains `entity_id = entity_id(kind, title, body)`, and a
+UNIQUE-constraint failure on it is caught and recovered rather than
+propagated, reusing `recover_from_entity_id_collision` (`notes.rs`) exactly as
+`add_note`/`add_note_with_created_at`/`add_note_superseding` already do – not
+reimplemented. `RemoteEntry` (the `/memory/since` wire type) carries no
+`tags`/`linked_files` today, so the reused merge step has nothing to union on
+this path; that is an existing property of the wire format, not something this
+decision changes.
+
+This rejects two alternatives:
+
+- **Keep-both literally** (leave the INSERT unconstrained for this path
+  specifically) – would require carving out an exception to
+  `idx_notes_entity_id`'s UNIQUE constraint for one insert path, permanently
+  reopening the "same content, two rows" case A2/B1 exist to close, for the
+  path most likely to hit it (two teammates independently recording the same
+  decision, then syncing).
+- **Reject/error on collision** – has no precedent anywhere else in this
+  identity model; every other collision is a merge, never a hard failure, and
+  a pull that fails outright on ordinary duplicate content would make routine
+  `sync` unreliable.
+
+### F2 – Collision recovery adopts the pulled `remote_id` and propagates archival
+
+The plain tag/file merge `recover_from_entity_id_collision` performs is not
+sufficient on its own for a pull path: unlike `add_note`'s caller, the caller
+here already holds a `remote_id` and an archived/active flag that need
+somewhere to go once the row that "wins" the collision is an *existing* row
+the caller didn't mint. Layered on top of the reused merge (composing existing
+primitives, not extending `recover_from_entity_id_collision`'s own contract):
+
+- **Adopt the pulled `remote_id` onto the existing row**, via the existing
+  `set_remote_id` (already guarded `WHERE remote_id IS NULL`, so this is a
+  no-op if the existing row already carries a different `remote_id` – see the
+  twin-content case below). Without this, every future pull of the same
+  `remote_id` would repeat the same collision-recovery path indefinitely
+  instead of short-circuiting through `note_id_for_remote_id`'s existing
+  early-return, which is what actually makes a re-run of `sync` a no-op per
+  this function's own doc comment.
+- **Propagate archival**, via the existing `self.archive(...)`, exactly as the
+  already-known-`remote_id` branch above this one in the same function already
+  does: a pulled tombstone archives the existing row; an already-archived
+  existing row is never reverted to active on a non-archived pull. Same
+  never-un-archive contract, now applied to a row reached via `entity_id`
+  instead of via `remote_id`.
+- **Twin-content edge case:** if the existing row already carries a
+  *different*, non-null `remote_id` (two distinct cloud entries that happen to
+  share `kind`/`title`/`body`, pushed independently from two stores),
+  `set_remote_id`'s guard leaves it untouched – the existing row's `remote_id`
+  is a stable, arbitrary, first-recorded pick, and the second cloud id is never
+  separately representable locally. Re-pulling it repeats the same no-op merge
+  on every future `sync`, which is harmless. This is not a new tradeoff: it is
+  the pull-path manifestation of the mechanism the third amendment (B1)
+  already accepted (Johan, 2026-07-14) – recording byte-identical content
+  under two different origins converges to one local entry.
+- The whole sequence (INSERT attempt, existing-row lookup and merge,
+  `remote_id` adoption, archive propagation) runs as one transaction, mirroring
+  `add_note_superseding`'s existing `BEGIN`/`COMMIT`/`ROLLBACK` wrapping – not
+  the bare, unwrapped statement sequence `add_note`'s simpler recovery uses,
+  because this path chains more than one follow-up write after the merge.
+- **Return value is unchanged** (`Result<bool>`, not the `(id, bool)` tuple
+  `add_note` moved to): the collision-recovery branch returns `false`, the
+  same value the existing already-known-`remote_id` branch already returns for
+  a state-changing-but-not-a-new-row outcome (including when it archives).
+  Callers (`pull_and_apply` in the CLI) already treat `false` as "not a newly
+  applied entry" for the pull-count summary, which is the correct count here
+  too: nothing new appeared for the user.
+
+`note_id_for_remote_id`'s existing early-return is unchanged: it remains the
+first check, and the collision-recovery path above is reached only when it
+returns `None` – this decision does not touch how an already-`remote_id`-known
+row is found or handled.
+
+### F3 – Interaction with Step A/B (`entity_id_migration.rs`)
+
+Closing this gap removes the future flow of *new* NULL-`entity_id` rows from
+this path. It does not retroactively fix rows a pre-fix client already wrote:
+those still reach `MemoryStore::open` with `entity_id IS NULL` and still
+depend on Step A's per-row collision hardening (the amendment above this one)
+to backfill safely or skip-and-warn without hard-failing `open` – the same
+"needed regardless" reasoning that amendment already applied to
+`add_note_superseding`'s pre-fix rows applies here too. Step A's hardening is
+not superseded or made redundant by this decision; both are required, for the
+same reason they were both required there: one closes the source, the other
+protects rows written before the source was closed.
+
+`entity_id_migration.rs`'s own module doc comment currently names
+`apply_remote_note`'s gap explicitly as one of the reasons Step A must stay
+defensive. Once this decision is implemented, that reference describes a
+closed gap rather than an open one and should be corrected in the same change
+(a doc-accuracy fix, not a behavioral criterion).
+
+### F4 – Non-goals, consequences, security
+
+- **Non-goal:** no change to `RemoteEntry`'s wire shape or to the cloud
+  `/memory/since` payload. It carries no `tags`/`linked_files` today; adding
+  them is a separate, unrequested feature.
+- **Non-goal:** no change to `note_id_for_remote_id` or to how a
+  previously-synced row is found. `remote_id` remains the first-line dedup
+  key; `entity_id` is only consulted when it misses.
+- **Consequence:** `apply_remote_note` becomes idempotent under content
+  identity, not only under `remote_id` identity – content recorded locally and
+  later pulled from the cloud (or vice versa) converges to one row instead of
+  two, matching every other insert path's behavior post-promotion.
+- **Consequence:** pre-promotion (a store still holding duplicate `entity_id`
+  groups), behavior is unchanged from today: a pulled note can still land as a
+  distinct row alongside a same-content existing row, exactly as `add_note`
+  and `add_note_superseding` themselves preserve pre-promotion.
+- **Security:** no new trust boundary. `entity_id` carries no authority here
+  either (A7); the merge only ever unions metadata already accepted from the
+  configured team server, and never re-derives content from an untrusted
+  source.
