@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-15
 **Deciders:** founder (Johan); architect
-**Relationship to prior ADRs:** operates strictly inside ADR-010's embedding
+**Relationship to prior ADRs:** operates strictly inside the existing embedding
 split (the server computes vectors, the CLI is the only persistent store for
 index data) and does not reopen it. Extends
 [ADR-068](068-zero-setup-onboarding-git-notes-memory-fallback.md)'s honesty
@@ -51,7 +51,7 @@ tree, and two of them are not what the intake ticket recorded.
    does not store them. The server has no access to the project's SQLite
    database, no notion of which chunks lack embeddings, and no project path. A
    server-side drain loop is not missing, it is **not expressible** without
-   inverting ADR-010. The idle server is correct behaviour, not a bug.
+   inverting that split. The idle server is correct behaviour, not a bug.
 
 4. **Search then declines to fall back.** In `auto` mode the fallback to
    ast-grep on an empty result set is gated on `index_is_stale(&db_path)`, which
@@ -524,7 +524,7 @@ observation, read by every consumer. That was the right design and it stays.
   work is explicitly the `Device::Cpu` path, where these constants are live.
 - **Cloud or remote embedding.** Trades a GPU-bound constraint for a metered
   network one with no wall-clock win.
-- **Reopening ADR-010.** The server stays stateless with respect to index data.
+- **Reopening the embedding split.** The server stays stateless with respect to index data.
   Every alternative that "just has the server finish the job" is a rewrite of
   the storage boundary, and none of them is needed: the CLI-side worker already
   has the database, the queue, and the resume path.
