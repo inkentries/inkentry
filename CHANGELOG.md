@@ -9,6 +9,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Chunk re-windowing is now token-aware, and windowed chunks keep their identity.**
+  Oversized code nodes (and unsupported-language fallback content) were previously
+  re-split into a fixed 120-line window regardless of token count, so `MAX_CHUNK_TOKENS`
+  decided only *when* to re-window, never *how big* the result was — long-line
+  machine-generated content could still produce single windows of 10,000+ tokens.
+  Windows now accumulate whole lines up to the `MAX_CHUNK_TOKENS` budget (with a
+  single over-budget line becoming its own window, so the split always makes forward
+  progress), keeping ~12.5% token overlap between adjacent windows. Each window also
+  now carries its source node's name, docstring, and enclosing scope, so a re-windowed
+  function embeds with its symbol identity instead of `title: none`. Existing indexes
+  remain valid — this changes neither the DB schema nor the embedding format — but a
+  `spelunk index --force` re-index is recommended (not required) to pick up the
+  improved chunk shape on already-indexed repos with large, long-line files.
 ### Security
 
 - **Self-hosted server bearer credentials are now scoped per server, not

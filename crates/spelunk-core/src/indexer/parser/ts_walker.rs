@@ -294,10 +294,26 @@ fn walk_node_inner(
                     }
                 }
                 if out.len() == before {
-                    push_windowed(&content, ctx, start_row, out);
+                    push_windowed(
+                        &content,
+                        ctx,
+                        start_row,
+                        name.as_deref(),
+                        docstring.as_deref(),
+                        parent_scope,
+                        out,
+                    );
                 }
             } else {
-                push_windowed(&content, ctx, start_row, out);
+                push_windowed(
+                    &content,
+                    ctx,
+                    start_row,
+                    name.as_deref(),
+                    docstring.as_deref(),
+                    parent_scope,
+                    out,
+                );
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i as u32) {
                         walk_node_inner(child, ctx, scope_label.as_deref(), out, depth + 1);
@@ -337,9 +353,28 @@ fn walk_node_inner(
 }
 
 /// Re-window an oversized node's text into sliding-window sub-chunks, offsetting
-/// each sub-chunk's line span by the node's 0-based `start_row`.
-fn push_windowed(content: &str, ctx: &WalkCtx<'_>, start_row: usize, out: &mut Vec<Chunk>) {
-    for mut sub in sliding_window(content, ctx.file_path, ctx.language, 120, 15) {
+/// each sub-chunk's line span by the node's 0-based `start_row`. The node's
+/// identity (`name`/`docstring`/`parent_scope`) is threaded onto every sub-chunk
+/// so a re-windowed node keeps its symbol name and docstring in the embedding
+/// text instead of degrading to `title: none`.
+#[allow(clippy::too_many_arguments)]
+fn push_windowed(
+    content: &str,
+    ctx: &WalkCtx<'_>,
+    start_row: usize,
+    name: Option<&str>,
+    docstring: Option<&str>,
+    parent_scope: Option<&str>,
+    out: &mut Vec<Chunk>,
+) {
+    for mut sub in sliding_window(
+        content,
+        ctx.file_path,
+        ctx.language,
+        name,
+        docstring,
+        parent_scope,
+    ) {
         sub.start_line += start_row;
         sub.end_line += start_row;
         out.push(sub);
