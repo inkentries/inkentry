@@ -4,12 +4,19 @@ use spelunk_core::indexer::chunker::MAX_CHUNK_TOKENS;
 use spelunk_core::indexer::{Chunk, ChunkKind, SourceParser};
 use spelunk_core::search::tokens::estimate_tokens;
 
-// ── sliding_window ───────────────────────────────────────────────────────────
+// ── sliding_window (token-aware) ─────────────────────────────────────────────
+
+use spelunk_core::indexer::sliding_window;
+
+/// One line of `chars` visible characters (no trailing newline).
+fn line_of(chars: usize) -> String {
+    "x".repeat(chars)
+}
 
 #[test]
 fn sliding_window_single_chunk_when_file_fits() {
     let src = "line1\nline2\nline3";
-    let chunks = spelunk_core::indexer::sliding_window(src, "test.txt", "text", 10, 2);
+    let chunks = sliding_window(src, "test.txt", "text", None, None, None);
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].start_line, 1);
     assert_eq!(chunks[0].end_line, 3);
@@ -17,33 +24,106 @@ fn sliding_window_single_chunk_when_file_fits() {
 }
 
 #[test]
-fn sliding_window_produces_overlap() {
-    // 6 lines, window=4, overlap=2 → step=2
-    // chunk1: lines 1-4, chunk2: lines 3-6
-    let src = (1..=6)
-        .map(|n| format!("line{n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let chunks = spelunk_core::indexer::sliding_window(&src, "test.txt", "text", 4, 2);
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].start_line, 1);
-    assert_eq!(chunks[0].end_line, 4);
-    assert_eq!(chunks[1].start_line, 3);
-    assert_eq!(chunks[1].end_line, 6);
-}
-
-#[test]
 fn sliding_window_empty_source_returns_no_chunks() {
-    let chunks = spelunk_core::indexer::sliding_window("", "test.txt", "text", 10, 2);
+    let chunks = sliding_window("", "test.txt", "text", None, None, None);
     assert!(chunks.is_empty());
 }
 
 #[test]
 fn sliding_window_all_chunks_are_verbatim() {
-    let src = "a\nb\nc\nd\ne\nf\ng\nh";
-    let chunks = spelunk_core::indexer::sliding_window(src, "f.txt", "text", 3, 1);
+    // Long-line content forces multiple windows.
+    let src = vec![line_of(400); 60].join("\n");
+    let chunks = sliding_window(&src, "f.txt", "text", None, None, None);
+    assert!(
+        chunks.len() > 1,
+        "long-line content must split into >1 window"
+    );
     for c in &chunks {
         assert!(matches!(c.kind, ChunkKind::Verbatim));
+    }
+}
+
+#[test]
+fn sliding_window_multi_line_windows_respect_token_budget() {
+    // 60 lines × 400 chars = 24_000 chars ≈ 6_000 tokens; a fixed 120-line window
+    // would emit one ~6k-token chunk. Token-aware windowing must keep every
+    // multi-line window at or under the cap; only a lone over-budget line may
+    // exceed it (none here — each line is ~100 tokens).
+    let src = vec![line_of(400); 60].join("\n");
+    let chunks = sliding_window(&src, "gen.ts", "typescript", None, None, None);
+    for c in &chunks {
+        let toks = estimate_tokens(&c.content);
+        let single_line = c.content.lines().count() <= 1;
+        assert!(
+            toks <= MAX_CHUNK_TOKENS || single_line,
+            "window {}-{} has {toks} tokens (> cap) but is not a lone line",
+            c.start_line,
+            c.end_line,
+        );
+    }
+}
+
+#[test]
+fn sliding_window_over_budget_single_line_becomes_its_own_window() {
+    // One 20_000-char line ≈ 5_000 tokens, far over the 2_048 cap. It cannot be
+    // split on line boundaries, so it must be emitted as a single window rather
+    // than looping forever — forward progress is the guarantee under test.
+    let src = line_of(20_000);
+    let chunks = sliding_window(&src, "min.js", "javascript", None, None, None);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].start_line, 1);
+    assert_eq!(chunks[0].end_line, 1);
+    assert!(estimate_tokens(&chunks[0].content) > MAX_CHUNK_TOKENS);
+}
+
+#[test]
+fn sliding_window_adjacent_windows_overlap() {
+    // Enough long lines to produce several windows; each window after the first
+    // must start on or before the previous window's last line (overlap), and
+    // start strictly after the previous window's start (forward progress).
+    let src = vec![line_of(300); 80].join("\n");
+    let chunks = sliding_window(&src, "f.txt", "text", None, None, None);
+    assert!(
+        chunks.len() >= 3,
+        "expected several windows, got {}",
+        chunks.len()
+    );
+    for pair in chunks.windows(2) {
+        let (prev, next) = (&pair[0], &pair[1]);
+        assert!(
+            next.start_line <= prev.end_line,
+            "window at {} does not overlap previous ending at {}",
+            next.start_line,
+            prev.end_line,
+        );
+        assert!(
+            next.start_line > prev.start_line,
+            "windows must advance: {} !> {}",
+            next.start_line,
+            prev.start_line,
+        );
+    }
+}
+
+#[test]
+fn sliding_window_threads_identity_onto_every_subchunk() {
+    let src = vec![line_of(400); 40].join("\n");
+    let chunks = sliding_window(
+        &src,
+        "f.rs",
+        "rust",
+        Some("my_fn"),
+        Some("/// does a thing"),
+        Some("impl Foo"),
+    );
+    assert!(chunks.len() > 1, "fixture should span multiple windows");
+    for c in &chunks {
+        assert_eq!(c.name.as_deref(), Some("my_fn"));
+        assert_eq!(c.docstring.as_deref(), Some("/// does a thing"));
+        assert_eq!(c.parent_scope.as_deref(), Some("impl Foo"));
+        // Identity reaches the embedding text — no `title: none`.
+        assert!(c.embedding_text().starts_with("title: my_fn |"));
+        assert!(!c.embedding_text().contains("title: none"));
     }
 }
 
@@ -126,9 +206,38 @@ fn oversized_leaf_splits_into_capped_subchunks() {
             c.end_line,
             estimate_tokens(&c.content)
         );
+        // Identity re-attached: the re-windowed function keeps its name, so it
+        // embeds as `title: huge`, not `title: none`.
+        assert_eq!(c.name.as_deref(), Some("huge"));
+        assert!(c.embedding_text().starts_with("title: huge |"));
     }
     // Line offset preserved: the function starts at file line 1.
     assert_eq!(chunks[0].start_line, 1);
+}
+
+#[test]
+fn oversized_markdown_section_windows_keep_heading_as_name() {
+    // A single heading whose body is over the cap → windowed, each window named
+    // after the heading rather than degrading to `title: none`.
+    let mut src = String::from("# Big Section\n");
+    for i in 0..1200 {
+        src.push_str(&format!(
+            "prose line number {i} with some filler words here\n"
+        ));
+    }
+    assert!(
+        estimate_tokens(&src) > MAX_CHUNK_TOKENS,
+        "markdown fixture must exceed cap"
+    );
+
+    let chunks = SourceParser::parse(&src, "doc.md", "markdown").unwrap();
+    assert!(chunks.len() > 1, "oversized section should window");
+    for c in &chunks {
+        assert_eq!(c.name.as_deref(), Some("Big Section"));
+        assert!(c.embedding_text().starts_with("title: Big Section |"));
+        let single_line = c.content.lines().count() <= 1;
+        assert!(estimate_tokens(&c.content) <= MAX_CHUNK_TOKENS || single_line);
+    }
 }
 
 #[test]
