@@ -379,6 +379,89 @@ mod tests {
         );
     }
 
+    /// Three machines, not just two, independently double(triple)-superseding
+    /// the same OLD with three different successors: the fold must scan the
+    /// *whole* group and pick the true maximum, not just win a pairwise
+    /// comparison. Deliberately unordered input (the true max is in the
+    /// middle) so an accidental "last one wins" or "first beats second, stop"
+    /// implementation would fail this.
+    #[test]
+    fn superseded_by_entity_id_three_way_conflict_resolves_to_latest_created_at() {
+        let mut low = copy(1, 100, &[]);
+        low.status = "archived".to_string();
+        low.superseded_by_entity_id = Some("aaaa".to_string());
+
+        let mut highest = copy(2, 300, &[]);
+        highest.status = "archived".to_string();
+        highest.superseded_by_entity_id = Some("mmmm".to_string());
+
+        let mut mid = copy(3, 200, &[]);
+        mid.status = "archived".to_string();
+        mid.superseded_by_entity_id = Some("zzzz".to_string());
+
+        // `highest` (created_at 300) is neither first nor last in the input,
+        // and its value ("mmmm") is neither the lexicographic min nor max —
+        // only a genuine whole-group scan by `created_at` picks it.
+        let folded = fold_records(vec![low, highest, mid]);
+        assert_eq!(folded.len(), 1, "one entity, one entry");
+        assert_eq!(
+            folded[0].superseded_by_entity_id.as_deref(),
+            Some("mmmm"),
+            "must resolve to the record with the greatest created_at among all \
+             three conflicting copies, regardless of input order or lexicographic \
+             value"
+        );
+    }
+
+    /// Three conflicting records all tying on `created_at` — not a corner
+    /// case: `NoteRecord::created_at` is second-granularity
+    /// (`now_secs`), so three near-simultaneous writes/races commonly land on
+    /// the same second in practice. All three must resolve by `id` ascending,
+    /// regardless of input order.
+    #[test]
+    fn superseded_by_entity_id_three_way_tie_on_created_at_breaks_by_id_ascending() {
+        fn tied_triple() -> Vec<NoteRecord> {
+            let mut id3 = copy(3, 100, &[]);
+            id3.status = "archived".to_string();
+            id3.superseded_by_entity_id = Some("aaaa".to_string()); // lex-smallest, highest id
+
+            let mut id1 = copy(1, 100, &[]);
+            id1.status = "archived".to_string();
+            id1.superseded_by_entity_id = Some("zzzz".to_string()); // lex-largest, lowest id — must win
+
+            let mut id2 = copy(2, 100, &[]);
+            id2.status = "archived".to_string();
+            id2.superseded_by_entity_id = Some("mmmm".to_string());
+
+            vec![id3, id1, id2]
+        }
+
+        for perm in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let triple = tied_triple();
+            let mut src: Vec<Option<NoteRecord>> = triple.into_iter().map(Some).collect();
+            let ordered: Vec<NoteRecord> = perm
+                .iter()
+                .map(|&i| src[i].take().expect("each index taken once"))
+                .collect();
+            let folded = fold_records(ordered);
+            assert_eq!(folded.len(), 1);
+            assert_eq!(
+                folded[0].superseded_by_entity_id.as_deref(),
+                Some("zzzz"),
+                "all three tie on created_at, so the lowest id (1) must win \
+                 regardless of input order {perm:?}, not the lexicographically \
+                 smallest or largest value"
+            );
+        }
+    }
+
     /// Regression guard: E5 is scoped to `superseded_by_entity_id` only —
     /// `valid_at`/`invalid_at` folding is untouched, still resolving via
     /// `min_some` (earliest wins), a different semantic (a temporal validity
