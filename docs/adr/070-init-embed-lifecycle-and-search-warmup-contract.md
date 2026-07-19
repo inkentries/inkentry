@@ -132,17 +132,24 @@ durable and resumable. `chunks_missing_embeddings` reconstructs it with a
 the queue from the database rather than carrying it across the process boundary.
 The recovery path has always worked. It was only ever undiscoverable.
 
-Resume granularity is **per chunk, not per batch**. `insert_embedding` issues a
-bare `INSERT OR REPLACE` on the connection, and the embed phase calls it in a
-plain `for` loop with no enclosing transaction, so every row commits in its own
-implicit transaction. This strengthens the argument rather than weakening it: a
-worker killed mid-batch keeps every chunk it had already written, and the
-`LEFT JOIN` picks up from exactly there. It is not free, at a measured ~+5.2ms
-per chunk on the profiled repo, but that cost is already being paid today and
-buying finer resumability than this ADR requires. Batching those commits is a
-throughput question, out of scope here; it is noted only so that a future change
-knows it would be trading resume granularity for speed, rather than discovering
-that trade after the fact.
+Resume granularity is **per batch, not per chunk**. `insert_embeddings` writes
+each batch's rows in a single transaction (matching the `update_graph_ranks`
+batch pattern), so a batch either lands whole or not at all. The queue-durability
+argument holds unchanged: a worker killed mid-batch keeps every batch it had
+already committed, the interrupted batch commits nothing, and the `LEFT JOIN`
+re-queues exactly that batch on the next run, with no duplicate row (the insert
+is keyed on `chunk_id`) and no silent gap. The trade this buys is bounded: the
+worst case on an untimely kill is recomputing one batch's embeddings, capped by
+the calibrated batch size (at most 256 chunks, and usually the smaller
+duration-calibrated size rather than the ceiling), not unbounded work. This
+supersedes an earlier per-chunk autocommit whose per-row transaction commit
+bought finer resumability than this ADR requires; batching the commits trades
+that surplus granularity for throughput, a trade this decision anticipated and
+pre-accepted rather than one discovered after the fact. The overhead removed is
+the per-row commit cost (a WAL fsync per autocommit under the default
+`synchronous=FULL`); its magnitude is hardware-dependent and small relative to
+the GPU-bound embed phase, so the change is a modest throughput refinement, not
+a headline speedup.
 
 ### D3 – Search never reports an absence it cannot substantiate.
 

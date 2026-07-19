@@ -550,15 +550,29 @@ pub(super) async fn run_embed_phase(
         let stride = dim * 4;
         let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
-        for (i, (row_id, _text, token_count)) in batch.iter().enumerate() {
-            let vector =
-                spelunk_core::embeddings::blob_to_vec(&bytes[i * stride..(i + 1) * stride]);
-            db.insert_embedding(*row_id, &vector)?;
+        // Decode this batch's vectors and commit them in a single transaction
+        // (see `Database::insert_embeddings`): one commit per batch instead of
+        // one implicit autocommit per row. The whole batch's compute is already
+        // sunk by now, so the commit boundary is the batch — an untimely kill
+        // rolls the batch back atomically and `chunks_missing_embeddings`
+        // re-queues it whole on the next run (ADR-070 D2).
+        let embeddings: Vec<(i64, Vec<f32>)> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, (row_id, _text, _token_count))| {
+                let vector =
+                    spelunk_core::embeddings::blob_to_vec(&bytes[i * stride..(i + 1) * stride]);
+                (*row_id, vector)
+            })
+            .collect();
+        db.insert_embeddings(&embeddings)?;
+
+        // The batch is now durable; advance the counters and repaint the ETA
+        // per chunk so it still counts down through a batch, not once per request.
+        for (_row_id, _text, token_count) in batch.iter() {
             embedded += 1;
             tokens_done += (*token_count).max(1) as u64;
             bar.inc(1);
-            // Refresh the displayed ETA from the updated `rate` as each chunk
-            // lands, so it counts down through a batch, not once per request.
             let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
             let work_pct = pct(tokens_done, total_tokens);
             bar.set_message(format!(
@@ -1663,5 +1677,103 @@ mod tests {
              a batch larger than the server-advertised max_batch_chunks"
         );
         assert_eq!(db.stats().unwrap().embedding_count, 30);
+    }
+
+    // ── resume after an interrupted run (ADR-070 D2: per-batch granularity) ──
+
+    #[tokio::test]
+    async fn resume_after_interrupted_run_reembeds_the_missing_queue_without_dupes() {
+        // The resume story end-to-end. A run stops partway with one batch never
+        // committed (per-batch transaction: it landed nothing). A re-run
+        // rebuilds the queue from `chunks_missing_embeddings` and embeds exactly
+        // the remainder — every chunk ends embedded once, none skipped, none
+        // duplicated. This relies on `chunks_missing_embeddings` never
+        // re-sending a chunk_id that already has an embedding row, not on
+        // `INSERT OR REPLACE` actually replacing one — see
+        // `storage::db::tests::insert_embedding_single_row_path_does_not_actually_replace_a_repeated_chunk_id`
+        // (spelunk-core) for why that distinction matters: OR REPLACE against
+        // the `embeddings` vec0 table does not work today, so idempotency here
+        // depends entirely on the queue never producing a same-key collision.
+        let (db, ids) = seed_chunks(6);
+        let cfg = Config::default();
+        let mp = MultiProgress::new();
+
+        // ── Run 1: the two calibration batches (1 + 4 chunks) succeed, the
+        //    next request 500s, so the run stops with 5 of 6 embedded. ──
+        let mock1 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(OkEmbedResponder)
+            .up_to_n_times(2)
+            .mount(&mock1)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock1)
+            .await;
+
+        let queue1: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+        let embedded1 = run_embed_phase(
+            queue1,
+            &db,
+            &cfg,
+            &server_tier(mock1.uri()),
+            std::path::Path::new("/tmp/proj"),
+            4,
+            &mp,
+        )
+        .await
+        .expect("run 1 stops gracefully, not Err");
+        assert_eq!(
+            embedded1, 5,
+            "the 1+4 calibration batches commit; the 500'd batch commits nothing"
+        );
+        assert_eq!(db.stats().unwrap().embedding_count, 5);
+
+        // ── Rebuild the queue exactly as a re-run does: the interrupted batch
+        //    left no partial rows, so exactly the one un-embedded chunk is
+        //    re-queued. ──
+        let missing = db.chunks_missing_embeddings().unwrap();
+        assert_eq!(
+            missing.len(),
+            1,
+            "the interrupted batch committed nothing, so exactly the unembedded chunk remains"
+        );
+        let queue2: Vec<(i64, String, usize)> = missing
+            .iter()
+            .map(|(id, _name, _meta, _summary, content, tc)| (*id, content.clone(), *tc))
+            .collect();
+
+        // ── Run 2: everything succeeds; only the missing chunk is embedded. ──
+        let mock2 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(OkEmbedResponder)
+            .mount(&mock2)
+            .await;
+        let embedded2 = run_embed_phase(
+            queue2,
+            &db,
+            &cfg,
+            &server_tier(mock2.uri()),
+            std::path::Path::new("/tmp/proj"),
+            4,
+            &mp,
+        )
+        .await
+        .expect("run 2 backfills the remainder");
+        assert_eq!(
+            embedded2, 1,
+            "only the one missing chunk is embedded on the re-run"
+        );
+        assert_eq!(
+            db.stats().unwrap().embedding_count,
+            6,
+            "all six chunks embedded exactly once — no duplicate row, no lost chunk"
+        );
     }
 }
