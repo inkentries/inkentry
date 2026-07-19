@@ -461,7 +461,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::{CURRENT_SCHEMA_VERSION, Database};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OptionalExtension};
     use std::sync::OnceLock;
 
     fn register_sqlite_vec() {
@@ -629,6 +629,109 @@ mod tests {
         db.apply_file_mtime_migration()
             .expect("re-applying the migration on a migrated DB is a no-op");
         assert!(has_mtime(&db));
+    }
+
+    /// Exercises the actual legacy-inference rung for this migration (ladder
+    /// entry `(15, files_has_column("mtime"))`), not just the direct
+    /// `apply_file_mtime_migration` idempotency check above. A DB frozen at v14
+    /// (every table/column through `index_meta` present, `files.mtime` not yet
+    /// added, `user_version` reset to 0 — the real shape of an index built by
+    /// the previous binary) must be inferred at exactly 14 through
+    /// `Database::open`'s normal migration runner, and only step 15 must run to
+    /// bring it current.
+    #[test]
+    fn legacy_db_frozen_at_v14_infers_14_and_applies_only_mtime_step() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
+            // Roll back to the pre-024 shape: drop only the mtime column,
+            // leaving every other v1..14 table/column intact, then reset the
+            // version stamp so `Database::open` must re-infer it from shape.
+            db.conn
+                .execute_batch("ALTER TABLE files DROP COLUMN mtime; PRAGMA user_version = 0;")
+                .expect("roll back to pre-mtime shape");
+            assert_eq!(
+                Database::infer_legacy_version(&db).unwrap(),
+                14,
+                "with every v1..14 predicate true and only the mtime rung false, \
+                 inference must land exactly at 14"
+            );
+            // A row inserted while at this legacy shape has no mtime column at
+            // all yet (pre-migration data).
+            db.conn
+                .execute(
+                    "INSERT INTO files (path, language, hash, indexed_at) VALUES ('old.rs', 'rust', 'h', 1)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // Reopen through the normal runner (not calling apply_file_mtime_migration
+        // directly): this is the real "agent upgrades the binary" path.
+        let db = Database::open(tmp.path()).expect("reopen legacy v14 DB");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+
+        let mtime: i64 = db
+            .conn
+            .query_row("SELECT mtime FROM files WHERE path = 'old.rs'", [], |r| {
+                r.get(0)
+            })
+            .expect("mtime column must exist and be queryable after inferred upgrade");
+        assert_eq!(
+            mtime, 0,
+            "a pre-existing row defaults to mtime 0, not an error"
+        );
+    }
+
+    /// Defends the ladder's early-break behaviour against a hand-tampered /
+    /// corrupted DB where a *later* rung's predicate is true but an *earlier*
+    /// one is false — a state the normal forward-only migration path can never
+    /// produce, but one a manual `ALTER TABLE` (or a hand-restored backup)
+    /// could. `Database::open` must still complete without error or data
+    /// corruption: the ladder takes the lowest satisfied version (ignoring the
+    /// spuriously-true later rung), and every step from there re-applies
+    /// idempotently rather than double-erroring on the already-present column.
+    #[test]
+    fn migration_ladder_tolerates_out_of_order_manually_tampered_state() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
+            // Simulate tampering: drop the `usage` table (rung 9) while
+            // `files.mtime` (rung 15) is left present — a combination the real
+            // forward-only runner would never produce on its own.
+            db.conn
+                .execute_batch("DROP TABLE IF EXISTS usage; PRAGMA user_version = 0;")
+                .expect("tamper: drop usage, keep mtime");
+            assert_eq!(
+                Database::infer_legacy_version(&db).unwrap(),
+                8,
+                "the ladder must break at the first false predicate (rung 9, usage table) \
+                 and ignore the spuriously-true rung 15"
+            );
+        }
+
+        // Reopening must not error even though this replays step 15
+        // (files.mtime already exists) on top of a version-8 inference.
+        let db = Database::open(tmp.path())
+            .expect("reopening a tampered-but-recoverable DB must not error or corrupt state");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+
+        let has_usage: bool = db
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(
+            has_usage,
+            "the usage table must be recreated by the replayed step 9"
+        );
     }
 
     /// Model provenance round-trips through index_meta, and a mismatch is a hard

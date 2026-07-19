@@ -1038,6 +1038,64 @@ mod tests {
             .unwrap();
     }
 
+    /// `stat_mtime` on a path that cannot be `stat()`'d (doesn't exist —
+    /// stands in for any metadata-read failure, e.g. a permission error or a
+    /// virtual/generated path with no real inode) must fall back to `0`
+    /// rather than panicking or erroring the whole parse phase. `0` is the
+    /// same sentinel a pre-migration row carries and sorts last,
+    /// deterministically, under the queue's `mtime DESC` order.
+    #[test]
+    fn stat_mtime_nonexistent_path_falls_back_to_zero() {
+        let missing = std::path::Path::new("/nonexistent/definitely-not-a-real-path.rs");
+        assert_eq!(
+            stat_mtime(missing),
+            0,
+            "an unstattable path must fall back to 0, not panic"
+        );
+    }
+
+    /// A file with a modification time before the Unix epoch (a corrupted
+    /// filesystem timestamp, or a container/VM with a badly-skewed clock) makes
+    /// `SystemTime::duration_since(UNIX_EPOCH)` return `Err`. `stat_mtime` must
+    /// still fall back to `0` rather than panicking on the `i64` conversion.
+    #[test]
+    fn stat_mtime_pre_epoch_time_falls_back_to_zero_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("ancient.rs");
+        std::fs::write(&f, "pub fn ancient() {}\n").unwrap();
+        let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(100);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(pre_epoch)
+            .unwrap();
+
+        assert_eq!(
+            stat_mtime(&f),
+            0,
+            "a pre-epoch mtime must fall back to 0, not panic on the i64 cast"
+        );
+    }
+
+    /// A file whose mtime is far in the future (clock skew, or a deliberately
+    /// forward-touched file) must be read back verbatim as a large positive
+    /// `i64`, without overflow or panic on the `u64 -> i64` cast.
+    #[test]
+    fn stat_mtime_far_future_time_returns_positive_no_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("future.rs");
+        std::fs::write(&f, "pub fn future() {}\n").unwrap();
+        // Year ~2107 — comfortably future without approaching u64/i64 bounds.
+        set_file_mtime(&f, 4_300_000_000);
+
+        assert_eq!(
+            stat_mtime(&f),
+            4_300_000_000,
+            "a far-future mtime must round-trip verbatim, not overflow or panic"
+        );
+    }
+
     /// A parsed file stores its filesystem mtime in `files.mtime`, and the
     /// DB-driven embed queue (the exact path the detached `--_embed-phases`
     /// worker rebuilds from) orders the resulting chunks by that recency on a

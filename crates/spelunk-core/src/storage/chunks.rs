@@ -402,6 +402,109 @@ mod tests {
         );
     }
 
+    /// A bulk-copied file tree (e.g. `cp -r` or a fresh checkout) commonly
+    /// leaves every file with an *identical* mtime, and a cold index leaves
+    /// every chunk's `graph_rank` at the shared `0.0` default. With both
+    /// leading keys tied across many rows, the ordering must not fall through
+    /// to SQLite's unspecified tie-break: `c.id` must fully determine the
+    /// order, identically across repeated calls.
+    #[test]
+    fn chunks_missing_embeddings_many_ties_are_fully_determined_by_id() {
+        let db = open_db();
+        let mut expected = Vec::new();
+        // 6 files, identical mtime, 3 chunks each: 18 rows all tied on
+        // (graph_rank=0.0, mtime=500).
+        for i in 0..6 {
+            let names = ["x", "y", "z"];
+            let ids = seed_file_chunks(&db, &format!("f{i}.rs"), 500, &names);
+            expected.extend(ids);
+        }
+        // Ascending c.id is the only remaining discriminator once graph_rank
+        // and mtime are constant across every row.
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(
+            expected, sorted_expected,
+            "sanity: ids were inserted in ascending order"
+        );
+
+        assert_eq!(
+            missing_ids(&db),
+            expected,
+            "fully-tied rows (graph_rank, mtime) must resolve to ascending c.id"
+        );
+        // Repeat: no run-to-run flake from an underspecified ORDER BY.
+        assert_eq!(
+            missing_ids(&db),
+            expected,
+            "tie-break must be stable across repeated calls, not left to SQLite's whim"
+        );
+    }
+
+    /// Many chunks can share the same *non-zero* `graph_rank` too (e.g. several
+    /// leaf functions PageRank scores to the same value). Ties within a shared
+    /// rank must fall through to `mtime DESC`, then `c.id`, not collapse to an
+    /// arbitrary order.
+    #[test]
+    fn chunks_missing_embeddings_tied_nonzero_rank_falls_back_to_mtime_then_id() {
+        let db = open_db();
+        let a = seed_file_chunks(&db, "a.rs", 100, &["a1", "a2"]);
+        let b = seed_file_chunks(&db, "b.rs", 300, &["b1", "b2"]);
+        let c = seed_file_chunks(&db, "c.rs", 300, &["c1", "c2"]);
+
+        // All six chunks share the same non-zero rank.
+        for id in a.iter().chain(&b).chain(&c) {
+            db.update_graph_rank(*id, 0.42).unwrap();
+        }
+
+        // Tied on rank: mtime DESC groups b/c (300) ahead of a (100); within
+        // the b/c tie (same rank AND same mtime), c.id is the final tiebreak.
+        let expected = vec![b[0], b[1], c[0], c[1], a[0], a[1]];
+        assert_eq!(
+            missing_ids(&db),
+            expected,
+            "a shared non-zero graph_rank must fall back to mtime DESC, then id"
+        );
+    }
+
+    /// A file with a modification time far in the future (clock skew, or a
+    /// deliberately touched file) must sort ahead of every normal-mtime row,
+    /// and the query must not error or panic on a large positive `i64`.
+    #[test]
+    fn chunks_missing_embeddings_future_mtime_sorts_first_no_panic() {
+        let db = open_db();
+        let normal = seed_file_chunks(&db, "normal.rs", 1_000, &["n1"]);
+        // Comfortably in the future (year ~2107) without approaching i64::MAX,
+        // matching what a skewed system clock could plausibly report.
+        let skewed = seed_file_chunks(&db, "skewed.rs", 4_300_000_000, &["s1"]);
+
+        let expected = vec![skewed[0], normal[0]];
+        assert_eq!(
+            missing_ids(&db),
+            expected,
+            "a future/skewed mtime must sort first, not error"
+        );
+    }
+
+    /// A negative mtime (not producible by `stat_mtime`'s own fallback, which
+    /// always yields 0 on failure, but defensive against any other write path)
+    /// must not error the ORDER BY and must sort after both positive and
+    /// zero/legacy mtimes.
+    #[test]
+    fn chunks_missing_embeddings_negative_mtime_sorts_last_no_error() {
+        let db = open_db();
+        let negative = seed_file_chunks(&db, "negative.rs", -100, &["neg"]);
+        let legacy = seed_file_chunks(&db, "legacy.rs", 0, &["leg"]);
+        let fresh = seed_file_chunks(&db, "fresh.rs", 200, &["fr"]);
+
+        let expected = vec![fresh[0], legacy[0], negative[0]];
+        assert_eq!(
+            missing_ids(&db),
+            expected,
+            "DESC ordering must place negative mtime after 0 and positive mtimes, without erroring"
+        );
+    }
+
     /// A chunk with no matching `embeddings` row must surface via
     /// `chunks_missing_embeddings` (the parse phase unions these into the embed
     /// batch so a parse-only index doesn't leave chunks permanently

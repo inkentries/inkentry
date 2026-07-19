@@ -871,6 +871,36 @@ mod tests {
         assert!(n.contains("spelunk status"), "actionable: {n}");
     }
 
+    /// HARDENING FINDING (spelunk-oss embed-queue reorder): the embed queue's
+    /// `ORDER BY` changed from raw parse/insertion order (`c.id`) to
+    /// `graph_rank DESC, mtime DESC, c.id` — the queue is no longer "the first
+    /// N files walked" in any sense. This warmup notice's copy still asserts
+    /// the embedded prefix is "front-loaded by indexing order", which is now a
+    /// stale, inaccurate description of the mechanism (it is front-loaded by
+    /// recency/importance instead). The sibling test
+    /// `partial_notice_names_coverage_and_its_front_loaded_shape` still
+    /// encodes the old claim as an expected value — that test is itself now
+    /// asserting a false statement about the system, not a spec.
+    ///
+    /// This does not affect the coverage/completeness contract (verified
+    /// above: `coverage_disposition` only ever reads `(embedded, total)`
+    /// counts, never queue order, so "ordering mistaken for completeness"
+    /// does not regress). But the notice's *explanation* of the ordering
+    /// mechanism is user-facing and wrong. Left failing intentionally —
+    /// HANDBACK: the copy (and its sibling test) needs an update to describe
+    /// the new mechanism, which is a product/copy call for engineer, not
+    /// test-engineer, to make.
+    #[test]
+    fn partial_notice_no_longer_claims_indexing_order_after_the_reorder() {
+        let n = warmup_notice_partial(11_813, 27_734);
+        assert!(
+            !n.contains("indexing order"),
+            "the embed queue is no longer ordered by parse/indexing order since the \
+             recency+graph_rank reorder (ORDER BY c.graph_rank DESC, f.mtime DESC, c.id) — \
+             this notice's copy is stale and describes a mechanism that no longer exists: {n}"
+        );
+    }
+
     #[test]
     fn zero_auto_notice_names_warmup_as_the_reason() {
         let n = warmup_notice_zero_auto(27_734);
