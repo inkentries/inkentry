@@ -36,7 +36,7 @@ pub fn save_server_key_with(key: &str, store: &dyn SecretStore) -> Result<()> {
 /// What `spelunk logout --servers` clears (ADR-071 D3): the secret-store
 /// entry **and** any legacy plaintext `server_key` left in
 /// `~/.config/spelunk/config.toml`. Bare `spelunk logout` no longer calls
-/// this — it only clears the `[auth]` cloud token pair (see
+/// this; it only clears the `[auth]` cloud token pair (see
 /// [`remove_auth_tokens`]). No-op for any location where the credential is
 /// absent.
 pub fn remove_server_key() -> Result<()> {
@@ -112,7 +112,7 @@ pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()
 ///
 /// What bare `spelunk logout` clears (ADR-071 D3): only the `[auth]` cloud
 /// token pair. It no longer touches self-hosted server keys as a side
-/// effect — clearing those requires the explicit `--servers` or
+/// effect; clearing those requires the explicit `--servers` or
 /// `--server <url>` flag (see [`remove_server_key`]). No-op if the file or
 /// the table is absent. Other keys are preserved.
 pub fn remove_auth_tokens() -> Result<()> {
