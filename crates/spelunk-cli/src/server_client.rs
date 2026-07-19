@@ -109,6 +109,13 @@ pub struct ServerInferenceClient {
     client: reqwest::Client,
     base_url: String,
     project_id: String,
+    /// `true` when `base_url` came from an explicitly configured team
+    /// `server_url` rather than loopback auto-discovery (which populates
+    /// `inference_url` while leaving `server_url` unset, ADR-004). An
+    /// inference error against an explicit remote must name `base_url`
+    /// instead of pointing at `spelunk server logs`, which only reads the
+    /// local auto-daemon's log.
+    is_explicit_remote: bool,
     /// Current bearer token + refresh state. `RwLock`-free `Mutex` is fine:
     /// contention is nil (refresh happens at most once per request) and the
     /// critical section is a cheap clone / swap.
@@ -189,6 +196,10 @@ impl ServerInferenceClient {
             client,
             base_url,
             project_id,
+            // `effective_config` only ever sets `inference_url` when
+            // `server_url` is unset (ADR-004), so a set `server_url` here
+            // means `base_url` resolved from it, i.e. an explicit remote.
+            is_explicit_remote: cfg.server_url.is_some(),
             auth: Mutex::new(BearerState {
                 bearer: cfg.server_key.clone(),
                 refresh,
@@ -210,6 +221,7 @@ impl ServerInferenceClient {
             client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             project_id: project_id.to_string(),
+            is_explicit_remote: false,
             auth: Mutex::new(BearerState {
                 bearer,
                 // `workos_url` is the second tuple element (tests point it at a
@@ -222,6 +234,15 @@ impl ServerInferenceClient {
                 }),
             }),
         }
+    }
+
+    /// Mark this test client as reached via an explicit remote `server_url`
+    /// (not loopback auto-discovery), for tests covering the scoped
+    /// inference-error hint.
+    #[cfg(test)]
+    fn with_explicit_remote(mut self) -> Self {
+        self.is_explicit_remote = true;
+        self
     }
 
     /// Current bearer token, if any.
@@ -467,7 +488,11 @@ impl ServerInferenceClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("{}", server_inference_error("/index/embed", status, &text));
+            let remote_url = self.is_explicit_remote.then_some(self.base_url.as_str());
+            anyhow::bail!(
+                "{}",
+                server_inference_error("/index/embed", status, &text, remote_url)
+            );
         }
         let bytes = resp
             .bytes()
@@ -588,7 +613,18 @@ impl spelunk_core::llm::LlmBackend for ServerLlmAdapter {
 /// embedder (state `loading`/`unavailable`). `reqwest::error_for_status` throws
 /// that body away and yields a bare "HTTP status 503", so we parse it here and
 /// append a next-step hint.
-fn server_inference_error(endpoint: &str, status: reqwest::StatusCode, body: &str) -> String {
+///
+/// `remote_url` is `Some` when this client reached the server via an explicit
+/// `server_url` (not loopback auto-discovery). The `unavailable` hint must
+/// then name that server instead of pointing at `spelunk server logs`, which
+/// only reads the local auto-daemon's log and would show clean logs for a
+/// failure that lives on the remote server.
+fn server_inference_error(
+    endpoint: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+    remote_url: Option<&str>,
+) -> String {
     let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
     let field = |k: &str| {
         parsed
@@ -599,9 +635,12 @@ fn server_inference_error(endpoint: &str, status: reqwest::StatusCode, body: &st
     };
     let reason = field("detail").or_else(|| field("error"));
     let hint = match field("state") {
-        Some("loading") => " Retry shortly (`spelunk server status`).",
-        Some("unavailable") => " See `spelunk server logs`.",
-        _ => "",
+        Some("loading") => " Retry shortly (`spelunk server status`).".to_string(),
+        Some("unavailable") => match remote_url {
+            Some(url) => format!(" Check the logs for team server {url}."),
+            None => " See `spelunk server logs`.".to_string(),
+        },
+        _ => String::new(),
     };
     match reason {
         Some(reason) => format!("spelunk-server {endpoint} returned {status}: {reason}.{hint}"),
@@ -932,6 +971,33 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("sk-legacy"));
     }
 
+    /// `is_explicit_remote` keys off whether `server_url` was set by the
+    /// operator, never off what host it resolves to: an explicitly
+    /// configured `server_url = http://127.0.0.1:PORT` is still "explicit"
+    /// even though the host is loopback. `spelunk server logs` only ever
+    /// reads the fixed auto-daemon log path and cannot tell this loopback
+    /// address was hand-configured, so the inference-error hint must still
+    /// name it. Mirrors `capability::tests::
+    /// tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
+    /// which pins the same invariant on the `Tier` side of this contract.
+    #[test]
+    #[serial_test::serial]
+    fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let cfg = crate::config::Config {
+            server_url: Some("http://127.0.0.1:9797".to_string()),
+            project_id: Some("proj".to_string()),
+            ..Default::default()
+        };
+        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        assert!(
+            client.is_explicit_remote,
+            "an explicitly configured server_url must count as explicit even when it is loopback"
+        );
+    }
+
     /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`
     /// must become `%2F` so the whole slug occupies one URL path segment
     /// (IMP-1 / spelunk decision #106).
@@ -1058,6 +1124,7 @@ mod tests {
             "/index/embed",
             reqwest::StatusCode::SERVICE_UNAVAILABLE,
             &body,
+            None,
         );
         assert!(msg.contains("downloading model (42%)"), "got: {msg}");
         assert!(msg.contains("spelunk server status"), "got: {msg}");
@@ -1066,7 +1133,9 @@ mod tests {
     }
 
     #[test]
-    fn inference_error_surfaces_unavailable_points_at_logs() {
+    fn inference_error_surfaces_unavailable_loopback_points_at_logs() {
+        // Loopback auto-discovery: the failing embedder IS the local daemon,
+        // so `spelunk server logs` is the right place to look.
         let body = serde_json::json!({
             "error": "embedder unavailable",
             "state": "unavailable",
@@ -1077,9 +1146,35 @@ mod tests {
             "/index/embed",
             reqwest::StatusCode::SERVICE_UNAVAILABLE,
             &body,
+            None,
         );
         assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
         assert!(msg.contains("spelunk server logs"), "got: {msg}");
+    }
+
+    #[test]
+    fn inference_error_surfaces_unavailable_remote_names_that_server_never_local_logs() {
+        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // log, which is clean when the failure lives on the team server. The
+        // error must name the probed server instead.
+        let body = serde_json::json!({
+            "error": "embedder unavailable",
+            "state": "unavailable",
+            "detail": "OOM loading GGUF",
+        })
+        .to_string();
+        let msg = server_inference_error(
+            "/index/embed",
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            &body,
+            Some("https://team.example:7777"),
+        );
+        assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
+        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
+        assert!(
+            !msg.contains("spelunk server logs"),
+            "must not point a remote failure at local logs: {msg}"
+        );
     }
 
     #[test]
@@ -1089,6 +1184,7 @@ mod tests {
             "/index/embed",
             reqwest::StatusCode::BAD_GATEWAY,
             "<html>502</html>",
+            None,
         );
         assert!(msg.contains("/index/embed"), "got: {msg}");
         assert!(msg.contains("502"), "got: {msg}");
@@ -1118,6 +1214,38 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("loading F2LLM weights"), "got: {msg}");
         assert!(msg.contains("spelunk server status"), "got: {msg}");
+    }
+
+    /// End-to-end: a 503 `unavailable` from `/index/embed` against an
+    /// explicit team `server_url` must name that server, never `spelunk
+    /// server logs` (which would read a healthy local daemon's log instead).
+    #[tokio::test]
+    async fn embed_text_remote_names_that_server_never_local_logs() {
+        let inference = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/index/embed"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": "embedder unavailable",
+                "state": "unavailable",
+                "detail": "OOM loading GGUF",
+            })))
+            .mount(&inference)
+            .await;
+
+        let client =
+            ServerInferenceClient::for_test(&inference.uri(), "proj", Some("sk".into()), None)
+                .with_explicit_remote();
+        let err = client
+            .embed_text("hello")
+            .await
+            .expect_err("503 must surface as an error");
+        let msg = err.to_string();
+        assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
+        assert!(msg.contains(&inference.uri()), "got: {msg}");
+        assert!(
+            !msg.contains("spelunk server logs"),
+            "must not point a remote failure at local logs: {msg}"
+        );
     }
 
     /// `/v1/health`-style probes aside, inference requests built via

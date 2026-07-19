@@ -486,9 +486,16 @@ async fn run_embed_phases(
 /// skipped, so an unembedded index is never a silent surprise. Pure so it can
 /// be unit-tested; the four cases mirror the server's readiness contract.
 /// `server_url` is `cfg.server_url` (used only for the offline case).
+///
+/// `remote_url` is `Some` when the probed server came from an explicit
+/// `server_url` (not loopback auto-discovery). The unavailable-embedder
+/// notice must then name that server instead of pointing at `spelunk server
+/// logs`, which only reads the local auto-daemon's log and would show clean
+/// logs for a failure that lives on the remote server.
 fn embed_skipped_lines(
     embedder_state: Option<capability::EmbedderState>,
     server_url: Option<&str>,
+    remote_url: Option<&str>,
 ) -> Vec<String> {
     use capability::EmbedderState;
     match embedder_state {
@@ -498,12 +505,23 @@ fn embed_skipped_lines(
             "Re-run `spelunk index` in a moment to add embeddings (check `spelunk server status`)."
                 .to_string(),
         ],
-        Some(EmbedderState::Unavailable) => vec![
-            "Warning: the embedder failed to load — chunks indexed for text/ast-grep search only."
-                .to_string(),
-            "See `spelunk server logs` for the load error, then re-run `spelunk index`."
-                .to_string(),
-        ],
+        Some(EmbedderState::Unavailable) => match remote_url {
+            Some(url) => vec![
+                format!(
+                    "Warning: the embedder failed to load on team server {url}; chunks indexed \
+                     for text/ast-grep search only."
+                ),
+                "Check that server's own logs for the load error, then re-run `spelunk index`."
+                    .to_string(),
+            ],
+            None => vec![
+                "Warning: the embedder failed to load; chunks indexed for text/ast-grep search \
+                 only."
+                    .to_string(),
+                "See `spelunk server logs` for the load error, then re-run `spelunk index`."
+                    .to_string(),
+            ],
+        },
         // Reachable server without a ready embedder for any other reason
         // (`disabled`, or an older server that never advertised `index.embed`).
         Some(_) => vec![
@@ -534,7 +552,11 @@ fn embed_skipped_lines(
 
 /// Print the embed-skipped notice to stderr.
 fn eprint_embed_skipped_notice(tier: &capability::Tier, cfg: &Config) {
-    for line in embed_skipped_lines(tier.embedder_state(), cfg.server_url.as_deref()) {
+    for line in embed_skipped_lines(
+        tier.embedder_state(),
+        cfg.server_url.as_deref(),
+        tier.explicit_remote_url(),
+    ) {
         eprintln!("{line}");
     }
 }
@@ -754,7 +776,7 @@ mod tests {
 
     #[test]
     fn embed_skipped_loading_advises_retry() {
-        let lines = embed_skipped_lines(Some(capability::EmbedderState::Loading), None);
+        let lines = embed_skipped_lines(Some(capability::EmbedderState::Loading), None, None);
         assert!(!lines.is_empty(), "notice must not be silent");
         let joined = lines.join("\n");
         assert!(joined.contains("warming up"));
@@ -762,11 +784,35 @@ mod tests {
     }
 
     #[test]
-    fn embed_skipped_unavailable_points_at_logs() {
-        let lines = embed_skipped_lines(Some(capability::EmbedderState::Unavailable), None);
+    fn embed_skipped_unavailable_loopback_points_at_logs() {
+        // Loopback auto-discovery: the failing embedder IS the local daemon,
+        // so `spelunk server logs` is the right place to look.
+        let lines = embed_skipped_lines(Some(capability::EmbedderState::Unavailable), None, None);
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
         assert!(joined.contains("spelunk server logs"));
+    }
+
+    #[test]
+    fn embed_skipped_unavailable_remote_names_that_server_never_local_logs() {
+        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // log, which is clean when the failure lives on the team server. The
+        // notice must name the probed server instead.
+        let lines = embed_skipped_lines(
+            Some(capability::EmbedderState::Unavailable),
+            None,
+            Some("https://team.example:7777"),
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("failed to load"));
+        assert!(
+            joined.contains("https://team.example:7777"),
+            "got: {joined}"
+        );
+        assert!(
+            !joined.contains("spelunk server logs"),
+            "must not point a remote failure at local logs: {joined}"
+        );
     }
 
     #[test]
@@ -774,7 +820,7 @@ mod tests {
         // Offline (no reachable server) with a configured server_url: the notice
         // names the URL and the Windows firewall cause, replacing the old silent
         // 0-chunk embed.
-        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"));
+        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None);
         let joined = lines.join("\n");
         assert!(joined.contains("http://127.0.0.1:7777"));
         assert!(joined.contains("unreachable"));
@@ -783,7 +829,7 @@ mod tests {
 
     #[test]
     fn embed_skipped_no_server_suggests_starting_one() {
-        let lines = embed_skipped_lines(None, None);
+        let lines = embed_skipped_lines(None, None, None);
         let joined = lines.join("\n");
         assert!(joined.contains("spelunk server start"));
     }
@@ -1040,10 +1086,12 @@ mod tests {
             None,
         ] {
             for url in [Some("http://x:1"), None] {
-                assert!(
-                    !embed_skipped_lines(state, url).is_empty(),
-                    "state {state:?} url {url:?} produced no notice"
-                );
+                for remote_url in [None, Some("https://team.example:7777")] {
+                    assert!(
+                        !embed_skipped_lines(state, url, remote_url).is_empty(),
+                        "state {state:?} url {url:?} remote_url {remote_url:?} produced no notice"
+                    );
+                }
             }
         }
     }
