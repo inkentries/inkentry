@@ -75,6 +75,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   of the embedder's lock, between sub-batches, and per chunk on the
   sequential path), and the abandonment is logged with the chunk count
   completed. No request/response contract change. (#631)
+- **`memory add --supersedes OLD` against an already-archived OLD no longer
+  writes conflicting git-notes carrier records.** The SQL layer's archive-OLD
+  update already silently no-ops when OLD is not active, but the CLI never
+  checked that outcome before appending a state-update record to the git-notes
+  carrier, so running `--supersedes OLD` twice with two different successors
+  left two conflicting `archived` records for OLD's entity, each naming a
+  different successor — and the read-time fold picked between them by
+  lexicographic string comparison, not recency, so the wrong successor could
+  silently display. `--supersedes` now checks OLD is active *before* any
+  write (SQLite or git-notes), on both storage paths, and fails with the same
+  "No active memory entry with id `<old-id>` (old)." error `memory supersede`
+  already gives for the same case — this is a deliberate behavior change: the
+  command used to succeed against a stale OLD, and now it errors instead.
+  Fold-time resolution of any conflicting records written before this fix
+  (or by a lost cross-machine race) is also hardened: `superseded_by_entity_id`
+  now resolves to the record with the greatest `created_at`, not the smallest
+  `entity_id` string. (ADR-068 E4/E5)
 
 ## [0.9.4] — 2026-07-17
 
@@ -97,7 +114,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   terminal reason to skip the embed pass. (ADR-070 D1, D2)
 - **Search over a warming index emits coverage-gated notices.** When KNN search runs
   over an incompletely-embedded corpus, a one-line stderr notice names the coverage
-  percentage and its shape ("front-loaded by indexing order"). In `auto` mode on zero
+  percentage and its shape ("front-loaded by importance and recency"). In `auto` mode on zero
   coverage, search falls back to ast-grep with a notice naming embeddings as building
   in the background; in explicit `semantic`/`hybrid` mode, zero coverage produces an
   actionable error naming the resume command instead of "No results found." Partial
@@ -992,13 +1009,13 @@ to re-embed. (#439, #441)
   machines are preserved. A new `spelunk memory pull` does a one-way delta pull.
   Sync is identity-keyed on a time-ordered UUID carried by each entry, so it is
   idempotent (re-running never duplicates) and drift-free across machine clocks;
-  archived entries propagate as tombstones. (ADR-037 P1, #425)
+  archived entries propagate as tombstones. (#425)
 
 - **Sync modes (`mode = offline | local_first | cloud_first`).** A new `mode`
   config field (and `SPELUNK_MODE` env override) controls how the CLI reconciles
   local and cloud memory. The default preserves existing behaviour: with no
   `server_url` the CLI is `offline`; with a `server_url` set it is `local_first`.
-  `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (ADR-037 P1, #425)
+  `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (#425)
 - **Sync-mode indicator and state-scoped capability hints.** `spelunk status`
   gains a neutral one-word `mode` line reporting the active sync mode
   (`local_first`, `cloud_first`, or `offline`) whenever a `server_url` or an
@@ -1009,7 +1026,7 @@ to re-embed. (#439, #441)
   instead of suggesting to set one that is already set. `cloud_first` mode pins
   hard-error behavior: reads and writes fail loudly when the server is
   unreachable or untrusted, and local data is never silently substituted as a
-  fallback. (ADR-037)
+  fallback.
 
 ### Changed
 
