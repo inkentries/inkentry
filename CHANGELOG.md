@@ -978,13 +978,13 @@ to re-embed. (#439, #441)
   machines are preserved. A new `spelunk memory pull` does a one-way delta pull.
   Sync is identity-keyed on a time-ordered UUID carried by each entry, so it is
   idempotent (re-running never duplicates) and drift-free across machine clocks;
-  archived entries propagate as tombstones. (ADR-037 P1, #425)
+  archived entries propagate as tombstones. (#425)
 
 - **Sync modes (`mode = offline | local_first | cloud_first`).** A new `mode`
   config field (and `SPELUNK_MODE` env override) controls how the CLI reconciles
   local and cloud memory. The default preserves existing behaviour: with no
   `server_url` the CLI is `offline`; with a `server_url` set it is `local_first`.
-  `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (ADR-037 P1, #425)
+  `SPELUNK_NO_SERVER=1` remains a hard kill-switch. (#425)
 - **Sync-mode indicator and state-scoped capability hints.** `spelunk status`
   gains a neutral one-word `mode` line reporting the active sync mode
   (`local_first`, `cloud_first`, or `offline`) whenever a `server_url` or an
@@ -995,7 +995,7 @@ to re-embed. (#439, #441)
   instead of suggesting to set one that is already set. `cloud_first` mode pins
   hard-error behavior: reads and writes fail loudly when the server is
   unreachable or untrusted, and local data is never silently substituted as a
-  fallback. (ADR-037)
+  fallback.
 
 ### Changed
 

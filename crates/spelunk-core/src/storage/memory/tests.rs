@@ -149,7 +149,7 @@ fn add_edge_duplicate_silently_ignored() {
     );
 }
 
-// ── ADR-037 D2: UUID identity + cursor + idempotent apply ────────────────────
+// ── UUID identity + cursor + idempotent apply ────────────────────────────────
 
 #[test]
 fn ensure_uuid_backfills_and_is_idempotent() {
@@ -185,7 +185,7 @@ fn rows_for_sync_assigns_uuids_and_is_text_only() {
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 2);
     // Every row carries a freshly-assigned UUID; SyncRow has no embedding field
-    // at all (text-only by construction — ADR-037 D3).
+    // at all (text-only by construction).
     for r in &rows {
         assert_eq!(r.uuid.len(), 36);
         assert!(r.remote_id.is_none());

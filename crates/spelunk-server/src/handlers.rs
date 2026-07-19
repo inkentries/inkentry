@@ -618,9 +618,9 @@ pub async fn add_note(
 
 /// One entry in a `POST /memory/batch` request. Field-for-field match of the
 /// CLI's `BatchPushItem` (`spelunk-core/src/storage/remote/sync.rs`): the CLI
-/// never sends `embedding` today (its push is text-only, ADR-037 D3), but the
-/// field is accepted when present for forward compatibility with a future
-/// pushed-vector optimization (ADR-053 #4b): the server must not require it.
+/// never sends `embedding` today (its push is text-only), but the
+/// field is accepted when present for forward compatibility with a possible
+/// future pushed-vector optimization: the server must not require it.
 #[derive(Deserialize, ToSchema)]
 pub struct BatchNoteItem {
     pub kind: String,
