@@ -12,7 +12,7 @@ pub struct Database {
 /// The runner in `Database::open` gates each migration on this via
 /// `PRAGMA user_version`; steps are numbered in the order they run (the field
 /// order), not filename order.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 15;
 
 /// One entry in the migration runner: (target version, migration body).
 type MigrationStep = (i32, fn(&Database) -> Result<()>);
@@ -74,6 +74,7 @@ impl Database {
             (12, Self::apply_dim_upgrade_migration),
             (13, Self::apply_drop_snapshots_migration),
             (14, Self::apply_index_meta_migration),
+            (15, Self::apply_file_mtime_migration),
         ];
         debug_assert_eq!(
             steps.last().map(|(v, _)| *v),
@@ -147,8 +148,18 @@ impl Database {
             }
             Ok(false)
         };
+        let files_has_column = |col: &str| -> Result<bool> {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(files)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                if row.get::<_, String>(1)? == col {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
 
-        let ladder: [(i32, bool); 14] = [
+        let ladder: [(i32, bool); 15] = [
             (1, has_table("chunks")?),
             (2, has_table("embeddings")?),
             (3, has_table("graph_edges")?),
@@ -163,6 +174,7 @@ impl Database {
             (12, has_table("schema_int8_embeddings")?),
             (13, !has_table("snapshots")?),
             (14, has_table("index_meta")?),
+            (15, files_has_column("mtime")?),
         ];
         // Highest version whose predicate and all lower ones hold.
         let mut version = 0;
@@ -359,6 +371,21 @@ impl Database {
         Ok(())
     }
 
+    /// Add the `mtime` column to the files table (unix seconds; recency signal
+    /// for the embed queue). `ALTER TABLE` has no `IF NOT EXISTS`, so only the
+    /// already-applied error is tolerated; a genuine failure propagates.
+    pub fn apply_file_mtime_migration(&self) -> Result<()> {
+        match self
+            .conn
+            .execute_batch(include_str!("../../migrations/024_file_mtime.sql"))
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e).context("running file mtime migration"),
+        }
+        Ok(())
+    }
+
     /// Create the index_meta KV table (embedding provenance). Idempotent.
     pub fn apply_index_meta_migration(&self) -> Result<()> {
         self.conn
@@ -547,6 +574,61 @@ mod tests {
             msg.contains("no such table") || msg.contains("token_count migration"),
             "a real migration failure must propagate, got: {msg}"
         );
+    }
+
+    /// The `files.mtime` migration is idempotent: applying it to a pre-existing
+    /// (pre-column) index adds the column with default 0 without error, and
+    /// applying it again on an already-migrated DB is a tolerated no-op.
+    #[test]
+    fn file_mtime_migration_is_idempotent() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+
+        let has_mtime = |db: &Database| -> bool {
+            let mut stmt = db.conn.prepare("PRAGMA table_info(files)").unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                if row.get::<_, String>(1).unwrap() == "mtime" {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Fresh DB already has the column from the full migration run.
+        assert!(has_mtime(&db), "fresh DB has the mtime column");
+
+        // Simulate a pre-column index: drop the column, then re-run the migration.
+        db.conn
+            .execute_batch("ALTER TABLE files DROP COLUMN mtime")
+            .expect("drop mtime to simulate a pre-migration index");
+        assert!(!has_mtime(&db), "column dropped to model a legacy index");
+
+        db.apply_file_mtime_migration()
+            .expect("migration must add the column to a pre-column index without error");
+        assert!(has_mtime(&db), "migration re-added the mtime column");
+
+        // A legacy row inserted before the column existed reads back as 0.
+        db.conn
+            .execute(
+                "INSERT INTO files (path, language, hash, indexed_at) VALUES ('legacy.rs', 'rust', 'h', 1)",
+                [],
+            )
+            .unwrap();
+        let mtime: i64 = db
+            .conn
+            .query_row(
+                "SELECT mtime FROM files WHERE path = 'legacy.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mtime, 0, "a row lacking an explicit mtime defaults to 0");
+
+        // Re-applying on the already-migrated DB is a tolerated no-op.
+        db.apply_file_mtime_migration()
+            .expect("re-applying the migration on a migrated DB is a no-op");
+        assert!(has_mtime(&db));
     }
 
     /// Model provenance round-trips through index_meta, and a mismatch is a hard
