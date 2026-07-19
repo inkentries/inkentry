@@ -30,7 +30,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   terminal reason to skip the embed pass. (ADR-070 D1, D2)
 - **Search over a warming index emits coverage-gated notices.** When KNN search runs
   over an incompletely-embedded corpus, a one-line stderr notice names the coverage
-  percentage and its shape ("front-loaded by indexing order"). In `auto` mode on zero
+  percentage and its shape ("front-loaded by importance and recency"). In `auto` mode on zero
   coverage, search falls back to ast-grep with a notice naming embeddings as building
   in the background; in explicit `semantic`/`hybrid` mode, zero coverage produces an
   actionable error naming the resume command instead of "No results found." Partial
