@@ -952,109 +952,23 @@ import.
   principle once its own identity gap (not setting `entity_id` on insert) is
   closed; that gap is not closed by this amendment.
 
-## Amendment (2026-07-19): `add_note_superseding` identity gap, Step A hardening, and double-supersede carrier consistency
+## Amendment (2026-07-19): Double-supersede carrier consistency
 
 **Date:** 2026-07-19
 **Deciders:** founder (Johan) — pending review via this PR; architect
 
-Two gaps in the supersede path, found in the same review pass because both
-sit on the identity-model surface these amendments already cover.
+A gap in the supersede path, found on the identity-model surface these
+amendments already cover: `memory add --supersedes` can silently fork the
+git-notes carrier when `OLD` is already archived.
 
-**Provenance check (2026-07-19).** At the time of this amendment, the third
-amendment's Step A/B (`entity_id_migration.rs`) and `spelunk memory dedupe`
-exist only on the in-progress branch `task/engineer-dedupe-20260718-1314`
-(board task spelunk-oss^179) — not yet on `main`. The fourth amendment's C1
-(`add_note`/`add_note_with_created_at` insert-then-recover) is speced but has
-no Rust implementation anywhere yet; it is also in ^179's scope (criteria
-25-35, in progress on a second worktree at the time of this writing). This
-amendment's E1-E3 are therefore corrections to land **in the same
-implementation pass** as ^179, not patches against already-shipped code.
-
-### E1 — `add_note_superseding` gains `entity_id` and the same insert-then-recover as `add_note`
-
-The fourth amendment's C1 explicitly scoped `add_note_superseding` out:
-"its INSERT statement does not populate `entity_id` at all, so it cannot
-violate this index today... tracked as a separate follow-up." This is that
-follow-up.
-
-`add_note_superseding` (`crates/spelunk-core/src/storage/memory/edges.rs`)
-computes `entity_id` at insert time exactly like `add_note` /
-`add_note_with_created_at`:
-
-```rust
-crate::storage::entity_id::entity_id(kind, title, body)
-```
-
-added to its `INSERT INTO notes` column list. This closes the root cause: no
-future `--supersedes`-created row is ever `entity_id = NULL`.
-
-Once this INSERT populates `entity_id`, it is subject to the same UNIQUE
-constraint C1 gave `add_note`, so it needs the same insert-then-recover
-handling, not a bare `INSERT` that can now fail: attempt the insert; on a
-UNIQUE-constraint failure on `notes.entity_id` specifically, look up the
-existing row by `entity_id` and merge `tags`/`linked_files` into it via the
-existing `union_tags_and_files`, exactly as C1 specifies, **and use that
-existing row's id as the successor** for the archive-`OLD` step that follows
-(the transaction's second statement — `UPDATE notes SET status='archived',
-superseded_by=?2, ... WHERE id=?1 AND status='active'` — must run against
-whichever id is authoritative: the freshly inserted row, or the reused
-existing one). Return type changes to expose both the id and whether a fresh
-row was created, mirroring the fourth amendment's C2 (so the CLI can
-distinguish "created" from "reused" here too, and so E4 below can compose with
-it). `add_note_superseding`'s own archive-`OLD` UPDATE must also report
-whether it actually changed a row — needed independently by E4.
-
-### E2 — Step A backfill hardens against a collision it can now hit
-
-The third amendment's B3 states Step A "cannot fail on a constraint, because
-migration 023's index stays non-unique for this step." That is true only for
-a store's *first* pass through Step A, before Step B has ever promoted the
-index. It is not true in general: Step A and Step B both run, unconditionally,
-on **every** `MemoryStore::open` — not just the first. Once a store has
-already been promoted to UNIQUE by an earlier open, any row that reaches Step
-A still `entity_id IS NULL` (a row inserted by *some* path that predates E1's
-fix, or by any future path that has the same gap) hits Step A's bare
-`UPDATE notes SET entity_id = ?1 WHERE id = ?2` on a now-UNIQUE index. If the
-computed value collides with an existing row's `entity_id`, that `UPDATE`
-raises a UNIQUE-constraint error with no handler, which propagates out of
-`backfill_entity_ids` via `?` and hard-fails `MemoryStore::open` itself —
-bricking every `spelunk` command against that store, exactly as
-spelunk-oss^249 described.
-
-Step A's per-row `UPDATE` catches a UNIQUE-constraint violation on
-`notes.entity_id` specifically and, on that error only, skips the row
-(leaving it `NULL` for a future `dedupe`-then-retry) and logs one actionable
-warning naming the affected row id and pointing at `spelunk memory dedupe` —
-reusing Step B's existing message shape. Any other error from the `UPDATE`
-still propagates unchanged. Step A must never hard-abort `open`, matching the
-third amendment's own stated invariant for Step B; this closes the one case
-where Step A did not yet live up to it.
-
-### E3 — A second latent NULL-`entity_id` insert path found: `apply_remote_note` — flagged, not fixed here
-
-Grepping every `INSERT INTO notes` in `spelunk-core`/`spelunk-cli` (requested
-by ^249) found a second path that never populates `entity_id`:
-`MemoryStore::apply_remote_note` (`crates/spelunk-core/src/storage/memory/sync.rs`),
-the cloud-pull idempotency path for an explicit team `server_url`. Unlike
-`add_note_superseding`, this one is not a same-shape fix: its own doc comment
-states an **Add-Wins/keep-both** posture ("pulled entries are added, never
-overwriting local ones"), which predates `entity_id` and may not compose
-cleanly with C1's merge-on-collision behavior — a pulled row and a locally
-authored row can legitimately share content but arrive by different paths,
-and which posture is correct there is its own question, not a mechanical
-copy of E1. **Not decided or fixed by this amendment.** Filed as its own
-follow-up task (spelunk-oss, to be created by the EM/architect next), scoped
-to: (a) whether `apply_remote_note` should set `entity_id` at insert
-time, and (b) whether a collision there should merge (C1-style), keep-both
-(status quo, requiring the index to stay non-unique for this path, which
-conflicts with E2's premise), or something else. Until that is decided, E2's
-Step A hardening is what keeps this path from being able to hard-fail `open`
-in the meantime — this is additional justification for shipping E2 regardless
-of E1.
+A second, unrelated identity-model gap (an `add_note_superseding` insertion
+path and a Step A backfill hardening) is being corrected separately, in a
+concurrent change against this same file; this amendment covers only the
+double-supersede fix below.
 
 ### E4 — Re-superseding an already-archived entry: reject, don't silently fork the carrier
 
-**Correction to spelunk-oss^250's own framing.** Its "Problem" section
+**Correction to the reported bug's framing.** Its "Problem" section
 describes both `memory add --supersedes` and `memory supersede` as
 unconditional carrier-appenders. Re-reading both CLI commands: **only `memory
 add --supersedes` has this bug.** `memory supersede`
@@ -1089,7 +1003,7 @@ asked for; introducing it here would be scope creep against the existing
   supersede` already has. This is a deliberate behavior change from today,
   where `add --supersedes` against an already-archived `OLD` currently
   *succeeds*, creating an orphaned new note plus the conflicting carrier
-  write ^250 describes.
+  write described above.
 - **`crates/spelunk-cli/src/cli/cmd/memory/add.rs`** (post-`init`, SQLite
   primary): when `args.supersedes` is `Some`, read `OLD`'s current status
   *before* calling `backend.add(...)` (the CLI already reads `OLD` later, to
@@ -1140,8 +1054,6 @@ were produced by the bug E4 closes, a pre-fix client, or a lost-race write.
 
 ### E6 — Non-goals, consequences, security
 
-- **Non-goal:** deciding `apply_remote_note`'s `entity_id`/collision posture
-  (E3) — a separate task, not this amendment.
 - **Non-goal:** a chained-supersede-by-recency feature for `add --supersedes`
   (E4) — rejected in favor of matching `memory supersede`'s existing
   reject-on-stale-`OLD` behavior; YAGNI absent a stated need for chaining.
@@ -1153,10 +1065,6 @@ were produced by the bug E4 closes, a pre-fix client, or a lost-race write.
   loudly instead of silently creating an orphaned entry and a conflicting
   carrier record — a deliberate, user-visible behavior change, consistent
   with `memory supersede`'s existing contract.
-- **Consequence:** `MemoryStore::open` cannot be hard-failed by Step A
-  regardless of which insert path left a row `entity_id = NULL`, closing the
-  specific hard-fail risk spelunk-oss^249 raised, though E3's path remains an
-  open question for its own collision semantics.
 - **Security:** no new trust boundary. E4's pre-flight read is a local
   SQLite/git-notes read already performed by the existing code, just
   reordered; no new data leaves the machine.
