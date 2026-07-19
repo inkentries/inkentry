@@ -521,3 +521,107 @@ fn insert_embedding_replaces_a_repeated_note_id() {
         "the second embedding must overwrite the first"
     );
 }
+
+/// Replacing a `note_id` that has never been embedded must be a harmless
+/// no-op DELETE followed by a normal INSERT, not an error — the common case
+/// of embedding a note for the first time.
+#[test]
+fn insert_embedding_of_nonexistent_note_id_is_a_harmless_delete_no_op() {
+    let store = open_store();
+    let id = store
+        .add_note("note", "N", "b", &[], &[], None, None)
+        .unwrap();
+
+    let dim = crate::embeddings::EMBEDDING_DIM;
+    let mut vector = vec![0f32; dim];
+    vector[7] = 1.0;
+
+    store
+        .insert_embedding(id, &crate::embeddings::vec_to_blob(&vector))
+        .expect("embedding a never-before-embedded note must succeed");
+
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM note_embeddings WHERE note_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "the first embed for a fresh note must land exactly once"
+    );
+}
+
+/// The strongest test of "joins the existing transaction" vs. "just happens
+/// not to error": call `insert_embedding` for a repeated `note_id` from
+/// WITHIN a transaction the caller already opened, then roll that outer
+/// transaction back. If the delete+insert genuinely joined the caller's
+/// transaction, rolling it back must undo both halves, restoring the
+/// pre-transaction row exactly.
+#[test]
+fn insert_embedding_joins_callers_transaction_and_rolls_back_with_it() {
+    let store = open_store();
+    let id = store
+        .add_note("note", "N", "b", &[], &[], None, None)
+        .unwrap();
+
+    let dim = crate::embeddings::EMBEDDING_DIM;
+    let mut first = vec![0f32; dim];
+    first[0] = 1.0;
+    store
+        .insert_embedding(id, &crate::embeddings::vec_to_blob(&first))
+        .expect("seed row (autocommit)");
+
+    let mut second = vec![0f32; dim];
+    second[1] = 1.0;
+
+    {
+        let tx = store
+            .conn
+            .unchecked_transaction()
+            .expect("caller opens an outer transaction");
+        assert!(
+            !store.conn.is_autocommit(),
+            "precondition: connection must be mid-transaction, exercising the \
+             is_autocommit() guard's join branch rather than its own-BEGIN branch"
+        );
+
+        store
+            .insert_embedding(id, &crate::embeddings::vec_to_blob(&second))
+            .expect("replacing inside the caller's open transaction must not nest a BEGIN");
+
+        tx.rollback().expect("roll back the outer transaction");
+    }
+
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM note_embeddings WHERE note_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "rollback must not leave the row deleted — the DELETE half of the \
+         replace was part of the outer transaction and must roll back with it"
+    );
+
+    let stored: Vec<u8> = store
+        .conn
+        .query_row(
+            "SELECT embedding FROM note_embeddings WHERE note_id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        crate::embeddings::vec_to_blob(&first),
+        "rollback must restore the pre-transaction (first) vector — if the \
+         delete+insert had committed independently of the caller's \
+         transaction, the row would still hold `second` here"
+    );
+}

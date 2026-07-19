@@ -1054,4 +1054,187 @@ mod tests {
             "the last write in the batch must win"
         );
     }
+
+    /// Replacing a `chunk_id` that has never been inserted must be a harmless
+    /// no-op DELETE followed by a normal INSERT — not an error. This is the
+    /// overwhelmingly common real-world call pattern (indexing a chunk for the
+    /// first time), so it must not regress under the delete-then-insert fix.
+    #[test]
+    fn insert_embedding_of_nonexistent_chunk_id_is_a_harmless_delete_no_op() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+
+        let mut vector = vec![0f32; dim];
+        vector[3] = 1.0;
+
+        db.insert_embedding(42, &vector)
+            .expect("inserting a never-before-seen chunk_id must succeed");
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE chunk_id = 42",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "the first insert for a fresh id must land exactly once"
+        );
+
+        let stored: Vec<u8> = db
+            .conn
+            .query_row(
+                "SELECT embedding FROM embeddings WHERE chunk_id = 42",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, crate::embeddings::vec_to_int8_blob(&vector));
+    }
+
+    /// The strongest test of "joins the existing transaction" vs. "just happens
+    /// not to error": call `insert_embedding` for a repeated `chunk_id` from
+    /// WITHIN a transaction the caller already opened, then roll that outer
+    /// transaction back. If the delete+insert genuinely joined the caller's
+    /// transaction (rather than, say, silently nesting a SAVEPOINT that
+    /// commits independently), rolling back the outer transaction must undo
+    /// both the delete and the insert, restoring the pre-transaction row
+    /// exactly.
+    #[test]
+    fn insert_embedding_joins_callers_transaction_and_rolls_back_with_it() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+
+        let mut first = vec![0f32; dim];
+        first[0] = 1.0;
+        db.insert_embedding(1, &first)
+            .expect("seed row (autocommit)");
+
+        let mut second = vec![0f32; dim];
+        second[1] = 1.0;
+
+        {
+            let tx = db
+                .conn
+                .unchecked_transaction()
+                .expect("caller opens an outer transaction");
+            assert!(
+                !db.conn.is_autocommit(),
+                "precondition: connection must be mid-transaction, exercising the \
+                 is_autocommit() guard's join branch rather than its own-BEGIN branch"
+            );
+
+            // Must not attempt a nested BEGIN (vec0/SQLite would reject it) —
+            // simply not erroring here already covers that. The real test is
+            // below: did it join *this* transaction, or silently commit on its
+            // own?
+            db.insert_embedding(1, &second)
+                .expect("replacing inside the caller's open transaction must not nest a BEGIN");
+
+            tx.rollback().expect("roll back the outer transaction");
+        }
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE chunk_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "rollback must not leave the row deleted — the DELETE half of the \
+             replace was part of the outer transaction and must roll back with it"
+        );
+
+        let stored: Vec<u8> = db
+            .conn
+            .query_row(
+                "SELECT embedding FROM embeddings WHERE chunk_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            crate::embeddings::vec_to_int8_blob(&first),
+            "rollback must restore the pre-transaction (first) vector — if the \
+             delete+insert had committed independently of the caller's \
+             transaction, the row would still hold `second` here"
+        );
+    }
+
+    /// The `embeddings` table runs in WAL mode (`Database::open`). A repeated
+    /// `chunk_id` replace is delete-then-insert; if those two statements were
+    /// not wrapped in one atomic transaction, a concurrent reader (e.g. a
+    /// search query racing an index refresh) could observe a window with zero
+    /// rows for that id between the DELETE committing and the INSERT
+    /// committing. Drive many replaces on one connection while a second,
+    /// independent connection continuously polls the row count, and assert
+    /// the reader never observes zero.
+    #[test]
+    fn insert_embedding_replace_has_no_zero_row_window_visible_to_a_concurrent_reader() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_path_buf();
+        let db = Database::open(&path).expect("open file-backed db (WAL mode)");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+
+        let mut seed = vec![0f32; dim];
+        seed[0] = 1.0;
+        db.insert_embedding(1, &seed).expect("seed row");
+
+        let reader = Connection::open(&path).expect("independent reader connection");
+        reader
+            .execute_batch("PRAGMA busy_timeout = 5000;")
+            .expect("reader busy timeout");
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_zero = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let iterations_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stop_reader = stop.clone();
+        let saw_zero_reader = saw_zero.clone();
+        let iterations_reader = iterations_observed.clone();
+
+        let reader_thread = std::thread::spawn(move || {
+            while !stop_reader.load(std::sync::atomic::Ordering::Relaxed) {
+                let count: i64 = reader
+                    .query_row(
+                        "SELECT COUNT(*) FROM embeddings WHERE chunk_id = 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .expect("reader query must not error under WAL");
+                iterations_reader.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count == 0 {
+                    saw_zero_reader.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+
+        let mut v = vec![0f32; dim];
+        for i in 0..500 {
+            v[i % dim] = 1.0;
+            db.insert_embedding(1, &v).expect("replace");
+        }
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader_thread.join().expect("reader thread must not panic");
+
+        assert!(
+            iterations_observed.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "sanity check: the reader must actually have raced the writer"
+        );
+        assert!(
+            !saw_zero.load(std::sync::atomic::Ordering::Relaxed),
+            "a concurrent WAL reader must never observe zero rows for chunk_id=1 \
+             mid-replace — the delete+insert must commit atomically as one \
+             transaction, not as two independently-visible statements"
+        );
+    }
 }
