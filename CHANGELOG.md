@@ -64,6 +64,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk-server` no longer computes an abandoned embed batch to
+  completion.** The native embedder moved a whole `/index/embed` batch into a
+  detached blocking task, so when the CLI's client gave up on a slow batch
+  (`batch_timeout`) or the server's own 1800s timeout fired first, the
+  connection closed but the embedding work kept running on the GPU/CPU for a
+  result nobody would ever read, measured at ~37% of one run's GPU time spent
+  on a single abandoned batch. A client disconnect or server-side timeout now
+  cancels the in-flight batch (checked when a queued batch reaches the front
+  of the embedder's lock, between sub-batches, and per chunk on the
+  sequential path), and the abandonment is logged with the chunk count
+  completed. No request/response contract change. (#631)
 - **`memory add --supersedes OLD` against an already-archived OLD no longer
   writes conflicting git-notes carrier records.** The SQL layer's archive-OLD
   update already silently no-ops when OLD is not active, but the CLI never
