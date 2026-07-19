@@ -1,13 +1,27 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Returns `~/.config/spelunk/`.
+/// Returns `~/.config/spelunk/`, or `SPELUNK_CONFIG_DIR` when set.
 ///
 /// On all platforms we use `~/.config` rather than the OS-native config dir
 /// (e.g. `~/Library/Application Support` on macOS) so that the path matches
 /// what the CLI documentation and error messages say, and so that config files
 /// work the same way across Linux and macOS.
+///
+/// `SPELUNK_CONFIG_DIR` is a supported override of the entire path, not
+/// dev-only cruft: it is load-bearing on Windows, where `dirs::home_dir()` 6.x
+/// calls `SHGetKnownFolderPath` (a Registry lookup) rather than reading
+/// `HOME`/`USERPROFILE`, making a per-process environment override of `HOME`
+/// ineffective (the identical portability gap documented on
+/// `spelunk_state_dir` in the CLI's `capability.rs` and on
+/// `web_to_md_script_path` in `memory/add.rs`). Tests that need an isolated
+/// config/secret-store location (this crate's own `config::mod::tests`, and
+/// the CLI integration tests via `spelunk_bin_in`) set this instead of relying
+/// on `HOME` alone.
 pub(in crate::config) fn spelunk_config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("SPELUNK_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config")
@@ -115,6 +129,34 @@ pub fn resolve_db(explicit: Option<&Path>, cfg_default: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ── spelunk_config_dir / SPELUNK_CONFIG_DIR override ─────────────────────
+
+    /// `SPELUNK_CONFIG_DIR` wins over `dirs::home_dir()`-derived resolution.
+    /// This is the override that makes per-test isolation possible on
+    /// Windows, where `dirs::home_dir()` does not read `HOME`.
+    #[test]
+    #[serial_test::serial(spelunk_config_dir_env)]
+    fn spelunk_config_dir_honors_env_override() {
+        let tmp = TempDir::new().unwrap();
+        let override_dir = tmp.path().join("custom-config-dir");
+        unsafe { std::env::set_var("SPELUNK_CONFIG_DIR", &override_dir) };
+        let got = spelunk_config_dir();
+        unsafe { std::env::remove_var("SPELUNK_CONFIG_DIR") };
+        assert_eq!(got, override_dir);
+    }
+
+    #[test]
+    #[serial_test::serial(spelunk_config_dir_env)]
+    fn spelunk_config_dir_falls_back_to_home_when_unset() {
+        unsafe { std::env::remove_var("SPELUNK_CONFIG_DIR") };
+        let got = spelunk_config_dir();
+        assert!(
+            got.ends_with(Path::new(".config").join("spelunk")),
+            "got: {}",
+            got.display()
+        );
+    }
 
     // ── find_project_dir / require_project_db_at (ADR-067) ───────────────────
 
