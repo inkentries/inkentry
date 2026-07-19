@@ -16,7 +16,7 @@
 # this repo does not ship a proxy to pair with it.
 #
 # Run (dev, no compose): the server binds loopback only (see above), so a
-# sibling container on its own network can't reach it — sibling-container DNS
+# sibling container on its own network can't reach it: sibling-container DNS
 # resolves to the bridge IP, and nothing listens there. A sidecar has to share
 # the server's network namespace instead, then reach it at 127.0.0.1:
 #   docker run -d --name spelunk-server -v spelunk-data:/data spelunk-server
@@ -25,8 +25,8 @@
 #
 # Run (local scaffold, with API key): see docker-compose.yml. It runs this
 # image with a persistent volume, wired up with the same
-# `--network container:spelunk-server` + 127.0.0.1 pattern above — nothing
-# more. It does not publish a host-reachable port.
+# `--network container:spelunk-server` + 127.0.0.1 pattern above. Nothing
+# more; it does not publish a host-reachable port.
 #
 # For a team-reachable deployment, don't containerize this at all: run the
 # binary bare-metal/systemd on a host, with your own TLS terminator (nginx,
