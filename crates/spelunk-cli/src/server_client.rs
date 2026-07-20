@@ -134,7 +134,7 @@ struct BearerState {
 
 /// State needed to rotate an expired/rejected WorkOS access token.
 ///
-/// Refresh now goes DIRECTLY to WorkOS (ADR-047), so the WorkOS base URL and the
+/// Refresh now goes DIRECTLY to WorkOS, so the WorkOS base URL and the
 /// embedded public `client_id` are carried here alongside the rotating tokens.
 struct RefreshState {
     tokens: AuthTokens,
@@ -210,9 +210,9 @@ impl ServerInferenceClient {
         // Carry WorkOS refresh state only when the resolved bearer came from
         // `[auth]`, i.e. `base_url`'s origin is the cloud kind (ADR-071 D2).
         // A self-hosted server-key / env token is not refreshable here.
-        // Refresh targets WorkOS directly (ADR-047): the WorkOS base URL and
-        // the embedded public client_id (derived from the default cloud
-        // host) are captured here.
+        // Refresh targets WorkOS directly: the WorkOS base URL and the
+        // embedded public client_id (derived from the default cloud host)
+        // are captured here.
         let refresh = cfg
             .auth
             .as_ref()
@@ -302,7 +302,7 @@ impl ServerInferenceClient {
     }
 
     /// Rotate the WorkOS access token DIRECTLY via WorkOS `/authenticate`
-    /// (refresh grant, ADR-047), persist the rotated tokens, and update the
+    /// (refresh grant), persist the rotated tokens, and update the
     /// in-memory bearer.
     ///
     /// Returns `Ok(true)` when a refresh was performed, `Ok(false)` when there
@@ -755,7 +755,7 @@ mod tests {
             .mount(&inference)
             .await;
 
-        // The WorkOS refresh exchange rotates the tokens (ADR-047).
+        // The WorkOS refresh exchange rotates the tokens.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1018,7 +1018,19 @@ mod tests {
             project_id: Some("proj".to_string()),
             ..Default::default()
         };
-        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        // Inject an in-memory secret store so this test never touches the
+        // real OS keychain (DI; cf. the `refresh_on_401_retries_once_and_persists`
+        // comment above and config.rs tests). This test previously called
+        // the production `from_config` entry point directly, which resolves
+        // the bearer via `Config::bearer_for` against the *real* default
+        // secret store; on macOS in a headless session that keychain
+        // lookup blocks indefinitely instead of failing fast, which is what
+        // made this test (and the whole module) appear to hang "even in
+        // isolation" without `SPELUNK_SECRET_STORE=file` set in the
+        // environment.
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let client =
+            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
         assert!(
             client.is_explicit_remote,
             "an explicitly configured server_url must count as explicit even when it is loopback"
