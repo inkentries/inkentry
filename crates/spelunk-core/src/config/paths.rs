@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// calls `SHGetKnownFolderPath` (a Registry lookup) rather than reading
 /// `HOME`/`USERPROFILE`, making a per-process environment override of `HOME`
 /// ineffective (the identical portability gap documented on
-/// `spelunk_state_dir` in the CLI's `capability.rs` and on
+/// `spelunk_state_dir` in the CLI's `capability/probe.rs` and on
 /// `web_to_md_script_path` in `memory/add.rs`). Tests that need an isolated
 /// config/secret-store location (this crate's own `config::mod::tests`, and
 /// the CLI integration tests via `spelunk_bin_in`) set this instead of relying

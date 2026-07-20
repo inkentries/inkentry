@@ -20,6 +20,17 @@
 //!
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.
+//!
+//! ## Module layout
+//!
+//! - [`state`]: the data types parsed from `/v1/health` (`Capabilities`,
+//!   `EmbedderState`, `ServerLimits`).
+//! - [`tier`]: the resolved [`Tier`] enum itself.
+//! - [`probe`]: loopback auto-discovery + explicit `server_url` health probing,
+//!   and the per-process `Tier` cache (`get_tier`).
+//! - [`diagnostics`]: probe-failure classification and TLS error rendering.
+//! - [`guard`]: the `require_*` functions commands call to gate a feature on
+//!   a `Tier`.
 
 mod diagnostics;
 mod guard;
@@ -31,6 +42,9 @@ pub use diagnostics::{ConnFailure, explicit_probe_failure};
 pub use guard::{inference_server_required_message, require_explicit_server_url, require_tier1};
 pub(crate) use probe::spelunk_state_dir;
 pub use probe::{get_tier, probe_tier_fresh};
+// `Capabilities` is only reached from outside this module by other crates'
+// `#[cfg(test)]` code (`Capabilities::all()`), so a non-test build sees this
+// re-export as unused.
 #[allow(unused_imports)]
 pub use state::Capabilities;
 pub use state::{EmbedderState, ServerLimits};
