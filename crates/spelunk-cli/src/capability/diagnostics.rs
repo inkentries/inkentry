@@ -116,7 +116,7 @@ pub(crate) fn find_rustls_cause(err: &(dyn std::error::Error + 'static)) -> Opti
 
 /// Map a `rustls::Error` to a short, human-readable cause. Certificate errors
 /// get specific text; `CaUsedAsEndEntity` (a CA:TRUE certificate presented as
-/// the server's own leaf, the exact self-hosting.md client-trust trap) is
+/// the server's own leaf, the exact server-setup.md client-trust trap) is
 /// detected by name inside `CertificateError::Other`, the bucket rustls maps
 /// it into (webpki's variant has no direct `CertificateError` counterpart).
 fn describe_rustls_error(e: &rustls::Error) -> String {
@@ -141,13 +141,13 @@ fn describe_rustls_error(e: &rustls::Error) -> String {
 }
 
 /// Hint appended to a TLS WARN when `server_ca` / `SPELUNK_SERVER_CA` is
-/// configured: the two classic self-hosting.md client-trust traps, so a user
+/// configured: the two classic server-setup.md client-trust traps, so a user
 /// does not have to rediscover them by trial and error.
 pub(crate) fn cert_trust_hint() -> String {
     "\n  server_ca is configured; two classic misconfigurations cause this:\n  \
      1) the file points at the server's own leaf certificate, not the issuing CA\n  \
      2) the server is presenting a CA certificate (CA:TRUE) as its own leaf certificate\n  \
-     See docs/self-hosting.md, section \"Trusting the server's certificate on the client\"."
+     See docs/server-setup.md, section \"Trusting the server's certificate on the client\"."
         .to_string()
 }
 
