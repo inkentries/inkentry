@@ -9,6 +9,34 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`spelunk memory dedupe` collapses duplicate-`entity_id` groups already
+  resident in a project's `memory.db`.** A store can already hold rows that
+  share the same content identity (`kind`/`title`/`body`) while differing in
+  `created_at`, `tags`, `linked_files`, or `status`, for example a decision
+  recorded twice by a repeated `memory harvest` run, or one merged in from
+  another machine. Opening the store now backfills each row's `entity_id` but
+  never deletes an existing row on its own, so this new command is the
+  explicit, dry-runnable way to clean duplicates up: `--dry-run` reports
+  duplicate groups and does nothing, otherwise the earliest-created row in
+  each group survives, the others' `tags` and `linked_files` merge onto it,
+  and any `supersedes` edge pointing at a removed row is repointed to the
+  survivor. It is a one-time backfill you run when you want to, not a step
+  `init` or `memory add` perform for you. See [ADR-068's third
+  amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
+### Fixed
+
+- **`spelunk memory add` no longer crashes on a byte-identical duplicate once
+  a project's `entity_id` index has been promoted to UNIQUE.** Previously a
+  second `memory add` with the same `kind`/`title`/`body` as an existing
+  entry hit `Error: UNIQUE constraint failed: notes.entity_id`. It now reuses
+  the existing entry instead, merging the new call's `tags` and
+  `linked_files` into it, and prints `Already recorded as [kind] #id: title`
+  in place of `Stored [kind] #id: title`. See [ADR-068's fourth
+  amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
 ### Changed
 
 - **Chunk re-windowing is now token-aware, and windowed chunks keep their identity.**

@@ -375,6 +375,59 @@ C#, Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text.
 
 ---
 
+## Code Comment Conventions
+
+Default to no comment. Add one only when it earns its place.
+
+- **Why, never what.** A comment states something the code itself cannot: a
+  hidden constraint, a non-obvious invariant, the specific bug a piece of
+  logic guards against, or the reason one approach was chosen over another.
+  If a comment only restates the next line in English, delete it.
+
+  ```rust
+  // Bad: restates the line below
+  // Insert the row into the notes table.
+  self.conn.execute("INSERT INTO notes ...", params)?;
+
+  // Good: the invariant isn't visible from the code alone
+  // Losers are deleted in id order; clearing their `superseded_by` first
+  // avoids a live FK reference regardless of that order.
+  self.clear_superseded_by(&loser_ids)?;
+  ```
+
+- **Self-documenting code first.** If a comment exists only to explain what a
+  poorly-named variable, function, or type actually holds or does, rename it
+  instead and delete the comment. Reach for a comment only after naming has
+  been tried.
+
+- **No `///`/`//!` doc-comments in test code.** Doc-comment syntax exists for
+  rustdoc, which is never generated for `#[cfg(test)]` modules or `#[test]`
+  functions — using it there is a category error, not a style choice. Use a
+  plain `//` comment if a note is genuinely needed, but prefer a descriptive
+  test name and clear assertions over a comment at all.
+
+- **No em-dashes (`—`).** Use a colon, comma, semicolon, period, or
+  restructure the sentence instead. This applies to comments, doc-comments,
+  and committed docs alike.
+
+  ```rust
+  // Bad
+  /// `server_limits` mirrors `/v1/health`'s `limits` object — `None` when
+  /// absent — a server that pre-dates the field.
+
+  // Good
+  /// `server_limits` mirrors `/v1/health`'s `limits` object: `None` when
+  /// absent means a server that pre-dates the field.
+  ```
+
+- **Even a real comment should be terse.** State the invariant or constraint
+  directly; cut the surrounding narration, the "here's why we're telling you
+  this" preamble, and any restated history. A comment that takes three
+  sentences to say one thing is a candidate for a one-clause rewrite, not a
+  trim.
+
+---
+
 ## Common Commands
 
 ```bash
