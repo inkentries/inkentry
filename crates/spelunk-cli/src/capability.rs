@@ -21,11 +21,15 @@
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use crate::config::Config;
 
+mod state;
+
+#[allow(unused_imports)]
+pub use state::Capabilities;
+pub use state::{EmbedderState, ServerLimits};
 /// The single state file directory resolver for the whole CLI:
 /// `~/.local/state/spelunk/`, or `SPELUNK_STATE_DIR` when set.
 ///
@@ -66,7 +70,6 @@ pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
         .map(|home| home.join(".local").join("state").join("spelunk"))
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
-
 /// Read the port written by `spelunk server start` into
 /// `~/.local/state/spelunk/server.port`. Returns `None` if absent or unreadable.
 fn read_server_port_file() -> Option<u16> {
@@ -74,9 +77,7 @@ fn read_server_port_file() -> Option<u16> {
     let content = std::fs::read_to_string(&path).ok()?;
     content.trim().parse::<u16>().ok()
 }
-
 static TIER: OnceCell<Tier> = OnceCell::const_new();
-
 /// Cause recorded for the most recent EXPLICIT (non-auto-discovered)
 /// `server_url` probe failure, set at most once per process (see
 /// `record_explicit_probe_failure`, which mirrors `OnceCell::set`'s
@@ -87,7 +88,6 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 /// that asserts it stays empty; both exist in this module's test suite and
 /// share this one process-global static. Production code never resets it.
 static EXPLICIT_PROBE_FAILURE: std::sync::Mutex<Option<ConnFailure>> = std::sync::Mutex::new(None);
-
 /// How an explicitly-configured `server_url` probe failed: distinguishes a
 /// transport-level miss (refused, timed out, DNS, no route) from a connection
 /// that reached the server but failed TLS trust. `status`/`check` read this to
@@ -103,7 +103,6 @@ pub enum ConnFailure {
     /// short cause string used in `[tls: <cause>]`.
     Tls(String),
 }
-
 /// Cause of the most recent explicit `server_url` probe failure, if any.
 /// `None` when no `server_url` is configured, when the tier is `Server`, when
 /// the only probes so far were loopback auto-discovery, or before the first
@@ -114,7 +113,6 @@ pub fn explicit_probe_failure() -> Option<ConnFailure> {
         .unwrap_or_else(|e| e.into_inner())
         .clone()
 }
-
 /// Record `cause` as the explicit-probe failure, unless one is already
 /// recorded. Mirrors `OnceCell::set`'s first-write-wins semantics so this
 /// carries the same "set at most once per process" contract the previous
@@ -127,7 +125,6 @@ fn record_explicit_probe_failure(cause: ConnFailure) {
         *slot = Some(cause);
     }
 }
-
 /// Test-only: clear the recorded explicit-probe failure so a test that
 /// asserts the cell is empty isn't at the mercy of whatever other
 /// `capability::` test happened to populate it earlier in this process.
@@ -139,7 +136,6 @@ fn reset_explicit_probe_failure_for_test() {
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
 }
-
 /// Render `err`'s full `source()` chain, one cause per arrow. reqwest's
 /// `Display` only ever shows its own top-level message ("error sending
 /// request for url (...)"); the actual cause (a TLS handshake failure, a DNS
@@ -155,7 +151,6 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     }
     out
 }
-
 /// Walk `err`'s source chain looking for a `rustls::Error`, which is how a TLS
 /// handshake/certificate failure surfaces underneath reqwest's generic
 /// "error sending request". tokio-rustls reports it boxed inside an
@@ -186,7 +181,6 @@ fn find_rustls_cause(err: &(dyn std::error::Error + 'static)) -> Option<String> 
     }
     None
 }
-
 /// Map a `rustls::Error` to a short, human-readable cause. Certificate errors
 /// get specific text; `CaUsedAsEndEntity` (a CA:TRUE certificate presented as
 /// the server's own leaf, the exact self-hosting.md client-trust trap) is
@@ -212,7 +206,6 @@ fn describe_rustls_error(e: &rustls::Error) -> String {
         other => format!("TLS handshake failed: {other}"),
     }
 }
-
 /// Hint appended to a TLS WARN when `server_ca` / `SPELUNK_SERVER_CA` is
 /// configured: the two classic self-hosting.md client-trust traps, so a user
 /// does not have to rediscover them by trial and error.
@@ -223,144 +216,6 @@ fn cert_trust_hint() -> String {
      See docs/self-hosting.md, section \"Trusting the server's certificate on the client\"."
         .to_string()
 }
-
-/// Server-side embedder readiness, mirrored from the `/v1/health` `embedder.state`
-/// field. The CLI uses this to distinguish, when semantic search is unavailable,
-/// between "no server reachable", "server up but the model is still warming up",
-/// and "the model failed to load" — so it can print an actionable one-line notice
-/// rather than silently degrading.
-///
-/// Serialized lowercase to match the server's health body and to feed
-/// `spelunk status --format json`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EmbedderState {
-    /// Native embedder build/download in progress — not ready yet, keep polling.
-    Loading,
-    /// Model loaded; embed endpoints will serve.
-    Ready,
-    /// Background load failed (download error, OOM, …). Terminal for that process.
-    Unavailable,
-    /// Server started with no in-process model to load (external embedding URL,
-    /// or no embedder feature). Treated as ready.
-    Disabled,
-    /// Field absent from the health body (server pre-dates it). Unknown state.
-    #[default]
-    Unknown,
-}
-
-impl EmbedderState {
-    /// Lowercase wire string (matches the server's `embedder.state` field and
-    /// feeds `spelunk status --format json`).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EmbedderState::Loading => "loading",
-            EmbedderState::Ready => "ready",
-            EmbedderState::Unavailable => "unavailable",
-            EmbedderState::Disabled => "disabled",
-            EmbedderState::Unknown => "unknown",
-        }
-    }
-}
-
-/// Server-enforced operative limits relevant to sizing an `/index/embed`
-/// request, mirrored from `/v1/health`'s `limits` object (see
-/// `crates/spelunk-server/src/handlers.rs` `ServerLimits`).
-///
-/// `None` on a `Tier::Server` (rather than this struct being absent) means the
-/// server pre-dates this field — the embed phase treats that as "assume the
-/// legacy 30s / no-embed-exemption profile", which is exactly the
-/// version-skew case a newer CLI can hit talking to an older, long-running
-/// server (see `embed_phase.rs`'s calibration-vs-server-budget clamping).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServerLimits {
-    /// Wall-clock budget (seconds) the server allows a single `/index/embed`
-    /// request before returning `408`.
-    pub embed_request_timeout_secs: u64,
-    /// Max chunks accepted in a single `/index/embed` request (`413` above this).
-    pub max_batch_chunks: usize,
-    /// Per-chunk token truncation cap the embedder enforces, if known.
-    pub embedder_token_cap: Option<usize>,
-}
-
-/// Feature availability for a server-connected tier.
-#[derive(Debug, Clone, Serialize)]
-pub struct Capabilities {
-    pub search_semantic: bool,
-    pub index_embed: bool,
-    pub memory_push: bool,
-    pub memory_pull: bool,
-    pub memory_search: bool,
-    pub memory_harvest: bool,
-    pub explore: bool,
-    /// Reserved (ADR-002 `/plan`): parsed from server caps but hidden from all
-    /// user-facing output until a `spelunk plan` command ships.
-    #[serde(skip_serializing)]
-    #[allow(dead_code)]
-    pub plan: bool,
-    /// The server accepts a client-pushed embedding vector on `POST
-    /// /memory/batch`, advertised as a top-level `bool` in
-    /// `/v1/health` (NOT an entry in the `capabilities` array). When set, the
-    /// sync push may send the locally-computed fp32/896 vector instead of making
-    /// the server re-embed; when unset (older server / OSS team server) the push
-    /// stays text-only. Not surfaced in user-facing output.
-    #[serde(skip_serializing)]
-    pub accepts_pushed_vectors: bool,
-}
-
-impl Capabilities {
-    fn from_server_caps(caps: &[&str]) -> Self {
-        let has = |c: &str| caps.contains(&c);
-        let memory = has("memory");
-        Self {
-            search_semantic: has("search.semantic"),
-            index_embed: has("index.embed"),
-            memory_push: memory,
-            memory_pull: memory,
-            memory_search: memory,
-            memory_harvest: memory,
-            explore: has("explore"),
-            plan: has("plan"),
-            // Not derivable from the `capabilities` array — it is a separate
-            // top-level bool set by `parse_health` from the health body.
-            accepts_pushed_vectors: false,
-        }
-    }
-
-    /// Conservative set assumed when talking to a legacy server that returns
-    /// plain-text health ("ok") instead of JSON.
-    fn legacy_memory_only() -> Self {
-        Self {
-            search_semantic: false,
-            index_embed: false,
-            memory_push: true,
-            memory_pull: true,
-            memory_search: true,
-            memory_harvest: false,
-            explore: false,
-            plan: false,
-            // A legacy plain-text server pre-dates the pushed-vector accept side.
-            accepts_pushed_vectors: false,
-        }
-    }
-
-    /// Full set for a fully-featured server.
-    #[cfg(test)]
-    pub fn all() -> Self {
-        Self {
-            search_semantic: true,
-            index_embed: true,
-            memory_push: true,
-            memory_pull: true,
-            memory_search: true,
-            memory_harvest: true,
-            explore: true,
-            plan: true,
-            accepts_pushed_vectors: true,
-        }
-    }
-}
-
 /// CLI capability tier for this process.
 #[derive(Debug, Clone)]
 pub enum Tier {
@@ -390,7 +245,6 @@ pub enum Tier {
         server_limits: Option<ServerLimits>,
     },
 }
-
 impl Tier {
     pub fn is_server(&self) -> bool {
         matches!(self, Tier::Server { .. })
@@ -512,7 +366,6 @@ impl Tier {
         out
     }
 }
-
 /// Return the cached capability tier for this process.
 ///
 /// On the first call, probes the server according to the following priority:
@@ -558,7 +411,6 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
     })
     .await
 }
-
 /// One fresh, uncached tier probe, honouring the same explicit-offline
 /// short-circuits as [`get_tier`].
 ///
@@ -578,16 +430,12 @@ pub async fn probe_tier_fresh(cfg: &Config) -> Tier {
     )
     .await
 }
-
 /// Remote-server probe timeout (explicit `server_url` in config/env).
 const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
 /// Loopback probe timeout (auto-discovery of a locally-running server).
 const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// Default loopback port for `spelunk-server`.
 const DEFAULT_LOOPBACK_PORT: u16 = 7777;
-
 async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     // ── 1. SPELUNK_NO_SERVER short-circuit ───────────────────────────────────
     if matches!(
@@ -640,7 +488,6 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     tracing::debug!("loopback auto-discovery: no local server found — offline mode");
     Tier::Offline
 }
-
 /// Probe a single URL and return the resulting `Tier`, or a hard error string
 /// for an explicit-URL dimension mismatch.
 ///
@@ -752,7 +599,6 @@ async fn probe_url(
         }
     }
 }
-
 /// Parse the health response body and return `(Capabilities, embedding_dim,
 /// embedder_state, server_limits)`.
 ///
@@ -847,7 +693,6 @@ async fn parse_health(
         }
     }
 }
-
 /// Return the effective UID of this process (Unix), or `None` on Windows.
 fn current_uid() -> Option<u32> {
     #[cfg(unix)]
@@ -862,7 +707,6 @@ fn current_uid() -> Option<u32> {
         None
     }
 }
-
 /// Guidance for an *inference*-backed feature (semantic `memory search`,
 /// `memory timeline`, `memory harvest`) that has no reachable server.
 ///
@@ -878,7 +722,6 @@ pub fn inference_server_required_message(feature: &str) -> String {
          Run `spelunk server start` to enable this feature."
     )
 }
-
 /// Return `Ok(())` if the tier is `Server`, otherwise return an `anyhow::Error`
 /// with the standard locked-feature message format.
 ///
@@ -907,7 +750,6 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
         ),
     }
 }
-
 /// Guard for a feature that moves memory to or from an explicitly-configured
 /// server (`memory push`, `sync`, `memory pull`): a self-hosted team server or
 /// Spelunk Cloud both work identically here. Distinct from features that
@@ -934,110 +776,9 @@ pub fn require_explicit_server_url(feature: &str, cfg: &Config) -> anyhow::Resul
         )
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Capabilities::from_server_caps ──────────────────────────────────────
-
-    #[test]
-    fn from_server_caps_empty_returns_all_false() {
-        let caps = Capabilities::from_server_caps(&[]);
-        assert!(!caps.search_semantic);
-        assert!(!caps.index_embed);
-        assert!(!caps.memory_push);
-        assert!(!caps.memory_pull);
-        assert!(!caps.memory_search);
-        assert!(!caps.memory_harvest);
-        assert!(!caps.explore);
-        assert!(!caps.plan);
-    }
-
-    #[test]
-    fn from_server_caps_full_set() {
-        let caps = Capabilities::from_server_caps(&[
-            "search.semantic",
-            "index.embed",
-            "memory",
-            "explore",
-            "plan",
-        ]);
-        assert!(caps.search_semantic);
-        assert!(caps.index_embed);
-        assert!(caps.memory_push);
-        assert!(caps.memory_pull);
-        assert!(caps.memory_search);
-        assert!(caps.memory_harvest);
-        assert!(caps.explore);
-        assert!(caps.plan);
-    }
-
-    #[test]
-    fn from_server_caps_memory_only() {
-        let caps = Capabilities::from_server_caps(&["memory"]);
-        assert!(!caps.search_semantic);
-        assert!(!caps.index_embed);
-        assert!(!caps.explore);
-        assert!(!caps.plan);
-        assert!(caps.memory_push);
-        assert!(caps.memory_pull);
-        assert!(caps.memory_search);
-        assert!(caps.memory_harvest);
-    }
-
-    #[test]
-    fn from_server_caps_partial_set() {
-        let caps = Capabilities::from_server_caps(&["search.semantic", "plan"]);
-        assert!(caps.search_semantic);
-        assert!(!caps.index_embed);
-        assert!(!caps.explore);
-        assert!(caps.plan);
-        assert!(!caps.memory_push);
-        assert!(!caps.memory_pull);
-        assert!(!caps.memory_search);
-        assert!(!caps.memory_harvest);
-    }
-
-    #[test]
-    fn from_server_caps_unknown_capability_is_ignored() {
-        let caps = Capabilities::from_server_caps(&["search.semantic", "unknown.future", "memory"]);
-        assert!(caps.search_semantic);
-        assert!(!caps.index_embed);
-        assert!(caps.memory_push);
-        // Unknown capability should not affect any flag.
-    }
-
-    // ── Capabilities::legacy_memory_only ─────────────────────────────────────
-
-    #[test]
-    fn legacy_memory_only_values() {
-        let caps = Capabilities::legacy_memory_only();
-        assert!(!caps.search_semantic);
-        assert!(!caps.index_embed);
-        assert!(!caps.explore);
-        assert!(!caps.plan);
-        assert!(caps.memory_push);
-        assert!(caps.memory_pull);
-        assert!(caps.memory_search);
-        assert!(!caps.memory_harvest);
-    }
-
-    // ── Capabilities::all ────────────────────────────────────────────────────
-
-    #[test]
-    fn all_values_are_true() {
-        let caps = Capabilities::all();
-        assert!(caps.search_semantic);
-        assert!(caps.index_embed);
-        assert!(caps.memory_push);
-        assert!(caps.memory_pull);
-        assert!(caps.memory_search);
-        assert!(caps.memory_harvest);
-        assert!(caps.explore);
-        assert!(caps.plan);
-    }
-
     // ── Tier ─────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1371,7 +1112,7 @@ mod tests {
             push_msg.replace("memory push", "sync"),
             sync_msg,
             "push and sync messages must differ only in the feature name: \
-             push={push_msg:?} sync={sync_msg:?}"
+                 push={push_msg:?} sync={sync_msg:?}"
         );
     }
 
@@ -1780,29 +1521,6 @@ mod tests {
         );
     }
 
-    // ── EmbedderState ────────────────────────────────────────────────────────
-
-    #[test]
-    fn embedder_state_default_is_unknown() {
-        assert_eq!(EmbedderState::default(), EmbedderState::Unknown);
-    }
-
-    #[test]
-    fn embedder_state_deserializes_lowercase_wire_values() {
-        // Must match the server's `#[serde(rename_all = "lowercase")]` values.
-        for (wire, want) in [
-            ("loading", EmbedderState::Loading),
-            ("ready", EmbedderState::Ready),
-            ("unavailable", EmbedderState::Unavailable),
-            ("disabled", EmbedderState::Disabled),
-        ] {
-            let got: EmbedderState =
-                serde_json::from_value(serde_json::Value::String(wire.to_string())).unwrap();
-            assert_eq!(got, want, "wire {wire:?} should deserialize to {want:?}");
-            assert_eq!(want.as_str(), wire, "as_str round-trips the wire value");
-        }
-    }
-
     #[test]
     fn tier_embedder_state_accessor() {
         let tier = Tier::Server {
@@ -2054,9 +1772,9 @@ mod tests {
         assert_eq!(
             rustls_entries, 1,
             "expected exactly one resolved `rustls` version in Cargo.lock, found \
-             {rustls_entries}; a split here means find_rustls_cause's downcast_ref \
-             will silently stop matching TLS causes; repin spelunk-cli's direct \
-             rustls to the same version reqwest resolves"
+                 {rustls_entries}; a split here means find_rustls_cause's downcast_ref \
+                 will silently stop matching TLS causes; repin spelunk-cli's direct \
+                 rustls to the same version reqwest resolves"
         );
     }
 
@@ -2180,8 +1898,8 @@ mod tests {
             explicit_probe_failure(),
             None,
             "a reachable server answering with a non-2xx status must not populate \
-             EXPLICIT_PROBE_FAILURE: that would render a stale/wrong [tls:] or \
-             [unreachable] label for a request that was neither"
+                 EXPLICIT_PROBE_FAILURE: that would render a stale/wrong [tls:] or \
+                 [unreachable] label for a request that was neither"
         );
     }
 
