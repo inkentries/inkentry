@@ -376,6 +376,8 @@ impl MemoryStore {
 }
 
 #[cfg(test)]
+mod superseded_by_tests;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;
