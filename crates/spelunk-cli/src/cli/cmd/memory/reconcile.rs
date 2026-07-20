@@ -543,7 +543,7 @@ fn import_batch(
                 "active"
             };
 
-            let id = store.add_note_with_created_at(
+            let (id, _created) = store.add_note_with_created_at(
                 &note.kind,
                 &note.title,
                 &note.body,
