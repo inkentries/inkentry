@@ -156,7 +156,7 @@ Key points:
   locked-feature message.
 
 <!-- The discovery timeout (250 ms) and autostart/handshake UX are confirmed
-     against capability.rs. `instance_id` and `started_by` are implemented
+     against capability/probe.rs. `instance_id` and `started_by` are implemented
      (PRs #329/#333). -->
 
 User-facing behaviour for these tiers is documented in

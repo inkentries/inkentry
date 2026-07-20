@@ -110,7 +110,7 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         // would otherwise land on the same real `%USERPROFILE%\.config\spelunk`,
         // and concurrent tests racing on one `secrets.toml` corrupt it (see the
         // identical, already-documented gap on `SPELUNK_STATE_DIR` in
-        // `capability.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
+        // `capability/probe.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
         // `SPELUNK_CONFIG_DIR` bypasses `dirs::home_dir()` entirely and works
         // identically on every platform.
         .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))

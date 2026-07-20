@@ -40,7 +40,10 @@ pub async fn memory_push(
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("memory push", tier, cfg.server_url.as_deref())?;
 
-    let base_url = capability::require_team_server("memory push", cfg)?;
+    let base_url = cfg
+        .server_url
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("memory push requires `server_url` to be configured."))?;
     let project_id = cfg.project_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. Set it in `.spelunk/config.toml` \
