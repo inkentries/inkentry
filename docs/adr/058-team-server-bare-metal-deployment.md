@@ -24,7 +24,7 @@ the founder's answer.
 ## Context
 
 `spelunk-server` (`crates/spelunk-server/`) is an axum HTTP listener. It serves
-two roles ([`server.md`](../server.md)): an automatic loopback **inference**
+two roles (`server.md`): an automatic loopback **inference**
 backend on a developer's own machine (never a memory store), and — when a
 developer sets an explicit `server_url` — a deployed **team memory** server that
 holds a team's shared memory ([ADR-004](004-unified-memory-storage.md),
@@ -51,7 +51,7 @@ deployment run over TLS is an **operational** one that the operator satisfies
 outside the binary, by putting a TLS terminator in front of a loopback-bound
 server. The client half enforces the same contract from the other side:
 `server_url` must be `https://` unless it points at loopback
-([`server.md`](../server.md) "Client configuration").
+(`server.md` "Client configuration").
 
 ### Why Docker cannot host the networked serving path
 
@@ -94,7 +94,7 @@ say (see §4).
 
 ### What already exists
 
-[`self-hosting.md`](../self-hosting.md) already documents the correct shape:
+`self-hosting.md` already documents the correct shape:
 server on `127.0.0.1`, an operator's TLS reverse proxy (Caddy or nginx) in
 front, a systemd unit, and a client pointed at the `https://` hostname. It is
 currently framed as one self-hosting recipe among others. What is missing is

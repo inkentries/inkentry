@@ -1,11 +1,9 @@
 # spelunk-server HTTP API Contract
 
 **Issue:** #261  
-**Status:** Implemented. Originally written as a design RFC before the auth
-trait and the endpoints below existed; all of it has since shipped, and this
-document is now the current reference for the HTTP + SSE surface
-`spelunk-server` exposes. Sections below describe what the running server
-actually does, verified against `crates/spelunk-server/src/handlers.rs`.
+**Status:** Implemented. This is the current reference for the HTTP + SSE
+surface `spelunk-server` exposes. Sections below describe what the running
+server actually does, verified against `crates/spelunk-server/src/handlers.rs`.
 
 ---
 
@@ -14,7 +12,7 @@ actually does, verified against `crates/spelunk-server/src/handlers.rs`.
 This document specifies the HTTP API surface that `spelunk-cli` calls on
 `spelunk-server`: the `AuthProvider` trait, and every route the server exposes.
 
-1. The `AuthProvider` trait (replaced the original inline `auth_middleware` function).
+1. The `AuthProvider` trait, which every route the server exposes goes through.
 2. Endpoints present from the server's first API-key auth implementation.
 3. Endpoints added for CLI integration (embedding proxy, explore, LLM completion).
 4. The server's **data promise** to the CLI.
@@ -24,7 +22,7 @@ This document specifies the HTTP API surface that `spelunk-cli` calls on
 ## Data promise (server → CLI)
 
 The CLI is the only durable store for index data. The server's behaviour is
-constrained as follows; cloud implementations MUST uphold the same contract.
+constrained as follows.
 
 | Resource | Server may receive | Server may store | Server may cache (in-memory, bounded TTL) |
 |---|:---:|:---:|:---:|
@@ -50,123 +48,14 @@ DB table is empty after `/v1/projects/{id}/index/embed` returns, and that
 
 ## Auth architecture
 
-### History
-
-Auth was originally a plain axum middleware function (`auth_middleware`) that
-compared a bearer token against `AppState.api_key: Option<String>`. It was
-replaced with the `AuthProvider` trait below so the auth strategy can be
-swapped (e.g. OAuth2/JWT) without forking the repo. `AppState.api_key` no
-longer exists; `AppState.auth: Arc<dyn AuthProvider>` is what's live today.
-
-### Design
-
-```rust
-// crates/spelunk-server/src/auth.rs
-
-/// Determines whether an incoming request is authorised and returns the
-/// caller's identity. Implement this for each auth strategy.
-#[async_trait::async_trait]
-pub trait AuthProvider: Send + Sync + 'static {
-    async fn authenticate(&self, headers: &HeaderMap) -> Result<AuthContext, AuthError>;
-}
-
-/// Outcome of a successful authentication check.
-pub struct AuthContext {
-    pub principal: Principal,
-}
-
-/// Caller identity. Extensible for alternative auth strategies.
-pub enum Principal {
-    /// Default: bearer token matched the configured key.
-    ApiKey(String),
-    /// Future: authenticated user identity (e.g. OAuth2).
-    User { id: String },
-}
-
-/// Authentication failed. Always maps to HTTP 401.
-#[derive(Debug)]
-pub struct AuthError(pub String);
-```
-
-`AppState` changes:
-
-```rust
-pub struct AppState {
-    pub db: Arc<tokio::sync::Mutex<ServerDb>>,
-    pub auth: Arc<dyn AuthProvider>,        // replaces api_key: Option<String>
-    pub conflict_threshold: f32,
-    pub embedder: Option<Arc<dyn EmbeddingBackend>>,
-}
-```
-
-The auth middleware becomes:
-
-```rust
-async fn auth_middleware(
-    State(state): State<AppState>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    match state.auth.authenticate(request.headers()).await {
-        Ok(ctx) => {
-            request.extensions_mut().insert(ctx);
-            next.run(request).await
-        }
-        Err(AuthError(msg)) => (StatusCode::UNAUTHORIZED, msg).into_response(),
-    }
-}
-```
-
-### OSS implementation: `ApiKeyAuth`
-
-```rust
-// crates/spelunk-server/src/auth.rs
-
-pub struct ApiKeyAuth {
-    /// None → accept all requests (no key configured; safe on a local loopback)
-    key: Option<String>,
-}
-
-#[async_trait::async_trait]
-impl AuthProvider for ApiKeyAuth {
-    async fn authenticate(&self, headers: &HeaderMap) -> Result<AuthContext, AuthError> {
-        match &self.key {
-            None => Ok(AuthContext { principal: Principal::ApiKey(String::new()) }),
-            Some(expected) => {
-                let provided = headers
-                    .get("Authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.strip_prefix("Bearer "));
-                match provided {
-                    Some(t) if t == expected => {
-                        Ok(AuthContext { principal: Principal::ApiKey(t.to_owned()) })
-                    }
-                    _ => Err(AuthError("Unauthorized".into())),
-                }
-            }
-        }
-    }
-}
-```
-
-Any alternative auth strategy supplies its own `impl AuthProvider`. No changes
-to handlers are needed.
-
-### Server construction
-
-```rust
-// Binary entrypoint constructs the provider and passes it in:
-let auth: Arc<dyn AuthProvider> = Arc::new(ApiKeyAuth::from_env());
-let state = AppState { db, auth, conflict_threshold, embedder };
-```
-
-### Where this lives
-
-The trait and `ApiKeyAuth` impl above are implemented verbatim in
-`crates/spelunk-server/src/auth.rs`, wired in via `pub mod auth;` in
-`crates/spelunk-server/src/lib.rs`. `state.api_key: Option<String>` no longer
-exists. No handler in `handlers.rs` reads the principal today, so none extract
-`Extension<AuthContext>`.
+Requests are authenticated through a pluggable `AuthProvider` trait
+(`crates/spelunk-server/src/auth.rs`), so an alternative auth strategy can be
+added without changing any handler. The shipped implementation, `ApiKeyAuth`,
+checks the `Authorization: Bearer` header against a single configured key
+(`SPELUNK_SERVER_KEY`); with no key configured, every request is accepted,
+which is safe only when the server is bound to loopback (see [Trust
+model](../server-setup.md#trust-model)). No handler currently reads the
+authenticated principal.
 
 ---
 
