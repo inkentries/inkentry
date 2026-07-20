@@ -142,10 +142,6 @@ fn docstring_captured_for_plain_function() {
 
 #[test]
 fn docstring_captured_across_a_single_attribute() {
-    // A Rust `attribute_item` is a real sibling between an item and any doc
-    // comment above it (unlike a TS decorator or Java annotation, which their
-    // grammars attach as a child of the item instead) – `preceding_comment`
-    // must skip over it, not stop there and report no docstring.
     let src = "/// does a thing\n#[allow(dead_code)]\nfn attributed() {}\n";
     let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
     let f = chunks
@@ -168,8 +164,6 @@ fn docstring_captured_across_stacked_attributes() {
 
 #[test]
 fn no_docstring_when_attribute_has_none_above_it() {
-    // No false positive: an attributed item with nothing but other code above
-    // it must still come back with no docstring.
     let src = "fn other() {}\n#[allow(dead_code)]\nfn attributed() {}\n";
     let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
     let f = chunks
@@ -327,28 +321,19 @@ fn oversized_container_suppresses_own_chunk_keeps_children() {
 
 #[test]
 fn docstring_captured_across_a_python_decorator() {
-    // Tree-sitter-python wraps a decorated def in a `decorated_definition`
-    // node holding the decorator(s) *and* the definition together, so the
-    // function node's own prev_sibling chain only contains other decorators
-    // and never reaches the doc comment above the wrapper. Same silent-drop
-    // shape as Rust's attribute_item case, different grammar structure.
     let src = "# does a thing\n@staticmethod\ndef attributed():\n    pass\n";
     let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
     let f = chunks
         .iter()
         .find(|c| c.name.as_deref() == Some("attributed"))
         .unwrap();
-    // Unlike Rust's `line_comment` token, tree-sitter-python's `comment`
-    // token span stops before the newline, so there is no trailing `\n`
-    // here (verified against the grammar directly, not pasted from a run).
+    // Unlike Rust's `line_comment`, Python's `comment` token excludes the trailing newline.
     assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
 }
 
 #[test]
 fn docstring_captured_across_stacked_python_decorators() {
-    // Multiple stacked decorators still live under a single
-    // `decorated_definition` wrapper (not one wrapper per decorator), so
-    // this must resolve the same way as the single-decorator case above.
+    // Stacked decorators share one `decorated_definition` wrapper, not one each.
     let src = "# does a thing\n@foo\n@bar\ndef attributed():\n    pass\n";
     let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
     let f = chunks
@@ -360,8 +345,6 @@ fn docstring_captured_across_stacked_python_decorators() {
 
 #[test]
 fn no_docstring_when_python_decorator_has_none_above_it() {
-    // No false positive: a decorated function with nothing but other code
-    // above it must still come back with no docstring.
     let src = "def other():\n    pass\n@staticmethod\ndef attributed():\n    pass\n";
     let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
     let f = chunks

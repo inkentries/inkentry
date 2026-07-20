@@ -1,27 +1,18 @@
-// Chunk-size retrieval-quality eval: measures MRR@10 / Recall@10 / nDCG@10 +
-// Recall@fixed-token-budget at a swept set of chunk-token caps, so the
-// MAX_CHUNK_TOKENS default can be picked on quality evidence, not perf alone.
+// Chunk-size retrieval-quality eval: MRR@10 / Recall@10 / nDCG@10 +
+// Recall@fixed-token-budget across swept chunk-token caps, to pick
+// MAX_CHUNK_TOKENS on quality evidence, not perf alone.
 //
-// Lives here (not in `spelunk-embed`, where `embed_bench` lives) because it
-// needs the real chunker (`spelunk_core::indexer`), and `spelunk-core`
-// depends on `spelunk-embed` – the reverse dependency isn't available, so a
-// tool needing both can only live on the `spelunk-core` side of that edge.
+// Lives in spelunk-core, not spelunk-embed (where embed_bench lives): needs
+// the real chunker, and spelunk-core depends on spelunk-embed, not the
+// reverse. No spelunk CLI or spelunk-server/HTTP in the path; calls
+// SourceParser and NativeEmbedder directly.
 //
-// No `spelunk` CLI and no `spelunk-server`/HTTP in the path: this calls
-// `SourceParser` and `NativeEmbedder` directly, the same way `embed_bench`
-// calls the embedder directly.
-//
-// Methodology (see the task this harness was built for):
-//   - Relevance is keyed on file + line-range overlap, not chunk id, because
-//     the retrieval unit itself changes with the cap (a chunk that's whole at
-//     2048 may be split into several pieces at 512).
-//   - Two arms: "leaky" embeds chunks as shipped (the docstring named in a
-//     query is present inside `embedding_text()`, so retrieval is
-//     near-exact-match); "held_out" strips the docstring from every indexed
-//     chunk first, a genuine "can NL find this code" test.
-//   - Recall@token-budget (not just @10) because the decision this data feeds
-//     is about context-window cost per unit of relevant code, which `@10`
-//     alone structurally flatters large chunks on.
+// Relevance is keyed on file + line-range overlap, not chunk id, since the
+// retrieval unit changes with the cap. Two arms: "leaky" embeds chunks as
+// shipped (docstring included, so retrieval is near-exact-match); "held_out"
+// strips the docstring first, a genuine NL-to-code test. Recall@token-budget
+// is reported alongside @10 because @10 alone structurally flatters large
+// chunks.
 //
 // Usage:
 //   cargo run --release -p spelunk-core --example chunk_quality_eval -- \
@@ -43,16 +34,15 @@ use spelunk_core::indexer::{Chunk, SourceParser, set_chunk_token_cap};
 use spelunk_embed::NativeEmbedder;
 use tokenizers::Tokenizer;
 
-/// Code-search query instruction prefix – matches the format `spelunk-server`
-/// uses for real code-search queries (see CLAUDE.md "Embedding input format").
+/// Matches the query format `spelunk-server` uses for code search (see
+/// CLAUDE.md "Embedding input format").
 const QUERY_INSTRUCTION: &str =
     "Instruct: Given a code search query, retrieve the relevant code snippets\nQuery: ";
 
 const DEFAULT_CAPS: &[usize] = &[2048, 1024, 512, 384];
 const DEFAULT_TOP_K: usize = 10;
-/// A modest, realistic context-assembly budget (tokens) for Recall@budget –
-/// not tied to any particular cap's `@10`, since the whole point of this
-/// metric is to compare caps on a cap-independent axis.
+/// Recall@budget token budget: cap-independent by design, not tied to any
+/// cap's `@10`.
 const DEFAULT_BUDGET_TOKENS: usize = 8192;
 /// Docstrings shorter than this are usually a one-word `// TODO` or a bare
 /// derive comment, not a usable natural-language query.
@@ -170,7 +160,7 @@ fn parse_args() -> Result<Args> {
     }
 
     let mut caps = caps.unwrap_or_else(|| DEFAULT_CAPS.to_vec());
-    caps.sort_unstable_by(|a, b| b.cmp(a)); // descending – largest (gold) cap first
+    caps.sort_unstable_by(|a, b| b.cmp(a)); // descending: largest (gold) cap first
     caps.dedup();
     anyhow::ensure!(!caps.is_empty(), "--caps must name at least one cap");
 
@@ -197,13 +187,11 @@ struct CorpusFile {
     language: &'static str,
 }
 
-/// Walk `root` for code files, applying the same two exclude layers the real
-/// indexer applies (`IndexFilter` defaults + self-declared generated-file
-/// markers) so the eval corpus matches what `spelunk index` would actually
-/// embed. This is a simplified mirror of `spelunk-cli`'s `collect_files` (not
-/// reusable directly – it lives in a crate `spelunk-core` doesn't depend on)
-/// and skips its sensitive-file `OverrideBuilder` layer, since this harness
-/// only ever points at repos the operator already trusts locally.
+/// Applies the same excludes real indexing does (`IndexFilter` defaults +
+/// generated-file markers), mirroring `spelunk-cli`'s `collect_files` (not
+/// reusable directly: it lives in a crate `spelunk-core` doesn't depend on).
+/// Skips the sensitive-file `OverrideBuilder` layer since this only ever
+/// points at repos the operator already trusts locally.
 fn collect_corpus_files(root: &Path, limit_files: Option<usize>) -> Result<Vec<CorpusFile>> {
     anyhow::ensure!(
         root.is_dir(),
@@ -258,21 +246,17 @@ fn collect_corpus_files(root: &Path, limit_files: Option<usize>) -> Result<Vec<C
     if let Some(limit) = limit_files
         && files.len() > limit
     {
-        // An even stride across the sorted list, not a prefix: a real repo's
-        // first paths alphabetically are often one lightly-commented
-        // directory (e.g. `migrations/` sorts before `src/`), so a prefix
-        // truncate silently samples only that directory instead of the whole
-        // corpus.
+        // Even stride, not a prefix: a repo's alphabetically-first paths are
+        // often one lightly-commented directory (e.g. `migrations/` before
+        // `src/`), so a prefix would silently sample only that directory.
         let step = (files.len() as f64 / limit as f64).ceil() as usize;
         files = files.into_iter().step_by(step.max(1)).take(limit).collect();
     }
     Ok(files)
 }
 
-/// Parse every corpus file at the process-global `chunk_token_cap()` in
-/// effect (caller sets it via `set_chunk_token_cap` first). Files that fail
-/// to read or parse are skipped with a warning, not fatal – a benchmark
-/// corpus is expected to contain the odd oddball file.
+/// Parses at the process-global cap (caller sets it via `set_chunk_token_cap`
+/// first). Read/parse failures are skipped with a warning, not fatal.
 fn chunk_corpus(files: &[CorpusFile]) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     for f in files {
@@ -325,10 +309,8 @@ fn build_gold_queries(
     if let Some(max) = max_queries
         && queries.len() > max
     {
-        // Deterministic stride sample rather than a shuffle – reproducible
-        // without needing an RNG dependency, and spreads the sample evenly
-        // across the corpus (queries are in file-walk order) instead of
-        // biasing toward whichever files sort first.
+        // Deterministic stride, not a shuffle: no RNG dep, and spreads evenly
+        // across file-walk order instead of biasing toward early files.
         let step = (queries.len() as f64 / max as f64).ceil() as usize;
         queries = queries.into_iter().step_by(step.max(1)).take(max).collect();
     }
@@ -339,10 +321,8 @@ fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) ->
     a_start <= b_end && b_start <= a_end
 }
 
-/// Indices into `chunks` whose (file, line-range) overlaps `q`'s gold range –
-/// the cap-dependent relevant set for this query (see module doc: this is
-/// what makes Recall/nDCG comparable across caps despite the retrieval unit
-/// itself changing size).
+/// The cap-dependent relevant set for `q`: what keeps Recall/nDCG comparable
+/// across caps despite the retrieval unit itself changing size.
 fn relevant_indices(chunks: &[Chunk], q: &Query) -> HashSet<usize> {
     chunks
         .iter()
@@ -395,11 +375,9 @@ fn ndcg_at_k(ranked: &[usize], relevant: &HashSet<usize>, k: usize, total_releva
     if idcg == 0.0 { 0.0 } else { dcg / idcg }
 }
 
-/// Recall among chunks retrievable within `budget` tokens: walk `ranked` in
-/// order, greedily accumulating each chunk's real embedding-text token cost,
-/// and stop at the first chunk that would overflow the budget (a rank-order
-/// context assembly, not a knapsack pack – swapping in a smaller lower-ranked
-/// chunk to keep filling would break rank fidelity).
+/// Recall within a `budget`-token context: greedy rank-order accumulation
+/// (not knapsack packing, which would break rank fidelity), stopping at the
+/// first chunk that would overflow the budget.
 fn recall_at_budget(
     ranked: &[usize],
     relevant: &HashSet<usize>,
@@ -426,10 +404,8 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Full ranking of every corpus chunk by descending cosine similarity to
-/// `query_vec`. Vectors are L2-normalised (`NativeEmbedder`'s contract), so a
-/// plain dot product is cosine similarity – brute force is fine at the
-/// corpus sizes this harness targets (thousands of chunks, not millions).
+/// Vectors are L2-normalised (`NativeEmbedder`'s contract), so dot product is
+/// cosine similarity. Brute force: fine at thousands of chunks, not millions.
 fn rank_by_similarity(query_vec: &[f32], chunk_vecs: &[Vec<f32>]) -> Vec<usize> {
     let mut scored: Vec<(usize, f32)> = chunk_vecs
         .iter()
@@ -440,10 +416,9 @@ fn rank_by_similarity(query_vec: &[f32], chunk_vecs: &[Vec<f32>]) -> Vec<usize> 
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
-/// Embed `texts` in `EMBED_PROGRESS_BATCH`-sized external batches (each one
-/// call to the backend, which does its own internal sub-batching) so a
-/// multi-minute corpus embed prints incremental progress instead of going
-/// silent, and a crash mid-run loses at most one external batch of work.
+/// Batches embed calls (`EMBED_PROGRESS_BATCH` texts each) so a multi-minute
+/// corpus embed prints progress instead of going silent, and a crash mid-run
+/// loses at most one batch.
 async fn embed_all(
     embedder: &NativeEmbedder,
     texts: &[String],
@@ -476,10 +451,9 @@ impl Arm {
         }
     }
 
-    /// The text actually indexed for one chunk under this arm. `Leaky` is
-    /// `embedding_text()` as-shipped (docstring included, so a query drawn
-    /// from that same docstring is near-exact-match). `HeldOut` strips the
-    /// docstring first – the genuine "can NL find this code" test.
+    /// The text indexed for one chunk under this arm. `Leaky`:
+    /// `embedding_text()` as-shipped (docstring included, near-exact-match).
+    /// `HeldOut`: docstring stripped first, the genuine NL-to-code test.
     fn embedding_text(self, c: &Chunk) -> String {
         match self {
             Arm::Leaky => c.embedding_text(),
@@ -524,9 +498,8 @@ fn main() -> Result<()> {
         args.corpus.display()
     );
 
-    // Gold pass: ground-truth query set drawn from the largest (least
-    // fragmented) cap in the sweep – the current shipped default when 2048 is
-    // included, or the closest stand-in otherwise.
+    // Gold pass: ground truth drawn from the largest (least fragmented) cap
+    // in the sweep, the shipped default when 2048 is included.
     let gold_cap = args.caps[0]; // sorted descending in parse_args
     set_chunk_token_cap(gold_cap);
     let gold_chunks = chunk_corpus(&files);

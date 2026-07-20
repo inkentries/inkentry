@@ -79,22 +79,15 @@ impl Chunk {
 /// Distinct from the embedder's hard `token_cap` OOM guard.
 pub const MAX_CHUNK_TOKENS: usize = 2048;
 
-/// Process-global chunk token cap, seeded from `MAX_CHUNK_TOKENS`. All cap
-/// comparisons (`chunk_token_cap()`) read this instead of the constant
-/// directly, so a benchmark harness can sweep the cap without a rebuild per
-/// value (see `set_chunk_token_cap`). Product code never calls the setter, so
-/// shipped indexing behaviour is unchanged.
+/// Process-global cap, seeded from `MAX_CHUNK_TOKENS`. Only benchmark/eval
+/// harnesses call the setter; production code always runs on the default.
 static CHUNK_TOKEN_CAP: AtomicUsize = AtomicUsize::new(MAX_CHUNK_TOKENS);
 
-/// Current chunk token cap in effect (defaults to `MAX_CHUNK_TOKENS`).
 pub fn chunk_token_cap() -> usize {
     CHUNK_TOKEN_CAP.load(Ordering::Relaxed)
 }
 
-/// Override the process-wide chunk token cap. For benchmark/eval harnesses
-/// only – e.g. sweeping `MAX_CHUNK_TOKENS`-equivalent caps across a re-chunk
-/// without a rebuild per value. Never call this from a production indexing
-/// path, which must run on the shipped `MAX_CHUNK_TOKENS`.
+/// Test/benchmark use only; never call from a production indexing path.
 pub fn set_chunk_token_cap(tokens: usize) {
     CHUNK_TOKEN_CAP.store(tokens, Ordering::Relaxed);
 }
@@ -202,11 +195,8 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    // `chunk_token_cap()` reads a process-global `AtomicUsize`; tests that call
-    // `set_chunk_token_cap` must run `#[serial]` (never in parallel with each
-    // other) and always restore the shipped default before returning, so a
-    // test failure mid-mutation can't leak a wrong cap into an unrelated test
-    // running later in the same binary.
+    // Mutates a process-global; must run #[serial] and restore the default,
+    // or a failure mid-mutation leaks a wrong cap into a later test.
     fn with_cap<R>(tokens: usize, f: impl FnOnce() -> R) -> R {
         set_chunk_token_cap(tokens);
         let result = f();
@@ -236,9 +226,8 @@ mod tests {
     #[test]
     #[serial]
     fn sliding_window_respects_the_injected_cap() {
-        // 200 lines of 20 chars each = ~4000 chars = ~1000 estimated tokens
-        // (chars/4). Under the shipped 2048 cap this is one window; capped
-        // down to 100 tokens (400 chars) it must split into several.
+        // ~1000 estimated tokens (chars/4): one window at the 2048 default,
+        // several once capped to 100.
         let source = (0..200)
             .map(|i| format!("let line_{i:03} = 1;"))
             .collect::<Vec<_>>()
@@ -257,8 +246,7 @@ mod tests {
                 capped_chunks.len() > 1,
                 "a 100-token cap must split the same source into multiple windows"
             );
-            // Every window must individually respect the injected budget (chars/4
-            // estimate, so budget_chars = 100 * 4 = 400).
+            // budget_chars = 100 tokens * 4 (chars/4 estimate) = 400.
             for c in &capped_chunks {
                 assert!(
                     c.content.chars().count() <= 400,

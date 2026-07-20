@@ -1,16 +1,13 @@
-// Sequence-length perf sweep for the native embedder, with no `spelunk` CLI
-// and no `spelunk-server`/HTTP in the path – calls `NativeEmbedder` directly.
+// Sequence-length perf sweep for the native embedder: no `spelunk` CLI or
+// `spelunk-server`/HTTP in the path, calls `NativeEmbedder` directly.
 //
-// Device is selected at compile time by the crate's existing `metal` feature
-// (see `select_device` in `embedder_native.rs`): build without the feature for
-// a CPU run, with `--features metal` for a Metal/GPU run. Run both and diff
-// the two tables to compare the cost curve across devices.
+// Device is chosen at compile time via the crate's `metal` feature (see
+// `select_device` in `embedder_native.rs`): build without it for CPU, with
+// `--features metal` for GPU. Run both and diff the tables to compare devices.
 //
-// x-axis is tokenizer-exact: every reported `n` is what the real
-// `tokenizer.json` actually produced for the text handed to `embed()` (not
-// the `chars/4` estimate `spelunk-core` uses at index time, which carries
-// ~±25% per-chunk error and produced non-monotonic artifacts in an earlier
-// HTTP-based profiling pass).
+// x-axis is tokenizer-exact (real `tokenizer.json` output), not the `chars/4`
+// estimate `spelunk-core` uses at index time, which carries ~±25% per-chunk
+// error and produced non-monotonic artifacts in an earlier profiling pass.
 //
 // Usage:
 //   cargo run --release -p spelunk-embed --example embed_bench -- \
@@ -38,10 +35,9 @@ const DEFAULT_BATCHES: &[usize] = &[1, 8];
 /// Repeats per (size, batch) point; the reported latency is the median.
 const DEFAULT_REPEAT: usize = 5;
 
-/// This crate's own source, concatenated as the synthetic corpus: real,
-/// representative Rust code without needing a network fetch or an external
-/// checkout. Cycled (see `corpus_token_ids`) if a run's largest size needs
-/// more tokens than one copy provides.
+/// This crate's own source as the synthetic corpus (no network fetch
+/// needed); cycled in `corpus_token_ids` if a run needs more tokens than one
+/// copy provides.
 const CORPUS_SOURCES: &[&str] = &[
     include_str!("../src/lib.rs"),
     include_str!("../src/embedder_native.rs"),
@@ -139,12 +135,11 @@ fn parse_usize_list(raw: &str) -> Result<Vec<usize>> {
 
 /// One sweep measurement: a (target size, batch) point.
 struct Row {
-    /// The nominal sweep point requested (label only – `actual_n` is what was
-    /// really embedded).
+    /// Requested sweep point (label only; `actual_n` is what was embedded).
     target: usize,
     batch: usize,
-    /// Mean tokenizer-exact token count actually embedded per item in the
-    /// batch (see module doc – this is the real x-axis).
+    /// Mean tokenizer-exact tokens actually embedded per batch item: the
+    /// real x-axis.
     actual_n: f64,
     median_ms: f64,
     tokens_per_sec: f64,
@@ -181,11 +176,9 @@ fn main() -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new().context("building tokio runtime")?;
 
-    // Warm up the allocator / BLAS thread pool / first-call page faults before
-    // timing anything – otherwise whichever point runs first absorbs all of
-    // that one-time cost and its latency isn't comparable to the rest of the
-    // curve (this is what made n=128 look slower than n=256 in an untimed
-    // dry run).
+    // Warm up the allocator/BLAS pool/page faults before timing, or whichever
+    // point runs first absorbs that one-time cost (this made n=128 look
+    // slower than n=256 in an untimed dry run).
     eprintln!("warming up...");
     rt.block_on(sweep_point(&embedder, &tokenizer, &corpus_ids, 128, 1, 1))?;
 
@@ -220,9 +213,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Tokenize the concatenated crate source (cycled until it has at least
-/// `min_tokens` ids) with `add_special_tokens=false` – the raw pool that
-/// per-point windows are sliced from.
+/// Tokenizes the concatenated corpus (cycled to >= `min_tokens` ids,
+/// `add_special_tokens=false`): the raw pool windows are sliced from.
 fn corpus_token_ids(tokenizer: &Tokenizer, min_tokens: usize) -> Result<Vec<u32>> {
     let one_copy = CORPUS_SOURCES.concat();
     anyhow::ensure!(!one_copy.is_empty(), "embed_bench corpus sources are empty");
@@ -237,13 +229,11 @@ fn corpus_token_ids(tokenizer: &Tokenizer, min_tokens: usize) -> Result<Vec<u32>
     Ok(ids)
 }
 
-/// Build `batch` distinct texts targeting `target` tokens each, by slicing
-/// `batch` different (circularly-wrapped) windows out of `corpus_ids` and
-/// decoding them back to text. The **actual** token count embedded is
-/// measured after decode by re-encoding with `add_special_tokens=true` – the
-/// same call `NativeEmbedder` makes internally – since decode/encode is not
-/// perfectly bijective (this is the whole point of a tokenizer-exact x-axis
-/// instead of assuming the slice length is what gets embedded).
+/// Slices `batch` circularly-wrapped windows from `corpus_ids`, decodes to
+/// text, then re-measures the actual token count via the same
+/// `add_special_tokens=true` encode `NativeEmbedder` uses internally:
+/// decode/encode isn't perfectly bijective, so slice length isn't what
+/// actually gets embedded.
 fn build_batch_texts(
     tokenizer: &Tokenizer,
     corpus_ids: &[u32],
@@ -252,9 +242,8 @@ fn build_batch_texts(
 ) -> Result<(Vec<String>, Vec<usize>)> {
     anyhow::ensure!(!corpus_ids.is_empty(), "empty corpus token pool");
     let len = corpus_ids.len();
-    // Spread the `batch` windows across the pool so they're not all the same
-    // text (avoids flattering any per-text cache the backend doesn't have,
-    // and better represents a real mixed sub-batch).
+    // Spread windows across the pool so they're not all the same text: avoids
+    // flattering any per-text cache, and represents a real mixed sub-batch.
     let spacing = (len / batch.max(1)).max(1);
 
     let mut texts = Vec::with_capacity(batch);
@@ -345,10 +334,8 @@ fn print_table(rows: &[Row]) {
     }
 }
 
-/// Least-squares fit of `ms = a + b*n + c*n^2` over the rows at `batch`,
-/// via the 3x3 normal-equations solved by Cramer's rule (no linear-algebra
-/// dependency needed for 3 unknowns). Reproduces the spike's curve-fit but
-/// against tokenizer-exact `n` instead of the `chars/4` estimate.
+/// Least-squares fit of `ms = a + b*n + c*n^2`, via 3x3 normal equations
+/// solved by Cramer's rule (no linalg dependency needed for 3 unknowns).
 fn print_fit(rows: &[Row], batch: usize) {
     let pts: Vec<(f64, f64)> = rows
         .iter()

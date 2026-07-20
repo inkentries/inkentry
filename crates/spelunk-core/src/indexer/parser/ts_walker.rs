@@ -593,31 +593,10 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// Return the text of the comment node that immediately precedes `node`
 /// (skipping whitespace), if any.
 ///
-/// Two grammars need special handling here, and they need *different*
-/// handling because they attach decorator-like syntax differently:
-///
-/// - **Rust**: `#[derive(...)]` / `#[async_trait]` etc. are a real,
-///   non-extra `attribute_item` *sibling* of the item, sitting directly
-///   between it and any doc comment above (stacked attributes are just
-///   more siblings in the chain). Skipping past `attribute_item` in the
-///   while-loop below, walking `node`'s own sibling chain, is enough.
-/// - **Python**: `@staticmethod` / `@property` etc. are *not* siblings of
-///   the function/class at all. Tree-sitter-python wraps the decorator(s)
-///   and the definition together in one `decorated_definition` node (a
-///   single wrapper even when several decorators are stacked), so the
-///   function/class node's own `prev_sibling` chain only ever contains
-///   other decorators and bottoms out at `None`; it never reaches the
-///   doc comment, which precedes the *wrapper*, not the definition. So
-///   for Python the walk has to start from `decorated_definition` (the
-///   node's parent, when present) instead of from the node itself.
-///
-/// TS decorators and Java annotations, by contrast, attach as a *child* of
-/// the item they modify, so the item's own `prev_sibling` already lands on
-/// the doc comment directly and neither needs special-casing here.
-///
-/// Without this, any decorated Python function/class (or attributed Rust
-/// item) silently comes back with `docstring: None` even though a comment
-/// is right there in the source.
+/// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
+/// below. Python wraps decorator+def in one `decorated_definition` node, so
+/// the walk must start from that parent instead of `node`. TS/Java attach
+/// decorators as a child, so neither case applies there.
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let start = match node.parent() {
         Some(parent) if parent.kind() == "decorated_definition" => parent,
