@@ -44,6 +44,9 @@ fn index_command(home: &Path, config: &Path, db: &Path, project: &Path) -> Comma
     cmd.env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
+        // Project-level config discovery walks up from CWD; every caller here
+        // writes `server_url` to `<project>/.spelunk/config.toml`.
+        .current_dir(project)
         .arg("--config")
         .arg(config)
         .arg("index")
@@ -131,8 +134,13 @@ fn summary_pass_completes_before_index_returns() {
     });
 
     let mock_url = mock_server.uri();
-    let config_path =
-        plumbing_helpers::write_config_with_server(project.path(), &db_path, &mock_url, &mock_url);
+    let config_path = plumbing_helpers::write_config_with_server(
+        project.path(),
+        &db_path,
+        &mock_url,
+        &mock_url,
+        project.path(),
+    );
 
     let mut child = index_command(project.path(), &config_path, &db_path, project.path())
         .stdout(Stdio::null())
@@ -224,8 +232,13 @@ fn summary_failure_is_reported_but_index_still_succeeds() {
     });
 
     let mock_url = mock_server.uri();
-    let config_path =
-        plumbing_helpers::write_config_with_server(project.path(), &db_path, &mock_url, &mock_url);
+    let config_path = plumbing_helpers::write_config_with_server(
+        project.path(),
+        &db_path,
+        &mock_url,
+        &mock_url,
+        project.path(),
+    );
 
     let output = index_command(project.path(), &config_path, &db_path, project.path())
         .output()
@@ -291,8 +304,13 @@ fn background_phases_mode_completes_summaries() {
     });
 
     let mock_url = mock_server.uri();
-    let config_path =
-        plumbing_helpers::write_config_with_server(project.path(), &db_path, &mock_url, &mock_url);
+    let config_path = plumbing_helpers::write_config_with_server(
+        project.path(),
+        &db_path,
+        &mock_url,
+        &mock_url,
+        project.path(),
+    );
 
     // Populate chunks first: background-phases mode skips parse/embed.
     let seed = index_command(project.path(), &config_path, &db_path, project.path())
