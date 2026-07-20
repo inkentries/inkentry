@@ -299,10 +299,20 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
                     "db_path = {:?}\n",
                     "embedding_model = \"test-model\"\n",
                     "llm_model = \"test-chat-model\"\n",
-                    "server_url = {:?}\n",
-                    "project_id = {:?}\n",
                 ),
                 db_path,
+            ),
+        )
+        .unwrap();
+
+        // `server_url` only loads from project-level `.spelunk/config.toml` (or
+        // env), never the personal global config — see `Config::load_with_store`.
+        let spelunk_dir = project_dir.join(".spelunk");
+        fs::create_dir(&spelunk_dir).unwrap();
+        fs::write(
+            spelunk_dir.join("config.toml"),
+            format!(
+                concat!("server_url = {:?}\n", "project_id = {:?}\n"),
                 mock_server.uri(),
                 project_id,
             ),
@@ -311,6 +321,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
 
         // Index the project — must reach the embedding phase without a 404.
         spelunk_bin()
+            .current_dir(&project_dir)
             .arg("--config")
             .arg(&config_path)
             .arg("index")
@@ -1329,7 +1340,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // These tests reproduce the auto-discovery path end-to-end: NO `server_url` in
 // config, `SPELUNK_NO_SERVER` unset, and a mock server reachable on loopback —
 // discovered via `~/.local/state/spelunk/server.port` (the same file
-// `spelunk server start` writes; see `capability.rs` step 3a). We redirect
+// `spelunk server start` writes; see `capability/probe.rs` step 3a). We redirect
 // `HOME` to an isolated temp dir and pre-write that port file so the probe
 // finds our `wiremock` instance deterministically, without depending on the
 // real default port 7777 (which may be occupied — or unoccupied — on the test
