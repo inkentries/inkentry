@@ -342,10 +342,11 @@ pub async fn append_to_git_notes(
 /// that way; a guard that did would silently swallow every state update this
 /// function writes.
 ///
-/// Shared by `memory supersede` and `memory add --supersedes` (the two
-/// carriers of a supersede edge); shaped so `memory archive`'s carrier
-/// write-through, tracked as separate follow-up work, can call it too with
-/// `superseded_by_entity_id: None`.
+/// Shared by three callers, all passing `superseded_by_entity_id: None`
+/// except the supersede pair: `memory archive`'s carrier write-through
+/// (`archive.rs`), `GitNotesBackend::archive` (git-notes as the primary
+/// store, not the carrier), and `memory supersede` / `memory add
+/// --supersedes` (the two carriers of a supersede edge, which do pass it).
 pub async fn append_state_update(
     git_root: Option<&std::path::Path>,
     base: &Note,
@@ -513,10 +514,13 @@ const GIT_NOTES_MAX_LIST: usize = 500;
 /// Multiple entries accumulate within a commit's note and across commits.
 ///
 /// # Concurrency
-/// `add`/`archive` do read-modify-write and rewrite the note with
-/// `git notes add -f`. Each is serialized by [`lock_notes`], which is keyed on
-/// the git **common** dir so that worktrees sharing one notes ref contend on
-/// one lock (#185).
+/// `add` and `archive` both do read-modify-write and rewrite the note with
+/// `git notes add -f`, appending a new JSON line rather than mutating an
+/// existing one (`archive` appends a `status: "archived"` state-update via
+/// [`append_state_update`], resolving its target by `entity_id` first, per
+/// ADR-068 A6). Each is serialized by [`lock_notes`], which is keyed on the
+/// git **common** dir so that worktrees sharing one notes ref contend on one
+/// lock (#185).
 ///
 /// # Unsupported methods
 /// Semantic search (`search`, `search_hybrid`, `search_timeline`, `search_text`),
@@ -551,6 +555,14 @@ impl GitNotesBackend {
             cmd.current_dir(root);
         }
         cmd
+    }
+
+    /// Exposes the configured root to the free-function carrier helpers
+    /// (`append_state_update` et al.), which take `Option<&Path>` rather than
+    /// `&GitNotesBackend`: they are shared with the SQLite-primary write-through
+    /// path, which has no `GitNotesBackend` to borrow from.
+    fn git_root(&self) -> Option<&std::path::Path> {
+        self.git_root.as_deref()
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
@@ -609,13 +621,13 @@ impl GitNotesBackend {
         Ok(self.run(&["rev-parse", "HEAD"]).await?.trim().to_string())
     }
 
-    /// Commits carrying a spelunk note, in reverse-chronological (newest first)
-    /// order.
+    /// `(commit_sha, note_blob_sha)` for every commit reachable from HEAD that
+    /// carries a spelunk note, in reverse-chronological (newest first) order.
     ///
     /// Only commits reachable from HEAD are listed: memory travels with the
     /// code that carries it, so a teammate's note on a fetched-but-unmerged
     /// commit stays invisible until that commit is merged.
-    async fn noted_commits(&self) -> Result<Vec<NotedCommit>> {
+    async fn noted_commits(&self) -> Result<Vec<(String, String)>> {
         // `git notes --ref=spelunk list` → "<note-blob-sha> <commit-sha>"
         let list_out = self
             .git()
@@ -648,18 +660,29 @@ impl GitNotesBackend {
             return Ok(vec![]);
         }
 
-        let commits = String::from_utf8_lossy(&log_out.stdout)
+        let pairs = String::from_utf8_lossy(&log_out.stdout)
             .lines()
             .filter_map(|line| {
                 let commit = line.trim();
-                noted.get(commit).map(|blob| NotedCommit {
-                    commit: commit.to_owned(),
-                    note_blob: (*blob).to_owned(),
-                })
+                noted
+                    .get(commit)
+                    .map(|blob| (commit.to_owned(), (*blob).to_owned()))
             })
             .collect();
 
-        Ok(commits)
+        Ok(pairs)
+    }
+
+    /// Note blob shas only, for the lenient batch read `folded_records` uses:
+    /// listing/lookup reads must not break because one historical note is
+    /// unreadable (see [`read_note_blobs`](Self::read_note_blobs)).
+    async fn noted_blobs(&self) -> Result<Vec<String>> {
+        Ok(self
+            .noted_commits()
+            .await?
+            .into_iter()
+            .map(|(_, blob)| blob)
+            .collect())
     }
 
     /// Read every listed note blob in one `git cat-file --batch`, in the order
@@ -710,9 +733,9 @@ impl GitNotesBackend {
 
     /// Read the raw note blob for `commit_sha` (empty string if no note).
     ///
-    /// A failed read is an `Err`, never an empty blob: `append_record` and
-    /// `archive_record` write back what this returns, so conflating the two
-    /// turns one transient git failure into a wiped note (#185).
+    /// A failed read is an `Err`, never an empty blob: `append_record` writes
+    /// back what this returns, so conflating the two turns one transient git
+    /// failure into a wiped note (#185).
     async fn read_note_blob(&self, commit_sha: &str) -> Result<String> {
         Ok(
             read_note_body_with_retry(self.git_root.as_deref(), commit_sha)
@@ -741,34 +764,6 @@ impl GitNotesBackend {
         self.add_note_stdin(object, &combined).await
     }
 
-    /// Set `status = "archived"` on the single spelunk record whose `id` matches
-    /// `id` within `object`'s note. Every other line (sibling records and
-    /// foreign content) is re-emitted unchanged in its original position; only
-    /// the matched record's line is re-serialized. Returns whether a match was
-    /// rewritten.
-    async fn archive_record(&self, object: &str, id: i64) -> Result<bool> {
-        let _lock = writer_lock(self.git_root.as_deref()).await?;
-
-        let blob = self.read_note_blob(object).await?;
-        let mut out_lines: Vec<String> = Vec::new();
-        let mut changed = false;
-        for line in blob.lines() {
-            match parse_spelunk_line(line) {
-                Some(mut record) if !changed && record.id == id => {
-                    record.status = "archived".to_string();
-                    out_lines.push(serde_json::to_string(&record)?);
-                    changed = true;
-                }
-                // Foreign lines and untargeted records: re-emit verbatim.
-                _ => out_lines.push(line.to_string()),
-            }
-        }
-        if changed {
-            self.add_note_stdin(object, &out_lines.join("\n")).await?;
-        }
-        Ok(changed)
-    }
-
     /// Every entry on the ref, folded to one record per entity, no filtering
     /// or limit truncation — the shared basis for `collect()`'s filtered
     /// listing and `get()`'s single-entity lookup, so both see the same
@@ -780,12 +775,7 @@ impl GitNotesBackend {
     /// The only site that sees every commit's records, so the only site that
     /// can fold an entity's copies together.
     async fn folded_records(&self) -> Result<Vec<NoteRecord>> {
-        let blob_shas: Vec<String> = self
-            .noted_commits()
-            .await?
-            .into_iter()
-            .map(|c| c.note_blob)
-            .collect();
+        let blob_shas = self.noted_blobs().await?;
 
         let mut records = Vec::new();
         for blob in self.read_note_blobs(&blob_shas).await? {
@@ -835,12 +825,6 @@ impl GitNotesBackend {
 
         Ok(folded.into_iter().map(record_to_note).collect())
     }
-}
-
-/// A commit carrying a spelunk note, and the note's blob sha.
-struct NotedCommit {
-    commit: String,
-    note_blob: String,
 }
 
 /// Permissively parse the spelunk records from one note blob.
