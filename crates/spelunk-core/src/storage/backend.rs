@@ -132,7 +132,7 @@ impl MemoryBackend for LocalMemoryBackend {
                 supersedes_id,
             )?
         } else {
-            store.add_note(
+            let (id, _created) = store.add_note(
                 &input.kind,
                 &input.title,
                 &input.body,
@@ -140,7 +140,8 @@ impl MemoryBackend for LocalMemoryBackend {
                 &files,
                 input.source_ref.as_deref(),
                 input.valid_at,
-            )?
+            )?;
+            id
         };
         if let Some(blob) = &input.embedding {
             store.insert_embedding(id, blob)?;
