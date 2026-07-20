@@ -279,6 +279,38 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         archived_stdout.contains("[archived]"),
         "X's single folded copy must be marked archived, got:\n{archived_stdout}"
     );
+
+    // Assert on the raw git ref too, not just the CLI's folded view: the
+    // fold could hide either a rewrite (one line, wrongly convincing) or an
+    // over-eager append (three-plus lines). The archive state-update is a new
+    // line alongside X's original, never a replacement of it, so exactly two
+    // raw lines must carry X's entity_id: the untouched original (still
+    // "active") and the appended state-update ("archived").
+    let raw_lines = spelunk_note_lines(&b);
+    let x_entity_id = record_field(&seeded[0], "entity_id");
+    let x_lines: Vec<&String> = raw_lines
+        .iter()
+        .filter(|l| record_field(l, "entity_id") == x_entity_id)
+        .collect();
+    assert_eq!(
+        x_lines.len(),
+        2,
+        "X must carry exactly two raw lines after the merge (original + \
+         appended state-update); a rewrite collapses to one, an unbounded \
+         re-append would exceed two, got:\n{raw_lines:?}"
+    );
+    assert!(
+        x_lines
+            .iter()
+            .any(|l| record_field(l, "status") == "active"),
+        "the original active line must survive byte-for-byte on the raw ref, got:\n{raw_lines:?}"
+    );
+    assert!(
+        x_lines
+            .iter()
+            .any(|l| record_field(l, "status") == "archived"),
+        "the appended state-update line must be present on the raw ref, got:\n{raw_lines:?}"
+    );
 }
 
 /// Two clones each archive the same entity independently, neither aware of
@@ -349,5 +381,95 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     assert!(
         archived_stdout.contains("[archived]"),
         "the folded entry must be marked archived, got:\n{archived_stdout}"
+    );
+}
+
+// The carrier write is best-effort (matching `memory add`/`memory
+// supersede`'s contract): if `refs/notes` cannot be written, `memory
+// archive` must still report success and the SQLite primary must still hold
+// the archive. Only the carry is allowed to fail quietly.
+#[cfg(unix)]
+#[test]
+fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_repo_with_commit(&dir);
+    std::fs::create_dir_all(dir.join(".spelunk")).unwrap();
+
+    bin(home.path(), &dir)
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "note",
+            "--title",
+            "carrier-fail-probe",
+            "--body",
+            "b",
+        ])
+        .assert()
+        .success();
+    let id = local_id_for_title(home.path(), &dir, "carrier-fail-probe");
+
+    let refs_notes = dir.join(".git/refs/notes");
+    let original = std::fs::metadata(&refs_notes).unwrap().permissions();
+    let mut read_only = original.clone();
+    read_only.set_mode(0o555);
+    std::fs::set_permissions(&refs_notes, read_only).unwrap();
+
+    // Probe with raw git, never the code under test: root (or a mount that
+    // ignores the mode) can still write there, and there would be no failure
+    // to assert against.
+    let enforced = !git_out(
+        &dir,
+        &["notes", "--ref=spelunk", "add", "-f", "-m", "x", "HEAD"],
+    )
+    .status
+    .success();
+    if !enforced {
+        std::fs::set_permissions(&refs_notes, original).unwrap();
+        return;
+    }
+
+    let out = bin(home.path(), &dir)
+        .args(["memory", "archive", &id.to_string()])
+        .output()
+        .expect("spawn spelunk memory archive");
+
+    // Restore before asserting: a panic below would otherwise leave a
+    // read-only directory behind that `TempDir` cannot clean up.
+    std::fs::set_permissions(&refs_notes, original).unwrap();
+
+    assert!(
+        out.status.success(),
+        "a failed git-notes carry must not fail the command, got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("git-notes carry failed"),
+        "the failure must surface as a warning, got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let archived = bin(home.path(), &dir)
+        .args([
+            "memory",
+            "list",
+            "--archived",
+            "--format",
+            "jsonl",
+            "--limit",
+            "10",
+        ])
+        .output()
+        .expect("spawn spelunk memory list --archived");
+    assert!(
+        String::from_utf8_lossy(&archived.stdout).contains("carrier-fail-probe"),
+        "the SQLite primary must hold the archive even though the carrier failed, got:\n{}",
+        String::from_utf8_lossy(&archived.stdout)
     );
 }
