@@ -1,6 +1,7 @@
 // Step A (backfill_entity_ids) and Step B (promote_entity_id_unique_index):
 // population, idempotency, resumption after partial population, index
-// promotion, and the marker short-circuit.
+// promotion, and the marker short-circuit. See collision_recovery_tests for
+// what happens once the index is promoted and a write collides with it.
 
 use super::test_support::*;
 

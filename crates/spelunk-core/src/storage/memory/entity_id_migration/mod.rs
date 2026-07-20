@@ -3,11 +3,16 @@
 //!
 //! Two independently-safe steps, run unconditionally at `MemoryStore::open`
 //! (same marker-table idiom as `apply_dim_upgrade_migration` in `db.rs`).
-//! Step A backfills `entity_id`; it can never hit a constraint because the
-//! index stays non-unique until Step B promotes it, and Step B only
-//! promotes once a duplicate scan comes back clean. A duplicate group
-//! leaves the index non-unique and logs a message pointing at `spelunk
-//! memory dedupe`. Neither step ever hard-aborts `open`.
+//! Step A backfills `entity_id`; before the index is ever promoted this
+//! can't hit a constraint. Step A/B run on every open though, not just the
+//! first, so on a later open (index already UNIQUE) a row that still has
+//! `entity_id IS NULL` (from an insert path with its own identity gap, e.g.
+//! `add_note_superseding` pre-fix, or `apply_remote_note`) can collide with
+//! an existing row. Step A's per-row UPDATE catches that and skips the row
+//! rather than hard-failing `open` (ADR-068 fifth amendment E2). Step B only
+//! promotes once a duplicate scan comes back clean; a duplicate group leaves
+//! the index non-unique and logs a message pointing at `spelunk memory
+//! dedupe`. Neither step ever hard-aborts `open`.
 
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
@@ -23,6 +28,12 @@ impl MemoryStore {
     /// Populates `entity_id` for every row still `NULL`. Computed in Rust:
     /// sha256 is unavailable to raw SQL. Idempotent: an interrupted run
     /// leaves the rest `NULL` for the next open to pick up.
+    ///
+    /// ADR-068 fifth amendment (E2): once a prior open has promoted
+    /// `idx_notes_entity_id` to UNIQUE, this per-row UPDATE can collide with
+    /// an existing row (see the module doc for how). On that collision,
+    /// skip the row and log a warning naming it, rather than propagating
+    /// the error and hard-failing `open`. Any other error still propagates.
     pub(super) fn backfill_entity_ids(&self) -> Result<()> {
         let rows: Vec<(i64, String, String, String)> = {
             let mut stmt = self
@@ -37,12 +48,27 @@ impl MemoryStore {
 
         for (id, kind, title, body) in rows {
             let eid = entity_id(&kind, &title, &body);
-            self.conn
-                .execute(
-                    "UPDATE notes SET entity_id = ?1 WHERE id = ?2",
-                    rusqlite::params![eid, id],
-                )
-                .with_context(|| format!("backfilling entity_id for note #{id}"))?;
+            let result = self.conn.execute(
+                "UPDATE notes SET entity_id = ?1 WHERE id = ?2",
+                rusqlite::params![eid, id],
+            );
+            match result {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(err, _))
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation
+                        && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+                {
+                    tracing::warn!(
+                        "note #{id} could not be backfilled with an entity_id: it collides \
+                         with an existing row's entity_id under the already-promoted UNIQUE \
+                         index; run `spelunk memory dedupe` to collapse them, then re-run \
+                         spelunk"
+                    );
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| format!("backfilling entity_id for note #{id}"));
+                }
+            }
         }
         Ok(())
     }
