@@ -1,6 +1,7 @@
 // Step A (backfill_entity_ids) and Step B (promote_entity_id_unique_index):
 // population, idempotency, resumption after partial population, index
-// promotion, and the marker short-circuit.
+// promotion, and the marker short-circuit. See collision_recovery_tests for
+// what happens once the index is promoted and a write collides with it.
 
 use super::test_support::*;
 
@@ -51,7 +52,7 @@ fn backfill_on_fully_populated_store_is_noop() {
 #[test]
 fn backfill_leaves_already_stamped_rows_untouched() {
     let store = open_store();
-    let id = store
+    let (id, _) = store
         .add_note("decision", "already stamped", "body", &[], &[], None, None)
         .unwrap();
     let before: String = store
@@ -199,7 +200,7 @@ fn promote_skips_rescan_once_marker_present() {
 #[test]
 fn promote_after_manual_collapse_to_zero_duplicates_succeeds() {
     let store = open_store();
-    let survivor_id = store
+    let (survivor_id, _) = store
         .add_note_with_created_at(
             "note",
             "dup title",
@@ -211,7 +212,7 @@ fn promote_after_manual_collapse_to_zero_duplicates_succeeds() {
             1_700_000_000,
         )
         .unwrap();
-    let loser_id = store
+    let (loser_id, _) = store
         .add_note_with_created_at(
             "note",
             "dup title",

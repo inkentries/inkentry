@@ -39,15 +39,15 @@ async fn mount_health_and_since(server: &MockServer) {
         .await;
 }
 
-fn write_server_config(dir: &Path, name: &str, server_url: &str) -> std::path::PathBuf {
+// `server_url`/`project_id` are set via `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID`
+// env on each command below, not this file: `Config::load` only honors those
+// two fields from a project-level `.spelunk/config.toml` (discovered by
+// walking up from CWD) or env, never from the `--config` file this test
+// swaps per origin. Env is the natural fit here since this file's whole
+// point is bearer-per-origin resolution, not config-file precedence.
+fn write_server_config(dir: &Path, name: &str) -> std::path::PathBuf {
     let config_path = dir.join(format!("{name}.toml"));
-    std::fs::write(
-        &config_path,
-        format!(
-            "server_url = {server_url:?}\nproject_id = {PROJECT_ID:?}\nembedding_model = \"test-model\"\n"
-        ),
-    )
-    .unwrap();
+    std::fs::write(&config_path, "embedding_model = \"test-model\"\n").unwrap();
     config_path
 }
 
@@ -82,13 +82,15 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     set_key(home.path(), &server_a.uri(), "sk-project-a-secret");
     set_key(home.path(), &server_b.uri(), "sk-project-b-secret");
 
-    let config_a = write_server_config(cfg_dir.path(), "a", &server_a.uri());
-    let config_b = write_server_config(cfg_dir.path(), "b", &server_b.uri());
+    let config_a = write_server_config(cfg_dir.path(), "a");
+    let config_b = write_server_config(cfg_dir.path(), "b");
 
     let mem_db = cfg_dir.path().join("memory.db");
 
     spelunk_bin_in(home.path())
         .env_remove("SPELUNK_SERVER_KEY")
+        .env("SPELUNK_SERVER_URL", server_a.uri())
+        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_a)
         .arg("memory")
@@ -101,6 +103,8 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
 
     spelunk_bin_in(home.path())
         .env_remove("SPELUNK_SERVER_KEY")
+        .env("SPELUNK_SERVER_URL", server_b.uri())
+        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_b)
         .arg("memory")
@@ -173,11 +177,13 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     )
     .unwrap();
 
-    let config_path = write_server_config(cfg_dir.path(), "legacy", &server.uri());
+    let config_path = write_server_config(cfg_dir.path(), "legacy");
     let mem_db = cfg_dir.path().join("memory.db");
 
     spelunk_bin_in(home.path())
         .env_remove("SPELUNK_SERVER_KEY")
+        .env("SPELUNK_SERVER_URL", server.uri())
+        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_path)
         .arg("memory")
