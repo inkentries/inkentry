@@ -164,7 +164,13 @@ migrations/  (crates/spelunk-core/migrations/)
 
 ```
 main.rs          — entry point: parse CLI, dispatch to commands
-capability.rs    — Tier 0/1 capability detection (server reachable probe, cached per-process)
+capability/      — Tier 0/1 capability detection (server reachable probe, cached per-process)
+  mod.rs         — module doc + re-exports
+  state.rs       — Capabilities / EmbedderState / ServerLimits: data parsed from `/v1/health`
+  tier.rs        — the Tier enum itself
+  probe.rs       — loopback auto-discovery, explicit server_url health probing, the Tier cache
+  diagnostics.rs — probe-failure classification + TLS error rendering
+  guard.rs       — require_tier1 / require_explicit_server_url: feature-gating checks
 server_client.rs — ServerLlmClient + ServerEmbedClient: HTTP clients for spelunk-server inference endpoints
 
 cli/
@@ -274,7 +280,7 @@ owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. The LLM backend and the external
 HTTP embedder shim live in spelunk-server (`main.rs`).
 
-`capability.rs` probes server availability at startup and exposes a `Tier`
+`capability/` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
 
 **Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config/sync_mode.rs`.
@@ -441,7 +447,8 @@ cargo run -p spelunk-cli -- status --all
 cargo run -p spelunk-cli -- graph <symbol>
 cargo run -p spelunk-cli -- chunks src/some/file.rs
 cargo run -p spelunk-cli -- languages
-cargo run -p spelunk-cli -- sync              # push local memory to server (alias for memory push)
+cargo run -p spelunk-cli -- sync              # two-way: push local memory to server, pull teammates' entries down
+cargo run -p spelunk-cli -- memory push       # one-way: seed the server from local memory only
 
 # Run the server
 cargo run -p spelunk-server -- --port 7777
