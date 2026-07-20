@@ -80,11 +80,11 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 /// **Per-process cache**: the result is stored in a `static OnceCell` and is fixed
 /// for the lifetime of the process. This is correct for CLI invocations (one process
 /// = one config), but unsuitable for long-running daemons that may use multiple
-/// configs — they would always see the tier determined by the first call.
+/// configs: they would always see the tier determined by the first call.
 pub async fn get_tier(cfg: &Config) -> &'static Tier {
     // An *explicit* offline mode (config `mode = "offline"`,
     // `SPELUNK_MODE=offline`, or the `SPELUNK_NO_SERVER=1` kill-switch) skips all
-    // server probes — the user has asked for a provable no-cloud run.
+    // server probes: the user has asked for a provable no-cloud run.
     //
     // The *defaulted* offline (no `server_url` and no explicit `mode`) must NOT
     // skip probing: loopback auto-discovery is inference-only (it never owns
@@ -96,7 +96,7 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
     let server_ca = cfg.server_ca.clone();
     TIER.get_or_init(|| async move {
         if explicit_offline {
-            tracing::debug!("sync mode is explicitly offline — skipping all server probes");
+            tracing::debug!("sync mode is explicitly offline: skipping all server probes");
             return Tier::Offline;
         }
         probe(
@@ -143,7 +143,7 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
         std::env::var("SPELUNK_NO_SERVER").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     ) {
-        tracing::debug!("SPELUNK_NO_SERVER set — skipping all server probes");
+        tracing::debug!("SPELUNK_NO_SERVER set: skipping all server probes");
         return Tier::Offline;
     }
 
@@ -166,14 +166,14 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
             "loopback auto-discovery: found server.port={port}, probing {loopback_url}"
         );
         // Loopback probes never produce hard errors (auto_discovered=true), so unwrap is safe.
-        // Loopback is plaintext http — a custom CA is irrelevant here.
+        // Loopback is plaintext http: a custom CA is irrelevant here.
         let tier = probe_url(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
             .await
             .unwrap_or(Tier::Offline);
         if tier.is_server() {
             return tier;
         }
-        tracing::debug!("loopback probe on port {port} failed — falling back to default port");
+        tracing::debug!("loopback probe on port {port} failed: falling back to default port");
     }
 
     // Step 3b: default port 7777
@@ -186,7 +186,7 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
         return tier;
     }
 
-    tracing::debug!("loopback auto-discovery: no local server found — offline mode");
+    tracing::debug!("loopback auto-discovery: no local server found: offline mode");
     Tier::Offline
 }
 
@@ -202,7 +202,7 @@ async fn probe_url(
     auto_discovered: bool,
     server_ca: Option<&std::path::Path>,
 ) -> Result<Tier, String> {
-    // Non-loopback plaintext http:// is invalid config — reject before sending
+    // Non-loopback plaintext http:// is invalid config: reject before sending
     // anything. No opt-out: the fix is always "use https, or loopback".
     spelunk_core::config::validate_transport_url(url)?;
 
@@ -222,7 +222,7 @@ async fn probe_url(
         }
     };
 
-    // `/v1/health` is an unauthenticated endpoint — do not send a bearer to it.
+    // `/v1/health` is an unauthenticated endpoint: do not send a bearer to it.
     let req = client.get(format!("{}/v1/health", url.trim_end_matches('/')));
 
     match req.send().await {
@@ -234,7 +234,7 @@ async fn probe_url(
                 let expected = spelunk_core::embeddings::EMBEDDING_DIM;
                 if server_dim != expected {
                     if auto_discovered {
-                        // Loopback auto-discovery: downgrade gracefully — the user did
+                        // Loopback auto-discovery: downgrade gracefully: the user did
                         // not explicitly configure this server.
                         tracing::warn!(
                             "spelunk-server at {url} serves {server_dim}-dim embeddings; \
@@ -267,7 +267,7 @@ async fn probe_url(
         Ok(resp) => {
             if !auto_discovered {
                 tracing::warn!(
-                    "spelunk-server at {url} returned {} — running in offline mode",
+                    "spelunk-server at {url} returned {}: running in offline mode",
                     resp.status()
                 );
             }
@@ -313,7 +313,7 @@ async fn probe_url(
 /// (`embedder: { state, detail }`). It is `Unknown` when the sub-object is
 /// absent (older server) or the body is legacy plain-text.
 ///
-/// `server_limits` mirrors `/v1/health`'s `limits` object. `None` when absent —
+/// `server_limits` mirrors `/v1/health`'s `limits` object. `None` when absent :
 /// a server that pre-dates the field, which is exactly the version-skew case:
 /// it still enforces the old blanket 30s `/index/embed` budget with no
 /// exemption, regardless of what the CLI's own calibration would otherwise
@@ -370,7 +370,7 @@ async fn parse_health(
                     tracing::warn!(
                         "spelunk-server at {url} was started by UID {server_uid} \
                          but you are UID {my_uid}; on a multi-user host this may \
-                         expose another user's memory — consider running your own server"
+                         expose another user's memory: consider running your own server"
                     );
                 }
             }
@@ -385,7 +385,7 @@ async fn parse_health(
             (caps, body.embedding_dim, embedder_state, body.limits)
         }
         Err(_) => {
-            // Legacy server returns plain-text "ok" — conservative fallback.
+            // Legacy server returns plain-text "ok": conservative fallback.
             // embedding_dim = 0 skips the dimension check; state Unknown; no limits.
             (
                 Capabilities::legacy_memory_only(),
@@ -491,7 +491,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        // Return a health body claiming 768-dim embeddings — wrong for the current CLI (896).
+        // Return a health body claiming 768-dim embeddings: wrong for the current CLI (896).
         Mock::given(method("GET"))
             .and(path("/v1/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
@@ -534,7 +534,7 @@ mod tests {
     // ── accepts_pushed_vectors (top-level health bool) ──────────────────────────
 
     /// A server advertising `accepts_pushed_vectors: true` must parse into
-    /// `caps.accepts_pushed_vectors == true` — the gate the sync push reads
+    /// `caps.accepts_pushed_vectors == true`: the gate the sync push reads
     /// before attaching a client-computed vector.
     #[tokio::test]
     async fn probe_url_parses_accepts_pushed_vectors_true() {
@@ -560,7 +560,7 @@ mod tests {
     }
 
     /// A server that omits the field (older server, or the OSS team server)
-    /// must default to `false` — the push stays text-only there.
+    /// must default to `false`: the push stays text-only there.
     #[tokio::test]
     async fn probe_url_accepts_pushed_vectors_defaults_false_when_absent() {
         use wiremock::matchers::{method, path};
@@ -624,7 +624,7 @@ mod tests {
     }
 
     /// A server that does NOT advertise `limits` (pre-dates the field) must
-    /// leave `Tier::Server.server_limits` as `None` — this is the exact
+    /// leave `Tier::Server.server_limits` as `None`: this is the exact
     /// version-skew case: an old server still enforcing the legacy 30s
     /// `/index/embed` budget with no exemption. `None` must never be
     /// confused with "no limit" by a caller.
@@ -657,7 +657,7 @@ mod tests {
 
     /// `embedder_token_cap` specifically must round-trip as `None` when the
     /// server reports it as JSON `null` (e.g. embedder not ready, or an
-    /// external non-native backend with no known cap) — distinct from the
+    /// external non-native backend with no known cap): distinct from the
     /// whole `limits` object being absent.
     #[tokio::test]
     async fn probe_url_parses_server_limits_with_null_token_cap() {
@@ -747,12 +747,12 @@ mod tests {
     // ── transport-scheme validation ──────────────────────────────────────────
 
     /// A non-loopback `http://` URL must be rejected before any request is
-    /// sent — no mock is mounted, so a request would fail with "connection
+    /// sent: no mock is mounted, so a request would fail with "connection
     /// refused" or similar rather than surfacing the validation error; the
     /// assertion on the error message proves the reject happened pre-flight.
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_no_request_sent() {
-        // Deliberately no MockServer / no listener on this address — if
+        // Deliberately no MockServer / no listener on this address: if
         // `probe_url` tried to send a request it would get a connection error,
         // not this validation message.
         let result = probe_url("http://team-server:7777", REMOTE_PROBE_TIMEOUT, false, None).await;
@@ -797,7 +797,7 @@ mod tests {
         );
     }
 
-    /// `/v1/health` must never carry an `Authorization` header — it is an
+    /// `/v1/health` must never carry an `Authorization` header: it is an
     /// unauthenticated endpoint.
     #[tokio::test]
     async fn probe_url_health_request_carries_no_bearer_header() {

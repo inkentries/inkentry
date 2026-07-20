@@ -18,7 +18,7 @@ The shapes we distinguish:
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
 | **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) |
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.spelunk.cloud` |
-| Self-hosted remote (R3) | Your own VM / pod | `https://spelunk.your-domain` — see [Server setup](server-setup.md) |
+| Self-hosted remote (R3) | Your own VM / pod | `https://spelunk.your-domain`: see [Server setup](server-setup.md) |
 
 This page covers **R1 (local Docker)**. R2 (cloud-managed) is on the roadmap and
 documented separately when it ships. R3 (self-hosted over the network) is

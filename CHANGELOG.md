@@ -772,7 +772,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `.spelunk/config.toml` has `server_url = "http://<host>:<port>"` pointing at
   anything other than loopback, spelunk will now refuse to start** with a
   one-line error telling you to switch to `https://` (put a TLS-terminating
-  reverse proxy in front — see `docs/self-hosting.md`) or move
+  reverse proxy in front: see `docs/self-hosting.md`) or move
   the server to loopback. Loopback `http://` and all `https://` URLs are
   unaffected.
 - **The CLI no longer sends the bearer token to `/v1/health`.** That endpoint
@@ -837,7 +837,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   no key now fails to start. Loopback binds are unaffected. **Breaking for the
   keyless Docker quickstart**: the container image binds `0.0.0.0` by default,
   so `docker compose up -d` with no `SPELUNK_SERVER_KEY` set now refuses to
-  start — see `docs/server.md#quick-start-docker`.
+  start: see `docs/server.md#quick-start-docker`.
 - **ADR-056 single-trust-domain guardrails.** Per [ADR-056](docs/adr/056-oss-server-tenancy-model.md),
   a `spelunk-server` instance's shared API key is the tenancy boundary by
   design — every keyholder administers every project on that instance; there is

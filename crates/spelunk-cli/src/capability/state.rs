@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Server-side embedder readiness, mirrored from the `/v1/health` `embedder.state`
 /// field. The CLI uses this to distinguish, when semantic search is unavailable,
 /// between "no server reachable", "server up but the model is still warming up",
-/// and "the model failed to load" — so it can print an actionable one-line notice
+/// and "the model failed to load": so it can print an actionable one-line notice
 /// rather than silently degrading.
 ///
 /// Serialized lowercase to match the server's health body and to feed
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbedderState {
-    /// Native embedder build/download in progress — not ready yet, keep polling.
+    /// Native embedder build/download in progress: not ready yet, keep polling.
     Loading,
     /// Model loaded; embed endpoints will serve.
     Ready,
@@ -47,7 +47,7 @@ impl EmbedderState {
 /// `crates/spelunk-server/src/handlers.rs` `ServerLimits`).
 ///
 /// `None` on a `Tier::Server` (rather than this struct being absent) means the
-/// server pre-dates this field — the embed phase treats that as "assume the
+/// server pre-dates this field: the embed phase treats that as "assume the
 /// legacy 30s / no-embed-exemption profile", which is exactly the
 /// version-skew case a newer CLI can hit talking to an older, long-running
 /// server (see `embed_phase.rs`'s calibration-vs-server-budget clamping).
@@ -100,7 +100,7 @@ impl Capabilities {
             memory_harvest: memory,
             explore: has("explore"),
             plan: has("plan"),
-            // Not derivable from the `capabilities` array — it is a separate
+            // Not derivable from the `capabilities` array: it is a separate
             // top-level bool set by `parse_health` from the health body.
             accepts_pushed_vectors: false,
         }

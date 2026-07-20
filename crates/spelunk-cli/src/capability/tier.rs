@@ -25,7 +25,7 @@ pub enum Tier {
         /// search is unavailable (rendered by `status`).
         embedder_state: EmbedderState,
         /// Server-enforced `/index/embed` limits, mirrored from `/v1/health`'s
-        /// `limits` object. `None` when the field is absent — a server that
+        /// `limits` object. `None` when the field is absent: a server that
         /// pre-dates this fix and still enforces the old blanket 30s budget
         /// with no `/index/embed` exemption. The embed phase
         /// (`embed_phase.rs`) reads this to clamp its own calibration to what
@@ -129,7 +129,7 @@ impl Tier {
     /// An auto-discovered loopback server is an **inference** backend only; it
     /// is never a memory store. So when the tier is `Server` and `server_url`
     /// is unset (the auto-discovered case), the discovered URL is written to
-    /// `inference_url` — NOT `server_url`. `ServerInferenceClient::from_config`
+    /// `inference_url`: NOT `server_url`. `ServerInferenceClient::from_config`
     /// reads `inference_url` (falling back to `server_url`), so inference still
     /// reaches the loopback server; `open_memory_backend` reads only
     /// `server_url`, so memory stays on the project's local `memory.db`. This

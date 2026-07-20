@@ -313,7 +313,7 @@ variables (each has an equivalent flag):
 `explore` and `memory harvest` pick up an LLM-configured local daemon
 automatically. Index-time chunk summaries are the exception: they additionally
 need an *explicit* `server_url` in `.spelunk/config.toml` (even a loopback one),
-not just a reachable server — see
+not just a reachable server: see
 [Third-party models](third-party-models.md#what-this-unlocks) for the full
 absence-behavior and the team-server equivalent.
 
@@ -431,7 +431,7 @@ spelunk check --format porcelain --files    # list files that need re-indexing
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
 - [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
-- [Server setup](server-setup.md) — exposing spelunk-server to remote agents over TLS
+- [Server setup](server-setup.md): exposing spelunk-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders
 
 ---
@@ -502,7 +502,7 @@ spelunk sync           # two-way: push local entries and pull teammates' entries
 recorded and pulls what everyone else did, so the team reads and writes one
 shared memory. Code never travels; only memory does.
 
-For full setup and deployment guide: **[Server setup](server-setup.md)** — Docker, configuration, API reference.
+For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker, configuration, API reference.
 
 ### Enterprise / MDM deployment
 

@@ -307,7 +307,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         .unwrap();
 
         // `server_url` only loads from project-level `.spelunk/config.toml` (or
-        // env), never the personal global config — see `Config::load_with_store`.
+        // env), never the personal global config: see `Config::load_with_store`.
         write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
         // Index the project — must reach the embedding phase without a 404.
