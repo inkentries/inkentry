@@ -103,7 +103,14 @@ fn local_first_read_serves_data_without_sync_nag() {
         tmp.path(),
         "config-local-first.toml",
         &tmp.path().join("spelunk.db"),
-        "server_url = \"https://team.invalid:7777\"\nproject_id = \"team/proj\"\n",
+        "",
+    );
+    // `server_url`/`project_id` only take effect from project-level
+    // `.spelunk/config.toml` (`memory_list` sets `.current_dir(tmp.path())`).
+    plumbing_helpers::write_project_server_config(
+        tmp.path(),
+        "https://team.invalid:7777",
+        "team/proj",
     );
 
     let out = memory_list(&tmp, &mem_path, &cfg);
@@ -129,14 +136,19 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
     let (tmp, mem_path, _id) = seeded_project();
     // Loopback http passes the transport guard; nothing listens on port 1, so
     // the read must fail. A raw-UUID project_id skips slug resolution, proving
-    // the failure is the memory read itself.
+    // the failure is the memory read itself. `mode` isn't a `ProjectConfig`
+    // field, so it stays in the global file; `server_url`/`project_id` only
+    // take effect from project-level `.spelunk/config.toml`.
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
         &tmp.path().join("spelunk.db"),
-        "server_url = \"http://127.0.0.1:1\"\n\
-         project_id = \"11111111-1111-1111-1111-111111111111\"\n\
-         mode = \"cloud_first\"\n",
+        "mode = \"cloud_first\"\n",
+    );
+    plumbing_helpers::write_project_server_config(
+        tmp.path(),
+        "http://127.0.0.1:1",
+        "11111111-1111-1111-1111-111111111111",
     );
 
     let out = memory_list(&tmp, &mem_path, &cfg);
@@ -196,8 +208,12 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
         tmp.path(),
         "config-team.toml",
         &tmp.path().join("index.db"),
-        "server_url = \"https://127.0.0.1:1\"\nproject_id = \"team/proj\"\n",
+        "",
     );
+    // `server_url`/`project_id` only take effect from project-level
+    // `.spelunk/config.toml`; the `status` command below runs with
+    // `.current_dir(&project)`, so it must land there, not under `tmp.path()`.
+    plumbing_helpers::write_project_server_config(&project, "https://127.0.0.1:1", "team/proj");
 
     let out = spelunk_bin()
         .current_dir(&project)
