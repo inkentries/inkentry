@@ -3,12 +3,14 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::Path;
 
+mod dedupe;
 mod edges;
 mod entity_id_migration;
 mod notes;
 mod search;
 mod sync;
 
+pub use dedupe::DedupeSummary;
 pub use sync::SyncRow;
 
 #[cfg(test)]
