@@ -908,6 +908,33 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
     }
 }
 
+/// Guard for a feature that moves memory to or from an explicitly-configured
+/// server (`memory push`, `sync`, `memory pull`): a self-hosted team server or
+/// Spelunk Cloud both work identically here. Distinct from features that
+/// merely need *an* inference-capable server (covered by [`require_tier1`]).
+///
+/// `require_tier1` alone is not sufficient for these commands: an
+/// auto-discovered loopback inference server makes the tier `Server` while
+/// `cfg.server_url` stays `None`, and that loopback server is never a memory
+/// store (ADR-004). Callers check `require_tier1` first, which already bails
+/// on `Tier::Offline`; this guard then confirms the server was configured
+/// explicitly rather than merely auto-discovered.
+///
+/// Deliberately **explicit-config-only**: it reads `cfg.server_url` and
+/// nothing else, never probing reachability or consulting the health-probe
+/// `Capabilities` itself. By the time this runs, every current caller has
+/// already established reachability via `require_tier1`, so this only ever
+/// needs to answer one question: was the server set explicitly? Returns the
+/// configured `server_url` on success.
+pub fn require_explicit_server_url(feature: &str, cfg: &Config) -> anyhow::Result<String> {
+    cfg.server_url.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "'spelunk {feature}' requires a server. Set `server_url` in your spelunk config \
+             (e.g. ~/.config/spelunk/config.toml or .spelunk/config.toml)."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,6 +1314,65 @@ mod tests {
         let err = require_tier1("memory push", &tier, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'spelunk memory push'"));
+    }
+
+    // require_explicit_server_url: `memory push`, `sync`, and `memory pull` all move
+    // memory to/from an explicitly-configured team server; an auto-discovered
+    // loopback inference server must never satisfy them (ADR-004: it is never
+    // a memory store). `require_tier1` alone is not enough for these commands,
+    // since a loopback server makes the tier `Server` while `cfg.server_url`
+    // stays `None`. This guard checks explicit configuration only and must
+    // never probe reachability, so it stays usable before any network call is
+    // made.
+
+    #[test]
+    fn require_explicit_server_url_errs_when_unset() {
+        let cfg = Config {
+            server_url: None,
+            ..Default::default()
+        };
+        let err = require_explicit_server_url("sync", &cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("server_url"));
+    }
+
+    #[test]
+    fn require_explicit_server_url_ok_regardless_of_reachability() {
+        // A garbage, unreachable URL: the guard must still succeed, because it
+        // checks configuration presence only, never reachability. Reachability
+        // is `require_tier1`'s job at the actual call site.
+        let cfg = Config {
+            server_url: Some("https://unreachable.invalid:1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            require_explicit_server_url("sync", &cfg).unwrap(),
+            "https://unreachable.invalid:1"
+        );
+    }
+
+    /// The load-bearing regression test: `memory push` and `sync` must refuse
+    /// with the exact same message shape (only the feature name differs), so
+    /// they can never again drift into the two different messages this guard
+    /// was extracted to prevent.
+    #[test]
+    fn require_explicit_server_url_message_is_identical_in_shape_across_features() {
+        let cfg = Config {
+            server_url: None,
+            ..Default::default()
+        };
+        let push_msg = require_explicit_server_url("memory push", &cfg)
+            .unwrap_err()
+            .to_string();
+        let sync_msg = require_explicit_server_url("sync", &cfg)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            push_msg.replace("memory push", "sync"),
+            sync_msg,
+            "push and sync messages must differ only in the feature name: \
+             push={push_msg:?} sync={sync_msg:?}"
+        );
     }
 
     // ── read_server_port_file ────────────────────────────────────────────────
