@@ -191,25 +191,42 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     (temp, project_dir, config_path)
 }
 
-/// Overwrite `config_path` to point at `server_url` (our TLS test listener),
-/// trusting `ca_pem_path` via `server_ca`.
-fn write_tls_config(config_path: &Path, db_path: &Path, port: u16, ca_pem_path: &Path) {
+/// Overwrite `config_path` (the global `--config` file) with `db_path` and
+/// `server_ca`, and separately point `server_url` (our TLS test listener) at
+/// `<project_dir>/.spelunk/config.toml`: `Config::load` only honors
+/// `server_url` from a project-level config (or env), never the global file.
+/// The loopback address means `project_id` is not required (see
+/// `Config::validate_with_project`).
+fn write_tls_config(
+    config_path: &Path,
+    db_path: &Path,
+    port: u16,
+    ca_pem_path: &Path,
+    project_dir: &Path,
+) {
     let cfg = format!(
-        "db_path = {:?}\nserver_url = \"https://127.0.0.1:{port}\"\nserver_ca = {:?}\n",
+        "db_path = {:?}\nserver_ca = {:?}\n",
         db_path.display().to_string(),
         ca_pem_path.display().to_string(),
     );
     fs::write(config_path, cfg).expect("write tls config");
+    plumbing_helpers::write_project_server_config(
+        project_dir,
+        &format!("https://127.0.0.1:{port}"),
+        "",
+    );
 }
 
 /// Same as `write_tls_config`, but deliberately omits `server_ca`: the CLI
 /// trusts only the default root store, so our in-test CA is untrusted.
-fn write_tls_config_no_ca(config_path: &Path, db_path: &Path, port: u16) {
-    let cfg = format!(
-        "db_path = {:?}\nserver_url = \"https://127.0.0.1:{port}\"\n",
-        db_path.display().to_string(),
-    );
+fn write_tls_config_no_ca(config_path: &Path, db_path: &Path, port: u16, project_dir: &Path) {
+    let cfg = format!("db_path = {:?}\n", db_path.display().to_string());
     fs::write(config_path, cfg).expect("write tls config with no server_ca");
+    plumbing_helpers::write_project_server_config(
+        project_dir,
+        &format!("https://127.0.0.1:{port}"),
+        "",
+    );
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -230,6 +247,7 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
         &temp.path().join("index.db"),
         port,
         &ca_pem_path,
+        &project_dir,
     );
 
     let output = spelunk_bin()
@@ -274,6 +292,7 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
         &temp.path().join("index.db"),
         port,
         &ca_pem_path,
+        &project_dir,
     );
 
     let output = spelunk_bin()
@@ -346,6 +365,7 @@ fn tls_server_with_expired_leaf_names_expired_cause() {
         &temp.path().join("index.db"),
         port,
         &ca_pem_path,
+        &project_dir,
     );
 
     let output = spelunk_bin()
@@ -386,7 +406,12 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
     let port = spawn_tls_server(leaf_pem, leaf_key_pem);
 
     let (temp, project_dir, config_path) = setup_project();
-    write_tls_config_no_ca(&config_path, &temp.path().join("index.db"), port);
+    write_tls_config_no_ca(
+        &config_path,
+        &temp.path().join("index.db"),
+        port,
+        &project_dir,
+    );
 
     let output = spelunk_bin()
         .current_dir(&project_dir)

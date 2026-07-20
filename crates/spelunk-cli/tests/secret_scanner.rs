@@ -191,12 +191,18 @@ fn summary_secret_is_not_persisted() {
     });
 
     let mock_url = mock_server.uri();
-    let config_path =
-        plumbing_helpers::write_config_with_server(tmp.path(), &db_path, &mock_url, &mock_url);
+    let config_path = plumbing_helpers::write_config_with_server(
+        tmp.path(),
+        &db_path,
+        &mock_url,
+        &mock_url,
+        tmp.path(),
+    );
 
     // Run the real `spelunk index` (no `--no-summaries`), same as production:
     // parse → embed → summary generation, all through `generate_summaries`.
     plumbing_helpers::spelunk_bin_in(tmp.path())
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("index")

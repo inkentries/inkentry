@@ -5,6 +5,7 @@ use tempfile::tempdir;
 mod plumbing_helpers;
 use plumbing_helpers::{
     FIXTURE_PROJECT_ID, IndexEmbedResponder, spelunk_bin, spelunk_bin_in, write_config_with_server,
+    write_project_server_config,
 };
 
 #[test]
@@ -191,19 +192,19 @@ async fn test_index_and_status() {
                 "db_path = {:?}\n",
                 "embedding_model = \"test-model\"\n",
                 "llm_model = \"test-chat-model\"\n",
-                "server_url = {:?}\n",
-                "project_id = {:?}\n",
             ),
             db_path,
-            mock_server.uri(),
-            project_id,
         ),
     )
     .unwrap();
+    // `server_url`/`project_id` only take effect from project-level
+    // `.spelunk/config.toml` (or env), never from the `--config` global file.
+    write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
     // 1. Index the project
     let mut cmd = spelunk_bin();
-    cmd.arg("--config")
+    cmd.current_dir(&project_dir)
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -307,17 +308,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
 
         // `server_url` only loads from project-level `.spelunk/config.toml` (or
         // env), never the personal global config — see `Config::load_with_store`.
-        let spelunk_dir = project_dir.join(".spelunk");
-        fs::create_dir(&spelunk_dir).unwrap();
-        fs::write(
-            spelunk_dir.join("config.toml"),
-            format!(
-                concat!("server_url = {:?}\n", "project_id = {:?}\n"),
-                mock_server.uri(),
-                project_id,
-            ),
-        )
-        .unwrap();
+        write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
         // Index the project — must reach the embedding phase without a 404.
         spelunk_bin()
@@ -464,10 +455,12 @@ async fn test_status_shows_server_tier() {
         &db_path,
         &mock_server.uri(),
         &mock_server.uri(),
+        &project_dir,
     );
 
     let mut cmd = spelunk_bin();
-    cmd.arg("--config")
+    cmd.current_dir(&project_dir)
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -525,10 +518,12 @@ async fn test_status_json_includes_tier_fields() {
         &db_path,
         &mock_server.uri(),
         &mock_server.uri(),
+        &project_dir,
     );
 
     let mut cmd = spelunk_bin();
-    cmd.arg("--config")
+    cmd.current_dir(&project_dir)
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -817,10 +812,12 @@ async fn test_check_reports_server_reachable() {
         &db_path,
         &mock_server.uri(),
         &mock_server.uri(),
+        &project_dir,
     );
 
     let mut cmd = spelunk_bin();
-    cmd.arg("--config")
+    cmd.current_dir(&project_dir)
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -852,14 +849,16 @@ async fn test_check_reports_server_unreachable() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test\"\nllm_model = \"test\"\nserver_url = {:?}\nproject_id = {:?}\n",
-            db_path, bad_url, bad_url, FIXTURE_PROJECT_ID
+            "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            db_path, bad_url
         ),
     )
     .unwrap();
+    write_project_server_config(&project_dir, bad_url, FIXTURE_PROJECT_ID);
 
     let mut cmd = spelunk_bin();
-    cmd.arg("--config")
+    cmd.current_dir(&project_dir)
+        .arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
@@ -2097,8 +2096,13 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
     // runs at Tier 1 and reaches the coverage gate instead of the Tier-0
     // text fallback.
     let db_ignored = home.path().join("unused.db");
-    let server_config =
-        write_config_with_server(home.path(), &db_ignored, &mock.uri(), &mock.uri());
+    let server_config = write_config_with_server(
+        home.path(),
+        &db_ignored,
+        &mock.uri(),
+        &mock.uri(),
+        &project_dir,
+    );
 
     let assert = spelunk_bin_in(home.path())
         .current_dir(&project_dir)
@@ -2143,10 +2147,17 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     )
     .unwrap();
     let db_ignored = home.path().join("unused.db");
-    let config_path = write_config_with_server(home.path(), &db_ignored, &mock.uri(), &mock.uri());
+    let config_path = write_config_with_server(
+        home.path(),
+        &db_ignored,
+        &mock.uri(),
+        &mock.uri(),
+        &project_dir,
+    );
 
     // Pass 1: embed everything via the mock server (full coverage).
     spelunk_bin_in(home.path())
+        .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -2163,6 +2174,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     .unwrap();
     spelunk_bin_in(home.path())
         .env("SPELUNK_NO_SERVER", "1")
+        .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("index")

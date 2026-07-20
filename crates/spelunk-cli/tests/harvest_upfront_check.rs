@@ -74,10 +74,14 @@ fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
 #[test]
 fn harvest_check_passes_when_server_url_is_set() {
     let temp = tempdir().unwrap();
-    // server_url is set; project_id is required alongside it.
-    let config_path = write_harvest_config(
+    // `Config::load` only honors `server_url`/`project_id` from project-level
+    // `.spelunk/config.toml` (or env), never the global `--config` file, so
+    // they're written separately from `write_harvest_config`'s `extra`.
+    let config_path = write_harvest_config(temp.path(), "");
+    plumbing_helpers::write_project_server_config(
         temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
+        "http://127.0.0.1:7777",
+        "test/proj",
     );
 
     // The command will fail (no live server, no git repo) but NOT with the

@@ -70,10 +70,13 @@ async fn mount_since_empty(server: &MockServer) {
         .await;
 }
 
-/// Write a config with an explicit `server_url`/`project_id` pointing at the
-/// mock server, and no `server_key`/`[auth]`, so `ensure_fresh_server_key`
+/// Write a config with no `server_key`/`[auth]`, so `ensure_fresh_server_key`
 /// takes its no-op path (`auth_api.rs`) and push/sync never needs a real
-/// WorkOS login against a keyless plaintext loopback server.
+/// WorkOS login against a keyless plaintext loopback server. `server_url`/
+/// `project_id` point at the mock server via `<dir>/.spelunk/config.toml`
+/// instead of this global file: `Config::load` only honors those two fields
+/// from a project-level config (or env). Every caller already sets
+/// `.current_dir(dir)`.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     let db_path = dir.join(".spelunk").join("index.db");
     let config_path = dir.join("config.toml");
@@ -82,12 +85,11 @@ fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
         format!(
             "db_path = {db_path:?}\n\
              embedding_model = \"test-model\"\n\
-             llm_model = \"test-chat\"\n\
-             server_url = {server_url:?}\n\
-             project_id = {PROJECT_SLUG:?}\n"
+             llm_model = \"test-chat\"\n"
         ),
     )
     .expect("write config.toml");
+    plumbing_helpers::write_project_server_config(dir, server_url, PROJECT_SLUG);
     config_path
 }
 

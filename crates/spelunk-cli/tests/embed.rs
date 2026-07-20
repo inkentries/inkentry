@@ -12,22 +12,15 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Build a config.toml that points `server_url` at the given mock server URI.
+/// Build a config.toml with `embedding_model`, and separately point
+/// `server_url`/`project_id` at `<dir>/.spelunk/config.toml`: `Config::load`
+/// only honors those two fields from a project-level config (or env), never
+/// the global `--config` file. The caller's `Command` must set
+/// `.current_dir(dir.path())`.
 fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
-        format!(
-            concat!(
-                "server_url = \"{server_uri}\"\n",
-                "project_id = \"{project_id}\"\n",
-                "embedding_model = \"test-model\"\n",
-            ),
-            server_uri = server_uri,
-            project_id = FIXTURE_PROJECT_ID,
-        ),
-    )
-    .unwrap();
+    std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
+    plumbing_helpers::write_project_server_config(dir.path(), server_uri, FIXTURE_PROJECT_ID);
     config
 }
 
@@ -51,6 +44,7 @@ async fn embed_exits_0_with_empty_piped_stdin() {
 
     // Pipe empty stdin — command should succeed (no lines to embed).
     spelunk_bin()
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -88,6 +82,7 @@ async fn embed_document_mode_produces_jsonl_vector() {
     let config = write_server_config(&tmp, &mock.uri());
 
     let output = spelunk_bin()
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -140,6 +135,7 @@ async fn embed_query_mode_produces_jsonl_vector() {
     let config = write_server_config(&tmp, &mock.uri());
 
     let output = spelunk_bin()
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -180,6 +176,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
     let config = write_server_config(&tmp, &mock.uri());
 
     let output = spelunk_bin()
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

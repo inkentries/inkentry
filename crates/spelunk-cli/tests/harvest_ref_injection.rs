@@ -14,14 +14,22 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
+/// `server_url`/`project_id` only satisfy harvest's upfront "server
+/// configured" gate: the injection guard under test fires before any request
+/// reaches that address, so it deliberately never needs to be reachable.
+/// `Config::load` only honors those two fields from project-level
+/// `.spelunk/config.toml` (or env), never the global `--config` file, so they
+/// land in `dir`'s project config instead of `dir/config.toml`. Every caller
+/// sets `.current_dir(dir)`.
+fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");
     let content = format!(
-        "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\n{extra}",
+        "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\n",
         db_path
     );
     fs::write(&config_path, content).expect("write config.toml");
+    plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:7777", "test/proj");
     config_path
 }
 
@@ -45,10 +53,7 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     let victim_path = victim_dir.path().join("victim.txt");
     assert!(!victim_path.exists());
 
-    let config_path = write_harvest_config(
-        temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
-    );
+    let config_path = write_harvest_config(temp.path());
 
     let malicious_branch_arg = format!("--branch=--output={}", victim_path.display());
 
@@ -80,10 +85,7 @@ fn harvest_rejects_option_like_git_range() {
     let victim_dir = tempdir().unwrap();
     let victim_path = victim_dir.path().join("victim2.txt");
 
-    let config_path = write_harvest_config(
-        temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
-    );
+    let config_path = write_harvest_config(temp.path());
 
     let malicious_range_arg = format!("--git-range=--output={}", victim_path.display());
 
@@ -112,10 +114,7 @@ fn harvest_rejects_short_option_like_branch() {
     let temp = tempdir().unwrap();
     init_repo(temp.path());
 
-    let config_path = write_harvest_config(
-        temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
-    );
+    let config_path = write_harvest_config(temp.path());
 
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
@@ -139,10 +138,7 @@ fn harvest_rejects_bare_double_dash_branch() {
     let temp = tempdir().unwrap();
     init_repo(temp.path());
 
-    let config_path = write_harvest_config(
-        temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
-    );
+    let config_path = write_harvest_config(temp.path());
 
     let mut cmd = spelunk_bin();
     cmd.current_dir(temp.path())
@@ -172,10 +168,7 @@ fn harvest_rejects_option_like_branch_with_shell_metacharacters() {
     let victim_dir = tempdir().unwrap();
     let victim_path = victim_dir.path().join("victim3.txt");
 
-    let config_path = write_harvest_config(
-        temp.path(),
-        "server_url = \"http://127.0.0.1:7777\"\nproject_id = \"test/proj\"\n",
-    );
+    let config_path = write_harvest_config(temp.path());
 
     let malicious_branch_arg = format!(
         "--branch=--output={};touch /tmp/oss61-pwned",

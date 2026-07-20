@@ -160,26 +160,42 @@ pub fn write_config(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
 
 /// Like `write_config` but also configures `server_url` + `project_id` for
 /// Tier 1 operation (server-based embedding during `spelunk index`).
+///
+/// `Config::load` only honors `server_url`/`project_id` from a project-level
+/// `.spelunk/config.toml` (discovered by walking up from CWD) or
+/// `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID` env, never from the `--config`
+/// file, which is the global personal config. So this writes those two fields
+/// to `<project_dir>/.spelunk/config.toml` instead of the returned global
+/// file. The caller's `Command` must set `.current_dir(project_dir)` (or
+/// wherever `project_dir` resolves to) or the discovery walk will never find
+/// it.
 pub fn write_config_with_server(
     dir: &Path,
     db_path: &Path,
     api_base: &str,
     server_url: &str,
+    project_dir: &Path,
 ) -> PathBuf {
-    let cfg = format!(
-        concat!(
-            "db_path = {:?}\n",
-            "api_base_url = {:?}\n",
-            "embedding_model = \"test-model\"\n",
-            "llm_model = \"test-chat\"\n",
-            "server_url = {:?}\n",
-            "project_id = {:?}\n",
-        ),
-        db_path, api_base, server_url, FIXTURE_PROJECT_ID,
-    );
-    let config_path = dir.join("config.toml");
-    std::fs::write(&config_path, cfg).expect("write config");
+    let config_path = write_config(dir, db_path, api_base);
+    write_project_server_config(project_dir, server_url, FIXTURE_PROJECT_ID);
     config_path
+}
+
+/// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`,
+/// the only config file `Config::load` honors those fields from (besides env).
+/// The caller's `Command` must set `.current_dir(project_dir)`.
+///
+/// An empty `project_id` is omitted entirely (rather than written as `""`) so
+/// a loopback-only test that doesn't need one (see `Config::validate_with_project`)
+/// leaves `project_id` genuinely unset, not set to an empty string.
+pub fn write_project_server_config(project_dir: &Path, server_url: &str, project_id: &str) {
+    let spelunk_dir = project_dir.join(".spelunk");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let mut cfg = format!("server_url = {server_url:?}\n");
+    if !project_id.is_empty() {
+        cfg.push_str(&format!("project_id = {project_id:?}\n"));
+    }
+    std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
 }
 
 /// Dynamic responder for `POST /v1/projects/{id}/index/embed`.
@@ -323,11 +339,16 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     });
 
     let mock_url = _mock_server.uri();
-    let config_path = write_config_with_server(tmp.path(), &db_path, &mock_url, &mock_url);
+    let config_path =
+        write_config_with_server(tmp.path(), &db_path, &mock_url, &mock_url, tmp.path());
 
     // Pass `--db` explicitly so the index is written to our temp DB path,
     // not to `<project_dir>/.spelunk/index.db` (the default project-local location).
+    // `.current_dir(tmp.path())`: the project-level config discovery walks up
+    // from CWD, not from the `project_dir` positional arg (which may be an
+    // unrelated source tree, e.g. the shared fixture).
     spelunk_bin_in(tmp.path())
+        .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
         .arg("index")
