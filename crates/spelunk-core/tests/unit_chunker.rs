@@ -127,6 +127,58 @@ fn sliding_window_threads_identity_onto_every_subchunk() {
     }
 }
 
+// ── tree-sitter docstring extraction (preceding_comment) ────────────────────
+
+#[test]
+fn docstring_captured_for_plain_function() {
+    let src = "/// does a thing\nfn plain() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("plain"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn docstring_captured_across_a_single_attribute() {
+    // A Rust `attribute_item` is a real sibling between an item and any doc
+    // comment above it (unlike a TS decorator or Java annotation, which their
+    // grammars attach as a child of the item instead) – `preceding_comment`
+    // must skip over it, not stop there and report no docstring.
+    let src = "/// does a thing\n#[allow(dead_code)]\nfn attributed() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn docstring_captured_across_stacked_attributes() {
+    let src = "/// does a thing\n#[derive(Debug)]\n#[allow(dead_code)]\nstruct Stacked;\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Stacked"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn no_docstring_when_attribute_has_none_above_it() {
+    // No false positive: an attributed item with nothing but other code above
+    // it must still come back with no docstring.
+    let src = "fn other() {}\n#[allow(dead_code)]\nfn attributed() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring, None);
+}
+
 // ── Chunk::embedding_text ────────────────────────────────────────────────────
 
 fn make_chunk(name: Option<&str>, docstring: Option<&str>, content: &str) -> Chunk {

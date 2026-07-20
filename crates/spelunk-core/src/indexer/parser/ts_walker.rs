@@ -1,4 +1,4 @@
-use super::super::chunker::{Chunk, ChunkKind, MAX_CHUNK_TOKENS, sliding_window};
+use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
 use crate::error::IndexError;
 use crate::search::tokens::estimate_tokens;
 use anyhow::Result;
@@ -282,7 +282,7 @@ fn walk_node_inner(
                 | ChunkKind::Interface
         );
 
-        if estimate_tokens(&content) > MAX_CHUNK_TOKENS {
+        if estimate_tokens(&content) > chunk_token_cap() {
             if is_container {
                 // Suppress the container's own chunk; its children already carry
                 // fine-grained chunks framed by parent_scope. Re-window only if the
@@ -594,9 +594,19 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// (skipping whitespace), if any.
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let mut prev = node.prev_sibling()?;
-    // skip over whitespace / newline tokens
+    // Skip over whitespace/newline tokens and Rust attributes
+    // (`#[derive(...)]`, `#[async_trait]`, etc.). Unlike a TS decorator or a
+    // Java annotation – attached by their grammars as a *child* of the
+    // item they modify, so the item's own prev_sibling still lands on the
+    // doc comment directly – a Rust `attribute_item` is a real, non-extra
+    // *sibling* of the item, sitting between it and any doc comment above.
+    // Looping past it here (the while condition, not a one-off skip) also
+    // covers the common stacked case (`#[derive(..)]` then `#[serde(..)]`).
+    // Without this, any attributed item's docstring silently comes back
+    // `None` even though a `///` comment is right there in the source.
     while prev.kind() == "\n"
         || prev.kind() == "newline"
+        || prev.kind() == "attribute_item"
         || prev.is_extra()
             && prev.kind() != "comment"
             && prev.kind() != "line_comment"

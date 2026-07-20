@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 /// The semantic kind of an extracted code chunk.
@@ -77,6 +79,26 @@ impl Chunk {
 /// Distinct from the embedder's hard `token_cap` OOM guard.
 pub const MAX_CHUNK_TOKENS: usize = 2048;
 
+/// Process-global chunk token cap, seeded from `MAX_CHUNK_TOKENS`. All cap
+/// comparisons (`chunk_token_cap()`) read this instead of the constant
+/// directly, so a benchmark harness can sweep the cap without a rebuild per
+/// value (see `set_chunk_token_cap`). Product code never calls the setter, so
+/// shipped indexing behaviour is unchanged.
+static CHUNK_TOKEN_CAP: AtomicUsize = AtomicUsize::new(MAX_CHUNK_TOKENS);
+
+/// Current chunk token cap in effect (defaults to `MAX_CHUNK_TOKENS`).
+pub fn chunk_token_cap() -> usize {
+    CHUNK_TOKEN_CAP.load(Ordering::Relaxed)
+}
+
+/// Override the process-wide chunk token cap. For benchmark/eval harnesses
+/// only – e.g. sweeping `MAX_CHUNK_TOKENS`-equivalent caps across a re-chunk
+/// without a rebuild per value. Never call this from a production indexing
+/// path, which must run on the shipped `MAX_CHUNK_TOKENS`.
+pub fn set_chunk_token_cap(tokens: usize) {
+    CHUNK_TOKEN_CAP.store(tokens, Ordering::Relaxed);
+}
+
 /// Split `source` into token-aware sliding-window chunks (fallback for
 /// languages without a tree-sitter grammar, for files that failed parsing, and
 /// for re-windowing oversized semantic nodes).
@@ -117,8 +139,8 @@ pub fn sliding_window(
     // `estimate_tokens` is `chars/4`, so the budget in characters mirrors the
     // token budget without introducing a second constant. Overlap targets
     // ~12.5% of the budget (the historical 15/120-line ratio), in tokens.
-    const BUDGET_CHARS: usize = MAX_CHUNK_TOKENS * 4;
-    const OVERLAP_CHARS: usize = BUDGET_CHARS / 8;
+    let budget_chars: usize = chunk_token_cap() * 4;
+    let overlap_chars: usize = budget_chars / 8;
 
     let line_chars: Vec<usize> = lines.iter().map(|l| l.chars().count()).collect();
 
@@ -133,7 +155,7 @@ pub fn sliding_window(
         let mut acc = 0usize; // characters accumulated in the current window
         while end < lines.len() {
             let add = line_chars[end] + usize::from(end > start); // +1 for the '\n' join
-            if end > start && acc + add > BUDGET_CHARS {
+            if end > start && acc + add > budget_chars {
                 break;
             }
             acc += add;
@@ -157,13 +179,13 @@ pub fn sliding_window(
             break;
         }
 
-        // Start the next window ~OVERLAP_CHARS earlier, on a line boundary, but
+        // Start the next window ~overlap_chars earlier, on a line boundary, but
         // always strictly after the current start so the loop makes progress.
         let mut next_start = end;
         let mut overlap = 0usize;
         while next_start > start + 1 {
             let candidate = line_chars[next_start - 1] + 1; // +1 for the join '\n'
-            if overlap + candidate > OVERLAP_CHARS {
+            if overlap + candidate > overlap_chars {
                 break;
             }
             overlap += candidate;
@@ -173,4 +195,77 @@ pub fn sliding_window(
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    // `chunk_token_cap()` reads a process-global `AtomicUsize`; tests that call
+    // `set_chunk_token_cap` must run `#[serial]` (never in parallel with each
+    // other) and always restore the shipped default before returning, so a
+    // test failure mid-mutation can't leak a wrong cap into an unrelated test
+    // running later in the same binary.
+    fn with_cap<R>(tokens: usize, f: impl FnOnce() -> R) -> R {
+        set_chunk_token_cap(tokens);
+        let result = f();
+        set_chunk_token_cap(MAX_CHUNK_TOKENS);
+        result
+    }
+
+    #[test]
+    #[serial]
+    fn chunk_token_cap_defaults_to_max_chunk_tokens() {
+        assert_eq!(chunk_token_cap(), MAX_CHUNK_TOKENS);
+    }
+
+    #[test]
+    #[serial]
+    fn set_chunk_token_cap_overrides_the_getter() {
+        with_cap(512, || {
+            assert_eq!(chunk_token_cap(), 512);
+        });
+        assert_eq!(
+            chunk_token_cap(),
+            MAX_CHUNK_TOKENS,
+            "must restore the default"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sliding_window_respects_the_injected_cap() {
+        // 200 lines of 20 chars each = ~4000 chars = ~1000 estimated tokens
+        // (chars/4). Under the shipped 2048 cap this is one window; capped
+        // down to 100 tokens (400 chars) it must split into several.
+        let source = (0..200)
+            .map(|i| format!("let line_{i:03} = 1;"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let default_chunks = sliding_window(&source, "f.rs", "rust", None, None, None);
+        assert_eq!(
+            default_chunks.len(),
+            1,
+            "default 2048-token cap must fit this source in one window"
+        );
+
+        with_cap(100, || {
+            let capped_chunks = sliding_window(&source, "f.rs", "rust", None, None, None);
+            assert!(
+                capped_chunks.len() > 1,
+                "a 100-token cap must split the same source into multiple windows"
+            );
+            // Every window must individually respect the injected budget (chars/4
+            // estimate, so budget_chars = 100 * 4 = 400).
+            for c in &capped_chunks {
+                assert!(
+                    c.content.chars().count() <= 400,
+                    "window content ({} chars) exceeds the 400-char budget for cap=100",
+                    c.content.chars().count()
+                );
+            }
+        });
+    }
 }
