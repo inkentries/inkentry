@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::path::Path;
 
 mod edges;
+mod entity_id_migration;
 mod notes;
 mod search;
 mod sync;
@@ -84,6 +85,11 @@ impl MemoryStore {
             .with_context(|| format!("opening memory DB at {}", path.display()))?;
         let store = Self { conn };
         store.migrate()?;
+        // ADR-068 third amendment: Step A (unconditional backfill) then Step B
+        // (conditional UNIQUE-index promotion). Neither ever hard-aborts open;
+        // see `entity_id_migration.rs`.
+        store.backfill_entity_ids()?;
+        store.promote_entity_id_unique_index()?;
         Ok(store)
     }
 
@@ -152,11 +158,8 @@ impl MemoryStore {
         // watermark to persist. The unique `idx_notes_remote_id` above is what
         // makes that cursor lookup and the `remote_id` dedupe cheap.
 
-        // Migration 023 (ADR-068): content-addressed `entity_id`.
-        // Not backfilled: every identity is recomputed in Rust from
-        // kind/title/body, so a NULL column costs nothing (sha256 is
-        // unavailable in SQLite regardless). The column is written but not yet
-        // read back — it is never the system of record.
+        // Migration 023 (ADR-068): content-addressed `entity_id`. Backfilled
+        // for existing rows by Step A below, right after `migrate()` returns.
         match self
             .conn
             .execute_batch("ALTER TABLE notes ADD COLUMN entity_id TEXT")
@@ -165,9 +168,9 @@ impl MemoryStore {
             Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e).context("running memory entity_id migration"),
         }
-        // Non-unique: existing stores legitimately hold rows with identical
-        // kind/title/body (the previous dedup key folded in created_at), so a
-        // UNIQUE index would abort on real data.
+        // Non-unique: existing stores can hold rows with identical
+        // kind/title/body. Step B promotes this to UNIQUE once a duplicate
+        // scan comes back clean.
         self.conn
             .execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_notes_entity_id \
