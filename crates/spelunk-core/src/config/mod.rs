@@ -117,7 +117,10 @@ pub struct Config {
     /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
-    /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL`.
+    /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL` only:
+    /// [`Config::load_with_store`] discards any value from the global personal
+    /// config, since a team server is a project-wide choice, not a
+    /// per-developer one.
     #[serde(default)]
     pub server_url: Option<String>,
 
@@ -303,6 +306,11 @@ impl Config {
     ///   3. `.spelunk/config.toml` discovered by walking up from CWD (project-level, team-wide)
     ///   4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, `SPELUNK_PROJECT_ID`
     ///
+    /// `server_url` is the one field step 2 is not allowed to set (see the
+    /// `server_url` field doc): a team server is a project-wide decision, so
+    /// only the checked-in project config or an explicit env var may supply
+    /// it, never a single developer's personal file.
+    ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let store = secret_store::default_store(&spelunk_config_dir())?;
@@ -327,6 +335,12 @@ impl Config {
         } else {
             Config::default()
         };
+        // A personal global config must never be able to point the CLI at a
+        // team server on its own: everyone on a project needs the same
+        // server_url, which only the checked-in project config or an env var
+        // can guarantee. Discard whatever the global file set here; step 2
+        // below is the only file-based source allowed to populate it.
+        cfg.server_url = None;
 
         // A bare `server_key` in the *personal* global config is the legacy
         // plaintext credential we migrate into the secret store.
@@ -727,8 +741,8 @@ project_id = "my-proj"
 
     #[test]
     #[serial_test::serial]
-    fn mixed_config_live_key_wins_over_deprecated() {
-        // Both the live key and its removed alias present: the live server_url
+    fn global_config_server_key_live_wins_over_deprecated() {
+        // Both the live key and its removed alias present: the live server_key
         // resolves and the deprecated alias is silently dropped (no error, no
         // override). `server_key` is the legacy personal bearer (a bare
         // `server_key` in the *global* config, not a `.spelunk/config.toml`
@@ -736,14 +750,16 @@ project_id = "my-proj"
         // `cfg.server_key` (cloud-kind only, ADR-071 D2), but the migration
         // into the secret store still runs and the value is still reachable
         // through `bearer_for_with_store` for a self-hosted origin.
+        //
+        // `server_url` is deliberately absent here: it cannot be set from the
+        // global config at all (see `project_level_config_live_key_wins_over_deprecated`
+        // for that guarantee's project-level equivalent).
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
             &config_path,
             r#"
-server_url = "http://new.example.com:7777"
-memory_server_url = "http://old.example.com:7777"
 server_key = "new-token"
 memory_server_key = "old-token"
 "#,
@@ -752,10 +768,7 @@ memory_server_key = "old-token"
 
         let store = MemoryStore::default();
         let cfg = Config::load_with_store(Some(&config_path), &store).unwrap();
-        assert_eq!(
-            cfg.server_url,
-            Some("http://new.example.com:7777".to_string())
-        );
+        assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.server_key, None);
         assert_eq!(
             cfg.bearer_for_with_store("http://new.example.com:7777", &store)
@@ -962,6 +975,23 @@ memory_server_key = "old-token"
     // ── env var overrides ────────────────────────────────────────────────────
     //
     // Env var tests are #[serial] because they mutate process-global state.
+
+    #[test]
+    #[serial_test::serial]
+    fn global_personal_config_cannot_set_server_url() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"server_url = "http://personal.example.com:7777"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_hermetic(&config_path).unwrap();
+        assert_eq!(cfg.server_url, None);
+    }
 
     #[test]
     #[serial_test::serial]
@@ -1178,18 +1208,20 @@ project_id = "team/proj"
         );
     }
 
-    /// Writing auth tokens preserves other top-level keys (e.g. `server_url`).
+    // Writing auth tokens preserves other top-level keys (e.g. `llm_model`).
+    // Not `server_url`: the global config no longer surfaces that field (see
+    // `load_with_store`), so it is not a useful "other key" for this test.
     #[test]
     #[serial_test::serial]
     fn save_auth_tokens_preserves_other_keys() {
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_url = \"http://team.example:7777\"\n").unwrap();
+        std::fs::write(&path, "llm_model = \"gpt-oss\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         let cfg = load_hermetic(&path).unwrap();
-        assert_eq!(cfg.server_url.as_deref(), Some("http://team.example:7777"));
+        assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
         assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
     }
 
