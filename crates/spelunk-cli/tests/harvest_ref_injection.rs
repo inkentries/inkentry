@@ -14,13 +14,13 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-/// `server_url`/`project_id` only satisfy harvest's upfront "server
-/// configured" gate: the injection guard under test fires before any request
-/// reaches that address, so it deliberately never needs to be reachable.
-/// `Config::load` only honors those two fields from project-level
-/// `.spelunk/config.toml` (or env), never the global `--config` file, so they
-/// land in `dir`'s project config instead of `dir/config.toml`. Every caller
-/// sets `.current_dir(dir)`.
+// `server_url`/`project_id` only satisfy harvest's upfront "server
+// configured" gate: the injection guard under test fires before any request
+// reaches that address, so it deliberately never needs to be reachable.
+// `Config::load` only honors those two fields from project-level
+// `.spelunk/config.toml` (or env), never the global `--config` file, so they
+// land in `dir`'s project config instead of `dir/config.toml`. Every caller
+// sets `.current_dir(dir)`.
 fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");

@@ -12,7 +12,7 @@
 //! `https://127.0.0.1:<port>`:
 //!
 //! - a proper CA -> leaf chain: the CLI must reach `Tier::Server`.
-//! - the classic server-setup.md client-trust trap (a CA:TRUE certificate
+//! - the classic self-hosting.md client-trust trap (a CA:TRUE certificate
 //!   served as the listener's own leaf): the CLI must stay offline AND name
 //!   the certificate cause, not just report "unreachable".
 
@@ -191,12 +191,12 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     (temp, project_dir, config_path)
 }
 
-/// Overwrite `config_path` (the global `--config` file) with `db_path` and
-/// `server_ca`, and separately point `server_url` (our TLS test listener) at
-/// `<project_dir>/.spelunk/config.toml`: `Config::load` only honors
-/// `server_url` from a project-level config (or env), never the global file.
-/// The loopback address means `project_id` is not required (see
-/// `Config::validate_with_project`).
+// Overwrite `config_path` (the global `--config` file) with `db_path` and
+// `server_ca`, and separately point `server_url` (our TLS test listener) at
+// `<project_dir>/.spelunk/config.toml`: `Config::load` only honors
+// `server_url` from a project-level config (or env), never the global file.
+// The loopback address means `project_id` is not required (see
+// `Config::validate_with_project`).
 fn write_tls_config(
     config_path: &Path,
     db_path: &Path,
@@ -274,10 +274,10 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
     );
 }
 
-// The classic server-setup.md client-trust trap: the server presents a
-// CA:TRUE certificate as its own leaf. The CLI must stay offline, but must
-// distinguish "reachable, TLS trust failed" from a plain "[unreachable]",
-// and must name the certificate cause in both the WARN and the status line.
+/// The classic self-hosting.md client-trust trap: the server presents a
+/// CA:TRUE certificate as its own leaf. The CLI must stay offline, but must
+/// distinguish "reachable, TLS trust failed" from a plain "[unreachable]",
+/// and must name the certificate cause in both the WARN and the status line.
 #[test]
 fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
     let ca = new_ca();
@@ -340,7 +340,7 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
          flattened top-level message: {combined}"
     );
     assert!(
-        combined.contains("server-setup.md"),
+        combined.contains("self-hosting.md"),
         "with server_ca configured, the WARN must point at the client-trust \
          doc section: {combined}"
     );
@@ -440,7 +440,7 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
         "a reachable server with an untrusted cert is not '[unreachable]'; stdout:\n{stdout}"
     );
     assert!(
-        !combined.contains("server_ca is configured") && !combined.contains("server-setup.md"),
+        !combined.contains("server_ca is configured") && !combined.contains("self-hosting.md"),
         "the server_ca-specific hint must not appear when server_ca isn't set: {combined}"
     );
 }

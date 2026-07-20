@@ -1208,9 +1208,9 @@ project_id = "team/proj"
         );
     }
 
-    /// Writing auth tokens preserves other top-level keys (e.g. `llm_model`).
-    /// Not `server_url`: the global config no longer surfaces that field (see
-    /// `load_with_store`), so it is not a useful "other key" for this test.
+    // Writing auth tokens preserves other top-level keys (e.g. `llm_model`).
+    // Not `server_url`: the global config no longer surfaces that field (see
+    // `load_with_store`), so it is not a useful "other key" for this test.
     #[test]
     #[serial_test::serial]
     fn save_auth_tokens_preserves_other_keys() {

@@ -70,13 +70,13 @@ async fn mount_since_empty(server: &MockServer) {
         .await;
 }
 
-/// Write a config with no `server_key`/`[auth]`, so `ensure_fresh_server_key`
-/// takes its no-op path (`auth_api.rs`) and push/sync never needs a real
-/// WorkOS login against a keyless plaintext loopback server. `server_url`/
-/// `project_id` point at the mock server via `<dir>/.spelunk/config.toml`
-/// instead of this global file: `Config::load` only honors those two fields
-/// from a project-level config (or env). Every caller already sets
-/// `.current_dir(dir)`.
+// Write a config with no `server_key`/`[auth]`, so `ensure_fresh_server_key`
+// takes its no-op path (`auth_api.rs`) and push/sync never needs a real
+// WorkOS login against a keyless plaintext loopback server. `server_url`/
+// `project_id` point at the mock server via `<dir>/.spelunk/config.toml`
+// instead of this global file: `Config::load` only honors those two fields
+// from a project-level config (or env). Every caller already sets
+// `.current_dir(dir)`.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     let db_path = dir.join(".spelunk").join("index.db");
     let config_path = dir.join("config.toml");

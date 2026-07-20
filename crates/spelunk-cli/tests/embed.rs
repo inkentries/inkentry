@@ -12,11 +12,11 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Build a config.toml with `embedding_model`, and separately point
-/// `server_url`/`project_id` at `<dir>/.spelunk/config.toml`: `Config::load`
-/// only honors those two fields from a project-level config (or env), never
-/// the global `--config` file. The caller's `Command` must set
-/// `.current_dir(dir.path())`.
+// Build a config.toml with `embedding_model`, and separately point
+// `server_url`/`project_id` at `<dir>/.spelunk/config.toml`: `Config::load`
+// only honors those two fields from a project-level config (or env), never
+// the global `--config` file. The caller's `Command` must set
+// `.current_dir(dir.path())`.
 fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     let config = dir.path().join("config.toml");
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();

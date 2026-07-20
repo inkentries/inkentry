@@ -367,7 +367,7 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
 /// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
 /// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
 /// making per-process environment overrides of `HOME` ineffective — see the
-/// identical note on `spelunk_state_dir` in `capability/probe.rs`.
+/// identical note on `spelunk_state_dir` in `capability.rs`.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("SPELUNK_SCRIPTS_DIR") {
         return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));

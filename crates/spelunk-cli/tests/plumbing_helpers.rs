@@ -110,7 +110,7 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         // would otherwise land on the same real `%USERPROFILE%\.config\spelunk`,
         // and concurrent tests racing on one `secrets.toml` corrupt it (see the
         // identical, already-documented gap on `SPELUNK_STATE_DIR` in
-        // `capability/probe.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
+        // `capability.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
         // `SPELUNK_CONFIG_DIR` bypasses `dirs::home_dir()` entirely and works
         // identically on every platform.
         .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
@@ -158,17 +158,17 @@ pub fn write_config(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
     config_path
 }
 
-/// Like `write_config` but also configures `server_url` + `project_id` for
-/// Tier 1 operation (server-based embedding during `spelunk index`).
-///
-/// `Config::load` only honors `server_url`/`project_id` from a project-level
-/// `.spelunk/config.toml` (discovered by walking up from CWD) or
-/// `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID` env, never from the `--config`
-/// file, which is the global personal config. So this writes those two fields
-/// to `<project_dir>/.spelunk/config.toml` instead of the returned global
-/// file. The caller's `Command` must set `.current_dir(project_dir)` (or
-/// wherever `project_dir` resolves to) or the discovery walk will never find
-/// it.
+// Like `write_config` but also configures `server_url` + `project_id` for
+// Tier 1 operation (server-based embedding during `spelunk index`).
+//
+// `Config::load` only honors `server_url`/`project_id` from a project-level
+// `.spelunk/config.toml` (discovered by walking up from CWD) or
+// `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID` env, never from the `--config`
+// file, which is the global personal config. So this writes those two fields
+// to `<project_dir>/.spelunk/config.toml` instead of the returned global
+// file. The caller's `Command` must set `.current_dir(project_dir)` (or
+// wherever `project_dir` resolves to) or the discovery walk will never find
+// it.
 pub fn write_config_with_server(
     dir: &Path,
     db_path: &Path,
@@ -181,13 +181,13 @@ pub fn write_config_with_server(
     config_path
 }
 
-/// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`,
-/// the only config file `Config::load` honors those fields from (besides env).
-/// The caller's `Command` must set `.current_dir(project_dir)`.
-///
-/// An empty `project_id` is omitted entirely (rather than written as `""`) so
-/// a loopback-only test that doesn't need one (see `Config::validate_with_project`)
-/// leaves `project_id` genuinely unset, not set to an empty string.
+// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`,
+// the only config file `Config::load` honors those fields from (besides env).
+// The caller's `Command` must set `.current_dir(project_dir)`.
+//
+// An empty `project_id` is omitted entirely (rather than written as `""`) so
+// a loopback-only test that doesn't need one (see `Config::validate_with_project`)
+// leaves `project_id` genuinely unset, not set to an empty string.
 pub fn write_project_server_config(project_dir: &Path, server_url: &str, project_id: &str) {
     let spelunk_dir = project_dir.join(".spelunk");
     std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
