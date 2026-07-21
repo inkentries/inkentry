@@ -217,6 +217,37 @@ mod tests {
         }
     }
 
+    /// `model_cache_dir()` honours `XDG_DATA_HOME` when set (the Docker image
+    /// points this at the persistent `/data` volume so the ~339 MB model
+    /// survives `docker rm`/recreate, instead of landing in the container
+    /// layer or a home directory that doesn't exist for the `-r` service
+    /// user). Linux-only: `dirs::data_local_dir()` follows the XDG spec on
+    /// Linux/BSD, but macOS ignores `XDG_DATA_HOME` entirely in favor of
+    /// `~/Library/Application Support` (the Docker image is Linux, so that's
+    /// the platform this fix targets). Uses `serial` because it mutates a
+    /// process-global env var.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(xdg_data_home_env)]
+    fn model_cache_dir_honours_xdg_data_home() {
+        // SAFETY: guarded by #[serial] so no other test reads/writes this var
+        // concurrently; we restore it before returning.
+        let prev = std::env::var("XDG_DATA_HOME").ok();
+
+        let tmp = std::env::temp_dir().join("spelunk-model-cache-dir-test");
+        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+
+        assert_eq!(
+            model_cache_dir().expect("resolve cache dir"),
+            tmp.join("spelunk").join("models")
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+        }
+    }
+
     /// End-to-end semantic-discrimination check over the real model. Ignored by
     /// default: it downloads the ~339 MB pre-quantized GGUF and runs inference.
     /// Run with `cargo test -p spelunk-server -- --ignored embeddings_discriminate`.
