@@ -377,7 +377,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                     );
                 }
                 Ok(Err(e)) => {
-                    let msg = format!("{e}");
+                    let msg = embedder_load_failure_message(&e);
                     tracing::warn!(
                         "native embedding model failed to load: {msg}; \
                          embedder unavailable (set --embedding-url to override)"
@@ -385,7 +385,9 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                     slot.set_unavailable(msg);
                 }
                 Err(join_err) => {
-                    let msg = format!("embedder load task panicked: {join_err}");
+                    let msg = embedder_load_failure_message(format_args!(
+                        "embedder load task panicked: {join_err}"
+                    ));
                     tracing::warn!("{msg}");
                     slot.set_unavailable(msg);
                 }
@@ -414,6 +416,16 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Native embedder load failure ──────────────────────────────────────────────
+
+/// Prefix a native-embedder load failure so `/v1/health`'s `embedder.detail`
+/// reads unambiguously as terminal: the underlying `anyhow::Context` message
+/// (e.g. "creating model cache dir ...") otherwise reads like in-progress
+/// bootstrap text rather than a failure.
+fn embedder_load_failure_message(context: impl std::fmt::Display) -> String {
+    format!("failed: {context}")
 }
 
 // ── Embed CPU thread budget ───────────────────────────────────────────────────
@@ -930,6 +942,22 @@ mod arg_tests {
         ] {
             assert!(!super::host_is_loopback(h), "{h} should NOT be loopback");
         }
+    }
+
+    /// A native-embedder load failure's `/v1/health` detail must read as a
+    /// terminal failure, not in-progress bootstrap text (the underlying
+    /// `anyhow::Context` message, e.g. "creating model cache dir ...", reads
+    /// like progress on its own).
+    #[test]
+    fn embedder_load_failure_message_is_prefixed() {
+        assert_eq!(
+            super::embedder_load_failure_message(
+                "creating model cache dir /home/spelunk/.local/share/spelunk/models: \
+                 Permission denied (os error 13)"
+            ),
+            "failed: creating model cache dir /home/spelunk/.local/share/spelunk/models: \
+             Permission denied (os error 13)"
+        );
     }
 
     // ── ADR-066 §4: TLS-aware bind-safety table ─────────────────────────────

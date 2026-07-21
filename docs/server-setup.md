@@ -340,6 +340,13 @@ the loopback scaffold will **not** be reachable, because `-p` forwards host
 traffic to the container's routable interface, not into its private loopback, so
 nothing published reaches a loopback-only bind.
 
+**What's on the `/data` volume.** Both the SQLite database (`/data/spelunk.db`)
+and the native embedder's downloaded model cache (`/data/spelunk/models/`, a
+one-time ~339 MB pull) live on the same named volume. Size it accordingly, and
+when backing it up, only the database needs your normal database backup
+process (per [Production deployment](#production-deployment) below); the model
+cache is a re-downloadable artifact, not project data.
+
 ## 5. Point a remote agent at it
 
 On the remote host (or in its container), the configuration is identical to

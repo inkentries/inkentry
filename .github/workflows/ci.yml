@@ -178,6 +178,45 @@ jobs:
           test -n "$(docker run --rm spelunk-server:ci --version)"
           docker run --rm spelunk-server:ci --print-openapi | head -c1 | grep -q .
 
+      # Regression check for the container-user-has-no-home bug: start the
+      # image against a real named volume (as a deployment would) and poll
+      # `/v1/health` from a sidecar sharing its network namespace (the
+      # pattern documented at the top of the Dockerfile, since the server
+      # only binds loopback). This only needs the embedder's model-cache
+      # `mkdir` to succeed, not the full ~339 MB download: `create_dir_all`
+      # runs before any network I/O in `load_from_hub()`, so a cache-dir
+      # failure surfaces as an `unavailable` state within a couple of
+      # seconds, well before "loading" would ever complete.
+      - name: Check embedder initializes against the persistent volume
+        run: |
+          docker run -d --name spelunk-server-ci -v spelunk-data-ci:/data spelunk-server:ci
+          trap 'docker logs spelunk-server-ci || true; docker rm -f spelunk-server-ci >/dev/null 2>&1; docker volume rm spelunk-data-ci >/dev/null 2>&1' EXIT
+
+          health=""
+          for _ in $(seq 1 30); do
+            health="$(docker run --rm --network container:spelunk-server-ci curlimages/curl -s http://127.0.0.1:7777/v1/health || true)"
+            [ -n "$health" ] && break
+            sleep 1
+          done
+
+          if [ -z "$health" ]; then
+            echo "ERROR: /v1/health never answered"
+            exit 1
+          fi
+          echo "$health"
+
+          state="$(echo "$health" | jq -r '.embedder.state')"
+          detail_lower="$(echo "$health" | jq -r '.embedder.detail // empty' | tr '[:upper:]' '[:lower:]')"
+
+          if [ "$state" = "unavailable" ]; then
+            case "$detail_lower" in
+              *mkdir*|*"permission denied"*)
+                echo "ERROR: embedder failed to initialize (model-cache dir/permissions failure): $detail_lower"
+                exit 1
+                ;;
+            esac
+          fi
+
   openapi-snapshot:
     name: OpenAPI snapshot check
     runs-on: ubuntu-latest
