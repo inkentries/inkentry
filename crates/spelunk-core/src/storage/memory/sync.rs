@@ -174,13 +174,21 @@ impl MemoryStore {
     /// (the cloud-minted id).
     ///
     /// - If a local note already carries this `remote_id` (we pushed it, or we
-    ///   pulled it before), reconcile lifecycle only — a cloud tombstone archives
+    ///   pulled it before), reconcile lifecycle only: a cloud tombstone archives
     ///   the local copy. Content is append-only and never mutated.
-    /// - Otherwise insert a new local row carrying `remote_id`. Add-Wins /
-    ///   keep-both: pulled entries are added, never overwriting local ones.
+    /// - Otherwise the entry is inserted with `entity_id` populated, via the
+    ///   same insert-then-recover path `add_note`/`add_note_superseding` use
+    ///   ([`Self::recover_from_entity_id_collision`]). A collision with an
+    ///   existing row reuses that row instead of erroring: the pulled
+    ///   `remote_id` is adopted onto it (`set_remote_id`'s own `WHERE
+    ///   remote_id IS NULL` guard is a no-op when the row already carries a
+    ///   different one), and an archived pull archives it, never un-archiving
+    ///   an already-archived row.
     ///
-    /// Returns `true` when a new row was inserted, `false` otherwise. Re-running
-    /// with the same input is a no-op — the source of `sync`'s idempotency.
+    /// Returns `true` only when a genuinely new row was inserted; `false`
+    /// covers both "already known via `remote_id`" and "reused via an
+    /// `entity_id` collision". Re-running with the same input is a no-op:
+    /// the source of `sync`'s idempotency.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_remote_note(
         &self,
@@ -200,16 +208,41 @@ impl MemoryStore {
             return Ok(false);
         }
 
-        let status = if archived { "archived" } else { "active" };
-        // A pulled entry gets a fresh local `uuid` too, so a later push of this
-        // store still has a stable external_id for it.
-        let uuid = Uuid::now_v7().to_string();
-        self.conn.execute(
-            "INSERT INTO notes (uuid, remote_id, kind, title, body, source_ref, status, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![uuid, remote_id, kind, title, body, source_ref, status, created_at],
-        )?;
-        Ok(true)
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<bool> {
+            let status = if archived { "archived" } else { "active" };
+            // A pulled entry gets a fresh local `uuid` too, so a later push of
+            // this store still has a stable external_id for it.
+            let uuid = Uuid::now_v7().to_string();
+            let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
+            let insert_result = self.conn.execute(
+                "INSERT INTO notes \
+                 (uuid, remote_id, kind, title, body, source_ref, status, created_at, entity_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    uuid, remote_id, kind, title, body, source_ref, status, created_at, entity_id
+                ],
+            );
+            let (row_id, created) =
+                self.recover_from_entity_id_collision(insert_result, &entity_id, &[], &[])?;
+            if !created {
+                self.set_remote_id(row_id, remote_id)?;
+                if archived {
+                    self.archive(row_id)?;
+                }
+            }
+            Ok(created)
+        })();
+        match result {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                self.conn.execute_batch("ROLLBACK").ok();
+                Err(e)
+            }
+        }
     }
 
     /// Local note id carrying the given cloud `remote_id`, if any.

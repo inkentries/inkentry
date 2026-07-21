@@ -14,8 +14,12 @@
 //!   dedupe on it, so re-running never duplicates. Same-millisecond boundary
 //!   entries are harmless: the cursor comparison is strict (`>`) and pull
 //!   dedupes by `remote_id`, so a re-applied boundary row is a no-op.
-//! - **Keep-both / Add-Wins.** Pulled entries are added, never overwriting local
-//!   ones; semantic-dup detection is the server's job (it flags `contradicts`).
+//! - **Entity-id reconciled.** A pulled entry that matches an existing local
+//!   row's `kind`/`title`/`body` (`entity_id`) reuses that row instead of
+//!   adding a duplicate: the row adopts the pulled `remote_id` if it had
+//!   none, and archival propagates the same never-un-archive way a matching
+//!   `remote_id` does; semantic-dup detection is the server's job (it flags
+//!   `contradicts`).
 //! - **Lifecycle propagation.** `supersedes` and archive/tombstone state travel
 //!   in both directions (previously hard-coded `None`/dropped).
 //! - **Text-only by default; optional pushed vector.** A push ships no vector

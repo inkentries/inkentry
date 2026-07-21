@@ -6,9 +6,10 @@
 //! Step A backfills `entity_id`; before the index is ever promoted this
 //! can't hit a constraint. Step A/B run on every open though, not just the
 //! first, so on a later open (index already UNIQUE) a row that still has
-//! `entity_id IS NULL` (from an insert path with its own identity gap, e.g.
-//! `add_note_superseding` pre-fix, or `apply_remote_note`) can collide with
-//! an existing row. Step A's per-row UPDATE catches that and skips the row
+//! `entity_id IS NULL` (written by an insert path before its own identity
+//! gap was closed, e.g. a pre-fix `add_note_superseding` or
+//! `apply_remote_note` row from an older client) can collide with an
+//! existing row. Step A's per-row UPDATE catches that and skips the row
 //! rather than hard-failing `open` (ADR-068 fifth amendment E2). Step B only
 //! promotes once a duplicate scan comes back clean; a duplicate group leaves
 //! the index non-unique and logs a message pointing at `spelunk memory
