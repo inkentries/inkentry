@@ -100,17 +100,24 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         // ADR-037 P2, item 35: additive-only JSON extensions. `null` under any
         // mode other than `local_first` (item 38: `cloud_first` has no local
         // write queue; `offline` has no sync configuration).
+        //
+        // Poll-and-apply BEFORE reading the pending count, not after: a poll
+        // in this same call can apply push-acks/pulls that reduce (or, for a
+        // pull, increase) what's actually outstanding. Reading pending first
+        // would report the pre-poll count next to a same-instant
+        // `last_synced_at`, understating how current the two fields actually
+        // are together.
         let (sync_pending, sync_last_synced_at): (Option<i64>, Option<String>) =
             if cfg.resolve_mode() == spelunk_core::config::SyncMode::LocalFirst {
-                let pending = MemoryStore::open(&mem_path)
-                    .ok()
-                    .and_then(|s| s.pending_sync_count().ok());
                 let last_synced_at =
                     crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path)
                         .await
                         .and_then(|p| p.last_synced_at)
                         .and_then(|ts| chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0))
                         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                let pending = MemoryStore::open(&mem_path)
+                    .ok()
+                    .and_then(|s| s.pending_sync_count().ok());
                 (pending, last_synced_at)
             } else {
                 (None, None)
@@ -525,14 +532,18 @@ async fn sync_mode_line(cfg: &Config, mem_path: &std::path::Path) -> Option<Stri
 ///
 /// Polls and applies the local relay's buffered state first (item 33: that
 /// state lives in the separate, longer-running `spelunk-server` process, so a
-/// fresh poll here is what makes "last synced" current on this invocation).
-/// The poll itself is best-effort: with no local relay reachable, `pending`
-/// still comes from the always-available local `pending_sync_count` and
-/// "last synced" is simply omitted.
+/// fresh poll here is what makes "last synced" current on this invocation),
+/// and only then reads the pending count: a poll applied in this same call
+/// can itself change what's outstanding, so reading pending first would
+/// report the pre-poll count alongside a same-instant "last synced", making
+/// the two fields inconsistent with each other for this one invocation. The
+/// poll itself is best-effort: with no local relay reachable, `pending` still
+/// comes from the always-available local `pending_sync_count` and "last
+/// synced" is simply omitted.
 async fn sync_status_suffix(cfg: &Config, mem_path: &std::path::Path) -> Option<String> {
     let store = MemoryStore::open(mem_path).ok()?;
-    let pending = store.pending_sync_count().ok()?;
     let poll = crate::cli::cmd::memory::outbox::poll_and_apply(cfg, mem_path).await;
+    let pending = store.pending_sync_count().ok()?;
     let last_synced_at = poll.as_ref().and_then(|p| p.last_synced_at);
     // item 19: a relay-side failure (e.g. an expired-and-unrefreshable bearer)
     // surfaces here rather than crashing or silently dropping.
@@ -1024,6 +1035,135 @@ mod tests {
         assert!(line.contains("local_first"), "got: {line}");
         assert!(line.contains("last synced"), "got: {line}");
         assert!(!line.contains("spelunk sync"), "got: {line}");
+    }
+
+    // ── pending must reflect the SAME call's own poll, not the pre-poll state ─
+    //
+    // `sync_status_suffix` polls (which can apply a push-ack) and reads
+    // `pending_sync_count` in the same call. Reading pending before the poll
+    // would report a stale, pre-apply count next to a same-instant "last
+    // synced" — e.g. "1 pending, last synced 0s ago" for a row that this very
+    // call just finished stamping. This pins the fix: the first call whose
+    // poll actually lands the ack must already show the post-apply count.
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn mode_line_pending_count_reflects_the_same_calls_own_poll_not_the_stale_pre_poll_state()
+    {
+        clear_no_server_env();
+        register_sqlite_vec_for_status_tests();
+
+        let team_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "entries": [], "count": 0
+                })),
+            )
+            .mount(&team_server)
+            .await;
+
+        // A real spelunk-server, in its LOCAL relay role, on an ephemeral port.
+        let db_dir = tempfile::TempDir::new().unwrap();
+        let db =
+            spelunk_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
+                .unwrap();
+        let instance_id = db.get_or_create_instance_id().unwrap();
+        let state = spelunk_server::AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
+            conflict_threshold: spelunk_server::default_conflict_threshold(),
+            embedder: spelunk_server::EmbedderSlot::disabled(),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(
+                1000, 60,
+            )),
+            instance_id,
+            started_by: None,
+            relay: spelunk_server::relay::RelayRegistry::new(),
+        };
+        let app = spelunk_server::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let tmp_state = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        std::fs::write(
+            tmp_state.path().join("server.port"),
+            format!("{relay_port}\n"),
+        )
+        .unwrap();
+
+        let tmp_mem = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp_mem.path().join("memory.db");
+        let uuid = {
+            let store = crate::storage::MemoryStore::open(&mem_path).unwrap();
+            store
+                .add_note("decision", "One", "b", &[], &[], None, None)
+                .unwrap();
+            store.rows_for_sync(false).unwrap()[0].uuid.clone()
+        };
+        // Mounted with this note's actual uuid so the push handler's ack
+        // round-trips onto the real row (matching `poll_and_apply`'s
+        // `note_id_for_uuid` lookup).
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/batch"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                    "created": 1, "skipped": 0, "failed": 0,
+                    "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+                })),
+            )
+            .mount(&team_server)
+            .await;
+
+        let cfg = crate::config::Config {
+            server_url: Some(team_server.uri()),
+            project_id: Some("proj".to_string()),
+            ..Default::default()
+        };
+
+        // Poll `sync_mode_line` directly (not through a prior nudge) so the
+        // very first call that observes "last synced" is also the call whose
+        // own poll applied the ack: exactly the window the ordering bug lived
+        // in.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut line = None;
+        while std::time::Instant::now() < deadline {
+            let candidate = sync_mode_line(&cfg, &mem_path).await;
+            if candidate
+                .as_deref()
+                .is_some_and(|l| l.contains("last synced"))
+            {
+                line = candidate;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        let line = line.expect("status line must show 'last synced' after the relay syncs");
+        assert!(
+            line.contains("up to date"),
+            "the call that first reports 'last synced' must already reflect its OWN \
+             poll's apply, not a stale pre-poll pending count: got {line}"
+        );
+        assert!(
+            !line.contains("1 pending"),
+            "must never show a pending count for a row this same call just stamped: got {line}"
+        );
     }
 
     #[tokio::test]

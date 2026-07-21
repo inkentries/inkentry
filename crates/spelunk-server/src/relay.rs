@@ -425,6 +425,16 @@ async fn run_pull_loop(session: Arc<RelaySession>) {
     }
 }
 
+/// Cap on the unresolved (no `\n\n` seen yet) SSE receive buffer. A frame here
+/// only ever needs to carry a `data:`/`id:` line pair (the frame is a wake-up
+/// signal, never the note payload itself — see the module docs), so a
+/// legitimate frame is a few hundred bytes at most. This bounds memory growth
+/// against a misbehaving or malicious team `server_url` (any host a project
+/// happens to be configured with) that sends a very long line, or omits the
+/// blank-line frame terminator entirely: without a cap, `buf` would grow
+/// without limit for as long as the connection stays open.
+const MAX_SSE_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// One SSE connection attempt: connect, catch up (see [`run_pull_loop`]
 /// docs), then read frames until the stream ends or errors, catching up
 /// again on every frame received. `Ok(())` on a graceful stream end (the
@@ -458,6 +468,12 @@ async fn stream_once(session: &Arc<RelaySession>) -> anyhow::Result<()> {
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
+        if buf.len() > MAX_SSE_BUFFER_BYTES {
+            anyhow::bail!(
+                "SSE frame from {server_url} exceeded {MAX_SSE_BUFFER_BYTES} bytes \
+                 without a frame terminator; dropping this connection"
+            );
+        }
         while let Some(pos) = buf.find("\n\n") {
             let frame: String = buf.drain(..pos + 2).collect();
             let mut saw_data = false;
@@ -867,6 +883,39 @@ mod tests {
             y.pulled.is_empty(),
             "proj-y must never see proj-x's pulled entry: {:?}",
             y.pulled
+        );
+    }
+
+    // ── oversized/malformed SSE frame errors instead of growing forever ────
+    //
+    // A team `server_url` is whatever a project happens to be configured
+    // with (cloud-api, another spelunk-server, or, if misconfigured, anything
+    // else); this pins that a peer sending an unterminated line larger than
+    // `MAX_SSE_BUFFER_BYTES` makes `stream_once` return an error (which
+    // `run_pull_loop` already turns into `record_error` + backoff + retry,
+    // never a panic) instead of buffering without bound for as long as the
+    // connection stays open.
+
+    #[tokio::test]
+    async fn oversized_sse_frame_without_terminator_errors_instead_of_growing_forever() {
+        let server = MockServer::start().await;
+        let oversized_line = vec![b'x'; MAX_SSE_BUFFER_BYTES + 4096];
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/stream"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_bytes(oversized_line),
+            )
+            .mount(&server)
+            .await;
+
+        let session = Arc::new(RelaySession::new(server.uri(), "proj".to_string()));
+        let result = stream_once(&session).await;
+        assert!(
+            result.is_err(),
+            "an unterminated frame past the buffer cap must error, not hang or \
+             grow without bound"
         );
     }
 

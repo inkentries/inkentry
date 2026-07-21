@@ -281,7 +281,16 @@ pub(super) async fn memory_add(
     // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
     // `local_first` write's outbox drains promptly. Never affects this
     // command's own success/output; see `outbox.rs`.
-    if !pre_init_notes {
+    //
+    // Gated on `placeholder_path`, not just `pre_init_notes`: when there is no
+    // local `.spelunk/` project yet and this write rode the git-notes carrier
+    // via an explicit `--backend git-notes` (not the pre-init carrier),
+    // `resolve_memory_store` still hands back a placeholder `mem_path` that no
+    // caller is meant to open (see its doc comment). Nudging it would call
+    // `MemoryStore::open`, which unconditionally creates the parent directory
+    // and an empty `memory.db` there as a side effect, a phantom SQLite store
+    // for a project that deliberately opted out of one.
+    if !placeholder_path {
         super::outbox::nudge_after_write(cfg, mem_path).await;
     }
     Ok(())

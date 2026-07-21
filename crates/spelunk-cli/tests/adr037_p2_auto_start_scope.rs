@@ -19,7 +19,7 @@
 //! lookup happened to fail first.
 
 mod plumbing_helpers;
-use plumbing_helpers::{spelunk_bin_in, write_project_server_config};
+use plumbing_helpers::{init_git_repo, spelunk_bin_in, write_project_server_config};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -232,6 +232,128 @@ async fn write_never_makes_a_sync_call_to_server_url_even_when_it_is_reachable()
         "the write's own call stack must never reach the team server's sync \
          endpoints directly (no local relay was running to hand off to): {:?}",
         received.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
+}
+
+// ── nudge must never open a placeholder mem_path ────────────────────────────
+//
+// `memory add --backend git-notes` in a git repo with no local `.spelunk/`
+// project resolves `mem_path` to a placeholder that `resolve_memory_store`'s
+// own doc comment says "pre-init callers never open"
+// (`crates/spelunk-cli/src/cli/cmd/memory/mod.rs`). The write itself correctly
+// goes to git notes, not that path. Before this test, the post-write nudge
+// gate only checked `pre_init_notes`, not `placeholder_path`, so under a
+// `local_first` + `server_url` config, with a local relay already running
+// (`probe_local_relay_port` must find one reachable before `register_and_push`
+// is ever reached), it would still call `MemoryStore::open(mem_path)` on the
+// placeholder, which unconditionally creates the parent directory and an
+// empty `memory.db` file there, a phantom SQLite store for a project that
+// deliberately has none. A real running relay is required to actually reach
+// that call: without one, `probe_local_relay_port` returns `None` and the
+// nudge is already a no-op regardless of this gate, which would make the test
+// pass vacuously.
+
+// `multi_thread`: the test blocks its own thread on a synchronous
+// `Command::output()` for the CLI subprocess below, so the in-process relay
+// server spawned via `tokio::spawn` needs a separate worker thread to keep
+// actually servicing the CLI's health-probe HTTP request while that call
+// blocks; on the default single-threaded flavor the probe would starve and
+// `probe_local_relay_port` would spuriously return `None`, making this test
+// pass vacuously regardless of the gate under test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db() {
+    use std::sync::Arc;
+
+    #[allow(clippy::missing_transmute_annotations)]
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+
+    let home = TempDir::new().unwrap().keep();
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_git_repo(&repo);
+
+    // A real local relay (spelunk-server's production router), the same
+    // instance `probe_local_relay_port`/`register_and_push` would talk to.
+    let db_dir = TempDir::new().unwrap();
+    let db = spelunk_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
+        .unwrap();
+    let instance_id = db.get_or_create_instance_id().unwrap();
+    let state = spelunk_server::AppState {
+        db: Arc::new(tokio::sync::Mutex::new(db)),
+        auth: Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
+        conflict_threshold: spelunk_server::default_conflict_threshold(),
+        embedder: spelunk_server::EmbedderSlot::disabled(),
+        llm: None,
+        max_tokens_ceiling: 8192,
+        rate_limiter: Arc::new(spelunk_server::rate_limiter::RateLimiter::new(1000, 60)),
+        instance_id,
+        started_by: None,
+        relay: spelunk_server::relay::RelayRegistry::new(),
+    };
+    let app = spelunk_server::router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let state_dir = home.join(".local").join("state").join("spelunk");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("server.port"), format!("{relay_port}\n")).unwrap();
+
+    let out = spelunk_bin_in(&home)
+        .current_dir(&repo)
+        .env("SPELUNK_SERVER_URL", "https://team.invalid:7777")
+        .env("SPELUNK_PROJECT_ID", "team/proj")
+        .env("SPELUNK_MODE", "local_first")
+        .args([
+            "memory",
+            "add",
+            "--backend",
+            "git-notes",
+            "--kind",
+            "note",
+            "--title",
+            "T",
+            "--body",
+            "b",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Give the (best-effort, fire-and-forget) nudge a moment to reach
+    // `MemoryStore::open` if the gate under test is broken, before asserting
+    // its absence — otherwise a broken gate could race this check and still
+    // pass.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert!(
+        !repo.join(".spelunk").exists(),
+        "explicit --backend git-notes with no local project must never create \
+         a .spelunk/ project as a side effect of the post-write relay nudge"
+    );
+    // The placeholder `mem_path` resolves to `cfg.db_path.with_file_name(...)`
+    // (the global, no-project default under `SPELUNK_CONFIG_DIR`), not
+    // anywhere under `repo`: this is the actual file `MemoryStore::open`
+    // would create if the nudge gate let a placeholder path through.
+    assert!(
+        !home
+            .join(".config")
+            .join("spelunk")
+            .join("memory.db")
+            .exists(),
+        "must never create a phantom global memory.db as a side effect of an \
+         explicit --backend git-notes write with no local project"
     );
 }
 
