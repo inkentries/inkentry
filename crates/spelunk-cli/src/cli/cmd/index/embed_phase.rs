@@ -599,7 +599,7 @@ async fn run_embed_phase_with_backoff(
                     connect_failures += 1;
                     tracing::warn!(
                         "index/embed: could not connect to {server_url} (attempt \
-                         {connect_failures}/{}) — retrying the same batch of \
+                         {connect_failures}/{}), retrying the same batch of \
                          {this_batch_size} chunk(s) in {backoff:?}: {e:#}",
                         connect_failure_backoffs.len(),
                     );
@@ -662,7 +662,7 @@ async fn run_embed_phase_with_backoff(
 /// An `embed_one_batch` failure, distinguishing "the request budget was too
 /// small for this batch" (408, or a client-side timeout expiring first) and
 /// "the server wasn't reachable at all" (a TCP connect-phase failure) from
-/// every other failure — the first is worth shrinking and retrying, the
+/// every other failure: the first is worth shrinking and retrying, the
 /// second worth retrying at the same size, see `run_embed_phase`.
 enum EmbedBatchError {
     /// Server returned 408, or the client-side `timeout` elapsed after a
@@ -679,7 +679,7 @@ enum EmbedBatchError {
 /// Send one embed batch and return the raw little-endian f32 response bytes: one
 /// `EMBEDDING_DIM`-float vector per chunk, in request order. Applies a
 /// per-request `timeout` (see `batch_timeout`) and validates the response length.
-/// Distinguishes a 408/timeout, a connect failure, and other failures — see
+/// Distinguishes a 408/timeout, a connect failure, and other failures; see
 /// [`EmbedBatchError`].
 async fn embed_one_batch(
     client: &reqwest::Client,
@@ -1373,7 +1373,7 @@ mod tests {
     async fn embed_one_batch_classifies_a_refused_connection_as_connect_failure() {
         // Reserve a port, then release it without ever listening again: a
         // connection attempt fails at the OS connect phase (refused), exactly
-        // like the field failure's "server not accepting connections" — the
+        // like the field failure's "server not accepting connections", the
         // one difference being this fails instantly instead of after a long
         // client-side timeout, which is what makes it fast to test.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1409,7 +1409,7 @@ mod tests {
     async fn embed_one_batch_still_classifies_a_slow_connected_server_as_budget_exceeded() {
         // Regression guard: a server that IS reachable but responds slower
         // than the per-request timeout must still classify as
-        // `BudgetExceeded` — the new `is_connect()` check must not swallow a
+        // `BudgetExceeded`: the new `is_connect()` check must not swallow a
         // real request/response timeout.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1942,7 +1942,7 @@ mod tests {
     // backoff schedule instead of the production `CONNECT_FAILURE_BACKOFFS`
     // (which sums to several minutes): real (unpaused) time, kept fast by
     // shrinking the schedule rather than by faking the clock. `tokio::time`
-    // paused-time auto-advance was tried here first and discarded — it races
+    // paused-time auto-advance was tried here first and discarded: it races
     // against the real OS-level TCP connect-refusal this test relies on, and
     // in that race the client's own request `.timeout()` can fire first,
     // misclassifying the failure as `BudgetExceeded` instead of exercising
@@ -1960,7 +1960,7 @@ mod tests {
         // Reserve an address, release it, then start a real mock server on
         // the SAME address partway through the retry backoff schedule: the
         // first couple of attempts hit connect-refused, then the batch
-        // succeeds once the server starts listening — at the SAME batch size
+        // succeeds once the server starts listening, at the SAME batch size
         // throughout (the retry loop never shrinks on a `ConnectFailure`).
         //
         // The spawned task's delay (150ms) is chosen to land strictly

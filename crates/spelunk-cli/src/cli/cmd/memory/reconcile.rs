@@ -1179,8 +1179,8 @@ mod init_import_tests {
     ///
     /// Concurrency is bounded by a semaphore rather than firing all `RUNS`
     /// unbounded: each run shells out to several real `git` subprocesses, and
-    /// letting 20 of those launch at once — stacked on top of the rest of the
-    /// workspace's own parallel test suite doing the same — was observed to
+    /// letting 20 of those launch at once, stacked on top of the rest of the
+    /// workspace's own parallel test suite doing the same, was observed to
     /// spuriously fail `Command::spawn` with ENOENT under `cargo test
     /// --workspace` (not in isolation), i.e. this test flaked from OS-level
     /// process-spawn contention, the exact class of noise it exists to filter
