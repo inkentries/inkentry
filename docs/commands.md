@@ -783,8 +783,12 @@ and `source_project` / `source_project_path` fields in JSON.
 
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
 `spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
-so memory travels with the code. Outside a git repo this is a graceful no-op.
-Concurrent writes are serialized by a cross-process lock, and a write that
+so memory travels with the code. The repo is resolved from the database in
+use, the `--db <path>` directory when given, otherwise the discovered
+`.spelunk` project, not the invocation's working directory: pointing `--db`
+at another project's database writes notes to that project's repo. Outside a
+git repo this is a graceful no-op. Concurrent writes are serialized by a
+cross-process lock, and a write that
 cannot take the lock in time fails rather than risk erasing a concurrent
 writer's entry: `memory add` warns on stderr that the entry is stored locally
 but will not travel with the repo (pre-`init`, where git notes is the sole
