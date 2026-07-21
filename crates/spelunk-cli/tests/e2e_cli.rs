@@ -876,7 +876,13 @@ async fn test_check_reports_server_unreachable() {
         .stdout(predicate::str::contains("unreachable"));
 }
 
+// Investigation found no shared server/port/filesystem state this test could
+// race on (SPELUNK_NO_SERVER short-circuits before any is touched); flakes
+// under the parallel runner are attributed to generic child-process
+// spawn/stdio contention on a loaded runner, not CLI logic. Named group so
+// this doesn't serialize against unrelated tests.
 #[tokio::test]
+#[serial_test::serial(e2e_process_spawn_sensitive)]
 async fn test_index_prints_note_when_no_server_configured() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");

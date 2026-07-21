@@ -1063,13 +1063,12 @@ mod init_import_tests {
         );
     }
 
-    /// A git-notes entry whose content already exists in `memory.db` (e.g. it
-    /// arrived earlier via `memory reconcile` or a manual add) is NOT
-    /// re-imported: init reuses reconcile's content key, so the two stores
-    /// dedup against each other. Only the genuinely-new entry imports.
-    #[tokio::test]
-    async fn init_import_skips_entries_already_in_memory_db() {
-        register_sqlite_vec();
+    /// Runs the "already-present entry is skipped, new entry imports" scenario
+    /// end to end against a fresh temp repo. Shared by the single-run test
+    /// below and the concurrency stress test, so both exercise identical
+    /// logic instead of the stress test drifting from what it's supposed to
+    /// be probing.
+    async fn run_skip_already_present_scenario() -> Result<()> {
         let repo = make_temp_git_repo();
         let git_root = repo.path();
 
@@ -1088,7 +1087,7 @@ mod init_import_tests {
                 supersedes: None,
             })
             .await
-            .expect("git-notes add A");
+            .context("git-notes add A")?;
         // Entry B: only in git-notes — the one init should actually import.
         backend
             .add(NoteInput {
@@ -1103,22 +1102,22 @@ mod init_import_tests {
                 supersedes: None,
             })
             .await
-            .expect("git-notes add B");
+            .context("git-notes add B")?;
 
         // Read A back so we can seed memory.db with a byte-identical content key
         // (same kind/title/body/tags/created_at → same dedup hash).
         let seeded = backend
             .list(None, 10, true, None)
             .await
-            .expect("list git notes");
+            .context("list git notes")?;
         let a = seeded
             .iter()
             .find(|n| n.title == "already present")
-            .expect("entry A present in git notes");
+            .context("entry A present in git notes")?;
 
         let mem_path = git_root.join(".spelunk").join("memory.db");
         {
-            let store = MemoryStore::open(&mem_path).expect("open memory.db");
+            let store = MemoryStore::open(&mem_path).context("open memory.db")?;
             let tags: Vec<&str> = a.tags.iter().map(String::as_str).collect();
             store
                 .add_note_with_created_at(
@@ -1131,27 +1130,73 @@ mod init_import_tests {
                     "active",
                     a.created_at,
                 )
-                .expect("seed A into memory.db");
+                .context("seed A into memory.db")?;
         }
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
-        assert_eq!(imported, 1, "only the entry absent from memory.db imports");
+            .context("import")?;
+        anyhow::ensure!(
+            imported == 1,
+            "only the entry absent from memory.db imports, got {imported}"
+        );
 
-        let store = MemoryStore::open(&mem_path).expect("reopen memory.db");
-        let all = store.list(None, 50, true).expect("list");
-        assert_eq!(
-            all.len(),
-            2,
-            "no duplicate row for the already-present entry"
+        let store = MemoryStore::open(&mem_path).context("reopen memory.db")?;
+        let all = store.list(None, 50, true).context("list")?;
+        anyhow::ensure!(
+            all.len() == 2,
+            "no duplicate row for the already-present entry, got {}",
+            all.len()
         );
         // A keeps its original source_ref; only B is stamped init:git-notes.
         let init_sourced = all
             .iter()
             .filter(|n| n.source_ref.as_deref() == Some(INIT_GIT_NOTES_SOURCE))
             .count();
-        assert_eq!(init_sourced, 1, "exactly one row came from the init import");
+        anyhow::ensure!(
+            init_sourced == 1,
+            "exactly one row came from the init import, got {init_sourced}"
+        );
+
+        // Keep the tempdir alive through every access above.
+        drop(repo);
+        Ok(())
+    }
+
+    /// A git-notes entry whose content already exists in `memory.db` (e.g. it
+    /// arrived earlier via `memory reconcile` or a manual add) is NOT
+    /// re-imported: init reuses reconcile's content key, so the two stores
+    /// dedup against each other. Only the genuinely-new entry imports.
+    #[tokio::test]
+    async fn init_import_skips_entries_already_in_memory_db() {
+        register_sqlite_vec();
+        run_skip_already_present_scenario().await.expect("scenario");
+    }
+
+    /// Stress the same scenario across concurrent tasks in one process, each
+    /// against its own temp repo, so CI gets an active signal instead of
+    /// relying on the parallel test runner's luck to reproduce a flake.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn init_import_skip_scenario_is_race_free_under_concurrent_tasks() {
+        register_sqlite_vec();
+        const RUNS: usize = 20;
+
+        let tasks: Vec<_> = (0..RUNS)
+            .map(|_| tokio::spawn(run_skip_already_present_scenario()))
+            .collect();
+
+        let mut failures = Vec::new();
+        for (i, task) in tasks.into_iter().enumerate() {
+            if let Err(e) = task.await.expect("task should not panic") {
+                failures.push(format!("run {i}: {e:#}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}/{RUNS} concurrent runs failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     /// Drift guard: reconcile's server-row key and init-import's memory-row key

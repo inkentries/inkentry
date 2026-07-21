@@ -91,10 +91,7 @@ async fn notes_lock_path(git_root: Option<&Path>) -> Result<PathBuf> {
             if raw.is_absolute() {
                 raw.to_path_buf()
             } else {
-                match git_root {
-                    Some(root) => root.join(raw),
-                    None => std::env::current_dir()?.join(raw),
-                }
+                resolve_relative_common_dir(raw, git_root)?
             }
         }
     };
@@ -104,6 +101,25 @@ async fn notes_lock_path(git_root: Option<&Path>) -> Result<PathBuf> {
     let common_dir = std::fs::canonicalize(&common_dir).unwrap_or(common_dir);
 
     Ok(common_dir.join(LOCK_FILE_NAME))
+}
+
+/// Join a relative `--git-common-dir` answer against the caller's `git_root`.
+///
+/// A `None` git_root must never be resolved against the ambient process CWD:
+/// that CWD can change between the git subprocess that produced `raw` and
+/// this call, on any thread, in any process running spelunk-cli's test
+/// binary or the CLI itself. Erroring here forces every caller to supply an
+/// explicit root instead of racing.
+fn resolve_relative_common_dir(raw: &Path, git_root: Option<&Path>) -> Result<PathBuf> {
+    match git_root {
+        Some(root) => Ok(root.join(raw)),
+        None => Err(anyhow::anyhow!(
+            "git answered a relative --git-common-dir ({}) but no git_root was \
+             given to resolve it against; refusing to guess via the ambient \
+             process working directory",
+            raw.display()
+        )),
+    }
 }
 
 /// The single absolute path in `rev-parse --path-format=absolute` output, or
@@ -190,6 +206,29 @@ mod tests {
         assert_eq!(
             parse_absolute_dir("C:/repo/.git\n"),
             Some(PathBuf::from("C:/repo/.git"))
+        );
+    }
+
+    #[test]
+    fn relative_common_dir_joins_against_the_given_git_root() {
+        #[cfg(unix)]
+        let root = Path::new("/repo");
+        #[cfg(windows)]
+        let root = Path::new("C:/repo");
+        let raw = Path::new(".git");
+        assert_eq!(
+            resolve_relative_common_dir(raw, Some(root)).unwrap(),
+            root.join(raw)
+        );
+    }
+
+    #[test]
+    fn relative_common_dir_errors_without_a_git_root() {
+        let raw = Path::new(".git");
+        assert!(
+            resolve_relative_common_dir(raw, None).is_err(),
+            "a relative git-common-dir with no caller-supplied root must not be \
+             guessed against the ambient process CWD"
         );
     }
 }
