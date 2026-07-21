@@ -152,11 +152,13 @@ job that wants entries pushed before it exits) or when you want an immediate,
 synchronous push/pull rather than waiting on the background reconciler.
 `spelunk status` prints the active mode plus, when there's something to
 report, a pending-entry count and how long ago the local store last synced
-(for example `mode  local_first  ·  2 pending, last synced 4m ago`); a fresh
-or fully-drained project shows no extra clause. Use `spelunk sync` (or the
-one-way `spelunk memory push` / `spelunk memory pull`) whenever you want to
-force a synchronous reconcile with the server instead of waiting on the
-background drain.
+(for example `mode  local_first  ·  2 pending, last synced 4m ago`); only a
+project that has never synced shows no extra clause. Once a project has
+synced at least once, the clause persists even after the outbox fully
+drains, for example `mode  local_first  ·  up to date, last synced 4m ago`.
+Use `spelunk sync` (or the one-way `spelunk memory push` / `spelunk memory
+pull`) whenever you want to force a synchronous reconcile with the server
+instead of waiting on the background drain.
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
