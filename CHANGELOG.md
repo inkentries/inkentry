@@ -140,6 +140,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   were confirmed unaffected. No schema or embedding-format change; run
   `spelunk index --force` to recover docstrings on already-indexed
   attributed/decorated items.
+- **`spelunk index` no longer treats a failure to connect to the local
+  server the same as a slow request, and no longer lets one poison later
+  batch sizing.** A batch that failed because the client couldn't open a
+  TCP connection at all (the server momentarily unreachable, not just slow
+  to respond) was previously classified the same as a request that ran out
+  of its time budget: the client halved the batch size and folded the
+  failed attempt's elapsed time into its running throughput estimate, even
+  though a connect failure carries no signal about batch sizing or
+  embedding speed. Connect failures are now classified separately and
+  retried at the same batch size with a bounded backoff (five attempts,
+  5s to 180s) instead of shrinking, and no longer feed the rate estimate;
+  once those retries are exhausted, indexing falls back to the existing
+  manual re-run path unchanged.
 
 ## [0.9.4] — 2026-07-17
 

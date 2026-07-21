@@ -709,6 +709,7 @@ impl crate::EmbeddingBackend for NativeEmbedder {
             let mut results: Vec<Vec<f32>> = vec![Vec::new(); owned.len()];
             let mut completed = 0usize;
             for sub_batch in indexed.chunks(EMBED_BATCH_SIZE) {
+                let sub_batch_started = std::time::Instant::now();
                 if cancel.load(Ordering::Relaxed) {
                     tracing::info!(
                         "embed batch abandoned between sub-batches \
@@ -739,6 +740,14 @@ impl crate::EmbeddingBackend for NativeEmbedder {
                     results[*orig_idx] = vec;
                 }
                 completed += sub_batch.len();
+                // Pure observability: a trail for diagnosing a wedged vs.
+                // steadily-progressing embed from the server side, without
+                // relying entirely on the client's post-hoc symptoms.
+                tracing::debug!(
+                    "embed sub-batch of {} chunk(s) done in {:?} ({completed}/{total} total)",
+                    sub_batch.len(),
+                    sub_batch_started.elapsed(),
+                );
             }
 
             Ok(results)
