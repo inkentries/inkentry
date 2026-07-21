@@ -51,6 +51,17 @@ surviving entry carries the earliest recording time, and the union of the copies
 any copy reads as archived everywhere, so archiving it on one machine does not
 un-archive when a still-active copy arrives from another.
 
+**Archiving travels too.** `memory archive <id>` appends a state-update record
+for the entry to the carrier, carrying archived status and invalidation time,
+rather than editing the entry's line in place. This holds on both storage
+paths: the default SQLite-primary path (a write-through carry, best-effort and
+non-fatal like `memory add`) and explicit `--backend git-notes` (git notes is
+the primary store, and `archive` itself appends the record there). Because the
+write is always an append, a clone that already holds an independent copy of
+the pre-archive entry still converges to one archived entry once the notes ref
+is fetched and merged, instead of leaving a stale active copy sitting
+alongside it.
+
 **Superseding travels too.** `--supersedes <old-id>` (on `memory add`) and
 `memory supersede` both append a state-update record for the *old* entry to the
 carrier — archived status, invalidation time, and an edge naming the new
@@ -687,6 +698,91 @@ journal_mode=WAL` to avoid blocking the daemon's writers. No content from
 project's own `memory.db`. Embeddings are re-generated from the imported text
 via the configured server (best-effort; notes import successfully even when the
 server is unreachable).
+
+## Collapsing duplicate entries already in memory.db
+
+Content identity (see **Entry identity** at the top of this page) is derived
+only from `kind`, `title`, and `body`. A `memory.db` that predates this, or
+that picked up entries from more than one machine, can already contain rows
+that share that identity while differing in `created_at`, `tags`,
+`linked_files`, or `status`, for example the same decision recorded twice by
+a repeated `memory harvest` run. spelunk leaves those rows in place: they are
+harmless, and nothing reads or writes memory any differently because of them.
+
+Because collapsing existing rows means deleting some of them, it never
+happens automatically. If `spelunk` finds duplicate groups while opening a
+project's `memory.db`, it logs an actionable one-line warning instead of
+touching anything:
+
+```
+entity_id has 2 duplicate group(s); run `spelunk memory dedupe` to collapse
+them, then re-run spelunk to enforce uniqueness
+```
+
+`spelunk memory dedupe` is the command that warning points at. It is a
+one-time backfill you run when you want to clean up, not a step in the normal
+workflow: `init`, `memory add`, and every other command keep working with
+duplicates present.
+
+For each group of rows sharing an identity, the surviving row is the one with
+the earliest `created_at`. The other rows are deleted after their `tags` and
+`linked_files` are merged into the survivor (union, nothing dropped), its
+status becomes `archived` if any row in the group was archived, and any
+`supersedes` edge elsewhere in the store that pointed at a deleted row is
+repointed to the survivor. One run collapses every duplicate group in a
+single transaction: an error midway rolls the whole run back, so `memory.db`
+either ends up fully collapsed or is left exactly as it was.
+
+```bash
+# Preview what would be collapsed, without writing anything
+spelunk memory dedupe --dry-run
+
+# Collapse duplicate groups
+spelunk memory dedupe
+
+# Machine-readable summary
+spelunk memory dedupe --format json
+```
+
+Sample output, collapsing one group of two rows (the newer row's `cli`,
+`exit-codes` tags and its linked file merge into the survivor):
+
+```
+$ spelunk memory dedupe --dry-run
+[spelunk] dedupe (dry-run): total_notes=2 duplicate_groups=1 rows_would_collapse=1
+
+$ spelunk memory dedupe
+[spelunk] dedupe: total_notes=2 duplicate_groups=1 rows_collapsed=1 tags_merged=2 linked_files_merged=1 supersede_edges_repointed=0 supersede_self_edges_dropped=0
+
+$ spelunk memory dedupe --format json
+{"total_notes":2,"duplicate_groups":1,"rows_collapsed":1,"tags_merged":2,"linked_files_merged":1,"supersede_edges_repointed":0,"supersede_self_edges_dropped":0}
+```
+
+Once a store has zero duplicate groups, `dedupe` (dry-run or not) reports
+all-zero counts and makes no writes, and the next `spelunk` run promotes
+`memory.db`'s `entity_id` index to enforce uniqueness going forward; after
+that, a duplicate group can no longer occur.
+
+Once that index is promoted, a plain `memory add` for byte-identical
+`kind`/`title`/`body` content no longer inserts a second row: it reuses the
+existing entry (merging the new call's `tags` and `linked_files` into it,
+add-wins) and reports it instead of erroring:
+
+```
+$ spelunk memory add --kind decision --title "dup entry" --body "same content"
+Stored [decision] #3: dup entry
+$ spelunk memory add --kind decision --title "dup entry" --body "same content"
+Already recorded as [decision] #3: dup entry
+```
+
+### Security notes
+
+`dedupe` only reads and writes the project's own `memory.db`; it never
+contacts a server or an LLM. The collapse runs as a single transaction, so a
+failure partway through leaves the store exactly as it was rather than
+half-collapsed. Deleting the losing rows is destructive and not reversible by
+spelunk itself (back up `memory.db`, or your git-notes ref, first if you want
+to be able to undo it).
 
 ## Using memory as context
 

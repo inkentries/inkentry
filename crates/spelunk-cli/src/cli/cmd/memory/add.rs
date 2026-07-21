@@ -135,9 +135,11 @@ pub(super) async fn memory_add(
     // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
     // server, or (with `--backend git-notes`) git notes itself. Pre-init there
     // is no primary; the write-through carrier below is the sole writer, so mint
-    // an id the same way the backends do (`now_millis`).
-    let id = if pre_init_notes {
-        now_millis()
+    // an id the same way the backends do (`now_millis`). Reuses the backend
+    // opened above for the E4 pre-flight read (`backend_for_add`) instead of
+    // opening it twice.
+    let (id, created) = if pre_init_notes {
+        (now_millis(), true)
     } else {
         let backend = match backend_for_add.take() {
             Some(backend) => backend,
@@ -258,7 +260,14 @@ pub(super) async fn memory_add(
         }
     }
 
-    println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
+    if created {
+        println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
+    } else {
+        println!(
+            "Already recorded as [{kind}] #{id}: {title}",
+            kind = args.kind
+        );
+    }
     if let Some(line) = notes_rewrite_note {
         println!("{line}");
     }
@@ -358,7 +367,7 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
 /// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
 /// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
 /// making per-process environment overrides of `HOME` ineffective — see the
-/// identical note on `spelunk_state_dir` in `capability.rs`.
+/// identical note on `spelunk_state_dir` in `capability/probe.rs`.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("SPELUNK_SCRIPTS_DIR") {
         return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));

@@ -998,15 +998,15 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("sk-legacy"));
     }
 
-    /// `is_explicit_remote` keys off whether `server_url` was set by the
-    /// operator, never off what host it resolves to: an explicitly
-    /// configured `server_url = http://127.0.0.1:PORT` is still "explicit"
-    /// even though the host is loopback. `spelunk server logs` only ever
-    /// reads the fixed auto-daemon log path and cannot tell this loopback
-    /// address was hand-configured, so the inference-error hint must still
-    /// name it. Mirrors `capability::tests::
-    /// tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
-    /// which pins the same invariant on the `Tier` side of this contract.
+    // `is_explicit_remote` keys off whether `server_url` was set by the
+    // operator, never off what host it resolves to: an explicitly
+    // configured `server_url = http://127.0.0.1:PORT` is still "explicit"
+    // even though the host is loopback. `spelunk server logs` only ever
+    // reads the fixed auto-daemon log path and cannot tell this loopback
+    // address was hand-configured, so the inference-error hint must still
+    // name it. Mirrors
+    // `capability::tier::tests::tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
+    // which pins the same invariant on the `Tier` side of this contract.
     #[test]
     #[serial_test::serial]
     fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
@@ -1018,7 +1018,19 @@ mod tests {
             project_id: Some("proj".to_string()),
             ..Default::default()
         };
-        let client = ServerInferenceClient::from_config(&cfg).expect("client builds");
+        // Inject an in-memory secret store so this test never touches the
+        // real OS keychain (DI; cf. the `refresh_on_401_retries_once_and_persists`
+        // comment above and config.rs tests). This test previously called
+        // the production `from_config` entry point directly, which resolves
+        // the bearer via `Config::bearer_for` against the *real* default
+        // secret store; on macOS in a headless session that keychain
+        // lookup blocks indefinitely instead of failing fast, which is what
+        // made this test (and the whole module) appear to hang "even in
+        // isolation" without `SPELUNK_SECRET_STORE=file` set in the
+        // environment.
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let client =
+            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
         assert!(
             client.is_explicit_remote,
             "an explicitly configured server_url must count as explicit even when it is loopback"
@@ -1085,7 +1097,7 @@ mod tests {
     // `from_config` hard-exits the process on an invalid (non-loopback http://)
     // inference URL, so the exit path itself isn't exercised in-process here
     // (that would kill the test binary). These tests instead cover the pure
-    // validator directly (used identically by `capability.rs::probe_url`) and
+    // validator directly (used identically by `capability::probe::probe_url`) and
     // confirm `from_config` still builds normally for every URL shape the
     // validator accepts.
 

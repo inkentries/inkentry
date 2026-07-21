@@ -42,3 +42,6 @@ libc = "0.2"
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+# Only for the embed_bench example (surfaces the loader's device-selection log
+# line without requiring the caller to export RUST_LOG themselves).
+tracing-subscriber = { workspace = true }

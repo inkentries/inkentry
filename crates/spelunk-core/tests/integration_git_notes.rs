@@ -100,7 +100,7 @@ async fn git_notes_add_and_list_round_trip() {
     let dir = make_temp_git_repo();
     let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
 
-    let id = backend
+    let (id, _) = backend
         .add(note_input("decision", "use sqlcipher"))
         .await
         .expect("add");
@@ -240,7 +240,7 @@ async fn git_notes_archive_hides_entry() {
     let dir = make_temp_git_repo();
     let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
 
-    let id = backend
+    let (id, _) = backend
         .add(note_input("decision", "archive me"))
         .await
         .expect("add");
@@ -541,7 +541,7 @@ async fn git_notes_backend_add_with_option_like_body_round_trips() {
     let mut input = note_input("decision", "--amend");
     input.body = "-f --force --output=/tmp/should-not-exist-oss61".to_string();
 
-    let id = backend.add(input).await.expect("add");
+    let (id, _) = backend.add(input).await.expect("add");
 
     let notes = backend
         .list(Some("decision"), 10, false, None)
@@ -752,6 +752,97 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(all.len(), 3, "all three records still present");
     let rec2 = all.iter().find(|n| n.id == 2).expect("record 2 present");
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
+}
+
+/// `archive` must append a new state-update record for the entity rather than
+/// rewrite the matched line in place, mirroring
+/// `append_state_update_appends_never_rewrites` but for `GitNotesBackend`'s
+/// own primary-store `archive` (`--backend git-notes`, not the SQLite-primary
+/// carrier that free function serves). Checked directly on the raw ref,
+/// single-repo: a two-clone merge cannot distinguish the two here, because
+/// `cat_sort_uniq` reconstructs a rewrite's discarded original line from any
+/// clone that never touched it, making a rewrite and an append converge to
+/// the same union either way. Only the raw line count on the writing repo
+/// itself, before any merge, tells them apart.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_archive_appends_never_rewrites() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (id, _created) = backend
+        .add(note_input("decision", "archive me"))
+        .await
+        .expect("add");
+    let original = read_raw_note(root);
+    let original_line = original
+        .lines()
+        .next()
+        .expect("one seeded line")
+        .to_string();
+    let original_record: NoteRecord = serde_json::from_str(&original_line).expect("parse original");
+
+    let archived = backend.archive(id).await.expect("archive");
+    assert!(archived);
+
+    let after = read_raw_note(root);
+    let lines: Vec<&str> = after.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "archiving must append a state-update record, not rewrite the \
+         original line in place: {after}"
+    );
+    assert_eq!(
+        lines[0], original_line,
+        "the original active line must survive byte-for-byte"
+    );
+
+    let update: NoteRecord = serde_json::from_str(lines[1]).expect("parse appended record");
+    assert_eq!(update.status, "archived");
+    assert_ne!(
+        update.id, id,
+        "the appended state-update mints its own id, never reusing the \
+         original rowid"
+    );
+    assert_eq!(
+        update.entity_id, original_record.entity_id,
+        "the appended record must target the entity by entity_id (ADR-068 A6), \
+         not the rowid the old in-place rewrite matched on"
+    );
+
+    // The fold still converges to one entry, correctly archived.
+    let all = backend.list(None, 10, true, None).await.expect("list all");
+    assert_eq!(all.len(), 1, "the two raw lines fold to one entity");
+    assert_eq!(all[0].status, "archived");
+}
+
+/// Archiving the same entity twice (sequentially, one machine) must converge
+/// to one folded, archived entry, not a duplicate or a conflict, even though
+/// each call appends its own state-update record with its own minted id.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_archive_twice_is_idempotent() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (id, _created) = backend
+        .add(note_input("decision", "archive me twice"))
+        .await
+        .expect("add");
+
+    assert!(backend.archive(id).await.expect("first archive"));
+    assert!(backend.archive(id).await.expect("second archive"));
+
+    let all = backend.list(None, 10, true, None).await.expect("list all");
+    assert_eq!(
+        all.len(),
+        1,
+        "two archives of the same entity must still fold to one entry"
+    );
+    assert_eq!(all[0].status, "archived");
 }
 
 // ── concurrent append safety (#185 / ADR-069 D8) ─────────────────────────────
@@ -1239,7 +1330,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
     let root = dir.path();
     let backend = GitNotesBackend::with_root(root.to_path_buf());
 
-    let id = backend
+    let (id, _) = backend
         .add(note_input("decision", "the sibling entry at stake"))
         .await
         .expect("seed");
@@ -1377,7 +1468,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
     let root = dir.path();
     let backend = GitNotesBackend::with_root(root.to_path_buf());
 
-    let id = backend
+    let (id, _) = backend
         .add(note_input("decision", "the sibling entry at stake"))
         .await
         .expect("seed");
@@ -1772,12 +1863,11 @@ async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
     // collision here would archive the wrong record.
     let mut ids = Vec::new();
     for n in 1..=ENTRIES {
-        ids.push(
-            backend
-                .add(note_input("decision", &format!("archive target {n}")))
-                .await
-                .expect("add"),
-        );
+        let (id, _) = backend
+            .add(note_input("decision", &format!("archive target {n}")))
+            .await
+            .expect("add");
+        ids.push(id);
     }
     let distinct: std::collections::HashSet<i64> = ids.iter().copied().collect();
     assert_eq!(distinct.len(), ENTRIES, "setup: the ids must be distinct");
@@ -1856,7 +1946,7 @@ async fn git_notes_backend_uncontended_add_and_archive_never_reach_the_wait_budg
     let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
 
     let started = std::time::Instant::now();
-    let id = backend
+    let (id, _) = backend
         .add(note_input("decision", "no nested acquisition"))
         .await
         .expect("add");

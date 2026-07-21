@@ -9,6 +9,34 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`spelunk memory dedupe` collapses duplicate-`entity_id` groups already
+  resident in a project's `memory.db`.** A store can already hold rows that
+  share the same content identity (`kind`/`title`/`body`) while differing in
+  `created_at`, `tags`, `linked_files`, or `status`, for example a decision
+  recorded twice by a repeated `memory harvest` run, or one merged in from
+  another machine. Opening the store now backfills each row's `entity_id` but
+  never deletes an existing row on its own, so this new command is the
+  explicit, dry-runnable way to clean duplicates up: `--dry-run` reports
+  duplicate groups and does nothing, otherwise the earliest-created row in
+  each group survives, the others' `tags` and `linked_files` merge onto it,
+  and any `supersedes` edge pointing at a removed row is repointed to the
+  survivor. It is a one-time backfill you run when you want to, not a step
+  `init` or `memory add` perform for you. See [ADR-068's third
+  amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
+### Fixed
+
+- **`spelunk memory add` no longer crashes on a byte-identical duplicate once
+  a project's `entity_id` index has been promoted to UNIQUE.** Previously a
+  second `memory add` with the same `kind`/`title`/`body` as an existing
+  entry hit `Error: UNIQUE constraint failed: notes.entity_id`. It now reuses
+  the existing entry instead, merging the new call's `tags` and
+  `linked_files` into it, and prints `Already recorded as [kind] #id: title`
+  in place of `Stored [kind] #id: title`. See [ADR-068's fourth
+  amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+
 ### Changed
 
 - **Chunk re-windowing is now token-aware, and windowed chunks keep their identity.**
@@ -92,6 +120,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   (or by a lost cross-machine race) is also hardened: `superseded_by_entity_id`
   now resolves to the record with the greatest `created_at`, not the smallest
   `entity_id` string. (ADR-068 E4/E5)
+- **Indexing no longer drops the docstring from a documented Rust item
+  followed by an attribute, or a documented Python function/class wrapped in
+  a decorator.** `preceding_comment`'s walk back over sibling nodes stopped
+  at the first non-whitespace node it found, so a Rust `#[derive(...)]` /
+  `#[async_trait]` attribute (a real sibling sitting between the item and
+  its doc comment) or a Python `@decorator` (which tree-sitter-python wraps
+  together with the definition in one `decorated_definition` node) made the
+  walk land on the attribute or wrapper instead of the comment, so no
+  docstring was captured at all, silently. This affects retrieval quality,
+  since a chunk's docstring is part of what gets embedded and searched
+  (`Chunk::embedding_text()`); attributed/decorated items are common in
+  async Rust services and in most idiomatic Python. The walk now skips
+  `attribute_item` siblings (Rust) and starts from the enclosing
+  `decorated_definition` when present (Python), so the docstring is
+  captured as before. TypeScript decorators, Java annotations, and every
+  other currently supported language with similar syntax (PHP, Kotlin,
+  Swift, C#, C++, C) attach it as a child of the item in their grammars and
+  were confirmed unaffected. No schema or embedding-format change; run
+  `spelunk index --force` to recover docstrings on already-indexed
+  attributed/decorated items.
 
 ## [0.9.4] — 2026-07-17
 
@@ -607,7 +655,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   now refuses a non-loopback plaintext bind unconditionally, whether or not a key
   is set; the error names the interface/port. There is no opt-out. Loopback
   binds are unchanged. See
-  [docs/server.md](docs/server.md#non-loopback-plaintext-binds-are-refused-no-override).
+  `docs/server.md#non-loopback-plaintext-binds-are-refused-no-override`.
   - **Docker Compose demoted to a local scaffold; bare-metal/systemd is now
     the recommended team-server deployment.** The shipped `docker-compose.yml`
     previously bound the `spelunk-server` container to `0.0.0.0` directly,
@@ -624,9 +672,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
     server process itself. For a team-reachable instance, run the binary
     bare-metal under systemd instead, with your own TLS terminator in front of
     the same loopback bind on that host — see
-    [Self-hosting](docs/self-hosting.md). `docker-compose.full.yml` (Ollama
+    `docs/self-hosting.md`. `docker-compose.full.yml` (Ollama
     sidecar) and `Caddyfile` (bundled TLS sidecar) are removed; no proxy ships
-    with this repo. See [docs/server.md](docs/server.md#quick-start-docker).
+    with this repo. See `docs/server.md#quick-start-docker`.
 - **Server robustness/info-leak hardening (error-string sniffing, raw FTS5 errors, unbounded
   file reads).**
   - `AppError::Internal` no longer inspects the error message text (previously it returned the
@@ -772,7 +820,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `.spelunk/config.toml` has `server_url = "http://<host>:<port>"` pointing at
   anything other than loopback, spelunk will now refuse to start** with a
   one-line error telling you to switch to `https://` (put a TLS-terminating
-  reverse proxy in front — see [Self-hosting](docs/self-hosting.md)) or move
+  reverse proxy in front: see `docs/self-hosting.md`) or move
   the server to loopback. Loopback `http://` and all `https://` URLs are
   unaffected.
 - **The CLI no longer sends the bearer token to `/v1/health`.** That endpoint
@@ -837,14 +885,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   no key now fails to start. Loopback binds are unaffected. **Breaking for the
   keyless Docker quickstart**: the container image binds `0.0.0.0` by default,
   so `docker compose up -d` with no `SPELUNK_SERVER_KEY` set now refuses to
-  start — see [Quick start (Docker)](docs/server.md#quick-start-docker).
+  start: see `docs/server.md#quick-start-docker`.
 - **ADR-056 single-trust-domain guardrails.** Per [ADR-056](docs/adr/056-oss-server-tenancy-model.md),
   a `spelunk-server` instance's shared API key is the tenancy boundary by
   design — every keyholder administers every project on that instance; there is
   no per-project ACL. The server now logs a prominent startup warning restating
   this whenever it binds a non-loopback address with a key configured (a
   shared/team deployment); suppressed on loopback binds and when no key is
-  configured. See [Trust model](docs/server.md#trust-model).
+  configured. See `docs/server.md#trust-model`.
 - **Secret scanner now scans the docstring and LLM summary, not just the raw
   chunk content.** `Chunk::embedding_text()` prepends the docstring (and, once
   generated, the LLM summary) to what actually gets stored and embedded, but the

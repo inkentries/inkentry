@@ -127,6 +127,52 @@ fn sliding_window_threads_identity_onto_every_subchunk() {
     }
 }
 
+// ── tree-sitter docstring extraction (preceding_comment) ────────────────────
+
+#[test]
+fn docstring_captured_for_plain_function() {
+    let src = "/// does a thing\nfn plain() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("plain"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn docstring_captured_across_a_single_attribute() {
+    let src = "/// does a thing\n#[allow(dead_code)]\nfn attributed() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn docstring_captured_across_stacked_attributes() {
+    let src = "/// does a thing\n#[derive(Debug)]\n#[allow(dead_code)]\nstruct Stacked;\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Stacked"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("/// does a thing\n"));
+}
+
+#[test]
+fn no_docstring_when_attribute_has_none_above_it() {
+    let src = "fn other() {}\n#[allow(dead_code)]\nfn attributed() {}\n";
+    let chunks = SourceParser::parse(src, "f.rs", "rust").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring, None);
+}
+
 // ── Chunk::embedding_text ────────────────────────────────────────────────────
 
 fn make_chunk(name: Option<&str>, docstring: Option<&str>, content: &str) -> Chunk {
@@ -271,4 +317,39 @@ fn oversized_container_suppresses_own_chunk_keeps_children() {
     }
     let names: Vec<&str> = fns.iter().filter_map(|c| c.name.as_deref()).collect();
     assert!(names.contains(&"f0") && names.contains(&"f4"));
+}
+
+#[test]
+fn docstring_captured_across_a_python_decorator() {
+    let src = "# does a thing\n@staticmethod\ndef attributed():\n    pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    // Unlike Rust's `line_comment`, Python's `comment` token excludes the trailing newline.
+    assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
+}
+
+#[test]
+fn docstring_captured_across_stacked_python_decorators() {
+    // Stacked decorators share one `decorated_definition` wrapper, not one each.
+    let src = "# does a thing\n@foo\n@bar\ndef attributed():\n    pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
+}
+
+#[test]
+fn no_docstring_when_python_decorator_has_none_above_it() {
+    let src = "def other():\n    pass\n@staticmethod\ndef attributed():\n    pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring, None);
 }

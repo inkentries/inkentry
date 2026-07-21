@@ -14,10 +14,10 @@
 //! `SPELUNK_STATE_DIR` when set; see `capability::spelunk_state_dir`, the
 //! single resolver every reader and writer of this directory shares):
 //! - `server.pid`  — PID of the running daemon process
-//! - `server.port` — TCP port the daemon is listening on (read by `capability.rs`)
+//! - `server.port`: TCP port the daemon is listening on (read by `capability/probe.rs`)
 //! - `server.log`  — stdout + stderr of the daemon process
 //!
-//! The port file is read by `capability.rs` for loopback auto-discovery
+//! The port file is read by `capability/probe.rs` for loopback auto-discovery
 //! (spelunk#316).  The writer here **must** use the same path, enforced by
 //! both going through the shared resolver rather than each defining their own.
 //!

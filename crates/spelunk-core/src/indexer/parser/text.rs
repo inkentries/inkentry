@@ -1,4 +1,4 @@
-use super::super::chunker::{Chunk, ChunkKind, MAX_CHUNK_TOKENS, sliding_window};
+use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
 use crate::search::tokens::estimate_tokens;
 
 /// Parse a `.ipynb` notebook into per-cell chunks.
@@ -112,7 +112,7 @@ pub(super) fn parse_markdown(source: &str, file_path: &str) -> Vec<Chunk> {
         if content.trim().is_empty() {
             return;
         }
-        if estimate_tokens(&content) > MAX_CHUNK_TOKENS {
+        if estimate_tokens(&content) > chunk_token_cap() {
             // Section start is 0-based line index `start`; sub-chunk lines are
             // 1-based within the section, so `start` is the correct offset.
             // Thread the section heading through as each sub-chunk's name so an
