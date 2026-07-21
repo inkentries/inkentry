@@ -533,34 +533,6 @@ says so explicitly so no one has to infer it from behaviour.
   v1.0; see ADR-056's "Revisit if" clause). The managed cloud product
   provides organization-scoped isolation if you need that instead.
 
-## Embedding dimension
-
-All clients writing to the same project must use the same embedding model. The
-embedding model is fixed product-wide to codefuse-ai/F2LLM-v2-330M (896-dim) and
-cannot be selected; a mismatched model silently corrupts semantic search. The
-server records the embedding dimension on the first write and rejects subsequent
-writes with a different dimension.
-
-Default: 896 dimensions (codefuse-ai/F2LLM-v2-330M, the bundled native embedder).
-
-`--embedding-dim` sets the dimension the server enforces. Change it only to match
-an external endpoint whose vectors differ in size; doing so means you are
-running a different model at your own risk (the one-model-per-vector-space
-invariant no longer holds), not a supported way to swap embedding models. See
-[Third-party models](third-party-models.md) for configuring an external
-embedding endpoint.
-
-```bash
-docker compose run spelunk-server --embedding-dim 1024
-```
-
-Or via compose environment:
-
-```yaml
-environment:
-  SPELUNK_EMBEDDING_DIM: "1024"
-```
-
 ## Production deployment
 
 **Bare-metal / systemd is the recommended way to run a team-reachable

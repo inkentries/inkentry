@@ -104,12 +104,6 @@ spelunk-server --embedding-url http://127.0.0.1:1234
 When set, the server calls out to that OpenAI-compatible embeddings endpoint
 instead of running the bundled native embedder.
 
-`--embedding-dim` overrides the dimension the server enforces (default 896) for
-the rare case where your endpoint's vectors are a different size; changing it
-means you are running a different model at your own risk, and the server
-rejects later writes with a mismatched dimension (see
-[Server setup → Embedding dimension](server-setup.md#embedding-dimension)).
-
 `SPELUNK_EMBEDDER_GGUF_REPO` is unrelated to the above: it points the *bundled
 native* embedder at an alternate source for the same F2LLM-v2-330M GGUF and
 tokenizer artifacts, not a different model. See
