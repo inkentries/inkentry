@@ -394,6 +394,15 @@ impl RelayRegistry {
 /// payload's own identity — see module docs). Reconnects with capped
 /// exponential backoff on drop/error (item 21).
 ///
+/// Every (re)connect — not just the first — is immediately followed by a
+/// catch-up, before the frame-read loop starts. `handlers::memory_stream`
+/// only emits notes created after the moment a given connection opened, so
+/// without this, a write that lands between two connection attempts (e.g.
+/// during a backoff sleep, or the very first connect racing a push that
+/// lazily creates the project server-side) would be visible to neither the
+/// stream's own live frames nor the one-time initial catch-up, and would
+/// never arrive until *something else* happened to produce a later frame.
+///
 /// Isolated per session (item 17): errors here are always caught and
 /// recorded via [`RelaySession::record_error`], never propagated as a panic,
 /// so one project's relay failure cannot affect another session's task or
@@ -416,9 +425,10 @@ async fn run_pull_loop(session: Arc<RelaySession>) {
     }
 }
 
-/// One SSE connection attempt: connect, read frames until the stream ends or
-/// errors, catching up on every frame received. `Ok(())` on a graceful
-/// stream end (the server closed it) resets the caller's backoff.
+/// One SSE connection attempt: connect, catch up (see [`run_pull_loop`]
+/// docs), then read frames until the stream ends or errors, catching up
+/// again on every frame received. `Ok(())` on a graceful stream end (the
+/// server closed it) resets the caller's backoff.
 async fn stream_once(session: &Arc<RelaySession>) -> anyhow::Result<()> {
     use futures_util::StreamExt;
 
@@ -442,6 +452,7 @@ async fn stream_once(session: &Arc<RelaySession>) -> anyhow::Result<()> {
     }
 
     let resp = req.send().await?.error_for_status()?;
+    session.catch_up().await;
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     while let Some(chunk) = stream.next().await {

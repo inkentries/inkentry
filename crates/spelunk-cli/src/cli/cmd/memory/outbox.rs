@@ -116,7 +116,23 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
     let Some(port) = super::super::server::probe_local_relay_port().await else {
         return;
     };
+    register_and_push(cfg, mem_path, &server_url, &project_id, port).await;
+}
 
+/// Register this project's relay session (creating it and starting its pull
+/// loop on first sight — item 12/18/20) and hand over any currently-pending
+/// outbox rows. An empty outbox still registers: the server-side push
+/// handler starts the session's pull task regardless of whether `entries` is
+/// empty, which is what lets a purely-read instance (never writing locally)
+/// still receive live pulls (item 20's two-instance scenario needs exactly
+/// this — instance B may never call `memory add` at all).
+async fn register_and_push(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    server_url: &str,
+    project_id: &str,
+    port: u16,
+) {
     let Ok(local) = MemoryStore::open(mem_path) else {
         return;
     };
@@ -140,7 +156,7 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
         })
         .collect();
     let since_cursor = local.max_remote_id().ok().flatten();
-    let bearer = super::super::auth_api::ensure_fresh_server_key(cfg, &server_url)
+    let bearer = super::super::auth_api::ensure_fresh_server_key(cfg, server_url)
         .await
         .ok()
         .flatten();
@@ -152,8 +168,8 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
         return;
     };
     let body = RelayPushRequestWire {
-        server_url,
-        project_id,
+        server_url: server_url.to_string(),
+        project_id: project_id.to_string(),
         bearer,
         since_cursor,
         entries,
@@ -179,12 +195,20 @@ pub(crate) struct PollOutcome {
 /// happened. Returns `None` when there is nothing to poll (not `local_first`,
 /// no server configured, or no local relay reachable) — `spelunk status`
 /// falls back to a purely local pending-count in that case.
+///
+/// Also registers the relay session (via [`register_and_push`]) before
+/// polling, same as a write's nudge: a purely-read instance that never calls
+/// `memory add` still needs its session registered at some point for live
+/// pull to reach it at all (item 20 — this is the mechanism that lets
+/// instance B in the two-instance scenario pick up instance A's write
+/// without ever writing locally itself).
 pub(crate) async fn poll_and_apply(
     cfg: &Config,
     mem_path: &std::path::Path,
 ) -> Option<PollOutcome> {
     let (server_url, project_id) = relay_target(cfg)?;
     let port = super::super::server::probe_local_relay_port().await?;
+    register_and_push(cfg, mem_path, &server_url, &project_id, port).await;
     let local = MemoryStore::open(mem_path).ok()?;
 
     let client = reqwest::Client::builder()
@@ -277,11 +301,14 @@ mod tests {
     }
 
     /// Spin up a real `spelunk-server` axum router (the actual production
-    /// router, not a hand-rolled stand-in) on an ephemeral loopback port, and
-    /// write its port into `state_dir/server.port` so
-    /// `server::probe_local_relay_port` discovers it exactly the way it
-    /// would discover a real `spelunk server start`-ed daemon.
-    async fn spawn_local_relay(state_dir: &std::path::Path) -> SocketAddr {
+    /// router, not a hand-rolled stand-in) on an ephemeral loopback port and
+    /// return its address. Serves BOTH roles the same binary can play: the
+    /// team-hosting `/v1/projects/*/memory*` routes (a stand-in for a real
+    /// team server) and the local-only `/local/relay/*` routes (a stand-in
+    /// for a real `spelunk server start`-ed daemon) — callers pick which
+    /// role they're using it for by whether they write a state-dir port file
+    /// (see [`spawn_local_relay`]) or pass the address as `server_url`.
+    async fn spawn_spelunk_server() -> SocketAddr {
         register_sqlite_vec();
         let db_dir = TempDir::new().unwrap();
         let db =
@@ -308,7 +335,15 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
+        addr
+    }
 
+    /// Like [`spawn_spelunk_server`], but also writes the port into
+    /// `state_dir/server.port` so `server::probe_local_relay_port`
+    /// discovers it exactly the way it would discover a real
+    /// `spelunk server start`-ed daemon — the *local relay* role.
+    async fn spawn_local_relay(state_dir: &std::path::Path) -> SocketAddr {
+        let addr = spawn_spelunk_server().await;
         std::fs::create_dir_all(state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{}\n", addr.port())).unwrap();
         addr
@@ -402,9 +437,12 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-        assert_eq!(
-            applied, 1,
-            "the push-ack must be applied via CLI-side storage"
+        assert!(
+            applied >= 1,
+            "the push-ack must be applied via CLI-side storage (poll_and_apply also \
+             re-registers on every call, per item 20, so a still-unstamped row can \
+             legitimately be offered more than once before it lands — the row-level \
+             assertions below are the authoritative check): got {applied}"
         );
 
         let store = open_store(&mem_path);
@@ -449,21 +487,18 @@ mod tests {
             nudge_after_write(&cfg, &mem_path).await;
         }
 
-        // Nothing should have registered with the local relay at all.
-        let poll = poll_and_apply(
-            &Config {
-                server_url: Some(format!("http://127.0.0.1:{}", addr.port())),
-                project_id: Some("proj".to_string()),
-                ..Default::default()
-            },
-            &mem_path,
-        )
-        .await;
-        // local_first here so poll_and_apply itself does reach the relay;
-        // an untouched session means nothing buffered.
-        let outcome = poll.expect("relay reachable");
-        assert_eq!(outcome.applied_pushes, 0);
-        assert_eq!(outcome.applied_pulls, 0);
+        // Direct, race-free check: neither nudge touched the row at all — it
+        // is exactly as it was before either call, still pending. (A
+        // subsequent `local_first` `poll_and_apply` would itself register
+        // and push, per item 20, so it is not used here to avoid conflating
+        // "the gated nudges did nothing" with "a later, ungated poll did
+        // something".)
+        let store = open_store(&mem_path);
+        assert_eq!(
+            store.pending_sync_count().unwrap(),
+            1,
+            "offline/cloud_first nudges must never touch the outbox row"
+        );
     }
 
     #[tokio::test]
@@ -582,5 +617,211 @@ mod tests {
                 "the local relay must still be reachable after each nudge"
             );
         }
+    }
+
+    /// Point `SPELUNK_STATE_DIR` at `dir` for the remainder of the current
+    /// scope. Caller must hold `#[serial(server_state_dir_env)]` AND keep a
+    /// [`RestoreStateDirOnDrop`] alive for the test's duration, or the
+    /// mutated value leaks into whichever test in the same serial group runs
+    /// next.
+    fn point_state_dir_at(dir: &std::path::Path) {
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", dir) };
+    }
+
+    /// Captures the current `SPELUNK_STATE_DIR` on construction and restores
+    /// it on drop. Tests that call [`point_state_dir_at`] more than once (so
+    /// [`StateDirGuard`] alone won't do, since it only knows the value it
+    /// itself set) must hold one of these for the whole test body.
+    struct RestoreStateDirOnDrop(Option<std::ffi::OsString>);
+    impl RestoreStateDirOnDrop {
+        fn capture() -> Self {
+            Self(std::env::var_os("SPELUNK_STATE_DIR"))
+        }
+    }
+    impl Drop for RestoreStateDirOnDrop {
+        fn drop(&mut self) {
+            // SAFETY: see `StateDirGuard::drop` above; same serial group.
+            unsafe {
+                match &self.0 {
+                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                }
+            }
+        }
+    }
+
+    // ── item 20: SSE-driven live pull, two local instances, one team server ─
+    //
+    // Uses a REAL `spelunk-server` router as the team server (not a wiremock
+    // stub): its `/v1/projects/*/memory*` team-hosting routes are the same
+    // production handlers a real cloud-api-or-OSS team server would run, so
+    // pushing through instance A's relay and having instance B's relay pick
+    // it up exercises the actual SSE `/memory/stream` code path this
+    // module's pull loop consumes, not just `/memory/since` polling.
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn entry_added_on_instance_a_becomes_visible_on_instance_b_via_live_pull() {
+        let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        let team_addr = spawn_spelunk_server().await;
+        let team_uri = format!("http://{}", team_addr);
+
+        let state_a = TempDir::new().unwrap();
+        let state_b = TempDir::new().unwrap();
+        spawn_local_relay(state_a.path()).await;
+        spawn_local_relay(state_b.path()).await;
+
+        let mem_dir_a = TempDir::new().unwrap();
+        let mem_a = mem_dir_a.path().join("memory.db");
+        let mem_dir_b = TempDir::new().unwrap();
+        let mem_b = mem_dir_b.path().join("memory.db");
+        let _store_a = open_store(&mem_a);
+        let _store_b = open_store(&mem_b);
+
+        let cfg = local_first_cfg(&team_uri);
+
+        // Register B FIRST, before A ever writes, so B's pull loop is live
+        // (holding its SSE connection) with nothing yet to catch up on — the
+        // entry it eventually sees can only have arrived via the live SSE
+        // wake-up + re-catch-up path, not B's own initial registration
+        // catch-up.
+        point_state_dir_at(state_b.path());
+        assert!(
+            poll_and_apply(&cfg, &mem_b).await.is_some(),
+            "instance B's relay must be reachable"
+        );
+
+        // Now instance A writes and relays it to the team server.
+        point_state_dir_at(state_a.path());
+        let store_a = open_store(&mem_a);
+        store_a
+            .add_note(
+                "decision",
+                "Cross-instance entry",
+                "body",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store_a);
+        nudge_after_write(&cfg, &mem_a).await;
+
+        // Instance B: poll until the entry arrives via live pull.
+        point_state_dir_at(state_b.path());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            if let Some(outcome) = poll_and_apply(&cfg, &mem_b).await
+                && outcome.applied_pulls > 0
+            {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            seen,
+            "instance A's write must become visible on instance B without \
+             any explicit `spelunk sync`/`memory pull`"
+        );
+
+        let store_b = open_store(&mem_b);
+        let notes = store_b.rows_for_sync(false).unwrap();
+        assert!(
+            notes.iter().any(|n| n.title == "Cross-instance entry"),
+            "the pulled entry must be applied into instance B's own memory.db"
+        );
+    }
+
+    // ── item 16: kill-and-restart mid-drain, no data loss, no duplicates ───
+    //
+    // Simulates a killed-and-restarted local server with a genuinely fresh
+    // process: a second `spawn_local_relay` (a brand new axum router + a
+    // brand new, empty `RelayRegistry`) that shares no state at all with the
+    // first. Re-registering against it must re-derive the outbox/cursor from
+    // `memory.db` alone and reach a correct, duplicate-free end state.
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn kill_and_restart_the_local_relay_mid_drain_loses_nothing_and_dedupes() {
+        let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        let team_addr = spawn_spelunk_server().await;
+        let team_uri = format!("http://{}", team_addr);
+        let cfg = local_first_cfg(&team_uri);
+
+        let state_1 = TempDir::new().unwrap();
+        spawn_local_relay(state_1.path()).await;
+
+        let mem_dir = TempDir::new().unwrap();
+        let mem_path = mem_dir.path().join("memory.db");
+        let store = open_store(&mem_path);
+        store
+            .add_note("decision", "A", "body", &[], &[], None, None)
+            .unwrap();
+        store
+            .add_note("decision", "B", "body", &[], &[], None, None)
+            .unwrap();
+        drop(store);
+
+        point_state_dir_at(state_1.path());
+        nudge_after_write(&cfg, &mem_path).await;
+
+        // Wait for both A and B to land on the (real) team server before the
+        // "restart".
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            let store = open_store(&mem_path);
+            if store.pending_sync_count().unwrap() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "A and B did not land on the team server before the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // "Restart": a second, wholly independent local relay process/registry.
+        let state_2 = TempDir::new().unwrap();
+        spawn_local_relay(state_2.path()).await;
+
+        // A new, never-yet-pushed row, added after the "restart".
+        let store = open_store(&mem_path);
+        store
+            .add_note("decision", "C", "body", &[], &[], None, None)
+            .unwrap();
+        drop(store);
+
+        point_state_dir_at(state_2.path());
+        nudge_after_write(&cfg, &mem_path).await;
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            let store = open_store(&mem_path);
+            if store.pending_sync_count().unwrap() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "C did not land on the team server before the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let store = open_store(&mem_path);
+        assert_eq!(
+            store.count().unwrap(),
+            3,
+            "no data loss and no duplicates across the simulated restart"
+        );
+        let rows = store.rows_for_sync(false).unwrap();
+        assert!(
+            rows.iter().all(|r| r.remote_id.is_some()),
+            "every row must carry a remote_id after re-deriving through the new relay"
+        );
     }
 }
