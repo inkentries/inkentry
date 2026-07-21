@@ -754,6 +754,97 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }
 
+/// `archive` must append a new state-update record for the entity rather than
+/// rewrite the matched line in place, mirroring
+/// `append_state_update_appends_never_rewrites` but for `GitNotesBackend`'s
+/// own primary-store `archive` (`--backend git-notes`, not the SQLite-primary
+/// carrier that free function serves). Checked directly on the raw ref,
+/// single-repo: a two-clone merge cannot distinguish the two here, because
+/// `cat_sort_uniq` reconstructs a rewrite's discarded original line from any
+/// clone that never touched it, making a rewrite and an append converge to
+/// the same union either way. Only the raw line count on the writing repo
+/// itself, before any merge, tells them apart.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_archive_appends_never_rewrites() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (id, _created) = backend
+        .add(note_input("decision", "archive me"))
+        .await
+        .expect("add");
+    let original = read_raw_note(root);
+    let original_line = original
+        .lines()
+        .next()
+        .expect("one seeded line")
+        .to_string();
+    let original_record: NoteRecord = serde_json::from_str(&original_line).expect("parse original");
+
+    let archived = backend.archive(id).await.expect("archive");
+    assert!(archived);
+
+    let after = read_raw_note(root);
+    let lines: Vec<&str> = after.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "archiving must append a state-update record, not rewrite the \
+         original line in place: {after}"
+    );
+    assert_eq!(
+        lines[0], original_line,
+        "the original active line must survive byte-for-byte"
+    );
+
+    let update: NoteRecord = serde_json::from_str(lines[1]).expect("parse appended record");
+    assert_eq!(update.status, "archived");
+    assert_ne!(
+        update.id, id,
+        "the appended state-update mints its own id, never reusing the \
+         original rowid"
+    );
+    assert_eq!(
+        update.entity_id, original_record.entity_id,
+        "the appended record must target the entity by entity_id (ADR-068 A6), \
+         not the rowid the old in-place rewrite matched on"
+    );
+
+    // The fold still converges to one entry, correctly archived.
+    let all = backend.list(None, 10, true, None).await.expect("list all");
+    assert_eq!(all.len(), 1, "the two raw lines fold to one entity");
+    assert_eq!(all[0].status, "archived");
+}
+
+/// Archiving the same entity twice (sequentially, one machine) must converge
+/// to one folded, archived entry, not a duplicate or a conflict, even though
+/// each call appends its own state-update record with its own minted id.
+#[tokio::test]
+#[serial]
+async fn git_notes_backend_archive_twice_is_idempotent() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (id, _created) = backend
+        .add(note_input("decision", "archive me twice"))
+        .await
+        .expect("add");
+
+    assert!(backend.archive(id).await.expect("first archive"));
+    assert!(backend.archive(id).await.expect("second archive"));
+
+    let all = backend.list(None, 10, true, None).await.expect("list all");
+    assert_eq!(
+        all.len(),
+        1,
+        "two archives of the same entity must still fold to one entry"
+    );
+    assert_eq!(all[0].status, "archived");
+}
+
 // ── concurrent append safety (#185 / ADR-069 D8) ─────────────────────────────
 
 /// The D8 invariant for N concurrent writers: every writer's entry **lands or

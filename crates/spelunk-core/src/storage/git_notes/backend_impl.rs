@@ -91,13 +91,38 @@ impl MemoryBackend for GitNotesBackend {
         Ok(self.noted_commits().await?.len() as i64)
     }
 
+    /// Resolves `id` to its underlying record with the same strict,
+    /// per-commit read `add`/`append_record` use, so that a failed read fails
+    /// the archive rather than looking like a missing entry (a writer's own
+    /// resolve step is not the lenient batch read `get`/`folded_records` use
+    /// for listing, where one unreadable historical note must not block an
+    /// unrelated read). Then appends a `status: "archived"` state-update for
+    /// that record's entity via the shared carrier helper, targeting it by
+    /// `entity_id` rather than the rowid (ADR-068 A6). Never rewrites the
+    /// entity's existing line(s) in place: the ref is an append-only,
+    /// entity-keyed event log (see [`append_state_update`]'s doc), and a
+    /// rewrite mutates an already-written line's bytes, breaking that
+    /// invariant even on a single machine with no other clone involved.
     async fn archive(&self, id: i64) -> Result<bool> {
-        for noted in self.noted_commits().await? {
-            if self.archive_record(&noted.commit, id).await? {
-                return Ok(true);
+        let mut found = None;
+        for (commit, _) in self.noted_commits().await? {
+            let blob = self.read_note_blob(&commit).await?;
+            if let Some(record) = blob
+                .lines()
+                .find_map(|line| super::parse_spelunk_line(line).filter(|r| r.id == id))
+            {
+                found = Some(record);
+                break;
             }
         }
-        Ok(false)
+        let Some(record) = found else {
+            return Ok(false);
+        };
+
+        let base = record_to_note(record);
+        let invalid_at = base.invalid_at.or_else(|| Some(now_secs()));
+        super::append_state_update(self.git_root(), &base, "archived", invalid_at, None).await?;
+        Ok(true)
     }
 
     // ── Unsupported ──────────────────────────────────────────────────────────

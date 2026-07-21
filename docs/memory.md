@@ -51,6 +51,17 @@ surviving entry carries the earliest recording time, and the union of the copies
 any copy reads as archived everywhere, so archiving it on one machine does not
 un-archive when a still-active copy arrives from another.
 
+**Archiving travels too.** `memory archive <id>` appends a state-update record
+for the entry to the carrier, carrying archived status and invalidation time,
+rather than editing the entry's line in place. This holds on both storage
+paths: the default SQLite-primary path (a write-through carry, best-effort and
+non-fatal like `memory add`) and explicit `--backend git-notes` (git notes is
+the primary store, and `archive` itself appends the record there). Because the
+write is always an append, a clone that already holds an independent copy of
+the pre-archive entry still converges to one archived entry once the notes ref
+is fetched and merged, instead of leaving a stale active copy sitting
+alongside it.
+
 **Superseding travels too.** `--supersedes <old-id>` (on `memory add`) and
 `memory supersede` both append a state-update record for the *old* entry to the
 carrier — archived status, invalidation time, and an edge naming the new
