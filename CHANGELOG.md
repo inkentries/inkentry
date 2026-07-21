@@ -120,6 +120,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   (or by a lost cross-machine race) is also hardened: `superseded_by_entity_id`
   now resolves to the record with the greatest `created_at`, not the smallest
   `entity_id` string. (ADR-068 E4/E5)
+- **Indexing no longer drops the docstring from a documented Rust item
+  followed by an attribute, or a documented Python function/class wrapped in
+  a decorator.** `preceding_comment`'s walk back over sibling nodes stopped
+  at the first non-whitespace node it found, so a Rust `#[derive(...)]` /
+  `#[async_trait]` attribute (a real sibling sitting between the item and
+  its doc comment) or a Python `@decorator` (which tree-sitter-python wraps
+  together with the definition in one `decorated_definition` node) made the
+  walk land on the attribute or wrapper instead of the comment, so no
+  docstring was captured at all, silently. This affects retrieval quality,
+  since a chunk's docstring is part of what gets embedded and searched
+  (`Chunk::embedding_text()`); attributed/decorated items are common in
+  async Rust services and in most idiomatic Python. The walk now skips
+  `attribute_item` siblings (Rust) and starts from the enclosing
+  `decorated_definition` when present (Python), so the docstring is
+  captured as before. TypeScript decorators, Java annotations, and every
+  other currently supported language with similar syntax (PHP, Kotlin,
+  Swift, C#, C++, C) attach it as a child of the item in their grammars and
+  were confirmed unaffected. No schema or embedding-format change; run
+  `spelunk index --force` to recover docstrings on already-indexed
+  attributed/decorated items.
 
 ## [0.9.4] — 2026-07-17
 

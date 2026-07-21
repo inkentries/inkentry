@@ -76,3 +76,7 @@ tempfile = { workspace = true }
 wiremock = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+# Only for the chunk_quality_eval example: an independent tokenizer-exact
+# token count for the Recall@token-budget metric (avoids reintroducing the
+# chars/4 `estimate_tokens` bias the embed_bench harness exists to fix).
+tokenizers = { workspace = true }

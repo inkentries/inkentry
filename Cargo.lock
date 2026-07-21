@@ -5307,6 +5307,7 @@ dependencies = [
  "sqlite-vec",
  "tempfile",
  "thiserror 2.0.18",
+ "tokenizers 0.23.1",
  "tokio",
  "toml",
  "tracing",
@@ -5336,6 +5337,7 @@ dependencies = [
  "tokenizers 0.23.1",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

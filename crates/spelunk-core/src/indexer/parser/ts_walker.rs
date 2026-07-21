@@ -1,4 +1,4 @@
-use super::super::chunker::{Chunk, ChunkKind, MAX_CHUNK_TOKENS, sliding_window};
+use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
 use crate::error::IndexError;
 use crate::search::tokens::estimate_tokens;
 use anyhow::Result;
@@ -282,7 +282,7 @@ fn walk_node_inner(
                 | ChunkKind::Interface
         );
 
-        if estimate_tokens(&content) > MAX_CHUNK_TOKENS {
+        if estimate_tokens(&content) > chunk_token_cap() {
             if is_container {
                 // Suppress the container's own chunk; its children already carry
                 // fine-grained chunks framed by parent_scope. Re-window only if the
@@ -592,11 +592,20 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 
 /// Return the text of the comment node that immediately precedes `node`
 /// (skipping whitespace), if any.
+///
+/// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
+/// below. Python wraps decorator+def in one `decorated_definition` node, so
+/// the walk must start from that parent instead of `node`. TS/Java attach
+/// decorators as a child, so neither case applies there.
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
-    let mut prev = node.prev_sibling()?;
-    // skip over whitespace / newline tokens
+    let start = match node.parent() {
+        Some(parent) if parent.kind() == "decorated_definition" => parent,
+        _ => *node,
+    };
+    let mut prev = start.prev_sibling()?;
     while prev.kind() == "\n"
         || prev.kind() == "newline"
+        || prev.kind() == "attribute_item"
         || prev.is_extra()
             && prev.kind() != "comment"
             && prev.kind() != "line_comment"
