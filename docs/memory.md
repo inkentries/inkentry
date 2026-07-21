@@ -134,10 +134,29 @@ variable) controls how the CLI reconciles the local store and the server:
 and writes stay in the project's local `memory.db`, so every command keeps
 working offline and the team server is a converging replica rather than the
 store of record. Because reads never block on the network, local results can
-be ahead of or behind the server. `spelunk status` prints the active mode (a
-neutral one-word `mode` line) so it is clear which store you are reading. Use
-`spelunk sync` (or the one-way `spelunk memory push` / `spelunk memory pull`)
-to exchange entries with the server when you want to reconcile the two.
+be ahead of or behind the server. A write commits locally and returns
+immediately, with no network call in the write's own path; it queues in a
+local outbox (the same
+`memory.db` rows, not a separate table) until a background reconciler drains
+it. From an interactive terminal session, the write opportunistically starts
+(or reuses) a local `spelunk-server` and hands it the outbox to push; that
+same background process also holds a live pull connection to the team server,
+so entries recorded elsewhere on the team tend to show up locally without any
+explicit step. Non-interactive invocations (CI, scripts, git hooks) never
+auto-start a server: the write still commits and stays durably queued, and
+drains the next time an interactive session or an explicit trigger runs.
+
+Because of this, **you normally don't need to run `spelunk sync` by hand** in
+`local_first` mode; it now mostly matters for non-interactive contexts (a CI
+job that wants entries pushed before it exits) or when you want an immediate,
+synchronous push/pull rather than waiting on the background reconciler.
+`spelunk status` prints the active mode plus, when there's something to
+report, a pending-entry count and how long ago the local store last synced
+(for example `mode  local_first  ·  2 pending, last synced 4m ago`); a fresh
+or fully-drained project shows no extra clause. Use `spelunk sync` (or the
+one-way `spelunk memory push` / `spelunk memory pull`) whenever you want to
+force a synchronous reconcile with the server instead of waiting on the
+background drain.
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause

@@ -345,6 +345,17 @@ chunks and percentage; progress is shown as percentage of work done, measured by
 token weight. An incomplete status includes the `spelunk index .` resume command
 (or, when the embedder is unavailable, a pointer at the server logs instead).
 
+For a project in `local_first` mode (a team `server_url` configured, the
+default sync mode), the `mode` line also carries a quiet pending-entry count
+and last-synced freshness once there's something to report, for example
+`mode  local_first  ·  2 pending, last synced 4m ago`. A project with nothing
+pending and nothing synced yet shows no extra clause, and this line never
+suggests running `spelunk sync`: the background reconciler drains the queue
+on its own during interactive sessions (see [Team server and sync
+modes](memory.md#team-server-and-sync-modes)). `--format json` carries the
+same information as `sync_pending` / `sync_last_synced_at`, both `null`
+outside `local_first`.
+
 **Example:**
 
 ```bash
@@ -827,6 +838,14 @@ Two-way sync (shorthand for `spelunk memory sync`): push your local memory
 entries to the configured server **and** pull remote entries into the local
 `memory.db`, so a team converges on one shared memory. Code never leaves the
 machine; only memory does. Requires a configured `server_url`.
+
+Under the default `local_first` mode, a background reconciler already drains
+unpushed entries and pulls new ones during interactive sessions, so this
+command is no longer required in the normal day-to-day path: `spelunk
+status` shows what's still pending. Reach for `spelunk sync` when you want an
+immediate, synchronous reconcile instead of waiting on the background drain,
+or in a non-interactive context (CI, a script, a git hook) where the
+background reconciler never auto-starts.
 
 ```
 spelunk sync [--project <slug>] [--source <path>] [--include-archived]

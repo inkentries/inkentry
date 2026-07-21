@@ -11,6 +11,28 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`local_first` writes now queue and drain automatically; you no longer
+  need to run `spelunk sync` by hand in the normal path.** A write (`memory
+  add`/`archive`/`supersede`) with a team `server_url` configured still
+  commits to `memory.db` and returns immediately with no network call in its
+  own path, exactly as before. What's new is what happens next: the entry sits
+  in a local outbox (still just the same `memory.db` rows, no new table) until
+  a background reconciler drains it. From an interactive terminal session, the
+  write opportunistically starts (or reuses) the local `spelunk-server` and
+  hands it the outbox to push; that process also holds a live pull connection
+  to the team server, so entries recorded elsewhere on the team tend to show
+  up locally without an explicit `spelunk sync`. Non-interactive invocations
+  (CI, scripts, git hooks) never auto-start a server: the write still commits
+  and stays durably queued, and drains on the next interactive session or
+  explicit trigger. `spelunk status` now shows a quiet pending-entry count and
+  last-synced freshness for `local_first` projects (for example `mode
+  local_first  ·  2 pending, last synced 4m ago`; nothing extra when there's
+  nothing to report), in text and `--format json` (`sync_pending` /
+  `sync_last_synced_at`). `spelunk sync` and the one-way `memory push` /
+  `memory pull` still work unchanged for a forced, synchronous reconcile or a
+  non-interactive context. See [Team server and sync
+  modes](docs/memory.md#team-server-and-sync-modes).
+
 - **`spelunk memory dedupe` collapses duplicate-`entity_id` groups already
   resident in a project's `memory.db`.** A store can already hold rows that
   share the same content identity (`kind`/`title`/`body`) while differing in
