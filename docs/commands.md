@@ -803,7 +803,12 @@ automatically; use `spelunk memory dedupe` to do that explicitly (see
 Once a store's duplicates are cleared and its `entity_id` index is promoted to
 UNIQUE, a plain `memory add` for byte-identical content no longer errors: it
 reuses the existing entry and prints `Already recorded as ...` instead of
-`Stored ...`.
+`Stored ...`. The same reuse applies to `spelunk sync` / `spelunk memory pull`:
+a pulled entry matching an existing local row's identity merges into that row
+(adopting the remote id, archiving it if the pulled entry is archived) instead
+of adding a duplicate, so the printed pull count reflects only genuinely new
+rows. Pre-promotion, a pull can still add a distinct row alongside matching
+local content, same as `memory add`.
 
 ---
 
