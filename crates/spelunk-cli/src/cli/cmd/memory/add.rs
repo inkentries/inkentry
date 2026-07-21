@@ -115,7 +115,9 @@ pub(super) async fn memory_add(
     let mut old_note_for_carrier = None;
     if let Some(old_id) = args.supersedes {
         let old = if pre_init_notes {
-            GitNotesBackend::new().get(old_id).await?
+            GitNotesBackend::with_root(project_root.to_path_buf())
+                .get(old_id)
+                .await?
         } else {
             let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
             let old = backend.get(old_id).await?;
@@ -190,9 +192,8 @@ pub(super) async fn memory_add(
             entity_id: Some(new_entity_id.clone()),
             superseded_by_entity_id: None,
         };
-        // Use process CWD (None) — the CLI is always run from the project root.
         // Secret scan already ran above; no second check needed here.
-        match append_to_git_notes(None, &record).await {
+        match append_to_git_notes(Some(project_root), &record).await {
             Ok(outcome) => {
                 // Visible without RUST_LOG: an unserialized write can lose a
                 // concurrent entry, and this is the only channel that reaches
@@ -247,9 +248,14 @@ pub(super) async fn memory_add(
         if let Some(old_note) = old_note_for_carrier {
             let old_id = old_note.id;
             let invalid_at = old_note.invalid_at.or_else(|| Some(now_secs()));
-            if let Err(e) =
-                append_state_update(None, &old_note, "archived", invalid_at, Some(new_entity_id))
-                    .await
+            if let Err(e) = append_state_update(
+                Some(project_root),
+                &old_note,
+                "archived",
+                invalid_at,
+                Some(new_entity_id),
+            )
+            .await
             {
                 eprintln!(
                     "Warning: entry stored locally, but carrying #{old_id}'s \
