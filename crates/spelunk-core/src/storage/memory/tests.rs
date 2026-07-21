@@ -357,6 +357,299 @@ fn apply_remote_note_tombstone_archives_existing() {
     assert_eq!(store.get(local_id).unwrap().unwrap().status, "archived");
 }
 
+// ── apply_remote_note: entity_id + collision recovery ──────────────────────
+// A fresh :memory: store (via open_store) has zero rows at construction, so
+// `MemoryStore::open`'s Step B promotes idx_notes_entity_id to UNIQUE
+// immediately; every test below runs against an already-promoted index
+// unless it explicitly drops back to a plain index to exercise criterion 8.
+
+fn drop_entity_id_unique_constraint(store: &MemoryStore) {
+    store
+        .conn
+        .execute_batch(
+            "DROP INDEX idx_notes_entity_id; \
+             CREATE INDEX idx_notes_entity_id ON notes(entity_id) WHERE entity_id IS NOT NULL;",
+        )
+        .unwrap();
+}
+
+#[test]
+fn apply_remote_note_sets_entity_id_on_fresh_insert() {
+    let store = open_store();
+    let remote_id = "01890000-0000-7000-8000-000000000010";
+
+    let inserted = store
+        .apply_remote_note(
+            remote_id,
+            "decision",
+            "Fresh",
+            "body",
+            None,
+            1_700_000_000,
+            false,
+        )
+        .unwrap();
+    assert!(inserted, "criterion 1: no collision, fresh row inserts");
+
+    let local_id = store.note_id_for_remote_id(remote_id).unwrap().unwrap();
+    let stored_eid: Option<String> = store
+        .conn
+        .query_row(
+            "SELECT entity_id FROM notes WHERE id = ?1",
+            rusqlite::params![local_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_eid,
+        Some(crate::storage::entity_id::entity_id(
+            "decision", "Fresh", "body"
+        )),
+        "criterion 1: entity_id must be populated at insert time"
+    );
+}
+
+#[test]
+fn apply_remote_note_recovers_from_collision_and_adopts_remote_id() {
+    let store = open_store();
+    let (existing_id, _) = store
+        .add_note(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+    let remote_id = "01890000-0000-7000-8000-000000000011";
+    let inserted = store
+        .apply_remote_note(
+            remote_id,
+            "decision",
+            "dup entry",
+            "same content",
+            None,
+            1_700_000_000,
+            false,
+        )
+        .unwrap();
+    assert!(
+        !inserted,
+        "criterion 3: a colliding pull must report false, not a fresh insert"
+    );
+    assert_eq!(
+        store.count().unwrap(),
+        1,
+        "criterion 3: the collision must not create a second row"
+    );
+    assert_eq!(
+        store.note_id_for_remote_id(remote_id).unwrap(),
+        Some(existing_id),
+        "criterion 3: the existing row must adopt the pulled remote_id"
+    );
+}
+
+#[test]
+fn apply_remote_note_collision_with_existing_remote_id_leaves_it_unchanged() {
+    let store = open_store();
+    let (existing_id, _) = store
+        .add_note(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+    let own_remote_id = "01890000-0000-7000-8000-000000000012";
+    store.set_remote_id(existing_id, own_remote_id).unwrap();
+
+    let pulled_remote_id = "01890000-0000-7000-8000-000000000013";
+    let inserted = store
+        .apply_remote_note(
+            pulled_remote_id,
+            "decision",
+            "dup entry",
+            "same content",
+            None,
+            1_700_000_000,
+            false,
+        )
+        .unwrap();
+    assert!(
+        !inserted,
+        "criterion 4: still a collision, not a fresh insert"
+    );
+    assert_eq!(
+        store.count().unwrap(),
+        1,
+        "criterion 4: no second row from the collision"
+    );
+    assert_eq!(
+        store.note_id_for_remote_id(own_remote_id).unwrap(),
+        Some(existing_id),
+        "criterion 4: the row's own remote_id must be left untouched"
+    );
+    assert_eq!(
+        store.note_id_for_remote_id(pulled_remote_id).unwrap(),
+        None,
+        "criterion 4: the pulled remote_id must not be stored anywhere locally"
+    );
+}
+
+#[test]
+fn apply_remote_note_collision_and_archived_pull_archives_existing_row() {
+    let store = open_store();
+    let (existing_id, _) = store
+        .add_note(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(store.get(existing_id).unwrap().unwrap().status, "active");
+
+    let remote_id = "01890000-0000-7000-8000-000000000014";
+    store
+        .apply_remote_note(
+            remote_id,
+            "decision",
+            "dup entry",
+            "same content",
+            None,
+            1_700_000_000,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store.get(existing_id).unwrap().unwrap().status,
+        "archived",
+        "criterion 5: an archived pull must archive the reused existing row"
+    );
+}
+
+#[test]
+fn apply_remote_note_collision_non_archived_pull_does_not_unarchive_existing() {
+    let store = open_store();
+    let (existing_id, _) = store
+        .add_note_with_created_at(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            "archived",
+            1_700_000_000,
+        )
+        .unwrap();
+    assert_eq!(store.get(existing_id).unwrap().unwrap().status, "archived");
+
+    let remote_id = "01890000-0000-7000-8000-000000000015";
+    store
+        .apply_remote_note(
+            remote_id,
+            "decision",
+            "dup entry",
+            "same content",
+            None,
+            1_700_000_000,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(
+        store.get(existing_id).unwrap().unwrap().status,
+        "archived",
+        "criterion 6: a non-archived pull must never revert an archived row to active"
+    );
+}
+
+#[test]
+fn apply_remote_note_before_promotion_still_inserts_distinct_row() {
+    let store = open_store();
+    drop_entity_id_unique_constraint(&store);
+
+    store
+        .add_note(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+    let remote_id = "01890000-0000-7000-8000-000000000016";
+    let inserted = store
+        .apply_remote_note(
+            remote_id,
+            "decision",
+            "dup entry",
+            "same content",
+            None,
+            1_700_000_000,
+            false,
+        )
+        .unwrap();
+    assert!(
+        inserted,
+        "criterion 8: pre-promotion, a pulled note must still land as a \
+         distinct row alongside matching content"
+    );
+    assert_eq!(store.count().unwrap(), 2);
+}
+
+#[test]
+fn apply_remote_note_other_insert_error_propagates_and_rolls_back() {
+    let store = open_store();
+    store
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER reject_specific_title
+             BEFORE INSERT ON notes
+             WHEN NEW.title = 'trigger-reject'
+             BEGIN SELECT RAISE(ABORT, 'synthetic non-unique failure'); END;",
+        )
+        .unwrap();
+
+    let result = store.apply_remote_note(
+        "01890000-0000-7000-8000-000000000017",
+        "note",
+        "trigger-reject",
+        "body",
+        None,
+        1_700_000_000,
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "criterion 9: a non-UNIQUE error must propagate, not be swallowed"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("synthetic non-unique failure"),
+        "expected the synthetic trigger error to propagate verbatim, got: {msg}"
+    );
+    assert_eq!(
+        store.count().unwrap(),
+        0,
+        "criterion 7: the failed transaction must roll back, no orphaned row left behind"
+    );
+}
+
 #[test]
 fn max_remote_id_is_the_pull_cursor() {
     let store = open_store();
