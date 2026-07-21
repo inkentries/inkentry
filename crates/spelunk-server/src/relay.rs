@@ -784,6 +784,92 @@ mod tests {
         assert_eq!(registry.session_count().await, 2);
     }
 
+    // ── item 22: no cross-project SSE/pull leakage ──────────────────────────
+    // Two projects on the SAME team server: a note pushed to one must never
+    // appear in the other's pulled buffer. `RelayKey` is `(server_url,
+    // project_id)`, so distinct project ids always get distinct sessions with
+    // independent cursors/buffers; this pins that at the observable
+    // push+pull level rather than trusting the key type alone.
+
+    #[tokio::test]
+    async fn pulled_rows_never_leak_across_projects_on_the_same_team_server() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj-x/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": "ex", "id": "cloud-x"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj-x/memory/since"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entries": [{
+                    "id": "01890000-0000-7000-8000-0000000000x1",
+                    "kind": "note", "title": "X-only", "body": "b",
+                    "created_at": "2026-06-19T01:00:00Z"
+                }],
+                "count": 1
+            })))
+            .mount(&server)
+            .await;
+        // proj-y's own /memory/since must never see proj-x's entry (a distinct
+        // mock, scoped to a different path, proves the request itself is
+        // correctly project-scoped, not just that this mock happens to return
+        // nothing).
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj-y/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+            )
+            .mount(&server)
+            .await;
+
+        let registry = RelayRegistry::new();
+        registry
+            .push(RelayPushRequest {
+                server_url: server.uri(),
+                project_id: "proj-x".to_string(),
+                bearer: None,
+                since_cursor: None,
+                entries: vec![entry("ex")],
+            })
+            .await
+            .unwrap();
+        registry
+            .push(RelayPushRequest {
+                server_url: server.uri(),
+                project_id: "proj-y".to_string(),
+                bearer: None,
+                since_cursor: None,
+                entries: vec![],
+            })
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut x = RelayPollResponse::default();
+        while std::time::Instant::now() < deadline {
+            x = registry.poll(&server.uri(), "proj-x").await;
+            if !x.pulled.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(x.pulled.len(), 1, "proj-x must see its own entry");
+        assert_eq!(x.pulled[0].title, "X-only");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let y = registry.poll(&server.uri(), "proj-y").await;
+        assert!(
+            y.pulled.is_empty(),
+            "proj-y must never see proj-x's pulled entry: {:?}",
+            y.pulled
+        );
+    }
+
     // ── item 13: the reconciler never opens a project's memory.db ──────────
     //
     // Every public entry point on `RelayRegistry` (`push`, `poll`) takes only
