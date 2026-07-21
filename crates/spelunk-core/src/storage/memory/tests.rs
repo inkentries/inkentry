@@ -568,6 +568,22 @@ fn apply_remote_note_collision_non_archived_pull_does_not_unarchive_existing() {
         )
         .unwrap();
 
+    // Without these two, the assertion below passes trivially even when the
+    // pulled note lands as a distinct second row (never touching existing_id
+    // at all), so it would not actually catch a collision-recovery regression.
+    let total_rows: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        total_rows, 1,
+        "criterion 6: must be a collision recovery, not a second distinct row"
+    );
+    assert_eq!(
+        store.note_id_for_remote_id(remote_id).unwrap(),
+        Some(existing_id),
+        "criterion 6: the pulled remote_id must be adopted onto the existing row"
+    );
     assert_eq!(
         store.get(existing_id).unwrap().unwrap().status,
         "archived",
@@ -647,6 +663,65 @@ fn apply_remote_note_other_insert_error_propagates_and_rolls_back() {
         store.count().unwrap(),
         0,
         "criterion 7: the failed transaction must roll back, no orphaned row left behind"
+    );
+}
+
+// The existing rollback test above only forces a failure at the INSERT
+// itself, which every prior insert path already rolled back on trivially
+// (a single failed statement leaves nothing behind, transaction or not).
+// This forces the failure one step later, inside set_remote_id's UPDATE
+// after collision recovery already succeeded, to prove the BEGIN/COMMIT
+// wrapping is doing real work for criterion 7's "partway through" case.
+#[test]
+fn apply_remote_note_failure_after_collision_recovery_rolls_back() {
+    let store = open_store();
+    let (existing_id, _) = store
+        .add_note(
+            "decision",
+            "dup entry",
+            "same content",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+    store
+        .conn
+        .execute_batch(
+            "CREATE TRIGGER reject_remote_id_update
+             BEFORE UPDATE OF remote_id ON notes
+             BEGIN SELECT RAISE(ABORT, 'synthetic post-recovery failure'); END;",
+        )
+        .unwrap();
+
+    let remote_id = "01890000-0000-7000-8000-000000000099";
+    let result = store.apply_remote_note(
+        remote_id,
+        "decision",
+        "dup entry",
+        "same content",
+        None,
+        1_700_000_000,
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "criterion 7: a failure in set_remote_id after recovery must propagate: {result:?}"
+    );
+    assert_eq!(
+        store.note_id_for_remote_id(remote_id).unwrap(),
+        None,
+        "criterion 7: remote_id must not be adopted when the transaction rolled back"
+    );
+    let total_rows: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        total_rows, 1,
+        "criterion 7: no orphan row from the aborted transaction; existing_id={existing_id}"
     );
 }
 
