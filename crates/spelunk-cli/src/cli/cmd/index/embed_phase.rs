@@ -1444,6 +1444,52 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn embed_one_batch_classifies_dual_connect_and_timeout_flags_as_connect_failure() {
+        // The `is_connect()`-before-`is_timeout()` ordering matters only when
+        // a single reqwest::Error satisfies both predicates at once. Verified
+        // empirically (not just by reading reqwest's source): a
+        // `connect_timeout` that elapses while the OS is still trying to
+        // reach an unresponsive host produces exactly that dual-flagged
+        // error, since reqwest's own connect-attempt timeout marker gets
+        // wrapped inside the connect-phase error hyper reports.
+        //
+        // 192.0.2.1 is RFC 5737 TEST-NET-1: reserved for documentation, never
+        // assigned or routed on the public internet, so the connection
+        // attempt is silently dropped rather than instantly refused, giving
+        // the client's `connect_timeout` time to elapse first. Bounded to
+        // under a second by that same `connect_timeout`, so this stays fast
+        // and deterministic without depending on a controllable server.
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(300))
+            .build()
+            .unwrap();
+        let url = "http://192.0.2.1:81/v1/projects/x/index/embed";
+
+        let result = embed_one_batch(
+            &client,
+            url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::ConnectFailure(_)) => {}
+            Err(EmbedBatchError::BudgetExceeded(e)) => panic!(
+                "a connect-phase timeout must classify as ConnectFailure, not \
+                 BudgetExceeded, even when the underlying error also satisfies \
+                 is_timeout(): {e:#}"
+            ),
+            Err(EmbedBatchError::Other(e)) => {
+                panic!("a connect-phase timeout must classify as ConnectFailure, not Other: {e:#}")
+            }
+            Ok(_) => panic!("192.0.2.1 must never actually accept a connection"),
+        }
+    }
+
     /// Insert `n` chunks into a fresh in-memory DB and return it plus their ids.
     fn seed_chunks(n: usize) -> (Database, Vec<i64>) {
         register_sqlite_vec();
