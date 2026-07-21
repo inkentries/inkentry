@@ -41,6 +41,22 @@ const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Headroom multiple over a batch's expected duration when deriving its timeout.
 const TIMEOUT_SAFETY_FACTOR: u32 = 4;
 
+/// Backoff sleep before each connect-failure retry (index 0 = the first
+/// retry after the initial attempt), in order. A connect failure (the server
+/// isn't accepting connections at all) carries no signal about batch sizing
+/// or embedding throughput, unlike `BudgetExceeded`, so the response is a
+/// bounded retry at the *same* batch size with this backoff, never a shrink.
+/// The schedule's length doubles as the retry bound: once exhausted, the
+/// batch is abandoned via `report_embed_failure` like any other
+/// unrecoverable failure.
+const CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(45),
+    Duration::from_secs(90),
+    Duration::from_secs(180),
+];
+
 /// Effective ceiling the calibrated batch size may grow to: `--batch-size`
 /// (0 → `DEFAULT_BATCH_CEILING`) clamped to `MAX_BATCH` and, when advertised,
 /// the server's own `max_batch_chunks` (413 above it). Only an upper bound —
@@ -329,6 +345,35 @@ pub(super) async fn run_embed_phase(
     batch_size: usize,
     mp: &MultiProgress,
 ) -> Result<u64> {
+    run_embed_phase_with_backoff(
+        chunk_ids_and_texts,
+        db,
+        cfg,
+        tier,
+        project_root,
+        batch_size,
+        mp,
+        &CONNECT_FAILURE_BACKOFFS,
+    )
+    .await
+}
+
+/// Same as [`run_embed_phase`], but with the connect-failure retry backoff
+/// schedule injected instead of hard-coded to `CONNECT_FAILURE_BACKOFFS`.
+/// Exists so tests can exercise the exhausted-retries path on a
+/// millisecond-scale schedule instead of waiting through the production
+/// schedule's several minutes of real sleeping.
+#[allow(clippy::too_many_arguments)]
+async fn run_embed_phase_with_backoff(
+    chunk_ids_and_texts: Vec<(i64, String, usize)>,
+    db: &Database,
+    cfg: &Config,
+    tier: &Tier,
+    project_root: &std::path::Path,
+    batch_size: usize,
+    mp: &MultiProgress,
+    connect_failure_backoffs: &[Duration],
+) -> Result<u64> {
     let (server_url, server_key) = match tier {
         Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
         Tier::Offline => return Ok(0),
@@ -441,8 +486,11 @@ pub(super) async fn run_embed_phase(
 
         // Retry loop for THIS batch: a 408/timeout is recoverable — escalate
         // patience (calibration batch 1, no rate estimate yet) or shrink and
-        // retry, rather than aborting at 0 embedded. Any other failure aborts.
+        // retry, rather than aborting at 0 embedded. A connect failure is
+        // also recoverable, but via a bounded backoff retry at the same size
+        // (see the `ConnectFailure` arm below). Any other failure aborts.
         let mut escalated_calibration_once = false;
+        let mut connect_failures = 0usize;
         let bytes = 'retry: loop {
             let batch_tokens: u64 = chunk_ids_and_texts[cursor..cursor + this_batch_size]
                 .iter()
@@ -536,6 +584,28 @@ pub(super) async fn run_embed_phase(
                     this_batch_size = shrunk;
                     continue 'retry;
                 }
+                Err(EmbedBatchError::ConnectFailure(e)) => {
+                    // The server isn't reachable at all: no batch size fixes
+                    // that, and folding this attempt's elapsed time into
+                    // `rate` would poison sizing/timeout decisions for every
+                    // batch after it with a duration that measured nothing
+                    // about embedding throughput. Retry the same size with
+                    // backoff instead of shrinking.
+                    if connect_failures >= connect_failure_backoffs.len() {
+                        report_embed_failure(&bar, embedded, total, &server_url, e);
+                        return Ok(embedded);
+                    }
+                    let backoff = connect_failure_backoffs[connect_failures];
+                    connect_failures += 1;
+                    tracing::warn!(
+                        "index/embed: could not connect to {server_url} (attempt \
+                         {connect_failures}/{}) — retrying the same batch of \
+                         {this_batch_size} chunk(s) in {backoff:?}: {e:#}",
+                        connect_failure_backoffs.len(),
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue 'retry;
+                }
                 Err(EmbedBatchError::Other(e)) => {
                     // Any other failure: prior batches stay committed and a
                     // re-run backfills the rest. Report and stop rather than
@@ -590,12 +660,18 @@ pub(super) async fn run_embed_phase(
 }
 
 /// An `embed_one_batch` failure, distinguishing "the request budget was too
-/// small for this batch" (408, or a client-side timeout expiring first) from
-/// every other failure — only the former is worth shrinking and retrying (see
-/// `run_embed_phase`).
+/// small for this batch" (408, or a client-side timeout expiring first) and
+/// "the server wasn't reachable at all" (a TCP connect-phase failure) from
+/// every other failure — the first is worth shrinking and retrying, the
+/// second worth retrying at the same size, see `run_embed_phase`.
 enum EmbedBatchError {
-    /// Server returned 408, or the client-side `timeout` elapsed first.
+    /// Server returned 408, or the client-side `timeout` elapsed after a
+    /// connection was established.
     BudgetExceeded(anyhow::Error),
+    /// The client could not open a TCP connection to the server at all (see
+    /// `reqwest::Error::is_connect`): the server is unreachable, which says
+    /// nothing about whether this batch's size is appropriate.
+    ConnectFailure(anyhow::Error),
     /// Any other failure (network error, non-408 status, malformed body).
     Other(anyhow::Error),
 }
@@ -603,7 +679,8 @@ enum EmbedBatchError {
 /// Send one embed batch and return the raw little-endian f32 response bytes: one
 /// `EMBEDDING_DIM`-float vector per chunk, in request order. Applies a
 /// per-request `timeout` (see `batch_timeout`) and validates the response length.
-/// Distinguishes a 408/timeout from other failures — see [`EmbedBatchError`].
+/// Distinguishes a 408/timeout, a connect failure, and other failures — see
+/// [`EmbedBatchError`].
 async fn embed_one_batch(
     client: &reqwest::Client,
     url: &str,
@@ -620,6 +697,16 @@ async fn embed_one_batch(
     let send_result = req.send().await;
     let resp = match send_result {
         Ok(resp) => resp,
+        // Checked before `is_timeout()`: a connect-phase failure whose
+        // underlying OS error is itself a timeout (e.g. macOS's "Operation
+        // timed out (os error 60)") satisfies BOTH predicates, and only the
+        // connect classification is correct here.
+        Err(e) if e.is_connect() => {
+            return Err(EmbedBatchError::ConnectFailure(
+                anyhow::Error::new(e)
+                    .context(format!("calling {url} (could not connect to the server)")),
+            ));
+        }
         Err(e) if e.is_timeout() => {
             return Err(EmbedBatchError::BudgetExceeded(
                 anyhow::Error::new(e).context(format!(
@@ -967,6 +1054,22 @@ mod tests {
         assert!(heavy > light);
     }
 
+    // ── CONNECT_FAILURE_BACKOFFS: schedule for the connect-failure retry ────
+
+    #[test]
+    fn connect_failure_backoffs_is_the_documented_schedule() {
+        assert_eq!(
+            CONNECT_FAILURE_BACKOFFS,
+            [
+                Duration::from_secs(5),
+                Duration::from_secs(15),
+                Duration::from_secs(45),
+                Duration::from_secs(90),
+                Duration::from_secs(180),
+            ]
+        );
+    }
+
     // ── RateEstimate: continuously re-estimate the per-token rate ───────────
 
     #[test]
@@ -1052,6 +1155,35 @@ mod tests {
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(1), 0);
         assert!(r.per_token().is_none());
+    }
+
+    #[test]
+    fn rate_estimate_ignores_connect_failure_attempts() {
+        // `run_embed_phase`'s `ConnectFailure` arm must never call
+        // `RateEstimate::update` (unlike the `BudgetExceeded` shrink arm,
+        // which deliberately folds in a pessimistic sample): a connect
+        // failure carries no signal about embedding throughput. Simulate the
+        // sequence a connect-failure-then-success batch produces (no
+        // `update()` call for the failed attempts) and confirm the estimate
+        // reflects only the two REAL samples, matching the same de-weighted
+        // blend as `rate_estimate_deweights_the_batch_1_cold_sample_on_second_observation`.
+        let mut r = RateEstimate::new();
+        r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/token
+        // Any number of connect-failure retries would occur here in
+        // `run_embed_phase`, contributing no `update` call.
+        r.update(Duration::from_secs(4), 4); // batch 2, after the retries: 1s/token
+        let blended = r.per_token().unwrap();
+        // 10*0.1 + 1*0.9 = 1.9s/token: if a connect failure had folded in a
+        // bogus sample, this would be a 50/50 (or 3-way) blend instead.
+        assert!(
+            (blended.as_secs_f64() - 1.9).abs() < 1e-9,
+            "connect-failure retries must not fold a bogus sample into the rate estimate: \
+             expected the plain 2-real-sample blend 1.9s/token, got {blended:?}"
+        );
+        assert_eq!(
+            r.samples_seen, 2,
+            "only the two real batches count as samples, not any connect-failure attempt"
+        );
     }
 
     // ── pct + token-weighted progress: work fraction ≠ chunk fraction ───────
@@ -1232,6 +1364,83 @@ mod tests {
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/octet-stream")
                 .set_body_bytes(bytes)
+        }
+    }
+
+    // ── embed_one_batch: connect-phase failure classification ───────────────
+
+    #[tokio::test]
+    async fn embed_one_batch_classifies_a_refused_connection_as_connect_failure() {
+        // Reserve a port, then release it without ever listening again: a
+        // connection attempt fails at the OS connect phase (refused), exactly
+        // like the field failure's "server not accepting connections" — the
+        // one difference being this fails instantly instead of after a long
+        // client-side timeout, which is what makes it fast to test.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/v1/projects/x/index/embed");
+
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::ConnectFailure(_)) => {}
+            Err(EmbedBatchError::BudgetExceeded(e)) => panic!(
+                "a refused connection must classify as ConnectFailure, not BudgetExceeded: {e:#}"
+            ),
+            Err(EmbedBatchError::Other(e)) => {
+                panic!("a refused connection must classify as ConnectFailure, not Other: {e:#}")
+            }
+            Ok(_) => panic!("connecting to a released, unlistened port must fail"),
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_one_batch_still_classifies_a_slow_connected_server_as_budget_exceeded() {
+        // Regression guard: a server that IS reachable but responds slower
+        // than the per-request timeout must still classify as
+        // `BudgetExceeded` — the new `is_connect()` check must not swallow a
+        // real request/response timeout.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(300)))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::BudgetExceeded(_)) => {}
+            Err(EmbedBatchError::ConnectFailure(e)) => panic!(
+                "a slow-but-connected server must classify as BudgetExceeded, not \
+                 ConnectFailure: {e:#}"
+            ),
+            Err(EmbedBatchError::Other(e)) => panic!(
+                "a slow-but-connected server must classify as BudgetExceeded, not Other: {e:#}"
+            ),
+            Ok(_) => panic!("a response delayed past the timeout must fail"),
         }
     }
 
@@ -1679,6 +1888,124 @@ mod tests {
              a batch larger than the server-advertised max_batch_chunks"
         );
         assert_eq!(db.stats().unwrap().embedding_count, 30);
+    }
+
+    // ── connect-failure retry behaviour (server unreachable, not just slow) ──
+    //
+    // These drive `run_embed_phase_with_backoff` with a millisecond-scale
+    // backoff schedule instead of the production `CONNECT_FAILURE_BACKOFFS`
+    // (which sums to several minutes): real (unpaused) time, kept fast by
+    // shrinking the schedule rather than by faking the clock. `tokio::time`
+    // paused-time auto-advance was tried here first and discarded — it races
+    // against the real OS-level TCP connect-refusal this test relies on, and
+    // in that race the client's own request `.timeout()` can fire first,
+    // misclassifying the failure as `BudgetExceeded` instead of exercising
+    // the `ConnectFailure` path under test.
+    const FAST_CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    ];
+
+    #[tokio::test]
+    async fn connect_failure_retries_same_batch_size_then_succeeds() {
+        // Reserve an address, release it, then start a real mock server on
+        // the SAME address partway through the retry backoff schedule: the
+        // first couple of attempts hit connect-refused, then the batch
+        // succeeds once the server starts listening — at the SAME batch size
+        // throughout (the retry loop never shrinks on a `ConnectFailure`).
+        //
+        // The spawned task's delay (150ms) is chosen to land strictly
+        // between the first backoff (100ms) and the cumulative second
+        // backoff (100ms+100ms = 200ms), so the mock deterministically starts
+        // listening after exactly two connect failures, before the third
+        // attempt fires.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let listener = std::net::TcpListener::bind(addr).expect("reclaim the released address");
+            let mock = MockServer::builder().listener(listener).start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+                .respond_with(OkEmbedResponder)
+                .mount(&mock)
+                .await;
+            // Keep the mock server alive for the rest of the test.
+            std::future::pending::<()>().await
+        });
+
+        let (db, ids) = seed_chunks(6);
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+
+        let cfg = Config::default();
+        let tier = server_tier(format!("http://{addr}"));
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase_with_backoff(
+            chunk_ids_and_texts,
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            64,
+            &mp,
+            &FAST_CONNECT_FAILURE_BACKOFFS,
+        )
+        .await
+        .expect("connect failures must be retried, not fatal, once the server starts listening");
+
+        assert_eq!(
+            embedded, 6,
+            "every chunk embeds once the connect failures stop"
+        );
+        assert_eq!(db.stats().unwrap().embedding_count, 6);
+    }
+
+    #[tokio::test]
+    async fn connect_failure_exhausts_retries_and_stops_gracefully() {
+        // A server that never accepts connections: after the bounded number
+        // of connect-failure retries, the run must give up gracefully (Ok,
+        // not Err, not a hang) rather than retrying forever.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (db, ids) = seed_chunks(3);
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+
+        let cfg = Config::default();
+        let tier = server_tier(format!("http://{addr}"));
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase_with_backoff(
+            chunk_ids_and_texts,
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            64,
+            &mp,
+            &FAST_CONNECT_FAILURE_BACKOFFS,
+        )
+        .await
+        .expect("must return Ok(embedded), never Err or hang, once retries are exhausted");
+
+        assert_eq!(
+            embedded, 0,
+            "nothing embeds when the server is never reachable"
+        );
+        assert_eq!(db.stats().unwrap().embedding_count, 0);
     }
 
     // ── resume after an interrupted run (ADR-070 D2: per-batch granularity) ──
