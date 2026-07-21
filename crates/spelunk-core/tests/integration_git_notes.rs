@@ -771,7 +771,7 @@ async fn git_notes_backend_archive_appends_never_rewrites() {
     let root = dir.path();
     let backend = GitNotesBackend::with_root(root.to_path_buf());
 
-    let id = backend
+    let (id, _created) = backend
         .add(note_input("decision", "archive me"))
         .await
         .expect("add");
@@ -828,7 +828,7 @@ async fn git_notes_backend_archive_twice_is_idempotent() {
     let root = dir.path();
     let backend = GitNotesBackend::with_root(root.to_path_buf());
 
-    let id = backend
+    let (id, _created) = backend
         .add(note_input("decision", "archive me twice"))
         .await
         .expect("add");
