@@ -207,11 +207,12 @@ project here` error instead of using a machine-global store. From inside your
 project you can:
 
 ```bash
-# Trace callers and callees for any symbol
-spelunk graph validate_token
-
-# Full-text search
+# Find the code behind a concept: search takes any phrase, no symbol name needed
 spelunk search "error handling" --mode text
+
+# Trace how a symbol connects. graph resolves an exact identifier (a real symbol
+# name, e.g. one you just saw in the search results above), not a concept phrase
+spelunk graph validate_token
 
 # Store a decision for your team
 spelunk memory add --kind decision \
@@ -263,24 +264,28 @@ spelunk hooks uninstall
 
 ## Capability tiers: where inference and memory live
 
-spelunk works at three tiers. You do not pick one by hand; spelunk uses the best
-one available and degrades cleanly when a server is not reachable. The
-load-bearing distinction is that a **local server does inference only and never
-stores memory**. Your memory always lives in the project's local `memory.db`
-until you *explicitly* configure a team server.
+spelunk works at three tiers; the team-memory tier can be a server you host
+yourself or the managed spelunk.cloud, shown as separate rows below. You do not
+pick one by hand; spelunk uses the best one available and degrades cleanly when a
+server is not reachable. The load-bearing distinction is that a **local server
+does inference only and never stores memory**. Your memory always lives in the
+project's local `memory.db` until you *explicitly* configure a team server or use
+the managed spelunk.cloud.
 
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
 | **Built-in** (zero infra) | just the `spelunk` binary | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
 | **Local semantic server** | a loopback `spelunk-server`, auto-started on demand | semantic / hybrid `search`, `explore`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
-| **Team memory server** | a shared `spelunk-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server, the **only** way memory leaves your machine |
+| **Team memory server** | a shared `spelunk-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
+| **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
 
 Built-in works with nothing installed but the binary (the always-available
 commands in section 3). The local semantic server is auto-discovered on loopback
 (`127.0.0.1`) and started for you the first time a command needs it; it embeds
 queries and runs LLM calls, but a project's memory stays in `memory.db`
 regardless of whether it is running. Memory moves off the local machine only when
-you set an explicit team `server_url` (see
+you point at a team server, self-hosted via an explicit `server_url` or the
+managed spelunk.cloud (see
 [Team setup](#team-setup-shared-memory-with-spelunk-server)); each developer's
 code still stays local.
 
