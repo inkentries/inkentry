@@ -398,3 +398,52 @@ fn write_still_commits_and_stays_outbox_pending_when_no_auto_start_happens() {
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
     assert!(parsed.as_array().is_some_and(|a| a.len() == 1));
 }
+
+// ── item 43: read-command convergence (`memory list`) never auto-starts ────
+//
+// items 42-47 extend the ADR-037 P2 relay poll to `memory list`/`search`/
+// `show`/`timeline`/`spelunk context` so live-pulled entries converge on
+// reads, not just `spelunk status`. Item 43 requires this to be strictly
+// poll-if-already-running: it must reuse `probe_local_relay_port` (a passive
+// check) exactly like `spelunk status` already does, never
+// `ensure_server_running`. `memory list` stands in for all five call sites
+// here since they all route through the same `outbox::poll_and_apply`.
+
+#[test]
+fn memory_list_never_auto_starts_the_local_server() {
+    let home = TempDir::new().unwrap().keep();
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mem_path = project.join("memory.db");
+    let config_path = home.join("config.toml");
+    std::fs::write(&config_path, "").unwrap();
+    write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
+
+    assert!(
+        !state_dir_under(&home).exists(),
+        "precondition: state dir must not exist before the read"
+    );
+
+    let out = spelunk_bin_in(&home)
+        .current_dir(&project)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["list", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        !state_dir_under(&home).exists(),
+        "`memory list`'s relay poll (items 42-47) must never auto-start the local \
+         server — it may only poll one that is already running: {}",
+        state_dir_under(&home).display()
+    );
+}

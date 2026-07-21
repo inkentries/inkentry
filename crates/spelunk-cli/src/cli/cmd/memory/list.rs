@@ -28,8 +28,18 @@ pub(super) async fn memory_list(
     };
 
     // Discovery nudge: warn once when unimported server.db notes exist.
+    // ADR-037 P2 (items 42-44): also apply whatever the local relay has
+    // buffered (push acks, pulled rows) so a teammate's live-pulled entry is
+    // visible here without an explicit `spelunk sync`. Best-effort, same
+    // convention as `nudge_after_write`: any failure/timeout is swallowed,
+    // never surfaced as a command error. Never triggers `ensure_server_running`
+    // (item 43) — polls an already-running relay only. Skipped on the
+    // git-notes/pre-init placeholder path, same gate as the nudge above:
+    // `poll_and_apply` opens `mem_path` as a real `memory.db`, which a
+    // placeholder path must never be.
     if !git_notes {
         super::reconcile::maybe_emit_nudge(mem_path, cfg);
+        super::outbox::poll_and_apply(cfg, mem_path).await;
     }
 
     let backend = open_memory_backend(cfg, mem_path, effective_override).await?;

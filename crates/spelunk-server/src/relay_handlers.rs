@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::relay::{RelayPollResponse, RelayPushRequest};
+use crate::relay::{RelayAckRequest, RelayPollResponse, RelayPushRequest};
 use crate::{AppError, AppState};
 
 /// `POST /local/relay/push` — see [`crate::relay::RelayRegistry::push`].
@@ -38,10 +38,31 @@ pub struct RelayPollQuery {
     pub project_id: String,
 }
 
-/// `GET /local/relay/poll` — see [`crate::relay::RelayRegistry::poll`].
+/// `GET /local/relay/poll` — see [`crate::relay::RelayRegistry::poll`]. A
+/// peek, not a drain: buffered entries stay until confirmed via
+/// `POST /local/relay/ack`.
 pub async fn relay_poll(
     State(state): State<AppState>,
     Query(q): Query<RelayPollQuery>,
 ) -> Json<RelayPollResponse> {
     Json(state.relay.poll(&q.server_url, &q.project_id).await)
+}
+
+/// `POST /local/relay/ack` — see [`crate::relay::RelayRegistry::ack`]. The
+/// CLI calls this after it has durably applied a poll's results locally;
+/// only the named entries are retired from the relay's buffer.
+pub async fn relay_ack(
+    State(state): State<AppState>,
+    Json(body): Json<RelayAckRequest>,
+) -> Response {
+    state
+        .relay
+        .ack(
+            &body.server_url,
+            &body.project_id,
+            &body.applied_push_external_ids,
+            &body.applied_pull_remote_ids,
+        )
+        .await;
+    (StatusCode::OK, Json(serde_json::json!({"acked": true}))).into_response()
 }

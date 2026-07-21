@@ -455,6 +455,7 @@ pub fn router_with_limits(
         // endpoint (item 39).
         .route("/local/relay/push", post(relay_handlers::relay_push))
         .route("/local/relay/poll", get(relay_handlers::relay_poll))
+        .route("/local/relay/ack", post(relay_handlers::relay_ack))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

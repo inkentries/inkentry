@@ -110,6 +110,20 @@ pub struct RelayPushRequest {
     pub entries: Vec<RelayPushEntry>,
 }
 
+/// Body of `POST /local/relay/ack`: the CLI confirming which polled entries
+/// it durably applied to `memory.db`, so the relay can retire exactly those
+/// and keep offering the rest on the next poll. See [`RelaySession::poll`]'s
+/// doc comment for why this handshake exists.
+#[derive(Debug, Deserialize)]
+pub struct RelayAckRequest {
+    pub server_url: String,
+    pub project_id: String,
+    #[serde(default)]
+    pub applied_push_external_ids: Vec<String>,
+    #[serde(default)]
+    pub applied_pull_remote_ids: Vec<String>,
+}
+
 /// Outcome of a relayed push, one per entry the team server affirmatively
 /// accepted or already had (never one it rejected — nothing here should be
 /// stamped onto a row that must remain retryable).
@@ -150,10 +164,13 @@ impl From<RemoteEntry> for RelayPulledEntry {
     }
 }
 
-/// Response body of `GET /local/relay/poll`. Draining (item 33: this state
-/// lives only in this long-running process, surviving any single CLI
-/// invocation) — a poll clears what it returns, so the CLI applying it
-/// exactly once is the contract.
+/// Response body of `GET /local/relay/poll` (item 33: this state lives only
+/// in this long-running process, surviving any single CLI invocation). A
+/// poll is a **peek**, not a drain: the CLI applies the returned entries
+/// locally, then confirms which ones it actually applied via
+/// `POST /local/relay/ack` (see [`RelaySession::poll`] / [`RelaySession::ack`]).
+/// A crashed or failed apply between poll and ack simply sees the same
+/// entries again on the next poll.
 #[derive(Debug, Default, Serialize)]
 pub struct RelayPollResponse {
     pub push_results: Vec<RelayPushResult>,
@@ -161,6 +178,14 @@ pub struct RelayPollResponse {
     pub last_synced_at: Option<i64>,
     pub last_error: Option<String>,
 }
+
+/// Cap on buffered-but-unconfirmed push results / pulled entries per session.
+/// Same class of bound as [`MAX_SSE_BUFFER_BYTES`]: without one, a resident
+/// server relaying for an active team while the local CLI never polls (or
+/// polls but never confirms via [`RelaySession::ack`]) grows these without
+/// limit. The maps below dedupe by identity, so this bounds the number of
+/// distinct outstanding rows, not repeat re-fetches of the same one.
+const MAX_BUFFERED_ITEMS_PER_SESSION: usize = 10_000;
 
 #[derive(Default)]
 struct RelayInner {
@@ -170,7 +195,11 @@ struct RelayInner {
     /// documents). Restart-safe by construction: this lives only in process
     /// memory, and a fresh registration after a restart reseeds it from the
     /// CLI's own `max_remote_id()` (item 16) — nothing here is a source of
-    /// truth.
+    /// truth. Only ever advanced past an entry that made it into `pulled`
+    /// (see [`RelaySession::catch_up`]): advancing it past an entry dropped
+    /// for being over [`MAX_BUFFERED_ITEMS_PER_SESSION`] would make that
+    /// entry permanently unfetchable, the same class of loss this module's
+    /// ack handshake exists to close.
     cursor: Option<String>,
     /// SSE `id:` field, tracked for a warm reconnect resume (item 21) against
     /// a remote that sends one (cloud-api-style); this server's own
@@ -178,8 +207,14 @@ struct RelayInner {
     /// against an OSS team server and every reconnect is cold (falls back to
     /// `cursor`).
     last_event_id: Option<String>,
-    push_results: Vec<RelayPushResult>,
-    pulled: Vec<RelayPulledEntry>,
+    /// Keyed by `external_id`, not a `Vec`: dedupes repeated re-offers of the
+    /// same still-unstamped row (the CLI re-offers every unpushed row on
+    /// every nudge/poll registration until it is stamped) and gives
+    /// [`RelaySession::ack`] a targeted removal instead of a full clear.
+    push_results: HashMap<String, RelayPushResult>,
+    /// Keyed by `remote_id`. See [`RelaySession::poll`] / [`RelaySession::ack`]
+    /// for why this is no longer cleared on every poll.
+    pulled: HashMap<String, RelayPulledEntry>,
     last_synced_at: Option<i64>,
     last_error: Option<String>,
     pull_task_started: bool,
@@ -228,9 +263,29 @@ impl RelaySession {
         self.inner.lock().await.last_error = Some(msg);
     }
 
-    /// Drain `entries` to the team server via [`CloudSyncClient::push_batch`]
+    /// Push `entries` to the team server via [`CloudSyncClient::push_batch`]
     /// (item 12: reused, not reimplemented). Never stamps a result for an
-    /// item the server did not affirmatively accept.
+    /// item the server did not affirmatively accept. Buffered results are
+    /// keyed by `external_id` (dedupe: the CLI re-offers every still-unstamped
+    /// row on every registration, so a slow-to-be-applied earlier result must
+    /// not pile up duplicates) and are **not cleared here** — only
+    /// [`Self::ack`] retires a buffered result, once the CLI confirms it
+    /// durably applied it locally. This is the fix for the push-side half of
+    /// the destructive-drain data-loss bug: the old `drain`-on-poll contract
+    /// handed a result to the CLI and forgot it in the same call, so a local
+    /// `set_remote_id` failure after a successful poll permanently stranded
+    /// the row pending (a re-push of an already-persisted row comes back
+    /// `skipped`, which may carry no id to stamp with).
+    ///
+    /// A later result for an `external_id` already buffered never regresses
+    /// a known `remote_id` to `None`: since the row stays outbox-pending
+    /// (`remote_id IS NULL`) locally until it is actually stamped, the CLI
+    /// keeps re-offering it on every registration while an earlier result
+    /// sits unacked, and a real team server's idempotent dedupe answers a
+    /// repeat push with `skipped` — which may carry no id. Letting that
+    /// overwrite an earlier `created`/`skipped` result that DID carry an id
+    /// would reintroduce the exact "no id to stamp with" trap this buffer
+    /// retention is meant to close.
     async fn push(&self, entries: Vec<RelayPushEntry>) {
         if entries.is_empty() {
             return;
@@ -246,6 +301,7 @@ impl RelaySession {
         match client.push_batch(items).await {
             Ok(res) => {
                 let mut inner = self.inner.lock().await;
+                let mut buffer_full = false;
                 for r in res.results {
                     let Some(external_id) = r.external_id else {
                         continue;
@@ -254,14 +310,40 @@ impl RelaySession {
                     if !durably_persisted {
                         continue;
                     }
-                    inner.push_results.push(RelayPushResult {
-                        external_id,
-                        remote_id: r.id,
-                        status: r.status,
-                    });
+                    let at_capacity = inner.push_results.len() >= MAX_BUFFERED_ITEMS_PER_SESSION;
+                    match inner.push_results.entry(external_id.clone()) {
+                        std::collections::hash_map::Entry::Occupied(mut o) => {
+                            if r.id.is_some() || o.get().remote_id.is_none() {
+                                o.insert(RelayPushResult {
+                                    external_id,
+                                    remote_id: r.id,
+                                    status: r.status,
+                                });
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(v) => {
+                            if at_capacity {
+                                buffer_full = true;
+                                continue;
+                            }
+                            v.insert(RelayPushResult {
+                                external_id,
+                                remote_id: r.id,
+                                status: r.status,
+                            });
+                        }
+                    }
                 }
                 inner.last_synced_at = Some(now_secs());
-                inner.last_error = None;
+                inner.last_error = if buffer_full {
+                    Some(format!(
+                        "local relay push-result buffer is full ({MAX_BUFFERED_ITEMS_PER_SESSION} \
+                         unconfirmed rows); waiting for the CLI to poll and confirm before \
+                         buffering more"
+                    ))
+                } else {
+                    None
+                };
             }
             Err(e) => self.record_error(e.to_string()).await,
         }
@@ -270,6 +352,14 @@ impl RelaySession {
     /// Catch up via `/memory/since?since_id=<cursor>`, buffering newly-pulled
     /// rows and advancing the session's own cursor. See the module docs for
     /// why this, not the raw SSE payload, is what pull correctness rests on.
+    ///
+    /// Buffered rows are keyed by `remote_id` and are **not cleared here** —
+    /// see [`Self::push`]'s doc comment for why (the pull-side half of the
+    /// same fix). The cursor only ever advances past an entry that actually
+    /// made it into the buffer; an entry dropped for hitting
+    /// [`MAX_BUFFERED_ITEMS_PER_SESSION`] is never counted as fetched, so a
+    /// later catch-up (once the CLI has drained some of the buffer via
+    /// [`Self::ack`]) re-offers it instead of skipping it forever.
     async fn catch_up(&self) {
         let cursor = self.inner.lock().await.cursor.clone();
         let client = match self.client().await {
@@ -285,27 +375,64 @@ impl RelaySession {
                     return;
                 }
                 let mut inner = self.inner.lock().await;
+                let mut buffer_full = false;
                 for e in entries {
-                    if Some(e.id.as_str()) > inner.cursor.as_deref() {
-                        inner.cursor = Some(e.id.clone());
+                    let id = e.id.clone();
+                    let already_buffered = inner.pulled.contains_key(&id);
+                    if !already_buffered {
+                        if inner.pulled.len() >= MAX_BUFFERED_ITEMS_PER_SESSION {
+                            buffer_full = true;
+                            break;
+                        }
+                        inner.pulled.insert(id.clone(), e.into());
                     }
-                    inner.pulled.push(e.into());
+                    if Some(id.as_str()) > inner.cursor.as_deref() {
+                        inner.cursor = Some(id);
+                    }
                 }
                 inner.last_synced_at = Some(now_secs());
-                inner.last_error = None;
+                inner.last_error = if buffer_full {
+                    Some(format!(
+                        "local relay pulled-entry buffer is full ({MAX_BUFFERED_ITEMS_PER_SESSION} \
+                         unconfirmed rows); waiting for the CLI to poll and confirm before \
+                         fetching further"
+                    ))
+                } else {
+                    None
+                };
             }
             Err(e) => self.record_error(e.to_string()).await,
         }
     }
 
-    /// Drain buffered results for the CLI to apply locally, clearing them.
-    async fn drain(&self) -> RelayPollResponse {
-        let mut inner = self.inner.lock().await;
+    /// Snapshot buffered results for the CLI to apply locally. Non-destructive
+    /// by design (renamed from the old `drain`): a poll used to hand back
+    /// buffered state and clear it in the same call
+    /// (`std::mem::take`), so a CLI-side apply failure *after* a successful
+    /// poll permanently lost the row (pull) or stranded it pending forever
+    /// (push). Only [`Self::ack`] — sent by the CLI after it confirms the
+    /// local apply actually succeeded — retires an entry, so a failed or
+    /// interrupted apply simply sees the same entry again on the next poll.
+    async fn poll(&self) -> RelayPollResponse {
+        let inner = self.inner.lock().await;
         RelayPollResponse {
-            push_results: std::mem::take(&mut inner.push_results),
-            pulled: std::mem::take(&mut inner.pulled),
+            push_results: inner.push_results.values().cloned().collect(),
+            pulled: inner.pulled.values().cloned().collect(),
             last_synced_at: inner.last_synced_at,
-            last_error: inner.last_error.take(),
+            last_error: inner.last_error.clone(),
+        }
+    }
+
+    /// Retire buffered results the CLI has confirmed applying to `memory.db`.
+    /// Anything not named here stays buffered for the next poll — see
+    /// [`Self::poll`]'s doc comment.
+    async fn ack(&self, applied_push_external_ids: &[String], applied_pull_remote_ids: &[String]) {
+        let mut inner = self.inner.lock().await;
+        for id in applied_push_external_ids {
+            inner.push_results.remove(id);
+        }
+        for id in applied_pull_remote_ids {
+            inner.pulled.remove(id);
         }
     }
 }
@@ -364,15 +491,33 @@ impl RelayRegistry {
         Ok(())
     }
 
-    /// Handle `GET /local/relay/poll`: drain buffered results for one
+    /// Handle `GET /local/relay/poll`: snapshot buffered results for one
     /// session without creating it (item 18: polling an unregistered project
-    /// must not spawn anything).
+    /// must not spawn anything). Non-destructive — see [`RelaySession::poll`].
     pub async fn poll(&self, server_url: &str, project_id: &str) -> RelayPollResponse {
         let key = RelayKey::new(server_url, project_id);
         let session = self.0.lock().await.get(&key).cloned();
         match session {
-            Some(s) => s.drain().await,
+            Some(s) => s.poll().await,
             None => RelayPollResponse::default(),
+        }
+    }
+
+    /// Handle `POST /local/relay/ack`: retire buffered results the CLI
+    /// confirms it applied. A no-op for an unregistered session (nothing
+    /// buffered to retire); never creates one.
+    pub async fn ack(
+        &self,
+        server_url: &str,
+        project_id: &str,
+        applied_push_external_ids: &[String],
+        applied_pull_remote_ids: &[String],
+    ) {
+        let key = RelayKey::new(server_url, project_id);
+        let session = self.0.lock().await.get(&key).cloned();
+        if let Some(s) = session {
+            s.ack(applied_push_external_ids, applied_pull_remote_ids)
+                .await;
         }
     }
 
@@ -435,6 +580,14 @@ async fn run_pull_loop(session: Arc<RelaySession>) {
 /// without limit for as long as the connection stays open.
 const MAX_SSE_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Byte-offset of the first `"\n\n"` frame terminator in `buf`, if any.
+/// Searched over raw bytes (not a decoded `&str`) so a not-yet-complete
+/// multi-byte UTF-8 sequence at the end of `buf` can never cause a spurious
+/// match or a decode error before a full frame has arrived.
+fn find_double_newline(buf: &[u8]) -> Option<usize> {
+    buf.windows(2).position(|w| w == b"\n\n")
+}
+
 /// One SSE connection attempt: connect, catch up (see [`run_pull_loop`]
 /// docs), then read frames until the stream ends or errors, catching up
 /// again on every frame received. `Ok(())` on a graceful stream end (the
@@ -464,18 +617,26 @@ async fn stream_once(session: &Arc<RelaySession>) -> anyhow::Result<()> {
     let resp = req.send().await?.error_for_status()?;
     session.catch_up().await;
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    // Raw bytes, not a `String`: a chunk boundary from the underlying HTTP
+    // stream has no relation to a UTF-8 character boundary or a frame
+    // boundary. Decoding each chunk in isolation (the previous
+    // `String::from_utf8_lossy(&chunk)` per iteration) could corrupt a
+    // multi-byte character, or a `Last-Event-ID` value, split across two
+    // chunks — decoding only happens below, once a complete frame (delimited
+    // by `\n\n`) has been assembled from raw bytes.
+    let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
+        buf.extend_from_slice(&chunk);
         if buf.len() > MAX_SSE_BUFFER_BYTES {
             anyhow::bail!(
                 "SSE frame from {server_url} exceeded {MAX_SSE_BUFFER_BYTES} bytes \
                  without a frame terminator; dropping this connection"
             );
         }
-        while let Some(pos) = buf.find("\n\n") {
-            let frame: String = buf.drain(..pos + 2).collect();
+        while let Some(pos) = find_double_newline(&buf) {
+            let frame_bytes: Vec<u8> = buf.drain(..pos + 2).collect();
+            let frame = String::from_utf8_lossy(&frame_bytes);
             let mut saw_data = false;
             let mut frame_id: Option<String> = None;
             for line in frame.lines() {
@@ -531,7 +692,7 @@ mod tests {
     // ── item 12: push reuses CloudSyncClient/BatchPushItem ─────────────────
 
     #[tokio::test]
-    async fn push_drains_entries_to_the_team_server_and_is_pollable() {
+    async fn push_lands_on_the_team_server_and_is_pollable_and_reoffered_until_acked() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
@@ -583,9 +744,28 @@ mod tests {
         assert_eq!(got.push_results[0].status, "created");
         assert!(got.last_synced_at.is_some());
 
-        // A second poll drains nothing more — items 33's "drain" contract.
+        // A second poll before any ack must return the SAME result again —
+        // this is the fix for the destructive-drain data-loss bug: a poll
+        // used to clear the buffer in the same call, so a CLI-side apply
+        // failure after this first poll would have permanently stranded the
+        // row pending forever (nothing left to retry against).
         let second = registry.poll(&server.uri(), "proj").await;
-        assert!(second.push_results.is_empty());
+        assert_eq!(
+            second.push_results.len(),
+            1,
+            "an unacked result must still be offered on the next poll"
+        );
+        assert_eq!(second.push_results[0].external_id, "e1");
+
+        // Only an explicit ack retires it.
+        registry
+            .ack(&server.uri(), "proj", &["e1".to_string()], &[])
+            .await;
+        let third = registry.poll(&server.uri(), "proj").await;
+        assert!(
+            third.push_results.is_empty(),
+            "an acked result must not be offered again"
+        );
     }
 
     #[tokio::test]
@@ -669,6 +849,96 @@ mod tests {
             "01890000-0000-7000-8000-000000000002"
         );
         assert!(!got.pulled[0].archived);
+    }
+
+    // ── founder review (PR #728): pull-side data loss without a restart ────
+    //
+    // The bug: `GET /local/relay/poll` used to destructively drain buffered
+    // pulled rows (`std::mem::take`) while the CLI's `apply_remote_note` call
+    // can fail (SQLITE_BUSY, a killed process) without re-buffering — and the
+    // session's pull cursor had already advanced past the row when it was
+    // first buffered, so a restart-free retry would never re-offer it. This
+    // pins the fix directly at the relay level, independent of any CLI-side
+    // failure injection: a poll never clears the buffer by itself, so a CLI
+    // that never acks (modelling "poll succeeded, the local apply after it
+    // failed") must see the exact same row again, indefinitely, across many
+    // polls and additional catch-up cycles — never silently dropped. Fails
+    // against the pre-fix `drain`-on-poll code (the second poll below would
+    // return empty), passes after.
+
+    #[tokio::test]
+    async fn a_pulled_row_survives_repeated_polls_when_the_cli_never_acks_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entries": [{
+                    "id": "01890000-0000-7000-8000-000000000002",
+                    "kind": "note", "title": "Remote",
+                    "body": "body", "created_at": "2026-06-19T01:00:00Z"
+                }],
+                "count": 1
+            })))
+            .mount(&server)
+            .await;
+
+        let registry = RelayRegistry::new();
+        registry
+            .push(RelayPushRequest {
+                server_url: server.uri(),
+                project_id: "proj".to_string(),
+                bearer: None,
+                since_cursor: None,
+                entries: vec![],
+            })
+            .await
+            .unwrap();
+
+        // Wait for the initial catch-up to buffer the row.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if !registry.poll(&server.uri(), "proj").await.pulled.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the row never arrived to begin with"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Simulate "the CLI polled it, but its local apply failed" by simply
+        // never acking, across several more polls (each of which also lets
+        // the background pull loop run another catch-up cycle against a
+        // cursor that must not have moved past this still-unacked row).
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let got = registry.poll(&server.uri(), "proj").await;
+            assert_eq!(
+                got.pulled.len(),
+                1,
+                "an unacked pulled row must never disappear from the buffer"
+            );
+            assert_eq!(
+                got.pulled[0].remote_id,
+                "01890000-0000-7000-8000-000000000002"
+            );
+        }
+
+        // Once the CLI confirms it actually applied the row, it is retired.
+        registry
+            .ack(
+                &server.uri(),
+                "proj",
+                &[],
+                &["01890000-0000-7000-8000-000000000002".to_string()],
+            )
+            .await;
+        let after_ack = registry.poll(&server.uri(), "proj").await;
+        assert!(
+            after_ack.pulled.is_empty(),
+            "an acked pulled row must not be offered again"
+        );
     }
 
     #[tokio::test]
@@ -884,6 +1154,41 @@ mod tests {
             "proj-y must never see proj-x's pulled entry: {:?}",
             y.pulled
         );
+    }
+
+    // ── founder review (PR #728): SSE frames decode across chunk boundaries ─
+    //
+    // `stream_once` used to decode each raw HTTP chunk in isolation
+    // (`String::from_utf8_lossy(&chunk)` per iteration, before frame
+    // boundaries were known), which could corrupt a multi-byte UTF-8
+    // character or a `Last-Event-ID` value split across two chunks. The fix
+    // accumulates raw bytes and only decodes once a complete `\n\n`-
+    // terminated frame has been assembled. This pins the byte-safety
+    // primitive the fix relies on: `find_double_newline` must locate the
+    // terminator by raw bytes, never by decoding (which would panic or
+    // silently corrupt data on a not-yet-complete multi-byte sequence sitting
+    // at the search boundary).
+
+    #[test]
+    fn find_double_newline_locates_the_terminator_around_a_multibyte_char() {
+        // "café" — 'é' is the two-byte UTF-8 sequence 0xC3 0xA9. Split the
+        // buffer such that this sequence itself sits right before the
+        // terminator, the exact shape a chunk-boundary split could produce.
+        let mut buf = b"data: caf\xc3\xa9\n\n".to_vec();
+        let pos = find_double_newline(&buf).expect("terminator must be found");
+        let frame = String::from_utf8_lossy(&buf[..pos + 2]).into_owned();
+        assert_eq!(
+            frame, "data: café\n\n",
+            "the multibyte character must decode intact"
+        );
+
+        // No terminator yet (a chunk boundary landed mid-frame, even mid-
+        // character): must not find a false match or panic on invalid UTF-8
+        // in the not-yet-complete tail.
+        buf.truncate(buf.len() - 2); // drop the "\n\n"
+        assert_eq!(find_double_newline(&buf), None);
+        let mid_char = &buf[..buf.len() - 1]; // split inside 'é''s 2-byte sequence
+        assert_eq!(find_double_newline(mid_char), None);
     }
 
     // ── oversized/malformed SSE frame errors instead of growing forever ────

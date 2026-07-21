@@ -1,4 +1,4 @@
-//! ADR-037 P2: post-write nudge + status poll for the local relay
+//! ADR-037 P2: post-write nudge + read/status poll for the local relay
 //! (`crate::cli::cmd::server::probe_local_relay_port`, spelunk-server's
 //! `relay` module).
 //!
@@ -8,10 +8,20 @@
 //!   and hand the local server's relay any newly-unpushed rows. Best-effort
 //!   only: any failure here must never surface as a write error, a
 //!   meaningfully added write latency, or a non-zero exit (items 7/9/10/11).
-//! - [`poll_and_apply`] — called from `spelunk status` to drain whatever the
-//!   relay has buffered (push acks, pulled rows) and apply it locally, so
-//!   status can report a fresh "N pending, last synced Xm ago" without ever
-//!   printing a manual-sync call to action.
+//! - [`poll_and_apply`] — called from `spelunk status` and from `memory
+//!   list`/`search`/`show`/`timeline`/`spelunk context` (items 42-47) to
+//!   apply whatever the relay has buffered (push acks, pulled rows) locally,
+//!   so both status and reads stay converged without ever printing a
+//!   manual-sync call to action. Never triggers `ensure_server_running`
+//!   (item 43): only polls an already-running relay.
+//!
+//! The relay's `GET /local/relay/poll` is a **peek, not a drain**: entries
+//! stay buffered until [`poll_and_apply`] explicitly confirms which ones it
+//! applied via `POST /local/relay/ack`. This is what makes a failed local
+//! apply (a write error, a killed process mid-loop) recoverable on the very
+//! next poll instead of silently losing the row (pull side) or stranding it
+//! pending forever (push side) — see `relay.rs`'s module docs for the fuller
+//! account of the bug this closes.
 //!
 //! `memory.db` is opened and written **only** by this CLI-side code — never
 //! by the server (D5); the relay's own local HTTP surface only ever carries
@@ -85,6 +95,21 @@ struct RelayPollResponseWire {
     last_synced_at: Option<i64>,
     #[serde(default)]
     last_error: Option<String>,
+}
+
+/// Body of `POST /local/relay/ack`: names exactly the entries this call
+/// confirmed applying to `memory.db`, so a failed/skipped one (still
+/// unstamped or unapplied) stays buffered on the relay and is offered again
+/// on the next poll, rather than being lost — see `relay.rs`'s module docs
+/// for the destructive-drain bug this closes.
+#[derive(Debug, Default, Serialize)]
+struct RelayAckRequestWire {
+    server_url: String,
+    project_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    applied_push_external_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    applied_pull_remote_ids: Vec<String>,
 }
 
 /// Resolve `(server_url, project_id)` for the relay, or `None` when this
@@ -223,7 +248,15 @@ pub(crate) async fn poll_and_apply(
         .ok()?;
     let body: RelayPollResponseWire = resp.json().await.ok()?;
 
+    // The relay's poll is a peek, not a drain (see `relay.rs`'s module docs):
+    // every entry applied here is named explicitly in a follow-up `ack` call
+    // below, and only those names are retired from the relay's buffer. An
+    // entry this loop fails to apply (a local write error, a killed process
+    // mid-loop) is simply never named, so it stays buffered and is offered
+    // again on the CLI's next poll — closing the "poll succeeds, apply fails,
+    // row is gone forever" gap the old destructive `drain`-on-poll had.
     let mut applied_pushes = 0usize;
+    let mut acked_push_ids: Vec<String> = Vec::new();
     for r in &body.push_results {
         let durably_persisted = r.status == "created" || r.status == "skipped";
         if !durably_persisted {
@@ -234,10 +267,12 @@ pub(crate) async fn poll_and_apply(
             && local.set_remote_id(local_id, remote_id).is_ok()
         {
             applied_pushes += 1;
+            acked_push_ids.push(r.external_id.clone());
         }
     }
 
     let mut applied_pulls = 0usize;
+    let mut acked_pull_ids: Vec<String> = Vec::new();
     for e in &body.pulled {
         let created_secs = super::sync::parse_iso_to_secs(&e.created_at);
         if local
@@ -253,7 +288,26 @@ pub(crate) async fn poll_and_apply(
             .is_ok()
         {
             applied_pulls += 1;
+            acked_pull_ids.push(e.remote_id.clone());
         }
+    }
+
+    if !acked_push_ids.is_empty() || !acked_pull_ids.is_empty() {
+        let ack_body = RelayAckRequestWire {
+            server_url: server_url.clone(),
+            project_id: project_id.clone(),
+            applied_push_external_ids: acked_push_ids,
+            applied_pull_remote_ids: acked_pull_ids,
+        };
+        // Best-effort: a failed/dropped ack just means these already-applied
+        // (and locally idempotent to re-apply) entries are offered again on
+        // the next poll instead of being retired promptly. Never surfaced as
+        // an error here.
+        let _ = client
+            .post(format!("http://127.0.0.1:{port}/local/relay/ack"))
+            .json(&ack_body)
+            .send()
+            .await;
     }
 
     let outcome = PollOutcome {
@@ -708,13 +762,41 @@ mod tests {
         drop(store_a);
         nudge_after_write(&cfg, &mem_a).await;
 
-        // Instance B: poll until the entry arrives via live pull.
+        // Instance B: drive a REAL `spelunk memory list` invocation (item 45)
+        // until the entry arrives via live pull — not `poll_and_apply`
+        // directly. This is the actual gap the founder review found: the
+        // item-20 e2e test previously passed by calling `poll_and_apply`
+        // itself, so it never exercised the read path item 20's own text
+        // names ("visible via `spelunk memory list`/`search`"). Calling the
+        // production `memory_list` function here means this test can no
+        // longer pass without `memory list` itself draining the buffer.
         point_state_dir_at(state_b.path());
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut seen = false;
         while std::time::Instant::now() < deadline {
-            if let Some(outcome) = poll_and_apply(&cfg, &mem_b).await
-                && outcome.applied_pulls > 0
+            crate::cli::cmd::memory::list::memory_list(
+                crate::cli::cmd::memory::MemoryListArgs {
+                    kind: None,
+                    source_ref: None,
+                    limit: 20,
+                    format: "json".to_string(),
+                    archived: false,
+                    as_of: None,
+                    local_only: true,
+                },
+                &mem_b,
+                &cfg,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+            let store_b = open_store(&mem_b);
+            if store_b
+                .rows_for_sync(false)
+                .unwrap()
+                .iter()
+                .any(|n| n.title == "Cross-instance entry")
             {
                 seen = true;
                 break;
@@ -723,15 +805,8 @@ mod tests {
         }
         assert!(
             seen,
-            "instance A's write must become visible on instance B without \
-             any explicit `spelunk sync`/`memory pull`"
-        );
-
-        let store_b = open_store(&mem_b);
-        let notes = store_b.rows_for_sync(false).unwrap();
-        assert!(
-            notes.iter().any(|n| n.title == "Cross-instance entry"),
-            "the pulled entry must be applied into instance B's own memory.db"
+            "instance A's write must become visible via a real `spelunk memory list` \
+             invocation on instance B, without any explicit `spelunk sync`/`memory pull`"
         );
     }
 
@@ -822,6 +897,300 @@ mod tests {
         assert!(
             rows.iter().all(|r| r.remote_id.is_some()),
             "every row must carry a remote_id after re-deriving through the new relay"
+        );
+    }
+
+    // ── founder review (PR #728): apply-fails-without-restart, end to end ──
+    //
+    // The kill/restart test above (item 16) only covers the path where a
+    // fresh relay re-derives everything from `memory.db`, which already
+    // works because the outbox/cursor are durable. The actual gap the
+    // founder review found is narrower and does NOT involve a restart at
+    // all: the relay hands the CLI a result, the CLI's own local write to
+    // `memory.db` fails (e.g. `SQLITE_BUSY`, no `busy_timeout` is
+    // configured), and — before this fix — that result was already gone
+    // from the relay's buffer (destructive `drain`-on-poll), so nothing
+    // would ever retry it. These two tests force that exact failure with a
+    // real competing SQLite writer (same technique as
+    // `spelunk_core::storage::db::tests::insert_embeddings_rolls_back_on_a_real_sqlite_error_not_just_bad_dimension`)
+    // holding `memory.db`'s write lock across one or more `poll_and_apply`
+    // calls, through the real `nudge_after_write`/`poll_and_apply` code path
+    // — not a synthetic unit test of the relay's buffer alone. Verification
+    // while the lock is held goes through a bare read-only connection: even
+    // `MemoryStore::open` itself always attempts a write on every call (the
+    // FTS-sync migration's `INSERT OR IGNORE`, unconditional regardless of
+    // content), so it is itself lock-contentious and cannot be used to probe
+    // state during the locked window without tripping the very contention
+    // under test.
+
+    /// Read-only, migration-free probe: whether any local row already
+    /// carries `remote_id`. Deliberately bypasses `MemoryStore::open` (see
+    /// the comment above) so this itself never contends for the write lock.
+    fn raw_has_remote_id(mem_path: &std::path::Path, remote_id: &str) -> bool {
+        let conn = rusqlite::Connection::open(mem_path).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE remote_id = ?1",
+                rusqlite::params![remote_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        n > 0
+    }
+
+    /// Peek the local relay directly (bypassing `poll_and_apply`, so this
+    /// never consumes or applies anything — the poll itself is non-
+    /// destructive after this fix). Used only to deterministically wait for
+    /// the relay's own background catch-up/push to have buffered something,
+    /// without racing a blind sleep against it.
+    async fn raw_relay_peek(
+        port: u16,
+        server_url: &str,
+        project_id: &str,
+    ) -> RelayPollResponseWire {
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/local/relay/poll"))
+            .query(&[("server_url", server_url), ("project_id", project_id)])
+            .send()
+            .await
+            .unwrap();
+        resp.json().await.unwrap()
+    }
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn a_pull_apply_failure_without_a_restart_does_not_lose_the_row() {
+        let state_guard = StateDirGuard::new();
+        let team_addr = spawn_spelunk_server().await;
+        spawn_local_relay(state_guard.path()).await;
+        let team_uri = format!("http://{}", team_addr);
+        let cfg = local_first_cfg(&team_uri);
+
+        let mem_dir = TempDir::new().unwrap();
+        let mem_path = mem_dir.path().join("memory.db");
+        let _store = open_store(&mem_path); // create + migrate, nothing local yet
+
+        // Register (unlocked) so the relay's background pull loop is alive
+        // and holding its own SSE connection to the team server BEFORE the
+        // row is seeded — same ordering `entry_added_on_instance_a_...`
+        // above uses, so the row is picked up by the relay's own background
+        // catch-up, entirely independent of any later `poll_and_apply` call.
+        assert!(
+            poll_and_apply(&cfg, &mem_path).await.is_some(),
+            "the local relay must be reachable"
+        );
+
+        // `memory_stream`'s server-side polling loop only yields notes with
+        // `created_at` strictly after the SSE connection's own second-
+        // granularity start time; without this, a note created in the same
+        // wall-clock second as registration can be silently invisible to the
+        // stream forever (nothing else ever advances `last_seen` past it in
+        // this single-write test). Cross a second boundary first so the seed
+        // below is unambiguously "after".
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        // Seed the entry directly on the team server, as if pushed by a
+        // different instance — this instance only ever sees it via pull.
+        // Deliberately NOT capturing `results[0].id` from this response as
+        // the row's identity: that field is the server's raw local row id,
+        // a different value from the `sync_id` `/memory/since` (and thus
+        // this relay's `pulled[].remote_id`) actually keys on. Instead, read
+        // the real identity back off the relay's own buffered entry below.
+        let http = reqwest::Client::new();
+        http.post(format!("{team_uri}/v1/projects/proj/memory/batch"))
+            .json(&serde_json::json!({
+                "entries": [{
+                    "kind": "decision", "title": "Remote", "body": "b",
+                    "external_id": "seed-ext-1"
+                }]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Wait for the relay's own SSE-driven background catch-up to buffer
+        // the row on its own — verified via a direct, non-destructive peek
+        // at the relay (never through `poll_and_apply`, so this wait itself
+        // never applies/consumes anything).
+        let port = crate::cli::cmd::server::probe_local_relay_port()
+            .await
+            .expect("local relay must be reachable");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let remote_id = loop {
+            let peek = raw_relay_peek(port, &team_uri, "proj").await;
+            if let Some(entry) = peek.pulled.iter().find(|p| p.title == "Remote") {
+                break entry.remote_id.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the relay never buffered the seeded row via its background catch-up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        // Only now hold `memory.db`'s write lock from a second, competing
+        // connection — the row is confirmed buffered relay-side; this is the
+        // CLI's first attempt to retrieve+apply it.
+        let locker = rusqlite::Connection::open(&mem_path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            assert!(
+                !raw_has_remote_id(&mem_path, &remote_id),
+                "the row must not appear locally while the competing writer holds the lock"
+            );
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        locker.execute_batch("COMMIT;").unwrap();
+
+        // Now that the lock is released, the row must still be recoverable
+        // — proving it was never dropped from the relay's buffer despite
+        // every earlier apply attempt failing.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            if raw_has_remote_id(&mem_path, &remote_id) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pulled row must still be recoverable once the lock is released \
+                 (it must never have been dropped by an earlier failed apply attempt)"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn a_push_stamp_failure_without_a_restart_does_not_strand_the_row_pending_forever() {
+        let state_guard = StateDirGuard::new();
+        spawn_local_relay(state_guard.path()).await;
+
+        let mem_dir = TempDir::new().unwrap();
+        let mem_path = mem_dir.path().join("memory.db");
+        let uuid = {
+            let store = open_store(&mem_path);
+            store
+                .add_note("decision", "T", "body", &[], &[], None, None)
+                .unwrap();
+            store.rows_for_sync(false).unwrap()[0].uuid.clone()
+        };
+
+        let team_server = MockServer::start().await;
+        // The FIRST push lands and creates the row. `register_and_push` is
+        // called on every `nudge_after_write`/`poll_and_apply` and always
+        // re-offers every still-unstamped row (item 8/11) — including this
+        // one, while its earlier `created` ack sits unstamped due to the
+        // lock below — so any SUBSEQUENT push of the same `external_id` must
+        // behave like a real team server's idempotent dedupe: `skipped`,
+        // with **no id** (`handlers.rs`'s pre-fix behavior; the exact trap
+        // named in the founder review). If the fix relied on that later
+        // push somehow re-minting a fresh id, this mock would silently mask
+        // the regression — it must not: recovery has to come from the
+        // relay's still-buffered original `created` result, never a re-push.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+            })))
+            .up_to_n_times(1)
+            .mount(&team_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 1, "failed": 0,
+                "results": [{"status": "skipped", "external_id": uuid, "id": null}]
+            })))
+            .mount(&team_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+            )
+            .mount(&team_server)
+            .await;
+
+        let cfg = local_first_cfg(&team_server.uri());
+        // Unlocked: registers the session and relays the push to the (mock)
+        // team server in a detached background task on the relay side.
+        nudge_after_write(&cfg, &mem_path).await;
+
+        // Wait for that detached push to land and buffer a `created` ack
+        // relay-side — verified via a direct, non-destructive peek at the
+        // relay, entirely independent of any `poll_and_apply` call.
+        let port = crate::cli::cmd::server::probe_local_relay_port()
+            .await
+            .expect("local relay must be reachable");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let peek = raw_relay_peek(port, &team_server.uri(), "proj").await;
+            if peek.push_results.iter().any(|r| r.external_id == uuid) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the relay never buffered the push ack"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Only now hold `memory.db`'s write lock — this is the CLI's first
+        // attempt to retrieve+apply (stamp) the already-buffered ack, even
+        // though the push already durably landed remotely.
+        let locker = rusqlite::Connection::open(&mem_path).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            assert!(
+                !raw_has_remote_id(&mem_path, "cloud-1"),
+                "the row must not get stamped while the competing writer holds the lock"
+            );
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        locker.execute_batch("COMMIT;").unwrap();
+
+        // Once the lock is released, the SAME buffered `created` ack (never
+        // dropped by an earlier failed poll) must still be there to stamp —
+        // this is the fix for the "re-push comes back `skipped` with no id"
+        // trap: there is no re-push at all here, just a retried apply of the
+        // original, still-buffered result.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            poll_and_apply(&cfg, &mem_path).await;
+            if raw_has_remote_id(&mem_path, "cloud-1") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the push ack must still be recoverable once the lock is released \
+                 (it must never have been dropped by an earlier failed stamp attempt)"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let reader = open_store(&mem_path);
+        assert_eq!(
+            reader.pending_sync_count().unwrap(),
+            0,
+            "the row must no longer read as pending once the stamp succeeds"
         );
     }
 }

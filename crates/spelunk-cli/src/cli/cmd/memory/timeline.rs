@@ -19,6 +19,15 @@ pub(super) async fn memory_timeline(
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
 
+    // ADR-037 P2 (items 42-44): apply whatever the local relay has buffered
+    // so a teammate's live-pulled entry is visible without an explicit
+    // `spelunk sync`. Best-effort/error-swallowing, never triggers
+    // `ensure_server_running` (item 43). `mem_path` here is always a real,
+    // fail-closed-resolved per-project path (`resolve_memory_store` only
+    // grants the git-notes-carrier/pre-init exemption to `Add`/`List`), so
+    // no placeholder gate is needed.
+    super::outbox::poll_and_apply(cfg, mem_path).await;
+
     let sp = super::super::ui::spinner("Embedding query…");
     let client = require_server_client(cfg, "memory timeline")?;
     let blob = embed_query(

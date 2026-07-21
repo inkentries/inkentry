@@ -651,7 +651,10 @@ pub struct BatchItemResult {
     /// `"created"` or `"skipped"` (idempotent re-push).
     pub status: &'static str,
     pub external_id: String,
-    /// The server-minted note id (stringified), present only for `"created"`.
+    /// The server-minted note id (stringified). Present for `"created"` and
+    /// also for a `"skipped"` dedupe-hit (the already-existing id), so a
+    /// caller that lost track of an earlier create can still recover the id
+    /// from a plain re-push.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
@@ -764,11 +767,16 @@ pub async fn push_memory_batch(
     let mut skipped = 0u32;
 
     for entry in &body.entries {
-        if existing.contains_key(&entry.external_id) {
+        if let Some(&existing_id) = existing.get(&entry.external_id) {
+            // Carry the already-assigned id even on a dedupe-skip: a caller
+            // that lost track of a prior "created" ack (e.g. a local write
+            // failure between receiving the ack and stamping it) must be able
+            // to recover the id from a plain re-push, not just the original
+            // create.
             results.push(BatchItemResult {
                 status: "skipped",
                 external_id: entry.external_id.clone(),
-                id: None,
+                id: Some(existing_id.to_string()),
             });
             skipped += 1;
             continue;
@@ -3049,6 +3057,49 @@ mod tests {
         assert_eq!(results[1]["status"], json!("created"));
         assert_eq!(results[2]["external_id"], json!("id-new-2"));
         assert_eq!(results[2]["status"], json!("created"));
+    }
+
+    // ── founder review (PR #728): a dedupe-skip must still carry an id ─────
+    //
+    // Before this fix, a "skipped" result always carried `id: null`. The
+    // ADR-037 P2 local relay stamps a pushed row's `remote_id` from this
+    // response; if a first "created" ack is buffered but the CLI's local
+    // stamp then fails (e.g. `SQLITE_BUSY`), a later re-push of the same row
+    // durably lands as "skipped" — and with no id to recover from that
+    // response, the row was stuck outbox-pending forever, not even fixable
+    // by a manual `spelunk sync` (same code path). The id on a skip must be
+    // the SAME id the original create was assigned.
+
+    #[tokio::test]
+    async fn batch_skip_dedupe_hit_carries_the_same_id_as_the_original_create() {
+        let (app, _dim) = make_app(0.92);
+        let (s0, b0) = post_batch(
+            app.clone(),
+            "skip-id-proj",
+            json!([note_item("first", "ext-1")]),
+        )
+        .await;
+        assert_eq!(s0, http::StatusCode::MULTI_STATUS, "seed: {b0}");
+        let created_id = b0["results"][0]["id"]
+            .as_str()
+            .expect("created result must carry an id")
+            .to_string();
+
+        let (status, body) = post_batch(
+            app,
+            "skip-id-proj",
+            json!([note_item("first again", "ext-1")]),
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+        assert_eq!(body["results"][0]["status"], json!("skipped"));
+        assert_eq!(
+            body["results"][0]["id"],
+            json!(created_id),
+            "a dedupe-skip must carry the same id the original create was assigned, \
+             not null, so a caller that lost track of the create can recover it \
+             from a plain re-push: {body}"
+        );
     }
 
     /// An external_id repeated WITHIN one batch must not crash the request:

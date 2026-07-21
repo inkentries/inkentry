@@ -16,6 +16,14 @@ pub(super) async fn memory_search(
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     super::reconcile::maybe_emit_nudge(mem_path, cfg);
+    // ADR-037 P2 (items 42-44): apply whatever the local relay has buffered
+    // so a teammate's live-pulled entry is visible without an explicit
+    // `spelunk sync`. Best-effort/error-swallowing, never triggers
+    // `ensure_server_running` (item 43). `mem_path` here is always a real,
+    // fail-closed-resolved per-project path (`resolve_memory_store` only
+    // grants `Search` the git-notes-carrier/pre-init exemption for
+    // `Add`/`List`), so no placeholder gate is needed.
+    super::outbox::poll_and_apply(cfg, mem_path).await;
 
     // Honor the auto-discovered server tier: loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`, so build an
