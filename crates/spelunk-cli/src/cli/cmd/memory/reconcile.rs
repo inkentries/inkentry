@@ -1176,13 +1176,35 @@ mod init_import_tests {
     /// Stress the same scenario across concurrent tasks in one process, each
     /// against its own temp repo, so CI gets an active signal instead of
     /// relying on the parallel test runner's luck to reproduce a flake.
+    ///
+    /// Concurrency is bounded by a semaphore rather than firing all `RUNS`
+    /// unbounded: each run shells out to several real `git` subprocesses, and
+    /// letting 20 of those launch at once — stacked on top of the rest of the
+    /// workspace's own parallel test suite doing the same — was observed to
+    /// spuriously fail `Command::spawn` with ENOENT under `cargo test
+    /// --workspace` (not in isolation), i.e. this test flaked from OS-level
+    /// process-spawn contention, the exact class of noise it exists to filter
+    /// out rather than reintroduce. Capping in-flight scenarios keeps the
+    /// cross-task concurrency this test is actually probing (shared
+    /// `register_sqlite_vec` init, overlapping temp-repo lifecycles, the
+    /// scenario's own dedup transaction) while staying well under what the
+    /// dev/CI machine's fork/exec path reliably sustains alongside everything
+    /// else running.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn init_import_skip_scenario_is_race_free_under_concurrent_tasks() {
         register_sqlite_vec();
         const RUNS: usize = 20;
+        const MAX_CONCURRENT: usize = 4;
 
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT));
         let tasks: Vec<_> = (0..RUNS)
-            .map(|_| tokio::spawn(run_skip_already_present_scenario()))
+            .map(|_| {
+                let semaphore = semaphore.clone();
+                tokio::spawn(async move {
+                    let _permit = semaphore.acquire_owned().await.expect("semaphore open");
+                    run_skip_already_present_scenario().await
+                })
+            })
             .collect();
 
         let mut failures = Vec::new();
