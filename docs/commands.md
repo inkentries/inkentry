@@ -111,6 +111,11 @@ drifts partway through is picked up rather than locked to the first sample.
 Each batch is written to the database as soon as it completes, so an
 interrupted run (timeout, machine sleep, process kill) never loses
 already-embedded chunks — re-run `spelunk index` to pick up where it left off.
+A batch that can't even reach the server (the local server is momentarily
+unresponsive, not just slow) is retried automatically at the same batch size
+with backoff, rather than being treated as a request that was too big; only
+once those retries are exhausted does the run stop and wait on a manual
+re-run.
 
 `spelunk init` always hands the embedding pass to a detached background worker,
 and `--detach-embed` opts a manual `spelunk index` run into the same behaviour:
