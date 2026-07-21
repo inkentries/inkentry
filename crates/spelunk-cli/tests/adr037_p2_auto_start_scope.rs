@@ -163,6 +163,78 @@ fn spelunk_no_server_env_write_never_auto_starts() {
     );
 }
 
+// ── item 7: no SYNC network call to the team server_url in the write's own
+// stack, even when server_url is reachable ─────────────────────────────────
+//
+// Pins today's baseline (`memory_add` never contacts the network for SYNC
+// under `local_first`) directly against a real mock server standing in for
+// `server_url`, so P2's background machinery (the local relay, the
+// interactive auto-start probe) provably never creeps into the write path
+// itself: the write's own call stack only ever reaches the LOCAL loopback
+// relay (absent here, so even that is a no-op), never the team server's sync
+// endpoints (`/memory/batch`, `/memory/since`).
+//
+// Not asserting *zero* requests overall: `memory add` under `local_first`
+// with a reachable `server_url` legitimately calls `/v1/health` and
+// `/index/embed` today, pre-P2 and unrelated to sync — ADR-004's inference
+// routing (`capability::get_tier`/`try_embed_via_server`), a documented,
+// orthogonal concern ("Inference vs. memory storage are separate concerns").
+// This test's job is to prove P2 added no *sync* traffic to that stack, not
+// to relitigate the pre-existing inference call.
+
+#[tokio::test]
+async fn write_never_makes_a_sync_call_to_server_url_even_when_it_is_reachable() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let team_server = MockServer::start().await;
+    // Answer everything generically (health probe, embed) so the write
+    // completes normally; only the sync paths are asserted against below.
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok", "version": "test", "capabilities": ["memory"]
+        })))
+        .mount(&team_server)
+        .await;
+
+    let home = TempDir::new().unwrap().keep();
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mem_path = project.join("memory.db");
+    let config_path = home.join("config.toml");
+    std::fs::write(&config_path, "").unwrap();
+    write_project_server_config(&project, &team_server.uri(), "team/proj");
+
+    let out = spelunk_bin_in(&home)
+        .current_dir(&project)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["add", "--kind", "note", "--title", "T", "--body", "b"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let received = team_server.received_requests().await.unwrap();
+    let sync_reqs: Vec<_> = received
+        .iter()
+        .filter(|r| {
+            r.url.path().contains("/memory/batch") || r.url.path().contains("/memory/since")
+        })
+        .collect();
+    assert!(
+        sync_reqs.is_empty(),
+        "the write's own call stack must never reach the team server's sync \
+         endpoints directly (no local relay was running to hand off to): {:?}",
+        received.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
+}
+
 // ── item 8/10: the write itself is unaffected either way ───────────────────
 
 #[test]
