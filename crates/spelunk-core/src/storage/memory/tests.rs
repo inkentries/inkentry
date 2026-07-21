@@ -760,6 +760,87 @@ fn max_remote_id_is_the_pull_cursor() {
     );
 }
 
+// ── note_id_for_uuid: forward lookup for applying a relayed push-ack ───────
+
+#[test]
+fn note_id_for_uuid_finds_the_row_that_owns_it() {
+    let store = open_store();
+    let (id, _) = store
+        .add_note("note", "N", "b", &[], &[], None, None)
+        .unwrap();
+    let uuid = store.ensure_uuid(id).unwrap();
+
+    assert_eq!(store.note_id_for_uuid(&uuid).unwrap(), Some(id));
+    assert_eq!(store.note_id_for_uuid("no-such-uuid").unwrap(), None);
+}
+
+// ── pending_sync_count: cheap outbox count, never mutates ──────────────────
+
+#[test]
+fn pending_sync_count_reports_unpushed_active_rows() {
+    let store = open_store();
+    assert_eq!(store.pending_sync_count().unwrap(), 0);
+
+    let (a, _) = store
+        .add_note("note", "A", "b", &[], &[], None, None)
+        .unwrap();
+    store
+        .add_note("note", "B", "b", &[], &[], None, None)
+        .unwrap();
+    assert_eq!(
+        store.pending_sync_count().unwrap(),
+        2,
+        "two freshly-added active rows, neither pushed yet"
+    );
+
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-0000000000aa")
+        .unwrap();
+    assert_eq!(
+        store.pending_sync_count().unwrap(),
+        1,
+        "a stamped remote_id excludes the row from the outbox count"
+    );
+}
+
+#[test]
+fn pending_sync_count_ignores_archived_rows() {
+    let store = open_store();
+    let (id, _) = store
+        .add_note("note", "N", "b", &[], &[], None, None)
+        .unwrap();
+    store.archive(id).unwrap();
+    assert_eq!(
+        store.pending_sync_count().unwrap(),
+        0,
+        "an archived-and-never-pushed row is not a pending push (matches \
+         rows_for_sync's default include_archived=false view)"
+    );
+}
+
+#[test]
+fn pending_sync_count_is_a_pure_read_unaffected_by_rows_for_sync() {
+    let store = open_store();
+    store
+        .add_note("note", "A", "b", &[], &[], None, None)
+        .unwrap();
+    store
+        .add_note("note", "B", "b", &[], &[], None, None)
+        .unwrap();
+
+    // pending_sync_count must never call ensure_uuid (a mutation): calling it
+    // repeatedly, interleaved with the real mutating read, must not change
+    // what either sees.
+    assert_eq!(store.pending_sync_count().unwrap(), 2);
+    let rows = store.rows_for_sync(false).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        store.pending_sync_count().unwrap(),
+        2,
+        "count is unaffected by the preceding rows_for_sync call"
+    );
+}
+
 #[test]
 fn set_remote_id_records_and_dedupes() {
     let store = open_store();

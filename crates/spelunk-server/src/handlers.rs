@@ -1932,6 +1932,7 @@ mod tests {
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         (router(state), dim as i32)
     }
@@ -2101,6 +2102,7 @@ mod tests {
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         super::super::router(state)
     }
@@ -2657,6 +2659,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         router(state)
     }
@@ -2818,6 +2821,7 @@ mod tests {
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         super::super::router(state)
     }
@@ -3367,6 +3371,7 @@ mod tests {
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         let app = super::super::router_with_timeout(state, request_timeout);
 
@@ -3414,6 +3419,7 @@ mod tests {
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
             instance_id,
             started_by: None,
+            relay: super::super::relay::RelayRegistry::new(),
         };
         let app = super::super::router_with_timeouts(state, request_timeout, embed_request_timeout);
 

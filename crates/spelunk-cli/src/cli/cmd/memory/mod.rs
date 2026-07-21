@@ -374,6 +374,7 @@ mod graph_cmd;
 mod harvest;
 mod harvest_claude;
 mod list;
+pub(crate) mod outbox;
 pub mod push;
 pub(crate) mod reconcile;
 mod search;

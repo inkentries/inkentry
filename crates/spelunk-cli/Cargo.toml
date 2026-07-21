@@ -76,3 +76,9 @@ serial_test = { workspace = true }
 axum = { version = "0.8", features = ["macros"] }
 axum-server = { workspace = true }
 rcgen = "0.14"
+# ADR-037 P2 relay tests only: runs the real spelunk-server axum router
+# in-process (`spelunk_server::router`) to exercise `outbox.rs`'s local relay
+# client against the actual `/local/relay/push`/`/local/relay/poll` wire
+# shapes, not a hand-mocked stand-in. `default-features = false` skips the
+# native embedder (candle/hf-hub) build, irrelevant to these tests.
+spelunk-server = { path = "../spelunk-server", default-features = false }

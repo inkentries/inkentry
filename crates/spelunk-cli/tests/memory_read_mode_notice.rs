@@ -129,6 +129,85 @@ fn local_first_read_serves_data_without_sync_nag() {
     assert!(stdout.contains(LOCAL_TITLE), "got: {stdout}");
 }
 
+/// ADR-037 P2 item 34: the new pending/last-synced clause belongs on `spelunk
+/// status` only. No per-read banner is reintroduced on
+/// `list`/`search`/`show`/`timeline`/`context` — extends this file's existing
+/// `assert_no_sync_nag` coverage (recorded in commit `a44279e26`) to also
+/// guard against the new content, not just the old removed nag.
+#[test]
+fn read_commands_never_print_pending_or_last_synced_banner() {
+    let (tmp, mem_path, id) = seeded_project();
+    let cfg = write_cfg(
+        tmp.path(),
+        "config-read-commands.toml",
+        &tmp.path().join("spelunk.db"),
+        "",
+    );
+    plumbing_helpers::write_project_server_config(
+        tmp.path(),
+        "https://team.invalid:7777",
+        "team/proj",
+    );
+
+    let assert_clean = |out: &std::process::Output, label: &str| {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        for needle in ["pending", "last synced", "sync error", "spelunk sync"] {
+            assert!(
+                !stdout.contains(needle) && !stderr.contains(needle),
+                "{label} must never mention {needle:?} (status-only content): \
+                 stdout={stdout} stderr={stderr}"
+            );
+        }
+    };
+
+    let list = memory_list(&tmp, &mem_path, &cfg);
+    assert_clean(&list, "memory list");
+
+    let show = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["show", &id.to_string()])
+        .output()
+        .unwrap();
+    assert_clean(&show, "memory show");
+
+    let search = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["search", LOCAL_TITLE, "--mode", "text"])
+        .output()
+        .unwrap();
+    assert_clean(&search, "memory search");
+
+    let timeline = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["memory", "--db"])
+        .arg(&mem_path)
+        .args(["timeline", LOCAL_TITLE])
+        .output()
+        .unwrap();
+    assert_clean(&timeline, "memory timeline");
+
+    let context = spelunk_bin()
+        .current_dir(tmp.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["context", "--db"])
+        .arg(&mem_path)
+        .output()
+        .unwrap();
+    assert_clean(&context, "context");
+}
+
 // ── cloud_first: unreachable server = hard error, local data never printed ────
 
 #[test]

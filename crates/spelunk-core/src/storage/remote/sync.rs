@@ -217,6 +217,18 @@ impl CloudSyncClient {
         }
     }
 
+    /// URL for the live-pull SSE endpoint (`GET /memory/stream`), percent-encoding
+    /// `project_id` the same way every other request here does.
+    ///
+    /// This client does not itself hold a streaming connection open (its other
+    /// methods are all single-shot request/response); a caller that needs one
+    /// builds its own request against this URL (see
+    /// `crates/spelunk-server/src/relay.rs`, the only place in the workspace
+    /// that does, for ADR-037 P2's local relay role).
+    pub fn stream_url(&self) -> String {
+        self.url("memory/stream")
+    }
+
     /// Push a batch of text-only entries. Idempotent on `external_id`.
     ///
     /// Returns the server's aggregate result. An empty input is a no-op.
@@ -536,6 +548,15 @@ mod tests {
     fn new_keyless_construction_unaffected_by_transport() {
         // No bearer to leak, so even a non-loopback plaintext dev server is fine.
         assert!(CloudSyncClient::new("http://team-server:7777", "proj", None, None).is_ok());
+    }
+
+    #[test]
+    fn stream_url_percent_encodes_project_slug() {
+        let client = CloudSyncClient::new("https://team.example", "acme/app", None, None).unwrap();
+        assert_eq!(
+            client.stream_url(),
+            "https://team.example/v1/projects/acme%2Fapp/memory/stream"
+        );
     }
 
     #[tokio::test]

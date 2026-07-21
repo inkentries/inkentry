@@ -277,6 +277,13 @@ pub(super) async fn memory_add(
     if let Some(line) = notes_rewrite_note {
         println!("{line}");
     }
+
+    // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
+    // `local_first` write's outbox drains promptly. Never affects this
+    // command's own success/output; see `outbox.rs`.
+    if !pre_init_notes {
+        super::outbox::nudge_after_write(cfg, mem_path).await;
+    }
     Ok(())
 }
 

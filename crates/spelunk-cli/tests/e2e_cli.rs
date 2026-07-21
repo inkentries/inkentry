@@ -762,6 +762,9 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "memory_backend",
         "tier",
         "mode",
+        // ADR-037 P2 item 35: additive-only pending-count/last-synced fields.
+        "sync_pending",
+        "sync_last_synced_at",
         "server_url",
         "capabilities",
         "embedder_state",
