@@ -142,17 +142,24 @@ fn mention_stopwords() -> &'static HashSet<&'static str> {
 
 struct CommentStyle {
     line_prefixes: &'static [&'static str],
-    block: Option<(&'static str, &'static str)>,
+    // (open, close, nests): `nests` is true only for languages whose block comments
+    // nest (Rust); everyone else's `/* */` stops at the first `*/`, per that
+    // language's real grammar.
+    block: Option<(&'static str, &'static str, bool)>,
 }
 
 /// Comment syntax per language, for `strip_comments_and_strings`. `None` means the
 /// language is unrecognized here and content passes through unstripped (fail open).
 fn comment_style(language: &str) -> Option<CommentStyle> {
     match language {
-        "rust" | "javascript" | "jsx" | "typescript" | "tsx" | "go" | "java" | "c" | "cpp"
-        | "csharp" | "kotlin" | "swift" | "proto" => Some(CommentStyle {
+        "rust" => Some(CommentStyle {
             line_prefixes: &["//"],
-            block: Some(("/*", "*/")),
+            block: Some(("/*", "*/", true)),
+        }),
+        "javascript" | "jsx" | "typescript" | "tsx" | "go" | "java" | "c" | "cpp" | "csharp"
+        | "kotlin" | "swift" | "proto" => Some(CommentStyle {
+            line_prefixes: &["//"],
+            block: Some(("/*", "*/", false)),
         }),
         "python" | "ruby" => Some(CommentStyle {
             line_prefixes: &["#"],
@@ -160,15 +167,15 @@ fn comment_style(language: &str) -> Option<CommentStyle> {
         }),
         "php" | "hcl" => Some(CommentStyle {
             line_prefixes: &["//", "#"],
-            block: Some(("/*", "*/")),
+            block: Some(("/*", "*/", false)),
         }),
         "sql" => Some(CommentStyle {
             line_prefixes: &["--"],
-            block: Some(("/*", "*/")),
+            block: Some(("/*", "*/", false)),
         }),
         "css" => Some(CommentStyle {
             line_prefixes: &[],
-            block: Some(("/*", "*/")),
+            block: Some(("/*", "*/", false)),
         }),
         _ => None,
     }
@@ -196,14 +203,22 @@ fn strip_comments_and_strings(content: &str, language: &str) -> String {
     let mut i = 0;
 
     while i < n {
-        if let Some((open, close)) = style.block
+        if let Some((open, close, nests)) = style.block
             && matches_at(&chars, i, open)
         {
             i += open.chars().count();
-            while i < n && !matches_at(&chars, i, close) {
-                i += 1;
+            let mut depth = 1u32;
+            while i < n && depth > 0 {
+                if nests && matches_at(&chars, i, open) {
+                    depth += 1;
+                    i += open.chars().count();
+                } else if matches_at(&chars, i, close) {
+                    depth -= 1;
+                    i += close.chars().count();
+                } else {
+                    i += 1;
+                }
             }
-            i = (i + close.chars().count()).min(n);
             out.push(' ');
             continue;
         }
@@ -392,5 +407,120 @@ fn getDirectoryTree(dirPath: string) { const subTree = walk(dirPath); return sub
         for stopword in ["fn", "let", "pub", "self"] {
             assert!(!tokens.iter().any(|t| t == stopword));
         }
+    }
+
+    #[test]
+    fn rust_block_comments_nest() {
+        // Rust block comments nest; the outer comment only ends at the matching
+        // outer `*/`, not the first `*/` encountered.
+        let out = strip_comments_and_strings("foo /* outer /* inner */ still outer */ bar", "rust");
+        assert!(out.contains("foo"));
+        assert!(out.contains("bar"));
+        assert!(!out.contains("inner"));
+        assert!(!out.contains("still"));
+        assert!(!out.contains("outer"));
+    }
+
+    #[test]
+    fn non_nesting_languages_stop_at_first_close() {
+        // JS/C-family block comments do not nest: a `/*` inside an open comment is
+        // inert, so the comment ends at the first `*/`, leaving what follows as code.
+        // This mirrors real JS semantics for source containing a stray `/*`.
+        let out =
+            strip_comments_and_strings("foo /* outer /* inner */ trailing */ bar", "javascript");
+        assert!(out.contains("foo"));
+        assert!(!out.contains("inner"));
+        // Non-nesting: comment closed after "inner", so "trailing" and the stray
+        // "*/ bar" fragment are code, not comment content.
+        assert!(out.contains("trailing"));
+        assert!(out.contains("bar"));
+    }
+
+    #[test]
+    fn line_comment_starting_inside_string_is_not_a_comment() {
+        // A `//` inside a string literal must not be treated as a comment start.
+        let out = strip_comments_and_strings(r#"let url = "http://example.com"; keep_me"#, "rust");
+        assert!(!out.contains("http"));
+        assert!(!out.contains("example"));
+        assert!(out.contains("keep_me"));
+    }
+
+    #[test]
+    fn quote_inside_line_comment_does_not_open_a_string() {
+        // A quote character inside a `//` comment must not be mistaken for the start
+        // of a string literal that would swallow the following code.
+        let out = strip_comments_and_strings("// don't break this\nkeep_me", "rust");
+        assert!(!out.contains("don't break this"));
+        assert!(out.contains("keep_me"));
+    }
+
+    #[test]
+    fn rust_raw_string_with_embedded_quotes_is_a_known_gap() {
+        // KNOWN LIMITATION: the stripper matches string spans as plain-quote pairs
+        // with no awareness of Rust's `r"..."` / `r#"..."#` raw-string syntax. A raw
+        // string containing an embedded `"` is treated as multiple back-to-back
+        // string spans, and content between the embedded quotes leaks through as a
+        // token. Full raw-string support needs prefix + hash-count-aware matching,
+        // judged out of scope for this heuristic (same rationale as skipping a
+        // second tree-sitter parse). This test locks in the current, imperfect
+        // behavior so a future change to it is a deliberate choice, not a surprise.
+        let content = r####"let re = r#"contains "nested" quotes"#; keep_after"####;
+        let tokens = extract_mention_tokens(content, "rust");
+        assert!(tokens.iter().any(|t| t == "keep_after"));
+        assert!(
+            tokens.iter().any(|t| t == "nested"),
+            "expected the known gap: raw-string inner content leaks as a token"
+        );
+    }
+
+    #[test]
+    fn python_triple_quoted_docstring_is_stripped() {
+        // Not purpose-built support for `"""..."""`: the generic single-quote
+        // matcher happens to pair the six quote characters of an open+close triple
+        // quote as (empty, content, empty), which strips the docstring prose as a
+        // side effect. This test locks in that (accidental but correct) behavior.
+        let content = "\"\"\"\nUse forward slashes for the path.\nIgnore hidden dotfiles.\n\"\"\"\ndef helper(): pass";
+        let tokens = extract_mention_tokens(content, "python");
+        for junk in ["Use", "forward", "slashes", "Ignore", "hidden", "dotfiles"] {
+            assert!(
+                !tokens.iter().any(|t| t == junk),
+                "unexpected junk token: {junk}"
+            );
+        }
+        assert!(tokens.iter().any(|t| t == "helper"));
+    }
+
+    #[test]
+    fn unterminated_block_comment_at_eof_does_not_panic() {
+        let out = strip_comments_and_strings("keep_me /* never closes", "rust");
+        assert!(out.contains("keep_me"));
+        assert!(!out.contains("never"));
+        assert!(!out.contains("closes"));
+    }
+
+    #[test]
+    fn unterminated_string_at_eof_does_not_panic() {
+        let out = strip_comments_and_strings(r#"keep_me "unterminated string"#, "rust");
+        assert!(out.contains("keep_me"));
+        assert!(!out.contains("unterminated"));
+    }
+
+    #[test]
+    fn unicode_content_in_comments_and_strings_does_not_panic() {
+        // Hand-rolled scanners often index by byte offset and panic on a non-ASCII
+        // char boundary; this implementation scans over `Vec<char>`, so multi-byte
+        // content must strip cleanly without panicking.
+        let out = strip_comments_and_strings(
+            "let dirPath = x; // caché déjà vu 日本語 emoji 🎉 note",
+            "rust",
+        );
+        assert!(out.contains("dirPath"));
+        assert!(!out.contains("caché"));
+        assert!(!out.contains("日本語"));
+
+        let out2 = strip_comments_and_strings(r#"let s = "héllo 世界"; keep_me"#, "rust");
+        assert!(out2.contains("keep_me"));
+        assert!(!out2.contains("héllo"));
+        assert!(!out2.contains("世界"));
     }
 }
