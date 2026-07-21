@@ -340,13 +340,9 @@ spelunk-server --embedding-url http://127.0.0.1:1234
 There is no embedding-model flag: `spelunk` always computes 896-dim
 F2LLM-v2-330M vectors, and your endpoint must serve that model. (A legacy
 `SPELUNK_EMBEDDING_MODEL` / `--embedding-model` is ignored, with a startup
-warning, rather than honoured.) `--embedding-dim` still exists so an endpoint
-whose vectors differ in dimension can be matched, but changing it means you are
-running a different model at your own risk — the server records the dimension on
-the first write and rejects later writes that disagree (see
-[Embedding dimension](server-setup.md#embedding-dimension)). Re-embedding an existing
-index through a new endpoint needs a full re-index (`spelunk index --force`),
-since unchanged files are otherwise skipped.
+warning, rather than honoured.) Re-embedding an existing index through a new
+endpoint needs a full re-index (`spelunk index --force`), since unchanged files
+are otherwise skipped.
 
 Tune the per-request embedding batch ceiling at index time with
 `spelunk index --batch-size <n>` if a slow or memory-constrained endpoint
