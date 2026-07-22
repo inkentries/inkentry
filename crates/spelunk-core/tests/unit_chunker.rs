@@ -354,7 +354,7 @@ fn no_docstring_when_python_decorator_has_none_above_it() {
     assert_eq!(f.docstring, None);
 }
 
-// ── docstring on the first documented member of a block (spelunk-oss^257) ──
+// ── docstring on the first documented member of a block ──
 //
 // tree-sitter-python attaches a comment that leads the first statement of a
 // class/function body as a child of the *enclosing* class_definition /
