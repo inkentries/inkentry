@@ -10,6 +10,8 @@ pub(super) async fn memory_show(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    super::outbox::poll_and_apply(cfg, mem_path).await;
+
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     match backend.get(args.id).await? {
         None => anyhow::bail!("No memory entry with id {}.", args.id),

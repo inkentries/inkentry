@@ -4,6 +4,8 @@ pub mod db;
 pub mod embed_hub;
 pub mod handlers;
 pub mod rate_limiter;
+pub mod relay;
+pub mod relay_handlers;
 pub mod security;
 
 use std::sync::{Arc, RwLock};
@@ -197,6 +199,11 @@ pub struct AppState {
     /// Effective UID of the process that started the server (Unix); `None` on Windows.
     /// CLI warns when this differs from the connecting user's UID (multi-user host).
     pub started_by: Option<u32>,
+    /// ADR-037 P2: this instance's local-relay sessions (outbound-client role
+    /// against a team `server_url`, one per registered project). See
+    /// [`relay`] module docs for why this is a distinct role from the
+    /// `/memory*` team-hosting routes above.
+    pub relay: relay::RelayRegistry,
 }
 
 pub fn default_conflict_threshold() -> f32 {
@@ -441,6 +448,14 @@ pub fn router_with_limits(
             "/v1/projects/{project_id}/llm/complete",
             post(handlers::llm_complete),
         )
+        // ── ADR-037 P2 local relay (see `relay` module docs) ────────────────
+        // Local-only surface: the CLI on the same machine is the only
+        // intended caller. Same `auth_middleware`/timeout/limits as every
+        // other route in this router — no new unauthenticated state-mutating
+        // endpoint (item 39).
+        .route("/local/relay/push", post(relay_handlers::relay_push))
+        .route("/local/relay/poll", get(relay_handlers::relay_poll))
+        .route("/local/relay/ack", post(relay_handlers::relay_ack))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

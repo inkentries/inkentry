@@ -178,6 +178,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
+    crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
 
     let be = match args.backend.as_str() {
         "git-notes" => Some("git-notes"),

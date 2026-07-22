@@ -401,7 +401,7 @@ async fn pull_and_apply(local: &MemoryStore, client: &CloudSyncClient) -> Result
 ///
 /// Falls back to "now" if the server sends a value we cannot parse, so a single
 /// odd row never aborts the whole sync.
-fn parse_iso_to_secs(s: &str) -> i64 {
+pub(super) fn parse_iso_to_secs(s: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| crate::storage::now_secs())

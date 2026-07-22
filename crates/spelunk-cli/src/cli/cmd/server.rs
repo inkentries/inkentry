@@ -422,6 +422,21 @@ pub async fn server(args: ServerArgs) -> Result<()> {
 
 // ── Public bootstrap API ──────────────────────────────────────────────────────
 
+/// Probe for an already-running local spelunk-server daemon (the one
+/// `spelunk server start`/[`ensure_server_running`] manages), without
+/// starting one. Returns its port if `/v1/health` responds.
+///
+/// This is the non-starting half of ADR-037 P2's D6 auto-start gate: a
+/// `local_first` write nudges the reconciler only if this returns `Some`, or
+/// (when interactive) after first calling [`ensure_server_running`] itself —
+/// this function never spawns anything on its own.
+pub(crate) async fn probe_local_relay_port() -> Option<u16> {
+    let state_dir = spelunk_state_dir().ok()?;
+    let port = read_port(&state_dir)?;
+    probe_health(port).await?;
+    Some(port)
+}
+
 /// Ensure a local spelunk-server is running.
 ///
 /// Returns `(port, freshly_started)`. Idempotent: if the server is already
@@ -988,6 +1003,7 @@ mod tests {
     // ── spelunk_state_dir ────────────────────────────────────────────────────
 
     #[test]
+    #[serial(server_state_dir_env)]
     fn state_dir_contains_spelunk() {
         let dir = spelunk_state_dir().expect("state dir");
         assert!(
@@ -1237,6 +1253,73 @@ mod tests {
             &db.to_string_lossy().into_owned(),
             "daemon arg --db value should match supplied db path"
         );
+    }
+
+    // ── probe_local_relay_port: non-starting local-daemon detection (D6) ─────
+
+    /// Restores `SPELUNK_STATE_DIR` on drop, so a panic mid-test can't leak a
+    /// mutated env var into other tests. Mirrors `PathGuard` above.
+    struct StateDirGuard(Option<std::ffi::OsString>);
+    impl StateDirGuard {
+        fn set(dir: &Path) -> Self {
+            let prev = std::env::var_os("SPELUNK_STATE_DIR");
+            unsafe { std::env::set_var("SPELUNK_STATE_DIR", dir) };
+            Self(prev)
+        }
+    }
+    impl Drop for StateDirGuard {
+        fn drop(&mut self) {
+            // SAFETY: `#[serial(server_state_dir_env)]` on every test using
+            // this guard serialises against all others touching the var.
+            unsafe {
+                match &self.0 {
+                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn probe_local_relay_port_none_when_no_state_dir_at_all() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = StateDirGuard::set(&tmp.path().join("nonexistent"));
+        // No port file written at all: must return None without any network call.
+        assert_eq!(probe_local_relay_port().await, None);
+    }
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn probe_local_relay_port_none_when_port_file_present_but_unhealthy() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = StateDirGuard::set(tmp.path());
+        // A stale port file (nothing listening) must not be reported as running.
+        std::fs::write(port_path(tmp.path()), b"19999\n").unwrap();
+        assert_eq!(probe_local_relay_port().await, None);
+    }
+
+    #[tokio::test]
+    #[serial(server_state_dir_env)]
+    async fn probe_local_relay_port_some_when_health_responds() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instance_id": "x"})),
+            )
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let _guard = StateDirGuard::set(tmp.path());
+        let port = server.address().port();
+        std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
+
+        assert_eq!(probe_local_relay_port().await, Some(port));
     }
 
     // ── classify_running_server (PID-reuse + hung-server handling) ───────────

@@ -77,5 +77,9 @@ pub(super) async fn memory_supersede(
     } else {
         anyhow::bail!("No active memory entry with id {} (old).", args.old_id);
     }
+
+    // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
+    // `local_first` supersede's outbox drains promptly. See `outbox.rs`.
+    super::outbox::nudge_after_write(cfg, mem_path).await;
     Ok(())
 }

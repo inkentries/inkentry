@@ -73,6 +73,22 @@ impl MemoryStore {
         Ok(uuid)
     }
 
+    /// Local note id carrying the given stable `uuid` (the local identity
+    /// pushed as the cloud `external_id`), if any. The forward counterpart to
+    /// [`Self::uuid_for`]; used to apply a relayed push-ack (`external_id` ->
+    /// `remote_id`) back onto the originating row.
+    pub fn note_id_for_uuid(&self, uuid: &str) -> Result<Option<i64>> {
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM notes WHERE uuid = ?1",
+                rusqlite::params![uuid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     /// Record the cloud-minted id for a local note (after a successful push or
     /// when first seen on pull). Idempotent.
     pub fn set_remote_id(&self, note_id: i64, remote_id: &str) -> Result<()> {
@@ -276,5 +292,21 @@ impl MemoryStore {
             .optional()?
             .flatten();
         Ok(cursor)
+    }
+
+    /// Count of active (non-archived) rows still in the push outbox
+    /// (`remote_id IS NULL`), for the quiet `spelunk status` "N pending" line.
+    ///
+    /// A read, not a mutation: unlike [`Self::rows_for_sync`] this never calls
+    /// [`Self::ensure_uuid`] and never materializes full rows, so calling it
+    /// repeatedly (e.g. every `status` invocation) cannot itself change what a
+    /// concurrent `rows_for_sync` sees.
+    pub fn pending_sync_count(&self) -> Result<i64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM notes WHERE status = 'active' AND remote_id IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n)
     }
 }

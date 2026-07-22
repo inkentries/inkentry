@@ -60,5 +60,9 @@ pub(super) async fn memory_archive(
     } else {
         anyhow::bail!("No active memory entry with id {}.", args.id);
     }
+
+    // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
+    // `local_first` archive's outbox drains promptly. See `outbox.rs`.
+    super::outbox::nudge_after_write(cfg, mem_path).await;
     Ok(())
 }

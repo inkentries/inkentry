@@ -16,6 +16,7 @@ pub(super) async fn memory_search(
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     super::reconcile::maybe_emit_nudge(mem_path, cfg);
+    super::outbox::poll_and_apply(cfg, mem_path).await;
 
     // Honor the auto-discovered server tier: loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`, so build an

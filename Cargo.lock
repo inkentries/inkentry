@@ -5261,6 +5261,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "spelunk-core",
+ "spelunk-server",
  "sqlite-vec",
  "tempfile",
  "tokio",

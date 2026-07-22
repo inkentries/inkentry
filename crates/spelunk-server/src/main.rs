@@ -311,6 +311,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         rate_limiter,
         instance_id,
         started_by,
+        relay: spelunk_server::relay::RelayRegistry::new(),
     };
 
     // Keep a handle to the embedder slot so the background load task can flip it

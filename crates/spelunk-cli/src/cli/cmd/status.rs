@@ -20,7 +20,7 @@ use crate::{
     capability::{self, Tier},
     config::Config,
     registry::{Registry, resolve_project_context},
-    storage::{Database, open_memory_backend},
+    storage::{Database, MemoryStore, open_memory_backend},
 };
 
 /// Stable JSON schema for `spelunk status --format json` (issue #269).
@@ -45,11 +45,16 @@ use crate::{
 /// - `memory_backend` — stable identifier for the active memory backend:
 ///   `"sqlite"`, `"git-notes"`, or `"remote"` (see issue #308)
 ///
-/// Additional fields (`tier`, `mode`, `server_url`, `capabilities`,
-/// `embedder_state`, `embedding_count`, `embedding_pending`,
-/// `embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`) are
-/// present for backward compatibility and richer tooling; treat them as
-/// unstable extensions.
+/// Additional fields (`tier`, `mode`, `sync_pending`, `sync_last_synced_at`,
+/// `server_url`, `capabilities`, `embedder_state`, `embedding_count`,
+/// `embedding_pending`, `embed_worker_alive`, `embed_tokens`,
+/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
+/// richer tooling; treat them as unstable extensions.
+///
+/// `sync_pending`/`sync_last_synced_at` (ADR-037 P2) are `null` unless `mode`
+/// is `"local_first"`: the outbox pending count and the local relay's last
+/// successful push-ack/pull-apply time (ISO-8601 UTC), or `null` when nothing
+/// has synced yet.
 /// `embedder_state` mirrors the server's `/v1/health` readiness
 /// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
 /// offline or when the reachable server pre-dates the readiness field.
@@ -91,6 +96,32 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             };
         let usage_map: std::collections::HashMap<&str, i64> =
             usage.iter().map(|(c, n)| (c.as_str(), *n)).collect();
+
+        // ADR-037 P2, item 35: additive-only JSON extensions. `null` under any
+        // mode other than `local_first` (item 38: `cloud_first` has no local
+        // write queue; `offline` has no sync configuration).
+        //
+        // Poll-and-apply BEFORE reading the pending count, not after: a poll
+        // in this same call can apply push-acks/pulls that reduce (or, for a
+        // pull, increase) what's actually outstanding. Reading pending first
+        // would report the pre-poll count next to a same-instant
+        // `last_synced_at`, understating how current the two fields actually
+        // are together.
+        let (sync_pending, sync_last_synced_at): (Option<i64>, Option<String>) =
+            if cfg.resolve_mode() == spelunk_core::config::SyncMode::LocalFirst {
+                let last_synced_at =
+                    crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path)
+                        .await
+                        .and_then(|p| p.last_synced_at)
+                        .and_then(|ts| chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0))
+                        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                let pending = MemoryStore::open(&mem_path)
+                    .ok()
+                    .and_then(|s| s.pending_sync_count().ok());
+                (pending, last_synced_at)
+            } else {
+                (None, None)
+            };
 
         // has_semantic_search: true only when a Server tier is reachable and it
         // advertises the search.semantic capability.
@@ -176,6 +207,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 // ── Extensions (backward-compat, may change) ─────────────────
                 "tier": tier_str,
                 "mode": cfg.resolve_mode().as_str(),
+                "sync_pending": sync_pending,
+                "sync_last_synced_at": sync_last_synced_at,
                 "server_url": tier_url,
                 "capabilities": caps_json,
                 "embedder_state": embedder_state_json,
@@ -299,7 +332,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     };
 
     // ── Capability tier section ───────────────────────────────────────────────
-    print_tier_section(tier, &cfg, &mem_label);
+    print_tier_section(tier, &cfg, &mem_label, &mem_path_text).await;
 
     if let Some(p) = &resolved.project {
         println!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
@@ -395,7 +428,14 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
 /// `mem_label` is the resolved memory line (ADR-067 D3): derived from the opened
 /// backend's `backend_kind()`, never inferred from the capability tier.
-fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
+/// `mem_path` is the project's `memory.db` path, threaded through to
+/// [`sync_mode_line`] for the ADR-037 P2 pending/last-synced extension.
+async fn print_tier_section(
+    tier: &Tier,
+    cfg: &Config,
+    mem_label: &str,
+    mem_path: &std::path::Path,
+) {
     match tier {
         Tier::Offline => {
             let server_hint = if cfg.server_url.is_some() {
@@ -407,7 +447,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
                 "  [set server_url to enable semantic search]".to_string()
             };
             println!("Capability tier:  \x1b[33mOffline\x1b[0m");
-            if let Some(line) = sync_mode_line(cfg) {
+            if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");
             }
             println!("  search          ast-grep + text{server_hint}");
@@ -430,7 +470,7 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
                 url.clone()
             };
             println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url_label})\x1b[0m");
-            if let Some(line) = sync_mode_line(cfg) {
+            if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");
             }
             let search_label = if caps.search_semantic {
@@ -465,11 +505,67 @@ fn print_tier_section(tier: &Tier, cfg: &Config, mem_label: &str) {
 /// there is no sync configuration to surface. No call to action: the background
 /// reconciler owns convergence, so status must not pre-teach a manual `spelunk
 /// sync` workflow.
-fn sync_mode_line(cfg: &Config) -> Option<String> {
+///
+/// ADR-037 P2: under `local_first`, this same line additionally carries a
+/// quiet pending-count / last-synced clause (item 31) — never a second,
+/// separate line. `cloud_first` and `offline` render the bare mode word only
+/// (items 37/38): `cloud_first` has no local write queue to report on, and
+/// `offline` has no sync configuration to poll.
+async fn sync_mode_line(cfg: &Config, mem_path: &std::path::Path) -> Option<String> {
     if cfg.server_url.is_none() && cfg.mode.is_none() {
         return None;
     }
-    Some(format!("  {:<16}{}", "mode", cfg.resolve_mode().as_str()))
+    let mode = cfg.resolve_mode();
+    let mut line = format!("  {:<16}{}", "mode", mode.as_str());
+    if mode == spelunk_core::config::SyncMode::LocalFirst
+        && let Some(suffix) = sync_status_suffix(cfg, mem_path).await
+    {
+        line.push_str(&suffix);
+    }
+    Some(line)
+}
+
+/// The pending-count / last-synced clause appended to [`sync_mode_line`]
+/// under `local_first`. `None` when there is nothing worth reporting yet (no
+/// pending rows and no recorded sync ever) — a fresh project stays silent
+/// rather than printing a hollow "up to date".
+///
+/// Polls and applies the local relay's buffered state first (item 33: that
+/// state lives in the separate, longer-running `spelunk-server` process, so a
+/// fresh poll here is what makes "last synced" current on this invocation),
+/// and only then reads the pending count: a poll applied in this same call
+/// can itself change what's outstanding, so reading pending first would
+/// report the pre-poll count alongside a same-instant "last synced", making
+/// the two fields inconsistent with each other for this one invocation. The
+/// poll itself is best-effort: with no local relay reachable, `pending` still
+/// comes from the always-available local `pending_sync_count` and "last
+/// synced" is simply omitted.
+async fn sync_status_suffix(cfg: &Config, mem_path: &std::path::Path) -> Option<String> {
+    let store = MemoryStore::open(mem_path).ok()?;
+    let poll = crate::cli::cmd::memory::outbox::poll_and_apply(cfg, mem_path).await;
+    let pending = store.pending_sync_count().ok()?;
+    let last_synced_at = poll.as_ref().and_then(|p| p.last_synced_at);
+    // item 19: a relay-side failure (e.g. an expired-and-unrefreshable bearer)
+    // surfaces here rather than crashing or silently dropping.
+    let last_error = poll.and_then(|p| p.last_error);
+
+    if pending == 0 && last_synced_at.is_none() && last_error.is_none() {
+        return None;
+    }
+    let pending_clause = if pending > 0 {
+        format!("{pending} pending")
+    } else {
+        "up to date".to_string()
+    };
+    let mut clause = match last_synced_at {
+        Some(ts) => format!("{pending_clause}, last synced {}", format_age(ts)),
+        None => pending_clause,
+    };
+    if let Some(err) = last_error {
+        let truncated: String = err.chars().take(80).collect();
+        clause.push_str(&format!(", sync error: {truncated}"));
+    }
+    Some(format!("  \u{b7}  {clause}"))
 }
 
 /// Hint for the `explore` line when the tier is Offline. With a configured
@@ -719,54 +815,389 @@ mod tests {
         unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
     }
 
-    #[test]
+    /// A path that opens as an empty, ephemeral SQLite DB — fine for the mode
+    /// branches that never reach `sync_status_suffix` (cloud_first / offline
+    /// / no-config), which never actually query it.
+    fn unused_mem_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(":memory:")
+    }
+
+    #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_absent_on_solo_default() {
+    async fn mode_line_absent_on_solo_default() {
         clear_no_server_env();
         // No server_url, no explicit mode: nothing to explain, output unchanged.
         let cfg = crate::config::Config::default();
-        assert!(sync_mode_line(&cfg).is_none());
+        assert!(sync_mode_line(&cfg, &unused_mem_path()).await.is_none());
     }
 
-    #[test]
-    #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
         clear_no_server_env();
+        // Isolate from any real local spelunk-server daemon on this machine:
+        // the local_first branch polls the local relay via `SPELUNK_STATE_DIR`.
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let tmp_state = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+
         let cfg = crate::config::Config {
             server_url: Some("https://team.example:7777".to_string()),
             ..Default::default()
         };
-        let line = sync_mode_line(&cfg).expect("server_url set renders a mode line");
+        let line = sync_mode_line(&cfg, &unused_mem_path())
+            .await
+            .expect("server_url set renders a mode line");
+
+        // SAFETY: serialised via #[serial(server_state_dir_env)] against every
+        // other test touching this var.
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
         assert!(line.contains("local_first"), "got: {line}");
         // Neutral indicator only: no manual-sync imperative (the background
         // reconciler owns convergence).
         assert!(!line.contains("spelunk sync"), "got: {line}");
+        // item 32: a fresh, empty memory.db with nothing pending and nothing
+        // ever synced renders no suffix clause at all (no hollow "up to date").
+        assert!(!line.contains("pending"), "got: {line}");
     }
 
-    #[test]
+    // ── items 31/32: pending-count clause, purely from the local outbox ─────
+    // (no relay reachable — the clause must not depend on it for `pending`,
+    // only for `last synced`).
+
+    fn register_sqlite_vec_for_status_tests() {
+        use std::sync::OnceLock;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn mode_line_local_first_shows_pending_count_from_local_outbox_alone() {
+        clear_no_server_env();
+        register_sqlite_vec_for_status_tests();
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        // Empty state dir: no local relay reachable, so this must come from
+        // `pending_sync_count()` alone, never a poll.
+        let tmp_state = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+
+        let tmp_mem = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp_mem.path().join("memory.db");
+        {
+            let store = crate::storage::MemoryStore::open(&mem_path).unwrap();
+            store
+                .add_note("decision", "One", "b", &[], &[], None, None)
+                .unwrap();
+            store
+                .add_note("decision", "Two", "b", &[], &[], None, None)
+                .unwrap();
+        }
+
+        let cfg = crate::config::Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            ..Default::default()
+        };
+        let line = sync_mode_line(&cfg, &mem_path).await.expect("mode line");
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        assert!(line.contains("local_first"), "got: {line}");
+        assert!(line.contains("2 pending"), "got: {line}");
+        // item 36: never a manual-action suggestion, even with pending rows.
+        assert!(!line.contains("spelunk sync"), "got: {line}");
+        // item 33: nothing has synced yet (no relay reachable) — no "last
+        // synced" clause fabricated.
+        assert!(!line.contains("last synced"), "got: {line}");
+    }
+
+    // ── item 33: "last synced" renders once the relay has actually synced ──
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn mode_line_shows_last_synced_after_a_real_relay_round_trip() {
+        clear_no_server_env();
+        register_sqlite_vec_for_status_tests();
+
+        let team_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/batch"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                    "created": 1, "skipped": 0, "failed": 0, "results": []
+                })),
+            )
+            .mount(&team_server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "entries": [], "count": 0
+                })),
+            )
+            .mount(&team_server)
+            .await;
+
+        // A real spelunk-server, in its LOCAL relay role, on an ephemeral port.
+        let db_dir = tempfile::TempDir::new().unwrap();
+        let db =
+            spelunk_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
+                .unwrap();
+        let instance_id = db.get_or_create_instance_id().unwrap();
+        let state = spelunk_server::AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
+            conflict_threshold: spelunk_server::default_conflict_threshold(),
+            embedder: spelunk_server::EmbedderSlot::disabled(),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(
+                1000, 60,
+            )),
+            instance_id,
+            started_by: None,
+            relay: spelunk_server::relay::RelayRegistry::new(),
+        };
+        let app = spelunk_server::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let tmp_state = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        std::fs::write(
+            tmp_state.path().join("server.port"),
+            format!("{relay_port}\n"),
+        )
+        .unwrap();
+
+        let tmp_mem = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp_mem.path().join("memory.db");
+        {
+            let store = crate::storage::MemoryStore::open(&mem_path).unwrap();
+            store
+                .add_note("decision", "One", "b", &[], &[], None, None)
+                .unwrap();
+        }
+
+        let cfg = crate::config::Config {
+            server_url: Some(team_server.uri()),
+            project_id: Some("proj".to_string()),
+            ..Default::default()
+        };
+
+        // Poll until the relay has actually synced (its own detached push
+        // task needs a moment), then read the status line.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut line = None;
+        while std::time::Instant::now() < deadline {
+            let candidate = sync_mode_line(&cfg, &mem_path).await;
+            if candidate
+                .as_deref()
+                .is_some_and(|l| l.contains("last synced"))
+            {
+                line = candidate;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        let line = line.expect("status line must show 'last synced' after the relay syncs");
+        assert!(line.contains("local_first"), "got: {line}");
+        assert!(line.contains("last synced"), "got: {line}");
+        assert!(!line.contains("spelunk sync"), "got: {line}");
+    }
+
+    // ── pending must reflect the SAME call's own poll, not the pre-poll state ─
+    //
+    // `sync_status_suffix` polls (which can apply a push-ack) and reads
+    // `pending_sync_count` in the same call. Reading pending before the poll
+    // would report a stale, pre-apply count next to a same-instant "last
+    // synced" — e.g. "1 pending, last synced 0s ago" for a row that this very
+    // call just finished stamping. This pins the fix: the first call whose
+    // poll actually lands the ack must already show the post-apply count.
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn mode_line_pending_count_reflects_the_same_calls_own_poll_not_the_stale_pre_poll_state()
+    {
+        clear_no_server_env();
+        register_sqlite_vec_for_status_tests();
+
+        let team_server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "entries": [], "count": 0
+                })),
+            )
+            .mount(&team_server)
+            .await;
+
+        // A real spelunk-server, in its LOCAL relay role, on an ephemeral port.
+        let db_dir = tempfile::TempDir::new().unwrap();
+        let db =
+            spelunk_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
+                .unwrap();
+        let instance_id = db.get_or_create_instance_id().unwrap();
+        let state = spelunk_server::AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
+            conflict_threshold: spelunk_server::default_conflict_threshold(),
+            embedder: spelunk_server::EmbedderSlot::disabled(),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(
+                1000, 60,
+            )),
+            instance_id,
+            started_by: None,
+            relay: spelunk_server::relay::RelayRegistry::new(),
+        };
+        let app = spelunk_server::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let tmp_state = tempfile::TempDir::new().unwrap();
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        std::fs::write(
+            tmp_state.path().join("server.port"),
+            format!("{relay_port}\n"),
+        )
+        .unwrap();
+
+        let tmp_mem = tempfile::TempDir::new().unwrap();
+        let mem_path = tmp_mem.path().join("memory.db");
+        let uuid = {
+            let store = crate::storage::MemoryStore::open(&mem_path).unwrap();
+            store
+                .add_note("decision", "One", "b", &[], &[], None, None)
+                .unwrap();
+            store.rows_for_sync(false).unwrap()[0].uuid.clone()
+        };
+        // Mounted with this note's actual uuid so the push handler's ack
+        // round-trips onto the real row (matching `poll_and_apply`'s
+        // `note_id_for_uuid` lookup).
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/projects/proj/memory/batch"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                    "created": 1, "skipped": 0, "failed": 0,
+                    "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+                })),
+            )
+            .mount(&team_server)
+            .await;
+
+        let cfg = crate::config::Config {
+            server_url: Some(team_server.uri()),
+            project_id: Some("proj".to_string()),
+            ..Default::default()
+        };
+
+        // Poll `sync_mode_line` directly (not through a prior nudge) so the
+        // very first call that observes "last synced" is also the call whose
+        // own poll applied the ack: exactly the window the ordering bug lived
+        // in.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut line = None;
+        while std::time::Instant::now() < deadline {
+            let candidate = sync_mode_line(&cfg, &mem_path).await;
+            if candidate
+                .as_deref()
+                .is_some_and(|l| l.contains("last synced"))
+            {
+                line = candidate;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        let line = line.expect("status line must show 'last synced' after the relay syncs");
+        assert!(
+            line.contains("up to date"),
+            "the call that first reports 'last synced' must already reflect its OWN \
+             poll's apply, not a stale pre-poll pending count: got {line}"
+        );
+        assert!(
+            !line.contains("1 pending"),
+            "must never show a pending count for a row this same call just stamped: got {line}"
+        );
+    }
+
+    #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_cloud_first_is_neutral_mode_word() {
+    async fn mode_line_cloud_first_is_neutral_mode_word() {
         clear_no_server_env();
         let cfg = crate::config::Config {
             server_url: Some("https://team.example:7777".to_string()),
             mode: Some(crate::config::SyncMode::CloudFirst),
             ..Default::default()
         };
-        let line = sync_mode_line(&cfg).expect("mode line");
+        let line = sync_mode_line(&cfg, &unused_mem_path())
+            .await
+            .expect("mode line");
         assert!(line.contains("cloud_first"), "got: {line}");
+        // item 38: cloud_first has no local write queue to report on.
+        assert!(!line.contains("pending"), "got: {line}");
     }
 
-    #[test]
+    #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
-    fn mode_line_explicit_offline_shown_even_without_server_url() {
+    async fn mode_line_explicit_offline_shown_even_without_server_url() {
         clear_no_server_env();
         // An explicit mode is sync configuration worth surfacing on its own.
         let cfg = crate::config::Config {
             mode: Some(crate::config::SyncMode::Offline),
             ..Default::default()
         };
-        let line = sync_mode_line(&cfg).expect("explicit mode renders a line");
+        let line = sync_mode_line(&cfg, &unused_mem_path())
+            .await
+            .expect("explicit mode renders a line");
         assert!(line.contains("offline"), "got: {line}");
+        // item 37: offline has no sync configuration to poll.
+        assert!(!line.contains("pending"), "got: {line}");
     }
 
     // ── embedding_state_line: what status knows about its own worker (no guessing) ──

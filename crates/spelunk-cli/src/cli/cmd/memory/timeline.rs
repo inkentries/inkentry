@@ -19,6 +19,8 @@ pub(super) async fn memory_timeline(
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
 
+    super::outbox::poll_and_apply(cfg, mem_path).await;
+
     let sp = super::super::ui::spinner("Embedding query…");
     let client = require_server_client(cfg, "memory timeline")?;
     let blob = embed_query(
