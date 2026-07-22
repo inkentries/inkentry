@@ -178,12 +178,6 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
-    // ADR-037 P2 (items 42-44): apply whatever the local relay has buffered
-    // so a teammate's live-pulled entry is visible without an explicit
-    // `spelunk sync`. Best-effort/error-swallowing, never triggers
-    // `ensure_server_running` (item 43). `mem_path` here is always either an
-    // explicit `--db` override or the fail-closed `require_project_db`
-    // result (ADR-067) — never a placeholder — so no extra gate is needed.
     crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
 
     let be = match args.backend.as_str() {

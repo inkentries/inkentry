@@ -10,13 +10,6 @@ pub(super) async fn memory_show(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // ADR-037 P2 (items 42-44): apply whatever the local relay has buffered
-    // so a teammate's live-pulled entry is visible without an explicit
-    // `spelunk sync`. Best-effort/error-swallowing, never triggers
-    // `ensure_server_running` (item 43). `mem_path` here is always a real,
-    // fail-closed-resolved per-project path (`resolve_memory_store` only
-    // grants the git-notes-carrier/pre-init exemption to `Add`/`List`), so
-    // no placeholder gate is needed.
     super::outbox::poll_and_apply(cfg, mem_path).await;
 
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;

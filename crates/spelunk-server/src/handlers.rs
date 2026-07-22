@@ -3059,7 +3059,7 @@ mod tests {
         assert_eq!(results[2]["status"], json!("created"));
     }
 
-    // ── founder review (PR #728): a dedupe-skip must still carry an id ─────
+    // a dedupe-skip must still carry an id
     //
     // Before this fix, a "skipped" result always carried `id: null`. The
     // ADR-037 P2 local relay stamps a pushed row's `remote_id` from this
