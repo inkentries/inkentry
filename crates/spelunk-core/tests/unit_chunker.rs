@@ -353,3 +353,69 @@ fn no_docstring_when_python_decorator_has_none_above_it() {
         .unwrap();
     assert_eq!(f.docstring, None);
 }
+
+// ── docstring on the first documented member of a block (spelunk-oss^257) ──
+//
+// tree-sitter-python attaches a comment that leads the first statement of a
+// class/function body as a child of the *enclosing* class_definition /
+// function_definition node (a sibling of `body`), not as the first child
+// inside the `block` itself. Only the first member is affected; once there's
+// an earlier statement in the block, the comment is already a normal sibling
+// within it.
+
+#[test]
+fn docstring_captured_for_first_member_of_class_body() {
+    let src = "class Outer:\n    # inner\n    def attributed():\n        pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# inner"));
+}
+
+#[test]
+fn docstring_captured_for_first_decorated_member_of_class_body() {
+    let src = "class Outer:\n    # inner\n    @staticmethod\n    def attributed():\n        pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# inner"));
+}
+
+#[test]
+fn docstring_captured_for_first_statement_of_function_body() {
+    let src = "def outer():\n    # inner\n    def attributed():\n        pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# inner"));
+}
+
+#[test]
+fn docstring_captured_for_first_decorated_statement_of_function_body() {
+    let src = "def outer():\n    # inner\n    @staticmethod\n    def attributed():\n        pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# inner"));
+}
+
+#[test]
+fn no_docstring_for_first_member_of_class_body_when_none_precedes_it() {
+    // First member, no comment at all — must not pick up an unrelated node
+    // one level up (e.g. the class name or `:` token).
+    let src = "class Outer:\n    def attributed():\n        pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring, None);
+}
