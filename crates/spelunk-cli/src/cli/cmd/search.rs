@@ -988,7 +988,7 @@ mod tests {
         }
     }
 
-    /// **Gap check (spelunk-oss#262):** `/v1/health`'s embedder state stays
+    /// **Gap check:** `/v1/health`'s embedder state stays
     /// `ready` while the embed admission queue sheds a `/search` call with
     /// 429 (health is a separate, unaffected endpoint) - so `search_query`'s
     /// failure surfaces here with `embedder_state = Some(Ready)`. There is no

@@ -60,7 +60,7 @@ const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
 /// Bound on how many embed requests may be admitted (in-flight + queued
 /// waiting on the embedder) before the server sheds load with `429` instead
-/// of letting a request join an unbounded wait (spelunk-oss#262).
+/// of letting a request join an unbounded wait.
 ///
 /// The embedder itself only ever runs one request at a time (see
 /// `NativeEmbedder`'s `Mutex` in `spelunk-embed`, intentional and correct —
@@ -129,8 +129,8 @@ mod embed_admission_tests {
 
     /// Once every slot is held, the next acquire is shed immediately with
     /// `429` + the configured `Retry-After` — never blocks waiting for a
-    /// slot to free up (spelunk-oss#262: an unbounded wait is exactly the
-    /// failure mode being fixed).
+    /// slot to free up: an unbounded wait is exactly the failure mode
+    /// being fixed.
     #[test]
     fn sheds_with_busy_error_once_capacity_is_exhausted() {
         let admission = EmbedAdmission::new(1, 9);
@@ -845,8 +845,7 @@ pub enum AppError {
     },
     /// The bounded embed admission queue ([`EmbedAdmission`]) is full: `429`
     /// with `Retry-After`, so a client sheds load explicitly instead of
-    /// joining an unbounded wait behind the mutex-serialized embedder
-    /// (spelunk-oss#262).
+    /// joining an unbounded wait behind the mutex-serialized embedder.
     EmbedderBusy {
         retry_after_secs: u64,
     },

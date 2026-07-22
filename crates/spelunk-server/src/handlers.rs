@@ -947,9 +947,9 @@ pub async fn search_notes(
         "This server has no embedder configured. Semantic memory search is unavailable.",
     )?;
 
-    // Admission control (spelunk-oss#262): same shared mutex-serialized
-    // embedder as `/index/embed` and `project_search`; shed with 429 once the
-    // bounded queue is full instead of queuing silently.
+    // Admission control: same shared mutex-serialized embedder as
+    // `/index/embed` and `project_search`; shed with 429 once the bounded
+    // queue is full instead of queuing silently.
     let _admission = state.embed_admission.try_acquire()?;
 
     // F2LLM QA query prefix — matches the instruction format used for memory documents.
@@ -1414,8 +1414,8 @@ pub async fn index_embed(
         return Ok(octet_stream(Vec::new()));
     }
 
-    // Admission control (spelunk-oss#262): the embedder is mutex-serialized
-    // and processes one request at a time, so a saturated index run must not
+    // Admission control: the embedder is mutex-serialized and processes
+    // one request at a time, so a saturated index run must not
     // let this request join an unbounded wait behind it. Shed with `429`
     // immediately if the bounded queue is already full, rather than parking
     // as another blocking-pool thread on the mutex. Held for the whole embed
@@ -1572,8 +1572,8 @@ pub async fn project_search(
          Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text.",
     )?;
 
-    // Admission control (spelunk-oss#262): a query embed sharing the mutex-
-    // serialized embedder with a running `/index/embed` batch must not queue
+    // Admission control: a query embed sharing the mutex-serialized
+    // embedder with a running `/index/embed` batch must not queue
     // silently behind it until the client's own timeout fires (the observed
     // symptom: `search` reporting "no results" against a live-but-busy
     // server). Shed with 429 instead once the bounded queue is full.
@@ -3510,9 +3510,9 @@ mod tests {
     }
 
     /// Same as [`spawn_test_server_with_embed`], but with the embed admission
-    /// gate injected too — exists so tests can prove the `429` shedding
-    /// behaviour (spelunk-oss#262) with a small, deterministic queue capacity
-    /// instead of the production default.
+    /// gate injected too: exists so tests can prove the `429` shedding
+    /// behaviour with a small, deterministic queue capacity instead of the
+    /// production default.
     async fn spawn_test_server_with_embed_and_admission(
         embedder: super::super::EmbedderSlot,
         request_timeout: std::time::Duration,
@@ -4603,7 +4603,6 @@ mod tests {
     }
 
     // ── Embed admission control (429 on queue saturation) ────────────────────
-    // (spelunk-oss#262)
     //
     // The embedder itself is mutex-serialized (one call at a time) by design
     // (GPU memory / CPU thread-budget reasons in `spelunk-embed`); these tests
@@ -4738,7 +4737,7 @@ mod tests {
         }
     }
 
-    // ── add_note under a saturated embedder (spelunk-oss#262 scope check) ───
+    // ── add_note under a saturated embedder (scope check) ────────────────────
     //
     // `add_note`/`push_memory_batch` are deliberately NOT gated by
     // `EmbedAdmission` (see the task's scope note: they "already catch any
@@ -4746,8 +4745,8 @@ mod tests {
     // in-band `Err` from `embed()`, but a saturated embedder doesn't error
     // quickly, it just makes the caller wait behind the `Mutex`. This proves
     // what actually happens when the embedder is busy longer than the
-    // general request timeout, under the exact load pattern spelunk-oss#262
-    // targets for `index_embed`/`search`/`search_notes`.
+    // general request timeout, under the exact load pattern the embed
+    // admission control targets for `index_embed`/`search`/`search_notes`.
     #[tokio::test]
     async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
         let started = Arc::new(tokio::sync::Notify::new());

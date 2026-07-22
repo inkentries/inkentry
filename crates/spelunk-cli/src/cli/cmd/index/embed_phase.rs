@@ -57,8 +57,8 @@ const CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
     Duration::from_secs(180),
 ];
 
-/// Fallback wait before retrying a `429` (server embed admission queue full,
-/// spelunk-oss#262) when the response carries no usable `Retry-After`. The
+/// Fallback wait before retrying a `429` (server embed admission queue full)
+/// when the response carries no usable `Retry-After`. The
 /// server always sends one in practice; this only guards a legacy/misbehaving
 /// server.
 const DEFAULT_SATURATION_RETRY: Duration = Duration::from_secs(5);
@@ -624,7 +624,7 @@ async fn run_embed_phase_with_backoff(
                 }
                 Err(EmbedBatchError::Saturated(retry_after)) => {
                     // The server is up and reachable but shed this request:
-                    // its bounded embed admission queue is full (spelunk-oss#262).
+                    // its bounded embed admission queue is full.
                     // No batch size fixes that either — retry the same size
                     // after the server's own `Retry-After`, composing with the
                     // connect-failure retry above rather than reusing its
@@ -717,8 +717,8 @@ enum EmbedBatchError {
     /// `reqwest::Error::is_connect`): the server is unreachable, which says
     /// nothing about whether this batch's size is appropriate.
     ConnectFailure(anyhow::Error),
-    /// Server returned 429: its bounded embed admission queue is full
-    /// (spelunk-oss#262), an explicit "shed and back off" signal from a
+    /// Server returned 429: its bounded embed admission queue is full,
+    /// an explicit "shed and back off" signal from a
     /// server that IS up and reachable — unlike `BudgetExceeded`, says
     /// nothing about this batch's size, and unlike `ConnectFailure`, the
     /// server itself names the wait via `Retry-After`.
@@ -1567,9 +1567,9 @@ mod tests {
     }
 
     // ── embed_one_batch: 429 (embed admission queue saturated) ──────────────
-    // (spelunk-oss#262: the server's admission gate sheds a request with 429
-    // + Retry-After instead of letting it queue behind the mutex-serialized
-    // embedder past its own timeout.)
+    // The server's admission gate sheds a request with 429 + Retry-After
+    // instead of letting it queue behind the mutex-serialized embedder past
+    // its own timeout.
 
     #[tokio::test]
     async fn embed_one_batch_classifies_429_as_saturated_with_parsed_retry_after() {
@@ -1794,7 +1794,6 @@ mod tests {
     }
 
     // ── run_embed_phase: honoring the server's 429 admission shedding ───────
-    // (spelunk-oss#262)
 
     #[tokio::test]
     async fn saturated_429_retries_same_batch_after_retry_after_then_succeeds() {

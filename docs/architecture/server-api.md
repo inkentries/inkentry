@@ -135,7 +135,7 @@ If the server has no embedder configured, it returns `400`:
 ```
 
 **Response `429`:** the query embed shares the bounded admission queue in front
-of the mutex-serialized embedder with `/index/embed` (spelunk-oss#262); once
+of the mutex-serialized embedder with `/index/embed`; once
 that queue is full the request is shed immediately rather than queued behind a
 running index, with a `Retry-After` (seconds) header:
 
@@ -199,7 +199,7 @@ concurrently, see [Embedding CPU thread
 budget](../server-setup.md#embedding-cpu-thread-budget)), so a bounded
 admission queue sits in front of it. Once that queue is full the request is
 shed immediately with `429` and a `Retry-After` (seconds) header, instead of
-parking until the caller's own request timeout fires (spelunk-oss#262):
+parking until the caller's own request timeout fires:
 
 ```json
 { "error": "embedder busy, retry shortly", "state": "busy" }

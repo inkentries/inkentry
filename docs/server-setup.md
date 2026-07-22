@@ -625,7 +625,7 @@ uses most of this budget on its own). A batch queuing behind a running index
 no longer waits silently until the caller's own timeout fires: once a bounded
 admission queue in front of the embedder is full, the server sheds the
 request immediately with `429` and a `Retry-After` header instead (see
-`POST /index/embed` in `architecture/server-api.md`, spelunk-oss#262).
+`POST /index/embed` in `architecture/server-api.md`).
 
 ### Non-loopback plaintext binds are refused, no override
 
