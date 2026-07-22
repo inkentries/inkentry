@@ -444,8 +444,9 @@ in `project_id` is used as-is. (See [ADR-005](adr/005-cli-slug-uuid-resolution.m
 
 By default a configured `server_url` runs in `local_first` mode: reads and
 writes stay in each developer's local `memory.db` and the server is a
-converging replica (`spelunk status` shows the active mode; use `spelunk sync`
-to reconcile with the server). Add `mode = "cloud_first"` to the same config to
+converging replica kept in step by a background reconciler (`spelunk status`
+shows the active mode; run `spelunk sync` only when you want to force a
+synchronous reconcile). Add `mode = "cloud_first"` to the same config to
 make the server authoritative for reads and writes; an unreachable server is
 then a hard error rather than a silent local read. See [Team server and sync
 modes](memory.md#team-server-and-sync-modes).
