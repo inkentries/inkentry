@@ -597,21 +597,37 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// below. Python wraps decorator+def in one `decorated_definition` node, so
 /// the walk must start from that parent instead of `node`. TS/Java attach
 /// decorators as a child, so neither case applies there.
+///
+/// Some grammars (Python `class_definition`/`function_definition`, Ruby
+/// `class`/`module`) attach a leading comment as a child of the enclosing
+/// `block`'s own parent, immediately before the `body` field, rather than as
+/// the first child inside the block. That bites only the first documented
+/// member of a body: when `start` has no sibling of its own (nothing else in
+/// its block precedes it), check one level up for that comment-as-child case.
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let start = match node.parent() {
         Some(parent) if parent.kind() == "decorated_definition" => parent,
         _ => *node,
     };
-    let mut prev = start.prev_sibling()?;
-    while prev.kind() == "\n"
-        || prev.kind() == "newline"
-        || prev.kind() == "attribute_item"
-        || prev.is_extra()
-            && prev.kind() != "comment"
-            && prev.kind() != "line_comment"
-            && prev.kind() != "block_comment"
-            && prev.kind() != "doc_comment"
-    {
+    match start.prev_sibling() {
+        Some(prev) => scan_backward_for_comment(prev, src),
+        None => scan_backward_for_comment(start.parent()?.prev_sibling()?, src),
+    }
+}
+
+fn scan_backward_for_comment(mut prev: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    loop {
+        let skip = prev.kind() == "\n"
+            || prev.kind() == "newline"
+            || prev.kind() == "attribute_item"
+            || prev.is_extra()
+                && prev.kind() != "comment"
+                && prev.kind() != "line_comment"
+                && prev.kind() != "block_comment"
+                && prev.kind() != "doc_comment";
+        if !skip {
+            break;
+        }
         prev = prev.prev_sibling()?;
     }
     if matches!(
