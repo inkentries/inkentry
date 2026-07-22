@@ -175,8 +175,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   5s to 180s) instead of shrinking, and no longer feed the rate estimate;
   once those retries are exhausted, indexing falls back to the existing
   manual re-run path unchanged.
-
-## [0.9.4] — 2026-07-17
+- **`spelunk sync` now actually pulls teammates' entries for a client that
+  has already pushed or synced before.** The team server's batch-push
+  endpoint acknowledged each pushed entry with its raw database row id
+  (e.g. `"1"`) instead of its `sync_id`, and the CLI stores whatever id it
+  is acknowledged with as that entry's `remote_id`, then computes its next
+  pull cursor as the greatest `remote_id` it has on file. A small integer
+  string sorts lexically after every real `sync_id` (a UUIDv7, which starts
+  with a hex timestamp), so once a client had pushed anything at all, its
+  next pull matched nothing server-side even when teammates had added newer
+  entries. A fresh client, whose `remote_id` starts unset, never hit this,
+  which is why the fresh-clone case always looked fine while day-to-day team
+  sync quietly stopped receiving updates after the first push. The server
+  now acknowledges pushes with the same `sync_id` `/memory/since` cursors
+  on, so an established client's pull cursor advances correctly.
 
 ### Changed
 
