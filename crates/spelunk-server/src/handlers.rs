@@ -3107,6 +3107,12 @@ mod tests {
              not null, so a caller that lost track of the create can recover it \
              from a plain re-push: {body}"
         );
+        assert_eq!(
+            created_id.len(),
+            36,
+            "the id both branches agree on must actually be a sync_id (UUID), \
+             not the raw row id: {created_id}"
+        );
     }
 
     /// An external_id repeated WITHIN one batch must not crash the request:

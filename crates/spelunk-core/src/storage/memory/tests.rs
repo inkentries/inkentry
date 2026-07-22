@@ -760,6 +760,50 @@ fn max_remote_id_is_the_pull_cursor() {
     );
 }
 
+/// Direct, fast unit test on the cursor's lexical-sort assumption using
+/// genuinely generated `Uuid::now_v7()` values (spelunk-oss story 272/269
+/// hardening), not hand-typed strings: the server mints `sync_id` the same
+/// way, so this proves `MAX(remote_id)` picks the truly newest entry for
+/// real UUIDv7 output, independent of the row insertion order used to
+/// stamp them. A future regression that acks a push with anything other
+/// than a genuine `sync_id` (e.g. a raw autoincrement row id, which sorts
+/// lexically after any current-era UUIDv7's smaller leading hex digits)
+/// would fail here in milliseconds, instead of only surfacing via the
+/// full-server integration test.
+#[test]
+fn max_remote_id_orders_real_uuidv7_values_by_time_not_insertion_order() {
+    let store = open_store();
+
+    let (first_row, _) = store
+        .add_note("note", "first", "b", &[], &[], None, None)
+        .unwrap();
+    let (second_row, _) = store
+        .add_note("note", "second", "b", &[], &[], None, None)
+        .unwrap();
+
+    // Two genuinely generated UUIDv7 values. Sort them ourselves (don't
+    // assume generation order == lexical order across two close calls) and
+    // stamp the lexically SMALLER one onto the row added FIRST, so a
+    // passing result can't be explained by MAX() secretly tracking
+    // insertion/rowid order instead of the UUIDv7 string's own value.
+    let uuid_x = uuid::Uuid::now_v7().to_string();
+    let uuid_y = uuid::Uuid::now_v7().to_string();
+    let (smaller, larger) = if uuid_x < uuid_y {
+        (uuid_x, uuid_y)
+    } else {
+        (uuid_y, uuid_x)
+    };
+    store.set_remote_id(first_row, &smaller).unwrap();
+    store.set_remote_id(second_row, &larger).unwrap();
+
+    assert_eq!(
+        store.max_remote_id().unwrap().as_deref(),
+        Some(larger.as_str()),
+        "MAX(remote_id) must return the lexically largest real UUIDv7, \
+         not whichever row it happens to be stamped on"
+    );
+}
+
 // ── note_id_for_uuid: forward lookup for applying a relayed push-ack ───────
 
 #[test]
