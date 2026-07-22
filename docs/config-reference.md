@@ -68,18 +68,24 @@ normally no reason to change it.
 - **Type:** string, optional
 - **Default:** unset
 
-Model ID for the LLM used by `spelunk explore` and `spelunk memory harvest`. When
-unset, commands that require a chat model are unavailable.
+A local presence flag, not a model selector: when unset, `spelunk explore` is
+hidden from `--help` (it still runs if invoked directly). The value itself is
+never sent to `spelunk-server` and does not choose which chat model actually
+runs; that is resolved by whichever server the CLI reaches. `spelunk memory
+harvest` does not consult this field at all: for both commands, whether a chat
+model is actually available depends on the capability tier (a reachable
+inference server with a model loaded), independent of this setting.
 
 ### `llm_context_length`
 
 - **Type:** integer
 - **Default:** `8192`
 
-Context-window size (tokens) of the configured LLM, used for `spelunk memory
-harvest` and `spelunk explore`. spelunk uses this to split harvest batches that
-would overflow the model's window. Set this to match the context length of the
-model you have loaded.
+Context-window size (tokens) of the configured LLM, used by `spelunk memory
+harvest` (including its `--source claude-code` variant) to split harvest
+batches that would overflow the model's window. Not consulted by `spelunk
+explore`, which has its own `--max-steps` bound instead. Set this to match the
+context length of the model you have loaded.
 
 ### `store_in_git_notes`
 
