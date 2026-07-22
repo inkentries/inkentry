@@ -1,3 +1,4 @@
+use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::Args;
 
@@ -269,9 +270,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         } else {
             // Detailed view per project
             for p in &projects {
-                println!("\x1b[1m{}\x1b[0m", p.root_path.display());
+                cprintln!("\x1b[1m{}\x1b[0m", p.root_path.display());
                 if !p.root_path.exists() {
-                    println!("  \x1b[31m[root path missing from disk]\x1b[0m");
+                    cprintln!("  \x1b[31m[root path missing from disk]\x1b[0m");
                 }
                 println!("  DB: {}", p.db_path.display());
                 println!("  Registered: {}", format_age(p.registered_at));
@@ -285,7 +286,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                             println!("  Last indexed: {}", format_age(ts));
                         }
                     }
-                    Err(_) => println!("  \x1b[2m(no index yet)\x1b[0m"),
+                    Err(_) => cprintln!("  \x1b[2m(no index yet)\x1b[0m"),
                 }
                 let deps = reg.get_deps(p.id)?;
                 if !deps.is_empty() {
@@ -335,7 +336,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     print_tier_section(tier, &cfg, &mem_label, &mem_path_text).await;
 
     if let Some(p) = &resolved.project {
-        println!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
+        cprintln!("Project: \x1b[1m{}\x1b[0m", p.root_path.display());
     }
     println!("Index:      {}", db_path.display());
     println!("Files:      {}", s.file_count);
@@ -367,7 +368,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             tokens.as_ref().map(|t| t.pending_tokens).unwrap_or(0),
             eta,
         ) {
-            println!("{line}");
+            cprintln!("{line}");
         }
     }
     if let Some(ts) = s.last_indexed {
@@ -389,7 +390,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     // Drift signals: files that haven't changed while the project has evolved
     let drift = db.drift_candidates(30, 5).unwrap_or_default();
     if !drift.is_empty() {
-        println!("\n\x1b[33mDrift signals\x1b[0m  (unchanged while project evolved):");
+        cprintln!("\n\x1b[33mDrift signals\x1b[0m  (unchanged while project evolved):");
         println!("  {:<6}  {:<8}  File", "Days", "Callers");
         println!("  {}", "─".repeat(60));
         for d in &drift {
@@ -400,7 +401,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             };
             println!("  {:<6}  {:<8}  {}", d.days_behind, callers, d.path);
         }
-        println!(
+        cprintln!(
             "  \x1b[2mRun `spelunk search \"<topic>\"` to check if these are still relevant.\x1b[0m"
         );
     }
@@ -446,7 +447,7 @@ async fn print_tier_section(
             } else {
                 "  [set server_url to enable semantic search]".to_string()
             };
-            println!("Capability tier:  \x1b[33mOffline\x1b[0m");
+            cprintln!("Capability tier:  \x1b[33mOffline\x1b[0m");
             if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");
             }
@@ -469,7 +470,7 @@ async fn print_tier_section(
             } else {
                 url.clone()
             };
-            println!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url_label})\x1b[0m");
+            cprintln!("Capability tier:  \x1b[32mServer\x1b[0m  \x1b[2m({url_label})\x1b[0m");
             if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");
             }
@@ -486,7 +487,7 @@ async fn print_tier_section(
             // failing embedder lives on an explicit remote server_url.
             let remote_url = (!*auto_discovered).then_some(url.as_str());
             if let Some(line) = embedder_status_line(embedder_state, remote_url) {
-                println!("{line}");
+                cprintln!("{line}");
             }
             println!("  memory          {mem_label}");
             let explore_label = if caps.explore {

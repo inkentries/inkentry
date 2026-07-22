@@ -45,6 +45,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
@@ -903,7 +904,7 @@ async fn cmd_status() -> Result<()> {
 
     match (pid, port) {
         (Some(pid), Some(port)) if pid_is_alive(pid) => {
-            println!("spelunk-server  \x1b[32mrunning\x1b[0m");
+            cprintln!("spelunk-server  \x1b[32mrunning\x1b[0m");
             println!("  PID:   {pid}");
             println!("  Port:  {port}");
             println!("  Log:   {}", log_path(&state_dir).display());
@@ -920,20 +921,20 @@ async fn cmd_status() -> Result<()> {
                     }
                 }
                 None => {
-                    println!("  URL:   http://127.0.0.1:{port}  \x1b[31m(unreachable)\x1b[0m");
+                    cprintln!("  URL:   http://127.0.0.1:{port}  \x1b[31m(unreachable)\x1b[0m");
                 }
             }
         }
         (Some(pid), _) if pid_is_alive(pid) => {
-            println!("spelunk-server  \x1b[33mrunning\x1b[0m (port unknown)");
+            cprintln!("spelunk-server  \x1b[33mrunning\x1b[0m (port unknown)");
             println!("  PID: {pid}");
         }
         (Some(pid), _) => {
-            println!("spelunk-server  \x1b[31mstopped\x1b[0m (stale pid={pid})");
+            cprintln!("spelunk-server  \x1b[31mstopped\x1b[0m (stale pid={pid})");
             println!("  Run `spelunk server start` to start.");
         }
         (None, _) => {
-            println!("spelunk-server  \x1b[31mnot started\x1b[0m");
+            cprintln!("spelunk-server  \x1b[31mnot started\x1b[0m");
             println!("  Run `spelunk server start` to start.");
         }
     }

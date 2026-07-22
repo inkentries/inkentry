@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use super::super::color::cprintln;
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     capability,
@@ -408,7 +409,7 @@ async fn memory_harvest_git(
             };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
-            println!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
+            cprintln!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
             stored += 1;
         }
     }
@@ -771,7 +772,7 @@ async fn memory_harvest_failures(
             };
 
             let short_sha = &full_sha[..full_sha.len().min(8)];
-            println!("  + [antipattern] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
+            cprintln!("  + [antipattern] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
             stored += 1;
         }
     }

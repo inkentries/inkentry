@@ -40,6 +40,11 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
+    /// Color output: auto (default, on when stdout is a terminal and
+    /// NO_COLOR is unset), always, or never
+    #[arg(long, global = true, value_enum, default_value_t = cmd::ColorChoice::Auto)]
+    pub color: cmd::ColorChoice,
+
     #[command(subcommand)]
     pub command: Command,
 }

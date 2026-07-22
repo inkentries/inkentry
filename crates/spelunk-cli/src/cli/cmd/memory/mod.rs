@@ -1,3 +1,4 @@
+use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
@@ -517,7 +518,7 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         .as_deref()
         .map(|p| format!("  \x1b[36m[from: {p}]\x1b[0m"))
         .unwrap_or_default();
-    println!(
+    cprintln!(
         "\x1b[1m#{id}\x1b[0m  \x1b[33m[{kind}]\x1b[0m  {title}{archived}{dist_fmt}{source}",
         id = n.id,
         kind = n.kind,
@@ -530,9 +531,9 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         },
         source = source_badge,
     );
-    println!("     \x1b[2m{}\x1b[0m", format_age(n.created_at));
+    cprintln!("     \x1b[2m{}\x1b[0m", format_age(n.created_at));
     if let Some(valid_at) = n.valid_at {
-        println!("     \x1b[2mvalid_at: {}\x1b[0m", format_age(valid_at));
+        cprintln!("     \x1b[2mvalid_at: {}\x1b[0m", format_age(valid_at));
     }
     if !n.tags.is_empty() {
         println!("     tags: {}", n.tags.join(", "));
@@ -541,18 +542,18 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         println!("     files: {}", n.linked_files.join(", "));
     }
     if let Some(sup) = n.superseded_by {
-        println!("     \x1b[2msuperseded by #{sup}\x1b[0m");
+        cprintln!("     \x1b[2msuperseded by #{sup}\x1b[0m");
     }
     if !matches!(n.kind.as_str(), "question" | "answer") {
         let preview: Vec<&str> = n.body.lines().take(2).collect();
         for line in &preview {
-            println!("     \x1b[2m{line}\x1b[0m");
+            cprintln!("     \x1b[2m{line}\x1b[0m");
         }
         if n.body.lines().count() > 2 {
-            println!("     \x1b[2m…\x1b[0m");
+            cprintln!("     \x1b[2m…\x1b[0m");
         }
     } else {
-        println!(
+        cprintln!(
             "     \x1b[2m(use `spelunk memory show {}` to read body)\x1b[0m",
             n.id
         );

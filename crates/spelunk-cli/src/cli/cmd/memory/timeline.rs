@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::super::color::cprintln;
 use super::super::helpers::{embed_query, require_server_client};
 use super::super::status::format_age;
 use super::{MemoryTimelineArgs, backend_err};
@@ -45,12 +46,12 @@ pub(super) async fn memory_timeline(
     match crate::utils::effective_format(&args.format) {
         "json" => println!("{}", serde_json::to_string_pretty(&notes)?),
         _ => {
-            println!("\x1b[1mTimeline: {}\x1b[0m\n", args.query);
+            cprintln!("\x1b[1mTimeline: {}\x1b[0m\n", args.query);
             let (active, superseded): (Vec<_>, Vec<_>) =
                 notes.iter().partition(|n| n.status == "active");
 
             if !active.is_empty() {
-                println!("\x1b[32mActive\x1b[0m");
+                cprintln!("\x1b[32mActive\x1b[0m");
                 for n in &active {
                     print_timeline_entry(n);
                 }
@@ -59,7 +60,7 @@ pub(super) async fn memory_timeline(
                 if !active.is_empty() {
                     println!();
                 }
-                println!("\x1b[2mSuperseded / Archived\x1b[0m");
+                cprintln!("\x1b[2mSuperseded / Archived\x1b[0m");
                 for n in &superseded {
                     print_timeline_entry(n);
                 }
@@ -86,7 +87,7 @@ fn print_timeline_entry(n: &crate::storage::memory::Note) {
         .invalid_at
         .map(|t| format!(" \x1b[2m– {}\x1b[0m", format_age(t)))
         .unwrap_or_default();
-    println!(
+    cprintln!(
         " {marker} \x1b[36m{}\x1b[0m  \x1b[1m[{}] #{} {}\x1b[0m{sup}{short_ref}{inv}",
         format_age(ts),
         n.kind,
@@ -95,5 +96,5 @@ fn print_timeline_entry(n: &crate::storage::memory::Note) {
     );
     let excerpt: String = n.body.chars().take(80).collect();
     let ellipsis = if n.body.len() > 80 { "…" } else { "" };
-    println!("     \x1b[2m{excerpt}{ellipsis}\x1b[0m");
+    cprintln!("     \x1b[2m{excerpt}{ellipsis}\x1b[0m");
 }
