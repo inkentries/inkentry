@@ -145,7 +145,7 @@
           "index"
         ],
         "summary": "Generate embeddings for code chunks. The server encodes each chunk and returns the\nvectors. **The server does not store the vectors** — the CLI is the only persistent\nstore for index data.",
-        "description": "Returns 400 if no embedder is configured.\nReturns 413 if the batch exceeds 256 chunks.",
+        "description": "Returns 400 if no embedder is configured.\nReturns 413 if the batch exceeds 256 chunks.\nReturns 429 (with `Retry-After`) if the embed admission queue is full.",
         "operationId": "index_embed",
         "parameters": [
           {
@@ -197,6 +197,16 @@
           },
           "413": {
             "description": "Batch exceeds 256 chunks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Embed admission queue full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {
@@ -670,6 +680,16 @@
           },
           "404": {
             "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Embed admission queue full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {
@@ -1184,6 +1204,16 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Embed admission queue full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {

@@ -968,6 +968,10 @@ mod tests {
             auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
             conflict_threshold: spelunk_server::default_conflict_threshold(),
             embedder: spelunk_server::EmbedderSlot::disabled(),
+            embed_admission: spelunk_server::EmbedAdmission::new(
+                spelunk_server::EMBED_QUEUE_CAPACITY,
+                spelunk_server::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(
@@ -1075,6 +1079,10 @@ mod tests {
             auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
             conflict_threshold: spelunk_server::default_conflict_threshold(),
             embedder: spelunk_server::EmbedderSlot::disabled(),
+            embed_admission: spelunk_server::EmbedAdmission::new(
+                spelunk_server::EMBED_QUEUE_CAPACITY,
+                spelunk_server::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(

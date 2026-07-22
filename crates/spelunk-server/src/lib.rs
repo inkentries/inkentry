@@ -58,6 +58,112 @@ const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 /// including the `/memory/stream` SSE poll loop.
 const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
+/// Bound on how many embed requests may be admitted (in-flight + queued
+/// waiting on the embedder) before the server sheds load with `429` instead
+/// of letting a request join an unbounded wait (spelunk-oss#262).
+///
+/// The embedder itself only ever runs one request at a time (see
+/// `NativeEmbedder`'s `Mutex` in `spelunk-embed`, intentional and correct —
+/// GPU memory and CPU thread-budget reasons); this bound is unrelated to that
+/// concurrency-of-one, it caps how many callers are allowed to *wait* for
+/// their turn. A handful is enough for the normal case (one big index batch
+/// plus a couple of interactive `search`/`memory search` queries) without
+/// letting a slow index turn every other request into a silent hang.
+pub const EMBED_QUEUE_CAPACITY: usize = 4;
+
+/// `Retry-After` (seconds) sent with a `429` when the embed admission queue is
+/// full. Matches the `Retry-After: 5` already used for `EmbedderWarmingUp`'s
+/// transient case, so CLI clients have one retry cadence to reason about
+/// regardless of which transient embed condition they hit.
+pub const EMBED_BUSY_RETRY_AFTER_SECS: u64 = 5;
+
+/// A permit held for the duration of one embed request. Dropping it (end of
+/// the holding handler's scope) returns the slot to the queue.
+pub struct EmbedPermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
+
+/// Bounded admission control in front of the shared, mutex-serialized
+/// embedder. See [`EMBED_QUEUE_CAPACITY`].
+#[derive(Clone)]
+pub struct EmbedAdmission {
+    semaphore: Arc<tokio::sync::Semaphore>,
+    retry_after_secs: u64,
+}
+
+impl EmbedAdmission {
+    pub fn new(capacity: usize, retry_after_secs: u64) -> Self {
+        Self {
+            semaphore: Arc::new(tokio::sync::Semaphore::new(capacity)),
+            retry_after_secs,
+        }
+    }
+
+    /// Take a slot if one is free; otherwise `Err(AppError::EmbedderBusy)`
+    /// with this admission gate's configured `Retry-After`. Never waits: a
+    /// full queue is shed immediately, not joined.
+    pub fn try_acquire(&self) -> Result<EmbedPermit, AppError> {
+        match Arc::clone(&self.semaphore).try_acquire_owned() {
+            Ok(permit) => Ok(EmbedPermit(permit)),
+            Err(_) => Err(AppError::EmbedderBusy {
+                retry_after_secs: self.retry_after_secs,
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod embed_admission_tests {
+    use super::{AppError, EmbedAdmission};
+
+    /// A request within the configured bound must be admitted normally: no
+    /// 429, and the permit can be held and dropped like any resource guard.
+    #[test]
+    fn admits_requests_within_capacity() {
+        let admission = EmbedAdmission::new(2, 5);
+        let p1 = admission.try_acquire();
+        assert!(p1.is_ok(), "first of 2 must be admitted");
+        let p2 = admission.try_acquire();
+        assert!(p2.is_ok(), "second of 2 must be admitted");
+    }
+
+    /// Once every slot is held, the next acquire is shed immediately with
+    /// `429` + the configured `Retry-After` — never blocks waiting for a
+    /// slot to free up (spelunk-oss#262: an unbounded wait is exactly the
+    /// failure mode being fixed).
+    #[test]
+    fn sheds_with_busy_error_once_capacity_is_exhausted() {
+        let admission = EmbedAdmission::new(1, 9);
+        let Ok(_permit) = admission.try_acquire() else {
+            panic!("the only slot is free");
+        };
+        let second = admission.try_acquire();
+        assert!(
+            matches!(
+                second,
+                Err(AppError::EmbedderBusy {
+                    retry_after_secs: 9
+                })
+            ),
+            "a second acquire past capacity 1 must be rejected with \
+             AppError::EmbedderBusy{{retry_after_secs: 9}}"
+        );
+    }
+
+    /// Dropping a held permit returns its slot to the pool immediately — the
+    /// mechanism that lets a drained embed queue recover without a restart.
+    #[test]
+    fn dropping_a_permit_frees_its_slot() {
+        let admission = EmbedAdmission::new(1, 5);
+        let permit = admission.try_acquire();
+        assert!(permit.is_ok(), "the only slot is free");
+        drop(permit);
+        let reacquired = admission.try_acquire();
+        assert!(
+            reacquired.is_ok(),
+            "the slot must be available again once the prior permit dropped"
+        );
+    }
+}
+
 /// Readiness state of the server-side embedder.
 ///
 /// The native embedder loads on a background task after the listener binds, so
@@ -186,6 +292,10 @@ pub struct AppState {
     /// `ready`; no embedder at all starts `disabled`. Handlers read the current
     /// state without blocking. See [`EmbedderSlot`].
     pub embedder: EmbedderSlot,
+    /// Bounded admission gate in front of the embedder, shared by every
+    /// embed-consuming handler (`/index/embed`, `/search`,
+    /// `/memory/search`). See [`EmbedAdmission`].
+    pub embed_admission: EmbedAdmission,
     /// Optional LLM backend for `/explore` and `/llm/complete`.
     pub llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
@@ -494,6 +604,28 @@ mod app_error_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// `AppError::EmbedderBusy` must map to `429` carrying the configured
+    /// `Retry-After` value verbatim, not the `503`/`Retry-After: 5` used by
+    /// `EmbedderWarmingUp` — a client must be able to tell "shed, come back
+    /// shortly" (429) apart from "not ready yet" (503).
+    #[tokio::test]
+    async fn embedder_busy_maps_to_429_with_configured_retry_after() {
+        let resp = AppError::EmbedderBusy {
+            retry_after_secs: 7,
+        }
+        .into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = resp
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .expect("429 must carry a Retry-After header")
+            .to_str()
+            .unwrap();
+        assert_eq!(retry_after, "7");
+        let (_, body) = body_string(resp).await;
+        assert!(body.contains("busy"));
+    }
+
     /// A `DimensionMismatch` wrapped in `AppError::Internal` must map to a 400
     /// with the typed, safe message — not fall through to the generic 500.
     #[tokio::test]
@@ -611,6 +743,13 @@ pub enum AppError {
         terminal: bool,
         detail: String,
     },
+    /// The bounded embed admission queue ([`EmbedAdmission`]) is full: `429`
+    /// with `Retry-After`, so a client sheds load explicitly instead of
+    /// joining an unbounded wait behind the mutex-serialized embedder
+    /// (spelunk-oss#262).
+    EmbedderBusy {
+        retry_after_secs: u64,
+    },
     Internal(anyhow::Error),
 }
 
@@ -656,6 +795,18 @@ impl IntoResponse for AppError {
                         .into_response()
                 }
             }
+            AppError::EmbedderBusy { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    retry_after_secs.to_string(),
+                )],
+                Json(serde_json::json!({
+                    "error": "embedder busy, retry shortly",
+                    "state": "busy",
+                })),
+            )
+                .into_response(),
             AppError::Internal(e) => {
                 // Only a known, explicitly-typed user-facing error is ever
                 // surfaced to the client; everything else gets a generic

@@ -932,6 +932,7 @@ pub async fn get_note(
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
+        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -945,6 +946,11 @@ pub async fn search_notes(
         &state,
         "This server has no embedder configured. Semantic memory search is unavailable.",
     )?;
+
+    // Admission control (spelunk-oss#262): same shared mutex-serialized
+    // embedder as `/index/embed` and `project_search`; shed with 429 once the
+    // bounded queue is full instead of queuing silently.
+    let _admission = state.embed_admission.try_acquire()?;
 
     // F2LLM QA query prefix — matches the instruction format used for memory documents.
     let query_text = format!(
@@ -1359,6 +1365,7 @@ impl Drop for EmbedAbandonGuard {
 ///
 /// Returns 400 if no embedder is configured.
 /// Returns 413 if the batch exceeds 256 chunks.
+/// Returns 429 (with `Retry-After`) if the embed admission queue is full.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/index/embed",
@@ -1370,6 +1377,7 @@ impl Drop for EmbedAbandonGuard {
         (status = 200, description = "Embedding vectors as raw little-endian f32 bytes, row-major [n_chunks x dim] in request order (not stored server-side)", content_type = "application/octet-stream"),
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
         (status = 413, description = "Batch exceeds 256 chunks", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
@@ -1405,6 +1413,14 @@ pub async fn index_embed(
     if body.chunks.is_empty() {
         return Ok(octet_stream(Vec::new()));
     }
+
+    // Admission control (spelunk-oss#262): the embedder is mutex-serialized
+    // and processes one request at a time, so a saturated index run must not
+    // let this request join an unbounded wait behind it. Shed with `429`
+    // immediately if the bounded queue is already full, rather than parking
+    // as another blocking-pool thread on the mutex. Held for the whole embed
+    // call so the permit only frees up once this request's turn is done.
+    let _admission = state.embed_admission.try_acquire()?;
 
     // Collect texts, preserving order for reassembly.
     let texts: Vec<&str> = body.chunks.iter().map(|c| c.content.as_str()).collect();
@@ -1521,6 +1537,7 @@ pub struct CodeSearchResponse {
         (status = 200, description = "Query vector (CLI runs KNN locally)", body = CodeSearchResponse),
         (status = 400, description = "No embedder configured or invalid mode", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "search"
@@ -1554,6 +1571,13 @@ pub async fn project_search(
         "semantic/hybrid search requires an embedder. \
          Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text.",
     )?;
+
+    // Admission control (spelunk-oss#262): a query embed sharing the mutex-
+    // serialized embedder with a running `/index/embed` batch must not queue
+    // silently behind it until the client's own timeout fires (the observed
+    // symptom: `search` reporting "no results" against a live-but-busy
+    // server). Shed with 429 instead once the bounded queue is full.
+    let _admission = state.embed_admission.try_acquire()?;
 
     // F2LLM-v2-330M query prefix: instruction + query. Documents are embedded
     // without a prefix; queries must use this format for correct retrieval.
@@ -1935,6 +1959,10 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold,
             embedder: super::super::EmbedderSlot::disabled(),
+            embed_admission: super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -2105,6 +2133,10 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold: 0.92,
             embedder,
+            embed_admission: super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -2659,6 +2691,10 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold: 0.92,
             embedder: super::super::EmbedderSlot::disabled(),
+            embed_admission: super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: Some(Arc::new(NoopLlm)),
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(
@@ -2824,6 +2860,10 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(key.map(str::to_string))),
             conflict_threshold: 0.92,
             embedder: super::super::EmbedderSlot::disabled(),
+            embed_admission: super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -3417,6 +3457,10 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold: 0.92,
             embedder: super::super::EmbedderSlot::disabled(),
+            embed_admission: super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
             llm,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -3453,6 +3497,28 @@ mod tests {
         request_timeout: std::time::Duration,
         embed_request_timeout: std::time::Duration,
     ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
+        spawn_test_server_with_embed_and_admission(
+            embedder,
+            request_timeout,
+            embed_request_timeout,
+            super::super::EmbedAdmission::new(
+                super::super::EMBED_QUEUE_CAPACITY,
+                super::super::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
+        )
+        .await
+    }
+
+    /// Same as [`spawn_test_server_with_embed`], but with the embed admission
+    /// gate injected too — exists so tests can prove the `429` shedding
+    /// behaviour (spelunk-oss#262) with a small, deterministic queue capacity
+    /// instead of the production default.
+    async fn spawn_test_server_with_embed_and_admission(
+        embedder: super::super::EmbedderSlot,
+        request_timeout: std::time::Duration,
+        embed_request_timeout: std::time::Duration,
+        embed_admission: super::super::EmbedAdmission,
+    ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
         register_sqlite_vec();
         let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
             .expect("failed to open in-memory server db");
@@ -3465,6 +3531,7 @@ mod tests {
             auth: Arc::new(ApiKeyAuth::new(None)),
             conflict_threshold: 0.92,
             embedder,
+            embed_admission,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: Arc::new(super::super::rate_limiter::RateLimiter::new(1000, 60)),
@@ -4533,5 +4600,141 @@ mod tests {
             N_REQUESTS,
             "all requests should eventually be admitted once slots free up"
         );
+    }
+
+    // ── Embed admission control (429 on queue saturation) ────────────────────
+    // (spelunk-oss#262)
+    //
+    // The embedder itself is mutex-serialized (one call at a time) by design
+    // (GPU memory / CPU thread-budget reasons in `spelunk-embed`); these tests
+    // cover the layer in FRONT of it — `EmbedAdmission` — which bounds how
+    // many callers may hold a slot waiting their turn before the server sheds
+    // load with 429 instead of letting a request queue silently past its own
+    // timeout.
+
+    /// An embedder that signals `started` the instant it is invoked, then
+    /// blocks until `release` fires — lets a test hold the only admission
+    /// slot open for as long as it needs to prove the *next* request is shed
+    /// immediately rather than queued.
+    struct GatedEmbedder {
+        dim: usize,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl spelunk_core::embeddings::EmbeddingBackend for GatedEmbedder {
+        async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(vec![vec![0.0_f32; self.dim]; texts.len()])
+        }
+
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+    }
+
+    /// **T1:** with the admission queue's only slot held by an in-flight
+    /// request, a second `/index/embed` call must be shed immediately with
+    /// `429` + the configured `Retry-After` — not queue behind the first and
+    /// wait. Once the first request is released, it must still complete
+    /// normally: admission control sheds excess load, it does not break the
+    /// request that WAS within budget.
+    #[tokio::test]
+    async fn index_embed_returns_429_with_retry_after_once_admission_queue_is_saturated() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(GatedEmbedder {
+            dim: 4,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }));
+        let (base, _db) = spawn_test_server_with_embed_and_admission(
+            embedder,
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+            super::super::EmbedAdmission::new(1, 3),
+        )
+        .await;
+
+        let first_base = base.clone();
+        let first = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("{first_base}/v1/projects/timeout-test/index/embed"))
+                .json(&json!({"chunks": [{"chunk_id": "1", "content": "fn f() {}"}]}))
+                .send()
+                .await
+        });
+
+        // Wait for the first request to actually be holding the (only) slot
+        // before firing the second, so this proves saturation shedding, not
+        // an accidental race.
+        started.notified().await;
+
+        let second = reqwest::Client::new()
+            .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({"chunks": [{"chunk_id": "2", "content": "fn g() {}"}]}))
+            .send()
+            .await
+            .expect("a saturated queue must respond immediately (429), not hang");
+
+        assert_eq!(
+            second.status().as_u16(),
+            429,
+            "the second request must be shed once the single admission slot is held"
+        );
+        assert_eq!(
+            second
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .expect("429 must carry Retry-After")
+                .to_str()
+                .unwrap(),
+            "3",
+            "Retry-After must carry this admission gate's configured value"
+        );
+
+        release.notify_one();
+        let first_resp = first
+            .await
+            .expect("first request task panicked")
+            .expect("first request must still complete once its slot is released");
+        assert_eq!(
+            first_resp.status().as_u16(),
+            200,
+            "the admitted request must succeed normally — shedding excess load must not \
+             break the request that was within budget"
+        );
+    }
+
+    /// Control case: sequential requests within the configured capacity never
+    /// see a 429 — the previous test's rejection is specifically about
+    /// exceeding the bound, not embed requests in general.
+    #[tokio::test]
+    async fn index_embed_succeeds_normally_when_within_admission_capacity() {
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(MockEmbedder { dim: 4 }));
+        let (base, _db) = spawn_test_server_with_embed_and_admission(
+            embedder,
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+            super::super::EmbedAdmission::new(2, 3),
+        )
+        .await;
+
+        let client = reqwest::Client::new();
+        for chunk_id in ["1", "2", "3"] {
+            let resp = client
+                .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+                .json(&json!({"chunks": [{"chunk_id": chunk_id, "content": "fn f() {}"}]}))
+                .send()
+                .await
+                .expect("request within admission capacity must succeed");
+            assert_eq!(
+                resp.status().as_u16(),
+                200,
+                "a request within the admission bound must never be shed with 429"
+            );
+        }
     }
 }

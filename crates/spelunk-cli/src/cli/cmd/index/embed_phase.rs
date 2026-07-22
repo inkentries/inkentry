@@ -57,6 +57,19 @@ const CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
     Duration::from_secs(180),
 ];
 
+/// Fallback wait before retrying a `429` (server embed admission queue full,
+/// spelunk-oss#262) when the response carries no usable `Retry-After`. The
+/// server always sends one in practice; this only guards a legacy/misbehaving
+/// server.
+const DEFAULT_SATURATION_RETRY: Duration = Duration::from_secs(5);
+
+/// Safety valve on how many times a batch retries a `429` before giving up
+/// like any other unrecoverable failure. Unlike a connect failure (binary
+/// up/down), the server explicitly tells us when to retry via `Retry-After`,
+/// so this is not expected to trigger in practice — it only bounds the
+/// pathological case of a queue that never drains.
+const MAX_SATURATION_RETRIES: usize = 30;
+
 /// Effective ceiling the calibrated batch size may grow to: `--batch-size`
 /// (0 → `DEFAULT_BATCH_CEILING`) clamped to `MAX_BATCH` and, when advertised,
 /// the server's own `max_batch_chunks` (413 above it). Only an upper bound —
@@ -488,9 +501,12 @@ async fn run_embed_phase_with_backoff(
         // patience (calibration batch 1, no rate estimate yet) or shrink and
         // retry, rather than aborting at 0 embedded. A connect failure is
         // also recoverable, but via a bounded backoff retry at the same size
-        // (see the `ConnectFailure` arm below). Any other failure aborts.
+        // (see the `ConnectFailure` arm below). A 429 (see `Saturated`) is
+        // recoverable the same way, but the wait comes from the server's own
+        // `Retry-After` instead of a fixed schedule. Any other failure aborts.
         let mut escalated_calibration_once = false;
         let mut connect_failures = 0usize;
+        let mut saturation_retries = 0usize;
         let bytes = 'retry: loop {
             let batch_tokens: u64 = chunk_ids_and_texts[cursor..cursor + this_batch_size]
                 .iter()
@@ -606,6 +622,35 @@ async fn run_embed_phase_with_backoff(
                     tokio::time::sleep(backoff).await;
                     continue 'retry;
                 }
+                Err(EmbedBatchError::Saturated(retry_after)) => {
+                    // The server is up and reachable but shed this request:
+                    // its bounded embed admission queue is full (spelunk-oss#262).
+                    // No batch size fixes that either — retry the same size
+                    // after the server's own `Retry-After`, composing with the
+                    // connect-failure retry above rather than reusing its
+                    // fixed schedule (the server already told us how long).
+                    if saturation_retries >= MAX_SATURATION_RETRIES {
+                        report_embed_failure(
+                            &bar,
+                            embedded,
+                            total,
+                            &server_url,
+                            anyhow::anyhow!(
+                                "server embed admission queue stayed saturated after \
+                                 {MAX_SATURATION_RETRIES} retries"
+                            ),
+                        );
+                        return Ok(embedded);
+                    }
+                    saturation_retries += 1;
+                    tracing::info!(
+                        "index/embed: server embedder busy (429), retrying the same batch \
+                         of {this_batch_size} chunk(s) in {retry_after:?} (attempt \
+                         {saturation_retries}/{MAX_SATURATION_RETRIES})",
+                    );
+                    tokio::time::sleep(retry_after).await;
+                    continue 'retry;
+                }
                 Err(EmbedBatchError::Other(e)) => {
                     // Any other failure: prior batches stay committed and a
                     // re-run backfills the rest. Report and stop rather than
@@ -672,8 +717,26 @@ enum EmbedBatchError {
     /// `reqwest::Error::is_connect`): the server is unreachable, which says
     /// nothing about whether this batch's size is appropriate.
     ConnectFailure(anyhow::Error),
+    /// Server returned 429: its bounded embed admission queue is full
+    /// (spelunk-oss#262), an explicit "shed and back off" signal from a
+    /// server that IS up and reachable — unlike `BudgetExceeded`, says
+    /// nothing about this batch's size, and unlike `ConnectFailure`, the
+    /// server itself names the wait via `Retry-After`.
+    Saturated(Duration),
     /// Any other failure (network error, non-408 status, malformed body).
     Other(anyhow::Error),
+}
+
+/// Parse a `Retry-After` header value as whole seconds, falling back to
+/// [`DEFAULT_SATURATION_RETRY`] when absent or not a plain integer (the
+/// server only ever sends delta-seconds, never an HTTP-date).
+fn parse_retry_after(resp: &reqwest::Response) -> Duration {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_SATURATION_RETRY)
 }
 
 /// Send one embed batch and return the raw little-endian f32 response bytes: one
@@ -726,6 +789,10 @@ async fn embed_one_batch(
             "server returned 408 Request Timeout for index/embed \
              (batch of {batch_len} chunk(s) exceeded the server's request budget)"
         )));
+    }
+
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(EmbedBatchError::Saturated(parse_retry_after(&resp)));
     }
 
     let resp = match resp.error_for_status() {
@@ -1398,6 +1465,9 @@ mod tests {
             Err(EmbedBatchError::BudgetExceeded(e)) => panic!(
                 "a refused connection must classify as ConnectFailure, not BudgetExceeded: {e:#}"
             ),
+            Err(EmbedBatchError::Saturated(_)) => {
+                panic!("a refused connection must classify as ConnectFailure, not Saturated")
+            }
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a refused connection must classify as ConnectFailure, not Other: {e:#}")
             }
@@ -1437,6 +1507,9 @@ mod tests {
                 "a slow-but-connected server must classify as BudgetExceeded, not \
                  ConnectFailure: {e:#}"
             ),
+            Err(EmbedBatchError::Saturated(_)) => {
+                panic!("a slow-but-connected server must classify as BudgetExceeded, not Saturated")
+            }
             Err(EmbedBatchError::Other(e)) => panic!(
                 "a slow-but-connected server must classify as BudgetExceeded, not Other: {e:#}"
             ),
@@ -1483,10 +1556,103 @@ mod tests {
                  BudgetExceeded, even when the underlying error also satisfies \
                  is_timeout(): {e:#}"
             ),
+            Err(EmbedBatchError::Saturated(_)) => {
+                panic!("a connect-phase timeout must classify as ConnectFailure, not Saturated")
+            }
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a connect-phase timeout must classify as ConnectFailure, not Other: {e:#}")
             }
             Ok(_) => panic!("192.0.2.1 must never actually accept a connection"),
+        }
+    }
+
+    // ── embed_one_batch: 429 (embed admission queue saturated) ──────────────
+    // (spelunk-oss#262: the server's admission gate sheds a request with 429
+    // + Retry-After instead of letting it queue behind the mutex-serialized
+    // embedder past its own timeout.)
+
+    #[tokio::test]
+    async fn embed_one_batch_classifies_429_as_saturated_with_parsed_retry_after() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "7"))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::Saturated(retry_after)) => {
+                assert_eq!(
+                    retry_after,
+                    Duration::from_secs(7),
+                    "must parse the server's Retry-After value verbatim"
+                );
+            }
+            Err(EmbedBatchError::BudgetExceeded(e)) => {
+                panic!("a 429 must classify as Saturated, not BudgetExceeded: {e:#}")
+            }
+            Err(EmbedBatchError::ConnectFailure(e)) => {
+                panic!("a 429 must classify as Saturated, not ConnectFailure: {e:#}")
+            }
+            Err(EmbedBatchError::Other(e)) => {
+                panic!("a 429 must classify as Saturated, not Other: {e:#}")
+            }
+            Ok(_) => panic!("a 429 response must not classify as success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_one_batch_defaults_retry_after_when_429_header_is_missing() {
+        // A legacy/misbehaving server that sends 429 with no Retry-After must
+        // not crash the classification — fall back to DEFAULT_SATURATION_RETRY
+        // rather than panicking on a missing/unparseable header.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::Saturated(retry_after)) => {
+                assert_eq!(retry_after, DEFAULT_SATURATION_RETRY);
+            }
+            Err(EmbedBatchError::BudgetExceeded(e)) => {
+                panic!("a 429 must classify as Saturated, not BudgetExceeded: {e:#}")
+            }
+            Err(EmbedBatchError::ConnectFailure(e)) => {
+                panic!("a 429 must classify as Saturated, not ConnectFailure: {e:#}")
+            }
+            Err(EmbedBatchError::Other(e)) => {
+                panic!("a 429 must classify as Saturated, not Other: {e:#}")
+            }
+            Ok(_) => panic!("a 429 response must not classify as success"),
         }
     }
 
@@ -1625,6 +1791,99 @@ mod tests {
 
         assert_eq!(embedded, 50);
         assert_eq!(db.stats().unwrap().embedding_count, 50);
+    }
+
+    // ── run_embed_phase: honoring the server's 429 admission shedding ───────
+    // (spelunk-oss#262)
+
+    #[tokio::test]
+    async fn saturated_429_retries_same_batch_after_retry_after_then_succeeds() {
+        // The server's admission queue may be transiently full; the client
+        // must honor `Retry-After` and retry the SAME batch (no shrink,
+        // unlike a 408 — queue depth says nothing about this batch's size)
+        // rather than treating it as an unrecoverable failure.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(2)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(OkEmbedResponder)
+            .mount(&mock)
+            .await;
+
+        let (db, ids) = seed_chunks(10);
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+
+        let cfg = Config::default();
+        let tier = server_tier(mock.uri());
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase(
+            chunk_ids_and_texts,
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            4,
+            &mp,
+        )
+        .await
+        .expect("a transient 429 must not abort the run");
+
+        assert_eq!(
+            embedded, 10,
+            "every chunk must still get embedded once the admission queue's 429s clear"
+        );
+        assert_eq!(db.stats().unwrap().embedding_count, 10);
+    }
+
+    #[tokio::test]
+    async fn saturated_429_gives_up_gracefully_after_max_retries_exhausted() {
+        // Safety valve: if the server's admission queue never drains (or a
+        // misbehaving server always sheds), the run must still terminate
+        // rather than retry forever, and must report progress-so-far (here,
+        // 0) instead of propagating an `Err` that would discard it.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .mount(&mock)
+            .await;
+
+        let (db, ids) = seed_chunks(3);
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+
+        let cfg = Config::default();
+        let tier = server_tier(mock.uri());
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase(
+            chunk_ids_and_texts,
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            4,
+            &mp,
+        )
+        .await
+        .expect("an always-saturated server must not return Err; it stops gracefully");
+
+        assert_eq!(
+            embedded, 0,
+            "a permanently-saturated queue must give up after MAX_SATURATION_RETRIES, not hang \
+             forever"
+        );
     }
 
     #[tokio::test]
