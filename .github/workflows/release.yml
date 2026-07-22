@@ -476,6 +476,13 @@ jobs:
     if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Serializes retries/manual re-runs for the same tag: two overlapping runs
+    # would both push to the same ci/scoop-manifest-<tag> branch and race on
+    # `gh pr create` (the loser errors "pull request already exists" and
+    # fails the job even though the PR the winner opened is fine).
+    concurrency:
+      group: scoop-manifest-${{ github.ref_name }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
