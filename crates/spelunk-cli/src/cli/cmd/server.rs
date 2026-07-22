@@ -1418,13 +1418,36 @@ mod tests {
 
     // ── start lock (single-instance guard) ───────────────────────────────────
 
+    /// Polls `acquire_start_lock` until it succeeds or `timeout` elapses,
+    /// returning the last `Result`. `cargo test` compiles every `#[cfg(test)]`
+    /// module in the crate into one binary, so a `fork()` in an unrelated,
+    /// untagged test elsewhere in that binary can transiently duplicate this
+    /// process's fd table (including an already-released lock fd) and delay
+    /// when `flock`'s refcount actually reaches zero. That window is bounded
+    /// (milliseconds), so a short bounded retry reflects the lock's real
+    /// contract without requiring crate-wide serialization.
+    #[cfg(unix)]
+    fn retry_acquire_start_lock(state_dir: &Path, timeout: Duration) -> Result<StartLock> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match acquire_start_lock(state_dir) {
+                Ok(lock) => return Ok(lock),
+                Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
     /// A second `acquire_start_lock` on the same state dir must fail while the
     /// first guard is still held (serialises concurrent `server start`).
     ///
     /// `#[serial(server_start_lock)]`: this test asserts on `flock` release
     /// timing, which a concurrent `fork()+exec()` in another test can delay (a
     /// forked child transiently inherits the lock fd until it execs). Grouped
-    /// with the process-spawning tests below so they never overlap.
+    /// with the process-spawning tests below so they never overlap each
+    /// other, though untagged subprocess-spawning tests elsewhere in the
+    /// crate's single test binary can still race this one; see
+    /// `retry_acquire_start_lock`.
     #[cfg(unix)]
     #[test]
     #[serial(server_start_lock)]
@@ -1436,8 +1459,26 @@ mod tests {
             "second lock must fail while the first is held"
         );
         drop(first);
-        // Released — a fresh acquire now succeeds.
-        assert!(acquire_start_lock(tmp.path()).is_ok(), "lock frees on drop");
+        // Released, but tolerate the bounded fork-fd race documented above
+        // instead of asserting success on the very first attempt.
+        assert!(
+            retry_acquire_start_lock(tmp.path(), Duration::from_millis(500)).is_ok(),
+            "lock frees on drop"
+        );
+    }
+
+    /// `retry_acquire_start_lock` must still report failure when the lock
+    /// genuinely never frees, not silently pass once the timeout elapses.
+    #[cfg(unix)]
+    #[test]
+    #[serial(server_start_lock)]
+    fn retry_acquire_start_lock_fails_when_lock_never_frees() {
+        let tmp = TempDir::new().unwrap();
+        let _held = acquire_start_lock(tmp.path()).expect("first lock acquires");
+        assert!(
+            retry_acquire_start_lock(tmp.path(), Duration::from_millis(50)).is_err(),
+            "must fail when the lock genuinely never frees within the timeout"
+        );
     }
 
     // ── state file / dir permissions (unix-gated) ───────────────────────────
