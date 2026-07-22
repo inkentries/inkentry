@@ -288,7 +288,8 @@ in CI) to set a shared team credential per developer instead.
 ```toml
 # ~/.config/spelunk/config.toml
 
-# Enable spelunk explore / memory harvest
+# Un-hides `spelunk explore` from --help (cosmetic only; see the field
+# descriptions above for what actually gates explore/harvest availability)
 llm_model = "google/gemma-3n-e4b"
 llm_context_length = 8192
 

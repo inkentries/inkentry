@@ -636,7 +636,7 @@ spelunk memory graph 42 --format json
 
 ## Harvesting from git history
 
-`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires `llm_model` in `~/.config/spelunk/config.toml`.
+`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `spelunk-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/spelunk/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
 
 ```bash
 # Default: last 10 commits
