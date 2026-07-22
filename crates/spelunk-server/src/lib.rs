@@ -113,6 +113,8 @@ impl EmbedAdmission {
 #[cfg(test)]
 mod embed_admission_tests {
     use super::{AppError, EmbedAdmission};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     /// A request within the configured bound must be admitted normally: no
     /// 429, and the permit can be held and dropped like any resource guard.
@@ -160,6 +162,104 @@ mod embed_admission_tests {
         assert!(
             reacquired.is_ok(),
             "the slot must be available again once the prior permit dropped"
+        );
+    }
+
+    /// A panic while a permit is held (e.g. the embed handler's task panics
+    /// mid-embed) must still free the slot: `OwnedSemaphorePermit`'s `Drop`
+    /// runs during unwind like any other destructor, and a panicking tokio
+    /// task is caught at the task boundary (converted to a `JoinError`) not
+    /// escalated to the process, so this is the realistic failure shape.
+    /// Without this, one panic would permanently shrink the effective queue
+    /// capacity by one slot until a server restart.
+    #[tokio::test]
+    async fn a_panic_while_holding_a_permit_still_frees_its_slot() {
+        let admission = EmbedAdmission::new(1, 5);
+
+        let admission_clone = admission.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(_permit) = admission_clone.try_acquire() else {
+                panic!("the only slot is free");
+            };
+            panic!("simulated panic mid-embed, permit still held on this stack frame");
+        });
+        let result = handle.await;
+        assert!(
+            result.is_err(),
+            "the spawned task must have panicked (sanity check on the test itself)"
+        );
+
+        let reacquired = admission.try_acquire();
+        assert!(
+            reacquired.is_ok(),
+            "a panic while holding a permit must not leak the slot: the next acquire must \
+             succeed, not stay shed at capacity forever"
+        );
+    }
+
+    /// Boundary case under real concurrent load: fire exactly
+    /// `EMBED_QUEUE_CAPACITY` (production value) simultaneous holders plus
+    /// one more, all racing to acquire at once via a barrier (not
+    /// sequenced start-then-fire like the HTTP-level saturation test), and
+    /// prove exactly the capacity's worth are admitted and exactly one is
+    /// shed, regardless of scheduling order.
+    #[tokio::test]
+    async fn exactly_capacity_admitted_and_the_next_one_shed_under_true_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let admission = EmbedAdmission::new(super::EMBED_QUEUE_CAPACITY, 5);
+        let attempts = super::EMBED_QUEUE_CAPACITY + 1;
+        let barrier = Arc::new(tokio::sync::Barrier::new(attempts));
+        let admitted = Arc::new(AtomicUsize::new(0));
+        let shed = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::with_capacity(attempts);
+        for _ in 0..attempts {
+            let admission = admission.clone();
+            let barrier = Arc::clone(&barrier);
+            let admitted = Arc::clone(&admitted);
+            let shed = Arc::clone(&shed);
+            handles.push(tokio::spawn(async move {
+                // Every task blocks here until all `attempts` tasks are ready,
+                // so the `try_acquire()` calls below race as concurrently as
+                // the runtime can make them, instead of one reliably winning
+                // by virtue of being spawned/polled first.
+                barrier.wait().await;
+                match admission.try_acquire() {
+                    Ok(permit) => {
+                        admitted.fetch_add(1, Ordering::SeqCst);
+                        // Hold the permit past the point every task has had a
+                        // chance to attempt its own acquire, so a slot freed
+                        // early can't accidentally admit the "one over" task
+                        // too, which would mask a capacity-enforcement bug.
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        drop(permit);
+                    }
+                    Err(_) => {
+                        // try_acquire's only error variant is EmbedderBusy;
+                        // AppError has no Debug impl, so match by absence of
+                        // Ok rather than destructuring the variant.
+                        shed.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.expect("no task should panic");
+        }
+
+        assert_eq!(
+            admitted.load(Ordering::SeqCst),
+            super::EMBED_QUEUE_CAPACITY,
+            "exactly EMBED_QUEUE_CAPACITY concurrent callers must be admitted, no more, no \
+             fewer, even when every attempt races at once"
+        );
+        assert_eq!(
+            shed.load(Ordering::SeqCst),
+            1,
+            "exactly the one caller past capacity must be shed with 429, regardless of which \
+             physical task the scheduler happened to run first"
         );
     }
 }

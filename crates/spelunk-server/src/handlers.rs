@@ -4737,4 +4737,68 @@ mod tests {
             );
         }
     }
+
+    // ── add_note under a saturated embedder (spelunk-oss#262 scope check) ───
+    //
+    // `add_note`/`push_memory_batch` are deliberately NOT gated by
+    // `EmbedAdmission` (see the task's scope note: they "already catch any
+    // embed error and degrade to text-only storage"). That's true for an
+    // in-band `Err` from `embed()`, but a saturated embedder doesn't error
+    // quickly, it just makes the caller wait behind the `Mutex`. This proves
+    // what actually happens when the embedder is busy longer than the
+    // general request timeout, under the exact load pattern spelunk-oss#262
+    // targets for `index_embed`/`search`/`search_notes`.
+    #[tokio::test]
+    async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let embedder = super::super::EmbedderSlot::ready(Arc::new(GatedEmbedder {
+            dim: 4,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }));
+        // A short general request_timeout stands in for "the embedder is
+        // busy embedding a large index batch for longer than 30s in
+        // production" (`REQUEST_TIMEOUT`).
+        let (base, _db) = spawn_test_server_with_embed(
+            embedder,
+            std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{base}/v1/projects/timeout-test/memory"))
+            .json(&json!({
+                "kind": "note",
+                "title": "saturation probe",
+                "body": "does add_note degrade or get cancelled while the embedder is busy?",
+            }))
+            .send()
+            .await
+            .expect("the request itself must complete (timeout layer responds, not a hang)");
+
+        // `add_note`'s own `match embedder.embed(...).await { Err(e) => ... }`
+        // arm never runs here: the enclosing `TimeoutLayer` races the whole
+        // handler future and cancels it first, so the note is dropped
+        // entirely (stored neither with nor without a vector) rather than
+        // degrading to text-only. Pre-existing behavior, unchanged by this
+        // fix (add_note was never gated before either) - not a regression -
+        // but it means the "already degrades gracefully" scope note overstates
+        // this specific failure mode; text-only degradation only covers an
+        // in-band embed error, not a saturated/slow embedder.
+        assert_eq!(
+            resp.status().as_u16(),
+            408,
+            "add_note under a saturated embedder is cancelled by the general request \
+             timeout, not degraded to text-only storage - if this ever starts returning \
+             201, the scope note's claim has become literally true and should be revisited"
+        );
+
+        // The handler future (and the `embed()` call inside it) was already
+        // cancelled by the timeout layer above; nothing is waiting on
+        // `release` any more. Fire it anyway so a future refactor that makes
+        // this not-cancelled can't turn this test into a silent hang.
+        release.notify_one();
+    }
 }
