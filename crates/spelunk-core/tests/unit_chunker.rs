@@ -419,3 +419,37 @@ fn no_docstring_for_first_member_of_class_body_when_none_precedes_it() {
         .unwrap();
     assert_eq!(f.docstring, None);
 }
+
+#[test]
+fn docstring_scopes_to_immediate_enclosing_block_across_three_levels() {
+    // Guards the "bounded to one level" invariant: Inner's own doc must not
+    // leak down to m, and m must still find its own doc one level up rather
+    // than falling through to Outer's.
+    let src = "class Outer:\n    # outer doc\n    class Inner:\n        # inner doc\n        def m():\n            pass\n";
+    let chunks = SourceParser::parse(src, "f.py", "python").unwrap();
+    let inner = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Inner"))
+        .unwrap();
+    let m = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("m"))
+        .unwrap();
+    assert_eq!(inner.docstring.as_deref(), Some("# outer doc"));
+    assert_eq!(m.docstring.as_deref(), Some("# inner doc"));
+}
+
+#[test]
+fn docstring_captured_for_first_member_of_ruby_class_body() {
+    // Same grammar quirk as Python's class_definition/function_definition:
+    // tree-sitter-ruby attaches the leading comment as a child of `class`
+    // itself rather than inside `body_statement`. preceding_comment() is
+    // shared across languages, so the fix applies here too.
+    let src = "class Outer\n  # inner\n  def attributed\n  end\nend\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# inner"));
+}
