@@ -550,7 +550,10 @@ pub async fn add_note(
     let model = db.embedding_model.clone();
     let project = db.upsert_project(&project_id, dim, &model)?;
 
-    let id = db.add_note(
+    // The single-note response reports the local row id (unchanged wire
+    // shape); `sync_id` is irrelevant here since this path never round-trips
+    // through `/memory/since` cursoring the way a batch push ack does.
+    let (id, _sync_id) = db.add_note(
         project.id,
         &body.kind,
         &body.title,
@@ -651,10 +654,12 @@ pub struct BatchItemResult {
     /// `"created"` or `"skipped"` (idempotent re-push).
     pub status: &'static str,
     pub external_id: String,
-    /// The server-minted note id (stringified). Present for `"created"` and
-    /// also for a `"skipped"` dedupe-hit (the already-existing id), so a
-    /// caller that lost track of an earlier create can still recover the id
-    /// from a plain re-push.
+    /// The note's `sync_id` (the same id `GET /memory/since` returns and
+    /// cursors on, never the raw row id). Present for `"created"` and also
+    /// for a `"skipped"` dedupe-hit (the already-existing id), so a caller
+    /// that lost track of an earlier create can still recover the id from a
+    /// plain re-push, and a caller that stamps this as its pull cursor gets
+    /// an id that actually orders against `/memory/since`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
@@ -767,16 +772,18 @@ pub async fn push_memory_batch(
     let mut skipped = 0u32;
 
     for entry in &body.entries {
-        if let Some(&existing_id) = existing.get(&entry.external_id) {
+        if let Some(existing_sync_id) = existing.get(&entry.external_id) {
             // Carry the already-assigned id even on a dedupe-skip: a caller
             // that lost track of a prior "created" ack (e.g. a local write
             // failure between receiving the ack and stamping it) must be able
             // to recover the id from a plain re-push, not just the original
-            // create.
+            // create. This must be `sync_id`, the same id `/memory/since`
+            // returns: a caller that stamps this onto its own pull cursor
+            // needs an id that actually orders against that endpoint's rows.
             results.push(BatchItemResult {
                 status: "skipped",
                 external_id: entry.external_id.clone(),
-                id: Some(existing_id.to_string()),
+                id: Some(existing_sync_id.clone()),
             });
             skipped += 1;
             continue;
@@ -815,7 +822,7 @@ pub async fn push_memory_batch(
             .map(|sha| vec![format!("git:{sha}")])
             .unwrap_or_default();
 
-        let id = db.add_note(
+        let (_note_id, sync_id) = db.add_note(
             project.id,
             &entry.kind,
             &entry.title,
@@ -828,11 +835,11 @@ pub async fn push_memory_batch(
         // Record it immediately so a later entry in this same batch sharing
         // the external_id is skipped instead of re-inserted (see the `mut`
         // comment on `existing` above).
-        existing.insert(entry.external_id.clone(), id);
+        existing.insert(entry.external_id.clone(), sync_id.clone());
         results.push(BatchItemResult {
             status: "created",
             external_id: entry.external_id.clone(),
-            id: Some(id.to_string()),
+            id: Some(sync_id),
         });
         created += 1;
     }
@@ -3216,18 +3223,29 @@ mod tests {
     /// sibling registered in the same router.
     #[tokio::test]
     async fn note_id_routes_still_work_alongside_batch_route() {
-        let (app, _dim) = make_app(0.92);
-        let (status, body) = post_batch(
+        let (app, dim) = make_app(0.92);
+
+        // The batch route itself: prove it works in the same router as the
+        // numeric note-id routes below (the routing invariant this test
+        // guards). Its returned id is now a `sync_id` (not the row id), so
+        // it is not usable against the numeric route below by design.
+        let (batch_status, batch_body) = post_batch(
             app.clone(),
             "sibling-proj",
             json!([note_item("A", "sib-1")]),
         )
         .await;
-        assert_eq!(status, http::StatusCode::MULTI_STATUS, "seed: {body}");
-        let id = body["results"][0]["id"]
-            .as_str()
-            .expect("created id")
-            .to_string();
+        assert_eq!(
+            batch_status,
+            http::StatusCode::MULTI_STATUS,
+            "seed: {batch_body}"
+        );
+
+        // A real numeric row id, minted via the single-note POST route.
+        let embedding = vec![1.0; dim as usize];
+        let (note_status, note_body) = post_note(app.clone(), "sibling-proj", "B", embedding).await;
+        assert_eq!(note_status, http::StatusCode::CREATED, "seed: {note_body}");
+        let id = note_body["id"].as_i64().expect("created id");
 
         let req = Request::builder()
             .method("GET")
