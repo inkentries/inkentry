@@ -618,6 +618,15 @@ the bounded default. A pre-set `RAYON_NUM_THREADS` is respected and never
 overridden. The resolved value and its source are logged at startup
 (`embed CPU thread budget resolved`). GPU (Metal/CUDA) builds are unaffected.
 
+This budget only bounds CPU contention *within* a single embed batch; embed
+requests themselves are still serialized behind a single mutex on both device
+paths (GPU concurrency would blow its memory limit, and a CPU batch already
+uses most of this budget on its own). A batch queuing behind a running index
+no longer waits silently until the caller's own timeout fires: once a bounded
+admission queue in front of the embedder is full, the server sheds the
+request immediately with `429` and a `Retry-After` header instead (see
+`POST /index/embed` in `architecture/server-api.md`, spelunk-oss#262).
+
 ### Non-loopback plaintext binds are refused, no override
 
 `spelunk-server` refuses to bind a non-loopback address over plaintext HTTP,

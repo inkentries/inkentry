@@ -115,7 +115,11 @@ A batch that can't even reach the server (the local server is momentarily
 unresponsive, not just slow) is retried automatically at the same batch size
 with backoff, rather than being treated as a request that was too big; only
 once those retries are exhausted does the run stop and wait on a manual
-re-run.
+re-run. A batch that reaches the server but gets back `429` (the server's
+bounded embed queue is already full, e.g. another `index` or a `search` is
+mid-embed) is retried the same way, at the same batch size, but sleeping for
+the server's own `Retry-After` instead of the fixed backoff schedule; see
+`POST /index/embed` in `docs/architecture/server-api.md`.
 
 `spelunk init` always hands the embedding pass to a detached background worker,
 and `--detach-embed` opts a manual `spelunk index` run into the same behaviour:
