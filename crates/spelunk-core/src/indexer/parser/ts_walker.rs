@@ -614,10 +614,12 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let start = match node.parent() {
         Some(parent) if parent.kind() == "decorated_definition" => parent,
-        Some(parent) if parent.kind() == "argument_list" => match parent.parent() {
-            Some(call) if call.kind() == "call" => call,
-            _ => *node,
-        },
+        Some(parent) if parent.kind() == "argument_list" && parent.named_child_count() == 1 => {
+            match parent.parent() {
+                Some(call) if call.kind() == "call" => call,
+                _ => *node,
+            }
+        }
         _ => *node,
     };
     match start.prev_sibling() {

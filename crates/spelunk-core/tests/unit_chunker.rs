@@ -486,3 +486,35 @@ fn docstring_captured_across_a_plain_ruby_def_no_visibility_wrapper() {
         .unwrap();
     assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
 }
+
+#[test]
+fn docstring_captured_across_a_ruby_def_wrapped_by_any_sole_arg_call() {
+    // Generalizes beyond the `private`/`protected`/`public` keywords: any
+    // single-argument call wrapping a `def` (e.g. the `memoize` idiom from
+    // the memoist gem) should get the same treatment, since it parses to
+    // the identical `call(argument_list(method))` shape.
+    let src = "# memoized on first call\nmemoize def attributed\nend\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# memoized on first call"));
+}
+
+#[test]
+fn no_docstring_misattached_when_def_is_one_of_several_call_arguments() {
+    // Over-reach guard: a `def` merely happens to be one of several
+    // arguments to an unrelated call (rare, but syntactically legal Ruby
+    // since `def` is an expression). The preceding comment describes the
+    // *call* as a whole, not specifically the nested `def`, so it must not
+    // be attached to the method's docstring the way the sole-argument
+    // `private def foo; end` idiom is.
+    let src = "# describes the call, not attributed specifically\nsome_call(other_arg, def attributed\nend)\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring, None);
+}
