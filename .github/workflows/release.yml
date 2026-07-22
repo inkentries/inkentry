@@ -478,6 +478,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      pull-requests: write
     steps:
       # Commit lands on main, not the tag ref.
       - uses: actions/checkout@v7
@@ -508,17 +509,41 @@ jobs:
 
           cat bucket/spelunk.json
 
-      - name: Commit and push bucket/spelunk.json
+      # This repo doubles as the Scoop bucket (unlike the separate,
+      # unprotected homebrew-spelunk tap repo above), so main's ruleset
+      # applies: a direct `git push origin main` is rejected with GH013
+      # (pull_request rule violation). That ruleset's
+      # required_approving_review_count is 0 and it has no required status
+      # checks, so opening a PR and merging it immediately in this same job
+      # satisfies the rule with no human in the loop and no extra token:
+      # just the default GITHUB_TOKEN with pull-requests: write added above.
+      - name: Open and merge a PR updating bucket/spelunk.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           if git diff --quiet -- bucket/spelunk.json; then
-            echo "No changes to bucket/spelunk.json — skipping push."
+            echo "No changes to bucket/spelunk.json — skipping PR."
             exit 0
           fi
 
+          BRANCH="ci/scoop-manifest-${{ github.ref_name }}"
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add bucket/spelunk.json
           git commit -m "scoop: spelunk ${{ github.ref_name }}"
-          git push origin main
+          # -f: a retried run of this workflow (same tag) reuses the branch name.
+          git push -f origin "$BRANCH"
+
+          if ! gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr create \
+              --title "scoop: spelunk ${{ github.ref_name }}" \
+              --body "Automated Scoop bucket update for ${{ github.ref_name }}." \
+              --base main \
+              --head "$BRANCH"
+          fi
+
+          gh pr merge "$BRANCH" --merge --delete-branch
