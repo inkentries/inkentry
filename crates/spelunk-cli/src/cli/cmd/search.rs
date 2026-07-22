@@ -729,10 +729,18 @@ fn warmup_error_zero_explicit(mode: &str, total: i64) -> String {
 /// notice must then name that server instead of pointing at `spelunk server
 /// logs`, which only reads the local auto-daemon's log and would show clean
 /// logs for a failure that lives on the remote server.
+///
+/// `server_url` is `cfg.server_url` (used only for the offline case, where no
+/// probe ever reached the point of populating `remote_url`): the configured
+/// server never answered at all, so the notice names it directly and flags
+/// that it overrides the auto-discovered local daemon. `is_windows` is
+/// injected rather than read from `cfg!(windows)` inline so the function stays
+/// pure and the platform-gated hint is unit-testable on any host.
 fn semantic_unavailable_message(
     embedder_state: Option<capability::EmbedderState>,
-    has_server_url: bool,
+    server_url: Option<&str>,
     remote_url: Option<&str>,
+    is_windows: bool,
 ) -> String {
     use capability::EmbedderState;
     match embedder_state {
@@ -750,10 +758,16 @@ fn semantic_unavailable_message(
         },
         Some(_) => "[semantic search unavailable on this server; using ast-grep]".to_string(),
         None => {
-            if has_server_url {
-                "[no server reachable — on Windows, allow the loopback listener through \
-                 Defender Firewall (`spelunk server status`); using ast-grep]"
-                    .to_string()
+            if let Some(url) = server_url {
+                let windows_hint = if is_windows {
+                    " On Windows, allow the loopback listener through Defender Firewall."
+                } else {
+                    ""
+                };
+                format!(
+                    "[no server reachable at {url} (the configured server_url, overriding the \
+                     auto-discovered local daemon);{windows_hint} using ast-grep]"
+                )
             } else {
                 "[no server running — start one with `spelunk server start` to enable \
                  semantic search; using ast-grep]"
@@ -770,8 +784,9 @@ fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
         "{}",
         semantic_unavailable_message(
             tier.embedder_state(),
-            cfg.server_url.is_some(),
+            cfg.server_url.as_deref(),
             tier.explicit_remote_url(),
+            cfg!(windows),
         )
     );
 }
@@ -921,7 +936,12 @@ mod tests {
 
     #[test]
     fn notice_loading_advises_retry() {
-        let msg = semantic_unavailable_message(Some(EmbedderState::Loading), true, None);
+        let msg = semantic_unavailable_message(
+            Some(EmbedderState::Loading),
+            Some("http://x:1"),
+            None,
+            false,
+        );
         assert!(msg.contains("warming up"));
         assert!(msg.contains("ast-grep"));
     }
@@ -930,7 +950,12 @@ mod tests {
     fn notice_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
         // so `spelunk server logs` is the right place to look.
-        let msg = semantic_unavailable_message(Some(EmbedderState::Unavailable), true, None);
+        let msg = semantic_unavailable_message(
+            Some(EmbedderState::Unavailable),
+            Some("http://x:1"),
+            None,
+            false,
+        );
         assert!(msg.contains("failed to load"));
         assert!(msg.contains("spelunk server logs"));
     }
@@ -942,8 +967,9 @@ mod tests {
         // notice must name the probed server instead.
         let msg = semantic_unavailable_message(
             Some(EmbedderState::Unavailable),
-            true,
+            Some("http://x:1"),
             Some("https://team.example:7777"),
+            false,
         );
         assert!(msg.contains("failed to load"));
         assert!(msg.contains("https://team.example:7777"), "got: {msg}");
@@ -954,17 +980,32 @@ mod tests {
     }
 
     #[test]
-    fn notice_no_server_with_configured_url_mentions_firewall() {
-        // Offline (no reachable server) but a server_url was configured →
-        // the likely Windows cause is a blocked loopback listener.
-        let msg = semantic_unavailable_message(None, true, None);
+    fn notice_no_server_names_the_configured_url_on_windows() {
+        // Offline (no reachable server) but a server_url was configured: name
+        // the actual URL that was attempted, note it overrides the
+        // auto-discovered local daemon, and mention the Windows cause only
+        // when actually running on Windows.
+        let msg = semantic_unavailable_message(None, Some("https://team.example:7777"), None, true);
+        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
         assert!(msg.contains("no server reachable"));
         assert!(msg.contains("Firewall"));
+        assert!(msg.contains("overriding"), "got: {msg}");
+    }
+
+    #[test]
+    fn notice_no_server_with_configured_url_omits_windows_hint_elsewhere() {
+        // Same offline+configured-url case, but not on Windows: the
+        // Defender-specific hint must not appear.
+        let msg =
+            semantic_unavailable_message(None, Some("https://team.example:7777"), None, false);
+        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
+        assert!(msg.contains("no server reachable"));
+        assert!(!msg.contains("Firewall"), "got: {msg}");
     }
 
     #[test]
     fn notice_no_server_no_url_suggests_starting_one() {
-        let msg = semantic_unavailable_message(None, false, None);
+        let msg = semantic_unavailable_message(None, None, None, false);
         assert!(msg.contains("spelunk server start"));
     }
 
@@ -980,9 +1021,14 @@ mod tests {
             Some(EmbedderState::Unknown),
             None,
         ] {
-            for has_url in [true, false] {
+            for url in [Some("http://x:1"), None] {
                 for remote_url in [None, Some("https://team.example:7777")] {
-                    assert!(!semantic_unavailable_message(state, has_url, remote_url).is_empty());
+                    for is_windows in [true, false] {
+                        assert!(
+                            !semantic_unavailable_message(state, url, remote_url, is_windows)
+                                .is_empty()
+                        );
+                    }
                 }
             }
         }
