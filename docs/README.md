@@ -62,6 +62,7 @@ documented and verified against the binary; reference lives after the journey, n
 before it.
 
 - [Commands](commands.md): every subcommand, flag, and environment variable
+- [Config reference](config-reference.md): every field in `config.toml`, with defaults and env overrides
 - [Memory model](memory.md): kinds, cross-project visibility, git-notes write-through
 - [Architecture](architecture.md) and [capability tiers](architecture/capability-tiers.md)
 - [Plumbing and porcelain](plumbing-and-porcelain.md): JSONL commands for scripts and agents
