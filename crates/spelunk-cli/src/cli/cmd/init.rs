@@ -1,3 +1,4 @@
+use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::Args;
 
@@ -245,7 +246,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         println!("  Memory:  {line}");
     }
     if let Some(line) = server_line {
-        println!("  Server:  {line}");
+        cprintln!("  Server:  {line}");
     }
     for line in &notes_lines {
         println!("  {line}");

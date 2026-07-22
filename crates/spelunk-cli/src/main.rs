@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
         .mut_subcommand("explore", |c| c.hide(!llm_configured))
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
+    cli::cmd::set_color_choice(cli.color);
 
     // Config loads before dispatch, so `--best-effort` has to be honoured here
     // or a publish never reaches the arm that keeps a hook's push alive (D3).

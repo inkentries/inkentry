@@ -1,3 +1,4 @@
+use super::color::cprintln;
 use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
@@ -151,7 +152,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                     } else {
                         features.join(", ")
                     };
-                    println!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
+                    cprintln!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
                 }
                 capability::Tier::Offline => {
                     let url = cfg.server_url.as_deref().unwrap_or("?");
@@ -161,7 +162,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                         }
                         _ => "unreachable, offline mode".to_string(),
                     };
-                    println!("Server:  {url}  \x1b[31m✗\x1b[0m  {label}");
+                    cprintln!("Server:  {url}  \x1b[31m✗\x1b[0m  {label}");
                 }
             }
         }

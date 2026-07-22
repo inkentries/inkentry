@@ -1,8 +1,10 @@
 # Commands Reference
 
 Every command accepts `-c, --config <path>` to override the default config file
-(`~/.config/spelunk/config.toml`). The flags and defaults below match the
-installed binary; run `spelunk <command> --help` to confirm against your version.
+(`~/.config/spelunk/config.toml`), and `--color <auto|always|never>` to control
+colored output (default `auto`: on when stdout is a terminal and `NO_COLOR` is
+unset). The flags and defaults below match the installed binary; run
+`spelunk <command> --help` to confirm against your version.
 
 A local `spelunk-server` is autostarted on demand and provides embeddings
 (native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
@@ -904,6 +906,7 @@ and publish on your next push.
 | Variable | Effect |
 |----------|--------|
 | `AGENT=true` | Force JSON output for commands that support it |
+| `NO_COLOR` | Any non-empty value disables colored output, overriding the `auto` default (`--color=always` still overrides `NO_COLOR`) |
 | `SPELUNK_NO_SERVER=1` | Never autostart or use a server (fully offline / no-server mode) |
 | `SPELUNK_SERVER_URL` | Point the CLI at a specific server URL |
 | `SPELUNK_CLOUD_URL` | Override the spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
