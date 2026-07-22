@@ -859,6 +859,12 @@ mod tests {
         assert!(joined.contains("unreachable"), "got: {joined}");
         assert!(joined.contains("server_url"), "got: {joined}");
         assert!(
+            joined.contains("configured"),
+            "must say the target came from a *configured* server_url, not just name \
+             `server_url` in passing (this is the specific wording the defect asked for, \
+             distinguishing it from the auto-discovered daemon): got: {joined}"
+        );
+        assert!(
             joined.contains("overrides") || joined.contains("override"),
             "must explain that an explicit server_url overrides the auto-discovered \
              local daemon, so a healthy daemon elsewhere is not the fix: got: {joined}"
