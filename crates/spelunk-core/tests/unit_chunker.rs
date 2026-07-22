@@ -453,3 +453,36 @@ fn docstring_captured_for_first_member_of_ruby_class_body() {
         .unwrap();
     assert_eq!(f.docstring.as_deref(), Some("# inner"));
 }
+
+#[test]
+fn docstring_captured_across_a_ruby_private_def_one_liner() {
+    let src = "# does a thing\nprivate def attributed\nend\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
+}
+
+#[test]
+fn docstring_captured_across_a_ruby_protected_def_one_liner() {
+    let src = "# does a thing\nprotected def attributed\nend\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
+}
+
+#[test]
+fn docstring_captured_across_a_plain_ruby_def_no_visibility_wrapper() {
+    let src = "# does a thing\ndef attributed\nend\n";
+    let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
+    let f = chunks
+        .iter()
+        .find(|c| c.name.as_deref() == Some("attributed"))
+        .unwrap();
+    assert_eq!(f.docstring.as_deref(), Some("# does a thing"));
+}

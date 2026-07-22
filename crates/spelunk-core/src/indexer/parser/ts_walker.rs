@@ -596,7 +596,14 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
 /// below. Python wraps decorator+def in one `decorated_definition` node, so
 /// the walk must start from that parent instead of `node`. TS/Java attach
-/// decorators as a child, so neither case applies there.
+/// decorators as a child, so neither case applies there. Ruby's
+/// `private def foo; end` visibility idiom (and lookalikes like `memoize def
+/// foo; end`) parses the def as a `method` node nested two levels inside a
+/// `call` (`private(def foo; end)`), so the walk must start from that `call`
+/// ancestor instead of the `method` node. Gated on the `method` being the
+/// argument_list's only child so an unrelated comment above a multi-arg call
+/// that merely happens to carry a `def` as one of several arguments (e.g.
+/// `some_call(other_arg, def foo; end)`) doesn't get misattached to `foo`.
 ///
 /// Some grammars (Python `class_definition`/`function_definition`, Ruby
 /// `class`/`module`) attach a leading comment as a child of the enclosing
@@ -607,6 +614,10 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let start = match node.parent() {
         Some(parent) if parent.kind() == "decorated_definition" => parent,
+        Some(parent) if parent.kind() == "argument_list" => match parent.parent() {
+            Some(call) if call.kind() == "call" => call,
+            _ => *node,
+        },
         _ => *node,
     };
     match start.prev_sibling() {
