@@ -491,17 +491,21 @@ for you on first use and caches the result locally, so no manual UUID lookup is
 needed. See [Server setup](server-setup.md#client-configuration) for details.
 
 After setup, all `spelunk memory` commands transparently use the server. Seed it
-with your existing local memory, then keep the two in step as you and your
-teammates record decisions:
+with your existing local memory, then keep recording decisions as usual:
 
 ```bash
-spelunk memory push    # one-way: send your local entries up to the server
-spelunk sync           # two-way: push local entries and pull teammates' entries down
+spelunk memory push    # one-way: seed the server with your existing local entries
+spelunk sync           # force a synchronous two-way reconcile (usually not needed; see below)
 ```
 
-`spelunk sync` is the day-to-day command for a shared server: it pushes what you
-recorded and pulls what everyone else did, so the team reads and writes one
-shared memory. Code never travels; only memory does.
+In the default `local_first` mode you rarely run `spelunk sync` by hand. Your
+writes commit to the local `memory.db` immediately and never block on the
+network; from an interactive terminal a background reconciler then drains what
+you recorded up to the server and pulls teammates' entries down, so the shared
+memory converges on its own. `spelunk sync` is the explicit escape hatch for
+when you want that reconcile to happen synchronously now rather than in the
+background, such as a CI job that needs entries pushed before it exits. Code
+never travels; only memory does.
 
 For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker, configuration, API reference.
 
