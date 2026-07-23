@@ -150,7 +150,10 @@ The dimension upgrade for pre-0.9 `FLOAT[768]` databases is handled **per store*
 `Database::apply_dim_upgrade_migration` rebuilds the chunk table as
 `INT8[896]`, while `MemoryStore::migrate` rebuilds `note_embeddings` as
 `FLOAT[896]` (each guarded by its own marker table). There is no path that leaves
-memory stranded on the stale 768-dim layout.
+memory stranded on the stale 768-dim layout. The `note_embeddings` rebuild is
+empty rather than converting the old vectors, so semantic recall on pre-upgrade
+notes is lost until they are re-embedded with `spelunk memory reindex`; a
+one-line notice after the upgrade points the user at that command.
 
 ### Backend abstraction
 
