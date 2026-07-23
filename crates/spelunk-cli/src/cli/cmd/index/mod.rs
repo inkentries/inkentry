@@ -28,7 +28,7 @@ pub struct IndexArgs {
     #[arg(long)]
     pub recount: bool,
 
-    /// Skip LLM summary generation even when llm_model is configured
+    /// Skip LLM summary generation even when server_url is configured
     #[arg(long)]
     pub no_summaries: bool,
 

@@ -88,7 +88,7 @@ spelunk index <path> [options]
 | `--batch-size <n>` | 0 (auto) | Cap on the embedding batch size (chunks per server request); the embed phase calibrates the actual size from measured throughput, up to this cap. 0 leaves the cap at the server's own 256-chunk limit |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
-| `--no-summaries` | false | Skip LLM summary generation even when `llm_model` is configured |
+| `--no-summaries` | false | Skip LLM summary generation even when `server_url` is configured |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
 | `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`spelunk init` does this automatically) |
