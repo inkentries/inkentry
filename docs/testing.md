@@ -157,14 +157,16 @@ from every test. The isolation must be process-wide, not scoped to one
 `Command`: a helper that only sets env on the `Command` it builds itself
 never reaches git that the code under test spawns for itself.
 
-Three call sites carry a copy of the same helper, because a unit test
-compiled into `src/` cannot reach a file under `tests/`:
+Four call sites carry a copy of the same helper, because a unit test
+compiled into `src/` cannot reach a file under `tests/`, and each `tests/`
+integration binary is its own compilation unit:
 
 | Location | Covers |
 |------|---------------|
 | `crates/spelunk-cli/tests/plumbing_helpers.rs` | `tests/` integration binaries for `spelunk-cli` |
 | `crates/spelunk-cli/src/cli/cmd/test_support.rs` | `src/` unit tests for `spelunk-cli` |
 | `crates/spelunk-core/src/storage/git_notes/mod.rs` (local to the `cat_file_batch` test module) | `spelunk-core` unit tests |
+| `crates/spelunk-core/tests/integration_git_notes.rs` | `spelunk-core`'s git-notes integration tests |
 
 CI runners carry no ambient global config, so a missing call here never
 fails CI. It only surfaces as a local test failure for a contributor who
