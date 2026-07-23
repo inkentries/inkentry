@@ -12,7 +12,12 @@ use serde::Serialize;
 
 use super::super::helpers::require_server_client;
 use super::MemoryReindexArgs;
-use crate::{capability, config::Config, embeddings::vec_to_blob, storage::MemoryStore};
+use crate::{
+    capability,
+    config::{Config, SyncMode},
+    embeddings::vec_to_blob,
+    storage::MemoryStore,
+};
 
 /// Counts partition the store: `total_active == already_embedded + missing_before`.
 /// `remaining` is how many of the targeted notes are still unembedded after the
@@ -46,6 +51,21 @@ pub(super) async fn memory_reindex(
         anyhow::bail!(
             "This operation requires the sqlite backend. \
              Re-run without --backend git-notes."
+        );
+    }
+
+    // `memory reindex` backfills vectors into the LOCAL `memory.db` (opened
+    // directly below, bypassing `open_memory_backend`'s mode-based routing).
+    // In `cloud_first` that file is not the store of record (an explicit
+    // `server_url` is, via `RemoteMemoryBackend`), so there is nothing local
+    // to re-embed: fail with an actionable message rather than silently
+    // reindexing a store nothing reads (2026-07-23 founder decision,
+    // spelunk-oss#280).
+    if cfg.resolve_mode() == SyncMode::CloudFirst {
+        anyhow::bail!(
+            "'spelunk memory reindex' is not applicable in cloud_first mode: \
+             memory.db is not the store of record there (server_url owns memory), \
+             so there is nothing local to re-embed."
         );
     }
 
@@ -103,7 +123,10 @@ pub(super) async fn memory_reindex(
     // exactly as `memory add` / `memory search` do (`project_root` is the store's
     // parent).
     let project_root = mem_path.parent().unwrap_or(mem_path);
-    let tier = capability::get_tier(cfg).await;
+    // `get_inference_tier` (not `get_tier`): local_first always prefers the
+    // local loopback embedder, even with an explicit server_url set
+    // (spelunk-oss#280).
+    let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     // No embedder reachable → actionable error + non-zero exit, before any
     // write. Deliberately unlike reconcile (which imports without embeddings):

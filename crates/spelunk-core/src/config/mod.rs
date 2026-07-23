@@ -565,12 +565,28 @@ impl Config {
 
     /// Return the URL to use for inference (embeddings + LLM), if any.
     ///
-    /// Prefers `inference_url` (set for an auto-discovered loopback server,
-    /// ADR-004) and falls back to `server_url` (an explicitly-configured
-    /// team/remote server, which serves both inference and memory). Memory
-    /// storage selection does **not** use this — see `open_memory_backend`.
+    /// Always prefers `inference_url` (set for an auto-discovered loopback
+    /// server, ADR-004). Whether it also falls back to `server_url` depends on
+    /// [`Config::resolve_mode`] (2026-07-23 founder decision, ADR-004
+    /// revision):
+    ///
+    /// - `cloud_first`: falls back to `server_url` — the explicitly-configured
+    ///   remote owns both inference and memory.
+    /// - `local_first` / `offline`: **never** falls back to `server_url`. An
+    ///   explicit `server_url` in these modes is a sync replica only; inference
+    ///   always prefers the local loopback embedder, which `inference_url`
+    ///   alone carries. Returning `server_url` here was the root cause of
+    ///   spelunk-oss#280: a `local_first` project with a cloud `server_url`
+    ///   sent embed requests to `{server_url}/index/embed`, which 404s (cloud
+    ///   API has no such route) instead of ever reaching the local embedder.
+    ///
+    /// Memory storage selection does **not** use this — see `open_memory_backend`.
     pub fn resolve_inference_url(&self) -> Option<&str> {
-        self.inference_url.as_deref().or(self.server_url.as_deref())
+        if self.resolve_mode() == SyncMode::CloudFirst {
+            self.inference_url.as_deref().or(self.server_url.as_deref())
+        } else {
+            self.inference_url.as_deref()
+        }
     }
 
     /// Resolve the effective sync mode.
@@ -1022,11 +1038,16 @@ memory_server_key = "old-token"
     }
 
     #[test]
-    fn resolve_inference_url_falls_back_to_server_url() {
-        // Explicit team server: only server_url set; it serves inference too.
+    #[serial_test::serial]
+    fn resolve_inference_url_falls_back_to_server_url_in_cloud_first() {
+        // Explicit team/cloud server in `cloud_first` mode: only server_url
+        // set; it serves inference too (founder decision 2026-07-23 — the
+        // ONLY mode where a configured server_url owns inference).
+        clear_spelunk_env();
         let cfg = Config {
             inference_url: None,
             server_url: Some("http://team.example.com:7777".to_string()),
+            mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
         assert_eq!(
@@ -1036,18 +1057,56 @@ memory_server_key = "old-token"
     }
 
     #[test]
+    #[serial_test::serial]
+    fn resolve_inference_url_local_first_never_falls_back_to_server_url() {
+        // Regression guard for spelunk-oss#280: `local_first` (the default
+        // mode once `server_url` is set, with no explicit `mode` key) must
+        // NOT fall back to `server_url` for inference — that is exactly the
+        // routing that sent embed requests to a cloud `server_url`'s
+        // nonexistent `/index/embed` route and produced the 404s. An
+        // explicit `server_url` here is a sync replica only.
+        clear_spelunk_env();
+        let cfg = Config {
+            inference_url: None,
+            server_url: Some("https://api.spelunk.cloud".to_string()),
+            mode: None, // defaults to local_first because server_url is set
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_mode(), SyncMode::LocalFirst);
+        assert_eq!(cfg.resolve_inference_url(), None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_inference_url_offline_never_falls_back_to_server_url() {
+        clear_spelunk_env();
+        let cfg = Config {
+            inference_url: None,
+            server_url: Some("https://api.spelunk.cloud".to_string()),
+            mode: Some(SyncMode::Offline),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_inference_url(), None);
+    }
+
+    #[test]
     fn resolve_inference_url_none_when_neither_set() {
         let cfg = Config::default();
         assert_eq!(cfg.resolve_inference_url(), None);
     }
 
     #[test]
+    #[serial_test::serial]
     fn resolve_inference_url_inference_url_wins_over_server_url() {
         // Defensive: if both are somehow set, inference must use the dedicated
         // inference_url (memory backend selection still uses server_url).
+        // Holds in every mode; exercised here in cloud_first, the one mode
+        // where server_url would otherwise be a candidate too.
+        clear_spelunk_env();
         let cfg = Config {
             inference_url: Some("http://127.0.0.1:7777".to_string()),
             server_url: Some("http://team.example.com:7777".to_string()),
+            mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
         assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:7777"));

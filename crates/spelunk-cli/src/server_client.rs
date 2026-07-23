@@ -228,10 +228,15 @@ impl ServerInferenceClient {
             client,
             base_url,
             project_id,
-            // `effective_config` only ever sets `inference_url` when
-            // `server_url` is unset (ADR-004), so a set `server_url` here
-            // means `base_url` resolved from it, i.e. an explicit remote.
-            is_explicit_remote: cfg.server_url.is_some(),
+            // Mirrors `Config::resolve_inference_url`'s own fallback exactly:
+            // `base_url` came from `server_url` iff `inference_url` was unset.
+            // Since the 2026-07-23 ADR-004 revision (spelunk-oss#280),
+            // `effective_config` CAN set `inference_url` even when
+            // `server_url` is ALSO set (the `local_first` case: an explicit
+            // `server_url` there is a sync replica only, never the inference
+            // target) — so `cfg.server_url.is_some()` alone is no longer a
+            // reliable signal of "base_url is the explicit remote".
+            is_explicit_remote: cfg.inference_url.is_none() && cfg.server_url.is_some(),
             auth: Mutex::new(BearerState { bearer, refresh }),
         }
     }
@@ -998,8 +1003,8 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("sk-legacy"));
     }
 
-    // `is_explicit_remote` keys off whether `server_url` was set by the
-    // operator, never off what host it resolves to: an explicitly
+    // `is_explicit_remote` keys off whether `base_url` resolved from
+    // `server_url` (never off what host it resolves to): an explicitly
     // configured `server_url = http://127.0.0.1:PORT` is still "explicit"
     // even though the host is loopback. `spelunk server logs` only ever
     // reads the fixed auto-daemon log path and cannot tell this loopback
@@ -1007,6 +1012,14 @@ mod tests {
     // name it. Mirrors
     // `capability::tier::tests::tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
     // which pins the same invariant on the `Tier` side of this contract.
+    //
+    // `mode: CloudFirst` is required here since the 2026-07-23 ADR-004
+    // revision (spelunk-oss#280): `resolve_inference_url` only falls back to
+    // `server_url` in `cloud_first` (in `local_first`, the default this test
+    // used to rely on, a bare `server_url` no longer resolves to any
+    // inference `base_url` at all — see
+    // `from_config_local_first_with_only_server_url_set_has_no_inference_target`
+    // below for that regression).
     #[test]
     #[serial_test::serial]
     fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
@@ -1016,6 +1029,7 @@ mod tests {
         let cfg = crate::config::Config {
             server_url: Some("http://127.0.0.1:9797".to_string()),
             project_id: Some("proj".to_string()),
+            mode: Some(spelunk_core::config::SyncMode::CloudFirst),
             ..Default::default()
         };
         // Inject an in-memory secret store so this test never touches the
@@ -1035,6 +1049,89 @@ mod tests {
             client.is_explicit_remote,
             "an explicitly configured server_url must count as explicit even when it is loopback"
         );
+    }
+
+    /// Regression guard for spelunk-oss#280: with only `server_url` set (no
+    /// `inference_url`) and no explicit `mode`, the config defaults to
+    /// `local_first` — and `local_first` must NOT resolve any inference
+    /// `base_url` from `server_url`. `from_config` must return `None` rather
+    /// than silently building a client aimed at `server_url` (which is what
+    /// produced the ^280 404s against a cloud `server_url`'s nonexistent
+    /// `/index/embed` route).
+    #[test]
+    #[serial_test::serial]
+    fn from_config_local_first_with_only_server_url_set_has_no_inference_target() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let cfg = crate::config::Config {
+            server_url: Some("https://api.spelunk.cloud".to_string()),
+            project_id: Some("proj".to_string()),
+            mode: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_mode(),
+            spelunk_core::config::SyncMode::LocalFirst
+        );
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        assert!(
+            ServerInferenceClient::from_config_with_store(&cfg, &store).is_none(),
+            "local_first must not build an inference client aimed at a bare server_url"
+        );
+    }
+
+    /// End-to-end regression test for the founder's own manual repro
+    /// (2026-07-23, spelunk-oss#280): `local_first`, `server_url` set to a
+    /// cloud host, no explicit `mode` → embedding must reach the LOCAL
+    /// loopback embedder, never the configured `server_url`. Modelled at this
+    /// layer by setting `inference_url` directly to a mocked loopback server
+    /// (what `Tier::effective_config` does once it has probed one, tested
+    /// separately in `capability::tier`) alongside a `server_url` pointed at
+    /// an address nothing mounts anything on: an accidental fallback would
+    /// surface as a hard connection error here, never a silent pass.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn embed_text_local_first_uses_loopback_not_configured_server_url() {
+        unsafe {
+            std::env::remove_var("SPELUNK_SERVER_KEY");
+        }
+        let loopback = MockServer::start().await;
+        let dim = spelunk_core::embeddings::EMBEDDING_DIM;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/index/embed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(spelunk_core::embeddings::vec_to_blob(&vec![0.25_f32; dim])),
+            )
+            .mount(&loopback)
+            .await;
+
+        let cfg = crate::config::Config {
+            inference_url: Some(loopback.uri()),
+            server_url: Some("https://cloud.invalid.example:1".to_string()),
+            project_id: Some("proj".to_string()),
+            mode: None, // defaults to local_first because server_url is set
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_mode(),
+            spelunk_core::config::SyncMode::LocalFirst
+        );
+
+        let store = spelunk_core::config::secret_store::MemoryStore::default();
+        let client = ServerInferenceClient::from_config_with_store(&cfg, &store)
+            .expect("client must build from inference_url (the loopback server)");
+        assert!(
+            !client.is_explicit_remote,
+            "base_url resolved from inference_url, not server_url"
+        );
+
+        let vec = client.embed_text("hello").await.expect(
+            "embedding must reach the local loopback server, not the unroutable \
+             cloud server_url",
+        );
+        assert_eq!(vec.len(), dim);
     }
 
     /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`

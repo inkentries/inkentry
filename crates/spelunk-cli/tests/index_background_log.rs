@@ -66,11 +66,22 @@ async fn dead_llm_server() -> MockServer {
 /// `--config` to the child, so a test that used an explicit one would have the
 /// child silently find no `server_url` and skip the summary pass the test is
 /// about.
+///
+/// `SPELUNK_MODE=cloud_first`: every test in this file drives its fixture's
+/// explicit `server_url` (2026-07-23 ADR-004 revision, spelunk-oss#280).
+/// `index/summaries.rs::generate_summaries` calls `ServerInferenceClient::
+/// from_config` directly on the loaded `Config` with no loopback
+/// auto-discovery bridging (its pre-existing `cfg.server_url.is_none()` skip
+/// already meant an auto-discovered server was never used here either), so
+/// under the default `local_first` mode a bare `server_url` no longer
+/// resolves to any inference target at all. `cloud_first` is what makes this
+/// fixture's premise — an explicit `server_url` IS used for summaries — hold.
 fn index_command(project: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
     cmd.current_dir(project)
         .env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", project)
+        .env("SPELUNK_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
         .arg("index")
         .arg(".");

@@ -16,7 +16,10 @@ pub(super) async fn memory_timeline(
     // `memory_search` for rationale — loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`.
     let project_root = mem_path.parent().unwrap_or(mem_path);
-    let tier = capability::get_tier(cfg).await;
+    // `get_inference_tier` (not `get_tier`): local_first always prefers the
+    // local loopback embedder, even with an explicit server_url set
+    // (2026-07-23 founder decision, spelunk-oss#280).
+    let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
 
