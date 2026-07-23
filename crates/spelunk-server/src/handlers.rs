@@ -34,8 +34,9 @@ pub const MAX_SLUG_LEN: usize = 200;
 /// its calibrated batch without guessing (see `HealthResponse`).
 pub const MAX_EMBED_BATCH: usize = 256;
 /// Max number of entries accepted in a single `POST /memory/batch` request.
-/// Matches cloud-api's cap and the CLI's own push chunk size
-/// (`chunk.chunks(200)` in `sync.rs`), so a legitimate CLI push never trips it.
+/// Matches cloud-api's cap and comfortably exceeds the CLI's own push chunk
+/// size (`PUSH_BATCH_CHUNK_SIZE` in `sync.rs`), so a legitimate CLI push never
+/// trips it.
 pub const MAX_BATCH_ENTRIES: usize = 200;
 
 /// Reject a title/body pair that exceeds the configured caps. Shared by every
