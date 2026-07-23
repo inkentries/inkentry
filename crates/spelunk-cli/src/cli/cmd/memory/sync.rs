@@ -176,6 +176,7 @@ pub async fn memory_sync(
 }
 
 /// Outcome of a push pass (shared by `sync` and the one-way `memory push`).
+#[derive(Debug)]
 pub(super) struct PushSummary {
     /// Rows actually sent to `push_batch` (the `live` set) — not the raw
     /// pre-filter row count, which would over-report when rows are already
@@ -415,6 +416,7 @@ async fn pull_and_apply_since(
 
 /// Outcome of one [`sync_round`]: the push summary plus the total newly
 /// applied entries across both pull passes.
+#[derive(Debug)]
 struct SyncRoundOutcome {
     pushed: PushSummary,
     pulled: usize,
@@ -460,7 +462,30 @@ async fn sync_round(
 
     let pushed = push_local(local, client, include_archived, accepts_pushed_vectors).await?;
 
-    let pulled_second = pull_and_apply_since(local, client, pre_round_cursor.as_deref()).await?;
+    // If this second pull errors (network blip, transient 5xx), the error
+    // propagates out of `sync_round` rather than being swallowed — `?`
+    // surfaces it to `memory_sync`, which reports a failure and a non-zero
+    // exit. That is correct (a real error must not be silently dropped), but
+    // by this point `pushed` already reflects a push that may have durably
+    // landed server-side (and stamped local `remote_id`s accordingly, inside
+    // `push_local`, before this call even runs) — the failure is scoped to
+    // the confirmation pull, not the push. Attach that context so the
+    // surfaced error doesn't read as "nothing happened": a caller shouldn't
+    // conclude their content was lost and try to force a re-push (harmless
+    // but pointless — already-stamped rows are excluded from `live` and
+    // skipped) instead of simply re-running sync, which retries the pull with
+    // an unaffected, freshly-derived cursor.
+    let pulled_second = pull_and_apply_since(local, client, pre_round_cursor.as_deref())
+        .await
+        .with_context(|| {
+            format!(
+                "confirmation pull failed after this round's push already reached \
+                 the server ({} attempted: {} created, {} skipped, {} failed) — \
+                 the push is not affected by this error; re-running sync will retry \
+                 the pull without re-pushing already-landed entries",
+                pushed.attempted, pushed.created, pushed.skipped, pushed.failed
+            )
+        })?;
 
     Ok(SyncRoundOutcome {
         pushed,
@@ -1689,5 +1714,80 @@ mod tests {
         // was just applied).
         let pulled_again = pull_and_apply(&store_c, &client_c).await.unwrap();
         assert_eq!(pulled_again, 0);
+    }
+
+    /// If the SECOND pull (the confirmation pull after this round's own push)
+    /// fails, `sync_round` must not silently swallow that error — but it also
+    /// must not lose or misrepresent the push that already succeeded. The
+    /// push already durably landed server-side and already stamped this
+    /// round's row with its `remote_id` (inside `push_local`, which returns
+    /// before the second pull ever runs), so: (1) the error surfaces instead
+    /// of being dropped, (2) its message says the push already reached the
+    /// server rather than reading as "nothing happened", and (3) local state
+    /// is left exactly as `push_local` left it — no corruption, no
+    /// re-attempt needed, just a retryable pull on the next sync.
+    #[tokio::test]
+    async fn sync_round_second_pull_failure_surfaces_the_error_without_losing_the_push() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let (_tmp, store) = fresh_store();
+        store
+            .add_note("decision", "T1", "own new entry", &[], &[], None, None)
+            .unwrap();
+        let ext = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        let cloud_id = "01890000-0000-7000-8000-0000000000b1";
+
+        let server = MockServer::start().await;
+        // First pull (pre-push, empty server): 200 empty.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // The push itself succeeds and durably lands.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": ext, "id": cloud_id}]
+            })))
+            .mount(&server)
+            .await;
+        // The confirmation (second) pull hits a transient server error.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let err = sync_round(&store, &client, false, false)
+            .await
+            .expect_err("a real second-pull error must not be swallowed as success");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("push already reached the server") && msg.contains("1 created"),
+            "error must say the push already succeeded, not read as a total \
+             failure: {msg}"
+        );
+
+        // The push's own effect is untouched by the later pull error: the row
+        // is stamped with its cloud id, exactly as `push_local` left it.
+        assert!(
+            store.note_id_for_remote_id(cloud_id).unwrap().is_some(),
+            "the already-succeeded push must not be undone or left unstamped \
+             just because the confirmation pull afterward failed"
+        );
+        assert_eq!(
+            store.count().unwrap(),
+            1,
+            "no duplicate/corrupted local row"
+        );
     }
 }
