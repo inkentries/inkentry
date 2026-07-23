@@ -25,8 +25,9 @@ GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
 **Carrier and index.** Think of `refs/notes/spelunk` as the durable *carrier*
 for memory and `.spelunk/memory.db` as the queryable *index* built over it. Every
 `memory add` appends its entry to the carrier through one write-through path;
-`spelunk init` hydrates the index by importing those notes, adding the embeddings
-semantic search needs. Both live in the repo, and the store of record stays local
+`spelunk init` hydrates the index by importing those notes: `memory list` and
+text search see them immediately, and `spelunk memory reindex` adds the
+embeddings semantic search needs. Both live in the repo, and the store of record stays local
 unless you configure a team `server_url` with `mode = "cloud_first"` (see [Team
 server and sync modes](#team-server-and-sync-modes)). The carrier reaches teammates only once
 the notes ref is pushed and fetched (see [Sharing memory across clones via
@@ -334,7 +335,9 @@ init` **hydrates** the new `memory.db` from those notes: every entry not already
 present is imported, and `spelunk memory list` then shows the repo's recorded
 history. The import is idempotent (re-running `init` imports nothing) and copies
 entry content only, not embeddings, so imported entries appear in `memory list`
-and full-text search right away. This is a local import: the notes must already
+and full-text search right away; semantic `memory search` finds them once they
+are embedded, which you can do with
+[`spelunk memory reindex`](#backfilling-missing-embeddings). This is a local import: the notes must already
 be present in your clone. Their cross-machine arrival still depends on your git
 notes refspec, since git does not fetch `refs/notes/*` by default (see above).
 git-notes is the durable carrier here and `memory.db` is a local index rebuilt
@@ -804,6 +807,60 @@ failure partway through leaves the store exactly as it was rather than
 half-collapsed. Deleting the losing rows is destructive and not reversible by
 spelunk itself (back up `memory.db`, or your git-notes ref, first if you want
 to be able to undo it).
+
+## Backfilling missing embeddings
+
+A note's semantic vector is created only when the note is first added
+(`spelunk memory add`). If no embedder was reachable at that moment, or the
+store was upgraded across the 768→896 embedding-dimension change (which drops
+the old vectors and rebuilds `note_embeddings` empty), the note stays in
+`memory.db` **present but unembedded**. Such a note is still found by text
+search (`--mode text`), `memory list`, `memory timeline`, and `context`; it is
+only missing from *semantic* `memory search`, because semantic ranking is a KNN
+over the embedding vectors and this note has none.
+
+`spelunk memory reindex` is the recovery command: it embeds the notes that have
+no vector, using the same local embedder `memory add` uses (the auto-discovered
+loopback `spelunk-server`, or a configured `server_url`). Reach for it after
+upgrading across the 768→896 change, or when notes were added while the embedder
+was down.
+
+```bash
+# Embed every active note that is missing a vector
+spelunk memory reindex
+
+# Report how many notes would be embedded, without writing or contacting the embedder
+spelunk memory reindex --dry-run
+
+# Re-embed every active note, replacing existing vectors (e.g. after a model or dimension change)
+spelunk memory reindex --force
+
+# Also backfill archived notes (default is active notes only)
+spelunk memory reindex --include-archived
+
+# Machine-readable summary
+spelunk memory reindex --format json
+```
+
+Because embedding **is** the point of this command, it needs a reachable
+embedder: with none, it prints an actionable error and exits non-zero without
+writing anything (unlike `reconcile`, which imports note text even when the
+embedder is down). Each note's vector is committed as it completes, so an
+interrupted run is resumable: re-running embeds only the notes still missing,
+with no duplicate rows, and a run against a fully-embedded store embeds nothing
+and exits 0. Progress is printed to stderr; the machine summary (`--format
+json`) goes to stdout. Notes are embedded one at a time, so a large backlog
+takes a while; `--dry-run` tells you how many are pending first.
+
+`reindex` covers the **memory** store only. The code index has its own re-embed
+path (`spelunk index`, which re-embeds changed files' chunks); the two operate
+on separate stores and neither substitutes for the other.
+
+After the 768→896 upgrade drops the old vectors, the first memory command prints
+a one-line notice naming the count and pointing at `spelunk memory reindex`, so
+the recall gap is discoverable without `RUST_LOG`. The notice is a pointer, not
+an auto-repair: it embeds nothing itself. Running `reindex` is what restores
+semantic recall.
 
 ## Using memory as context
 

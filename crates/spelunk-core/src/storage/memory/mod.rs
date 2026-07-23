@@ -18,6 +18,12 @@ mod tests;
 
 pub struct MemoryStore {
     pub(super) conn: Connection,
+    /// Set by [`MemoryStore::open`] to the count of active notes that need
+    /// re-embedding when the 768→896 migration dropped their vectors on THIS
+    /// open; `None` on every other open. Lets the CLI surface a one-line
+    /// `memory reindex` hint without `RUST_LOG` while keeping this library
+    /// side-effect-free (nothing is printed here).
+    pub reembed_needed: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,17 +91,32 @@ impl MemoryStore {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("opening memory DB at {}", path.display()))?;
-        let store = Self { conn };
-        store.migrate()?;
+        let mut store = Self {
+            conn,
+            reembed_needed: None,
+        };
+        let migrated_768_to_896 = store.migrate()?;
         // ADR-068 third amendment: Step A (unconditional backfill) then Step B
         // (conditional UNIQUE-index promotion). Neither ever hard-aborts open;
         // see `entity_id_migration.rs`.
         store.backfill_entity_ids()?;
         store.promote_entity_id_unique_index()?;
+        if migrated_768_to_896 {
+            // The upgrade just discarded every prior note's vector, so every
+            // active note now needs re-embedding; count them once so the CLI
+            // can point the user at `memory reindex` (there is no catch-up path
+            // otherwise).
+            let n = store.notes_missing_embeddings(false)?.len();
+            if n > 0 {
+                store.reembed_needed = Some(n);
+            }
+        }
         Ok(store)
     }
 
-    fn migrate(&self) -> Result<()> {
+    /// Returns `true` when the 768→896 `note_embeddings` upgrade dropped the old
+    /// vectors on this run (so [`MemoryStore::open`] can flag the re-embed need).
+    fn migrate(&self) -> Result<bool> {
         self.conn
             .execute_batch(include_str!("../../../migrations/004_memory.sql"))
             .context("running memory migrations")?;
@@ -194,6 +215,7 @@ impl MemoryStore {
             .optional()
             .context("checking v896 note_embeddings marker")?
             .is_some();
+        let mut dropped_768 = false;
         if !already_v896 {
             let needs_upgrade: bool = self
                 .conn
@@ -218,8 +240,9 @@ impl MemoryStore {
                     .context("upgrading note_embeddings to 896-dim")?;
                 tracing::info!(
                     "memory note_embeddings dim upgraded 768→896; \
-                     re-run `spelunk memory harvest` to rebuild embeddings"
+                     re-run `spelunk memory reindex` to rebuild embeddings"
                 );
+                dropped_768 = true;
             }
             self.conn
                 .execute_batch(
@@ -228,6 +251,6 @@ impl MemoryStore {
                 )
                 .context("creating v896 note_embeddings marker")?;
         }
-        Ok(())
+        Ok(dropped_768)
     }
 }

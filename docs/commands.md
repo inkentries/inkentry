@@ -788,6 +788,7 @@ spelunk memory sync                         # two-way: push local + pull remote 
 spelunk memory watch                        # stream new entries from the server (SSE)
 spelunk memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
 spelunk memory dedupe [--dry-run] [--format text|json]
+spelunk memory reindex [--force] [--include-archived] [--dry-run] [--format text|json]
 ```
 
 All `memory` subcommands accept `--backend sqlite|git-notes` (default `sqlite`)
@@ -835,6 +836,20 @@ a pulled entry matching an existing local row's identity merges into that row
 of adding a duplicate, so the printed pull count reflects only genuinely new
 rows. Pre-promotion, a pull can still add a distinct row alongside matching
 local content, same as `memory add`.
+
+**Backfilling missing embeddings:** a note's semantic vector is minted only at
+`memory add` time, so a note added while the embedder was down, or carried
+through the 768→896 embedding-dimension upgrade (which drops the old vectors),
+stays present-but-unembedded: still found by text search, `list`, `timeline`,
+and `context`, but absent from semantic `memory search`. `spelunk memory
+reindex` re-embeds those notes against the local embedder (the same path
+`memory add` uses), so it needs a reachable embedder and exits non-zero if none
+is; it commits each vector as it goes, so an interrupted run resumes on re-run.
+`--force` re-embeds every active note (replacing existing vectors), `--include-archived`
+also covers archived notes, and `--dry-run` reports counts without writing or
+contacting the embedder. This is separate from `spelunk index`, which re-embeds
+the code index. See
+[Backfilling missing embeddings](memory.md#backfilling-missing-embeddings).
 
 ---
 
