@@ -1,16 +1,16 @@
-//! Subprocess-level coverage for a mid-push (partial) failure: a multi-chunk
-//! `spelunk memory push` / `spelunk sync` whose later chunk fails must exit
-//! non-zero, print honest partial progress (`Pushed X of Y`) plus a resume hint,
-//! and never print success framing (`Done.` / `Sync complete.`).
-//!
-//! `push_local` (`crates/spelunk-cli/src/cli/cmd/memory/sync.rs`) stops at the
-//! first failed chunk, keeps the chunks that already landed durably stamped, and
-//! returns a summary marked `interrupted` rather than `?`-propagating; the
-//! command layer (`push.rs` / `sync.rs`) turns that into the partial-progress
-//! message and a non-zero exit via `bail!`. These tests spawn the real compiled
-//! `spelunk` binary (`assert_cmd`, following `memory_push_sync_total_failure.rs`)
-//! against a mock team server that serves the first chunk then 500s, so a
-//! regression in the command-layer framing or exit code is what fails here.
+// Subprocess-level coverage for a mid-push (partial) failure: a multi-chunk
+// `spelunk memory push` / `spelunk sync` whose later chunk fails must exit
+// non-zero, print honest partial progress (`Pushed X of Y`) plus a resume hint,
+// and never print success framing (`Done.` / `Sync complete.`).
+//
+// `push_local` (`crates/spelunk-cli/src/cli/cmd/memory/sync.rs`) stops at the
+// first failed chunk, keeps the chunks that already landed durably stamped, and
+// returns a summary marked `interrupted` rather than `?`-propagating; the
+// command layer (`push.rs` / `sync.rs`) turns that into the partial-progress
+// message and a non-zero exit via `bail!`. These tests spawn the real compiled
+// `spelunk` binary (`assert_cmd`, following `memory_push_sync_total_failure.rs`)
+// against a mock team server that serves the first chunk then 500s, so a
+// regression in the command-layer framing or exit code is what fails here.
 
 mod plumbing_helpers;
 use plumbing_helpers::spelunk_bin_in;
@@ -24,12 +24,12 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use spelunk_core::storage::MemoryStore;
 
-/// Project slug with no characters `encode_project_id` would percent-encode,
-/// so the mocked route paths below can be matched literally.
+// Project slug with no characters `encode_project_id` would percent-encode,
+// so the mocked route paths below can be matched literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
-/// Enough entries to span more than one push chunk (chunk size is 50), so a
-/// later chunk can fail after an earlier one has already landed.
+// Enough entries to span more than one push chunk (chunk size is 50), so a
+// later chunk can fail after an earlier one has already landed.
 const SEED_COUNT: usize = 60;
 
 fn register_sqlite_vec() {
@@ -44,9 +44,9 @@ fn register_sqlite_vec() {
     });
 }
 
-/// The first `POST /memory/batch` (chunk 1) lands `created: 50`; every later
-/// request 500s (chunk 2 fails). Keyed on call count so it does not depend on
-/// wiremock's ordering of same-path mocks.
+// The first `POST /memory/batch` (chunk 1) lands `created: 50`; every later
+// request 500s (chunk 2 fails). Keyed on call count so it does not depend on
+// wiremock's ordering of same-path mocks.
 struct FirstChunkThenFail {
     calls: AtomicUsize,
 }
@@ -84,7 +84,7 @@ async fn mount_batch_first_ok_then_fail(server: &MockServer) {
         .await;
 }
 
-/// The pull half of `spelunk sync` runs independently of the push outcome.
+// The pull half of `spelunk sync` runs independently of the push outcome.
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -120,9 +120,9 @@ fn init_project(proj: &Path) {
     std::fs::create_dir_all(proj.join(".spelunk")).expect("create .spelunk");
 }
 
-/// Seed a standalone memory.db with `SEED_COUNT` distinct live notes, directly
-/// via the library, so the push has a multi-chunk live set without spawning one
-/// `memory add` subprocess per note.
+// Seed a standalone memory.db with `SEED_COUNT` distinct live notes, directly
+// via the library, so the push has a multi-chunk live set without spawning one
+// `memory add` subprocess per note.
 fn seed_source_store(mem_path: &Path) {
     register_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create source dir");
