@@ -492,10 +492,18 @@ async fn run_embed_phases(
 /// notice must then name that server instead of pointing at `spelunk server
 /// logs`, which only reads the local auto-daemon's log and would show clean
 /// logs for a failure that lives on the remote server.
+///
+/// `is_windows` gates the Windows Defender Firewall hint in the offline
+/// case: that hint is a real cause only on Windows, and printing it on every
+/// platform actively misdirects a macOS/Linux user away from the real
+/// problem (an unreachable configured `server_url`). Callers pass
+/// `cfg!(windows)`; injected here so the platform-specific behaviour is
+/// testable without `#[cfg(windows)]` test gating.
 fn embed_skipped_lines(
     embedder_state: Option<capability::EmbedderState>,
     server_url: Option<&str>,
     remote_url: Option<&str>,
+    is_windows: bool,
 ) -> Vec<String> {
     use capability::EmbedderState;
     match embedder_state {
@@ -528,18 +536,32 @@ fn embed_skipped_lines(
             "Note: this server has no embedder — chunks indexed for text/ast-grep search only."
                 .to_string(),
         ],
-        // Offline: no server reachable.
+        // Offline: no server reachable. Reaching this arm with `server_url`
+        // set means the probe took the explicit-URL path (see
+        // `capability::probe::probe`): an auto-discovered loopback miss never
+        // carries a `server_url`, so the message can unconditionally say
+        // "configured server_url" rather than guessing.
         None => {
             if let Some(url) = server_url {
-                vec![
-                    format!(
-                        "Warning: spelunk-server at {url} is unreachable — skipping embedding phase."
-                    ),
-                    "On Windows, allow the loopback listener through Defender Firewall (accept the prompt on `spelunk server start`)."
+                let mut lines = vec![format!(
+                    "Warning: server_url is explicitly configured to {url}, which is \
+                     unreachable, so the embedding phase is skipped. This overrides the \
+                     auto-discovered local server, so a healthy `spelunk server start` \
+                     daemon elsewhere will not be used while server_url is set."
+                )];
+                if is_windows {
+                    lines.push(
+                        "On Windows, allow the loopback listener through Defender Firewall \
+                         (accept the prompt on `spelunk server start`)."
+                            .to_string(),
+                    );
+                }
+                lines.push(
+                    "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` once \
+                     the server is reachable to add embeddings."
                         .to_string(),
-                    "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` once the server is reachable to add embeddings."
-                        .to_string(),
-                ]
+                );
+                lines
             } else {
                 vec![
                     "Note: start a local server (`spelunk server start`) to enable semantic search."
@@ -556,6 +578,7 @@ fn eprint_embed_skipped_notice(tier: &capability::Tier, cfg: &Config) {
         tier.embedder_state(),
         cfg.server_url.as_deref(),
         tier.explicit_remote_url(),
+        cfg!(windows),
     ) {
         eprintln!("{line}");
     }
@@ -776,7 +799,8 @@ mod tests {
 
     #[test]
     fn embed_skipped_loading_advises_retry() {
-        let lines = embed_skipped_lines(Some(capability::EmbedderState::Loading), None, None);
+        let lines =
+            embed_skipped_lines(Some(capability::EmbedderState::Loading), None, None, false);
         assert!(!lines.is_empty(), "notice must not be silent");
         let joined = lines.join("\n");
         assert!(joined.contains("warming up"));
@@ -787,7 +811,12 @@ mod tests {
     fn embed_skipped_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
         // so `spelunk server logs` is the right place to look.
-        let lines = embed_skipped_lines(Some(capability::EmbedderState::Unavailable), None, None);
+        let lines = embed_skipped_lines(
+            Some(capability::EmbedderState::Unavailable),
+            None,
+            None,
+            false,
+        );
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
         assert!(joined.contains("spelunk server logs"));
@@ -802,6 +831,7 @@ mod tests {
             Some(capability::EmbedderState::Unavailable),
             None,
             Some("https://team.example:7777"),
+            false,
         );
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
@@ -816,20 +846,54 @@ mod tests {
     }
 
     #[test]
-    fn embed_skipped_unreachable_server_mentions_firewall() {
+    fn embed_skipped_unreachable_server_names_configured_server_url() {
         // Offline (no reachable server) with a configured server_url: the notice
-        // names the URL and the Windows firewall cause, replacing the old silent
-        // 0-chunk embed.
-        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None);
+        // must name the actual URL attempted AND say explicitly that it came
+        // from a configured `server_url` (not the auto-discovered loopback
+        // daemon). Without this, a user with a healthy loopback daemon running
+        // has no path from the message to the real cause: the daemon was
+        // never being used because server_url overrides it.
+        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, false);
         let joined = lines.join("\n");
-        assert!(joined.contains("http://127.0.0.1:7777"));
-        assert!(joined.contains("unreachable"));
-        assert!(joined.contains("Firewall"));
+        assert!(joined.contains("http://127.0.0.1:7777"), "got: {joined}");
+        assert!(joined.contains("unreachable"), "got: {joined}");
+        assert!(joined.contains("server_url"), "got: {joined}");
+        assert!(
+            joined.contains("configured"),
+            "must say the target came from a *configured* server_url, not just name \
+             `server_url` in passing (this is the specific wording the defect asked for, \
+             distinguishing it from the auto-discovered daemon): got: {joined}"
+        );
+        assert!(
+            joined.contains("overrides") || joined.contains("override"),
+            "must explain that an explicit server_url overrides the auto-discovered \
+             local daemon, so a healthy daemon elsewhere is not the fix: got: {joined}"
+        );
+    }
+
+    #[test]
+    fn embed_skipped_unreachable_server_shows_firewall_hint_only_on_windows() {
+        // The Windows Defender Firewall hint is a real cause ONLY on Windows;
+        // printing it unconditionally (the field bug, hit on macOS) actively
+        // misdirects a user on any other platform.
+        let windows_lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, true);
+        assert!(
+            windows_lines.join("\n").contains("Firewall"),
+            "the Windows hint must still show when the host platform is Windows"
+        );
+
+        let non_windows_lines =
+            embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, false);
+        assert!(
+            !non_windows_lines.join("\n").contains("Firewall"),
+            "the Windows-only hint must not print on a non-Windows host: got: {:?}",
+            non_windows_lines
+        );
     }
 
     #[test]
     fn embed_skipped_no_server_suggests_starting_one() {
-        let lines = embed_skipped_lines(None, None, None);
+        let lines = embed_skipped_lines(None, None, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("spelunk server start"));
     }
@@ -1087,10 +1151,13 @@ mod tests {
         ] {
             for url in [Some("http://x:1"), None] {
                 for remote_url in [None, Some("https://team.example:7777")] {
-                    assert!(
-                        !embed_skipped_lines(state, url, remote_url).is_empty(),
-                        "state {state:?} url {url:?} remote_url {remote_url:?} produced no notice"
-                    );
+                    for is_windows in [false, true] {
+                        assert!(
+                            !embed_skipped_lines(state, url, remote_url, is_windows).is_empty(),
+                            "state {state:?} url {url:?} remote_url {remote_url:?} \
+                             is_windows {is_windows} produced no notice"
+                        );
+                    }
                 }
             }
         }

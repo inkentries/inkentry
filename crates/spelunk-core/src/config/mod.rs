@@ -23,7 +23,10 @@ pub use persist::{
     remove_server_key_with, save_auth_tokens, save_auth_tokens_to, save_server_key,
     save_server_key_with, write_project_slug,
 };
-pub use predicates::{is_loopback_url, looks_like_uuid, no_server_env_set, validate_transport_url};
+pub use predicates::{
+    is_loopback_url, is_loopback_url_missing_port, looks_like_uuid, no_server_env_set,
+    validate_transport_url,
+};
 pub use project_id::derive_project_id;
 pub use sync_mode::SyncMode;
 pub use tls::apply_server_ca;
@@ -488,6 +491,28 @@ pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
     secret_store::default_store(&spelunk_config_dir())
 }
 
+/// Build the warning line for a loopback `server_url` with no port, or
+/// `None` when no warning applies. Pure so it's unit-testable without
+/// capturing stderr; `Config::validate_with_project` prints the result.
+///
+/// A loopback `server_url` missing a port can never be the auto-discovered
+/// local daemon (which always binds a specific port, default 7777): it is a
+/// near-certain leftover misconfiguration, most often a stale `server_url`
+/// after a team-server value was pared down to a bare host. This is a
+/// warning, not a validation error: unlike a non-loopback plaintext
+/// `http://` URL, it isn't a security problem, just a likely mistake.
+fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
+    if !is_loopback_url_missing_port(url) {
+        return None;
+    }
+    Some(format!(
+        "Warning: server_url ({url}) is a loopback host with no port; this can never be \
+         the auto-discovered local server (default port 7777). If this is a leftover \
+         value, remove server_url from config; otherwise add the port your server \
+         actually listens on."
+    ))
+}
+
 impl Config {
     /// Validate cross-field constraints. Call after `load()`.
     ///
@@ -519,6 +544,11 @@ impl Config {
                  Add `project_id = \"my-project\"` to .spelunk/config.toml \
                  or set SPELUNK_PROJECT_ID."
             );
+        }
+        if let Some(url) = &self.server_url
+            && let Some(warning) = portless_loopback_server_url_warning(url)
+        {
+            eprintln!("{warning}");
         }
         Ok(())
     }
@@ -861,6 +891,57 @@ memory_server_key = "old-token"
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    // ── portless_loopback_server_url_warning ─────────────────────────────────
+
+    #[test]
+    fn portless_loopback_server_url_warning_fires_for_bare_localhost() {
+        // The exact field-observed misconfig: `server_url = "http://localhost"`
+        // with no port, silently accepted and used instead of the healthy
+        // auto-discovered daemon on 7777.
+        let warning = portless_loopback_server_url_warning("http://localhost")
+            .expect("a portless loopback server_url must produce a warning");
+        assert!(warning.contains("http://localhost"), "got: {warning}");
+        assert!(warning.contains("no port"), "got: {warning}");
+    }
+
+    #[test]
+    fn portless_loopback_server_url_warning_is_none_when_port_present() {
+        assert_eq!(
+            portless_loopback_server_url_warning("http://localhost:7777"),
+            None
+        );
+        assert_eq!(
+            portless_loopback_server_url_warning("http://127.0.0.1:7777"),
+            None
+        );
+    }
+
+    #[test]
+    fn portless_loopback_server_url_warning_is_none_for_non_loopback_host() {
+        // A non-loopback https:// URL with no explicit port is normal
+        // (default port 443), not a misconfiguration signal.
+        assert_eq!(
+            portless_loopback_server_url_warning("https://team.example.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_still_passes_for_a_portless_loopback_server_url() {
+        // The warning is advisory, not a hard error: a portless loopback
+        // server_url is still a *valid* transport (is_loopback_url_missing_port
+        // is orthogonal to validate_transport_url's scheme/security check).
+        let cfg = Config {
+            server_url: Some("http://localhost".to_string()),
+            project_id: None,
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_ok(),
+            "a portless loopback server_url must warn, not fail validate()"
+        );
     }
 
     // ── validate_with_project() — --project satisfies the requirement ──────────

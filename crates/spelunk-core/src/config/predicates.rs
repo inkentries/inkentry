@@ -48,6 +48,30 @@ pub fn is_loopback_url(url: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
 }
 
+/// Return `true` when `url` targets a loopback host (see [`is_loopback_url`])
+/// but names no explicit port.
+///
+/// A loopback `server_url` with no port can never be the auto-discovered
+/// local daemon (which always binds a specific port, default `7777`): it is a
+/// near-certain leftover misconfiguration (e.g. a stale `server_url` after a
+/// team-server value was cleared down to a bare host). Callers use this to
+/// warn, not reject: unlike [`validate_transport_url`], a portless loopback
+/// URL is not a security problem, so it's a warning rather than a hard error.
+pub fn is_loopback_url_missing_port(url: &str) -> bool {
+    if !is_loopback_url(url) {
+        return false;
+    }
+    let host_part = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let host = host_part.split('/').next().unwrap_or(host_part);
+    match host.strip_prefix('[') {
+        // IPv6: `[::1]` (no port) vs `[::1]:7777` (port present after `]:`).
+        Some(_) => !host.contains("]:"),
+        None => !host.contains(':'),
+    }
+}
+
 /// Validate that `url` is an acceptable transport for sending a bearer token /
 /// talking to a spelunk-server: either `https://` (any host), or `http://` to a
 /// loopback host (`127.0.0.1`, `::1`, `localhost`).
@@ -125,6 +149,36 @@ mod tests {
     fn is_loopback_url_rejects_address_with_127_in_path() {
         // Should NOT match just because "127" appears somewhere
         assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
+    }
+
+    // ── is_loopback_url_missing_port ─────────────────────────────────────────
+
+    #[test]
+    fn is_loopback_url_missing_port_flags_bare_localhost() {
+        // The exact field-observed misconfig: a stale `server_url =
+        // "http://localhost"` with no port, which can never be the
+        // auto-discovered daemon (default port 7777).
+        assert!(is_loopback_url_missing_port("http://localhost"));
+        assert!(is_loopback_url_missing_port("https://localhost"));
+        assert!(is_loopback_url_missing_port("http://localhost/"));
+        assert!(is_loopback_url_missing_port("http://127.0.0.1"));
+        assert!(is_loopback_url_missing_port("http://[::1]"));
+        assert!(is_loopback_url_missing_port("http://[::1]/"));
+    }
+
+    #[test]
+    fn is_loopback_url_missing_port_accepts_when_port_present() {
+        assert!(!is_loopback_url_missing_port("http://localhost:7777"));
+        assert!(!is_loopback_url_missing_port("http://127.0.0.1:7777"));
+        assert!(!is_loopback_url_missing_port("http://[::1]:7777"));
+    }
+
+    #[test]
+    fn is_loopback_url_missing_port_ignores_non_loopback_hosts() {
+        // A non-loopback host without a port is a normal https:// URL
+        // (default port 443), not a misconfiguration signal.
+        assert!(!is_loopback_url_missing_port("https://example.com"));
+        assert!(!is_loopback_url_missing_port("http://team-server:7777"));
     }
 
     // ── validate_transport_url (loopback-only plaintext http) ──────────────────
