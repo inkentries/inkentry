@@ -68,7 +68,7 @@ async fn dead_llm_server() -> MockServer {
 /// about.
 ///
 /// `SPELUNK_MODE=cloud_first`: every test in this file drives its fixture's
-/// explicit `server_url` (2026-07-23 ADR-004 revision, spelunk-oss#280).
+/// explicit `server_url` (2026-07-23 ADR-004 revision).
 /// `index/summaries.rs::generate_summaries` calls `ServerInferenceClient::
 /// from_config` directly on the loaded `Config` with no loopback
 /// auto-discovery bridging (its pre-existing `cfg.server_url.is_none()` skip

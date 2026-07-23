@@ -59,7 +59,7 @@ pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
     // `get_inference_tier` (not `tier`/`get_tier` above, which governs the
     // `require_tier1` feature gate): local_first always prefers the local
     // loopback embedder/LLM for inference, even with an explicit server_url
-    // set (2026-07-23 founder decision, spelunk-oss#280).
+    // set (2026-07-23 founder decision).
     let project_root = db_path.parent().unwrap_or(&db_path);
     let inference_tier = capability::get_inference_tier(&cfg).await;
     let eff_cfg = inference_tier.effective_config(&cfg, project_root);

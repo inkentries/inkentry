@@ -1540,7 +1540,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         ));
 }
 
-/// Founder's own manual repro (2026-07-23, spelunk-oss#280): `local_first`
+/// Founder's own manual repro (2026-07-23): `local_first`
 /// (no explicit `mode`, reached because `server_url` is set), an explicit
 /// `server_url` pointed at an address nothing mounts anything on, and a
 /// loopback server auto-discovered via the port file. `memory add` must embed

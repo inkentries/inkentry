@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // `.current_dir(dir.path())`.
 //
 // `mode = "cloud_first"` in the global config is required since the
-// 2026-07-23 ADR-004 revision (spelunk-oss#280): `plumbing embed` has no
+// 2026-07-23 ADR-004 revision: `plumbing embed` has no
 // loopback-auto-discovery bridging (unlike `memory add`/`search`/etc, it
 // calls `require_server_client` directly on the loaded `Config`, with no
 // `effective_config` step), so a bare `server_url` with the default

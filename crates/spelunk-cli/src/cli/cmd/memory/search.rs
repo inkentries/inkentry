@@ -26,7 +26,7 @@ pub(super) async fn memory_search(
     let project_root = mem_path.parent().unwrap_or(mem_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder for query-embedding, even with an explicit
-    // server_url set (2026-07-23 founder decision, spelunk-oss#280).
+    // server_url set (2026-07-23 founder decision).
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;

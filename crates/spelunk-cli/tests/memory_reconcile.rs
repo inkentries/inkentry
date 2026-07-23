@@ -311,7 +311,7 @@ fn spelunk_no_server_exits_cleanly_with_import() {
     );
 }
 
-// ── spelunk-oss#280: local_first must embed via loopback, not a bare server_url ──
+// ── local_first must embed via loopback, not a bare server_url ──
 
 /// Start a mock spelunk-server (health + `/index/embed` mounted) on a
 /// dedicated runtime kept alive for the caller's duration.
@@ -328,13 +328,13 @@ fn start_mock() -> (tokio::runtime::Runtime, MockServer) {
 
 #[test]
 fn local_first_with_server_url_still_embeds_via_loopback() {
-    // Regression guard for spelunk-oss#280: step 5's best-effort embed used
+    // Regression guard: step 5's best-effort embed used
     // to call `ServerInferenceClient::from_config` on the raw (unbridged)
     // config, so a `local_first` project with an explicit `server_url`
-    // silently imported every note WITHOUT an embedding, the exact ^279
-    // symptom ^280 exists to eliminate. It must bridge via
-    // `get_inference_tier`/`effective_config` like `add`/`reindex`/`search`
-    // do, and reach the local loopback embedder instead.
+    // silently imported every note WITHOUT an embedding, the exact
+    // silent-unembedded-write symptom this fix eliminates. It must bridge
+    // via `get_inference_tier`/`effective_config` like `add`/`reindex`/
+    // `search` do, and reach the local loopback embedder instead.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);

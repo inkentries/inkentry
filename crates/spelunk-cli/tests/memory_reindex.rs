@@ -8,7 +8,7 @@
 //
 // The mock embedder is wired in via **loopback auto-discovery**
 // (`SPELUNK_STATE_DIR`/`server.port`), not `server_url`, since the
-// 2026-07-23 ADR-004 revision (spelunk-oss#280): `reindex` runs in the
+// 2026-07-23 ADR-004 revision: `reindex` runs in the
 // default `local_first` mode here (no explicit `mode` is set), and
 // `local_first` never routes inference through an explicit `server_url` —
 // only the local loopback embedder. Using the real discovery mechanism (a
@@ -757,7 +757,7 @@ fn no_reembed_notice_on_fresh_store() {
 // there (`server_url` is, via `RemoteMemoryBackend`), so `reindex` has
 // nothing local to re-embed. It must fail with an actionable "not
 // applicable" message rather than silently no-op'ing or (worse) reindexing a
-// store nothing reads (2026-07-23 founder decision, spelunk-oss#280). No
+// store nothing reads (2026-07-23 founder decision). No
 // mock embedder is set up at all: a real embed attempt would also fail this
 // test, just for the wrong reason (proving the bail happens before any embed
 // call, not after one fails).

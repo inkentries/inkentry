@@ -41,8 +41,8 @@ fn write_fixture(dir: &Path, name: &str) {
 /// Mirrors `plumbing_helpers::spelunk_bin_in`'s keychain/home pinning.
 ///
 /// `SPELUNK_MODE=cloud_first`: every test in this file drives its fixture's
-/// explicit `server_url` for LLM summaries (2026-07-23 ADR-004 revision,
-/// spelunk-oss#280). `index/summaries.rs::generate_summaries` calls
+/// explicit `server_url` for LLM summaries (2026-07-23 ADR-004 revision).
+/// `index/summaries.rs::generate_summaries` calls
 /// `ServerInferenceClient::from_config` directly on the loaded `Config` with
 /// no loopback auto-discovery bridging, so under the default `local_first`
 /// mode a bare `server_url` no longer resolves to any inference target at

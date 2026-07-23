@@ -137,7 +137,7 @@ impl Tier {
     /// split-brain where `memory add` wrote `memory.db` while `memory search`
     /// read the server's `server.db`.
     ///
-    /// ## ADR-004 revision (2026-07-23, spelunk-oss#280): mode governs whether
+    /// ## ADR-004 revision (2026-07-23): mode governs whether
     /// an explicit `server_url` also owns inference
     ///
     /// `self` here is the caller's **inference** tier (see
@@ -152,7 +152,7 @@ impl Tier {
     /// sync replica only. This inverts the original assumption that a
     /// configured `server_url` unconditionally owns both concerns — that
     /// assumption is exactly what routed `local_first` embed requests to a
-    /// cloud `server_url`'s nonexistent `/index/embed` route (the ^280 bug).
+    /// cloud `server_url`'s nonexistent `/index/embed` route.
     ///
     /// `project_id` is derived (mirroring `embed_phase`, see spelunk#307) so the
     /// inference client can address the project on the server.
@@ -342,14 +342,14 @@ mod tests {
     fn effective_config_explicit_server_url_cloud_first_left_unchanged() {
         // `cloud_first` is the ONLY mode where an explicitly-configured team
         // server owns BOTH inference and memory (2026-07-23 founder decision,
-        // ADR-004 revision, spelunk-oss#280). `effective_config` must not
+        // ADR-004 revision). `effective_config` must not
         // synthesise a separate `inference_url` here: `resolve_inference_url`
         // falls back to `server_url` for this mode instead.
         //
         // This test used to run with `mode` unset (defaulting to
         // `local_first`) and asserted the same "left unchanged" outcome; that
-        // was the bug spelunk-oss#280 fixed. The `local_first` case now has
-        // the opposite expectation — see
+        // was the bug this fix addressed. The `local_first` case now has
+        // the opposite expectation, see
         // `effective_config_explicit_server_url_local_first_prefers_tier_url_for_inference`
         // below — so this test is pinned to the one mode where "left
         // unchanged" is still correct.
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn effective_config_explicit_server_url_local_first_prefers_tier_url_for_inference() {
-        // Core regression test for spelunk-oss#280: in `local_first` (here,
+        // Core regression test: in `local_first` (here,
         // the default reached because `server_url` is set with no explicit
         // `mode`), a configured `server_url` is a memory sync replica only.
         // `self` is the caller's *inference* tier (`get_inference_tier`),

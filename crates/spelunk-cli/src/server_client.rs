@@ -230,7 +230,7 @@ impl ServerInferenceClient {
             project_id,
             // Mirrors `Config::resolve_inference_url`'s own fallback exactly:
             // `base_url` came from `server_url` iff `inference_url` was unset.
-            // Since the 2026-07-23 ADR-004 revision (spelunk-oss#280),
+            // Since the 2026-07-23 ADR-004 revision,
             // `effective_config` CAN set `inference_url` even when
             // `server_url` is ALSO set (the `local_first` case: an explicit
             // `server_url` there is a sync replica only, never the inference
@@ -1014,7 +1014,7 @@ mod tests {
     // which pins the same invariant on the `Tier` side of this contract.
     //
     // `mode: CloudFirst` is required here since the 2026-07-23 ADR-004
-    // revision (spelunk-oss#280): `resolve_inference_url` only falls back to
+    // revision: `resolve_inference_url` only falls back to
     // `server_url` in `cloud_first` (in `local_first`, the default this test
     // used to rely on, a bare `server_url` no longer resolves to any
     // inference `base_url` at all — see
@@ -1051,12 +1051,12 @@ mod tests {
         );
     }
 
-    /// Regression guard for spelunk-oss#280: with only `server_url` set (no
+    /// Regression guard: with only `server_url` set (no
     /// `inference_url`) and no explicit `mode`, the config defaults to
-    /// `local_first` — and `local_first` must NOT resolve any inference
+    /// `local_first`, and `local_first` must NOT resolve any inference
     /// `base_url` from `server_url`. `from_config` must return `None` rather
     /// than silently building a client aimed at `server_url` (which is what
-    /// produced the ^280 404s against a cloud `server_url`'s nonexistent
+    /// produced 404s against a cloud `server_url`'s nonexistent
     /// `/index/embed` route).
     #[test]
     #[serial_test::serial]
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     /// End-to-end regression test for the founder's own manual repro
-    /// (2026-07-23, spelunk-oss#280): `local_first`, `server_url` set to a
+    /// (2026-07-23): `local_first`, `server_url` set to a
     /// cloud host, no explicit `mode` → embedding must reach the LOCAL
     /// loopback embedder, never the configured `server_url`. Modelled at this
     /// layer by setting `inference_url` directly to a mocked loopback server

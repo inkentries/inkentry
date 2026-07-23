@@ -39,10 +39,9 @@ pub(super) async fn memory_add(
     };
     // `get_inference_tier` (not `get_tier`): in `local_first`, inference must
     // always prefer the local loopback embedder, even when `server_url` is
-    // explicitly set (2026-07-23 founder decision, ADR-004 revision,
-    // spelunk-oss#280) — `get_tier` alone would probe the explicit
-    // `server_url` and hand its (wrong, for inference) URL to
-    // `effective_config`.
+    // explicitly set (2026-07-23 founder decision, ADR-004 revision).
+    // `get_tier` alone would probe the explicit `server_url` and hand its
+    // (wrong, for inference) URL to `effective_config`.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;

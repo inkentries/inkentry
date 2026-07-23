@@ -575,8 +575,8 @@ impl Config {
     /// - `local_first` / `offline`: **never** falls back to `server_url`. An
     ///   explicit `server_url` in these modes is a sync replica only; inference
     ///   always prefers the local loopback embedder, which `inference_url`
-    ///   alone carries. Returning `server_url` here was the root cause of
-    ///   spelunk-oss#280: a `local_first` project with a cloud `server_url`
+    ///   alone carries. Returning `server_url` here was the root cause of a
+    ///   past bug: a `local_first` project with a cloud `server_url`
     ///   sent embed requests to `{server_url}/index/embed`, which 404s (cloud
     ///   API has no such route) instead of ever reaching the local embedder.
     ///
@@ -1059,7 +1059,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn resolve_inference_url_local_first_never_falls_back_to_server_url() {
-        // Regression guard for spelunk-oss#280: `local_first` (the default
+        // Regression guard: `local_first` (the default
         // mode once `server_url` is set, with no explicit `mode` key) must
         // NOT fall back to `server_url` for inference — that is exactly the
         // routing that sent embed requests to a cloud `server_url`'s

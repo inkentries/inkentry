@@ -171,9 +171,8 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
 /// misconfiguration).
 ///
 /// Split out of [`probe`] so [`get_inference_tier`] can run the identical
-/// discovery independent of an explicit `server_url` — the routing rule that
-/// fixes spelunk-oss#280 (`local_first` always prefers the local embedder,
-/// even when `server_url` targets a remote).
+/// discovery independent of an explicit `server_url`: `local_first` always
+/// prefers the local embedder, even when `server_url` targets a remote.
 async fn probe_loopback() -> Tier {
     // Step 3a: port file written by `spelunk server start`
     if let Some(port) = read_server_port_file() {
@@ -209,7 +208,7 @@ async fn probe_loopback() -> Tier {
 /// Resolve the tier used specifically to route **inference** (embeddings +
 /// LLM), which can differ from [`get_tier`]'s general-purpose capability tier.
 ///
-/// Per the founder's 2026-07-23 routing decision (spelunk-oss#280, ADR-004
+/// Per the founder's 2026-07-23 routing decision (ADR-004
 /// revision): `local_first` (and the serde-default mode reached when no
 /// `server_url` is set) always routes inference to the local loopback
 /// embedder, even when `server_url` is explicitly configured — there, an
@@ -1095,7 +1094,7 @@ mod tests {
         );
     }
 
-    // ── get_inference_tier (spelunk-oss#280, 2026-07-23 founder decision) ───
+    // ── get_inference_tier (2026-07-23 founder decision) ───
     //
     // These tests set `SPELUNK_STATE_DIR` / `SPELUNK_NO_SERVER`, both
     // process-global. Reusing the `spelunk_no_server_env` serial group (rather
@@ -1106,11 +1105,10 @@ mod tests {
 
     /// `local_first` (the default reached once `server_url` is set, with no
     /// explicit `mode`) must probe the LOCAL loopback embedder for inference,
-    /// never the configured `server_url` — the routing bug spelunk-oss#280
-    /// fixed. The loopback mock is discovered via the `server.port` file
-    /// (step 3a); `server_url` is left pointed at an address nothing mounts
-    /// anything on, so the test would fail loudly (connection error, not a
-    /// silent pass) if the code ever tried it.
+    /// never the configured `server_url`. The loopback mock is discovered via
+    /// the `server.port` file (step 3a); `server_url` is left pointed at an
+    /// address nothing mounts anything on, so the test would fail loudly
+    /// (connection error, not a silent pass) if the code ever tried it.
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn get_inference_tier_local_first_prefers_loopback_over_explicit_server_url() {

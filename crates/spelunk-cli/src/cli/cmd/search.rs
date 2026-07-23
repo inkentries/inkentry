@@ -124,7 +124,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let project_root = db_path.parent().unwrap_or(&db_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder, even with an explicit server_url set
-    // (2026-07-23 founder decision, spelunk-oss#280).
+    // (2026-07-23 founder decision).
     let tier = capability::get_inference_tier(&cfg).await;
     let cfg = tier.effective_config(&cfg, project_root);
 

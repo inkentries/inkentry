@@ -73,9 +73,9 @@ fn plumbing_knn_returns_valid_chunk_ids() {
     // `.current_dir` must match for this second, separate invocation to see it.
     //
     // `SPELUNK_MODE=cloud_first`: `plumbing embed` has no loopback
-    // auto-discovery bridging (2026-07-23 ADR-004 revision,
-    // spelunk-oss#280), so with the default `local_first` mode a bare
-    // `server_url` no longer resolves to any inference target.
+    // auto-discovery bridging (2026-07-23 ADR-004 revision), so with the
+    // default `local_first` mode a bare `server_url` no longer resolves to
+    // any inference target.
     let embed_output = spelunk_bin()
         .current_dir(_tmp.path())
         .env("SPELUNK_MODE", "cloud_first")

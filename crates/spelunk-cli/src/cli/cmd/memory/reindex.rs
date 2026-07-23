@@ -63,8 +63,7 @@ pub(super) async fn memory_reindex(
     // itself falls back to `memory.db` there too, memory.db is the store of
     // record and there IS something local to re-embed. Gating on `mode`
     // alone (ignoring `server_url`) would reject that exact case, contrary
-    // to `open_memory_backend`'s own routing (2026-07-23 founder decision,
-    // spelunk-oss#280).
+    // to `open_memory_backend`'s own routing (2026-07-23 founder decision).
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         anyhow::bail!(
             "'spelunk memory reindex' is not applicable in cloud_first mode with \
@@ -128,8 +127,7 @@ pub(super) async fn memory_reindex(
     // parent).
     let project_root = mem_path.parent().unwrap_or(mem_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder, even with an explicit server_url set
-    // (spelunk-oss#280).
+    // local loopback embedder, even with an explicit server_url set.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     // No embedder reachable → actionable error + non-zero exit, before any

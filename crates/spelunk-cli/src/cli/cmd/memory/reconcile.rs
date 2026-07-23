@@ -239,10 +239,10 @@ pub(super) async fn memory_reconcile(
 
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder for step 5's best-effort embed, even with an
-    // explicit server_url set (2026-07-23 founder decision, spelunk-oss#280).
+    // explicit server_url set (2026-07-23 founder decision).
     // Without this, step 5 silently imports every note unembedded under a
-    // local_first + server_url config, exactly the ^279 symptom ^280 exists
-    // to eliminate.
+    // local_first + server_url config, exactly the silent-unembedded-write
+    // symptom this fix eliminates.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, &project_root);
     let cfg = &eff_cfg;

@@ -79,7 +79,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // they're written separately from `write_harvest_config`'s `extra`.
     //
     // `mode = "cloud_first"` is required since the 2026-07-23 ADR-004
-    // revision (spelunk-oss#280): with `SPELUNK_NO_SERVER=1` forcing
+    // revision: with `SPELUNK_NO_SERVER=1` forcing
     // `Tier::Offline` (no loopback probe at all) and no explicit mode, a
     // bare `server_url` now defaults to `local_first`, which never falls
     // back to `server_url` for inference — so the Tier-0 gate this test

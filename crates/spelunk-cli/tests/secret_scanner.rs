@@ -204,8 +204,8 @@ fn summary_secret_is_not_persisted() {
     //
     // `SPELUNK_MODE=cloud_first`: `generate_summaries` calls
     // `ServerInferenceClient::from_config` directly on the loaded `Config`
-    // with no loopback auto-discovery bridging (2026-07-23 ADR-004 revision,
-    // spelunk-oss#280), so under the default `local_first` mode a bare
+    // with no loopback auto-discovery bridging (2026-07-23 ADR-004 revision),
+    // so under the default `local_first` mode a bare
     // `server_url` no longer resolves to any inference target.
     plumbing_helpers::spelunk_bin_in(tmp.path())
         .current_dir(tmp.path())
