@@ -1472,3 +1472,73 @@ fn open_fresh_store_does_not_flag_reembed() {
         "a fresh FLOAT[896] store never triggered the 768 drop"
     );
 }
+
+fn force_ids(store: &MemoryStore, include_archived: bool) -> Vec<i64> {
+    store
+        .all_active_notes_for_reembed(include_archived)
+        .expect("force query")
+        .into_iter()
+        .map(|(id, ..)| id)
+        .collect()
+}
+
+// The --force candidate set must widen to archived notes under
+// include_archived, and must NOT include them otherwise. Without this, a
+// `--force --include-archived` run would silently skip archived notes and a
+// wrong WHERE clause (still filtering status = 'active') would go unnoticed.
+#[test]
+fn all_active_notes_for_reembed_include_archived_covers_archived_and_embedded() {
+    let store = open_store();
+    let active = add_active(&store, "active");
+    let archived = add_active(&store, "archived");
+    assert!(store.archive(archived).expect("archive"));
+    // Embed the active one: the force set must still return it (embedded or
+    // not) so --force re-embeds everything.
+    embed(&store, active);
+
+    assert_eq!(
+        force_ids(&store, false),
+        vec![active],
+        "default force set is active notes only, regardless of embedding"
+    );
+
+    let mut got = force_ids(&store, true);
+    got.sort();
+    let mut want = vec![active, archived];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "include_archived force set covers the archived note too"
+    );
+}
+
+// A superseded note is archived (supersede sets status = 'archived'), so it
+// must drop out of the default missing set and reappear only under
+// include_archived. Pins the superseded-handling half of the query contract:
+// reindex must not re-embed a note the user has explicitly superseded unless
+// they opt in.
+#[test]
+fn superseded_note_excluded_by_default_included_with_archived() {
+    let store = open_store();
+    let old = add_active(&store, "old");
+    let new = add_active(&store, "new");
+    assert!(store.supersede(old, new).expect("supersede"));
+
+    // Default: the superseded (now archived) note is gone; only the active
+    // successor is missing.
+    assert_eq!(
+        missing_ids(&store, false),
+        vec![new],
+        "a superseded note is archived, so default reindex skips it"
+    );
+
+    // include_archived: both the successor and the superseded note surface.
+    let mut got = missing_ids(&store, true);
+    got.sort();
+    let mut want = vec![old, new];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "include_archived surfaces the superseded note for backfill"
+    );
+}

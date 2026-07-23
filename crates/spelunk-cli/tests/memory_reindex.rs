@@ -231,6 +231,34 @@ fn reindex_cmd(f: &Fixture) -> Command {
     cmd
 }
 
+// Archive a seeded note via the real `memory archive`. Runs with no server so
+// it stays a purely local status change (no git-notes carry: global config
+// pins store_in_git_notes = false).
+fn archive_note(f: &Fixture, id: i64) {
+    spelunk_bin()
+        .current_dir(&f.project_dir)
+        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("SPELUNK_SERVER_URL")
+        .arg("--config")
+        .arg(&f.global_config)
+        .arg("memory")
+        .arg("--db")
+        .arg(&f.mem_path)
+        .arg("archive")
+        .arg(id.to_string())
+        .assert()
+        .success();
+}
+
+// Extract the embed document string a recorded `/index/embed` body carried.
+fn embed_content(body: &str) -> String {
+    let sent: serde_json::Value = serde_json::from_str(body).expect("embed body is json");
+    sent["chunks"][0]["content"]
+        .as_str()
+        .expect("chunk content string")
+        .to_string()
+}
+
 // Build a genuine pre-0.9 store: a FLOAT[768] `note_embeddings` vec0 table with
 // `n` notes and no v896 sentinel, exactly what an upgraded user's memory.db
 // looks like before the first 0.9 open.
@@ -316,7 +344,9 @@ fn reindex_embeds_missing_and_is_idempotent() {
     reindex_cmd(&f)
         .assert()
         .success()
-        .stdout(predicates::str::contains("3 embedded"));
+        .stdout(predicates::str::contains("3 embedded"))
+        // Progress goes to stderr so the machine summary on stdout stays clean.
+        .stderr(predicates::str::contains("embedded 3/3"));
 
     let ids = embedded_note_ids(&f.mem_path);
     assert_eq!(ids.len(), 3, "all three notes must be embedded");
@@ -385,10 +415,16 @@ fn reindex_resumes_after_midrun_failure() {
     }
 
     // Run 1: the embedder serves two notes then fails; reindex stops and exits
-    // non-zero with two durably-committed vectors.
+    // non-zero with two durably-committed vectors. The failure must report the
+    // honest partial count (not just fail silently) and point at a re-run, so a
+    // user knows work was saved and how to finish it.
     let mock_a = start_mock(EmbedResponder::failing_after(0.1, 2));
     set_server(&f, &mock_a.uri());
-    reindex_cmd(&f).assert().failure();
+    reindex_cmd(&f)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("2 of 4 done and durably stored"))
+        .stderr(predicates::str::contains("re-run 'spelunk memory reindex'"));
     assert_eq!(
         embedded_note_ids(&f.mem_path).len(),
         2,
@@ -502,8 +538,13 @@ fn reindex_json_summary_partitions_counts() {
     let missing_before = summary["missing_before"].as_u64().unwrap();
     let already_embedded = summary["already_embedded"].as_u64().unwrap();
     let embedded = summary["embedded"].as_u64().unwrap();
+    let remaining = summary["remaining"].as_u64().unwrap();
 
     assert_eq!(total_active, 5, "five active notes total");
+    assert_eq!(
+        remaining, 0,
+        "on full success nothing targeted is left unembedded"
+    );
     assert_eq!(
         total_active,
         embedded + already_embedded,
@@ -577,6 +618,96 @@ fn migration_notice_fires_once_after_768_upgrade() {
     assert!(embedded_note_ids(&f.mem_path).is_empty());
 
     // The sentinel is now set: a second command must NOT repeat the notice.
+    spelunk_bin()
+        .current_dir(&f.project_dir)
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&f.global_config)
+        .arg("memory")
+        .arg("--db")
+        .arg(&f.mem_path)
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("need re-embedding").not());
+}
+
+// Every note (not just the first) is embedded via its own add-time document
+// string, in id order, with no F2LLM query prefix. Guards against a partial
+// wrong-format bug that a single-note parity check would miss.
+#[test]
+fn reindex_embeds_every_note_with_its_own_document() {
+    let f = fixture();
+    seed(&f, "decision", "First Title", "First Body");
+    seed(&f, "note", "Second Title", "Second Body");
+
+    let mock = start_mock(EmbedResponder::new(0.1));
+    set_server(&f, &mock.uri());
+    reindex_cmd(&f).assert().success();
+
+    let bodies = mock.embed.recorded_bodies();
+    assert_eq!(bodies.len(), 2, "one embed call per note");
+    let contents: Vec<String> = bodies.iter().map(|b| embed_content(b)).collect();
+    // Candidate order is `ORDER BY note id`, which is the seed order here.
+    assert_eq!(
+        contents,
+        vec![
+            "title: First Title | text: First Body".to_string(),
+            "title: Second Title | text: Second Body".to_string(),
+        ],
+        "each note must embed its own document, in id order"
+    );
+    for c in &contents {
+        assert!(
+            !c.contains("Instruct:") && !c.contains("Query:"),
+            "no document may carry the F2LLM query prefix: {c:?}"
+        );
+    }
+}
+
+// `--include-archived` is load-bearing: a default run skips archived notes, and
+// only `--include-archived` backfills them. Without the flag an archived note
+// stays vectorless (missing from timeline semantic recall).
+#[test]
+fn reindex_include_archived_covers_archived_only_with_the_flag() {
+    let f = fixture();
+    seed(&f, "note", "active-note", "active body");
+    seed(&f, "note", "archived-note", "archived body");
+    let active_id = note_id_by_title(&f.mem_path, "active-note");
+    let archived_id = note_id_by_title(&f.mem_path, "archived-note");
+    archive_note(&f, archived_id);
+
+    let mock = start_mock(EmbedResponder::new(0.1));
+    set_server(&f, &mock.uri());
+
+    // Default: only the active note is embedded; the archived one is skipped.
+    reindex_cmd(&f).assert().success();
+    assert_eq!(
+        embedded_note_ids(&f.mem_path),
+        vec![active_id],
+        "default reindex must not touch archived notes"
+    );
+
+    // With the flag the archived note gets its vector too.
+    reindex_cmd(&f).arg("--include-archived").assert().success();
+    let mut ids = embedded_note_ids(&f.mem_path);
+    ids.sort();
+    let mut want = vec![active_id, archived_id];
+    want.sort();
+    assert_eq!(
+        ids, want,
+        "--include-archived backfills the archived note as well"
+    );
+}
+
+// A store created by `memory add` is a fresh FLOAT[896] store that never went
+// through the 768 drop, so no command may print the re-embed notice. Pins the
+// CLI-layer negative end-to-end, not just the library flag.
+#[test]
+fn no_reembed_notice_on_fresh_store() {
+    let f = fixture();
+    seed(&f, "note", "one", "body one");
+
     spelunk_bin()
         .current_dir(&f.project_dir)
         .env("SPELUNK_NO_SERVER", "1")
