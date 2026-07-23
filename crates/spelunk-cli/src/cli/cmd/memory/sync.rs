@@ -722,6 +722,25 @@ mod tests {
         }
     }
 
+    // Echoes `created` for the first `ok` requests, then 500s every later one.
+    // Unlike `FailAfterFirst`, the failure can be placed on any chunk, so a test
+    // can prove the interrupted summary counts every chunk that landed before the
+    // failure and that the loop halts exactly at the failed chunk.
+    struct FailAfterN {
+        ok: usize,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Respond for FailAfterN {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.ok {
+                EchoCreated.respond(request)
+            } else {
+                ResponseTemplate::new(500).set_body_string("overloaded")
+            }
+        }
+    }
+
     #[test]
     fn push_batch_chunk_size_constant_is_50() {
         assert_eq!(PUSH_BATCH_CHUNK_SIZE, 50);
@@ -795,17 +814,19 @@ mod tests {
         let reqs = server.received_requests().await.unwrap();
         assert_eq!(reqs.len(), 3, "ceil(120 / 50) POSTs");
         let mut seen: Vec<String> = Vec::new();
+        let mut sizes: Vec<usize> = Vec::new();
         for req in &reqs {
             let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
             let entries = body["entries"].as_array().unwrap();
-            assert!(
-                entries.len() <= PUSH_BATCH_CHUNK_SIZE,
-                "no chunk carries more than N entries"
-            );
+            sizes.push(entries.len());
             for e in entries {
                 seen.push(e["external_id"].as_str().unwrap().to_string());
             }
         }
+        // A `<= N` check alone would pass an implementation chunking on the wrong
+        // size (e.g. 40), so pin the exact per-request counts: full chunks up to
+        // the constant, then the remainder. Requests arrive in push order.
+        assert_eq!(sizes, vec![50, 50, 20], "exact per-request entry counts");
         assert_eq!(seen.len(), 120, "no entry is pushed more than once");
         assert_eq!(
             seen.into_iter().collect::<HashSet<_>>(),
@@ -949,6 +970,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupted_on_a_later_chunk_counts_only_the_chunks_that_landed() {
+        // The failure lands on chunk 3 of 7: `created` must equal exactly the two
+        // full chunks that landed before it (not one, not three), and the loop
+        // must issue no request past the failed chunk.
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        seed_notes(&store, 340); // ceil(340 / 50) = 7 chunks
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(FailAfterN {
+                ok: 2,
+                calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            })
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s = push_local(&store, &client, false, false).await.unwrap();
+        assert!(s.interrupted.is_some());
+        assert_eq!(
+            (s.attempted, s.created, s.skipped),
+            (340, 100, 0),
+            "created reflects exactly the two chunks that landed before the failure"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            3,
+            "halts on the failed 3rd chunk; chunks 4 through 7 are never sent"
+        );
+        let unstamped = store
+            .rows_for_sync(false)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.remote_id.is_none())
+            .count();
+        assert_eq!(unstamped, 240, "only the 100 landed rows are stamped");
+    }
+
+    #[tokio::test]
+    async fn interrupted_push_skips_the_tombstone_delete_pass() {
+        // Once a live chunk fails the connection is already failing, so the
+        // archived-entry DELETEs must not be issued either. `delete_remote` treats
+        // a 404 as success, so only a request-count check catches a regression
+        // that dropped the interrupted gate on the tombstone pass.
+        register_sqlite_vec();
+        let tmp = TempDir::new().unwrap();
+        let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
+        // Three live, unstamped rows form the single push chunk that will fail.
+        seed_notes(&store, 3);
+        // Two archived rows that DO carry a remote_id: the tombstone pass would
+        // DELETE these if it were not skipped on an interrupted push.
+        for tag in ["A0", "A1"] {
+            let (id, _) = store
+                .add_note("note", tag, "body", &[], &[], None, None)
+                .unwrap();
+            store.set_remote_id(id, &format!("cloud-{tag}")).unwrap();
+            assert!(store.archive(id).unwrap());
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("overloaded"))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+
+        let s = push_local(&store, &client, true, false).await.unwrap();
+        assert!(s.interrupted.is_some());
+        assert_eq!(s.created, 0, "the only live chunk failed");
+
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(
+            reqs.len(),
+            1,
+            "only the failing batch POST is sent; no tombstone DELETEs follow"
+        );
+        assert!(
+            reqs[0].url.path().ends_with("/memory/batch"),
+            "the single request is the batch push, not a delete"
+        );
+    }
+
+    #[tokio::test]
     async fn overlapping_repush_tallies_skipped_and_leaves_no_duplicates() {
         // Models the committed-but-unstamped overlap: a prior push persisted rows
         // server-side but the client lost the response (no `remote_id` stamped).
@@ -1042,6 +1150,10 @@ mod tests {
             progress.iter().all(|&(done, total)| done <= total),
             "done never exceeds total: {progress:?}"
         );
+        assert!(
+            progress.windows(2).all(|w| w[0].0 <= w[1].0),
+            "cumulative done never regresses across chunks: {progress:?}"
+        );
         assert_eq!(
             progress.iter().map(|&(d, _)| d).collect::<Vec<_>>(),
             vec![50, 100, 120],
@@ -1082,6 +1194,10 @@ mod tests {
             "exactly one POST for a push of N or fewer entries"
         );
         assert_eq!(s.created, PUSH_BATCH_CHUNK_SIZE as u32);
+        assert!(
+            s.interrupted.is_none(),
+            "a clean single-chunk push is never marked interrupted"
+        );
     }
 
     #[tokio::test]
