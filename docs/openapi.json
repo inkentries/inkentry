@@ -1375,7 +1375,7 @@
               "string",
               "null"
             ],
-            "description": "The server-minted note id (stringified). Present for `\"created\"` and\nalso for a `\"skipped\"` dedupe-hit (the already-existing id), so a\ncaller that lost track of an earlier create can still recover the id\nfrom a plain re-push."
+            "description": "The note's `sync_id` (the same id `GET /memory/since` returns and\ncursors on, never the raw row id). Present for `\"created\"` and also\nfor a `\"skipped\"` dedupe-hit (the already-existing id), so a caller\nthat lost track of an earlier create can still recover the id from a\nplain re-push, and a caller that stamps this as its pull cursor gets\nan id that actually orders against `/memory/since`."
           },
           "status": {
             "type": "string",

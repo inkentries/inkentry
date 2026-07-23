@@ -342,6 +342,12 @@ impl ServerDb {
 
     // ── Notes ─────────────────────────────────────────────────────────────────
 
+    /// Returns `(note_id, sync_id)`: the local autoincrement row id, and the
+    /// stable `sync_id` UUIDv7 minted for it. A caller that hands an id back
+    /// across the wire (e.g. `push_memory_batch`'s ack) must use `sync_id`,
+    /// not `note_id`: `/memory/since` cursors on `sync_id`, and a wire id that
+    /// doesn't match what that endpoint returns breaks pull cursoring for
+    /// whoever stores it.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note(
         &self,
@@ -353,7 +359,7 @@ impl ServerDb {
         linked_files: &[String],
         embedding: Option<&[f32]>,
         remote_id: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<(i64, String)> {
         let tags_csv = if tags.is_empty() {
             None
         } else {
@@ -386,25 +392,27 @@ impl ServerDb {
                 rusqlite::params![note_id, blob],
             )?;
         }
-        Ok(note_id)
+        Ok((note_id, sync_id))
     }
 
     /// Bulk-lookup active notes by their cross-machine `remote_id` (the batch
-    /// push idempotency key). Scoped to the project and to live rows only:
-    /// an archived row with the same `remote_id` does not count as existing,
-    /// so a re-push after archiving creates a fresh row rather than a no-op.
-    /// Mirrors cloud-api's `find_by_external_ids`.
+    /// push idempotency key), returning each match's `sync_id` (not the row
+    /// id: a caller acking a dedupe-hit back across the wire must hand out
+    /// the same id `/memory/since` uses). Scoped to the project and to live
+    /// rows only: an archived row with the same `remote_id` does not count as
+    /// existing, so a re-push after archiving creates a fresh row rather than
+    /// a no-op. Mirrors cloud-api's `find_by_external_ids`.
     pub fn find_by_remote_ids(
         &self,
         project_id: i64,
         remote_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+    ) -> Result<std::collections::HashMap<String, String>> {
         if remote_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
         let placeholders = remote_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT remote_id, id FROM notes
+            "SELECT remote_id, sync_id FROM notes
              WHERE project_id = ? AND status = 'active' AND remote_id IN ({placeholders})"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -414,13 +422,16 @@ impl ServerDb {
             params.push(id);
         }
         let rows = stmt.query_map(params.as_slice(), |row| {
-            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
         })?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
-            let (remote_id, id) = row?;
-            if let Some(rid) = remote_id {
-                map.insert(rid, id);
+            let (remote_id, sync_id) = row?;
+            if let (Some(rid), Some(sid)) = (remote_id, sync_id) {
+                map.insert(rid, sid);
             }
         }
         Ok(map)
@@ -974,7 +985,7 @@ mod tests {
             .expect("open in-memory server db");
         let project = db.upsert_project("team/a", 4, "test-model").expect("proj");
 
-        let id = db
+        let (id, sync_id) = db
             .add_note(
                 project.id,
                 "note",
@@ -991,7 +1002,7 @@ mod tests {
             .expect("lookup before archive");
         assert_eq!(
             found.get("archived-id"),
-            Some(&id),
+            Some(&sync_id),
             "live note must be found"
         );
 
@@ -1229,7 +1240,7 @@ mod tests {
         let project = db
             .upsert_project("acme/widget", 4, "test-model")
             .expect("project");
-        let id = db
+        let (id, _sync_id) = db
             .add_note(
                 project.id,
                 "note",

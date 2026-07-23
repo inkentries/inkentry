@@ -1092,4 +1092,288 @@ mod tests {
         let rows_after = store.rows_for_sync(false).unwrap();
         assert!(rows_after.iter().all(|r| r.remote_id.is_none()));
     }
+
+    // ── real-server regression: an established client must keep pulling ────
+    // A wiremock stand-in can't catch this class of bug: it lives in the real
+    // server's own handler/db pairing (a batch-push ack echoing the raw row
+    // id instead of the `sync_id` `/memory/since` cursors on), not in the wire
+    // shape a hand-typed mock response can get right by construction. Spins
+    // up the actual `spelunk-server` axum router, matching the pattern in
+    // `outbox.rs`'s `spawn_spelunk_server`.
+
+    /// Spin up a real `spelunk-server` axum router (the production router) on
+    /// an ephemeral loopback port, serving the team-hosting
+    /// `/v1/projects/*/memory*` routes this test's `CloudSyncClient`s talk to.
+    async fn spawn_spelunk_server() -> std::net::SocketAddr {
+        register_sqlite_vec();
+        let db_dir = tempfile::TempDir::new().unwrap();
+        let db =
+            spelunk_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
+                .unwrap();
+        let instance_id = db.get_or_create_instance_id().unwrap();
+        let state = spelunk_server::AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            auth: std::sync::Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
+            conflict_threshold: spelunk_server::default_conflict_threshold(),
+            embedder: spelunk_server::EmbedderSlot::disabled(),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: std::sync::Arc::new(spelunk_server::rate_limiter::RateLimiter::new(
+                1000, 60,
+            )),
+            instance_id,
+            started_by: None,
+            relay: spelunk_server::relay::RelayRegistry::new(),
+        };
+        let app = spelunk_server::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        addr
+    }
+
+    /// Reproduces the walk-the-store bug: a client that has already pushed
+    /// and synced once (an "established" client) never sees a teammate's
+    /// later entries on a subsequent sync, even though a fresh client would
+    /// pull the full set. Before the fix, client A's first push stamps its
+    /// own row's `remote_id` from the batch ack's `id` field, which the real
+    /// server (bug) fills with the raw autoincrement row id ("1", "2", ...)
+    /// instead of `sync_id`. That digit-string sorts lexically AFTER every
+    /// real UUIDv7 `sync_id` (which starts with a much smaller hex nibble for
+    /// any current timestamp), so `max_remote_id()`'s cursor becomes that row
+    /// id and `since_id=<cursor>` on the second pull matches nothing, even
+    /// though the server holds teammate B's newer entry.
+    #[tokio::test]
+    async fn established_client_pulls_teammates_entries_added_after_its_first_sync() {
+        register_sqlite_vec();
+        let addr = spawn_spelunk_server().await;
+        let base_url = format!("http://{addr}");
+
+        // Client A: first sync. Pushes its own entry, then pulls (nothing new
+        // yet): this is what "establishes" the client and stamps its remote_id.
+        let tmp_a = tempfile::TempDir::new().unwrap();
+        let store_a = MemoryStore::open(&tmp_a.path().join("memory.db")).unwrap();
+        store_a
+            .add_note(
+                "decision",
+                "A1",
+                "client A's own entry",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        let client_a = CloudSyncClient::new(&base_url, "proj", None, None).unwrap();
+
+        let push1 = push_local(&store_a, &client_a, false, false).await.unwrap();
+        assert_eq!(
+            push1.created, 1,
+            "client A's own entry must land on the server"
+        );
+        let pull1 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        assert_eq!(pull1, 0, "nothing new on the server yet for the first pull");
+
+        // Teammate B: a second, independent client pushes a new entry to the
+        // same server/project.
+        let tmp_b = tempfile::TempDir::new().unwrap();
+        let store_b = MemoryStore::open(&tmp_b.path().join("memory.db")).unwrap();
+        store_b
+            .add_note("decision", "B1", "teammate B's entry", &[], &[], None, None)
+            .unwrap();
+        let client_b = CloudSyncClient::new(&base_url, "proj", None, None).unwrap();
+        let push_b = push_local(&store_b, &client_b, false, false).await.unwrap();
+        assert_eq!(
+            push_b.created, 1,
+            "teammate B's entry must land on the server"
+        );
+
+        // Client A syncs again: it is now an established client (already has a
+        // remote_id-stamped row), exactly the steady-state "sync to get
+        // teammates' latest" case the bug report describes.
+        let pull2 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        assert_eq!(
+            pull2, 1,
+            "an established client must still pull entries a teammate pushed afterward"
+        );
+        let titles: Vec<String> = store_a
+            .rows_for_sync(false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.title)
+            .collect();
+        assert!(
+            titles.contains(&"B1".to_string()),
+            "client A must now have teammate B's entry locally: {titles:?}"
+        );
+    }
+
+    /// Three-way steady state, each established client syncing across
+    /// multiple rounds: rules out an off-by-one in cursor advancement that a
+    /// two-client, single-extra-round test (see above) could miss (e.g. a
+    /// cursor that only "catches up" once and then drifts on a later round).
+    ///
+    /// Client C joins second, via a pull-only first sync (see the doc
+    /// comment on `store_c`'s setup below for why: joining via push+pull in
+    /// one round is a separate, real ordering issue, not this story's bug).
+    /// After that, both A and C are established clients holding a cursor
+    /// derived purely from pulls/pushes of their own already-caught-up
+    /// state, and teammate B pushes twice, in two separate rounds. Each of A
+    /// and C must pick up exactly the right delta on each of their own
+    /// subsequent pulls: never 0 (the bug this story fixes), never a
+    /// duplicate re-application, and never the other established client's
+    /// own entries re-surfacing.
+    #[tokio::test]
+    async fn two_established_clients_each_pull_correctly_across_multiple_rounds() {
+        register_sqlite_vec();
+        let addr = spawn_spelunk_server().await;
+        let base_url = format!("http://{addr}");
+
+        // Client A establishes: push A1, pull (nothing yet).
+        let tmp_a = tempfile::TempDir::new().unwrap();
+        let store_a = MemoryStore::open(&tmp_a.path().join("memory.db")).unwrap();
+        store_a
+            .add_note("decision", "A1", "client A's entry", &[], &[], None, None)
+            .unwrap();
+        let client_a = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
+        assert_eq!(
+            push_local(&store_a, &client_a, false, false)
+                .await
+                .unwrap()
+                .created,
+            1
+        );
+        assert_eq!(pull_and_apply(&store_a, &client_a).await.unwrap(), 0);
+
+        // Client C joins with no local content yet, so its first sync is a
+        // pull only (matching the walk-the-store "fresh client" case, which
+        // is known-good). This deliberately avoids a SEPARATE, real ordering
+        // issue that is out of scope for this story: `memory_sync` pushes
+        // before it pulls, so a client that pushes brand-new local content
+        // in the same round as older, not-yet-pulled remote content stamps
+        // its own freshly-minted (and therefore chronologically newest)
+        // sync_id as its cursor, permanently shadowing that older remote
+        // content from every future pull. Filed separately; see this task's
+        // board comment.
+        let tmp_c = tempfile::TempDir::new().unwrap();
+        let store_c = MemoryStore::open(&tmp_c.path().join("memory.db")).unwrap();
+        let client_c = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
+        let pull_c1 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        assert_eq!(pull_c1, 1, "client C must pull client A's A1 on establish");
+
+        // Now that C is caught up (nothing outstanding to miss), it can
+        // safely push its own new entry in the same round it pulls.
+        store_c
+            .add_note("decision", "C1", "client C's entry", &[], &[], None, None)
+            .unwrap();
+        assert_eq!(
+            push_local(&store_c, &client_c, false, false)
+                .await
+                .unwrap()
+                .created,
+            1
+        );
+        assert_eq!(
+            pull_and_apply(&store_c, &client_c).await.unwrap(),
+            0,
+            "nothing further for C to pull immediately after its own push"
+        );
+
+        // Teammate B pushes its first entry.
+        let tmp_b = tempfile::TempDir::new().unwrap();
+        let store_b = MemoryStore::open(&tmp_b.path().join("memory.db")).unwrap();
+        store_b
+            .add_note(
+                "decision",
+                "B1",
+                "teammate B's first entry",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        let client_b = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
+        assert_eq!(
+            push_local(&store_b, &client_b, false, false)
+                .await
+                .unwrap()
+                .created,
+            1
+        );
+
+        // Round 2: both established clients must pick up exactly the new
+        // delta each is missing (A is missing C1 and B1; C is missing B1).
+        let pull_a_round2 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        assert_eq!(
+            pull_a_round2, 2,
+            "client A must pull both C1 and B1 on its second sync"
+        );
+        let pull_c_round2 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        assert_eq!(
+            pull_c_round2, 1,
+            "client C must pull only B1 (it already has A1 and its own C1)"
+        );
+
+        // Teammate B pushes a second entry. This is the off-by-one probe:
+        // a cursor that only advances correctly ONCE (round 2) but then
+        // sticks or drifts would surface here as 0 or a re-applied dup on
+        // this THIRD round for either established client.
+        store_b
+            .add_note(
+                "decision",
+                "B2",
+                "teammate B's second entry",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            push_local(&store_b, &client_b, false, false)
+                .await
+                .unwrap()
+                .created,
+            1
+        );
+
+        let pull_a_round3 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        assert_eq!(
+            pull_a_round3, 1,
+            "client A's cursor must advance correctly again on a third round"
+        );
+        let pull_c_round3 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        assert_eq!(
+            pull_c_round3, 1,
+            "client C's cursor must advance correctly again on a third round"
+        );
+
+        let titles_a: Vec<String> = store_a
+            .rows_for_sync(false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.title)
+            .collect();
+        assert!(
+            ["A1", "C1", "B1", "B2"]
+                .iter()
+                .all(|t| titles_a.contains(&t.to_string())),
+            "client A must end up with all four entries exactly once each: {titles_a:?}"
+        );
+        let titles_c: Vec<String> = store_c
+            .rows_for_sync(false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.title)
+            .collect();
+        assert!(
+            ["A1", "C1", "B1", "B2"]
+                .iter()
+                .all(|t| titles_c.contains(&t.to_string())),
+            "client C must end up with all four entries exactly once each: {titles_c:?}"
+        );
+    }
 }
