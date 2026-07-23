@@ -429,6 +429,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
 /// reads unambiguously as terminal: the underlying `anyhow::Context` message
 /// (e.g. "creating model cache dir ...") otherwise reads like in-progress
 /// bootstrap text rather than a failure.
+#[cfg(feature = "embed-native")]
 fn embedder_load_failure_message(context: impl std::fmt::Display) -> String {
     format!("failed: {context}")
 }
@@ -954,6 +955,7 @@ mod arg_tests {
     /// `anyhow::Context` message, e.g. "creating model cache dir ...", reads
     /// like progress on its own).
     #[test]
+    #[cfg(feature = "embed-native")]
     fn embedder_load_failure_message_is_prefixed() {
         assert_eq!(
             super::embedder_load_failure_message(
