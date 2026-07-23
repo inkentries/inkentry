@@ -31,7 +31,7 @@ nextest does not run doctests. Some CI legs add `--no-default-features`
 you need to reproduce a platform-specific failure.
 
 A `make check` target that reproduces CI's **Check & Lint** and **Test**
-legs in one shot is in progress (spelunk-oss#621, not yet merged) — until
+legs in one shot is in progress (spelunk-oss#621, not yet merged). Until
 it lands, run the commands above directly.
 
 For a tighter loop while iterating on one file:
