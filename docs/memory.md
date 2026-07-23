@@ -820,10 +820,16 @@ only missing from *semantic* `memory search`, because semantic ranking is a KNN
 over the embedding vectors and this note has none.
 
 `spelunk memory reindex` is the recovery command: it embeds the notes that have
-no vector, using the same local embedder `memory add` uses (the auto-discovered
-loopback `spelunk-server`, or a configured `server_url`). Reach for it after
-upgrading across the 768→896 change, or when notes were added while the embedder
-was down.
+no vector, using the same embedder `memory add` uses. In the default
+`local_first` mode (and `offline`), that is always the local, auto-discovered
+loopback `spelunk-server`, even when a team `server_url` is also configured:
+inference stays on-machine there regardless of the sync-mode replica setting.
+In `cloud_first` with a team `server_url` set, `reindex` is not applicable and
+exits with an actionable error, since `memory.db` isn't the store of record in
+that mode; `cloud_first` with no `server_url` set behaves like `local_first`
+and reindexes against the loopback embedder. Reach for it after upgrading
+across the 768→896 change, or when notes were added while the embedder was
+down.
 
 ```bash
 # Embed every active note that is missing a vector

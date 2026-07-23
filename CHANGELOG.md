@@ -76,6 +76,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `linked_files` into it, and prints `Already recorded as [kind] #id: title`
   in place of `Stored [kind] #id: title`. See [ADR-068's fourth
   amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
+- **A `local_first` project with a team `server_url` configured now embeds
+  locally instead of 404ing.** Query and note embedding for `memory add`,
+  `memory reindex`, `memory search`, `memory timeline`, `memory harvest`,
+  `memory reconcile`, and `explore` used to route to whatever `server_url`
+  was configured, even in the default `local_first` mode, where `server_url`
+  is only a sync replica and often has no `/index/embed` route at all (e.g.
+  spelunk.cloud). The result was a 404 on `memory search`, and a silent,
+  unembedded write on `memory add`/`reconcile` (the note still saved, just
+  invisible to semantic search). Inference routing now keys off `mode`
+  instead of `server_url` presence: `local_first`/`offline` always use the
+  local, auto-discovered embedder; `cloud_first` still offloads embedding to
+  the server. `memory reindex` additionally rejects `cloud_first` with a
+  `server_url` configured, since `memory.db` isn't the store of record
+  there. See [ADR-004's 2026-07-23
+  amendment](docs/adr/004-unified-memory-storage.md).
 
 - **`spelunk memory push` and `spelunk sync` can now push a real-sized project
   instead of timing out.** Previously a project with more than a few dozen
