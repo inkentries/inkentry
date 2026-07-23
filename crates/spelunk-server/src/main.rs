@@ -306,6 +306,10 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         auth,
         conflict_threshold: args.conflict_threshold,
         embedder,
+        embed_admission: spelunk_server::EmbedAdmission::new(
+            spelunk_server::EMBED_QUEUE_CAPACITY,
+            spelunk_server::EMBED_BUSY_RETRY_AFTER_SECS,
+        ),
         llm,
         max_tokens_ceiling,
         rate_limiter,

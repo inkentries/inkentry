@@ -134,6 +134,15 @@ If the server has no embedder configured, it returns `400`:
 { "error": { "code": "bad_request", "message": "This server has no embedder configured. Semantic memory search is unavailable." } }
 ```
 
+**Response `429`:** the query embed shares the bounded admission queue in front
+of the mutex-serialized embedder with `/index/embed`; once
+that queue is full the request is shed immediately rather than queued behind a
+running index, with a `Retry-After` (seconds) header:
+
+```json
+{ "error": "embedder busy, retry shortly", "state": "busy" }
+```
+
 ---
 
 ## Endpoints added for CLI integration
@@ -183,6 +192,22 @@ If the server has no embedder, it returns 400:
 ```json
 { "error": { "code": "bad_request", "message": "index.embed requires an embedder. Configure SPELUNK_EMBEDDING_URL on the server." } }
 ```
+
+**Response `429`:** the embedder is serialized behind a single mutex (GPU
+memory limits and the CPU thread budget both rule out running batches
+concurrently, see [Embedding CPU thread
+budget](../server-setup.md#embedding-cpu-thread-budget)), so a bounded
+admission queue sits in front of it. Once that queue is full the request is
+shed immediately with `429` and a `Retry-After` (seconds) header, instead of
+parking until the caller's own request timeout fires:
+
+```json
+{ "error": "embedder busy, retry shortly", "state": "busy" }
+```
+
+The CLI's `spelunk index` embed phase retries the same batch after the given
+delay rather than shrinking it (queue depth says nothing about batch sizing);
+see [`spelunk index`](../commands.md#spelunk-index).
 
 ### `POST /v1/projects/{project_id}/explore`
 

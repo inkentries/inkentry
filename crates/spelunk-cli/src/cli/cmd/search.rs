@@ -1033,4 +1033,32 @@ mod tests {
             }
         }
     }
+
+    /// **Gap check:** `/v1/health`'s embedder state stays
+    /// `ready` while the embed admission queue sheds a `/search` call with
+    /// 429 (health is a separate, unaffected endpoint) - so `search_query`'s
+    /// failure surfaces here with `embedder_state = Some(Ready)`. There is no
+    /// dedicated "busy" case; it falls into the generic `Some(_)` arm. The
+    /// 2026-07-22 live-repro comment on this task asked for the client to
+    /// distinguish "server busy (embedding)" from "unavailable" so it can say
+    /// "busy, retrying" - that request is NOT implemented: a saturated-but-
+    /// healthy server still gets labeled "unavailable," not "busy." This is a
+    /// real, verified gap (not a regression from this change, and not fixed
+    /// by it), left as a follow-up rather than guessed at here since the
+    /// exact wording and whether to plumb the 429/EmbedderBusy reason through
+    /// `search_query` is a product/UX call, not a mechanical hardening fix.
+    #[test]
+    fn notice_ready_embedder_still_says_unavailable_not_busy() {
+        let msg = semantic_unavailable_message(Some(EmbedderState::Ready), true, None);
+        assert!(
+            msg.contains("unavailable"),
+            "documents current behavior: a Ready-but-saturated embedder gets the generic \
+             'unavailable' notice, not a busy/retry-specific one: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("busy") && !msg.to_lowercase().contains("retry"),
+            "if this ever starts mentioning busy/retry, a Busy-aware notice has been added - \
+             update this test to lock in the new behavior instead: {msg}"
+        );
+    }
 }

@@ -287,6 +287,10 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
         auth: Arc::new(spelunk_server::auth::ApiKeyAuth::new(None)),
         conflict_threshold: spelunk_server::default_conflict_threshold(),
         embedder: spelunk_server::EmbedderSlot::disabled(),
+        embed_admission: spelunk_server::EmbedAdmission::new(
+            spelunk_server::EMBED_QUEUE_CAPACITY,
+            spelunk_server::EMBED_BUSY_RETRY_AFTER_SECS,
+        ),
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(spelunk_server::rate_limiter::RateLimiter::new(1000, 60)),
