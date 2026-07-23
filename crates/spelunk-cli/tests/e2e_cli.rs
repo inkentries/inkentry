@@ -904,7 +904,10 @@ async fn test_index_prints_note_when_no_server_configured() {
     .unwrap();
 
     let mut cmd = spelunk_bin();
+    // Run in the temp project like the sibling tests, else the project-config walk-up
+    // reaches the repo's own .spelunk/config.toml (server_url set) and suppresses the notice.
     cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
+        .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("index")
