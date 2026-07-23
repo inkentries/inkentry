@@ -2,94 +2,136 @@
 
 ## Current state
 
-58 tests across 9 test files. The suite covers unit logic, SQLite integration,
-HTTP mock tests, server handler tests, and CLI end-to-end tests.
+Tests live under `crates/*/tests/` (integration-style, one binary per file)
+plus `#[cfg(test)]` blocks colocated with the code they cover across all four
+crates. The suite spans unit logic, real-SQLite integration, in-process
+server-handler tests, CLI end-to-end tests, property-based tests, and a
+scheduled fuzzing job. It is large and grows with every change, so this doc
+does not quote a count: any number written here is wrong by the next commit.
+If you want the current count, run the suite yourself (see below).
 
-```
-tests/
-  common/               — shared helpers (TempDb, sqlite-vec registration)
-  unit_chunker.rs       — sliding-window chunker logic
-  unit_embeddings.rs    — vec_to_blob / blob_to_vec roundtrips; ChunkKind parsing
-  unit_graph.rs         — EdgeKind parsing and display
-  integration_db.rs     — Database CRUD, KNN search, graph edges (real SQLite)
-  integration_server.rs — axum server handlers (in-process, no port binding)
-  mock_openai_compat.rs — OpenAiCompatEmbedder against a wiremock server
-  mock_lmstudio.rs      — legacy stub (kept for reference; superseded by mock_openai_compat.rs)
-  e2e_cli.rs            — CLI binary smoke tests via assert_cmd
-```
-
-Plus `#[cfg(test)]` blocks in:
-- `src/utils.rs` — ANSI stripping
-- `src/indexer/secrets.rs` — credential pattern detection
-- `src/search/tokens.rs` — token count estimation
+The embedder stack is the native candle F2LLM path (`spelunk-embed`, gated by
+the `embed-native` feature), not an external OpenAI-compatible endpoint. See
+`CLAUDE.md` for the full inference-backend picture.
 
 ---
 
-## Test categories
+## Running the tests
 
-### Unit tests (no I/O, no mocks)
+```bash
+make check
+```
 
-Pure-logic functions. Cheapest to write and maintain.
+This is the one command to run before pushing: it reproduces CI's **Check &
+Lint** and **Test** legs (both locally-runnable feature configs) in one shot.
+See `docs/building.md` for the full target list, including the gates
+`make check` does **not** cover (Windows tests, Docker image build, security
+scans, OpenAPI drift). Don't duplicate that table here: it drifts when
+duplicated in two places instead of one.
 
-| File | What is tested |
-|------|---------------|
-| `tests/unit_chunker.rs` | `sliding_window`: empty source, single chunk, cap-bound windows, forward progress on over-budget single lines, token overlap, identity (name/docstring/parent_scope) threading, verbatim content |
-| `tests/adversarial_chunker.rs` | `sliding_window` under adversarial input: sibling oversized nodes don't cross-contaminate identity, a genuinely anonymous node degrades to `name: None` cleanly, multi-section markdown windows attribute the correct heading, worst-case estimate/real-token bias stays within the accepted overshoot, non-oversized nodes bypass windowing entirely |
-| `tests/unit_embeddings.rs` | `vec_to_blob` / `blob_to_vec` roundtrip; empty vec; multi-value; blob length |
-| `tests/unit_graph.rs` | `EdgeKind` display and parse; unknown kind falls back to `Imports` |
-| `src/utils.rs` | `strip_ansi`: clean strings, colour codes, OSC sequences, C0 controls, newline/tab preservation |
-| `src/indexer/secrets.rs` | AWS key, GitHub PAT, PEM header detection; clean code and placeholders not flagged |
-| `src/search/tokens.rs` | `estimate_tokens`: empty string returns 1; chars/4 heuristic |
+For a tighter loop while iterating on one file:
 
-### Integration tests (real SQLite, no external HTTP)
+```bash
+# One test file
+cargo nextest run -p spelunk-core --test integration_db
 
-Use a temp-file database with the sqlite-vec extension registered via
-`tests/common/mod.rs`. Run serially where needed (`#[serial]` from `serial_test`).
+# Doctests: nextest does not run them, so they're a separate pass
+cargo test --doc
+```
 
-| File | What is tested |
-|------|---------------|
-| `tests/integration_db.rs` | `upsert_file` stable IDs and hash round-trips; `insert_chunk` / `delete_chunks_for_file`; `search_similar` KNN ordering and limit; `replace_edges` stale-edge removal |
-| `tests/integration_server.rs` | `GET /v1/health`; `POST /v1/projects/{id}/memory` creates note; `GET` lists; `POST .../search` returns KNN; archive; delete; project stats; auth middleware (valid token, missing token) |
+CI (`.github/workflows/ci.yml`) is the source of truth for what actually
+gates a merge: the test matrix, feature flags, and per-platform steps are
+described there, not restated here where they can drift out of sync.
 
-### HTTP mock tests (wiremock)
+---
 
-External HTTP is mocked with `wiremock`. No real inference server required.
+## Test layout
 
-| File | What is tested |
-|------|---------------|
-| `tests/mock_openai_compat.rs` | Successful embed (EOS token appended, correct request shape); empty data array error; 500 error handling; multiple vectors returned |
+Each crate that has tests owns a `crates/<crate>/tests/` directory of
+integration-style test binaries, plus `#[cfg(test)]` modules next to the code
+under test in `src/`. Broad categories, not an exhaustive file list (a file
+inventory is the kind of thing that goes stale the next time a test file is
+added or renamed):
 
-### CLI end-to-end tests (assert_cmd)
+- **`crates/spelunk-core/tests/`**: chunker, embeddings, and graph-edge unit
+  logic; real-SQLite integration tests against `Database` (CRUD, KNN search,
+  graph edges, conventions); git-notes integration tests; language-parsing
+  coverage; property-based tests (`prop_*.rs`, using `proptest`).
+- **`crates/spelunk-cli/tests/`**: CLI end-to-end tests that invoke the
+  compiled `spelunk` binary via `assert_cmd`; plumbing-subcommand tests;
+  memory workflow tests (add, dedupe, reconcile, reindex, push/sync); auth
+  and server-key resolution tests.
+- **`crates/spelunk-server/tests/`**: Axum handler integration tests
+  (in-process request/response, no socket bound) and a real-TLS serve test
+  (`tls_serve.rs`) that binds an actual loopback socket.
+- **`#[cfg(test)]` blocks in `src/`**: pure-logic unit tests colocated with
+  the function they cover, across all crates (e.g. ANSI stripping, secret
+  pattern detection, token estimation, memory dedupe logic).
 
-Invoke the compiled `spelunk` binary as a subprocess. These run in CI on every
-push and do not require an inference server.
-
-| File | What is tested |
-|------|---------------|
-| `tests/e2e_cli.rs` | `--version`; `--help`; invalid command error; `languages` output; `status` on empty project; `index` + `status` round-trip against a fixture directory |
+Cross-crate HTTP boundaries (spelunk-server's own endpoints, sync/relay, auth)
+are mocked with `wiremock` where a test needs an HTTP server without a real
+network dependency.
 
 ---
 
 ## sqlite-vec in tests
 
-`sqlite3_auto_extension` is process-global and must only be registered once.
-A `OnceLock` helper in `tests/common/mod.rs` handles this:
+`sqlite3_auto_extension` is process-global and must only be registered once
+per process. `crates/spelunk-core/tests/common/mod.rs` guards this with a
+`OnceLock`:
 
 ```rust
-pub fn open_test_db() -> Database {
-    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    ONCE.get_or_init(|| unsafe {
-        sqlite_vec::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
+pub fn register_sqlite_vec() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
     });
-    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-    Database::open(&path).unwrap()
+}
+
+pub fn open_test_db() -> spelunk_core::storage::Database {
+    register_sqlite_vec();
+    spelunk_core::storage::Database::open(std::path::Path::new(":memory:"))
+        .expect("failed to open in-memory database")
 }
 ```
 
-Tests that open a database call `common::open_test_db()` and are annotated
-`#[serial]` to avoid races on the global extension state.
+Tests that open a `Database` call `common::open_test_db()`. They are still
+annotated `#[serial_test::serial]`, but see the next section for what that
+annotation actually buys under the test runner CI uses.
+
+### `#[serial]` does not mean what it used to under nextest
+
+CI (and `make check`) run tests with `cargo nextest run`, which gives every
+test its own OS process. `serial_test`'s default lock (this workspace does
+not enable its `file_locks` feature) is an in-process primitive: it only
+serialises tests that share the same process's memory. Under nextest, no two
+`#[test]` functions ever share a process, so `#[serial]` provides **no**
+synchronisation there, in either direction:
+
+- It doesn't protect `sqlite3_auto_extension`'s global registration, but that
+  was never actually at risk from separate processes; each process gets its
+  own address space and its own one-time registration.
+- It also would **not** serialise a test's access to genuinely shared
+  *external* state, if a test needed that: a file on disk, a bound TCP port,
+  a git ref. Nextest's process-per-test model means such tests must
+  synchronise through the external resource itself (a lock file, a
+  retry/skip on port-in-use, an OS-level advisory lock), not through
+  `#[serial]`.
+
+`crates/spelunk-core/tests/integration_git_notes.rs` is the concrete example
+already in this codebase: its concurrent-write tests are correct not because
+of `#[serial]`, but because ADR-069 puts a real lock in the git common dir
+that every writer, in every process, takes before a read-modify-write. That
+lock is what makes the tests safe under nextest; `#[serial]` on those same
+tests is redundant with it, not a substitute for it.
+
+If you add a test that touches shared external state and see cross-run
+flakiness, look for a lock on the resource itself before reaching for
+`#[serial]`: it will not help.
 
 ---
 
@@ -126,24 +168,6 @@ cause.
 
 ---
 
-## Running the tests
-
-```bash
-# All tests
-cargo test
-
-# A specific test file
-cargo test --test integration_db
-
-# With output (useful for debugging)
-cargo test -- --nocapture
-
-# E2E tests require the binary to be built first
-cargo build && cargo test --test e2e_cli
-```
-
----
-
 ## What is intentionally not tested
 
 | Area | Reason |
@@ -158,9 +182,11 @@ cargo build && cargo test --test e2e_cli
 
 ## CI matrix and platform notes
 
-CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
-`windows-latest` (`x86_64-pc-windows-msvc`). The `check`/lint and
-`openapi-snapshot` jobs run on Ubuntu only, as they rely on POSIX tooling.
+`.github/workflows/ci.yml` is the source of truth for the test matrix, the
+per-platform feature flags, and the exact commands each job runs. The notes
+below capture platform-specific *reasons* behind choices in that file, since
+those are easy to lose ("why is this one command per step?") even when the
+file itself stays accurate.
 
 ### Windows (`windows-latest`) caveats
 
@@ -172,13 +198,13 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
   failed. Steps in this job's Windows-inclusive matrix keep one command per
   step for that reason, e.g. the toolchain install is `Update stable
   toolchain` and `Set default toolchain` as separate steps rather than one
-  `run: |` block.
+  `run: |` block. The same reasoning is why nextest and doctests run as
+  separate steps rather than one chained command.
 
 - **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls`,
   via `hf-hub`/`reqwest` in the `embed-native` stack) compiles from C source.
   Strawberry Perl is pre-installed on `windows-latest` runners so the build
-  succeeds, but it adds several minutes. The `test` job timeout is set to 30
-  minutes.
+  succeeds, but it adds several minutes.
 
 - **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
   spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
@@ -192,13 +218,13 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
 
 - **`pid_is_alive` on Windows.** The Windows implementation uses
   `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
-  PID is still running. This restores the `spelunk server status/stop` live-PID
-  check on Windows (the previous stub always returned `false`).
+  PID is still running. This backs the `spelunk server status/stop` live-PID
+  check on Windows.
 
-- **Model download.** The `embed-native` feature (default for `spelunk-server`)
-  bundles the candle F2LLM embedder; the model weights are fetched via `hf-hub`
-  at runtime on first use, not at build time. No model is downloaded during
-  `cargo build` or `cargo test` (tests use `embedder: None`).
+- **Model download.** The `embed-native` feature bundles the candle F2LLM
+  embedder; the model weights are fetched via `hf-hub` at runtime on first
+  use, not at build time. Server tests run with the embedder slot disabled,
+  so no model download happens during `cargo build` or the test run.
 
 ### Ubuntu (`ubuntu-latest`) caveats
 
@@ -206,15 +232,18 @@ CI runs `cargo build` + `cargo test` on `ubuntu-latest`, `macos-latest`, and
   workspace (`--all-targets --features rich-formats`, which pulls in the
   embedder dependency tree) and has intermittently exhausted the runner's
   free disk space. The job sets `CARGO_PROFILE_DEV_DEBUG: 0` to drop
-  dev-profile debug info, and runs `df -h` before toolchain install, after
-  cache restore, and after the final build, so a recurrence is diagnosable
-  from the job log instead of vanishing with the runner.
+  dev-profile debug info to reduce that pressure.
 
 ---
 
-## Planned additions
+## Property-based tests and fuzzing
 
-| Area | Issue |
-|------|-------|
-| Property-based tests for chunker, PageRank, and token-budget packing | #24 |
-| Fuzzing the parser and secret scanner | #23 |
+Both used to be "planned additions" here; both now exist and run in CI:
+
+- **Property-based tests** (`proptest`) live in `crates/spelunk-core/tests/prop_*.rs`
+  and cover the chunker and the token-budget packer.
+- **Fuzzing** targets live under `fuzz/fuzz_targets/` (parser, chunker, secret
+  scanner, JSONL parsing, XML escaping, CLI history-entry parsing) and run on
+  a schedule via `.github/workflows/fuzz.yml`, not on every push.
+
+PageRank does not yet have property-based test coverage.
