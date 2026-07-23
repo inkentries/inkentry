@@ -58,17 +58,30 @@ under test in `src/`. Broad categories, not an exhaustive file list (a file
 inventory is the kind of thing that goes stale the next time a test file is
 added or renamed):
 
-- **`crates/spelunk-core/tests/`**: chunker, embeddings, and graph-edge unit
-  logic; real-SQLite integration tests against `Database` (CRUD, KNN search,
-  graph edges, conventions); git-notes integration tests; language-parsing
-  coverage; property-based tests (`prop_*.rs`, using `proptest`).
+- **`crates/spelunk-core/tests/`**: chunker, embeddings, graph-edge, and
+  summariser unit logic; adversarial/coverage-gap hardening for the chunker
+  (`adversarial_chunker.rs`); real-SQLite integration tests against
+  `Database` (CRUD, KNN search, graph edges, conventions, LIKE-metacharacter
+  escaping); git-notes integration tests; a worktree-resolution integration
+  test over a real `git worktree`; language-parsing coverage; property-based
+  tests (`prop_*.rs`, using `proptest`).
 - **`crates/spelunk-cli/tests/`**: CLI end-to-end tests that invoke the
-  compiled `spelunk` binary via `assert_cmd`; plumbing-subcommand tests;
-  memory workflow tests (add, dedupe, reconcile, reindex, push/sync); auth
-  and server-key resolution tests.
+  compiled `spelunk` binary via `assert_cmd`; plumbing-subcommand tests
+  (`cat_chunks`, `graph_edges`, `knn`, `ls_files`, `parse_file`, `hash_file`)
+  and porcelain/plumbing consistency checks; memory workflow tests (add,
+  dedupe, reconcile, reindex, push/sync, cross-project visibility); auth,
+  TLS-trust, and server-key resolution tests; git-hook and git-notes
+  integration (pre-push publishing, hooks-path resolution, notes-carrier
+  fallback/archive, `init`'s notes refspec); security/regression guards
+  (secret-scanner bypass, harvest argument-injection, ANSI leaking onto
+  non-tty stdout); and UX-guidance tests for index/search/inference-server
+  messaging.
 - **`crates/spelunk-server/tests/`**: Axum handler integration tests
-  (in-process request/response, no socket bound) and a real-TLS serve test
-  (`tls_serve.rs`) that binds an actual loopback socket.
+  (in-process request/response, no socket bound); a real-TLS serve test
+  (`tls_serve.rs`) that binds an actual loopback socket; and a real-socket
+  plaintext CLI-to-server sync end-to-end test (`cli_sync_e2e.rs`) that
+  drives the actual `spelunk memory push`/`spelunk sync` client code against
+  a bound server instance.
 - **`#[cfg(test)]` blocks in `src/`**: pure-logic unit tests colocated with
   the function they cover, across all crates (e.g. ANSI stripping, secret
   pattern detection, token estimation, memory dedupe logic).
@@ -247,8 +260,9 @@ file itself stays accurate.
 
 Both used to be "planned additions" here; both now exist and run in CI:
 
-- **Property-based tests** (`proptest`) live in `crates/spelunk-core/tests/prop_*.rs`
-  and cover the chunker and the token-budget packer.
+- **Property-based tests** (`proptest`) live in `crates/spelunk-core/tests/prop_*.rs`:
+  `prop_chunker.rs`, `prop_token_budget.rs`, and `prop_embeddings.rs` (the
+  `vec_to_blob`/`blob_to_vec` roundtrip plus blob-length invariants).
 - **Fuzzing** targets live under `fuzz/fuzz_targets/` (parser, chunker, secret
   scanner, JSONL parsing, XML escaping, CLI history-entry parsing) and run on
   a schedule via `.github/workflows/fuzz.yml`, not on every push.
