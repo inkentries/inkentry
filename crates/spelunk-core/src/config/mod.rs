@@ -326,6 +326,20 @@ impl Config {
     /// paths can be exercised without a real keychain or daemon. Production code
     /// calls [`Config::load`], which resolves the host's default store.
     pub fn load_with_store(path: Option<&Path>, store: &dyn SecretStore) -> Result<Self> {
+        let project_root = std::env::current_dir().ok();
+        Self::load_with_store_from(path, store, project_root.as_deref())
+    }
+
+    /// Like [`load_with_store`], but the project-level `.spelunk/config.toml` is
+    /// discovered by walking up from `project_root` rather than the process CWD.
+    /// `None` skips project discovery entirely: a `.spelunk/config.toml` checked
+    /// in to this repo must not leak into a hermetic unit-test load. Production
+    /// always passes the CWD via [`load_with_store`].
+    pub(crate) fn load_with_store_from(
+        path: Option<&Path>,
+        store: &dyn SecretStore,
+        project_root: Option<&Path>,
+    ) -> Result<Self> {
         // ── 1. Load global personal config ───────────────────────────────────
         let global_path = match path {
             Some(p) => p.to_path_buf(),
@@ -356,8 +370,8 @@ impl Config {
         // file never carries a credential. A file that still has a
         // `server_key` line keeps working for its other fields: the parse
         // above silently drops the unrecognized key.
-        if let Ok(cwd) = std::env::current_dir()
-            && let Some(proj_path) = find_project_config(&cwd)
+        if let Some(root) = project_root
+            && let Some(proj_path) = find_project_config(root)
         {
             let raw = std::fs::read_to_string(&proj_path)
                 .with_context(|| format!("reading project config at {}", proj_path.display()))?;
@@ -610,7 +624,13 @@ mod tests {
     /// `Config::load` with a fresh in-memory secret store, so credential tests
     /// never touch the host keychain or `~/.config/spelunk/secrets.toml`.
     fn load_hermetic(path: &Path) -> Result<Config> {
-        Config::load_with_store(Some(path), &MemoryStore::default())
+        load_hermetic_with(path, &MemoryStore::default())
+    }
+
+    // No project-config discovery, so a .spelunk/config.toml checked in to this
+    // repo cannot leak into the loaded Config (that is what makes it hermetic).
+    fn load_hermetic_with(path: &Path, store: &dyn SecretStore) -> Result<Config> {
+        Config::load_with_store_from(Some(path), store, None)
     }
 
     /// Unset all spelunk-related env vars to prevent cross-test contamination.
@@ -797,7 +817,7 @@ memory_server_key = "old-token"
         .unwrap();
 
         let store = MemoryStore::default();
-        let cfg = Config::load_with_store(Some(&config_path), &store).unwrap();
+        let cfg = load_hermetic_with(&config_path, &store).unwrap();
         assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.server_key, None);
         assert_eq!(
@@ -1179,19 +1199,17 @@ project_id = "team/proj"
         let global_config = tmp.path().join("global.toml");
         std::fs::write(&global_config, "").unwrap();
 
-        let original_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&proj_dir).unwrap();
-
-        let cfg = load_hermetic(&global_config).unwrap();
+        let cfg = Config::load_with_store_from(
+            Some(&global_config),
+            &MemoryStore::default(),
+            Some(&proj_dir),
+        )
+        .unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://proj.example.com:7777".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
-
-        if let Some(d) = original_cwd {
-            std::env::set_current_dir(d).unwrap();
-        }
     }
 
     // ── [auth] WorkOS tokens ───────────────────────────────────────────────────
@@ -1374,16 +1392,14 @@ project_id = "team/old"
         let global_config = tmp.path().join("global.toml");
         std::fs::write(&global_config, "").unwrap();
 
-        let original_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&proj_dir).unwrap();
-
-        let cfg = load_hermetic(&global_config).unwrap();
+        let cfg = Config::load_with_store_from(
+            Some(&global_config),
+            &MemoryStore::default(),
+            Some(&proj_dir),
+        )
+        .unwrap();
         assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.project_id, Some("team/old".to_string()));
-
-        if let Some(d) = original_cwd {
-            std::env::set_current_dir(d).unwrap();
-        }
     }
 
     #[test]
@@ -1408,19 +1424,17 @@ project_id = "team/new"
         let global_config = tmp.path().join("global.toml");
         std::fs::write(&global_config, "").unwrap();
 
-        let original_cwd = std::env::current_dir().ok();
-        std::env::set_current_dir(&proj_dir).unwrap();
-
-        let cfg = load_hermetic(&global_config).unwrap();
+        let cfg = Config::load_with_store_from(
+            Some(&global_config),
+            &MemoryStore::default(),
+            Some(&proj_dir),
+        )
+        .unwrap();
         assert_eq!(
             cfg.server_url,
             Some("http://new.example.com:7777".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/new".to_string()));
-
-        if let Some(d) = original_cwd {
-            std::env::set_current_dir(d).unwrap();
-        }
     }
 
     // ── keychain secret store migration / precedence ─────────────────────────
