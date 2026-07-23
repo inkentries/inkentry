@@ -19,7 +19,9 @@
 // mock.
 
 mod plumbing_helpers;
-use plumbing_helpers::{mount_health, spelunk_bin};
+use plumbing_helpers::{
+    FIXTURE_PROJECT_ID, mount_health, spelunk_bin, write_project_server_config,
+};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -751,21 +753,26 @@ fn no_reembed_notice_on_fresh_store() {
         .stderr(predicates::str::contains("need re-embedding").not());
 }
 
-// `cloud_first`: `memory.db` is not the store of record there (an explicit
-// `server_url` is, via `RemoteMemoryBackend`), so `reindex` has nothing local
-// to re-embed. It must fail with an actionable "not applicable" message
-// rather than silently no-op'ing or (worse) reindexing a store nothing reads
-// (2026-07-23 founder decision, spelunk-oss#280). No mock embedder is set up
-// at all: a real embed attempt would also fail this test, just for the wrong
-// reason (proving the bail happens before any embed call, not after one
-// fails).
+// `cloud_first` WITH `server_url` set: `memory.db` is not the store of record
+// there (`server_url` is, via `RemoteMemoryBackend`), so `reindex` has
+// nothing local to re-embed. It must fail with an actionable "not
+// applicable" message rather than silently no-op'ing or (worse) reindexing a
+// store nothing reads (2026-07-23 founder decision, spelunk-oss#280). No
+// mock embedder is set up at all: a real embed attempt would also fail this
+// test, just for the wrong reason (proving the bail happens before any embed
+// call, not after one fails).
 #[test]
-fn reindex_in_cloud_first_is_not_applicable() {
+fn reindex_in_cloud_first_with_server_url_is_not_applicable() {
     let f = fixture();
     seed(&f, "decision", "one", "body one");
     assert!(
         embedded_note_ids(&f.mem_path).is_empty(),
         "seeded note must start unembedded"
+    );
+    write_project_server_config(
+        &f.project_dir,
+        "https://team.example.com",
+        FIXTURE_PROJECT_ID,
     );
 
     reindex_cmd(&f)
@@ -778,5 +785,37 @@ fn reindex_in_cloud_first_is_not_applicable() {
     assert!(
         embedded_note_ids(&f.mem_path).is_empty(),
         "a rejected cloud_first reindex must write no vectors"
+    );
+}
+
+// `cloud_first` with NO `server_url` set: nothing routes memory remotely, so
+// `open_memory_backend` itself falls back to `memory.db` (`storage/mod.rs`'s
+// `route_remote` requires BOTH `cloud_first` AND a configured `server_url`).
+// `memory.db` genuinely is the store of record here, so `reindex` must
+// proceed and embed normally, not bail. Regression guard: an earlier version
+// of this check gated on `mode` alone and rejected this valid case too.
+#[test]
+fn reindex_in_cloud_first_without_server_url_proceeds() {
+    let f = fixture();
+    seed(&f, "decision", "one", "body one");
+    assert!(
+        embedded_note_ids(&f.mem_path).is_empty(),
+        "seeded note must start unembedded"
+    );
+
+    let mock = start_mock(EmbedResponder::new(0.1));
+    set_server(&f, &mock.uri());
+
+    reindex_cmd(&f)
+        .env("SPELUNK_MODE", "cloud_first")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("1 embedded"));
+
+    let ids = embedded_note_ids(&f.mem_path);
+    assert_eq!(
+        ids.len(),
+        1,
+        "cloud_first with no server_url must still reindex the local memory.db"
     );
 }

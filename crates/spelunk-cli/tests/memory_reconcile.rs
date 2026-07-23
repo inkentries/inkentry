@@ -14,13 +14,14 @@
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
 
 mod plumbing_helpers;
-use plumbing_helpers::{spelunk_bin, spelunk_bin_in};
+use plumbing_helpers::{mount_health, mount_index_embed, spelunk_bin, spelunk_bin_in};
 
 use assert_cmd::Command;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tempfile::TempDir;
+use wiremock::MockServer;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -308,6 +309,95 @@ fn spelunk_no_server_exits_cleanly_with_import() {
         1,
         "note should be imported even without embedding server"
     );
+}
+
+// ── spelunk-oss#280: local_first must embed via loopback, not a bare server_url ──
+
+/// Start a mock spelunk-server (health + `/index/embed` mounted) on a
+/// dedicated runtime kept alive for the caller's duration.
+fn start_mock() -> (tokio::runtime::Runtime, MockServer) {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let server = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_health(&server).await;
+        mount_index_embed(&server).await;
+        server
+    });
+    (rt, server)
+}
+
+#[test]
+fn local_first_with_server_url_still_embeds_via_loopback() {
+    // Regression guard for spelunk-oss#280: step 5's best-effort embed used
+    // to call `ServerInferenceClient::from_config` on the raw (unbridged)
+    // config, so a `local_first` project with an explicit `server_url`
+    // silently imported every note WITHOUT an embedding, the exact ^279
+    // symptom ^280 exists to eliminate. It must bridge via
+    // `get_inference_tier`/`effective_config` like `add`/`reindex`/`search`
+    // do, and reach the local loopback embedder instead.
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("spelunk.db");
+    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+
+    let slug = "loopback-embed-test";
+    let (server_db, project_id) = create_server_db(tmp.path(), slug);
+    let conn = Connection::open(&server_db).unwrap();
+    insert_server_note(
+        &conn,
+        project_id,
+        "decision",
+        "Prefer local embedding",
+        "body one",
+        None,
+        None,
+        1_700_005_000,
+        "active",
+        None,
+    );
+    drop(conn);
+
+    let (_rt, mock) = start_mock();
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).expect("create state dir");
+    let port: u16 = mock
+        .uri()
+        .rsplit(':')
+        .next()
+        .expect("uri has a port")
+        .trim_end_matches('/')
+        .parse()
+        .expect("uri port is numeric");
+    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+
+    let output = reconcile_cmd(&config_path, &server_db)
+        .env_remove("SPELUNK_NO_SERVER")
+        .env("SPELUNK_STATE_DIR", &state_dir)
+        // Deliberately unroutable: local_first must never fall back to this,
+        // an accidental fallback surfaces as a connection error, not a
+        // silent unembedded import.
+        .env("SPELUNK_SERVER_URL", "https://cloud.invalid.example:1")
+        .env("SPELUNK_PROJECT_ID", slug)
+        .arg("--all-projects")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let text = String::from_utf8(output).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(text.trim()).expect("stdout must be valid JSON");
+
+    assert_eq!(value["imported"].as_i64(), Some(1));
+    assert_eq!(
+        value["imported_without_embedding"].as_i64(),
+        Some(0),
+        "local_first must embed via the loopback server even with an explicit \
+         (and unroutable) server_url configured: {value}"
+    );
+    assert_eq!(count_memory_notes(&mem_path), 1);
 }
 
 // ── AC-1: Dedup by content-hash, not rowid ───────────────────────────────────

@@ -56,16 +56,20 @@ pub(super) async fn memory_reindex(
 
     // `memory reindex` backfills vectors into the LOCAL `memory.db` (opened
     // directly below, bypassing `open_memory_backend`'s mode-based routing).
-    // In `cloud_first` that file is not the store of record (an explicit
-    // `server_url` is, via `RemoteMemoryBackend`), so there is nothing local
-    // to re-embed: fail with an actionable message rather than silently
-    // reindexing a store nothing reads (2026-07-23 founder decision,
+    // Mirror `open_memory_backend`'s exact `route_remote` condition
+    // (`storage/mod.rs`): `cloud_first` only relocates the store of record
+    // to `server_url` when one is actually configured. `cloud_first` with no
+    // `server_url` set has nothing to route to, so `open_memory_backend`
+    // itself falls back to `memory.db` there too, memory.db is the store of
+    // record and there IS something local to re-embed. Gating on `mode`
+    // alone (ignoring `server_url`) would reject that exact case, contrary
+    // to `open_memory_backend`'s own routing (2026-07-23 founder decision,
     // spelunk-oss#280).
-    if cfg.resolve_mode() == SyncMode::CloudFirst {
+    if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         anyhow::bail!(
-            "'spelunk memory reindex' is not applicable in cloud_first mode: \
-             memory.db is not the store of record there (server_url owns memory), \
-             so there is nothing local to re-embed."
+            "'spelunk memory reindex' is not applicable in cloud_first mode with \
+             server_url set: memory.db is not the store of record there (server_url \
+             owns memory), so there is nothing local to re-embed."
         );
     }
 
