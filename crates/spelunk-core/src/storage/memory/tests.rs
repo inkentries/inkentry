@@ -1000,7 +1000,10 @@ fn entity_id_migration_backfills_but_does_not_collapse_duplicates() {
     // a genuinely pre-023 DB.
     {
         let conn = rusqlite::Connection::open(&path).expect("open raw");
-        let store = MemoryStore { conn };
+        let store = MemoryStore {
+            conn,
+            reembed_needed: None,
+        };
         store.migrate().expect("schema migration only");
         for created_at in [1_700_000_001_i64, 1_700_000_002] {
             store
@@ -1243,5 +1246,229 @@ fn insert_embedding_joins_callers_transaction_and_rolls_back_with_it() {
         "rollback must restore the pre-transaction (first) vector — if the \
          delete+insert had committed independently of the caller's \
          transaction, the row would still hold `second` here"
+    );
+}
+
+// ── notes_missing_embeddings / reindex candidate queries ─────────────────────
+
+// Give `note_id` a valid 896-dim embedding so it drops out of the missing set.
+fn embed(store: &MemoryStore, note_id: i64) {
+    let blob = crate::embeddings::vec_to_blob(&[0.1f32; 896]);
+    store
+        .insert_embedding(note_id, &blob)
+        .expect("insert embedding");
+}
+
+fn missing_ids(store: &MemoryStore, include_archived: bool) -> Vec<i64> {
+    store
+        .notes_missing_embeddings(include_archived)
+        .expect("query missing")
+        .into_iter()
+        .map(|(id, ..)| id)
+        .collect()
+}
+
+// Seed one active note, return its id.
+fn add_active(store: &MemoryStore, title: &str) -> i64 {
+    store
+        .add_note(
+            "note",
+            title,
+            &format!("body of {title}"),
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("add note")
+        .0
+}
+
+#[test]
+fn notes_missing_embeddings_returns_only_active_unembedded_by_default() {
+    let store = open_store();
+    let a = add_active(&store, "a");
+    let b = add_active(&store, "b");
+    let c = add_active(&store, "c");
+    // Embed exactly one of the three.
+    embed(&store, b);
+
+    let mut got = missing_ids(&store, false);
+    got.sort();
+    let mut want = vec![a, c];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "only the two active-unembedded notes are returned"
+    );
+}
+
+#[test]
+fn notes_missing_embeddings_excludes_embedded_and_archived_by_default() {
+    let store = open_store();
+    let embedded = add_active(&store, "active-embedded");
+    embed(&store, embedded);
+    let unembedded = add_active(&store, "active-unembedded");
+    let archived = add_active(&store, "archived-unembedded");
+    assert!(store.archive(archived).expect("archive"));
+
+    assert_eq!(
+        missing_ids(&store, false),
+        vec![unembedded],
+        "default mode returns only the active, unembedded note"
+    );
+}
+
+#[test]
+fn notes_missing_embeddings_boundaries_all_and_none_embedded() {
+    let store = open_store();
+    let a = add_active(&store, "a");
+    let b = add_active(&store, "b");
+
+    // None embedded: both returned in id order.
+    assert_eq!(missing_ids(&store, false), vec![a, b]);
+
+    // All embedded: empty.
+    embed(&store, a);
+    embed(&store, b);
+    assert!(
+        missing_ids(&store, false).is_empty(),
+        "a fully embedded store has nothing missing"
+    );
+}
+
+#[test]
+fn notes_missing_embeddings_include_archived_covers_archived() {
+    let store = open_store();
+    let active = add_active(&store, "active");
+    let archived = add_active(&store, "archived");
+    assert!(store.archive(archived).expect("archive"));
+
+    let mut got = missing_ids(&store, true);
+    got.sort();
+    let mut want = vec![active, archived];
+    want.sort();
+    assert_eq!(
+        got, want,
+        "include_archived surfaces the unembedded archived note too"
+    );
+}
+
+#[test]
+fn insert_embedding_drops_note_out_and_force_query_keeps_all() {
+    let store = open_store();
+    let a = add_active(&store, "a");
+    let b = add_active(&store, "b");
+
+    assert_eq!(missing_ids(&store, false), vec![a, b]);
+    embed(&store, a);
+    assert_eq!(
+        missing_ids(&store, false),
+        vec![b],
+        "an embedded note drops out of notes_missing_embeddings"
+    );
+
+    // The force-path query returns every active note regardless of embedding.
+    let force: Vec<i64> = store
+        .all_active_notes_for_reembed(false)
+        .expect("force query")
+        .into_iter()
+        .map(|(id, ..)| id)
+        .collect();
+    assert_eq!(
+        force,
+        vec![a, b],
+        "the --force candidate set is every active note, embedded or not"
+    );
+}
+
+#[test]
+fn notes_missing_embeddings_returns_title_and_body_for_embed_text() {
+    let store = open_store();
+    let id = store
+        .add_note("decision", "My Title", "the body", &[], &[], None, None)
+        .expect("add")
+        .0;
+    let rows = store.notes_missing_embeddings(false).expect("query");
+    assert_eq!(
+        rows,
+        vec![(id, "My Title".to_string(), "the body".to_string())]
+    );
+}
+
+// ── D5: 768→896 migration flags the re-embed need once ───────────────────────
+
+// Build a genuine pre-0.9 store on disk: a `note_embeddings` vec0 table declared
+// FLOAT[768] with N notes and NO `schema_v896_note_embeddings` sentinel, exactly
+// what an upgraded user's store looks like before the first 0.9 open.
+fn make_pre_v896_store(path: &std::path::Path, n: usize) {
+    register_sqlite_vec();
+    let conn = rusqlite::Connection::open(path).expect("open raw pre-v896 store");
+    conn.execute_batch(
+        "CREATE TABLE notes (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind          TEXT    NOT NULL DEFAULT 'note',
+            title         TEXT    NOT NULL,
+            body          TEXT    NOT NULL,
+            tags          TEXT,
+            linked_files  TEXT,
+            created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE VIRTUAL TABLE note_embeddings USING vec0(
+            note_id INTEGER PRIMARY KEY, embedding FLOAT[768]
+        );",
+    )
+    .expect("create pre-v896 schema");
+    for i in 0..n {
+        conn.execute(
+            "INSERT INTO notes (kind, title, body) VALUES ('note', ?1, ?2)",
+            rusqlite::params![format!("t{i}"), format!("b{i}")],
+        )
+        .expect("seed note");
+    }
+}
+
+#[test]
+fn open_after_768_upgrade_flags_reembed_count_once() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+    make_pre_v896_store(&path, 3);
+
+    let store = MemoryStore::open(&path).expect("open upgrades 768→896");
+    assert_eq!(
+        store.reembed_needed,
+        Some(3),
+        "the drop must flag all 3 prior notes as needing re-embedding"
+    );
+    assert_eq!(
+        store.notes_missing_embeddings(false).expect("query").len(),
+        3,
+        "after the drop every prior note is present-but-unembedded"
+    );
+
+    // The sentinel is now set: a second open must NOT re-flag (the notice fires
+    // once, not on every command), and the notes stay present-but-unembedded.
+    drop(store);
+    let reopened = MemoryStore::open(&path).expect("reopen");
+    assert_eq!(
+        reopened.reembed_needed, None,
+        "a store already at v896 must not re-flag the re-embed need"
+    );
+    assert_eq!(
+        reopened
+            .notes_missing_embeddings(false)
+            .expect("query")
+            .len(),
+        3,
+        "the notes are still unembedded until reindex runs"
+    );
+}
+
+#[test]
+fn open_fresh_store_does_not_flag_reembed() {
+    let store = open_store();
+    assert_eq!(
+        store.reembed_needed, None,
+        "a fresh FLOAT[896] store never triggered the 768 drop"
     );
 }

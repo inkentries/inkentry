@@ -335,6 +335,72 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Active notes (and archived ones too when `include_archived`) that have no
+    /// row in the `note_embeddings` vec0 table: the set `memory reindex`
+    /// backfills. Mirrors `Database::chunks_missing_embeddings` for the code
+    /// index and uses the same `LEFT JOIN <vec0> ... WHERE ... IS NULL` idiom,
+    /// which is proven to filter correctly against a vec0 virtual table.
+    ///
+    /// Returns `(note_id, title, body)`: exactly the fields the add-time embed
+    /// document (`title: {title} | text: {body}`) is rebuilt from, so a
+    /// backfilled vector matches an add-time one. `ORDER BY n.id` is
+    /// deterministic, so a resumed re-query is stable.
+    pub fn notes_missing_embeddings(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<(i64, String, String)>> {
+        // Only string literals are interpolated here; there are no user-supplied
+        // values in this query, so no bind params are needed.
+        let status_clause = if include_archived {
+            ""
+        } else {
+            "AND n.status = 'active'"
+        };
+        let sql = format!(
+            "SELECT n.id, n.title, n.body \
+             FROM notes n \
+             LEFT JOIN note_embeddings e ON e.note_id = n.id \
+             WHERE e.note_id IS NULL {status_clause} \
+             ORDER BY n.id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Every active note (and archived too when `include_archived`), regardless
+    /// of whether it already has an embedding: the `--force` candidate set for
+    /// `memory reindex`. `insert_embedding`'s atomic delete-then-insert replaces
+    /// any existing vector in place, so re-embedding here is last-write-wins.
+    pub fn all_active_notes_for_reembed(
+        &self,
+        include_archived: bool,
+    ) -> Result<Vec<(i64, String, String)>> {
+        let status_clause = if include_archived {
+            ""
+        } else {
+            "WHERE status = 'active'"
+        };
+        let sql = format!("SELECT id, title, body FROM notes {status_clause} ORDER BY id");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     /// List notes, optionally filtered by kind, newest first.
     /// When `include_archived` is false only active entries are returned.
     pub fn list(

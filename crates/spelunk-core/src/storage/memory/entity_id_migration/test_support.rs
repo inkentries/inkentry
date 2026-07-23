@@ -23,7 +23,10 @@ pub(super) fn open_store() -> MemoryStore {
     register_sqlite_vec();
     let conn = rusqlite::Connection::open(std::path::Path::new(":memory:"))
         .expect("open in-memory sqlite");
-    let store = MemoryStore { conn };
+    let store = MemoryStore {
+        conn,
+        reembed_needed: None,
+    };
     store.migrate().expect("schema migration");
     store
 }

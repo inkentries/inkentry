@@ -11,6 +11,24 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`spelunk memory reindex` backfills local note embeddings that were never
+  minted, so semantic `memory search` can surface those notes again.** A note's
+  vector is created only at `memory add` time; if no embedder was reachable
+  then, or the store was upgraded across the 768→896 embedding-dimension change
+  (which drops the old vectors), the note stays present-but-unembedded with no
+  catch-up path and is invisible to semantic KNN (it is still reachable via text
+  search, `list`, `timeline`, and `context`). `reindex` re-embeds those notes
+  through the same local embed path `memory add` uses, committing each vector as
+  it completes so an interrupted run resumes on re-run rather than starting over.
+  By default it embeds only active notes missing a vector; `--force` re-embeds
+  every active note, replacing any existing vector (useful after a model or
+  dimension change); `--include-archived` also covers archived notes; `--dry-run`
+  reports the count and writes nothing; and `--format json` emits a
+  machine-readable summary. When no embedder is reachable it fails with an
+  actionable error and writes nothing. After the 768→896 upgrade drops old
+  vectors, memory commands print a one-line notice pointing at `spelunk memory
+  reindex` so the recall regression is discoverable without `RUST_LOG`.
+
 - **`local_first` writes now queue and drain automatically; you no longer
   need to run `spelunk sync` by hand in the normal path.** A write (`memory
   add`/`archive`/`supersede`) with a team `server_url` configured still
