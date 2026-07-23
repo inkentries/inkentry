@@ -1049,7 +1049,7 @@ mod tests {
     /// `search_query` is a product/UX call, not a mechanical hardening fix.
     #[test]
     fn notice_ready_embedder_still_says_unavailable_not_busy() {
-        let msg = semantic_unavailable_message(Some(EmbedderState::Ready), true, None);
+        let msg = semantic_unavailable_message(Some(EmbedderState::Ready), None, None, true);
         assert!(
             msg.contains("unavailable"),
             "documents current behavior: a Ready-but-saturated embedder gets the generic \
