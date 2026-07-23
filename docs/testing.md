@@ -19,15 +19,20 @@ the `embed-native` feature), not an external OpenAI-compatible endpoint. See
 ## Running the tests
 
 ```bash
-make check
+cargo nextest run
+cargo test --doc
 ```
 
-This is the one command to run before pushing: it reproduces CI's **Check &
-Lint** and **Test** legs (both locally-runnable feature configs) in one shot.
-See `docs/building.md` for the full target list, including the gates
-`make check` does **not** cover (Windows tests, Docker image build, security
-scans, OpenAPI drift). Don't duplicate that table here: it drifts when
-duplicated in two places instead of one.
+This is what to run before pushing, and matches CI's own invocation
+(`.github/workflows/ci.yml`) on each platform leg: `cargo nextest run`
+for the workspace, plus `cargo test --doc` as a separate pass since
+nextest does not run doctests. Some CI legs add `--no-default-features`
+(see the workflow file for exactly which); reach for that flag locally if
+you need to reproduce a platform-specific failure.
+
+A `make check` target that reproduces CI's **Check & Lint** and **Test**
+legs in one shot is in progress (spelunk-oss#621, not yet merged) — until
+it lands, run the commands above directly.
 
 For a tighter loop while iterating on one file:
 
@@ -105,8 +110,8 @@ annotation actually buys under the test runner CI uses.
 
 ### `#[serial]` does not mean what it used to under nextest
 
-CI (and `make check`) run tests with `cargo nextest run`, which gives every
-test its own OS process. `serial_test`'s default lock (this workspace does
+CI runs tests with `cargo nextest run`, which gives every test its own OS
+process. `serial_test`'s default lock (this workspace does
 not enable its `file_locks` feature) is an in-process primitive: it only
 serialises tests that share the same process's memory. Under nextest, no two
 `#[test]` functions ever share a process, so `#[serial]` provides **no**
