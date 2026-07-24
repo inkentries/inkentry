@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-07-24
+
 ### Changed
 
 - **Default chunk-token cap (`MAX_CHUNK_TOKENS`) lowered from 2048 to 512.** A

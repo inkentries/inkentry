@@ -1,6 +1,6 @@
 [package]
 name = "spelunk-core"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2024"
 description = "Core library for spelunk — storage, indexer, search, embeddings"
 license = "MIT"
