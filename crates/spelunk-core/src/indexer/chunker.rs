@@ -77,7 +77,7 @@ impl Chunk {
 /// Soft ceiling for one chunk (tokens, chars/4 estimate). Oversized leaves are
 /// re-windowed and oversized containers suppressed in favour of their children.
 /// Distinct from the embedder's hard `token_cap` OOM guard.
-pub const MAX_CHUNK_TOKENS: usize = 2048;
+pub const MAX_CHUNK_TOKENS: usize = 512;
 
 /// Process-global cap, seeded from `MAX_CHUNK_TOKENS`. Only benchmark/eval
 /// harnesses call the setter; production code always runs on the default.
@@ -90,6 +90,15 @@ pub fn chunk_token_cap() -> usize {
 /// Test/benchmark use only; never call from a production indexing path.
 pub fn set_chunk_token_cap(tokens: usize) {
     CHUNK_TOKEN_CAP.store(tokens, Ordering::Relaxed);
+}
+
+/// Identifier for the chunk-boundary-affecting knobs, stamped into a DB's
+/// `index_meta` so a later run can detect that its stored chunks were cut
+/// under a different configuration (see `Database::ensure_chunker_config`).
+/// Only `MAX_CHUNK_TOKENS` (via `chunk_token_cap`) affects boundaries today;
+/// fold any future boundary-affecting knob into this string too.
+pub fn chunker_config_id() -> String {
+    format!("max_chunk_tokens={}", chunk_token_cap())
 }
 
 /// Split `source` into token-aware sliding-window chunks (fallback for
@@ -226,18 +235,21 @@ mod tests {
     #[test]
     #[serial]
     fn sliding_window_respects_the_injected_cap() {
-        // ~1000 estimated tokens (chars/4): one window at the 2048 default,
-        // several once capped to 100.
-        let source = (0..200)
-            .map(|i| format!("let line_{i:03} = 1;"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Line count scaled off `MAX_CHUNK_TOKENS` (not a hardcoded literal)
+        // so this stays valid whatever the default cap is: comfortably under
+        // budget for the default-cap assertion, then split via an injected
+        // cap of 100.
+        let line = |i: usize| format!("let line_{i:03} = 1;");
+        let budget_chars = MAX_CHUNK_TOKENS * 4;
+        let chars_per_line = line(0).chars().count() + 1; // + newline
+        let fits_lines = (budget_chars / chars_per_line).saturating_sub(5).max(1);
+        let source = (0..fits_lines).map(line).collect::<Vec<_>>().join("\n");
 
         let default_chunks = sliding_window(&source, "f.rs", "rust", None, None, None);
         assert_eq!(
             default_chunks.len(),
             1,
-            "default 2048-token cap must fit this source in one window"
+            "source built to fit inside the default cap must stay one window"
         );
 
         with_cap(100, || {

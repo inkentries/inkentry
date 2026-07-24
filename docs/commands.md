@@ -103,6 +103,14 @@ Summaries are the exception: a chunk whose summary failed (say the LLM was
 unreachable) is recorded as attempted rather than missing, so a plain re-run
 skips it. Use `--force` to retry those.
 
+The index also remembers the chunker configuration (currently just the
+`MAX_CHUNK_TOKENS` cap) it was built under. If a plain `spelunk index` detects
+that the running build's chunker config differs from what's recorded, it
+prints a warning and proceeds anyway rather than failing: unchanged files keep
+their old chunk boundaries until re-parsed, so the index temporarily mixes
+chunk granularities. Run `spelunk index --force` to re-chunk every file under
+the current config and clear the warning.
+
 The embed phase calibrates its own batch size instead of guessing: it times a
 1-chunk request, then a 4-chunk request, and sizes subsequent requests (and
 their timeouts) from the observed token-weighted rate: smaller batches on slow
