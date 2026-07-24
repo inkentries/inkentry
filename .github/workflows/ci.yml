@@ -32,6 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Git isolation lint
+        run: scripts/check-git-isolation.sh
+
       - name: Disk usage (baseline)
         run: df -h
 
