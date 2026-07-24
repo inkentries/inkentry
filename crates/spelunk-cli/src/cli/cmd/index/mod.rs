@@ -1163,6 +1163,32 @@ mod tests {
         );
     }
 
+    // ── wait_for_embedder backoff/give-up constants ──────────────────────────
+    //
+    // Every wait_for_embedder test above drives the function with
+    // `TEST_BACKOFF` (1ms) so the suite doesn't take the ~150s the real
+    // constants would need to reach the give-up bound. That substitution is
+    // only faithful to production if the constants it stands in for keep
+    // their documented values; pin them here so a silent edit (e.g. raising
+    // `EMBED_WAIT_MAX_OFFLINE_PROBES` past what the give-up test's runtime
+    // budget assumes) fails loudly instead of just changing real-world
+    // worker wait time unnoticed. Mirrors the `loopback_probe_timeout_is_250ms`
+    // -style constant pins in `capability/probe.rs`.
+    #[test]
+    fn embed_wait_initial_backoff_is_1s() {
+        assert_eq!(EMBED_WAIT_INITIAL_BACKOFF.as_secs(), 1);
+    }
+
+    #[test]
+    fn embed_wait_max_backoff_is_30s() {
+        assert_eq!(EMBED_WAIT_MAX_BACKOFF.as_secs(), 30);
+    }
+
+    #[test]
+    fn embed_wait_max_offline_probes_is_10() {
+        assert_eq!(EMBED_WAIT_MAX_OFFLINE_PROBES, 10);
+    }
+
     // ── wait_for_embedder: local_first routes to loopback, not server_url ────
     //
     // The routing-bug regression this story fixes: before, the wait loop

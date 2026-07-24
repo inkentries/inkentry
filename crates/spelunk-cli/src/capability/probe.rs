@@ -1230,4 +1230,72 @@ mod tests {
         let tier = get_inference_tier(&cfg).await;
         assert!(matches!(tier, Tier::Offline), "got {tier:?}");
     }
+
+    /// `get_inference_tier_fresh`'s `cloud_first` branch must re-probe the
+    /// server on every call, never freezing on an earlier observation. This
+    /// is the one behavioural difference from `get_inference_tier` (whose
+    /// `cloud_first` branch reuses `get_tier`'s process-lifetime cache) and
+    /// the entire reason `wait_for_embedder` uses the `_fresh` variant: a
+    /// bug that made this branch delegate to `get_tier` too (i.e. collapse
+    /// to being identical to `get_inference_tier`) would still pass every
+    /// other `get_inference_tier_fresh` test in this file, since those only
+    /// ever make a single call each. This test calls it twice against a
+    /// mock whose response changes between calls and asserts the second
+    /// call observes the change, directly at the tier-fetch level (not
+    /// indirected through `wait_for_embedder`'s poll loop).
+    ///
+    /// Deliberately does not touch `get_tier`/`TIER` (the process-wide
+    /// `OnceCell`) at all, unlike a test that called `get_inference_tier`'s
+    /// `Cached` branch would have to: that cell is shared by every test in
+    /// this binary with no reset hook, so asserting on it directly here
+    /// would make this test's pass/fail depend on unrelated test ordering.
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    async fn get_inference_tier_fresh_cloud_first_reprobes_every_call() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+
+        let server = MockServer::start().await;
+        // First health check: embedder still loading, no index.embed.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(health_body_with_embedder("loading")),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Every call after the first: embedder ready.
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(
+                &["memory", "index.embed", "search.semantic"],
+                spelunk_core::embeddings::EMBEDDING_DIM,
+            )))
+            .mount(&server)
+            .await;
+
+        let cfg = Config {
+            server_url: Some(server.uri()),
+            project_id: Some("team/proj".to_string()),
+            mode: Some(spelunk_core::config::SyncMode::CloudFirst),
+            ..Default::default()
+        };
+
+        let first = get_inference_tier_fresh(&cfg).await;
+        assert_eq!(
+            first.embedder_state(),
+            Some(EmbedderState::Loading),
+            "first call must observe the first mock response; got {first:?}"
+        );
+
+        let second = get_inference_tier_fresh(&cfg).await;
+        assert!(
+            matches!(second.caps(), Some(c) if c.index_embed),
+            "second call must re-probe and observe the loading -> ready \
+             transition, not return a value pinned by the first call; got {second:?}"
+        );
+    }
 }
