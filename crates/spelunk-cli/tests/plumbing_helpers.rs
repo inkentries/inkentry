@@ -21,6 +21,12 @@ use tempfile::TempDir;
 ///
 /// `/dev/null` is not a Windows path, but git skips a scope whenever its var
 /// is set, whatever the path resolves to, so this isolates on Windows too.
+///
+/// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` only redirect config *files*;
+/// they don't touch `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`, which git
+/// consults before config and so override this file's fabricated
+/// `user.name`/`user.email` if the ambient process (a developer's shell, a
+/// CI runner's bot identity) happens to export them. Those are cleared too.
 pub fn isolate_git_config() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -30,6 +36,17 @@ pub fn isolate_git_config() {
         unsafe {
             std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
             std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+            for var in [
+                "GIT_AUTHOR_NAME",
+                "GIT_AUTHOR_EMAIL",
+                "GIT_AUTHOR_DATE",
+                "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL",
+                "GIT_COMMITTER_DATE",
+                "EMAIL",
+            ] {
+                std::env::remove_var(var);
+            }
         }
     });
 }

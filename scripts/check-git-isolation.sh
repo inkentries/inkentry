@@ -37,26 +37,56 @@
 #     fixture module, whose exported constructors call isolate_git_config
 #     internally.
 #
+# Known limitation (accepted, not fixable by a grep-based lint): a spawn
+# reached through a variable or an argument built elsewhere, e.g.
+# `let bin = "git"; Command::new(bin)`, has no literal `"git"` string next to
+# the `new(` call and is invisible to this script. Catching that needs real
+# dataflow analysis (a clippy lint or similar), which the story this script
+# was added for explicitly scoped out ("a grep/xtask lint is enough, no need
+# for a custom clippy lint"). Detected instead: the `new("git")` call itself,
+# tolerant of whatever type path prefixes `::new` (`Command::new("git")`,
+# `std::process::Command::new("git")`, a renamed `use ... as X; X::new("git")`
+# import, ...) and of whitespace/line-wrapping between the tokens (e.g.
+# rustfmt breaking a long call across lines).
+#
 # Usage:
 #   scripts/check-git-isolation.sh [root-dir]   # default root-dir: repo root
 #   scripts/check-git-isolation.sh --self-test  # regression-tests this script
 set -euo pipefail
 
 ISOLATION_MARKER='fn isolate_git_config|isolate_git_config\(|git_command\(|mod common;|mod plumbing_helpers;'
+# Matches `<AnyPath>::new("git")` regardless of the type-path prefix (so a
+# `use std::process::Command as Proc;` alias is still caught), after
+# whitespace/newlines between tokens have been collapsed to single spaces
+# below. `[A-Za-z_][A-Za-z0-9_]*::new` requires the call to end in `::new`,
+# which every `Command`-constructing path does (`Command::new`,
+# `process::Command::new`, `Proc::new`, ...). The trailing `,?` allows for
+# rustfmt's trailing comma when a single-argument call gets line-wrapped
+# (`Command::new(\n    "git",\n)`).
+GIT_SPAWN_PATTERN='[A-Za-z_][A-Za-z0-9_]*::new *\( *"git" *,? *\)'
 
 # Prints an error and sets $fail=1 if `$region` spawns git without an
 # isolation marker. $1 is the human-readable label for the offending region.
 check_region() {
   local label="$1" region="$2"
+  # Collapse all whitespace (including newlines) to single spaces so a
+  # call split across lines by rustfmt, or with incidental extra spacing,
+  # still matches as a single-line pattern below. Isolation markers are
+  # checked against the original (uncollapsed) region: they're simple
+  # single-token/single-line calls in every case this repo uses, and
+  # collapsing would make the label/context in a future error message less
+  # useful for no benefit.
+  local collapsed
+  collapsed="$(tr -s '[:space:]' ' ' <<<"$region")"
 
-  if ! grep -q 'Command::new("git")' <<<"$region"; then
+  if ! grep -qE "$GIT_SPAWN_PATTERN" <<<"$collapsed"; then
     return 0
   fi
   if grep -qE "$ISOLATION_MARKER" <<<"$region"; then
     return 0
   fi
 
-  echo "ERROR: $label spawns \`git\` via Command::new(\"git\") without wiring in git-config isolation" >&2
+  echo "ERROR: $label spawns \`git\` via a \`*::new(\"git\")\` call without wiring in git-config isolation" >&2
   echo "  (expected a call to isolate_git_config()/git_command(), or a \`mod common;\`/\`mod plumbing_helpers;\` import of the shared fixture)" >&2
   fail=1
 }
@@ -94,6 +124,39 @@ self_test() {
 #[test]
 fn spawns_git_unisolated() {
     std::process::Command::new("git").arg("status").status().unwrap();
+}
+EOF
+
+  # Bad: same, but the call is wrapped across lines the way rustfmt would
+  # when the surrounding call gets long. A naive single-line literal-string
+  # grep for `Command::new("git")` misses this entirely.
+  cat >"$tmp/crates/fake-crate/tests/bad_multiline.rs" <<'EOF'
+#[test]
+fn spawns_git_unisolated_multiline() {
+    std::process::Command::new(
+        "git",
+    )
+    .arg("status")
+    .status()
+    .unwrap();
+}
+EOF
+
+  # Bad: same, but with incidental extra whitespace inside the parens.
+  cat >"$tmp/crates/fake-crate/tests/bad_whitespace.rs" <<'EOF'
+#[test]
+fn spawns_git_unisolated_whitespace() {
+    std::process::Command::new( "git" ).arg("status").status().unwrap();
+}
+EOF
+
+  # Bad: same, but via a renamed import, so the literal substring
+  # `Command::new(` never appears in the file at all.
+  cat >"$tmp/crates/fake-crate/tests/bad_alias.rs" <<'EOF'
+use std::process::Command as Proc;
+#[test]
+fn spawns_git_unisolated_alias() {
+    Proc::new("git").arg("status").status().unwrap();
 }
 EOF
 
@@ -142,6 +205,18 @@ EOF
       echo "SELF-TEST FAIL: bad.rs was not flagged" >&2
       failures=1
     fi
+    if ! grep -q 'tests/bad_multiline.rs' /tmp/self_test_out; then
+      echo "SELF-TEST FAIL: bad_multiline.rs (line-wrapped call) was not flagged" >&2
+      failures=1
+    fi
+    if ! grep -q 'tests/bad_whitespace.rs' /tmp/self_test_out; then
+      echo "SELF-TEST FAIL: bad_whitespace.rs (extra spacing) was not flagged" >&2
+      failures=1
+    fi
+    if ! grep -q 'tests/bad_alias.rs' /tmp/self_test_out; then
+      echo "SELF-TEST FAIL: bad_alias.rs (renamed Command import) was not flagged" >&2
+      failures=1
+    fi
     if ! grep -q 'src/lib.rs' /tmp/self_test_out; then
       echo "SELF-TEST FAIL: the un-isolated #[cfg(test)] spawn in lib.rs was not flagged" >&2
       failures=1
@@ -157,7 +232,10 @@ EOF
   fi
 
   # Now remove the bad fixtures and confirm a clean tree passes.
-  rm "$tmp/crates/fake-crate/tests/bad.rs"
+  rm "$tmp/crates/fake-crate/tests/bad.rs" \
+    "$tmp/crates/fake-crate/tests/bad_multiline.rs" \
+    "$tmp/crates/fake-crate/tests/bad_whitespace.rs" \
+    "$tmp/crates/fake-crate/tests/bad_alias.rs"
   sed -i.bak '/^#\[cfg(test)\]/,$d' "$tmp/crates/fake-crate/src/lib.rs" && rm -f "$tmp/crates/fake-crate/src/lib.rs.bak"
   if ! run_check "$tmp" 2>/tmp/self_test_out2; then
     echo "SELF-TEST FAIL: run_check should pass once the un-isolated spawns are removed" >&2

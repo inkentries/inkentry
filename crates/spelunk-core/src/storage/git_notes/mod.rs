@@ -992,6 +992,13 @@ mod cat_file_batch {
     /// repo never sets, so an ambient `core.hooksPath` (husky, lefthook,
     /// the pre-commit framework) fires a foreign pre-commit hook on the
     /// commit below.
+    ///
+    /// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` only redirect config
+    /// *files*; they don't touch `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`,
+    /// which git consults before config and so override this module's own
+    /// explicit `user.name`/`user.email` if the ambient process (a
+    /// developer's shell, a CI runner's bot identity) happens to export
+    /// them. Those are cleared too.
     fn isolate_git_config() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
@@ -1001,6 +1008,17 @@ mod cat_file_batch {
             unsafe {
                 std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
                 std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+                for var in [
+                    "GIT_AUTHOR_NAME",
+                    "GIT_AUTHOR_EMAIL",
+                    "GIT_AUTHOR_DATE",
+                    "GIT_COMMITTER_NAME",
+                    "GIT_COMMITTER_EMAIL",
+                    "GIT_COMMITTER_DATE",
+                    "EMAIL",
+                ] {
+                    std::env::remove_var(var);
+                }
             }
         });
     }
