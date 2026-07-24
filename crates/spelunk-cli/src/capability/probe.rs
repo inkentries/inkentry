@@ -159,6 +159,21 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     }
 
     // ── 3. Loopback auto-discovery ───────────────────────────────────────────
+    probe_loopback().await
+}
+
+/// Loopback auto-discovery only: never consults `cfg.server_url`.
+///
+/// Step 3a: port file written by `spelunk server start`. Step 3b: fall back to
+/// the default port 7777. Both steps use the 250 ms loopback timeout and treat
+/// any probe failure as `Tier::Offline` (never a hard error: loopback
+/// auto-discovery finding nothing is the normal "no local server" case, not a
+/// misconfiguration).
+///
+/// Split out of [`probe`] so [`get_inference_tier`] can run the identical
+/// discovery independent of an explicit `server_url`: `local_first` always
+/// prefers the local embedder, even when `server_url` targets a remote.
+async fn probe_loopback() -> Tier {
     // Step 3a: port file written by `spelunk server start`
     if let Some(port) = read_server_port_file() {
         let loopback_url = format!("http://127.0.0.1:{port}");
@@ -188,6 +203,36 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
 
     tracing::debug!("loopback auto-discovery: no local server found: offline mode");
     Tier::Offline
+}
+
+/// Resolve the tier used specifically to route **inference** (embeddings +
+/// LLM), which can differ from [`get_tier`]'s general-purpose capability tier.
+///
+/// Per the founder's 2026-07-23 routing decision (ADR-004
+/// revision): `local_first` (and the serde-default mode reached when no
+/// `server_url` is set) always routes inference to the local loopback
+/// embedder, even when `server_url` is explicitly configured — there, an
+/// explicit `server_url` is a memory sync replica only, never an inference
+/// target. Only `cloud_first` lets an explicit `server_url` serve inference
+/// too, in which case this reuses [`get_tier`]'s cached probe of that URL
+/// (unchanged behaviour for that mode).
+///
+/// Explicit offline (`SPELUNK_NO_SERVER` / `mode = "offline"`) skips every
+/// probe, mirroring `get_tier`.
+///
+/// Not cached via a `OnceCell` like `get_tier`: `local_first` always runs a
+/// fresh loopback probe rather than reusing whatever `get_tier` already
+/// cached for `cfg.server_url` (a different, unrelated target in that mode).
+pub async fn get_inference_tier(cfg: &Config) -> Tier {
+    let explicit_offline = spelunk_core::config::no_server_env_set()
+        || cfg.mode == Some(spelunk_core::config::SyncMode::Offline);
+    if explicit_offline {
+        return Tier::Offline;
+    }
+    if cfg.resolve_mode() == spelunk_core::config::SyncMode::CloudFirst {
+        return get_tier(cfg).await.clone();
+    }
+    probe_loopback().await
 }
 
 /// Probe a single URL and return the resulting `Tier`, or a hard error string
@@ -1047,5 +1092,107 @@ mod tests {
             None,
             "loopback auto-discovery misses must never populate EXPLICIT_PROBE_FAILURE"
         );
+    }
+
+    // ── get_inference_tier (2026-07-23 founder decision) ───
+    //
+    // These tests set `SPELUNK_STATE_DIR` / `SPELUNK_NO_SERVER`, both
+    // process-global. Reusing the `spelunk_no_server_env` serial group (rather
+    // than a new name) keeps them mutually exclusive with
+    // `spelunk_no_server_forces_offline` above too: `get_inference_tier` reads
+    // `SPELUNK_NO_SERVER` internally, so it must never run concurrently with a
+    // test that transiently sets it.
+
+    /// `local_first` (the default reached once `server_url` is set, with no
+    /// explicit `mode`) must probe the LOCAL loopback embedder for inference,
+    /// never the configured `server_url`. The loopback mock is discovered via
+    /// the `server.port` file (step 3a); `server_url` is left pointed at an
+    /// address nothing mounts anything on, so the test would fail loudly
+    /// (connection error, not a silent pass) if the code ever tried it.
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env)]
+    async fn get_inference_tier_local_first_prefers_loopback_over_explicit_server_url() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+
+        let loopback = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body(&["memory"], 0)))
+            .mount(&loopback)
+            .await;
+
+        let loopback_port: u16 = loopback
+            .uri()
+            .rsplit(':')
+            .next()
+            .expect("uri has a port")
+            .trim_end_matches('/')
+            .parse()
+            .expect("uri port is numeric");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
+
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+
+        let cfg = Config {
+            // Deliberately never mocked: any accidental fallback to this
+            // "remote" would surface as a connection/DNS error, not a silent
+            // wrong-but-passing result.
+            server_url: Some("https://cloud.invalid.example:1".to_string()),
+            project_id: Some("team/proj".to_string()),
+            mode: None, // defaults to local_first because server_url is set
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_mode(),
+            spelunk_core::config::SyncMode::LocalFirst
+        );
+
+        let tier = get_inference_tier(&cfg).await;
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        assert_eq!(
+            tier.server_url(),
+            Some(format!("http://127.0.0.1:{loopback_port}")).as_deref(),
+            "local_first must route inference to the loopback server, not the \
+             configured (and unreachable) server_url; got {tier:?}"
+        );
+    }
+
+    /// Explicit offline (`mode = "offline"`) must short-circuit before any
+    /// probe, exactly like `get_tier`. `server_url` is set to an address
+    /// nothing mounts anything on, so any attempted probe would hang/error
+    /// rather than silently returning `Offline` for the right reason.
+    ///
+    /// Uses `cfg.mode = Some(SyncMode::Offline)` rather than
+    /// `SPELUNK_NO_SERVER=1` deliberately: that env var is process-global and
+    /// read by every concurrently-running test's `probe()`/`get_tier()`
+    /// call (e.g. `get_tier_probes_at_most_once_and_caches_the_result`
+    /// above, which is not in this lock group), so mutating it here would
+    /// reintroduce the exact cross-test race this comment is warning about.
+    /// `mode` is per-`Config` and carries no such risk.
+    #[tokio::test]
+    async fn get_inference_tier_explicit_offline_short_circuits() {
+        let cfg = Config {
+            server_url: Some("https://cloud.invalid.example:1".to_string()),
+            project_id: Some("team/proj".to_string()),
+            mode: Some(spelunk_core::config::SyncMode::Offline),
+            ..Default::default()
+        };
+        let tier = get_inference_tier(&cfg).await;
+        assert!(matches!(tier, Tier::Offline), "got {tier:?}");
     }
 }

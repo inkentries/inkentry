@@ -25,6 +25,7 @@ use std::path::PathBuf;
 
 use super::MemoryReconcileArgs;
 use crate::{
+    capability,
     capability::spelunk_state_dir,
     config::Config,
     server_client::ServerInferenceClient,
@@ -235,6 +236,16 @@ pub(super) async fn memory_reconcile(
     // Resolve project slug.
     let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let slug = cfg.resolve_project_id(&project_root);
+
+    // `get_inference_tier` (not `get_tier`): local_first always prefers the
+    // local loopback embedder for step 5's best-effort embed, even with an
+    // explicit server_url set (2026-07-23 founder decision).
+    // Without this, step 5 silently imports every note unembedded under a
+    // local_first + server_url config, exactly the silent-unembedded-write
+    // symptom this fix eliminates.
+    let tier = capability::get_inference_tier(cfg).await;
+    let eff_cfg = tier.effective_config(cfg, &project_root);
+    let cfg = &eff_cfg;
 
     if args.all_projects {
         run_all_projects(&server_db_path, mem_path, cfg, &args, json).await

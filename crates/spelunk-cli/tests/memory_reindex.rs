@@ -5,6 +5,18 @@
 // tests drive the real binary with the embed endpoint mocked via wiremock, so
 // none of them depend on the in-process native embedder (the `--no-default-
 // features` gate stays valid). The no-embedder case uses `SPELUNK_NO_SERVER=1`.
+//
+// The mock embedder is wired in via **loopback auto-discovery**
+// (`SPELUNK_STATE_DIR`/`server.port`), not `server_url`, since the
+// 2026-07-23 ADR-004 revision: `reindex` runs in the
+// default `local_first` mode here (no explicit `mode` is set), and
+// `local_first` never routes inference through an explicit `server_url` —
+// only the local loopback embedder. Using the real discovery mechanism (a
+// per-fixture, isolated state dir) rather than `mode = "cloud_first"` also
+// sidesteps a real hazard: a `cloud_first` fixture would still fall back to
+// hard-coded port 7777 if the state dir ever went unset, which could hit a
+// developer's own long-running `spelunk-server` instead of this fixture's
+// mock.
 
 mod plumbing_helpers;
 use plumbing_helpers::{
@@ -150,11 +162,14 @@ struct Fixture {
     project_dir: PathBuf,
     mem_path: PathBuf,
     global_config: PathBuf,
+    // Isolated `SPELUNK_STATE_DIR` for this fixture's loopback auto-discovery
+    // (`server.port`, step 3a). Never the hard-coded default port 7777.
+    state_dir: PathBuf,
 }
 
 // A temp project with a global `--config` (no server_url; `store_in_git_notes =
 // false` so seeding never touches git notes) and a `.spelunk/` dir where memory
-// and the project-level server config live.
+// lives.
 fn fixture() -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let project_dir = tmp.path().to_path_buf();
@@ -171,11 +186,14 @@ fn fixture() -> Fixture {
         ),
     )
     .expect("write global config");
+    let state_dir = project_dir.join("state");
+    std::fs::create_dir_all(&state_dir).expect("create state dir");
     Fixture {
         _tmp: tmp,
         project_dir,
         mem_path,
         global_config,
+        state_dir,
     }
 }
 
@@ -202,19 +220,31 @@ fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
         .success();
 }
 
-// Point the project's `.spelunk/config.toml` at `url` so reindex reaches the
-// mock embedder there (discovered by walking up from the child's CWD).
+// Write `<state_dir>/server.port` so loopback auto-discovery (step 3a) finds
+// the mock embedder at `url`, mirroring the file `spelunk server start`
+// writes. `local_first` (the mode every test in this file runs under) never
+// routes inference through `server_url`, only the local loopback embedder.
 fn set_server(f: &Fixture, url: &str) {
-    write_project_server_config(&f.project_dir, url, FIXTURE_PROJECT_ID);
+    let port: u16 = url
+        .rsplit(':')
+        .next()
+        .expect("uri has a port")
+        .trim_end_matches('/')
+        .parse()
+        .expect("uri port is numeric");
+    std::fs::write(f.state_dir.join("server.port"), format!("{port}\n"))
+        .expect("write server.port");
 }
 
-// Remove the project server config so `seed` stores notes unembedded: an
-// explicit `server_url` is honored even under `SPELUNK_NO_SERVER`, so seeding
-// an unembedded note after a server has been configured requires clearing it.
+// Remove the port file so `seed` stores notes unembedded: loopback
+// auto-discovery is honored even under `SPELUNK_NO_SERVER=0` (unset), so
+// seeding an unembedded note after a server has been configured requires
+// clearing it. `seed`/`archive_note` set `SPELUNK_NO_SERVER=1` themselves, so
+// in practice this is defensive; kept for symmetry with `set_server`.
 fn clear_server(f: &Fixture) {
-    let p = f.project_dir.join(".spelunk").join("config.toml");
+    let p = f.state_dir.join("server.port");
     if p.exists() {
-        std::fs::remove_file(&p).expect("remove project config");
+        std::fs::remove_file(&p).expect("remove server.port");
     }
 }
 
@@ -222,6 +252,7 @@ fn clear_server(f: &Fixture) {
 fn reindex_cmd(f: &Fixture) -> Command {
     let mut cmd = spelunk_bin();
     cmd.current_dir(&f.project_dir)
+        .env("SPELUNK_STATE_DIR", &f.state_dir)
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -720,4 +751,71 @@ fn no_reembed_notice_on_fresh_store() {
         .assert()
         .success()
         .stderr(predicates::str::contains("need re-embedding").not());
+}
+
+// `cloud_first` WITH `server_url` set: `memory.db` is not the store of record
+// there (`server_url` is, via `RemoteMemoryBackend`), so `reindex` has
+// nothing local to re-embed. It must fail with an actionable "not
+// applicable" message rather than silently no-op'ing or (worse) reindexing a
+// store nothing reads (2026-07-23 founder decision). No
+// mock embedder is set up at all: a real embed attempt would also fail this
+// test, just for the wrong reason (proving the bail happens before any embed
+// call, not after one fails).
+#[test]
+fn reindex_in_cloud_first_with_server_url_is_not_applicable() {
+    let f = fixture();
+    seed(&f, "decision", "one", "body one");
+    assert!(
+        embedded_note_ids(&f.mem_path).is_empty(),
+        "seeded note must start unembedded"
+    );
+    write_project_server_config(
+        &f.project_dir,
+        "https://team.example.com",
+        FIXTURE_PROJECT_ID,
+    );
+
+    reindex_cmd(&f)
+        .env("SPELUNK_MODE", "cloud_first")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not applicable in cloud_first"))
+        .stderr(predicates::str::contains("memory.db"));
+
+    assert!(
+        embedded_note_ids(&f.mem_path).is_empty(),
+        "a rejected cloud_first reindex must write no vectors"
+    );
+}
+
+// `cloud_first` with NO `server_url` set: nothing routes memory remotely, so
+// `open_memory_backend` itself falls back to `memory.db` (`storage/mod.rs`'s
+// `route_remote` requires BOTH `cloud_first` AND a configured `server_url`).
+// `memory.db` genuinely is the store of record here, so `reindex` must
+// proceed and embed normally, not bail. Regression guard: an earlier version
+// of this check gated on `mode` alone and rejected this valid case too.
+#[test]
+fn reindex_in_cloud_first_without_server_url_proceeds() {
+    let f = fixture();
+    seed(&f, "decision", "one", "body one");
+    assert!(
+        embedded_note_ids(&f.mem_path).is_empty(),
+        "seeded note must start unembedded"
+    );
+
+    let mock = start_mock(EmbedResponder::new(0.1));
+    set_server(&f, &mock.uri());
+
+    reindex_cmd(&f)
+        .env("SPELUNK_MODE", "cloud_first")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("1 embedded"));
+
+    let ids = embedded_note_ids(&f.mem_path);
+    assert_eq!(
+        ids.len(),
+        1,
+        "cloud_first with no server_url must still reindex the local memory.db"
+    );
 }

@@ -41,7 +41,7 @@ mod tier;
 pub use diagnostics::{ConnFailure, explicit_probe_failure};
 pub use guard::{inference_server_required_message, require_explicit_server_url, require_tier1};
 pub(crate) use probe::spelunk_state_dir;
-pub use probe::{get_tier, probe_tier_fresh};
+pub use probe::{get_inference_tier, get_tier, probe_tier_fresh};
 // `Capabilities` is only reached from outside this module by other crates'
 // `#[cfg(test)]` code (`Capabilities::all()`), so a non-test build sees this
 // re-export as unused.

@@ -21,11 +21,20 @@ use tempfile::tempdir;
 // `.spelunk/config.toml` (or env), never the global `--config` file, so they
 // land in `dir`'s project config instead of `dir/config.toml`. Every caller
 // sets `.current_dir(dir)`.
+//
+// `mode = "cloud_first"` (global config) is required since the 2026-07-23
+// ADR-004 revision: `Config::resolve_inference_url()` no longer falls back to
+// an unreachable `server_url` under the default `local_first`, so the Tier-0
+// gate this helper means to satisfy unconditionally would (correctly) start
+// checking real reachability instead, and nothing listens on the address
+// below. Only `cloud_first` keeps the old "a configured server_url always
+// satisfies the gate" behavior this test relies on to reach the injection
+// guard beneath it.
 fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");
     let content = format!(
-        "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\n",
+        "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nmode = \"cloud_first\"\n",
         db_path
     );
     fs::write(&config_path, content).expect("write config.toml");

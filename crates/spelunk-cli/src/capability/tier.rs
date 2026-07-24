@@ -1,6 +1,6 @@
 //! Capability tier: the resolved server state for this process.
 
-use crate::config::Config;
+use crate::config::{Config, SyncMode};
 
 use super::state::{Capabilities, EmbedderState, ServerLimits};
 
@@ -130,26 +130,42 @@ impl Tier {
     /// is never a memory store. So when the tier is `Server` and `server_url`
     /// is unset (the auto-discovered case), the discovered URL is written to
     /// `inference_url`: NOT `server_url`. `ServerInferenceClient::from_config`
-    /// reads `inference_url` (falling back to `server_url`), so inference still
-    /// reaches the loopback server; `open_memory_backend` reads only
-    /// `server_url`, so memory stays on the project's local `memory.db`. This
-    /// is what removes the split-brain where `memory add` wrote `memory.db`
-    /// while `memory search` read the server's `server.db`.
+    /// reads `inference_url` (falling back to `server_url` only in
+    /// `cloud_first`, see below), so inference still reaches the loopback
+    /// server; `open_memory_backend` reads only `server_url`, so memory stays
+    /// on the project's local `memory.db`. This is what removes the
+    /// split-brain where `memory add` wrote `memory.db` while `memory search`
+    /// read the server's `server.db`.
+    ///
+    /// ## ADR-004 revision (2026-07-23): mode governs whether
+    /// an explicit `server_url` also owns inference
+    ///
+    /// `self` here is the caller's **inference** tier (see
+    /// `capability::get_inference_tier`), not necessarily the tier reached by
+    /// probing `cfg.server_url` — in `local_first` mode it is always the
+    /// loopback probe result, independent of any configured `server_url`. Only
+    /// `cloud_first` treats an explicit `server_url` as owning inference too
+    /// (matching `Config::resolve_inference_url`'s fallback rule); every other
+    /// mode (`local_first`, and the serde-default offline-without-`server_url`
+    /// case) always prefers `self`'s URL for `inference_url`, even when
+    /// `server_url` is already set, because there `server_url` is a memory
+    /// sync replica only. This inverts the original assumption that a
+    /// configured `server_url` unconditionally owns both concerns — that
+    /// assumption is exactly what routed `local_first` embed requests to a
+    /// cloud `server_url`'s nonexistent `/index/embed` route.
     ///
     /// `project_id` is derived (mirroring `embed_phase`, see spelunk#307) so the
-    /// inference client can address the project on the server. When an explicit
-    /// `cfg.server_url` is already set (a team/remote server), it owns both
-    /// inference and memory and the config is returned unchanged.
+    /// inference client can address the project on the server.
     pub fn effective_config(&self, cfg: &Config, project_root: &std::path::Path) -> Config {
         let mut out = cfg.clone();
-        if let Tier::Server { url, .. } = self
-            && out.server_url.is_none()
-        {
-            // Auto-discovered loopback server: route inference here, but leave
-            // `server_url` unset so memory selection stays local (ADR-004).
-            out.inference_url = Some(url.clone());
-            if out.project_id.is_none() {
-                out.project_id = Some(cfg.resolve_project_id(project_root));
+        if let Tier::Server { url, .. } = self {
+            let server_url_owns_inference =
+                out.server_url.is_some() && cfg.resolve_mode() == SyncMode::CloudFirst;
+            if !server_url_owns_inference {
+                out.inference_url = Some(url.clone());
+                if out.project_id.is_none() {
+                    out.project_id = Some(cfg.resolve_project_id(project_root));
+                }
             }
         }
         out
@@ -323,9 +339,20 @@ mod tests {
     }
 
     #[test]
-    fn effective_config_explicit_server_url_left_unchanged() {
-        // An explicitly-configured team server owns BOTH inference and memory
-        // (team-memory tier). `effective_config` must not touch it.
+    fn effective_config_explicit_server_url_cloud_first_left_unchanged() {
+        // `cloud_first` is the ONLY mode where an explicitly-configured team
+        // server owns BOTH inference and memory (2026-07-23 founder decision,
+        // ADR-004 revision). `effective_config` must not
+        // synthesise a separate `inference_url` here: `resolve_inference_url`
+        // falls back to `server_url` for this mode instead.
+        //
+        // This test used to run with `mode` unset (defaulting to
+        // `local_first`) and asserted the same "left unchanged" outcome; that
+        // was the bug this fix addressed. The `local_first` case now has
+        // the opposite expectation, see
+        // `effective_config_explicit_server_url_local_first_prefers_tier_url_for_inference`
+        // below — so this test is pinned to the one mode where "left
+        // unchanged" is still correct.
         let tier = Tier::Server {
             url: "http://team.example.com:7777".to_string(),
             caps: Capabilities::all(),
@@ -336,6 +363,7 @@ mod tests {
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
             project_id: Some("team/proj".to_string()),
+            mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
         let eff = tier.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
@@ -347,7 +375,57 @@ mod tests {
         );
         assert_eq!(
             eff.inference_url, None,
-            "explicit server_url path should not synthesise a separate inference_url"
+            "cloud_first should not synthesise a separate inference_url: \
+             resolve_inference_url falls back to server_url for this mode"
+        );
+        assert_eq!(
+            eff.resolve_inference_url(),
+            Some("http://team.example.com:7777")
+        );
+    }
+
+    #[test]
+    fn effective_config_explicit_server_url_local_first_prefers_tier_url_for_inference() {
+        // Core regression test: in `local_first` (here,
+        // the default reached because `server_url` is set with no explicit
+        // `mode`), a configured `server_url` is a memory sync replica only.
+        // `self` is the caller's *inference* tier (`get_inference_tier`),
+        // which in `local_first` always reflects a loopback probe, never the
+        // explicit `server_url` — so its URL differs from `server_url` here,
+        // exactly as it would for a real auto-discovered loopback server
+        // sitting alongside a configured cloud `server_url`.
+        let tier = Tier::Server {
+            url: "http://127.0.0.1:7777".to_string(),
+            caps: Capabilities::all(),
+            auto_discovered: true,
+            embedder_state: EmbedderState::Ready,
+            server_limits: None,
+        };
+        let cfg = Config {
+            server_url: Some("https://api.spelunk.cloud".to_string()),
+            project_id: Some("team/proj".to_string()),
+            mode: None, // defaults to local_first because server_url is set
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_mode(), SyncMode::LocalFirst);
+        let eff = tier.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
+
+        assert_eq!(
+            eff.server_url.as_deref(),
+            Some("https://api.spelunk.cloud"),
+            "server_url must be preserved unchanged (memory selection still reads it)"
+        );
+        assert_eq!(
+            eff.inference_url.as_deref(),
+            Some("http://127.0.0.1:7777"),
+            "local_first must route inference to the tier's (loopback) URL, \
+             even though an explicit server_url is also set"
+        );
+        assert_eq!(
+            eff.resolve_inference_url(),
+            Some("http://127.0.0.1:7777"),
+            "resolve_inference_url must return the local loopback URL, never \
+             the cloud server_url, in local_first"
         );
     }
 

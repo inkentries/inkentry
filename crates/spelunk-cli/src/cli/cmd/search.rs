@@ -122,7 +122,10 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // the inference client can be built (mirrors explore.rs / memory/search.rs,
     // see spelunk#316).
     let project_root = db_path.parent().unwrap_or(&db_path);
-    let tier = capability::get_tier(&cfg).await;
+    // `get_inference_tier` (not `get_tier`): local_first always prefers the
+    // local loopback embedder, even with an explicit server_url set
+    // (2026-07-23 founder decision).
+    let tier = capability::get_inference_tier(&cfg).await;
     let cfg = tier.effective_config(&cfg, project_root);
 
     // Apply --local-only: discard linked deps.
@@ -260,7 +263,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // "ast-grep not found" error isn't misattributed.
         if auto_mode && query_vec_result.is_err() {
             sp.finish_and_clear();
-            eprint_semantic_unavailable_notice(tier, &cfg);
+            eprint_semantic_unavailable_notice(&tier, &cfg);
             return search_live(
                 &args.query,
                 &args.format,

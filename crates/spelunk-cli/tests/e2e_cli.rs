@@ -201,9 +201,17 @@ async fn test_index_and_status() {
     // `.spelunk/config.toml` (or env), never from the `--config` global file.
     write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
+    // Under the default `local_first` mode a bare `server_url` never routes
+    // embedding/search to it (that's a loopback-only inference path); this
+    // test exists to exercise the mock server's `/index/embed` and `/search`
+    // endpoints, so it opts into `cloud_first` explicitly on every command,
+    // the same way a real user would to keep this behavior.
+    const CLOUD_FIRST: (&str, &str) = ("SPELUNK_MODE", "cloud_first");
+
     // 1. Index the project
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -214,6 +222,7 @@ async fn test_index_and_status() {
     // 2. Check status
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -227,6 +236,7 @@ async fn test_index_and_status() {
     // 3. Search for the function (semantic search via server embedding)
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("search")
@@ -1540,6 +1550,91 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         ));
 }
 
+/// Founder's own manual repro (2026-07-23): `local_first`
+/// (no explicit `mode`, reached because `server_url` is set), an explicit
+/// `server_url` pointed at an address nothing mounts anything on, and a
+/// loopback server auto-discovered via the port file. `memory add` must embed
+/// via the loopback server (never the unroutable `server_url`), and `memory
+/// search` must return the local semantic result rather than erroring: before
+/// the fix, `resolve_inference_url()` returned the explicit `server_url`
+/// unconditionally, and the query embed 404'd against it (`{server_url}` has
+/// no `/index/embed` route in the cloud case this reproduces).
+#[tokio::test]
+async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server_url() {
+    let mock_server = MockServer::start().await;
+    mount_auto_discovery_inference_endpoints(&mock_server).await;
+
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    // `server_url` set, no `mode` key: resolves to `local_first`. Deliberately
+    // an address nothing mounts anything on (mirrors the founder's
+    // `https://api.spelunk.cloud`): an accidental fallback to it for
+    // inference would surface as a connection error, never a silent pass.
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\nserver_url = \"https://cloud.invalid.example:1\"\nproject_id = \"team/proj\"\n",
+            db_path
+        ),
+    )
+    .unwrap();
+
+    spelunk_bin()
+        .env("HOME", &home)
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    spelunk_bin()
+        .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env_remove("SPELUNK_NO_SERVER")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "decision",
+            "--title",
+            "Local first with cloud server_url",
+            "--body",
+            "server_url is a sync replica only; inference stays on loopback.",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored [decision]"));
+
+    spelunk_bin()
+        .env("HOME", &home)
+        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env_remove("SPELUNK_NO_SERVER")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "search", "local first cloud server_url"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Local first with cloud server_url",
+        ))
+        .stdout(predicate::str::contains("[decision]"));
+}
+
 /// `memory timeline` against an auto-discovered loopback server returns notes
 /// from the LOCAL `memory.db` (the server only embeds the query). Companion to
 /// the add→search round-trip above; guards that `timeline` does not regress to
@@ -2103,7 +2198,10 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
 
     // Same project, but a config that names the (mock) server, so the search
     // runs at Tier 1 and reaches the coverage gate instead of the Tier-0
-    // text fallback.
+    // text fallback. Under the default `local_first` a bare `server_url`
+    // never serves inference (that's a loopback-only path), so this test
+    // opts into `cloud_first` explicitly to keep exercising the mock's
+    // `/v1/health`, the same way `test_index_and_status` does.
     let db_ignored = home.path().join("unused.db");
     let server_config = write_config_with_server(
         home.path(),
@@ -2115,6 +2213,7 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
 
     let assert = spelunk_bin_in(home.path())
         .current_dir(&project_dir)
+        .env("SPELUNK_MODE", "cloud_first")
         .arg("--config")
         .arg(&server_config)
         .args(["search", "--mode", "semantic", "compute"])

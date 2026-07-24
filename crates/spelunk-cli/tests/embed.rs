@@ -17,9 +17,23 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // only honors those two fields from a project-level config (or env), never
 // the global `--config` file. The caller's `Command` must set
 // `.current_dir(dir.path())`.
+//
+// `mode = "cloud_first"` in the global config is required since the
+// 2026-07-23 ADR-004 revision: `plumbing embed` has no
+// loopback-auto-discovery bridging (unlike `memory add`/`search`/etc, it
+// calls `require_server_client` directly on the loaded `Config`, with no
+// `effective_config` step), so a bare `server_url` with the default
+// `local_first` mode no longer resolves to any inference target at all — by
+// design, `local_first` never falls back to `server_url` for inference. This
+// test's whole premise (a mocked `server_url` that IS used for embedding, no
+// local server involved) is exactly the `cloud_first` case.
 fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     let config = dir.path().join("config.toml");
-    std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
+    std::fs::write(
+        &config,
+        "embedding_model = \"test-model\"\nmode = \"cloud_first\"\n",
+    )
+    .unwrap();
     plumbing_helpers::write_project_server_config(dir.path(), server_uri, FIXTURE_PROJECT_ID);
     config
 }
