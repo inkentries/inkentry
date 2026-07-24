@@ -424,8 +424,8 @@ Examples of things worth storing:
 
 ```bash
 # Quick note with body inline
-spelunk memory add --title "Chunker uses 120-line sliding window as fallback" \
-              --body "This applies to unsupported file types and binary-adjacent files." \
+spelunk memory add --title "Chunker uses a token-aware sliding window as fallback" \
+              --body "Applies to unsupported file types and oversized semantic nodes: whole lines accumulate up to MAX_CHUNK_TOKENS (2048), with ~12.5% overlap between windows." \
               --kind context \
               --tags chunker,indexer
 
