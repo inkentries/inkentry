@@ -312,11 +312,32 @@ impl CloudSyncClient {
         anyhow::bail!("DELETE /memory/{remote_id} failed ({status}): {text}")
     }
 
-    /// Pull entries after the UUIDv7 cursor `since_id` (the max cloud
-    /// `remote_id` already synced locally — decision #183). When `since_id` is
-    /// `None` (nothing synced yet) this is a full catch-up: the
-    /// nil UUID `00000000-…` sorts before every UUIDv7, so it returns all
-    /// entries.
+    /// Entries requested per `/memory/since` page. Matches the server's own
+    /// clamp ceiling (`ServerDb::notes_since_id`'s `limit.clamp(1, 500)`), so
+    /// a single call already asks for the most the server will ever return
+    /// in one response, minimizing round trips.
+    ///
+    /// [`pull_since`](Self::pull_since) fetches exactly one page: it never
+    /// requests more than this many entries and never loops. A caller that
+    /// needs a store's full backlog (see `pull_and_apply_since` in
+    /// spelunk-cli) must keep calling with the cursor advanced to the last
+    /// entry's `id` until a page comes back shorter than
+    /// [`PULL_PAGE_LIMIT`](Self::PULL_PAGE_LIMIT) — the definitive "nothing
+    /// left" signal, including the empty-page case. A response exactly at
+    /// this limit does not by itself prove more remain, but it can never be
+    /// treated as the last page either, since the server never returns more
+    /// than this many even when more exist.
+    pub const PULL_PAGE_LIMIT: i64 = 500;
+
+    /// Pull one page of entries after the UUIDv7 cursor `since_id` (the max
+    /// cloud `remote_id` already synced locally — decision #183). When
+    /// `since_id` is `None` (nothing synced yet) this is a full catch-up
+    /// start: the nil UUID `00000000-…` sorts before every UUIDv7, so it
+    /// returns from the very beginning.
+    ///
+    /// Returns at most [`PULL_PAGE_LIMIT`](Self::PULL_PAGE_LIMIT) entries.
+    /// This method does not paginate on its own; a caller pulling a store's
+    /// entire backlog must loop (see `pull_and_apply_since` in spelunk-cli).
     ///
     /// A project that does not exist on the server yet (404) is treated as
     /// having nothing to pull, not an error: a spelunk-server-backed project
@@ -328,9 +349,10 @@ impl CloudSyncClient {
         // The all-zero UUID precedes every UUIDv7 in `id > $cursor` order, so it
         // is the natural "from the beginning" cursor for a first sync.
         let cursor = since_id.unwrap_or("00000000-0000-0000-0000-000000000000");
+        let limit = Self::PULL_PAGE_LIMIT.to_string();
         let resp = self
             .authed(self.client.get(self.url("memory/since")))
-            .query(&[("since_id", cursor)])
+            .query(&[("since_id", cursor), ("limit", limit.as_str())])
             .send()
             .await
             .context("GET /memory/since")?;
@@ -535,6 +557,7 @@ mod tests {
                 "since_id",
                 "01890000-0000-7000-8000-000000000000",
             ))
+            .and(query_param("limit", "500"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "entries": [{
                     "id": "01890000-0000-7000-8000-000000000001",
@@ -572,6 +595,40 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "brand-new-proj", None, None).unwrap();
         let entries = client.pull_since(None).await.unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn pull_page_limit_matches_the_server_clamp_ceiling() {
+        // `ServerDb::notes_since_id` clamps `limit` to `1..=500`; requesting
+        // anything above that ceiling would silently get clamped down
+        // server-side, so the client-requested limit must equal it exactly
+        // to actually minimize round trips.
+        assert_eq!(CloudSyncClient::PULL_PAGE_LIMIT, 500);
+    }
+
+    #[tokio::test]
+    async fn pull_since_requests_the_page_limit_explicitly() {
+        // Before this fix, no `limit` was ever sent, so the server silently
+        // applied its own 100-entry default — truncating a large backlog
+        // without any signal to the client. Match on path only (not `limit`)
+        // so a wrong/missing value surfaces in the captured request instead
+        // of being masked by wiremock's 404-no-match default, which
+        // `pull_since` itself treats as an empty-but-successful pull.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        client.pull_since(None).await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let query: std::collections::HashMap<_, _> = reqs[0].url.query_pairs().collect();
+        assert_eq!(query.get("limit").map(|v| v.as_ref()), Some("500"));
     }
 
     #[tokio::test]

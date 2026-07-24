@@ -471,33 +471,55 @@ async fn pull_and_apply(local: &MemoryStore, client: &CloudSyncClient) -> Result
 /// Pull remote entries after an explicit `since_id` cursor and apply them
 /// idempotently. Returns the number of newly-inserted local rows.
 ///
+/// `pull_since` returns at most `CloudSyncClient::PULL_PAGE_LIMIT` entries
+/// per call, so a backlog larger than one page requires more than one
+/// request: this loops, applying each page as it arrives and advancing the
+/// cursor to the last entry's `id`, until a page comes back shorter than the
+/// page limit (the definitive "nothing left" signal — including the
+/// empty-page case for an already-fully-synced project). Without this loop,
+/// a first sync into an established project would silently apply only the
+/// first page and report success.
+///
 /// Applying an entry is idempotent regardless of how many times this is
-/// called with overlapping ranges: [`MemoryStore::apply_remote_note`] dedupes
-/// on `remote_id` (or reuses a matching row by `entity_id`), so re-fetching a
-/// row already known locally is a harmless no-op, not a duplicate insert or a
-/// double count.
+/// called with overlapping ranges, or how many pages one call fetches:
+/// [`MemoryStore::apply_remote_note`] dedupes on `remote_id` (or reuses a
+/// matching row by `entity_id`), so re-fetching a row already known locally
+/// is a harmless no-op, not a duplicate insert or a double count.
 async fn pull_and_apply_since(
     local: &MemoryStore,
     client: &CloudSyncClient,
     cursor: Option<&str>,
 ) -> Result<usize> {
-    let entries = client.pull_since(cursor).await?;
-
+    let mut cursor = cursor.map(str::to_string);
     let mut applied = 0usize;
-    for e in &entries {
-        let created_secs = parse_iso_to_secs(&e.created_at);
-        let inserted = local.apply_remote_note(
-            &e.id,
-            &e.kind,
-            &e.title,
-            e.body.as_deref().unwrap_or(""),
-            e.source_commit.as_deref(),
-            created_secs,
-            e.is_archived(),
-        )?;
-        if inserted {
-            applied += 1;
+    loop {
+        let entries = client.pull_since(cursor.as_deref()).await?;
+        let page_len = entries.len();
+
+        for e in &entries {
+            let created_secs = parse_iso_to_secs(&e.created_at);
+            let inserted = local.apply_remote_note(
+                &e.id,
+                &e.kind,
+                &e.title,
+                e.body.as_deref().unwrap_or(""),
+                e.source_commit.as_deref(),
+                created_secs,
+                e.is_archived(),
+            )?;
+            if inserted {
+                applied += 1;
+            }
         }
+
+        if (page_len as i64) < CloudSyncClient::PULL_PAGE_LIMIT {
+            break;
+        }
+        // A full page never proves it's the last one (the server never
+        // returns more than the limit even when more remain), so always
+        // follow up: entries is non-empty here (page_len == the limit, which
+        // is > 0), so `last()` is always `Some`.
+        cursor = entries.last().map(|e| e.id.clone());
     }
     Ok(applied)
 }
@@ -2343,6 +2365,338 @@ mod tests {
         // was just applied).
         let pulled_again = pull_and_apply(&store_c, &client_c).await.unwrap();
         assert_eq!(pulled_again, 0);
+    }
+
+    // ── pull pagination: exhaust every page, not just the first ─────────────
+    // Before this fix, `pull_and_apply_since` made exactly one request to
+    // `pull_since` and treated whatever it returned as the whole backlog. The
+    // server caps a single response at `CloudSyncClient::PULL_PAGE_LIMIT`
+    // entries, so a first sync into an established project silently applied
+    // only the first page and reported success. These tests drive the fix
+    // directly against a mock `/memory/since`, controlling exact page sizes
+    // (including ones at/above the real 500 clamp) without needing that many
+    // real rows in a live server.
+
+    /// Deterministic, lexically-increasing ids so `since_id` cursors compare
+    /// the same way real UUIDv7 cloud ids do.
+    fn page_ids(start: usize, count: usize) -> Vec<String> {
+        (start..start + count)
+            .map(|i| format!("01890000-0000-7000-8000-{i:012x}"))
+            .collect()
+    }
+
+    fn entries_json(ids: &[String]) -> serde_json::Value {
+        let entries: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "kind": "note",
+                    "title": format!("T-{id}"),
+                    "body": "b",
+                    "created_at": "2026-06-19T01:00:00Z",
+                })
+            })
+            .collect();
+        serde_json::json!({ "entries": entries, "count": entries.len() })
+    }
+
+    const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+    /// Mounts one `/memory/since` mock per page, matched by the exact
+    /// `since_id` it must be requested with (the prior page's last id, or the
+    /// nil UUID for the very first request). Each mock must be hit exactly
+    /// `times` times.
+    async fn mount_pages_times(server: &wiremock::MockServer, pages: &[Vec<String>], times: u64) {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let mut cursor = NIL_UUID.to_string();
+        for ids in pages {
+            Mock::given(method("GET"))
+                .and(path("/v1/projects/proj/memory/since"))
+                .and(query_param("since_id", cursor.clone()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(entries_json(ids)))
+                .expect(times)
+                .mount(server)
+                .await;
+            if let Some(last) = ids.last() {
+                cursor = last.clone();
+            }
+        }
+    }
+
+    async fn mount_pages(server: &wiremock::MockServer, pages: &[Vec<String>]) {
+        mount_pages_times(server, pages, 1).await;
+    }
+
+    /// Item 1: a backlog smaller than one page is a single request, and every
+    /// entry lands.
+    #[tokio::test]
+    async fn pull_and_apply_since_single_page_matches_prior_behavior() {
+        let server = wiremock::MockServer::start().await;
+        let page = page_ids(0, 40);
+        mount_pages(&server, &[page]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 40);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// Item 2: a backlog spanning exactly two pages (500 then 150, the real
+    /// server clamp) is fetched in two requests, the second cursor is the
+    /// first page's last id, and every entry is applied exactly once.
+    #[tokio::test]
+    async fn pull_and_apply_since_two_pages_advances_cursor_to_last_id_of_prior_page() {
+        let server = wiremock::MockServer::start().await;
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 150);
+        mount_pages(&server, &[page1.clone(), page2.clone()]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 650);
+        assert_eq!(store.count().unwrap(), 650, "no duplicates applied");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// Item 3: three-plus pages (500 + 500 + 200) keep looping past two
+    /// iterations, not just handling the two-page case.
+    #[tokio::test]
+    async fn pull_and_apply_since_three_pages_loops_past_two_iterations() {
+        let server = wiremock::MockServer::start().await;
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 500);
+        let page3 = page_ids(1000, 200);
+        mount_pages(&server, &[page1, page2, page3]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 1200);
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    /// Item 4: a page landing exactly on the limit is always followed by
+    /// exactly one more request (never assumed to be the last page), and
+    /// that follow-up returning short ends the loop immediately (never a
+    /// third, unnecessary request).
+    #[tokio::test]
+    async fn pull_and_apply_since_full_page_triggers_exactly_one_more_request() {
+        let server = wiremock::MockServer::start().await;
+        let page1 = page_ids(0, 500);
+        let page2: Vec<String> = vec![];
+        mount_pages(&server, &[page1, page2]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 500);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// Item 5: an already fully-synced project (empty first page) terminates
+    /// after that one request instead of looping forever.
+    #[tokio::test]
+    async fn pull_and_apply_since_empty_first_page_terminates_after_one_request() {
+        let server = wiremock::MockServer::start().await;
+        mount_pages(&server, &[vec![]]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 0);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// Item 6: `sync_round`'s reported `pulled` count (what `spelunk sync`'s
+    /// completion message prints) is the TRUE total across every page, not
+    /// just the first. `memory_sync` itself can't be driven directly in this
+    /// binary (see `sync_round`'s own doc comment on the per-process tier
+    /// cache), so this asserts on the exact value the message interpolates.
+    #[tokio::test]
+    async fn sync_round_pulled_count_reflects_every_page_not_just_the_first() {
+        let server = wiremock::MockServer::start().await;
+        // sync_round's own first pull pass sees the whole multi-page backlog
+        // (nothing local to push, so the push call is empty and the second
+        // pull pass, reusing the same pre-round cursor, will be a no-op
+        // repeat of the same now-caught-up query).
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 300);
+        {
+            use wiremock::matchers::{method, path, query_param};
+            use wiremock::{Mock, ResponseTemplate};
+            // No `expect(1)`: the confirmation pull re-derives from the SAME
+            // pre-round cursor (nil UUID, since nothing local existed before
+            // this round), so it legitimately repeats this identical
+            // two-page sequence a second time.
+            Mock::given(method("GET"))
+                .and(path("/v1/projects/proj/memory/since"))
+                .and(query_param("since_id", NIL_UUID))
+                .respond_with(ResponseTemplate::new(200).set_body_json(entries_json(&page1)))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/v1/projects/proj/memory/since"))
+                .and(query_param("since_id", page1.last().unwrap().clone()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(entries_json(&page2)))
+                .mount(&server)
+                .await;
+        }
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let outcome = sync_round(&store, &client, false, false).await.unwrap();
+
+        assert_eq!(
+            outcome.pulled, 800,
+            "both pull passes re-fetch the same 800-entry backlog off the \
+             unchanged pre-round cursor; apply_remote_note's dedupe means the \
+             SECOND pass applies 0 new rows, so pulled must be exactly the \
+             true total, not double-counted nor short of the second page"
+        );
+        assert_eq!(store.count().unwrap(), 800);
+    }
+
+    /// Item 7: the one-way `spelunk memory pull` entry point (`pull_and_apply`,
+    /// which derives its own cursor from the store rather than being handed
+    /// one) also paginates fully — proven through `pull_and_apply` directly,
+    /// not just through `sync_round`, since both merely wrap the same shared
+    /// `pull_and_apply_since`.
+    #[tokio::test]
+    async fn pull_and_apply_one_way_also_paginates_fully() {
+        let server = wiremock::MockServer::start().await;
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 120);
+        mount_pages(&server, &[page1, page2]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply(&store, &client).await.unwrap();
+
+        assert_eq!(applied, 620);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// Item 8: `sync_round`'s SECOND (confirmation) pull pass paginates fully
+    /// on its own when it independently has more than one page of results
+    /// (e.g. a teammate pushed a large batch in the gap between this round's
+    /// first pull and its push) — not just the first pull pass.
+    #[tokio::test]
+    async fn sync_round_second_pull_pass_paginates_fully_on_its_own() {
+        let server = wiremock::MockServer::start().await;
+        {
+            use wiremock::matchers::{method, path, query_param};
+            use wiremock::{Mock, ResponseTemplate};
+            // First pull pass (pre-push): nothing yet.
+            Mock::given(method("GET"))
+                .and(path("/v1/projects/proj/memory/since"))
+                .and(query_param("since_id", NIL_UUID))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+                )
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            // This round's own push (empty local store: nothing to push).
+            Mock::given(method("POST"))
+                .and(path("/v1/projects/proj/memory/batch"))
+                .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                    "created": 0, "skipped": 0, "failed": 0, "results": []
+                })))
+                .mount(&server)
+                .await;
+        }
+        // Second (confirmation) pull pass reuses the SAME pre-round cursor
+        // (nil UUID, since nothing was applied by the first pass): a
+        // teammate landed a 650-entry batch in the gap, spanning two pages.
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 150);
+        mount_pages(&server, &[page1, page2]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let outcome = sync_round(&store, &client, false, false).await.unwrap();
+
+        assert_eq!(outcome.pushed.attempted, 0);
+        assert_eq!(
+            outcome.pulled, 650,
+            "the confirmation pull pass must exhaust its own pagination too"
+        );
+        assert_eq!(store.count().unwrap(), 650);
+    }
+
+    /// Item 9: re-running a pull after an interrupted/partial prior run
+    /// (some entries already applied locally from an earlier page) must not
+    /// double-count `applied` for entries seen again — regression-guards the
+    /// existing dedupe-by-`remote_id` specifically under the new loop, since
+    /// a naive re-implementation could re-tally a page it had already
+    /// applied once before.
+    #[tokio::test]
+    async fn pull_and_apply_since_rerun_after_partial_prior_run_does_not_double_count() {
+        let server = wiremock::MockServer::start().await;
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 100);
+        // Each page is legitimately re-requested once per run below.
+        mount_pages_times(&server, &[page1.clone(), page2.clone()], 2).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let first_run = pull_and_apply_since(&store, &client, None).await.unwrap();
+        assert_eq!(first_run, 600);
+
+        // Re-running from the same (still `None`, un-advanced) cursor
+        // re-fetches the identical two pages; every entry is already known
+        // by `remote_id`, so nothing should be counted or inserted twice.
+        let rerun = pull_and_apply_since(&store, &client, None).await.unwrap();
+        assert_eq!(rerun, 0, "already-applied entries must not be re-counted");
+        assert_eq!(store.count().unwrap(), 600, "and never re-inserted");
+    }
+
+    /// Item 10a: a project not yet created on the server (404 on the very
+    /// first page request) still applies 0 and returns success, not an
+    /// error, unchanged by the new loop.
+    #[tokio::test]
+    async fn pull_and_apply_since_404_on_first_page_is_still_zero_not_an_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 0);
+    }
+
+    /// Item 10b: a `None` cursor still starts the loop's first request from
+    /// the nil UUID (full catch-up), unchanged by the new loop wrapping the
+    /// cursor for its own subsequent iterations.
+    #[tokio::test]
+    async fn pull_and_apply_since_none_cursor_still_starts_at_nil_uuid() {
+        let server = wiremock::MockServer::start().await;
+        mount_pages(&server, &[page_ids(0, 5)]).await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 5);
     }
 
     /// If the SECOND pull (the confirmation pull after this round's own push)
