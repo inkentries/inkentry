@@ -164,7 +164,13 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     // ── Phase 2: embed chunks (Tier 1 only) ─────────────────────────────────
-    let tier = capability::get_tier(&cfg).await;
+    //
+    // `get_inference_tier` (not `get_tier`): local_first always prefers the
+    // local loopback embedder for inference, even with an explicit
+    // server_url set (2026-07-23 founder decision). `get_tier` alone would
+    // probe the explicit server_url and hand its (possibly wrong) tier
+    // straight to the batch-calibrated embed request loop below.
+    let tier = capability::get_inference_tier(&cfg).await;
 
     if result.chunk_ids_and_texts.is_empty() {
         let stats = db.stats()?;
@@ -195,7 +201,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // arrives here with the embedder still `loading`. Gating the spawn on
     // `embed_ready` is exactly the no-op that ships a permanently unembedded
     // index on a cold machine.
-    if args.detach_embed && tier.is_server() && detach_embed_eligible(tier) {
+    if args.detach_embed && tier.is_server() && detach_embed_eligible(&tier) {
         let embed_log = background_log_path(&db_path);
         if let EmbedSpawn::Detached(log_in_use) =
             spawn_embed_subprocess(&args, embed_log.as_deref())?
@@ -227,7 +233,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             result.chunk_ids_and_texts,
             &db,
             &cfg,
-            tier,
+            &tier,
             &project_root,
             args.batch_size,
             &mp,
@@ -235,7 +241,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         .await?;
         drop(worker_guard);
     } else {
-        eprint_embed_skipped_notice(tier, &cfg);
+        eprint_embed_skipped_notice(&tier, &cfg);
     }
 
     let stats = db.stats()?;
@@ -400,6 +406,12 @@ const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
 /// and `disabled` (or a server with no embedder at all) are terminal; each
 /// keeps its distinct notice via `eprint_embed_skipped_notice`. `loading` is
 /// never a reason to abandon durable queued work.
+///
+/// `get_inference_tier_fresh` (not `probe_tier_fresh`): local_first always
+/// prefers the local loopback embedder, even with an explicit server_url set
+/// (2026-07-23 founder decision), and this poller must keep re-observing
+/// that same local-vs-remote routing decision on every iteration rather than
+/// freezing on `get_tier`'s cached first probe of an unrelated server_url.
 async fn wait_for_embedder(
     cfg: &Config,
     initial_backoff: std::time::Duration,
@@ -409,7 +421,7 @@ async fn wait_for_embedder(
     let mut offline_probes = 0u32;
     let mut announced = false;
     loop {
-        let tier = capability::probe_tier_fresh(cfg).await;
+        let tier = capability::get_inference_tier_fresh(cfg).await;
         match &tier {
             capability::Tier::Server { .. } => {
                 if matches!(tier.caps(), Some(c) if c.index_embed) {
@@ -976,10 +988,21 @@ mod tests {
         })
     }
 
+    // `mode = "cloud_first"`: every test below drives the wait loop's polling
+    // logic (loading/ready/unavailable/disabled transitions, the offline
+    // give-up bound) by mocking `/v1/health` directly at `url` and expecting
+    // `wait_for_embedder` to probe exactly that URL. Under the default
+    // `local_first` mode, `get_inference_tier_fresh` routes inference to the
+    // local loopback embedder instead and never touches `server_url` at all
+    // (see `wait_for_embedder_local_first_routes_loopback_transition_not_server_url`
+    // below for that path); `cloud_first` is the mode where an explicit
+    // `server_url` legitimately serves inference, which is what every test
+    // here needs to still be exercising the polling logic against `url`.
     fn cfg_for(url: String) -> Config {
         Config {
             server_url: Some(url),
             project_id: Some("local/test".to_string()),
+            mode: Some(crate::config::SyncMode::CloudFirst),
             ..Default::default()
         }
     }
@@ -1137,6 +1160,85 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "the offline give-up must be bounded"
+        );
+    }
+
+    // ── wait_for_embedder: local_first routes to loopback, not server_url ────
+    //
+    // The routing-bug regression this story fixes: before, the wait loop
+    // probed `cfg.server_url` directly (`probe_tier_fresh`) regardless of
+    // mode, so a `local_first` project with an explicit `server_url` never
+    // reached its local embedder from the detached worker either.
+
+    #[tokio::test]
+    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    async fn wait_for_embedder_local_first_routes_loopback_transition_not_server_url() {
+        // Under `local_first` (the default once `server_url` is set, with no
+        // explicit `mode`), the wait loop must poll the LOCAL loopback
+        // embedder, never the configured `server_url` — even while observing
+        // a loading -> ready transition across several polls. `server_url` is
+        // deliberately unroutable, so an accidental fallback to it surfaces
+        // as a connection/DNS error, not a silent wrong-but-passing result.
+        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+
+        let loopback = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("loading")))
+            .up_to_n_times(2)
+            .mount(&loopback)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&loopback)
+            .await;
+
+        let loopback_port: u16 = loopback
+            .uri()
+            .rsplit(':')
+            .next()
+            .expect("uri has a port")
+            .trim_end_matches('/')
+            .parse()
+            .expect("uri port is numeric");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
+
+        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        // SAFETY: serialised via #[serial(server_state_dir_env)] against
+        // every other test touching this var.
+        unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+
+        let cfg = Config {
+            server_url: Some("https://cloud.invalid.example:1".to_string()),
+            project_id: Some("local/test".to_string()),
+            mode: None, // defaults to local_first because server_url is set
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolve_mode(), crate::config::SyncMode::LocalFirst);
+
+        let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
+
+        unsafe {
+            match prev_state_dir {
+                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
+                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+            }
+        }
+
+        assert!(
+            matches!(tier.caps(), Some(c) if c.index_embed),
+            "the wait must observe the loopback's loading -> ready transition; got {tier:?}"
+        );
+        assert_eq!(
+            tier.server_url(),
+            Some(format!("http://127.0.0.1:{loopback_port}")).as_deref(),
+            "local_first must route the wait loop to the loopback server, not the \
+             configured (and unreachable) server_url; got {tier:?}"
         );
     }
 

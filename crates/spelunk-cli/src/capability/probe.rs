@@ -224,13 +224,48 @@ async fn probe_loopback() -> Tier {
 /// fresh loopback probe rather than reusing whatever `get_tier` already
 /// cached for `cfg.server_url` (a different, unrelated target in that mode).
 pub async fn get_inference_tier(cfg: &Config) -> Tier {
+    inference_tier(cfg, CloudBranchProbe::Cached).await
+}
+
+/// Fresh-probing counterpart to [`get_inference_tier`], for callers that must
+/// observe a *transition* rather than a point-in-time snapshot: the detached
+/// embed worker's readiness wait (`wait_for_embedder`) polls repeatedly for
+/// the embedder to flip from `loading` to `ready`, so it can never read
+/// through a value pinned by [`get_tier`]'s per-process `OnceCell`.
+///
+/// Routes identically to [`get_inference_tier`] (same mode-based branch,
+/// same explicit-offline short-circuit), except the `cloud_first` branch
+/// re-probes the configured `server_url` on every call via
+/// [`probe_tier_fresh`] instead of reading [`get_tier`]'s cache: the same
+/// relationship `probe_tier_fresh` already has to `get_tier`, applied one
+/// level up. The `local_first` branch needs no change here: it already calls
+/// `probe_loopback()` directly, which was never cached.
+pub async fn get_inference_tier_fresh(cfg: &Config) -> Tier {
+    inference_tier(cfg, CloudBranchProbe::Fresh).await
+}
+
+/// Which probe the `cloud_first` branch of [`inference_tier`] takes: the
+/// per-process cache ([`get_tier`], for one-shot callers) or a fresh probe
+/// ([`probe_tier_fresh`], for pollers that must observe a transition).
+enum CloudBranchProbe {
+    Cached,
+    Fresh,
+}
+
+/// Shared mode-based routing behind [`get_inference_tier`] and
+/// [`get_inference_tier_fresh`]; see their docs for the routing rules. The two
+/// differ only in which probe serves the `cloud_first` branch.
+async fn inference_tier(cfg: &Config, cloud_branch: CloudBranchProbe) -> Tier {
     let explicit_offline = spelunk_core::config::no_server_env_set()
         || cfg.mode == Some(spelunk_core::config::SyncMode::Offline);
     if explicit_offline {
         return Tier::Offline;
     }
     if cfg.resolve_mode() == spelunk_core::config::SyncMode::CloudFirst {
-        return get_tier(cfg).await.clone();
+        return match cloud_branch {
+            CloudBranchProbe::Cached => get_tier(cfg).await.clone(),
+            CloudBranchProbe::Fresh => probe_tier_fresh(cfg).await,
+        };
     }
     probe_loopback().await
 }
