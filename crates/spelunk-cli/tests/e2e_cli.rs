@@ -2198,7 +2198,10 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
 
     // Same project, but a config that names the (mock) server, so the search
     // runs at Tier 1 and reaches the coverage gate instead of the Tier-0
-    // text fallback.
+    // text fallback. Under the default `local_first` a bare `server_url`
+    // never serves inference (that's a loopback-only path), so this test
+    // opts into `cloud_first` explicitly to keep exercising the mock's
+    // `/v1/health`, the same way `test_index_and_status` does.
     let db_ignored = home.path().join("unused.db");
     let server_config = write_config_with_server(
         home.path(),
@@ -2210,6 +2213,7 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
 
     let assert = spelunk_bin_in(home.path())
         .current_dir(&project_dir)
+        .env("SPELUNK_MODE", "cloud_first")
         .arg("--config")
         .arg(&server_config)
         .args(["search", "--mode", "semantic", "compute"])
