@@ -293,7 +293,7 @@ enum so commands degrade gracefully when no server is configured.
 Tree-sitter extracts **named semantic nodes** (functions, structs, impls, etc.)
 rather than naive line splits. A token-aware sliding window is the fallback
 for unsupported file types and for re-windowing oversized semantic nodes:
-whole lines accumulate up to `MAX_CHUNK_TOKENS` (2048) with ~12.5% token
+whole lines accumulate up to `MAX_CHUNK_TOKENS` (512) with ~12.5% token
 overlap between windows, and the source node's `name`/`docstring`/
 `parent_scope` are copied onto every window it produces (so a re-windowed
 function still embeds with its symbol name instead of `title: none`). Markdown

@@ -9,6 +9,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Default chunk-token cap (`MAX_CHUNK_TOKENS`) lowered from 2048 to 512.** A
+  quality/performance evaluation across a large gold-query corpus found
+  retrieval quality flat across 2048/1024/512/384 while 512 measurably speeds
+  up indexing, with second-order costs (vector count, storage) at the new cap
+  confirmed immaterial. `index_meta` now also tracks the chunker
+  configuration an index was built under, alongside the existing
+  `embedding_model`/`embedding_dim` provenance: opening an index that was
+  built under a different chunk-token cap prints a warning naming the drift
+  and pointing at `spelunk index --force` for a uniform re-index, rather than
+  silently leaving unchanged files on their old chunk boundaries forever. A
+  normal incremental run still proceeds after the warning: unlike an
+  embedding-model mismatch, a chunk-cap change is same-model/same-dimension
+  drift, not index corruption.
+
 ### Added
 
 - **`spelunk memory reindex` backfills local note embeddings that were never

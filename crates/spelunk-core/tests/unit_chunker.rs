@@ -78,10 +78,15 @@ fn sliding_window_over_budget_single_line_becomes_its_own_window() {
 
 #[test]
 fn sliding_window_adjacent_windows_overlap() {
-    // Enough long lines to produce several windows; each window after the first
-    // must start on or before the previous window's last line (overlap), and
-    // start strictly after the previous window's start (forward progress).
-    let src = vec![line_of(300); 80].join("\n");
+    // Lines short relative to the cap (so the overlap budget, 1/8th of the
+    // window budget, still spans several lines regardless of the configured
+    // cap) and enough of them to span several windows. Each window after the
+    // first must start on or before the previous window's last line
+    // (overlap), and start strictly after the previous window's start
+    // (forward progress).
+    let line_len = 40;
+    let total_lines = (MAX_CHUNK_TOKENS * 4 / line_len) * 5;
+    let src = vec![line_of(line_len); total_lines].join("\n");
     let chunks = sliding_window(&src, "f.txt", "text", None, None, None);
     assert!(
         chunks.len() >= 3,
@@ -288,10 +293,19 @@ fn oversized_markdown_section_windows_keep_heading_as_name() {
 
 #[test]
 fn oversized_container_suppresses_own_chunk_keeps_children() {
-    // A module whose whole text is over the cap, but each child fn is under it.
+    // A module whose whole text is over the cap, but each child fn is under
+    // it. `body_lines` is derived from `MAX_CHUNK_TOKENS` (not a hardcoded
+    // line count) so both fixture properties keep holding regardless of the
+    // configured cap: one child alone must fit under it, five together must not.
+    let body_lines = ((MAX_CHUNK_TOKENS / 3) / 5).max(10);
+    assert!(
+        estimate_tokens(&big_rust_fn("f0", body_lines)) <= MAX_CHUNK_TOKENS,
+        "fixture assumption broken: a single child function must fit under the cap"
+    );
+
     let mut src = String::from("mod tests {\n");
     for i in 0..5 {
-        src.push_str(&big_rust_fn(&format!("f{i}"), 120));
+        src.push_str(&big_rust_fn(&format!("f{i}"), body_lines));
     }
     src.push_str("}\n");
     assert!(

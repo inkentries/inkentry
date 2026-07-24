@@ -394,6 +394,19 @@ async fn run_embed_phase_with_backoff(
     // Refuse to append vectors from a different model into an existing index;
     // stamps provenance on a fresh/legacy DB.
     db.ensure_embedding_model(spelunk_core::embeddings::MODEL_ID)?;
+    // Same-model/same-dimension drift (e.g. a changed chunk-token cap) isn't
+    // corruption like a model mismatch, so this warns instead of bailing:
+    // unchanged files keep their old chunk boundaries until re-parsed, and
+    // nothing else would tell the user that `--force` is what fixes it.
+    let current_chunker_config = spelunk_core::indexer::chunker_config_id();
+    if let Some(recorded) = db.ensure_chunker_config(&current_chunker_config)? {
+        eprintln!(
+            "Warning: this index was built with chunker config '{recorded}', but the \
+             running build uses '{current_chunker_config}'. Unchanged files keep their old \
+             chunk boundaries until re-parsed, so the index now mixes chunk granularities. \
+             Run `spelunk index --force` to re-chunk everything under the current config.\n"
+        );
+    }
     let server_limits = tier.server_limits();
 
     // Ceiling the calibrated batch size may grow to (see `next_batch_size`),
@@ -1791,6 +1804,55 @@ mod tests {
 
         assert_eq!(embedded, 50);
         assert_eq!(db.stats().unwrap().embedding_count, 50);
+    }
+
+    #[tokio::test]
+    async fn chunker_config_drift_warns_but_does_not_block_the_embed_phase() {
+        // A DB stamped under an old chunker config (simulating an upgrade
+        // that changed the default chunk-token cap) must still complete a
+        // normal, non-`--force` embed phase: the mismatch is same-model/
+        // same-dimension drift, not corruption, so it's a warning, not a
+        // bailout.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(OkEmbedResponder)
+            .mount(&mock)
+            .await;
+
+        let (db, ids) = seed_chunks(5);
+        db.ensure_chunker_config("max_chunk_tokens=2048")
+            .expect("stamp an old chunker config, as an existing index.db would carry");
+
+        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            .iter()
+            .map(|id| (*id, format!("text {id}"), 3))
+            .collect();
+
+        let cfg = Config::default();
+        let tier = server_tier(mock.uri());
+        let mp = MultiProgress::new();
+
+        let embedded = run_embed_phase(
+            chunk_ids_and_texts,
+            &db,
+            &cfg,
+            &tier,
+            std::path::Path::new("/tmp/proj"),
+            8,
+            &mp,
+        )
+        .await
+        .expect("a chunker-config mismatch must not fail the embed phase");
+
+        assert_eq!(embedded, 5, "incremental embedding still proceeds normally");
+        assert_eq!(db.stats().unwrap().embedding_count, 5);
+        // The stale stamp is left as-is: only a `--force` full re-chunk
+        // (outside this function's scope) would bring it back in sync.
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some("max_chunk_tokens=2048")
+        );
     }
 
     // ── run_embed_phase: honoring the server's 429 admission shedding ───────

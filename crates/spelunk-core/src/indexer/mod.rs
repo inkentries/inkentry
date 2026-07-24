@@ -11,6 +11,8 @@ pub mod secrets;
 pub mod summariser;
 
 #[allow(unused_imports)]
-pub use chunker::{Chunk, ChunkKind, chunk_token_cap, set_chunk_token_cap, sliding_window};
+pub use chunker::{
+    Chunk, ChunkKind, chunk_token_cap, chunker_config_id, set_chunk_token_cap, sliding_window,
+};
 #[allow(unused_imports)]
 pub use parser::SourceParser;

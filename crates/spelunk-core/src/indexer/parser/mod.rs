@@ -213,7 +213,6 @@ impl SourceParser {
 
         if chunks.is_empty() {
             tracing::debug!("{file_path}: no semantic nodes found, using sliding window");
-            // 120-line window fits comfortably in EmbeddingGemma's 2048-token budget.
             return Ok(sliding_window(
                 source, file_path, language, None, None, None,
             ));

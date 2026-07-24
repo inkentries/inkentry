@@ -431,6 +431,45 @@ impl Database {
         }
     }
 
+    /// Read the recorded chunker config id (`chunker::chunker_config_id`), or
+    /// `None` if never stamped (a DB predating this provenance key).
+    pub fn chunker_config(&self) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM index_meta WHERE key = 'chunker_config'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("reading chunker_config")
+    }
+
+    /// Compare the running build's chunker config against this DB's
+    /// provenance, stamping it on a fresh/legacy DB. Unlike
+    /// [`ensure_embedding_model`](Self::ensure_embedding_model), a mismatch
+    /// here is same-model/same-dimension drift (e.g. a changed chunk-token
+    /// cap), not a hard incompatibility: old and new chunks coexist in the
+    /// same vector space at different granularity, so this never errors.
+    /// Returns the stale recorded value on a mismatch so the caller can warn
+    /// without failing the run; the stamp is left as-is (not overwritten) so
+    /// the warning keeps firing until a `--force` run re-chunks everything
+    /// under the current config.
+    pub fn ensure_chunker_config(&self, config: &str) -> Result<Option<String>> {
+        match self.chunker_config()? {
+            Some(recorded) if recorded == config => Ok(None),
+            Some(recorded) => Ok(Some(recorded)),
+            None => {
+                self.conn
+                    .execute(
+                        "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('chunker_config', ?1)",
+                        rusqlite::params![config],
+                    )
+                    .context("stamping chunker config provenance")?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Insert or replace an embedding for a chunk.
     ///
     /// Takes the raw float vector; it is int8-quantised here for the
@@ -810,6 +849,63 @@ mod tests {
             msg.to_lowercase().contains("re-index"),
             "message must instruct re-index: {msg}"
         );
+    }
+
+    /// Chunker config provenance round-trips like `embedding_model`, but a
+    /// mismatch returns the stale value instead of erroring, and the run
+    /// keeps going (a chunk-cap change doesn't corrupt the vector space).
+    #[test]
+    fn chunker_config_stamp_and_warn_on_mismatch() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        // Absent → backfilled (no error).
+        assert!(db.chunker_config().unwrap().is_none());
+        assert_eq!(
+            db.ensure_chunker_config("max_chunk_tokens=512")
+                .expect("first stamp"),
+            None
+        );
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some("max_chunk_tokens=512")
+        );
+        // Same config → no-op, no warning.
+        assert_eq!(
+            db.ensure_chunker_config("max_chunk_tokens=512")
+                .expect("same config is fine"),
+            None
+        );
+        // Different config → the stale value comes back for the caller to
+        // warn with, not an error, and the stamp is left untouched.
+        let recorded = db
+            .ensure_chunker_config("max_chunk_tokens=2048")
+            .expect("mismatch must not fail")
+            .expect("mismatch must surface the recorded value");
+        assert_eq!(recorded, "max_chunk_tokens=512");
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some("max_chunk_tokens=512"),
+            "a mismatch must not overwrite the stamp"
+        );
+    }
+
+    /// A DB stamped under an old chunker config still lets normal
+    /// (non-`--force`) indexing proceed: `ensure_chunker_config` never
+    /// blocks the caller, it only reports the drift.
+    #[test]
+    fn chunker_config_mismatch_does_not_block_incremental_indexing() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        db.ensure_chunker_config("max_chunk_tokens=2048")
+            .expect("stamp old config");
+
+        // Simulates a build upgraded to the new default: the check reports
+        // the drift but returns `Ok`, so a normal `spelunk index` run keeps
+        // going (incremental skip-by-hash still applies to unchanged files).
+        let warned = db
+            .ensure_chunker_config("max_chunk_tokens=512")
+            .expect("a config mismatch must be Ok, not an error");
+        assert_eq!(warned.as_deref(), Some("max_chunk_tokens=2048"));
     }
 
     fn embedding_count(db: &Database) -> i64 {
