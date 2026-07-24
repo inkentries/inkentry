@@ -653,6 +653,28 @@ mod tests {
         assert!(entries.is_empty());
     }
 
+    /// Only 404 (project not yet created) reads as "nothing to pull". A real
+    /// server error (500, or any other non-2xx/404 status) must surface as
+    /// `Err`, not be swallowed the same way — a caller looping pages (see
+    /// `pull_and_apply_since` in spelunk-cli) depends on this distinction to
+    /// tell "server has nothing yet" apart from "the request actually
+    /// failed mid-pagination".
+    #[tokio::test]
+    async fn pull_since_server_error_propagates_distinct_from_the_404_empty_case() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let err = client
+            .pull_since(None)
+            .await
+            .expect_err("a 500 must not be treated as an empty page like a 404 is");
+        assert!(format!("{err:#}").contains("memory/since"), "err: {err:#}");
+    }
+
     #[tokio::test]
     async fn pull_since_marks_archived_when_archived_at_present() {
         let server = MockServer::start().await;

@@ -2773,4 +2773,166 @@ mod tests {
             "no duplicate/corrupted local row"
         );
     }
+
+    /// A network/server failure on a LATER page (not the first) must not
+    /// corrupt or silently drop the pages that already succeeded: the loop
+    /// applies each page as it arrives, so a first-page success is durably
+    /// in the local store even though the overall call returns `Err`. A
+    /// naive rewrite (e.g. buffering all pages before applying any) would
+    /// instead lose the first page's entries when a later page fails.
+    #[tokio::test]
+    async fn pull_and_apply_since_error_on_a_later_page_keeps_earlier_pages_applied_and_is_retryable()
+     {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Page 1 must be a FULL page (== PULL_PAGE_LIMIT): a short page 1
+        // would already be the natural last page and the loop would never
+        // even attempt a second request, defeating the point of this test.
+        let page1 = page_ids(0, 500);
+        let page2 = page_ids(500, 5);
+
+        // ── Run 1: page 1 succeeds and applies, page 2 fails (500). ──
+        let server1 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", NIL_UUID))
+            .respond_with(ResponseTemplate::new(200).set_body_json(entries_json(&page1)))
+            .expect(1)
+            .mount(&server1)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", page1.last().unwrap().clone()))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server1)
+            .await;
+
+        let (_tmp, store) = fresh_store();
+        let client1 = CloudSyncClient::new(&server1.uri(), "proj", None, None).unwrap();
+        pull_and_apply_since(&store, &client1, None)
+            .await
+            .expect_err("a later-page failure must surface as Err, not a silent partial success");
+
+        assert_eq!(
+            store.count().unwrap(),
+            500,
+            "page 1's entries must already be durably applied even though the \
+             overall call failed on page 2"
+        );
+        assert_eq!(
+            store.max_remote_id().unwrap().as_deref(),
+            Some(page1.last().unwrap().as_str()),
+            "the store-derived cursor reflects exactly the pages that landed, \
+             so a retry resumes from the right place"
+        );
+
+        // ── Run 2: a healthy server serves the remainder from the re-derived
+        // cursor; nothing from page 1 is re-applied or duplicated. ──
+        let server2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", page1.last().unwrap().clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(entries_json(&page2)))
+            .expect(1)
+            .mount(&server2)
+            .await;
+        let client2 = CloudSyncClient::new(&server2.uri(), "proj", None, None).unwrap();
+
+        let cursor = store.max_remote_id().unwrap();
+        let applied = pull_and_apply_since(&store, &client2, cursor.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(applied, 5, "the retry applies exactly the remainder");
+        assert_eq!(
+            store.count().unwrap(),
+            505,
+            "no duplicates from re-fetching across the two runs"
+        );
+    }
+
+    /// A page whose entries fail to deserialize (here: an entry missing the
+    /// required `id` field, the value pagination advances the cursor from)
+    /// must fail the WHOLE page atomically rather than partially applying
+    /// the entries that happened to parse fine. `SinceBody`/`RemoteEntry`
+    /// deserialize the full response body before `pull_and_apply_since` ever
+    /// sees a single entry, so this is really a regression guard: a future
+    /// change that streamed/parsed entries one at a time could silently
+    /// apply a prefix before hitting the bad entry.
+    #[tokio::test]
+    async fn pull_and_apply_since_malformed_entry_missing_id_fails_the_page_atomically() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let malformed = serde_json::json!({
+            "entries": [
+                {
+                    "kind": "note",
+                    "title": "no id field at all",
+                    "body": "b",
+                    "created_at": "2026-06-19T01:00:00Z"
+                }
+            ],
+            "count": 1
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(malformed))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        pull_and_apply_since(&store, &client, None)
+            .await
+            .expect_err("a page that fails to parse must surface as Err");
+
+        assert_eq!(
+            store.count().unwrap(),
+            0,
+            "nothing from an unparseable page may be partially applied"
+        );
+    }
+
+    /// The server's `count` field is documented (see `pull_since`'s wire
+    /// comment) as redundant with `entries.len()`, never a "more remain"
+    /// signal — so the loop's termination must be driven by the actual
+    /// number of entries returned, not by trusting `count`. A server (or a
+    /// test double) that reports an inflated `count` alongside a genuinely
+    /// short `entries` array must still be treated as the last page.
+    #[tokio::test]
+    async fn pull_and_apply_since_terminates_on_actual_entries_len_not_a_lying_count_field() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let ids = page_ids(0, 50);
+        let mut body = entries_json(&ids);
+        // `entries.len() == 50` (well short of PULL_PAGE_LIMIT), but `count`
+        // falsely claims far more remain. If the loop ever keyed off `count`
+        // instead of the real page length, this would spin into a second,
+        // unexpected request against a server with nothing left to mount.
+        body["count"] = serde_json::json!(9999);
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_tmp, store) = fresh_store();
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+
+        assert_eq!(applied, 50);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a lying count must not trigger a second request past the real \
+             short page"
+        );
+    }
 }
