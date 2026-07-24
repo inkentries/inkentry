@@ -208,6 +208,16 @@ pub(super) fn run_parse_phase(
         chunk_ids_and_texts.push((chunk_id, text, tokens));
     }
 
+    // `--force` bypasses the hash-skip for every file processed above, so
+    // once this loop is done every stored chunk was cut under the current
+    // chunker config. Refresh the provenance stamp so a later normal run's
+    // `ensure_chunker_config` check stops warning about a drift that no
+    // longer exists; without this, the warning would persist forever even
+    // after the very re-index the message tells the user to run.
+    if args.force {
+        db.stamp_chunker_config(&spelunk_core::indexer::chunker_config_id())?;
+    }
+
     Ok(ParseResult {
         chunk_ids_and_texts,
         indexed,
@@ -904,6 +914,65 @@ mod tests {
         assert_eq!(
             texts_run2, texts_run1,
             "backfilled embedding text must match the parse-time embedding text byte-for-byte"
+        );
+    }
+
+    // ── --force refreshes the chunker-config provenance stamp ─────────────────
+
+    /// A `--force` run re-chunks every file under the current config, so it
+    /// must also refresh `index_meta`'s `chunker_config` stamp: otherwise
+    /// `ensure_chunker_config`'s drift warning (see `embed_phase.rs`) would
+    /// keep firing on every later normal run forever, even once `--force`
+    /// gave the user the exact uniform re-index its own message told them to
+    /// run. Drives the full sequence: stamp old → a normal run leaves the
+    /// drift alone → `--force` → the stamp updates → a later normal run
+    /// reports no drift.
+    #[test]
+    fn force_reindex_refreshes_the_chunker_config_stamp() {
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn foo() -> i32 { 1 }\n").unwrap();
+
+        let stale = "max_chunk_tokens=999999";
+        db.ensure_chunker_config(stale).expect("stamp old config");
+
+        let mp = MultiProgress::new();
+        let cfg = crate::config::Config::default();
+        let current = spelunk_core::indexer::chunker_config_id();
+
+        // A normal (non-`--force`) run must not touch the stamp: the drift
+        // stays there for the embed phase to warn about.
+        let args = default_args(dir.path().to_path_buf());
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("normal parse phase");
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some(stale),
+            "a normal run must not silently clear the drift"
+        );
+        assert_eq!(
+            db.ensure_chunker_config(&current).expect("drift check"),
+            Some(stale.to_string()),
+            "the stale stamp must still be reported as drift before --force"
+        );
+
+        // `--force` re-chunks everything under the current config and must
+        // refresh the stamp.
+        let mut force_args = default_args(dir.path().to_path_buf());
+        force_args.force = true;
+        run_parse_phase(dir.path(), &db, &force_args, &mp, &cfg).expect("force parse phase");
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some(current.as_str()),
+            "a --force re-index must refresh the stamp to the current config"
+        );
+
+        // A later normal run now sees no drift: the whole point of running
+        // --force was to make the warning stop.
+        assert_eq!(
+            db.ensure_chunker_config(&current)
+                .expect("post-force drift check"),
+            None,
+            "after --force, the same config must no longer be reported as drift"
         );
     }
 

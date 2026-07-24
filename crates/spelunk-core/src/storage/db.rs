@@ -453,7 +453,8 @@ impl Database {
     /// Returns the stale recorded value on a mismatch so the caller can warn
     /// without failing the run; the stamp is left as-is (not overwritten) so
     /// the warning keeps firing until a `--force` run re-chunks everything
-    /// under the current config.
+    /// under the current config and calls
+    /// [`stamp_chunker_config`](Self::stamp_chunker_config) to refresh it.
     pub fn ensure_chunker_config(&self, config: &str) -> Result<Option<String>> {
         match self.chunker_config()? {
             Some(recorded) if recorded == config => Ok(None),
@@ -468,6 +469,22 @@ impl Database {
                 Ok(None)
             }
         }
+    }
+
+    /// Unconditionally record `config` as this DB's chunker-config provenance,
+    /// regardless of what (if anything) was previously stamped. A `--force`
+    /// re-index re-chunks every file, so once it finishes every stored chunk
+    /// was cut under `config`; refreshing the stamp here is what makes
+    /// [`ensure_chunker_config`](Self::ensure_chunker_config) stop warning on
+    /// the next normal run, until the config next changes.
+    pub fn stamp_chunker_config(&self, config: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('chunker_config', ?1)",
+                rusqlite::params![config],
+            )
+            .context("stamping chunker config provenance")?;
+        Ok(())
     }
 
     /// Insert or replace an embedding for a chunk.
@@ -906,6 +923,42 @@ mod tests {
             .ensure_chunker_config("max_chunk_tokens=512")
             .expect("a config mismatch must be Ok, not an error");
         assert_eq!(warned.as_deref(), Some("max_chunk_tokens=2048"));
+    }
+
+    /// `stamp_chunker_config` is the refresh mechanism a `--force` re-index
+    /// uses to silence the drift warning: stamp old, detect the mismatch,
+    /// force-refresh, then confirm the same config no longer reports drift.
+    #[test]
+    fn stamp_chunker_config_silences_a_prior_mismatch() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        db.ensure_chunker_config("max_chunk_tokens=2048")
+            .expect("stamp old config");
+
+        // Drift is detected before the refresh.
+        assert_eq!(
+            db.ensure_chunker_config("max_chunk_tokens=512")
+                .expect("mismatch must not fail"),
+            Some("max_chunk_tokens=2048".to_string()),
+            "the old stamp must still be reported as drift before any refresh"
+        );
+
+        // A `--force` run re-chunks everything and refreshes the stamp,
+        // unconditionally, not just on a first-ever write.
+        db.stamp_chunker_config("max_chunk_tokens=512")
+            .expect("force refresh");
+        assert_eq!(
+            db.chunker_config().unwrap().as_deref(),
+            Some("max_chunk_tokens=512")
+        );
+
+        // The next normal (non-`--force`) run now sees a match: no drift.
+        assert_eq!(
+            db.ensure_chunker_config("max_chunk_tokens=512")
+                .expect("post-refresh check must not fail"),
+            None,
+            "after the refresh, the same config must no longer be reported as drift"
+        );
     }
 
     fn embedding_count(db: &Database) -> i64 {
