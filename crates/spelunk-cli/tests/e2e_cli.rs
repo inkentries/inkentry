@@ -201,9 +201,17 @@ async fn test_index_and_status() {
     // `.spelunk/config.toml` (or env), never from the `--config` global file.
     write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
+    // Under the default `local_first` mode a bare `server_url` never routes
+    // embedding/search to it (that's a loopback-only inference path); this
+    // test exists to exercise the mock server's `/index/embed` and `/search`
+    // endpoints, so it opts into `cloud_first` explicitly on every command,
+    // the same way a real user would to keep this behavior.
+    const CLOUD_FIRST: (&str, &str) = ("SPELUNK_MODE", "cloud_first");
+
     // 1. Index the project
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -214,6 +222,7 @@ async fn test_index_and_status() {
     // 2. Check status
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -227,6 +236,7 @@ async fn test_index_and_status() {
     // 3. Search for the function (semantic search via server embedding)
     let mut cmd = spelunk_bin();
     cmd.current_dir(&project_dir)
+        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
         .arg(&config_path)
         .arg("search")
