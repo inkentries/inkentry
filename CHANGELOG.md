@@ -90,6 +90,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   resume, and exits non-zero rather than reading as success. Batches that
   already landed are recorded, so a re-run pushes only the remainder and any
   entry the server already holds comes back skipped, never duplicated.
+- **`spelunk sync` / `spelunk memory sync` no longer permanently skips a
+  teammate's older memory on a client's first sync.** The pull cursor is
+  derived from the newest `remote_id` known locally, and `memory_sync`
+  previously pushed before pulling, so a client's own brand-new push became
+  that newest id; any teammate content already on the server that this
+  client had never pulled was silently and permanently skipped, with no
+  error. This mainly hit a new team member's very first sync on a project
+  with prior history, but the same shape could also shadow a teammate's push
+  landing in the narrow window between a client's own pull and its own push
+  on any sync round. `memory_sync` now pulls, pushes, then pulls a second
+  time reusing the pre-push cursor, so a concurrent teammate push in that
+  window is caught within the same sync call or, at the latest, the next
+  one. No command, flag, or output format changed.
 
 ### Changed
 

@@ -317,6 +317,13 @@ impl CloudSyncClient {
     /// `None` (nothing synced yet) this is a full catch-up: the
     /// nil UUID `00000000-…` sorts before every UUIDv7, so it returns all
     /// entries.
+    ///
+    /// A project that does not exist on the server yet (404) is treated as
+    /// having nothing to pull, not an error: a spelunk-server-backed project
+    /// is only created lazily by the first push to it (`memory/batch`), so a
+    /// pull that runs before any push has ever landed for a brand new project
+    /// (e.g. `sync`'s own first pull pass, ahead of its own push) must not
+    /// fail the whole sync just because nobody has pushed yet.
     pub async fn pull_since(&self, since_id: Option<&str>) -> Result<Vec<RemoteEntry>> {
         // The all-zero UUID precedes every UUIDv7 in `id > $cursor` order, so it
         // is the natural "from the beginning" cursor for a first sync.
@@ -326,13 +333,17 @@ impl CloudSyncClient {
             .query(&[("since_id", cursor)])
             .send()
             .await
-            .context("GET /memory/since")?
+            .context("GET /memory/since")?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(vec![]);
+        }
+        let body = resp
             .error_for_status()
             .context("server returned error for GET /memory/since")?
             .json::<SinceBody>()
             .await
             .context("parsing /memory/since response")?;
-        Ok(resp.entries)
+        Ok(body.entries)
     }
 }
 
@@ -543,6 +554,24 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "01890000-0000-7000-8000-000000000001");
         assert!(!entries[0].is_archived());
+    }
+
+    /// A project not yet created server-side (nobody has ever pushed to it)
+    /// must read as "nothing to pull", not an error: the two-phase sync
+    /// reconciliation pulls before the round's own push runs, so a brand
+    /// new project's very first sync must not fail just because it hasn't
+    /// been lazily created by a push yet.
+    #[tokio::test]
+    async fn pull_since_project_not_found_yet_is_treated_as_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/brand-new-proj/memory/since"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "brand-new-proj", None, None).unwrap();
+        let entries = client.pull_since(None).await.unwrap();
+        assert!(entries.is_empty());
     }
 
     #[tokio::test]

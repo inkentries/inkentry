@@ -181,6 +181,65 @@ async fn memory_sync_total_failure_exits_nonzero_and_does_not_print_sync_complet
     );
 }
 
+/// A total push failure still runs the full two-phase pull reconciliation
+/// (`sync_round`'s pull, push, pull-again sequence), and the failure
+/// message's pull count is the honest combined total across both passes,
+/// not just the first pass or zero.
+///
+/// Both pull calls in `sync_round` reuse the same pre-round cursor, so a
+/// stateless mock returning one remote entry for `/since` regardless of
+/// `since_id` is hit identically by both passes: the first applies it (new),
+/// the second re-fetches it but it's already known locally (dedup on
+/// `remote_id`), so the reported total is the true, non-doubled count.
+#[tokio::test]
+async fn memory_sync_total_failure_reports_the_full_two_pass_pull_count() {
+    let server = MockServer::start().await;
+    mount_health(&server).await;
+    mount_batch_total_failure(&server, 1).await;
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            r"^/v1/projects/{PROJECT_SLUG}/memory/since$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "entries": [{
+                "id": "01890000-0000-7000-8000-000000000abc",
+                "kind": "decision",
+                "title": "Teammate",
+                "body": "already on the server",
+                "created_at": "2026-06-19T01:00:00Z"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    init_project(proj.path());
+    let config_path = write_config(proj.path(), &server.uri());
+    seed_one_note(home.path(), proj.path(), &config_path);
+
+    let assert = spelunk_bin_in(home.path())
+        .current_dir(proj.path())
+        .arg("--config")
+        .arg(&config_path)
+        .arg("sync")
+        .assert()
+        .failure();
+
+    let out = assert.get_output();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Sync failed"),
+        "must still surface the push failure; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stderr.contains("pull still applied 1 new remote entries"),
+        "the pull count must reflect the one genuinely new entry across both \
+         reconciliation passes, not zero and not double-counted; stderr={stderr:?}"
+    );
+}
+
 /// Regression guard for the fix's OTHER side: a real success must still exit
 /// zero and print the "Done." success framing. Without this, a broken change
 /// that made every push exit non-zero unconditionally would still pass the
