@@ -159,10 +159,19 @@ ambient config exists.
 
 Every test that spawns git must call an `isolate_git_config()` helper
 first. It sets `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `/dev/null`
-for the whole process, guarded by `std::sync::Once` so it is safe to call
-from every test. The isolation must be process-wide, not scoped to one
-`Command`: a helper that only sets env on the `Command` it builds itself
-never reaches git that the code under test spawns for itself.
+for the whole process, and clears `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`:
+git resolves commit identity from those env vars before it consults config
+at all, so they can override a test's own explicit `git config
+user.name`/`user.email` unless cleared too. Guarded by `std::sync::Once` so
+it is safe to call from every test. The isolation must be process-wide, not
+scoped to one `Command`: a helper that only sets env on the `Command` it
+builds itself never reaches git that the code under test spawns for itself.
+
+For `spelunk-core` integration tests, prefer `common::git_command(cwd)` over
+calling `isolate_git_config()` and `std::process::Command::new("git")`
+separately: it bakes the isolation call into the `Command` it returns, so a
+new test file cannot construct an un-isolated one by forgetting the setup
+step.
 
 Four call sites carry a copy of the same helper, because a unit test
 compiled into `src/` cannot reach a file under `tests/`, and each `tests/`
@@ -173,12 +182,18 @@ integration binary is its own compilation unit:
 | `crates/spelunk-cli/tests/plumbing_helpers.rs` | `tests/` integration binaries for `spelunk-cli` |
 | `crates/spelunk-cli/src/cli/cmd/test_support.rs` | `src/` unit tests for `spelunk-cli` |
 | `crates/spelunk-core/src/storage/git_notes/mod.rs` (local to the `cat_file_batch` test module) | `spelunk-core` unit tests |
-| `crates/spelunk-core/tests/integration_git_notes.rs` | `spelunk-core`'s git-notes integration tests |
+| `crates/spelunk-core/tests/common/mod.rs` (also exports `git_command`) | `spelunk-core`'s `tests/` integration binaries |
 
-CI runners carry no ambient global config, so a missing call here never
-fails CI. It only surfaces as a local test failure for a contributor who
-has one of these settings configured globally, with no indication of the
-cause.
+`scripts/check-git-isolation.sh` runs as the first step of CI's Check & Lint
+job and fails the build if a test file spawns `git` (`Command::new("git")`,
+however wrapped, whitespaced, or aliased) without wiring in one of the
+above: a definition or call of `isolate_git_config`, a call to
+`git_command`, or a `mod common;`/`mod plumbing_helpers;` import of the
+fixture module. It's a grep-based heuristic, not a parser (see the script's
+own header comment for exact scope and known blind spots, e.g. it can't
+trace a spawn reached through a variable), but it catches the case that
+used to slip through silently: a new test file that spawns git and forgets
+isolation entirely.
 
 ---
 
