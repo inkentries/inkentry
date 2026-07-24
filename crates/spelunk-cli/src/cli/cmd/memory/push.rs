@@ -80,6 +80,17 @@ pub async fn memory_push(
         } else {
             println!("No local memory entries to push.");
         }
+    } else if let Some(reason) = summary.interrupted.as_deref() {
+        // A chunk failed mid-push. Report what already landed and how to resume,
+        // then exit non-zero: earlier chunks are durably stamped, so a re-run
+        // pushes only the remainder and already-pushed entries return 207
+        // `skipped`. Must not read as success.
+        anyhow::bail!(
+            "Pushed {} of {} entries, then stopped: {reason}. \
+             Re-run to resume (already-pushed entries are skipped).",
+            summary.created + summary.skipped,
+            summary.attempted
+        );
     } else if summary.created == 0 && summary.skipped == 0 {
         // Total failure: nothing durably landed. Must not read as success —
         // a caller skimming for "Done" or checking only the exit code would

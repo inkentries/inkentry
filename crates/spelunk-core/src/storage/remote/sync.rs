@@ -26,10 +26,22 @@
 //! never receives a vector and re-embeds — so text-only remains the universal
 //! fallback.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::encode_project_id;
+
+/// Per-request timeout for the sync HTTP client. `POST /memory/batch` performs
+/// server-side embedding backfill, an inference-class operation: a cold embedder
+/// plus a large with-vectors payload can legitimately run well past the 30s
+/// per-entry CRUD ceiling while still making progress, so the sync path belongs
+/// in the inference timeout class instead. This is a client-level timeout, so it
+/// also raises the ceiling on `pull_since`/`delete_remote`: strictly better,
+/// since only a hung connection ever reaches it and a slow-but-progressing pull
+/// is no longer cut short at 30s.
+const SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Precision tag sent alongside a client-pushed memory vector. Memory vectors
 /// cross to the cloud, so they are ALWAYS full-precision fp32 — never the
@@ -183,14 +195,34 @@ impl CloudSyncClient {
         api_key: Option<&str>,
         server_ca: Option<&std::path::Path>,
     ) -> Result<Self> {
+        Self::with_timeout(
+            base_url,
+            project_id,
+            api_key,
+            server_ca,
+            SYNC_REQUEST_TIMEOUT,
+        )
+    }
+
+    /// Build a client with an explicit per-request timeout. Production always
+    /// uses [`SYNC_REQUEST_TIMEOUT`] via [`Self::new`]; a caller passes a short
+    /// timeout only to exercise the enforcement path without waiting on the 300s
+    /// production ceiling.
+    fn with_timeout(
+        base_url: &str,
+        project_id: &str,
+        api_key: Option<&str>,
+        server_ca: Option<&std::path::Path>,
+        timeout: Duration,
+    ) -> Result<Self> {
         // Fail closed before building the client: a bearer must never travel over
         // plaintext http to a non-loopback host. Keyless
-        // loopback-dev construction is unaffected — nothing to leak.
+        // loopback-dev construction is unaffected: nothing to leak.
         if api_key.is_some() {
             crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
         }
         let client = crate::config::apply_server_ca(reqwest::Client::builder(), server_ca)?
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(timeout)
             .build()
             .context("building sync HTTP client")?;
         Ok(Self {
@@ -343,6 +375,65 @@ mod tests {
 
     fn spelunk_core_embedding_dim() -> usize {
         crate::embeddings::EMBEDDING_DIM
+    }
+
+    // ── request timeout: inference-class, and actually enforced ──────────────
+
+    #[test]
+    fn sync_request_timeout_is_inference_class_not_the_old_cap() {
+        // Guards against a silent revert to the old 30s per-entry CRUD cap:
+        // `/memory/batch` re-embeds server-side, so the client timeout must stay
+        // in the inference class.
+        assert_eq!(SYNC_REQUEST_TIMEOUT, Duration::from_secs(300));
+        assert!(SYNC_REQUEST_TIMEOUT > Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn request_timeout_is_actually_enforced_per_request() {
+        // A response delayed past the client timeout must surface as a timeout
+        // error; the same slow response under a looser timeout must succeed. This
+        // proves the per-request timeout is wired to the client, exercised with a
+        // short injected value so it runs sub-second, decoupled from the 300s
+        // production literal.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(
+                ResponseTemplate::new(207)
+                    .set_body_json(serde_json::json!({
+                        "created": 1, "skipped": 0, "failed": 0,
+                        "results": [{"status": "created", "external_id": "e1", "id": "c1"}]
+                    }))
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let tight = CloudSyncClient::with_timeout(
+            &server.uri(),
+            "proj",
+            None,
+            None,
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let err = tight.push_batch(vec![item("e1")]).await.unwrap_err();
+        let chain = format!("{err:#}").to_lowercase();
+        assert!(
+            chain.contains("time"),
+            "a response past the client timeout must surface as a timeout: {err:#}"
+        );
+
+        let loose = CloudSyncClient::with_timeout(
+            &server.uri(),
+            "proj",
+            None,
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let res = loose.push_batch(vec![item("e1")]).await.unwrap();
+        assert_eq!(res.created, 1);
     }
 
     /// The push is text-only by default, and carries the fp32/896 vector + model

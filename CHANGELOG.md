@@ -77,6 +77,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   in place of `Stored [kind] #id: title`. See [ADR-068's fourth
   amendment](docs/adr/068-zero-setup-onboarding-git-notes-memory-fallback.md).
 
+- **`spelunk memory push` and `spelunk sync` can now push a real-sized project
+  instead of timing out.** Previously a project with more than a few dozen
+  entries was pushed in requests bounded by a fixed 30-second client timeout, so
+  the push timed out and nothing landed: the server project was never even
+  created. The push now splits entries into smaller per-request batches and
+  gives each request the longer, inference-class timeout the server needs to
+  re-embed them, so a push of hundreds of entries completes and the project is
+  created by the first batch. If a batch fails partway through (for example the
+  server is briefly overloaded), the push stops at that batch, reports how far
+  it got (`Pushed X of Y entries, then stopped: ...`) with a hint to re-run to
+  resume, and exits non-zero rather than reading as success. Batches that
+  already landed are recorded, so a re-run pushes only the remainder and any
+  entry the server already holds comes back skipped, never duplicated.
 - **`spelunk sync` / `spelunk memory sync` no longer permanently skips a
   teammate's older memory on a client's first sync.** The pull cursor is
   derived from the newest `remote_id` known locally, and `memory_sync`
