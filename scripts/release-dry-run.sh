@@ -85,8 +85,9 @@ cleanup() {
   local leftover
   leftover="$(docker ps -aq --filter "name=${CONTAINER_PREFIX}" 2>/dev/null || true)"
   if [ -n "${leftover}" ]; then
-    # shellcheck disable=SC2086 -- word-splitting is intentional: leftover is
-    # a newline-separated list of container ids, all passed to one rm -f.
+    # Word-splitting is intentional: leftover is a newline-separated list of
+    # container ids, all passed to one rm -f.
+    # shellcheck disable=SC2086
     docker rm -f ${leftover} >/dev/null 2>&1 || true
   fi
 }

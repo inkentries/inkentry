@@ -45,7 +45,7 @@ Two install paths live outside this workflow:
 
 ## Local dry run before tagging
 
-The release workflow only triggers on a pushed `v*.*.*` tag — there is no
+The release workflow only triggers on a pushed `v*.*.*` tag: there is no
 `workflow_dispatch`, so the packaging pipeline (glibc-floor container build,
 the `.deb`'s `dpkg-shlibdeps`-derived `Depends`, and the floor install/smoke
 test) otherwise gets exercised for the first time at real tag-push, after
@@ -70,7 +70,7 @@ the `.deb` installs and its shipped binaries actually run (not just link)
 on the support floor.
 
 **What it does not prove:** macOS/Windows builds, the arm64 Linux leg, the
-real GitHub Release, or the Homebrew/Scoop publish steps — those are only
+real GitHub Release, or the Homebrew/Scoop publish steps. Those are only
 exercised by `.github/workflows/release.yml` at real tag-push time. The
 script has no code path that can create a GitHub release, push to the
 `homebrew-spelunk` tap, or write `bucket/spelunk.json`.
