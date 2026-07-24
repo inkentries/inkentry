@@ -6,9 +6,7 @@ Tests live under `crates/*/tests/` (integration-style, one binary per file)
 plus `#[cfg(test)]` blocks colocated with the code they cover across all four
 crates. The suite spans unit logic, real-SQLite integration, in-process
 server-handler tests, CLI end-to-end tests, property-based tests, and a
-scheduled fuzzing job. It is large and grows with every change, so this doc
-does not quote a count: any number written here is wrong by the next commit.
-If you want the current count, run the suite yourself (see below).
+scheduled fuzzing job.
 
 The embedder stack is the native candle F2LLM path (`spelunk-embed`, gated by
 the `embed-native` feature), not an external OpenAI-compatible endpoint. See
@@ -29,10 +27,6 @@ for the workspace, plus `cargo test --doc` as a separate pass since
 nextest does not run doctests. Some CI legs add `--no-default-features`
 (see the workflow file for exactly which); reach for that flag locally if
 you need to reproduce a platform-specific failure.
-
-A `make check` target that reproduces CI's **Check & Lint** and **Test**
-legs in one shot is in progress (spelunk-oss#621, not yet merged). Until
-it lands, run the commands above directly.
 
 For a tighter loop while iterating on one file:
 
