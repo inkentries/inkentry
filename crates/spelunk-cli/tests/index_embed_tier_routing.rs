@@ -1,19 +1,19 @@
-//! Regression tests for `spelunk index`'s primary embed phase local-vs-remote
-//! tier routing: the foreground embed phase (`index/mod.rs`'s phase 2) and
-//! the `--detach-embed` worker it can hand off to.
-//!
-//! Mirrors the loopback-vs-explicit-`server_url` routing bug already fixed
-//! for `spelunk explore` / `memory add` / `memory reindex` et al: under the
-//! default `local_first` mode, inference must always prefer the local
-//! loopback embedder, even when an explicit (here, deliberately unroutable)
-//! `server_url` is configured. `cloud_first` is the one mode where an
-//! explicit `server_url` legitimately serves inference too (test 2 is a
-//! regression guard for that path).
-//!
-//! The mock loopback server is wired in via `SPELUNK_STATE_DIR`/`server.port`
-//! (real auto-discovery), not `server_url`, so a routing regression surfaces
-//! as a genuine connection/DNS failure against the deliberately-unroutable
-//! `server_url` rather than a silently-passing test.
+// Regression tests for `spelunk index`'s primary embed phase local-vs-remote
+// tier routing: the foreground embed phase (`index/mod.rs`'s phase 2) and
+// the `--detach-embed` worker it can hand off to.
+//
+// Mirrors the loopback-vs-explicit-`server_url` routing bug already fixed
+// for `spelunk explore` / `memory add` / `memory reindex` et al: under the
+// default `local_first` mode, inference must always prefer the local
+// loopback embedder, even when an explicit (here, deliberately unroutable)
+// `server_url` is configured. `cloud_first` is the one mode where an
+// explicit `server_url` legitimately serves inference too (test 2 is a
+// regression guard for that path).
+//
+// The mock loopback server is wired in via `SPELUNK_STATE_DIR`/`server.port`
+// (real auto-discovery), not `server_url`, so a routing regression surfaces
+// as a genuine connection/DNS failure against the deliberately-unroutable
+// `server_url` rather than a silently-passing test.
 
 mod plumbing_helpers;
 use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_health, mount_index_embed, spelunk_bin_in};
@@ -24,13 +24,13 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Failsafe only: hit solely if the detached child never finishes.
+// Failsafe only: hit solely if the detached child never finishes.
 const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── fixture project ───────────────────────────────────────────────────────
 
-/// A tiny project: enough source for a couple of chunks, so the embed phase
-/// has real work without slowing the suite down.
+// A tiny project: enough source for a couple of chunks, so the embed phase
+// has real work without slowing the suite down.
 fn write_project(dir: &Path) {
     std::fs::write(
         dir.join("Cargo.toml"),
@@ -47,12 +47,12 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-/// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`.
-///
-/// `ProjectConfig` (`spelunk-core/src/config/mod.rs`) only deserializes
-/// `server_url`/`project_id`/`server_ca`/`index` from this file; any other
-/// key (notably `mode`) is silently dropped by serde. `mode` must go through
-/// `SPELUNK_MODE` (or the personal global `--config` file) instead.
+// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`.
+//
+// `ProjectConfig` (`spelunk-core/src/config/mod.rs`) only deserializes
+// `server_url`/`project_id`/`server_ca`/`index` from this file; any other
+// key (notably `mode`) is silently dropped by serde. `mode` must go through
+// `SPELUNK_MODE` (or the personal global `--config` file) instead.
 fn write_server_config(project_dir: &Path, server_url: &str) {
     let spelunk_dir = project_dir.join(".spelunk");
     std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
@@ -60,8 +60,8 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
     std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
 }
 
-/// Point loopback auto-discovery (`SPELUNK_STATE_DIR`/`server.port`, step 3a
-/// of `capability::probe`) at `url`.
+// Point loopback auto-discovery (`SPELUNK_STATE_DIR`/`server.port`, step 3a
+// of `capability::probe`) at `url`.
 fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     let port: u16 = url
@@ -74,8 +74,8 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
 }
 
-/// `GET /v1/health` reporting an embedder still `loading` (no `index.embed`
-/// capability advertised yet).
+// `GET /v1/health` reporting an embedder still `loading` (no `index.embed`
+// capability advertised yet).
 async fn mount_health_loading(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/v1/health"))
@@ -89,11 +89,11 @@ async fn mount_health_loading(server: &MockServer) {
         .await;
 }
 
-/// Build a `spelunk index --db <db> .` command against `project`, defensively
-/// scrubbed of every `SPELUNK_*` env var these tests care about isolating
-/// (an ambient value in the developer/CI shell must never leak into the
-/// child and quietly change which tier gets probed). Callers add back
-/// exactly the env each scenario needs.
+// Build a `spelunk index --db <db> .` command against `project`, defensively
+// scrubbed of every `SPELUNK_*` env var these tests care about isolating
+// (an ambient value in the developer/CI shell must never leak into the
+// child and quietly change which tier gets probed). Callers add back
+// exactly the env each scenario needs.
 fn index_cmd(home: &Path, project: &Path, db: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
@@ -154,9 +154,9 @@ fn wait_for_embeddings(db_path: &Path) -> i64 {
 
 // ── foreground embed phase (mod.rs's phase 2) ────────────────────────────
 
-/// Test 1 (the routing bug): `local_first` (default) with an explicit
-/// unroutable `server_url` and a loopback mock present must embed via the
-/// loopback mock, never attempt the unroutable `server_url`.
+// Test 1 (the routing bug): `local_first` (default) with an explicit
+// unroutable `server_url` and a loopback mock present must embed via the
+// loopback mock, never attempt the unroutable `server_url`.
 #[tokio::test]
 async fn local_first_foreground_embeds_via_loopback_not_unroutable_server_url() {
     let loopback = MockServer::start().await;
@@ -186,9 +186,9 @@ async fn local_first_foreground_embeds_via_loopback_not_unroutable_server_url() 
     );
 }
 
-/// Test 2 (regression guard): `cloud_first` with an explicit `server_url`
-/// that DOES advertise `index.embed` must still route embedding to and
-/// succeed against that `server_url`, unchanged by this fix.
+// Test 2 (regression guard): `cloud_first` with an explicit `server_url`
+// that DOES advertise `index.embed` must still route embedding to and
+// succeed against that `server_url`, unchanged by this fix.
 #[tokio::test]
 async fn cloud_first_foreground_still_embeds_via_explicit_server_url() {
     let mock = MockServer::start().await;
@@ -233,9 +233,9 @@ async fn cloud_first_foreground_still_embeds_via_explicit_server_url() {
     );
 }
 
-/// Test 3 (unaffected): no `server_url` configured at all (pure loopback
-/// auto-discovery, the default no-team-server case) must embed via loopback
-/// exactly as before this fix.
+// Test 3 (unaffected): no `server_url` configured at all (pure loopback
+// auto-discovery, the default no-team-server case) must embed via loopback
+// exactly as before this fix.
 #[tokio::test]
 async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     let loopback = MockServer::start().await;
@@ -262,9 +262,9 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     );
 }
 
-/// Test 4 (unchanged): explicit offline (`SPELUNK_NO_SERVER=1`) skips the
-/// embed phase with the existing differentiated notice; no server is
-/// contacted.
+// Test 4 (unchanged): explicit offline (`SPELUNK_NO_SERVER=1`) skips the
+// embed phase with the existing differentiated notice; no server is
+// contacted.
 #[tokio::test]
 async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     let home = TempDir::new().unwrap();
@@ -293,9 +293,9 @@ async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     );
 }
 
-/// Test 5 (unchanged): a loopback server present but with the embedder still
-/// `loading` at index time keeps the existing "still loading, skipped"
-/// notice for the foreground path.
+// Test 5 (unchanged): a loopback server present but with the embedder still
+// `loading` at index time keeps the existing "still loading, skipped"
+// notice for the foreground path.
 #[tokio::test]
 async fn loopback_embedder_loading_skips_foreground_embed_with_warmup_notice() {
     let loopback = MockServer::start().await;
@@ -327,9 +327,9 @@ async fn loopback_embedder_loading_skips_foreground_embed_with_warmup_notice() {
 
 // ── detached-worker path (--detach-embed) ─────────────────────────────────
 
-/// Test 6 (the routing bug, detached path): the same scenario as test 1, but
-/// through `--detach-embed`/`--_embed-phases`: the detached worker must poll
-/// and embed via the loopback mock, not the explicit unroutable `server_url`.
+// Test 6 (the routing bug, detached path): the same scenario as test 1, but
+// through `--detach-embed`/`--_embed-phases`: the detached worker must poll
+// and embed via the loopback mock, not the explicit unroutable `server_url`.
 #[tokio::test]
 async fn local_first_detached_embed_routes_to_loopback_not_unroutable_server_url() {
     let loopback = MockServer::start().await;

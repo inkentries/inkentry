@@ -552,7 +552,7 @@ mod tests {
 
     // ── Embedding-dim pre-flight checks ──────────────────────────────────────
 
-    /// Helper: build a health JSON body with the given capabilities and dim.
+    // Helper: build a health JSON body with the given capabilities and dim.
     fn health_body(caps: &[&str], dim: usize) -> serde_json::Value {
         serde_json::json!({
             "status": "ok",
@@ -564,7 +564,7 @@ mod tests {
         })
     }
 
-    /// Auto-discovered loopback server with wrong dim → `Tier::Offline` (soft downgrade).
+    // Auto-discovered loopback server with wrong dim → `Tier::Offline` (soft downgrade).
     #[tokio::test]
     async fn probe_loopback_dim_mismatch_downgrades_to_offline() {
         use wiremock::matchers::{method, path};
@@ -588,7 +588,7 @@ mod tests {
         );
     }
 
-    /// Auto-discovered loopback server with correct dim → `Tier::Server`.
+    // Auto-discovered loopback server with correct dim → `Tier::Server`.
     #[tokio::test]
     async fn probe_loopback_dim_match_returns_server() {
         use wiremock::matchers::{method, path};
@@ -613,9 +613,9 @@ mod tests {
 
     // ── accepts_pushed_vectors (top-level health bool) ──────────────────────────
 
-    /// A server advertising `accepts_pushed_vectors: true` must parse into
-    /// `caps.accepts_pushed_vectors == true`: the gate the sync push reads
-    /// before attaching a client-computed vector.
+    // A server advertising `accepts_pushed_vectors: true` must parse into
+    // `caps.accepts_pushed_vectors == true`: the gate the sync push reads
+    // before attaching a client-computed vector.
     #[tokio::test]
     async fn probe_url_parses_accepts_pushed_vectors_true() {
         use wiremock::matchers::{method, path};
@@ -639,8 +639,8 @@ mod tests {
         );
     }
 
-    /// A server that omits the field (older server, or the OSS team server)
-    /// must default to `false`: the push stays text-only there.
+    // A server that omits the field (older server, or the OSS team server)
+    // must default to `false`: the push stays text-only there.
     #[tokio::test]
     async fn probe_url_accepts_pushed_vectors_defaults_false_when_absent() {
         use wiremock::matchers::{method, path};
@@ -668,9 +668,9 @@ mod tests {
 
     // ── ServerLimits parsing (/v1/health `limits` object) ──────────────────────
 
-    /// A server that DOES advertise `limits` must have it parsed into
-    /// `Tier::Server.server_limits`. This is the non-version-skew case: a
-    /// current-build server carrying the `/index/embed` timeout exemption.
+    // A server that DOES advertise `limits` must have it parsed into
+    // `Tier::Server.server_limits`. This is the non-version-skew case: a
+    // current-build server carrying the `/index/embed` timeout exemption.
     #[tokio::test]
     async fn probe_url_parses_server_limits_when_present() {
         use wiremock::matchers::{method, path};
@@ -703,11 +703,11 @@ mod tests {
         assert_eq!(limits.embedder_token_cap, Some(5792));
     }
 
-    /// A server that does NOT advertise `limits` (pre-dates the field) must
-    /// leave `Tier::Server.server_limits` as `None`: this is the exact
-    /// version-skew case: an old server still enforcing the legacy 30s
-    /// `/index/embed` budget with no exemption. `None` must never be
-    /// confused with "no limit" by a caller.
+    // A server that does NOT advertise `limits` (pre-dates the field) must
+    // leave `Tier::Server.server_limits` as `None`: this is the exact
+    // version-skew case: an old server still enforcing the legacy 30s
+    // `/index/embed` budget with no exemption. `None` must never be
+    // confused with "no limit" by a caller.
     #[tokio::test]
     async fn probe_url_server_limits_none_when_absent_legacy_server() {
         use wiremock::matchers::{method, path};
@@ -735,10 +735,10 @@ mod tests {
         );
     }
 
-    /// `embedder_token_cap` specifically must round-trip as `None` when the
-    /// server reports it as JSON `null` (e.g. embedder not ready, or an
-    /// external non-native backend with no known cap): distinct from the
-    /// whole `limits` object being absent.
+    // `embedder_token_cap` specifically must round-trip as `None` when the
+    // server reports it as JSON `null` (e.g. embedder not ready, or an
+    // external non-native backend with no known cap): distinct from the
+    // whole `limits` object being absent.
     #[tokio::test]
     async fn probe_url_parses_server_limits_with_null_token_cap() {
         use wiremock::matchers::{method, path};
@@ -764,8 +764,8 @@ mod tests {
         assert_eq!(limits.embedder_token_cap, None);
     }
 
-    /// Auto-discovered loopback server with no embedder (dim 0) → `Tier::Server`
-    /// (dim 0 means no `index.embed` check is relevant).
+    // Auto-discovered loopback server with no embedder (dim 0) → `Tier::Server`
+    // (dim 0 means no `index.embed` check is relevant).
     #[tokio::test]
     async fn probe_loopback_dim_zero_no_embedder_returns_server() {
         use wiremock::matchers::{method, path};
@@ -786,7 +786,7 @@ mod tests {
         );
     }
 
-    /// Explicit server_url with wrong dim → hard `Err` with an actionable message.
+    // Explicit server_url with wrong dim → hard `Err` with an actionable message.
     #[tokio::test]
     async fn probe_explicit_url_dim_mismatch_returns_error() {
         use wiremock::matchers::{method, path};
@@ -826,10 +826,10 @@ mod tests {
 
     // ── transport-scheme validation ──────────────────────────────────────────
 
-    /// A non-loopback `http://` URL must be rejected before any request is
-    /// sent: no mock is mounted, so a request would fail with "connection
-    /// refused" or similar rather than surfacing the validation error; the
-    /// assertion on the error message proves the reject happened pre-flight.
+    // A non-loopback `http://` URL must be rejected before any request is
+    // sent: no mock is mounted, so a request would fail with "connection
+    // refused" or similar rather than surfacing the validation error; the
+    // assertion on the error message proves the reject happened pre-flight.
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_no_request_sent() {
         // Deliberately no MockServer / no listener on this address: if
@@ -841,8 +841,8 @@ mod tests {
         assert!(err.contains("https"), "got: {err}");
     }
 
-    /// Same rejection applies to the loopback auto-discovery path (defensive;
-    /// auto-discovery URLs are always loopback in practice).
+    // Same rejection applies to the loopback auto-discovery path (defensive;
+    // auto-discovery URLs are always loopback in practice).
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_even_when_auto_discovered() {
         let result = probe_url(
@@ -855,8 +855,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Loopback `http://` and `https://` URLs are accepted (proceed to the
-    /// actual health request against a mock server).
+    // Loopback `http://` and `https://` URLs are accepted (proceed to the
+    // actual health request against a mock server).
     #[tokio::test]
     async fn probe_url_accepts_loopback_http_and_https() {
         use wiremock::matchers::{method, path};
@@ -877,8 +877,8 @@ mod tests {
         );
     }
 
-    /// `/v1/health` must never carry an `Authorization` header: it is an
-    /// unauthenticated endpoint.
+    // `/v1/health` must never carry an `Authorization` header: it is an
+    // unauthenticated endpoint.
     #[tokio::test]
     async fn probe_url_health_request_carries_no_bearer_header() {
         use wiremock::matchers::{method, path};
@@ -904,7 +904,7 @@ mod tests {
         );
     }
 
-    /// Health body carrying the PR-A `embedder: { state, detail }` sub-object.
+    // Health body carrying the PR-A `embedder: { state, detail }` sub-object.
     fn health_body_with_embedder(state: &str) -> serde_json::Value {
         serde_json::json!({
             "status": "ok",
@@ -917,7 +917,7 @@ mod tests {
         })
     }
 
-    /// `probe_url` must surface the server's `embedder.state` on `Tier::Server`.
+    // `probe_url` must surface the server's `embedder.state` on `Tier::Server`.
     #[tokio::test]
     async fn probe_url_carries_embedder_state_loading() {
         use wiremock::matchers::{method, path};
@@ -958,7 +958,7 @@ mod tests {
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Unavailable));
     }
 
-    /// A server that pre-dates the `embedder` field → `Unknown` (not an error).
+    // A server that pre-dates the `embedder` field → `Unknown` (not an error).
     #[tokio::test]
     async fn probe_url_absent_embedder_field_is_unknown() {
         use wiremock::matchers::{method, path};
@@ -980,12 +980,12 @@ mod tests {
 
     // ── get_tier process-cache semantics ─────────────────────────────────────
 
-    /// `TIER` is a `OnceCell`: `get_tier` must probe at most once per process
-    /// and every later call must return the identical cached `Tier`, not
-    /// re-probe. This is what makes `EXPLICIT_PROBE_FAILURE` safe to read from
-    /// `Tier::Offline` rendering: there is no later probe in the same process
-    /// that could silently swap a fresh success in underneath a stale failure
-    /// annotation (or vice versa).
+    // `TIER` is a `OnceCell`: `get_tier` must probe at most once per process
+    // and every later call must return the identical cached `Tier`, not
+    // re-probe. This is what makes `EXPLICIT_PROBE_FAILURE` safe to read from
+    // `Tier::Offline` rendering: there is no later probe in the same process
+    // that could silently swap a fresh success in underneath a stale failure
+    // annotation (or vice versa).
     #[tokio::test]
     #[serial_test::serial(explicit_probe_failure)]
     async fn get_tier_probes_at_most_once_and_caches_the_result() {
@@ -1021,9 +1021,9 @@ mod tests {
 
     // ── classification matrix: real reqwest errors, not hand-built chains ────
 
-    /// A genuine TCP connection-refused error through the real `reqwest`
-    /// client must classify as `Unreachable`, never `Tls`: no TLS layer is
-    /// ever reached, so `find_rustls_cause` must return `None` on it.
+    // A genuine TCP connection-refused error through the real `reqwest`
+    // client must classify as `Unreachable`, never `Tls`: no TLS layer is
+    // ever reached, so `find_rustls_cause` must return `None` on it.
     #[tokio::test]
     #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_connection_refused_sets_unreachable_not_tls() {
@@ -1042,9 +1042,9 @@ mod tests {
         );
     }
 
-    /// A genuine client-side timeout (the peer accepts the TCP connection but
-    /// never answers) must also classify as `Unreachable`, not `Tls`: a slow
-    /// or hung server is not a certificate problem.
+    // A genuine client-side timeout (the peer accepts the TCP connection but
+    // never answers) must also classify as `Unreachable`, not `Tls`: a slow
+    // or hung server is not a certificate problem.
     #[tokio::test]
     #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_timeout_sets_unreachable_not_tls() {
@@ -1070,10 +1070,10 @@ mod tests {
         );
     }
 
-    /// A reachable server that answers with a non-2xx status (e.g. a
-    /// misconfigured reverse proxy, a 500, garbage) is neither `[tls: ...]`
-    /// nor `[unreachable]`: the transport and TLS both worked fine. This
-    /// path must leave `EXPLICIT_PROBE_FAILURE` unset entirely.
+    // A reachable server that answers with a non-2xx status (e.g. a
+    // misconfigured reverse proxy, a 500, garbage) is neither `[tls: ...]`
+    // nor `[unreachable]`: the transport and TLS both worked fine. This
+    // path must leave `EXPLICIT_PROBE_FAILURE` unset entirely.
     #[tokio::test]
     #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_explicit_non_success_status_does_not_set_any_probe_failure() {
@@ -1103,11 +1103,11 @@ mod tests {
         );
     }
 
-    /// Auto-discovered (loopback) probe failures must never populate
-    /// `EXPLICIT_PROBE_FAILURE`: that cache exists only to annotate an
-    /// *explicit* `server_url` miss. A common "no local server running"
-    /// loopback miss must not leave behind a failure cause that a later
-    /// status render could misattribute to an unrelated explicit `server_url`.
+    // Auto-discovered (loopback) probe failures must never populate
+    // `EXPLICIT_PROBE_FAILURE`: that cache exists only to annotate an
+    // *explicit* `server_url` miss. A common "no local server running"
+    // loopback miss must not leave behind a failure cause that a later
+    // status render could misattribute to an unrelated explicit `server_url`.
     #[tokio::test]
     #[serial_test::serial(explicit_probe_failure)]
     async fn probe_url_auto_discovered_connection_refused_leaves_probe_failure_unset() {
@@ -1138,12 +1138,12 @@ mod tests {
     // `SPELUNK_NO_SERVER` internally, so it must never run concurrently with a
     // test that transiently sets it.
 
-    /// `local_first` (the default reached once `server_url` is set, with no
-    /// explicit `mode`) must probe the LOCAL loopback embedder for inference,
-    /// never the configured `server_url`. The loopback mock is discovered via
-    /// the `server.port` file (step 3a); `server_url` is left pointed at an
-    /// address nothing mounts anything on, so the test would fail loudly
-    /// (connection error, not a silent pass) if the code ever tried it.
+    // `local_first` (the default reached once `server_url` is set, with no
+    // explicit `mode`) must probe the LOCAL loopback embedder for inference,
+    // never the configured `server_url`. The loopback mock is discovered via
+    // the `server.port` file (step 3a); `server_url` is left pointed at an
+    // address nothing mounts anything on, so the test would fail loudly
+    // (connection error, not a silent pass) if the code ever tried it.
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn get_inference_tier_local_first_prefers_loopback_over_explicit_server_url() {
@@ -1207,18 +1207,18 @@ mod tests {
         );
     }
 
-    /// Explicit offline (`mode = "offline"`) must short-circuit before any
-    /// probe, exactly like `get_tier`. `server_url` is set to an address
-    /// nothing mounts anything on, so any attempted probe would hang/error
-    /// rather than silently returning `Offline` for the right reason.
-    ///
-    /// Uses `cfg.mode = Some(SyncMode::Offline)` rather than
-    /// `SPELUNK_NO_SERVER=1` deliberately: that env var is process-global and
-    /// read by every concurrently-running test's `probe()`/`get_tier()`
-    /// call (e.g. `get_tier_probes_at_most_once_and_caches_the_result`
-    /// above, which is not in this lock group), so mutating it here would
-    /// reintroduce the exact cross-test race this comment is warning about.
-    /// `mode` is per-`Config` and carries no such risk.
+    // Explicit offline (`mode = "offline"`) must short-circuit before any
+    // probe, exactly like `get_tier`. `server_url` is set to an address
+    // nothing mounts anything on, so any attempted probe would hang/error
+    // rather than silently returning `Offline` for the right reason.
+    //
+    // Uses `cfg.mode = Some(SyncMode::Offline)` rather than
+    // `SPELUNK_NO_SERVER=1` deliberately: that env var is process-global and
+    // read by every concurrently-running test's `probe()`/`get_tier()`
+    // call (e.g. `get_tier_probes_at_most_once_and_caches_the_result`
+    // above, which is not in this lock group), so mutating it here would
+    // reintroduce the exact cross-test race this comment is warning about.
+    // `mode` is per-`Config` and carries no such risk.
     #[tokio::test]
     async fn get_inference_tier_explicit_offline_short_circuits() {
         let cfg = Config {
@@ -1231,24 +1231,24 @@ mod tests {
         assert!(matches!(tier, Tier::Offline), "got {tier:?}");
     }
 
-    /// `get_inference_tier_fresh`'s `cloud_first` branch must re-probe the
-    /// server on every call, never freezing on an earlier observation. This
-    /// is the one behavioural difference from `get_inference_tier` (whose
-    /// `cloud_first` branch reuses `get_tier`'s process-lifetime cache) and
-    /// the entire reason `wait_for_embedder` uses the `_fresh` variant: a
-    /// bug that made this branch delegate to `get_tier` too (i.e. collapse
-    /// to being identical to `get_inference_tier`) would still pass every
-    /// other `get_inference_tier_fresh` test in this file, since those only
-    /// ever make a single call each. This test calls it twice against a
-    /// mock whose response changes between calls and asserts the second
-    /// call observes the change, directly at the tier-fetch level (not
-    /// indirected through `wait_for_embedder`'s poll loop).
-    ///
-    /// Deliberately does not touch `get_tier`/`TIER` (the process-wide
-    /// `OnceCell`) at all, unlike a test that called `get_inference_tier`'s
-    /// `Cached` branch would have to: that cell is shared by every test in
-    /// this binary with no reset hook, so asserting on it directly here
-    /// would make this test's pass/fail depend on unrelated test ordering.
+    // `get_inference_tier_fresh`'s `cloud_first` branch must re-probe the
+    // server on every call, never freezing on an earlier observation. This
+    // is the one behavioural difference from `get_inference_tier` (whose
+    // `cloud_first` branch reuses `get_tier`'s process-lifetime cache) and
+    // the entire reason `wait_for_embedder` uses the `_fresh` variant: a
+    // bug that made this branch delegate to `get_tier` too (i.e. collapse
+    // to being identical to `get_inference_tier`) would still pass every
+    // other `get_inference_tier_fresh` test in this file, since those only
+    // ever make a single call each. This test calls it twice against a
+    // mock whose response changes between calls and asserts the second
+    // call observes the change, directly at the tier-fetch level (not
+    // indirected through `wait_for_embedder`'s poll loop).
+    //
+    // Deliberately does not touch `get_tier`/`TIER` (the process-wide
+    // `OnceCell`) at all, unlike a test that called `get_inference_tier`'s
+    // `Cached` branch would have to: that cell is shared by every test in
+    // this binary with no reset hook, so asserting on it directly here
+    // would make this test's pass/fail depend on unrelated test ordering.
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn get_inference_tier_fresh_cloud_first_reprobes_every_call() {

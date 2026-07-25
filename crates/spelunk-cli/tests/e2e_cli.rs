@@ -2274,7 +2274,17 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     );
 
     // Pass 1: embed everything via the mock server (full coverage).
+    //
+    // This test's purpose is the partial-vs-zero coverage warmup notice, not
+    // local-vs-remote embed routing, so it needs an explicit `server_url` to
+    // legitimately serve embedding here. Under the default `local_first`
+    // mode that routing is now correctly refused (see the `get_inference_tier`
+    // routing fix) in favor of the local loopback embedder, which this test
+    // does not configure - so force `cloud_first` via env (a project-level
+    // `.spelunk/config.toml`, which `write_config_with_server` writes to,
+    // silently drops a `mode` key; see `write_project_server_config`).
     spelunk_bin_in(home.path())
+        .env("SPELUNK_MODE", "cloud_first")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
