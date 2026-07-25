@@ -981,51 +981,9 @@ mod cat_file_batch {
         );
     }
 
-    /// Drop the machine's global/system git config for every git this
-    /// process spawns, including a setup git this test module runs
-    /// directly. Must be process-wide, not per-`Command`: a helper that
-    /// only sets env on the `Command` it builds itself never reaches git
-    /// spawned by the code under test (`run_git`/`run_git_with_stdin`
-    /// inherit the process environment like any other `Command`).
-    ///
-    /// A temp repo's local config does not shadow an ambient value the
-    /// repo never sets, so an ambient `core.hooksPath` (husky, lefthook,
-    /// the pre-commit framework) fires a foreign pre-commit hook on the
-    /// commit below.
-    ///
-    /// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` only redirect config
-    /// *files*; they don't touch `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`,
-    /// which git consults before config and so override this module's own
-    /// explicit `user.name`/`user.email` if the ambient process (a
-    /// developer's shell, a CI runner's bot identity) happens to export
-    /// them. Those are cleared too.
-    fn isolate_git_config() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            // SAFETY: every caller here calls this first and `Once` blocks
-            // the rest until it returns, so no thread can be spawning git
-            // (reading environ) while these run.
-            unsafe {
-                std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-                std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
-                for var in [
-                    "GIT_AUTHOR_NAME",
-                    "GIT_AUTHOR_EMAIL",
-                    "GIT_AUTHOR_DATE",
-                    "GIT_COMMITTER_NAME",
-                    "GIT_COMMITTER_EMAIL",
-                    "GIT_COMMITTER_DATE",
-                    "EMAIL",
-                ] {
-                    std::env::remove_var(var);
-                }
-            }
-        });
-    }
-
     /// A repo carrying one note, and that note's blob sha.
     fn repo_with_one_note() -> (tempfile::TempDir, String) {
-        isolate_git_config();
+        crate::test_support::isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let run = |args: &[&str]| {
             let out = std::process::Command::new("git")

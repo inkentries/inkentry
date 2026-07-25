@@ -35,25 +35,21 @@ pub fn open_test_db() -> spelunk_core::storage::Database {
         .expect("failed to open in-memory database")
 }
 
-/// Drop the machine's global/system git config for every git this process
-/// spawns, including one the code under test spawns itself. Must be
-/// process-wide, not per-`Command`: a helper that only sets env on the
-/// `Command` it builds itself never reaches git spawned by the code under
-/// test.
-///
-/// A temp repo's local config does not shadow an ambient value the repo
-/// never sets: a global `notes.rewriteRef` reads back as already-covered, or
-/// a global `core.hooksPath` (husky, lefthook, the pre-commit framework)
-/// fires a foreign hook on a setup commit.
-///
-/// `/dev/null` is not a Windows path, but git skips a scope whenever its var
-/// is set, whatever the path resolves to, so this isolates on Windows too.
-///
-/// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` only redirect config *files*;
-/// they don't touch `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`, which git
-/// consults before config and so override a test's own explicit `git config
-/// user.name`/`user.email` if the ambient process (a developer's shell, a
-/// CI runner's bot identity) happens to export them. Those are cleared too.
+// Drop the ambient global/system git config for every git this process
+// spawns, including one the code under test spawns itself: process-wide via
+// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM=/dev/null`, guarded by `Once`. Also
+// clears `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`, which git resolves before
+// consulting config at all, so an ambient value there would otherwise
+// override a test's own explicit `user.name`/`user.email`.
+//
+// This is `spelunk-core`'s `tests/`-side copy of
+// `spelunk_core::test_support::isolate_git_config`. An integration test
+// binary links the crate externally, so it can't reach that `#[cfg(test)]`-
+// reachable definition directly without a self-referencing dev-dependency —
+// tried, and it breaks this repo's shared-`CARGO_TARGET_DIR`-across-
+// worktrees pre-commit hook (fails with `unresolved import` against a target
+// dir last built from a different Cargo.lock). This duplicate is the actual
+// floor, not the self-dependency trick.
 pub fn isolate_git_config() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -78,14 +74,10 @@ pub fn isolate_git_config() {
     });
 }
 
-/// Build a `git` `Command` rooted at `cwd`, isolated from the developer's
-/// ambient global/system git config.
-///
-/// This is the sanctioned way for a `spelunk-core` integration test to spawn
-/// `git`: it always calls [`isolate_git_config`] first, so a caller cannot
-/// construct an un-isolated one by forgetting a separate setup step.
-/// `scripts/check-git-isolation.sh` enforces in CI that a test file spawning
-/// `git` wires this module in.
+// Build a `git` `Command` rooted at `cwd`, isolated via `isolate_git_config`
+// first, so a caller cannot construct an un-isolated one by forgetting a
+// separate setup step. `scripts/check-git-isolation.sh` enforces that a test
+// file spawning `git` wires this in.
 pub fn git_command(cwd: &std::path::Path) -> std::process::Command {
     isolate_git_config();
     let mut cmd = std::process::Command::new("git");
