@@ -45,7 +45,7 @@ pub fn open_test_db() -> spelunk_core::storage::Database {
 // This is `spelunk-core`'s `tests/`-side copy of
 // `spelunk_core::test_support::isolate_git_config`. An integration test
 // binary links the crate externally, so it can't reach that `#[cfg(test)]`-
-// reachable definition directly without a self-referencing dev-dependency —
+// reachable definition directly without a self-referencing dev-dependency:
 // tried, and it breaks this repo's shared-`CARGO_TARGET_DIR`-across-
 // worktrees pre-commit hook (fails with `unresolved import` against a target
 // dir last built from a different Cargo.lock). This duplicate is the actual

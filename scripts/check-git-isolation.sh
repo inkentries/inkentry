@@ -10,7 +10,7 @@
 #     file, since each is entirely test code.
 #   - crates/*/src/**/*.rs: only the trailing `#[cfg(test)] mod tests { .. }`
 #     block, checked from the first `#[cfg(test)]` line to EOF. Assumes the
-#     test module is last in the file (true today) — keep it that way, or
+#     test module is last in the file (true today): keep it that way, or
 #     this can misjudge production code as tests or vice versa.
 #
 # Blind spot: a spawn reached through a variable (`let bin = "git";

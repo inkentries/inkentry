@@ -98,19 +98,19 @@ fn real_git_worktree_resolves_to_main_index() {
     same_path(&resolve_main_worktree_root(&sub), &main_root);
 }
 
-/// Proves the "fully hermetic" claim above is real, not aspirational: even
-/// when the *ambient* environment (as set before this test binary starts,
-/// which `isolate_git_config`'s process-wide `Once` cannot retroactively
-/// undo for a call that already ran) points `GIT_CONFIG_GLOBAL` at a global
-/// config whose `core.hooksPath` hook always fails, `real_git_worktree_resolves_to_main_index`
-/// still passes. `isolate_git_config` runs inside the child and overwrites
-/// the inherited value before the child's first git spawn.
-///
-/// This has to re-exec the test binary as a child process: `isolate_git_config`
-/// is a one-shot `Once` per process, so simulating a hostile *ambient* value
-/// from within an already-running test (which may run after some other test
-/// already initialised isolation) cannot exercise the pre-isolation state the
-/// way a fresh child process, given a hostile environment at start, can.
+// Proves the "fully hermetic" claim above is real, not aspirational: even
+// when the *ambient* environment (as set before this test binary starts,
+// which `isolate_git_config`'s process-wide `Once` cannot retroactively
+// undo for a call that already ran) points `GIT_CONFIG_GLOBAL` at a global
+// config whose `core.hooksPath` hook always fails, `real_git_worktree_resolves_to_main_index`
+// still passes. `isolate_git_config` runs inside the child and overwrites
+// the inherited value before the child's first git spawn.
+//
+// This has to re-exec the test binary as a child process: `isolate_git_config`
+// is a one-shot `Once` per process, so simulating a hostile *ambient* value
+// from within an already-running test (which may run after some other test
+// already initialised isolation) cannot exercise the pre-isolation state the
+// way a fresh child process, given a hostile environment at start, can.
 #[test]
 fn real_git_worktree_resolves_to_main_index_survives_a_hostile_ambient_hooks_path() {
     let hostile = tempfile::TempDir::new().expect("tempdir");
@@ -145,17 +145,17 @@ fn real_git_worktree_resolves_to_main_index_survives_a_hostile_ambient_hooks_pat
     );
 }
 
-/// Commits in a fresh repo with an explicit local `user.name`/`user.email`,
-/// then asserts the commit's author and committer came from that config, not
-/// from whatever `GIT_AUTHOR_*`/`GIT_COMMITTER_*` the process happened to
-/// inherit. Git resolves identity as env-vars-before-config, so a fabricated
-/// local `user.email` alone proves nothing about isolation; the strong
-/// assertion is that the *env* did not win.
-///
-/// Runs standalone (covers the ordinary case: no ambient poisoning, still
-/// green) and is also re-exec'd by the driver test below under a poisoned
-/// ambient environment, where a real gap would make this specific assertion
-/// fail rather than some unrelated step.
+// Commits in a fresh repo with an explicit local `user.name`/`user.email`,
+// then asserts the commit's author and committer came from that config, not
+// from whatever `GIT_AUTHOR_*`/`GIT_COMMITTER_*` the process happened to
+// inherit. Git resolves identity as env-vars-before-config, so a fabricated
+// local `user.email` alone proves nothing about isolation; the strong
+// assertion is that the *env* did not win.
+//
+// Runs standalone (covers the ordinary case: no ambient poisoning, still
+// green) and is also re-exec'd by the driver test below under a poisoned
+// ambient environment, where a real gap would make this specific assertion
+// fail rather than some unrelated step.
 #[test]
 fn git_command_commit_identity_matches_local_config_not_ambient_env() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -191,16 +191,16 @@ fn git_command_commit_identity_matches_local_config_not_ambient_env() {
     );
 }
 
-/// Proves the assertion above is not vacuous: re-execs the test binary as a
-/// fresh child process with `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
-/// `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` poisoned in the *ambient*
-/// environment (the way a CI runner's bot identity or a developer's shell
-/// profile might export them), and confirms the commit identity assertion
-/// above still passes, i.e. `isolate_git_config` genuinely clears these
-/// before the child's first git spawn rather than merely redirecting config
-/// files. Needs a fresh process for the same reason as the hooks-path
-/// driver above: `isolate_git_config`'s `Once` cannot retroactively unpoison
-/// an environment it already observed.
+// Proves the assertion above is not vacuous: re-execs the test binary as a
+// fresh child process with `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
+// `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` poisoned in the *ambient*
+// environment (the way a CI runner's bot identity or a developer's shell
+// profile might export them), and confirms the commit identity assertion
+// above still passes, i.e. `isolate_git_config` genuinely clears these
+// before the child's first git spawn rather than merely redirecting config
+// files. Needs a fresh process for the same reason as the hooks-path
+// driver above: `isolate_git_config`'s `Once` cannot retroactively unpoison
+// an environment it already observed.
 #[test]
 fn git_command_commit_identity_survives_a_hostile_ambient_author_committer_env() {
     let exe = std::env::current_exe().expect("current test binary");

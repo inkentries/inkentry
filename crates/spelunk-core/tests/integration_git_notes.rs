@@ -2253,11 +2253,11 @@ async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
     );
 }
 
-/// Restores `GIT_CONFIG_GLOBAL` to `previous` on drop, including during a
-/// panic unwind. A plain "set, run, restore-before-assert" sequence only
-/// protects against a panic in the assertions: it still leaks the override
-/// into every later test in this process if the guarded call itself panics
-/// or the run is interrupted between the set and the restore.
+// Restores `GIT_CONFIG_GLOBAL` to `previous` on drop, including during a
+// panic unwind. A plain "set, run, restore-before-assert" sequence only
+// protects against a panic in the assertions: it still leaks the override
+// into every later test in this process if the guarded call itself panics
+// or the run is interrupted between the set and the restore.
 struct RestoreGitConfigGlobal(std::ffi::OsString);
 
 impl RestoreGitConfigGlobal {
@@ -2308,11 +2308,11 @@ async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
     );
 }
 
-/// Proves `RestoreGitConfigGlobal`'s `Drop` runs on unwind, not just on the
-/// happy path: forces a panic between the guard's construction and where the
-/// old set/restore code used to sit, then confirms the value is back
-/// afterward. Backs the panic-safety fix for
-/// `ensure_notes_rewrite_ref_honours_a_users_global_value` above.
+// Proves `RestoreGitConfigGlobal`'s `Drop` runs on unwind, not just on the
+// happy path: forces a panic between the guard's construction and where the
+// old set/restore code used to sit, then confirms the value is back
+// afterward. Backs the panic-safety fix for
+// `ensure_notes_rewrite_ref_honours_a_users_global_value` above.
 #[test]
 #[serial]
 fn restore_git_config_global_guard_restores_after_a_panic() {
