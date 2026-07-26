@@ -321,8 +321,18 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
         // Index the project — must reach the embedding phase without a 404.
+        //
+        // This test's purpose is the project_id slash-encoding in the embed
+        // request path, not local-vs-remote embed routing, so it needs an
+        // explicit `server_url` to legitimately serve embedding. Under the
+        // default `local_first` mode that routing is now correctly refused
+        // (see the `get_inference_tier` routing fix), so force `cloud_first`
+        // here: `.spelunk/config.toml` doesn't recognize a `mode` key (see
+        // `write_project_server_config`), so this must go through the env
+        // var.
         spelunk_bin()
             .current_dir(&project_dir)
+            .env("SPELUNK_MODE", "cloud_first")
             .arg("--config")
             .arg(&config_path)
             .arg("index")
@@ -2264,7 +2274,17 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     );
 
     // Pass 1: embed everything via the mock server (full coverage).
+    //
+    // This test's purpose is the partial-vs-zero coverage warmup notice, not
+    // local-vs-remote embed routing, so it needs an explicit `server_url` to
+    // legitimately serve embedding here. Under the default `local_first`
+    // mode that routing is now correctly refused (see the `get_inference_tier`
+    // routing fix) in favor of the local loopback embedder, which this test
+    // does not configure - so force `cloud_first` via env (a project-level
+    // `.spelunk/config.toml`, which `write_config_with_server` writes to,
+    // silently drops a `mode` key; see `write_project_server_config`).
     spelunk_bin_in(home.path())
+        .env("SPELUNK_MODE", "cloud_first")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)

@@ -22,6 +22,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   as it arrives, until a page comes back short of that size. A large first
   sync or pull now completes fully in one command instead of requiring
   several repeated runs to converge.
+- **`spelunk index`'s embed phase now embeds locally in `local_first` mode
+  even when a team `server_url` is configured.** Both the foreground (default)
+  embed phase and the `--detach-embed` background worker's embedder-readiness
+  poll resolved their embedding target from the raw tier-probing functions
+  (`get_tier`, `probe_tier_fresh`) instead of the mode-aware
+  `get_inference_tier`/`get_inference_tier_fresh`: a `local_first` project
+  with an explicit `server_url` sent every embed batch to that `server_url`
+  instead of the local, auto-discovered embedder, silently skipping embedding
+  when the configured server has no `/index/embed` route. Both call sites now
+  route through `get_inference_tier`/`get_inference_tier_fresh`, the same fix
+  already applied to `memory add`/`reindex`/`search`/`timeline`/`harvest`/
+  `reconcile` and `explore`. `cloud_first` is unchanged. See [ADR-004's
+  2026-07-23 amendment](docs/adr/004-unified-memory-storage.md).
 
 ## [0.9.5] — 2026-07-24
 
