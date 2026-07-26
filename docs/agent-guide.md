@@ -516,7 +516,7 @@ Example output:
 ```
 
 (The model name is the pinned model id, and the dimensionality reflects the
-bundled native embedder — codefuse-ai/F2LLM-v2-330M at 896 dimensions.
+bundled native embedder: codefuse-ai/F2LLM-v2-330M at 896 dimensions.
 Neither is configurable.)
 
 ---

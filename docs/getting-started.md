@@ -300,12 +300,12 @@ For how discovery works and how to point the CLI at a remote server, see
 ### Using your own LLM endpoint (advanced)
 
 By default the bundled `spelunk-server` provides embeddings (native, via the
-candle-served F2LLM-v2-330M model, 896-dim) and — when a chat model is
-configured — LLM inference. The embedding **model and its compute path are
+candle-served F2LLM-v2-330M model, 896-dim) and, when a chat model is
+configured, LLM inference. The embedding **model and its compute path are
 both fixed** product-wide: `spelunk` always embeds through the bundled native
 embedder, and there is no way to relocate or swap it. LLM inference is
 different: the server has no LLM of its own, so you point it at your own
-OpenAI-compatible chat-completions endpoint. Configure **the server** — this
+OpenAI-compatible chat-completions endpoint. Configure **the server**: this
 is not a CLI `config.toml` key. `spelunk-server` reads these environment
 variables (each has an equivalent flag):
 
@@ -339,7 +339,7 @@ Or, if you run `spelunk-server` yourself, pass the flags directly:
 spelunk-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-This is an advanced override; most users never set it — `explore`, summaries,
+This is an advanced override; most users never set it: `explore`, summaries,
 and `memory harvest` are simply unavailable without an LLM configured, and
 semantic search works regardless since the native embedder needs no
 configuration at all.

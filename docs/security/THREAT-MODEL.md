@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `SPELUNK_EMBEDDING_URL` removed — embedding can no longer egress to a third party)  
+**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `SPELUNK_EMBEDDING_URL` removed: embedding can no longer egress to a third party)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -37,7 +37,7 @@ cases, both of which change the data-egress threat profile:
 - **Explicit team `server_url`** in config points the CLI at a remote
   `spelunk-server`. Chunk text and query text then cross the network to that
   server, which embeds them natively in-process (embedding has no external
-  relocation option — see below).
+  relocation option; see below).
 - **Server-side external LLM shim:** a `spelunk-server` operator may set
   `--llm-url` (`SPELUNK_LLM_URL`) so the server forwards LLM calls to a
   third-party OpenAI-compatible service (OpenAI, Anthropic, Cohere, etc.).
@@ -357,7 +357,7 @@ The default backend is on-machine (loopback `spelunk-server`, native F2LLM
 embedder), so by default no code or memory content leaves the machine. This
 section covers the two paths that reach a third party. Embedding has no
 third-party path at all: it is always computed natively, in-process, by
-whichever `spelunk-server` receives the text — the control is the choice of
+whichever `spelunk-server` receives the text; the control is the choice of
 `server_url`, not a server-side embedding flag.
 
 **When a remote team `server_url` is set (chunk/query text and memory context

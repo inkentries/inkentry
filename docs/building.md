@@ -76,7 +76,7 @@ cargo build --release -p spelunk-server
 
 | Feature | Default | Description |
 |---|---|---|
-| `embed-native` | yes | Bundle the F2LLM-v2-330M native embedder via candle (CPU). Disabling it builds a server with no embedding capability at all — embed endpoints return a permanent 400 (there is no external-endpoint fallback). |
+| `embed-native` | yes | Bundle the F2LLM-v2-330M native embedder via candle (CPU). Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). |
 | `metal` | no | Enable Metal GPU acceleration on macOS. Requires the `embed-native` feature. Add when building the macOS release binary for best performance. |
 
 Enable non-default features with `--features`:
