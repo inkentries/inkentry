@@ -74,6 +74,7 @@ mod crash_test_hook;
 mod embed_phase;
 mod mentions;
 mod parse_phase;
+mod run_lock;
 mod summaries;
 mod worktree;
 
@@ -98,6 +99,28 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         .db
         .clone()
         .unwrap_or_else(|| project_root.join(".spelunk").join("index.db"));
+
+    // Serialize whole `spelunk index` runs against this project: two
+    // concurrent writers reproducibly corrupt index.db (see run_lock.rs doc
+    // comment), so only one process may hold this at a time. `mut` + `Option`
+    // because the two background-spawn sites below explicitly release it
+    // before handing off to a continuation child (see their comments).
+    let spelunk_dir = db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| project_root.join(".spelunk"));
+    let mut run_lock = match run_lock::try_acquire(&spelunk_dir)? {
+        run_lock::LockOutcome::Acquired(lock) => Some(lock),
+        run_lock::LockOutcome::HeldByOther { holder_pid } => {
+            let who = holder_pid
+                .map(|p| format!("pid {p}"))
+                .unwrap_or_else(|| "another process".to_string());
+            anyhow::bail!(
+                "index already running ({who}) on this project, try again once it finishes"
+            );
+        }
+    };
+
     let db = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
@@ -204,6 +227,12 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // index on a cold machine.
     if args.detach_embed && tier.is_server() && detach_embed_eligible(&tier) {
         let embed_log = background_log_path(&db_path);
+        // Release before spawning: the child re-acquires this same lock on
+        // entry, and dropping first (rather than after `spawn()` returns) is
+        // what makes that a race-free handoff instead of a timing-dependent
+        // one - the child starts running concurrently with us the instant
+        // `spawn()` is called, so releasing any later can lose the race.
+        drop(run_lock.take());
         if let EmbedSpawn::Detached(log_in_use) =
             spawn_embed_subprocess(&args, embed_log.as_deref())?
         {
@@ -223,7 +252,10 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             return Ok(());
         }
         // Spawn failed: fall through to the inline path (embeds now if ready,
-        // else prints the skip notice).
+        // else prints the skip notice), unprotected by the run lock already
+        // dropped above. Accepted: `Command::spawn` only fails on resource
+        // exhaustion, and re-acquiring here would just move the same
+        // race-vs-a-real-child problem rather than remove it.
     }
 
     if tier.is_server() && embed_ready {
@@ -263,10 +295,16 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         if let Some(p) = in_use {
             eprintln!("  Log: {}", p.display());
         }
+        // Release before spawning, same reasoning as the detach-embed site
+        // above: the child re-acquires this lock on entry, and only
+        // dropping first makes that race-free.
+        drop(run_lock.take());
         if cmd.spawn().is_ok() {
             return Ok(());
         }
-        // Fall through and run phases 3-5 inline as fallback.
+        // Fall through and run phases 3-5 inline as fallback, unprotected by
+        // the run lock already dropped above (see the detach-embed site's
+        // comment on this same tradeoff).
         tracing::warn!("failed to spawn background indexer; running inline");
     }
 

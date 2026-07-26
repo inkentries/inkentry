@@ -317,15 +317,13 @@ fn interrupted_file_hash_commits_before_its_chunks_pinning_the_real_write_orderi
 }
 
 #[test]
-fn plain_reindex_does_not_heal_a_hash_current_empty_chunks_file() {
-    // Known gap, pinned deliberately: `db.file_hash(path) == hash` short-
-    // circuits `process_text_file` (parse_phase.rs) before any chunk is
-    // touched, and `spelunk check` (check.rs) only re-hashes file content
-    // against the stored hash, never cross-checking chunk presence. Neither
-    // sees anything wrong with target.py after the crash in the drill above,
-    // so nothing currently converges this file back to indexed without
-    // `--force`. This test intentionally fails the moment that gap is closed;
-    // update it alongside the fix rather than deleting it.
+fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
+    // Regression pin for the fix: `process_text_file`'s skip check
+    // (parse_phase.rs) now requires "hash matches AND chunks exist for this
+    // file", not just a hash match, so a plain re-index (no `--force`)
+    // reprocesses target.py despite its hash already being current and
+    // converges it back to indexed - the user never needs to know about
+    // `--force` to recover from this crash window.
     let f = crash_mid_target_file();
 
     let mut cmd = spelunk_command(f._home.path());
@@ -342,13 +340,19 @@ fn plain_reindex_does_not_heal_a_hash_current_empty_chunks_file() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    assert_integrity_ok(&f.db_path);
     let conn = Connection::open(&f.db_path).expect("open db");
-    assert_eq!(
-        chunk_count_for(&conn, "target.py"),
-        0,
-        "documents the current gap: a plain re-index skips target.py forever because its hash \
-         is already current, even though it has zero chunks"
+    assert!(
+        chunk_count_for(&conn, "target.py") > 0,
+        "a plain re-index (no --force) must self-heal a hash-current, zero-chunk file left \
+         behind by the interrupted crash window"
     );
+    for path in ["alpha.py", "gamma.py", "target.py"] {
+        assert!(
+            all_file_paths(&conn).contains(&path.to_string()),
+            "{path} must be present after the plain re-index"
+        );
+    }
 }
 
 #[test]
@@ -674,33 +678,28 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
 // arrives while another holds the WAL write lock gets `SQLITE_BUSY`
 // immediately, not after a retry window.
 //
-// CONFIRMED FINDING, not a hypothetical: this drill reproducibly hits real
-// SQLite-level corruption ("database disk image is malformed", SQLITE_CORRUPT)
-// on unmodified code, not merely a busy/locked error from the losing process.
-// A single trial only overlaps the two processes' writes probabilistically
-// (observed ~1-in-3 to ~1-in-2 across manual sampling), so this loops several
-// fresh trials to make the drill a reliable regression pin instead of a flaky
-// one - this suite intentionally ships this test RED against unfixed main;
-// see the story's final report for the severity call and recommended next
-// step (a cross-process lock around the whole index run, the same shape as
-// `storage::git_notes::lock`, since WAL concurrent-writer semantics alone do
-// not prevent this).
-//
-// Marked `#[ignore]` deliberately, not deleted or softened: the corruption is
-// real but probabilistic even across `TRIALS` runs (observed ~1-in-3 outer
-// invocations reproducing it locally), so it cannot sit in the default green
-// suite without either being flaky-red (blocks merges on bad luck) or
-// training reviewers to ignore a real signal. Run explicitly with
-// `cargo test -p spelunk-cli --test crash_safety -- --ignored
-// two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db` to
-// reproduce, and un-ignore once the cross-process index lock lands - this
-// test is the fix's regression test, written in advance.
+// CONFIRMED FINDING against unmodified code: this drill used to reproducibly
+// hit real SQLite-level corruption ("database disk image is malformed",
+// SQLITE_CORRUPT), not merely a busy/locked error from the losing process.
+// The fix is `run_lock.rs`: a per-project cross-process advisory lock (same
+// shape as `storage::git_notes::lock`) taken as the first thing `spelunk
+// index` does, non-blocking. A second process that finds it held exits
+// immediately with a clean "index already running" error instead of racing
+// the first process's writes - it never touches the DB at all, so there is
+// nothing left to corrupt. This test now pins that behaviour: no longer
+// `#[ignore]`d, and re-run in a loop (not just this internal `TRIALS` count)
+// during development to build confidence the fix is real, not just less
+// likely to lose the race within one process run.
 #[test]
-#[ignore = "pins a confirmed, reproducible SQLITE_CORRUPT from two concurrent `spelunk index` \
-            runs (see module doc comment); un-ignore once a cross-process index lock lands"]
 fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
     const TRIALS: usize = 8;
     const FILES_PER_TRIAL: usize = 150;
+
+    // Across all trials, at least one must have actually contended for the
+    // lock (one process observed the other mid-run) - otherwise the two
+    // processes just happened to run back-to-back every time and this test
+    // would pass trivially without ever exercising the fix.
+    let mut observed_contention = false;
 
     for trial in 0..TRIALS {
         let home = TempDir::new().expect("home");
@@ -741,24 +740,55 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
             );
         }
 
-        // The decisive assertion: whichever process won (or both, if their
-        // writes never actually overlapped this trial), the file must not be
-        // corrupted. This is expected to fail within the trial budget above
-        // on unmodified code - see the doc comment on this test.
+        let successes = [&out1, &out2].iter().filter(|o| o.status.success()).count();
+        assert!(
+            successes >= 1,
+            "trial {trial}: at least one of the two concurrent runs must complete successfully: \
+             run1={:?} run2={:?}",
+            out1.status,
+            out2.status
+        );
+
+        // A losing process must fail CLEANLY with the lock-contention error,
+        // never hang, panic, or partially write before bailing.
+        for (label, out) in [("run 1", &out1), ("run 2", &out2)] {
+            if !out.status.success() {
+                observed_contention = true;
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(
+                    stderr.contains("already running"),
+                    "trial {trial}, {label}: a losing process must fail with the clean \
+                     lock-contention error, not some other failure: {stderr}"
+                );
+            }
+        }
+
+        // The decisive assertion, now expected to hold unconditionally: the
+        // index-run lock makes the two processes mutually exclusive, so
+        // index.db is never corrupted regardless of how they interleaved.
+        assert_integrity_ok(&db_path);
+
+        // The winner (or both, if they never actually overlapped this trial)
+        // must have fully indexed the project: a clean-error loser exits
+        // before writing anything, so it can never leave the index
+        // half-written from its own aborted attempt.
         let conn = Connection::open(&db_path).expect("reopen db after concurrent runs");
-        let result: String = conn
-            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-            .expect("run integrity_check");
+        let file_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+            .expect("count files");
         assert_eq!(
-            result, "ok",
-            "trial {trial}/{TRIALS}: two concurrent `spelunk index --force` runs on the same \
-             project corrupted index.db (SQLite integrity_check: {result:?}). This is real, \
-             reachable data loss - not a benign SQLITE_BUSY from the losing process - and is not \
-             fixed by adding `busy_timeout` alone (that only changes how long a writer waits for \
-             the lock, not what happens if both still interleave statement-by-statement); it \
-             needs a cross-process lock around the whole index run, see the module doc comment"
+            file_count, FILES_PER_TRIAL as i64,
+            "trial {trial}: the project must be fully indexed by whichever process(es) \
+             actually wrote, with no half-written state from an aborted loser"
         );
     }
+
+    assert!(
+        observed_contention,
+        "across {TRIALS} trials, the two concurrent runs never actually contended for the lock \
+         (both always happened to run fully sequentially) - this test never exercised the \
+         behaviour it is meant to pin"
+    );
 }
 
 // ── Drill 8: a concurrent reader is never blocked by an open writer ─────────

@@ -537,6 +537,7 @@ fn process_text_file(
     if !args.force
         && let Some(existing) = db.file_hash(path_str)?
         && existing == hash
+        && db.file_has_chunks(path_str)?
     {
         acc.skipped += 1;
         return Ok(());
@@ -551,10 +552,11 @@ fn process_text_file(
     };
 
     let file_id = db.upsert_file(path_str, Some(language), &hash, stat_mtime(path))?;
-    // This is the one write in the whole per-file sequence a crash cannot
-    // recover from cleanly: the hash just committed is now current, so the
-    // resume/skip check above will treat this file as already indexed even
-    // though no chunk below has landed yet. See the crash-safety suite.
+    // No transaction spans this hash commit and the chunk writes below, so a
+    // crash here leaves a file with a current hash and zero chunks. The
+    // `file_has_chunks` check above is what makes the *next* plain re-index
+    // reprocess that file instead of skipping it forever; see the
+    // crash-safety suite.
     super::crash_test_hook::pause_at("after_index_hash_write", path_str);
     db.delete_embeddings_for_file(file_id)?;
     db.delete_chunks_for_file(file_id)?;
