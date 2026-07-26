@@ -297,21 +297,20 @@ For how discovery works and how to point the CLI at a remote server, see
 **[Server setup](server-setup.md)** and
 [CLI capability tiers](architecture/capability-tiers.md).
 
-### Using your own inference server (advanced)
+### Using your own LLM endpoint (advanced)
 
 By default the bundled `spelunk-server` provides embeddings (native, via the
-candle-served F2LLM-v2-330M model) and — when a chat model is configured — LLM
-inference. The embedding **model is fixed** to F2LLM-v2-330M (896-dim) product-wide
-and can no longer be selected: a mismatched embedding model silently corrupts
-semantic search. You *can* relocate **where** embeddings are computed — point the
-server at your own OpenAI-compatible endpoint that serves that same model (e.g. a
-shared GPU host) — but the model itself stays fixed. Configure **the server** —
-this is not a CLI `config.toml` key. `spelunk-server` reads these environment
+candle-served F2LLM-v2-330M model, 896-dim) and — when a chat model is
+configured — LLM inference. The embedding **model and its compute path are
+both fixed** product-wide: `spelunk` always embeds through the bundled native
+embedder, and there is no way to relocate or swap it. LLM inference is
+different: the server has no LLM of its own, so you point it at your own
+OpenAI-compatible chat-completions endpoint. Configure **the server** — this
+is not a CLI `config.toml` key. `spelunk-server` reads these environment
 variables (each has an equivalent flag):
 
 | Variable | Flag | Purpose |
 |---|---|---|
-| `SPELUNK_EMBEDDING_URL` | `--embedding-url` | Base URL of an OpenAI-compatible embedding endpoint serving F2LLM-v2-330M. When set, the server embeds through it instead of computing embeddings itself. |
 | `SPELUNK_LLM_URL` | `--llm-url` | Base URL of an OpenAI-compatible chat-completions endpoint for LLM features (`explore`, summaries, `memory harvest`). |
 | `SPELUNK_LLM_MODEL` | `--llm-model` | Chat model id to send to that endpoint. |
 
@@ -327,8 +326,6 @@ server so it picks them up. The daemon inherits your shell environment, but a
 daemon that is already running keeps its old configuration until restarted:
 
 ```bash
-export SPELUNK_EMBEDDING_URL="http://127.0.0.1:1234"
-# optional, for LLM features (explore, summaries, harvest):
 export SPELUNK_LLM_URL="http://127.0.0.1:1234"
 export SPELUNK_LLM_MODEL="your-chat-model-id"
 
@@ -336,25 +333,16 @@ spelunk server stop     # if one is already running
 spelunk server start    # starts with the endpoint configured above
 ```
 
-Or, if you run `spelunk-server` yourself, pass the flag directly:
+Or, if you run `spelunk-server` yourself, pass the flags directly:
 
 ```bash
-spelunk-server --embedding-url http://127.0.0.1:1234
+spelunk-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-There is no embedding-model flag: `spelunk` always computes 896-dim
-F2LLM-v2-330M vectors, and your endpoint must serve that model. (A legacy
-`SPELUNK_EMBEDDING_MODEL` / `--embedding-model` is ignored, with a startup
-warning, rather than honoured.) Re-embedding an existing index through a new
-endpoint needs a full re-index (`spelunk index --force`), since unchanged files
-are otherwise skipped.
-
-Tune the per-request embedding batch ceiling at index time with
-`spelunk index --batch-size <n>` if a slow or memory-constrained endpoint
-struggles with the default.
-
-This is an advanced override; most users never set it — the native embedder in
-`spelunk-server` handles embeddings with no extra configuration.
+This is an advanced override; most users never set it — `explore`, summaries,
+and `memory harvest` are simply unavailable without an LLM configured, and
+semantic search works regardless since the native embedder needs no
+configuration at all.
 
 ### Index your project for semantic search
 

@@ -105,11 +105,6 @@ pub struct Config {
     #[serde(default = "Config::default_db_path")]
     pub db_path: PathBuf,
 
-    /// Display label for the `model:` field of `plumbing embed` JSONL output only.
-    /// The effective embedding model is owned by spelunk-server, not this key.
-    #[serde(default = "Config::default_embedding_model")]
-    pub embedding_model: String,
-
     /// Chat model id, resolved by spelunk-server, for `ask` and `memory harvest`.
     /// When unset, commands that require a chat model are unavailable.
     #[serde(default)]
@@ -251,9 +246,6 @@ impl Config {
     fn default_db_path() -> PathBuf {
         spelunk_config_dir().join("index.db")
     }
-    fn default_embedding_model() -> String {
-        "f2llm-v2-330m".to_string()
-    }
     fn default_llm_context_length() -> usize {
         8192
     }
@@ -266,7 +258,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             db_path: Self::default_db_path(),
-            embedding_model: Self::default_embedding_model(),
             llm_model: None,
             server_url: None,
             server_key: None,
@@ -735,9 +726,10 @@ mod tests {
     fn config_with_pruned_keys_still_parses() {
         // Guards the forward-compat contract for pre-0.9 config.toml files:
         // `Config` carries no `deny_unknown_fields`, so keys pruned as dead
-        // (batch_size, models_dir, api_base_url, plans_dir, specs_dir) are
-        // ignored rather than rejected. Adding `deny_unknown_fields` would
-        // break every existing user config, so this must stay green.
+        // (batch_size, models_dir, api_base_url, lmstudio_base_url, plans_dir,
+        // specs_dir, embedding_model) are ignored rather than rejected. Adding
+        // `deny_unknown_fields` would break every existing user config, so
+        // this must stay green.
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -748,8 +740,10 @@ mode = "local_first"
 batch_size = 32
 models_dir = "/opt/models"
 api_base_url = "http://inference.internal:1234"
+lmstudio_base_url = "http://127.0.0.1:1234"
 plans_dir = "docs/plans"
 specs_dir = "docs/specs"
+embedding_model = "some-other-model"
 "#,
         )
         .unwrap();

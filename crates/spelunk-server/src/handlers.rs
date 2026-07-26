@@ -204,8 +204,8 @@ pub struct AddNoteRequest {
     /// Source file paths this entry is linked to.
     #[serde(default)]
     pub linked_files: Vec<String>,
-    /// Pre-computed embedding vector from the client. Optional — if omitted and the server has an
-    /// embedding backend configured (`SPELUNK_EMBEDDING_URL`), the server embeds the entry.
+    /// Pre-computed embedding vector from the client. Optional — if omitted and the
+    /// server's embedder is ready, the server embeds the entry.
     /// If neither is available, the entry is stored without a vector (text search only).
     pub embedding: Option<Vec<f32>>,
 }
@@ -305,7 +305,7 @@ pub struct ServerLimits {
     pub max_batch_chunks: usize,
     /// Per-chunk token truncation cap the embedder enforces, if known (native
     /// backend only — see `EmbeddingBackend::token_cap`). `null` when the
-    /// embedder isn't ready or exposes none (e.g. an external `--embedding-url`).
+    /// embedder isn't ready or exposes none (e.g. a test-only mock backend).
     /// Informational — the binding constraint in practice is wall-clock time,
     /// not per-batch memory.
     pub embedder_token_cap: Option<usize>,
@@ -355,9 +355,8 @@ pub struct HealthResponse {
 )]
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let embedder_state = state.embedder.state();
-    // Ready backends (native model loaded, or an external embedding URL) are the
-    // only ones that can serve embeddings, so advertise the semantic caps and a
-    // non-zero dim only then.
+    // A ready backend (native model loaded) is the only one that can serve
+    // embeddings, so advertise the semantic caps and a non-zero dim only then.
     let ready_backend = state.embedder.backend();
 
     let mut capabilities = vec!["memory".to_string()];
@@ -462,8 +461,8 @@ pub async fn list_projects(State(state): State<AppState>) -> Result<impl IntoRes
 
 /// Add a memory entry to a project. The project is auto-created on first write.
 ///
-/// The `embedding` field is optional. If omitted and the server has `SPELUNK_EMBEDDING_URL`
-/// configured, the server embeds the entry before storage. If neither is available, the
+/// The `embedding` field is optional. If omitted and the server's embedder is ready,
+/// the server embeds the entry before storage. If neither is available, the
 /// entry is stored without a vector (text search only, no KNN).
 ///
 /// Returns **201** on success. Returns **409** when the new entry is semantically
@@ -1415,7 +1414,8 @@ pub async fn index_embed(
 
     let embedder = require_embedder(
         &state,
-        "index.embed requires an embedder. Configure SPELUNK_EMBEDDING_URL on the server.",
+        "index.embed requires an embedder, but this server was built without the \
+         native embedder (embed-native feature).",
     )?;
 
     if body.chunks.is_empty() {
@@ -1576,8 +1576,8 @@ pub async fn project_search(
     // Semantic / hybrid: require an embedder.
     let embedder = require_embedder(
         &state,
-        "semantic/hybrid search requires an embedder. \
-         Configure SPELUNK_EMBEDDING_URL on the server, or use mode=text.",
+        "semantic/hybrid search requires an embedder, but this server was built \
+         without the native embedder (embed-native feature); use mode=text.",
     )?;
 
     // Admission control: a query embed sharing the mutex-serialized
@@ -2354,8 +2354,7 @@ mod tests {
             "embedder.state must be 'ready' when the embedder is loaded"
         );
         // `MockEmbedder` doesn't override `token_cap()`, so it gets the
-        // trait's default `None` — same as any non-native backend (e.g. an
-        // external `--embedding-url` OpenAI-compatible server). Only
+        // trait's default `None` — same as any non-native backend. Only
         // `NativeEmbedder` has a real, host-derived cap to report.
         assert!(
             json["limits"]["embedder_token_cap"].is_null(),

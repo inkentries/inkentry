@@ -112,7 +112,14 @@ async fn embed_document_mode_produces_jsonl_vector() {
     assert_eq!(rows.len(), 1, "one stdin line → one embedding");
 
     let row = &rows[0];
-    assert!(row.get("model").is_some(), "missing 'model'");
+    // The config.toml written by `write_server_config` sets a *different*
+    // `embedding_model` value ("test-model"): the reported model must be the
+    // pinned constant regardless, never that config default.
+    assert_eq!(
+        row.get("model").and_then(|v| v.as_str()),
+        Some(spelunk_core::embeddings::MODEL_ID),
+        "'model' must report the pinned model id, not a config value"
+    );
     assert!(row.get("dimensions").is_some(), "missing 'dimensions'");
     assert!(row.get("vector").is_some(), "missing 'vector'");
 

@@ -221,7 +221,6 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
         concat!(
             "db_path = {:?}\n",
             "api_base_url = \"http://127.0.0.1:1\"\n",
-            "embedding_model = \"none\"\n",
             "llm_model = \"none\"\n",
         ),
         index_db_c

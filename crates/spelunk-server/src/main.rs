@@ -82,23 +82,6 @@ struct Args {
     #[arg(long, default_value_t = default_conflict_threshold())]
     conflict_threshold: f32,
 
-    /// Base URL of an OpenAI-compatible embedding server for server-side embedding
-    /// (e.g. `http://127.0.0.1:1234`). Overrides `SPELUNK_EMBEDDING_URL`.
-    /// Relocates *where* embeddings are computed only; the model stays fixed to
-    /// F2LLM-v2-330M@896 — the endpoint must serve that model. When set, entries
-    /// posted without a pre-computed `embedding` field are embedded by the server
-    /// before storage.
-    #[arg(long, env = "SPELUNK_EMBEDDING_URL")]
-    embedding_url: Option<String>,
-
-    /// Deprecated and ignored. The embedding model is fixed to F2LLM-v2-330M@896
-    /// product-wide; a mismatched model silently corrupts the shared
-    /// vector space. Retained hidden only so a legacy
-    /// `SPELUNK_EMBEDDING_MODEL` / `--embedding-model` warns and is ignored
-    /// instead of hard-failing an old deployment on upgrade. Never selects a model.
-    #[arg(long, env = "SPELUNK_EMBEDDING_MODEL", hide = true)]
-    embedding_model: Option<String>,
-
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
     /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
     #[arg(long, env = "SPELUNK_LLM_URL")]
@@ -176,12 +159,6 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         "embed CPU thread budget resolved"
     );
 
-    // Legacy embedding-model override is ignored, not honoured (the model is
-    // fixed product-wide). Warn instead of hard-failing an old deployment.
-    if let Some(msg) = legacy_embedding_model_warning(args.embedding_model.as_deref()) {
-        tracing::warn!("{msg}");
-    }
-
     // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
     // value from any source counts as "no key" — a set-but-empty
@@ -235,32 +212,15 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     let auth: Arc<dyn spelunk_server::auth::AuthProvider> =
         Arc::new(ApiKeyAuth::new(api_key.clone()));
 
-    // Build the server-side embedder readiness slot.
-    //
-    // The external `--embedding-url` backend is ready synchronously (it has no
-    // local model to warm up), so it starts `ready`. The bundled native embedder
-    // is CPU-/download-heavy, so we start the slot `loading` and defer the actual
-    // `embed_hub::load_from_hub()` to a background task spawned *after* the listener
-    // binds (below) — that way `/v1/health` is live immediately with
-    // `embedder.state = "loading"` instead of being dark for the whole first-run
-    // model download. When no embedder is configured at all, the slot is
+    // Build the server-side embedder readiness slot. The bundled native
+    // embedder is CPU-/download-heavy, so the slot starts `loading` and the
+    // actual `embed_hub::load_from_hub()` is deferred to a background task
+    // spawned *after* the listener binds (below) — that way `/v1/health` is
+    // live immediately with `embedder.state = "loading"` instead of being
+    // dark for the whole first-run model download. A server built without the
+    // `embed-native` feature has no embed path at all, so the slot is
     // `disabled` (embed endpoints return a permanent 400).
-    let (embedder, load_native): (EmbedderSlot, bool) = if let Some(base_url) = args.embedding_url {
-        // Model is fixed product-wide; the URL relocates compute only.
-        tracing::info!("server-side embedding enabled: {base_url} model={NATIVE_MODEL_ID}");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .context("building HTTP client for server-side embedder")?;
-        let backend: Arc<dyn spelunk_core::embeddings::EmbeddingBackend> =
-            Arc::new(ServerEmbedder {
-                client,
-                base_url,
-                model: NATIVE_MODEL_ID.to_string(),
-            });
-        (EmbedderSlot::ready(backend), false)
-    } else {
-        // No --embedding-url: try the bundled native embedder (embed-native feature).
+    let (embedder, load_native): (EmbedderSlot, bool) = {
         #[cfg(feature = "embed-native")]
         {
             (EmbedderSlot::loading(), true)
@@ -369,7 +329,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // `embed_hub::load_from_hub()` is blocking/CPU-heavy, so run it on the blocking
     // pool; publish the backend into the slot on success (state → ready) or
     // record the failure (state → unavailable). Only the native path warms up
-    // here — external/disabled slots are already in a terminal state.
+    // here — a disabled slot (no embed-native feature) is already terminal.
     #[cfg(feature = "embed-native")]
     if load_native {
         let slot = embedder_slot.clone();
@@ -384,8 +344,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                 Ok(Err(e)) => {
                     let msg = embedder_load_failure_message(&e);
                     tracing::warn!(
-                        "native embedding model failed to load: {msg}; \
-                         embedder unavailable (set --embedding-url to override)"
+                        "native embedding model failed to load: {msg}; embedder unavailable"
                     );
                     slot.set_unavailable(msg);
                 }
@@ -478,21 +437,6 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
         "default"
     };
     ThreadBudget { threads, source }
-}
-
-// ── Legacy embedding-model override ───────────────────────────────────────────
-
-/// Warning to emit when a legacy `SPELUNK_EMBEDDING_MODEL` / `--embedding-model`
-/// is set. The embedding model is fixed to `NATIVE_MODEL_ID` product-wide
-/// and can no longer be selected; a non-blank value is ignored, not
-/// honoured. Returns `None` when unset/blank so upgrades stay quiet.
-fn legacy_embedding_model_warning(model: Option<&str>) -> Option<String> {
-    let value = model.map(str::trim).filter(|m| !m.is_empty())?;
-    Some(format!(
-        "Ignoring embedding model override '{value}': the embedding model is fixed to \
-         {NATIVE_MODEL_ID} product-wide and can no longer be selected. Remove \
-         SPELUNK_EMBEDDING_MODEL / --embedding-model."
-    ))
 }
 
 // ── Bind-safety guard ─────────────────────────────────────────────────────────
@@ -726,56 +670,6 @@ fn effective_uid() -> Option<u32> {
     #[cfg(not(unix))]
     {
         None
-    }
-}
-
-// ── Inline embedder for the server binary ─────────────────────────────────────
-
-struct ServerEmbedder {
-    client: reqwest::Client,
-    base_url: String,
-    model: String,
-}
-
-#[async_trait::async_trait]
-impl spelunk_core::embeddings::EmbeddingBackend for ServerEmbedder {
-    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-        #[derive(serde::Serialize)]
-        struct Req<'a> {
-            model: &'a str,
-            input: &'a [&'a str],
-        }
-        #[derive(serde::Deserialize)]
-        struct Resp {
-            data: Vec<Data>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Data {
-            embedding: Vec<f32>,
-        }
-
-        let resp: Resp = self
-            .client
-            .post(format!("{}/v1/embeddings", self.base_url))
-            .json(&Req {
-                model: &self.model,
-                input: texts,
-            })
-            .send()
-            .await
-            .context("calling embedding server")?
-            .error_for_status()
-            .context("embedding server returned an error")?
-            .json()
-            .await
-            .context("parsing embedding response")?;
-
-        anyhow::ensure!(!resp.data.is_empty(), "embedding server returned 0 vectors");
-        Ok(resp.data.into_iter().map(|d| d.embedding).collect())
-    }
-
-    fn dimension(&self) -> usize {
-        0 // dimension is model-dependent; not used server-side
     }
 }
 
@@ -1276,40 +1170,62 @@ mod arg_tests {
         );
     }
 
-    // ── Legacy embedding-model override ──────────────────────────────────────
+    // ── Removed external-embedding relocation options ────────────────────────
+    //
+    // The embedding model is pinned product-wide to the bundled native
+    // embedder: `--embedding-url` / `SPELUNK_EMBEDDING_URL` (relocate compute)
+    // and the legacy `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` (select a
+    // model) must no longer exist as parseable flags at all.
 
-    /// A legacy `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` still parses
-    /// (hidden, not removed) so an old deployment doesn't hard-fail clap on
-    /// upgrade — but it never selects a model.
+    /// `--embedding-url` is unknown to clap, not silently accepted.
     #[test]
-    fn legacy_embedding_model_flag_still_parses() {
-        let args = Args::parse_from(["spelunk-server", "--embedding-model", "some-model"]);
-        assert_eq!(args.embedding_model.as_deref(), Some("some-model"));
+    fn embedding_url_flag_is_unknown() {
+        let err = Args::try_parse_from(["spelunk-server", "--embedding-url", "http://x:1234"])
+            .expect_err("--embedding-url must no longer parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
-    /// A set (non-blank) legacy value yields a visible warning that names the
-    /// value and the fixed model, and tells the operator to remove it.
+    /// `--embedding-model` is unknown to clap, not silently accepted.
     #[test]
-    fn legacy_embedding_model_value_warns() {
-        let msg = super::legacy_embedding_model_warning(Some("gemma-300m"))
-            .expect("a non-blank legacy value must warn");
-        assert!(msg.contains("gemma-300m"), "warning names the value: {msg}");
+    fn embedding_model_flag_is_unknown() {
+        let err = Args::try_parse_from(["spelunk-server", "--embedding-model", "some-model"])
+            .expect_err("--embedding-model must no longer parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    /// `--help` must not advertise either removed flag.
+    #[test]
+    fn help_omits_removed_embedding_flags() {
+        use clap::CommandFactory as _;
+        let help = Args::command().render_long_help().to_string();
         assert!(
-            msg.contains(super::NATIVE_MODEL_ID),
-            "warning names the fixed model: {msg}"
+            !help.contains("embedding-url"),
+            "help must not mention --embedding-url: {help}"
         );
         assert!(
-            msg.contains("SPELUNK_EMBEDDING_MODEL"),
-            "warning tells the operator which key to remove: {msg}"
+            !help.contains("embedding-model"),
+            "help must not mention --embedding-model: {help}"
         );
     }
 
-    /// Unset or blank → no warning, so a clean upgrade stays quiet.
+    /// `SPELUNK_EMBEDDING_URL` / `SPELUNK_EMBEDDING_MODEL` in the environment
+    /// are plain unread variables now (no `env = "..."` attribute maps them to
+    /// any field): parsing must succeed and must not be influenced by them.
     #[test]
-    fn legacy_embedding_model_unset_or_blank_is_silent() {
-        assert!(super::legacy_embedding_model_warning(None).is_none());
-        assert!(super::legacy_embedding_model_warning(Some("")).is_none());
-        assert!(super::legacy_embedding_model_warning(Some("   ")).is_none());
+    #[serial_test::serial]
+    fn embedding_env_vars_are_inert() {
+        // SAFETY: test-only, guarded by #[serial_test::serial] against
+        // concurrent env mutation from other tests.
+        unsafe {
+            std::env::set_var("SPELUNK_EMBEDDING_URL", "http://127.0.0.1:1234");
+            std::env::set_var("SPELUNK_EMBEDDING_MODEL", "some-model");
+        }
+        let args = Args::parse_from(["spelunk-server"]);
+        assert_eq!(args.host, "127.0.0.1", "parsing must succeed unaffected");
+        unsafe {
+            std::env::remove_var("SPELUNK_EMBEDDING_URL");
+            std::env::remove_var("SPELUNK_EMBEDDING_MODEL");
+        }
     }
 
     // ── Self-contained health probe ──────────────────────────────────────────

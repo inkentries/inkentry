@@ -188,11 +188,7 @@ async fn test_index_and_status() {
     fs::write(
         &config_path,
         format!(
-            concat!(
-                "db_path = {:?}\n",
-                "embedding_model = \"test-model\"\n",
-                "llm_model = \"test-chat-model\"\n",
-            ),
+            concat!("db_path = {:?}\n", "llm_model = \"test-chat-model\"\n",),
             db_path,
         ),
     )
@@ -306,11 +302,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         fs::write(
             &config_path,
             format!(
-                concat!(
-                    "db_path = {:?}\n",
-                    "embedding_model = \"test-model\"\n",
-                    "llm_model = \"test-chat-model\"\n",
-                ),
+                concat!("db_path = {:?}\n", "llm_model = \"test-chat-model\"\n",),
                 db_path,
             ),
         )
@@ -412,7 +404,7 @@ async fn test_status_shows_offline_tier() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -613,7 +605,7 @@ async fn test_status_json_stable_schema() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test-model\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test\"\n",
             db_path,
             mock_server.uri()
         ),
@@ -731,7 +723,7 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -872,7 +864,7 @@ async fn test_check_reports_server_unreachable() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test\"\n",
             db_path, bad_url
         ),
     )
@@ -917,7 +909,7 @@ async fn test_index_prints_note_when_no_server_configured() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -948,7 +940,7 @@ fn test_status_json_offline_tier() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1005,7 +997,7 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1049,7 +1041,7 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1096,7 +1088,7 @@ fn test_search_explicit_hybrid_no_embedder_falls_back_to_text() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:19999\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1482,7 +1474,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1592,7 +1584,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\nserver_url = \"https://cloud.invalid.example:1\"\nproject_id = \"team/proj\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nllm_model = \"test\"\nserver_url = \"https://cloud.invalid.example:1\"\nproject_id = \"team/proj\"\n",
             db_path
         ),
     )
@@ -1668,7 +1660,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     fs::write(
         &config_path,
         format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nllm_model = \"test\"\n",
             db_path
         ),
     )
@@ -1919,7 +1911,7 @@ fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::
     let config_path = home.join("config.toml");
     fs::write(
         &config_path,
-        "api_base_url = \"http://127.0.0.1:19999\"\nembedding_model = \"test\"\nllm_model = \"test\"\n",
+        "api_base_url = \"http://127.0.0.1:19999\"\nllm_model = \"test\"\n",
     )
     .unwrap();
     spelunk_bin_in(home)

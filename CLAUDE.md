@@ -277,8 +277,10 @@ All AI inference goes through **spelunk-server**. The CLI calls the server via
 The native embedding *engine* lives in the `spelunk-embed` crate
 (`NativeEmbedder`, local-path load only); spelunk-server's `embed_hub` module
 owns the Hugging Face Hub download path that resolves the (pre-quantized)
-model artifacts before handing them to it. The LLM backend and the external
-HTTP embedder shim live in spelunk-server (`main.rs`).
+model artifacts before handing them to it. There is no external embedder
+backend: embedding always runs through the bundled native engine. The LLM
+backend (with its own external HTTP shim, `--llm-url`) lives in spelunk-server
+(`main.rs`).
 
 `capability/` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
