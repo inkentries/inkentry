@@ -215,7 +215,9 @@ impl MemoryStore {
     /// table/column shapes. Walks the ladder top-down; the first unmet
     /// predicate fixes the version. A conservative (one-low) result is safe:
     /// the re-run step is a no-op guard (or a tolerated duplicate-column
-    /// error) that then advances the version.
+    /// error) that then advances the version. Each predicate must therefore
+    /// cover every column/object its step adds, not just one: a partial
+    /// match would infer the step "done" and skip it forever.
     fn infer_legacy_version(&self) -> Result<i32> {
         let has_table = |name: &str| -> Result<bool> {
             Ok(self
@@ -240,14 +242,30 @@ impl MemoryStore {
             Ok(false)
         };
 
+        // Each predicate must cover every column/object its step adds, not just
+        // the first: steps 2, 5 and 7 each `ALTER TABLE ADD COLUMN` twice in
+        // one loop, and SQLite auto-commits each ALTER independently, so a
+        // process killed between the two statements is a real field state.
+        // Checking only the first column would infer that step "done" from a
+        // half-applied ALTER and skip it forever, leaving the second column
+        // permanently missing.
         let ladder: [(i32, bool); 9] = [
             (1, has_table("notes")?),
-            (2, notes_has_column("status")?),
+            (
+                2,
+                notes_has_column("status")? && notes_has_column("superseded_by")?,
+            ),
             (3, notes_has_column("source_ref")?),
             (4, has_table("memory_fts")?),
-            (5, notes_has_column("valid_at")?),
+            (
+                5,
+                notes_has_column("valid_at")? && notes_has_column("invalid_at")?,
+            ),
             (6, has_table("memory_edges")?),
-            (7, notes_has_column("uuid")?),
+            (
+                7,
+                notes_has_column("uuid")? && notes_has_column("remote_id")?,
+            ),
             (8, notes_has_column("entity_id")?),
             (9, has_table("schema_v896_note_embeddings")?),
         ];

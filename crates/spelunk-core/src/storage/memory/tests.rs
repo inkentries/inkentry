@@ -1,4 +1,5 @@
 use super::MemoryStore;
+use rusqlite::OptionalExtension;
 use std::sync::OnceLock;
 
 /// Register the sqlite-vec extension exactly once per test process.
@@ -1747,4 +1748,273 @@ fn future_memory_schema_version_refuses_to_open() {
         msg.contains("newer") || msg.contains("upgrade spelunk"),
         "the error must explain the version mismatch clearly, got: {msg}"
     );
+}
+
+// `infer_legacy_version`'s ladder predicates for steps 2, 5 and 7 each only
+// probed the FIRST of two columns a real migration adds in one `ALTER TABLE`
+// loop (e.g. step 2 checked `status` but not `superseded_by`). Each `ALTER
+// TABLE ADD COLUMN` auto-commits independently in SQLite, so a process
+// killed between the two statements is a real partial-application window,
+// not a hypothetical one: exactly the crash-safety scenario this runner
+// exists to survive. A single-column predicate would infer the step as
+// "done" from the first column alone and skip it forever, leaving the
+// second column permanently missing. Cover all three two-column steps in
+// one table-driven test.
+#[test]
+fn legacy_db_missing_the_second_of_a_two_column_step_still_completes_it() {
+    register_sqlite_vec();
+
+    for (drop_col, other_col_in_same_step, dependent_index) in [
+        ("superseded_by", "status", None),
+        ("invalid_at", "valid_at", Some("idx_memory_invalid_at")),
+        ("remote_id", "uuid", Some("idx_notes_remote_id")),
+    ] {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("memory.db");
+
+        {
+            let store = MemoryStore::open(&path).expect("build current store");
+            if let Some(index) = dependent_index {
+                store
+                    .execute_batch(&format!("DROP INDEX {index}"))
+                    .unwrap_or_else(|e| panic!("drop index {index} depending on {drop_col}: {e}"));
+            }
+            store
+                .execute_batch(&format!(
+                    "ALTER TABLE notes DROP COLUMN {drop_col}; PRAGMA user_version = 0;"
+                ))
+                .unwrap_or_else(|e| {
+                    panic!("simulate a crash-interrupted step dropping {drop_col}: {e}")
+                });
+            assert!(
+                notes_has_column(&store, other_col_in_same_step),
+                "precondition: {other_col_in_same_step} must survive the drop"
+            );
+        }
+
+        let store = MemoryStore::open(&path)
+            .unwrap_or_else(|e| panic!("reopen a legacy db missing only {drop_col}: {e}"));
+        assert!(
+            notes_has_column(&store, drop_col),
+            "inferring the step's version from {other_col_in_same_step} alone must not \
+             permanently skip adding {drop_col}, the other column that step is responsible for"
+        );
+    }
+}
+
+// Criterion 3: a genuine (non-"duplicate column") failure partway through a
+// multi-statement step must not silently mark that step done, and the DDL
+// that already committed before the failure must not be re-applied
+// destructively on the next attempt once the fault is cleared. Force
+// `apply_edges_migration`'s single `execute_batch` (CREATE TABLE, then two
+// CREATE INDEX statements) to fail on its *second* statement by pre-creating
+// a colliding table where the first index should go: the CREATE TABLE
+// before it has already committed by the time the batch errors.
+#[test]
+fn genuine_mid_step_failure_leaves_recoverable_state_not_silent_progress() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    {
+        let store = MemoryStore::open(&path).expect("build current store");
+        store
+            .execute_batch(
+                "DROP INDEX idx_memory_edges_from; \
+                 DROP INDEX idx_memory_edges_to; \
+                 DROP TABLE memory_edges; \
+                 PRAGMA user_version = 5;",
+            )
+            .expect("strip back to a pre-edges (v5) shape");
+        // Collide with the name of the first index apply_edges_migration
+        // creates, so its execute_batch fails partway through, after the
+        // CREATE TABLE statement ahead of it has already committed.
+        store
+            .execute_batch("CREATE TABLE idx_memory_edges_from (blocker INTEGER)")
+            .expect("plant a colliding table name");
+    }
+
+    let err = MemoryStore::open(&path)
+        .err()
+        .expect("a real naming collision must surface as an error, not succeed");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("index") || msg.contains("table") || msg.contains("already"),
+        "expected a naming-collision error, got: {msg}"
+    );
+
+    // Verify the failure did NOT silently stamp the version, and that the
+    // statement before the failing one (CREATE TABLE memory_edges) really
+    // did commit despite the overall step returning Err.
+    let conn = rusqlite::Connection::open(&path).expect("raw reopen to inspect state");
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        version, 5,
+        "a failed migration attempt must not advance user_version past the point of failure"
+    );
+    let edges_table_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_edges'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()
+        .unwrap()
+        .is_some();
+    assert!(
+        edges_table_exists,
+        "the CREATE TABLE statement that ran before the failing CREATE INDEX must stay \
+         committed: SQLite DDL auto-commits per statement, it isn't rolled back by the later error"
+    );
+    drop(conn);
+
+    // Clear the induced fault and confirm the next open recovers cleanly:
+    // the already-applied CREATE TABLE is tolerated (IF NOT EXISTS), and the
+    // remaining steps complete normally.
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw reopen to fix the fault");
+        conn.execute_batch("DROP TABLE idx_memory_edges_from")
+            .expect("remove the blocker");
+    }
+    let recovered = MemoryStore::open(&path).expect("recovered open must succeed");
+    assert_eq!(user_version(&recovered), super::MEMORY_SCHEMA_VERSION);
+}
+
+// Criterion 4: `MemoryStore::open` sets no `busy_timeout` on its connection
+// (same as `Database::open` for index.db, see the analogous
+// `insert_embeddings_rolls_back_on_a_real_sqlite_error_not_just_bad_dimension`
+// test in `storage/db.rs`), so a second writer holding the file's write lock
+// during migration must surface as a loud `SQLITE_BUSY` error, not hang or
+// silently race on the `PRAGMA user_version` write.
+#[test]
+fn concurrent_open_during_migration_fails_loudly_not_silently() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    {
+        let store = MemoryStore::open(&path).expect("build current store");
+        store
+            .execute_batch(
+                "DROP INDEX idx_memory_edges_from; \
+                 DROP INDEX idx_memory_edges_to; \
+                 DROP TABLE memory_edges; \
+                 PRAGMA user_version = 5;",
+            )
+            .expect("strip back to a pre-edges (v5) shape needing a real migration write");
+    }
+
+    let locker = rusqlite::Connection::open(&path).expect("second connection");
+    locker
+        .execute_batch("BEGIN IMMEDIATE; CREATE TABLE lock_probe (id INTEGER);")
+        .expect("acquire the write lock");
+
+    let err = MemoryStore::open(&path)
+        .err()
+        .expect("opening under a held write lock must fail, not hang or corrupt state");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("lock") || msg.contains("busy"),
+        "expected a locking error, got: {msg}"
+    );
+
+    locker.execute_batch("COMMIT;").expect("release the lock");
+    let recovered =
+        MemoryStore::open(&path).expect("once the lock is released, migration completes");
+    assert_eq!(user_version(&recovered), super::MEMORY_SCHEMA_VERSION);
+}
+
+// Criterion 6: the engineer's legacy-inference tests used a single note, so
+// they couldn't distinguish "row content survives" from "row COUNT survives
+// but rows got cross-attributed" (e.g. an embedding landing on the wrong
+// `note_id`, or FTS text from one note leaking onto another). Use several
+// notes with distinct kind/title/body/tags and distinct embeddings, and
+// assert each note's own content, its own embedding, and its own FTS
+// match survive legacy re-inference attached to the correct row.
+#[test]
+fn legacy_inference_preserves_distinct_multi_row_content_not_just_row_count() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    let rows = [
+        (
+            "decision",
+            "Alpha decision",
+            "alpha body text",
+            vec!["infra"],
+            0.11f32,
+        ),
+        (
+            "context",
+            "Beta context",
+            "beta body text",
+            vec!["billing"],
+            0.22f32,
+        ),
+        (
+            "requirement",
+            "Gamma requirement",
+            "gamma body text",
+            vec!["auth", "urgent"],
+            0.33f32,
+        ),
+    ];
+    let mut ids = Vec::new();
+    {
+        let store = MemoryStore::open(&path).expect("build via runner");
+        for (kind, title, body, tags, fill) in &rows {
+            let (id, _) = store
+                .add_note(kind, title, body, tags, &[], None, None)
+                .unwrap();
+            let vector = vec![*fill; crate::embeddings::EMBEDDING_DIM];
+            store
+                .insert_embedding(id, &crate::embeddings::vec_to_blob(&vector))
+                .unwrap();
+            ids.push(id);
+        }
+        store.execute_batch("PRAGMA user_version = 0").unwrap();
+    }
+
+    let store = MemoryStore::open(&path).expect("reopen legacy");
+    assert_eq!(user_version(&store), super::MEMORY_SCHEMA_VERSION);
+
+    for (id, (kind, title, body, tags, fill)) in ids.iter().zip(rows.iter()) {
+        let note = store
+            .get(*id)
+            .unwrap()
+            .unwrap_or_else(|| panic!("note {id} must survive re-inference"));
+        assert_eq!(&note.kind, kind, "note {id} kind must not cross-attribute");
+        assert_eq!(
+            &note.title, title,
+            "note {id} title must not cross-attribute"
+        );
+        assert_eq!(&note.body, body, "note {id} body must not cross-attribute");
+        assert_eq!(&note.tags, tags, "note {id} tags must not cross-attribute");
+
+        let embedding = store
+            .get_embedding(*id)
+            .unwrap()
+            .unwrap_or_else(|| panic!("note {id} embedding must survive re-inference"));
+        let vector = crate::embeddings::blob_to_vec(&embedding);
+        assert!(
+            vector.iter().all(|v| (*v - *fill).abs() < 1e-4),
+            "note {id} embedding content must be its own, not another note's"
+        );
+
+        let hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH ?1",
+                rusqlite::params![title],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            hits, 1,
+            "note {id}'s own title must be findable via FTS after re-inference"
+        );
+    }
 }
