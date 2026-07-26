@@ -181,7 +181,10 @@ cargo test                    # test all crates
 
 ## Contributing
 
-Contributions welcome. See [Building from source](docs/building.md) for setup instructions.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+workflow and [Building from source](docs/building.md) for setup instructions.
+Supported platforms and host requirements are listed in
+[docs/support.md](docs/support.md).
 
 ## License
 
