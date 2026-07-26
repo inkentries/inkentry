@@ -32,7 +32,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 uuid        = { version = "1", features = ["v4", "v7", "serde"] }
 tempfile    = "3"
 pretty_assertions = "1"
-serial_test = "3"
+serial_test = "4"
 wiremock    = "0.6"
 dirs        = "6"
 # Native embedder stack (F2LLM-v2-330M via candle). Depended on unconditionally
