@@ -571,6 +571,97 @@ mod tests {
         );
     }
 
+    /// A minimal-but-valid `tokenizer.json`, built through the `tokenizers`
+    /// crate's own serializer rather than hand-typed JSON, so a corrupt-GGUF
+    /// test can get past tokenizer parsing and reach the GGUF parse itself
+    /// (`Qwen3EmbedWeights::from_gguf`), a different failure mode with a
+    /// different error path than the corrupt-tokenizer case above.
+    fn write_valid_tokenizer(path: &std::path::Path) {
+        let vocab: std::collections::HashMap<String, u32> =
+            [("<unk>".to_string(), 0u32)].into_iter().collect();
+        let model = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(vocab.into_iter().collect())
+            .unk_token("<unk>".to_string())
+            .build()
+            .expect("valid WordLevel fixture model");
+        tokenizers::Tokenizer::new(model)
+            .save(path, false)
+            .expect("saving fixture tokenizer.json");
+    }
+
+    /// Corrupt GGUF with a *valid* tokenizer must fail inside GGUF parsing
+    /// (`Qwen3EmbedWeights::from_gguf`), not tokenizer parsing - proving the
+    /// two artifact-corruption cases take genuinely distinct error paths
+    /// rather than both happening to fail on whichever the code checks first.
+    #[test]
+    fn load_from_model_dir_corrupt_gguf_errors_locally() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(QUANT_GGUF), b"not a real gguf").unwrap();
+        write_valid_tokenizer(&dir.path().join("tokenizer.json"));
+        // No config.json: the real embedded config is auto-written, so the
+        // failure is attributable to the GGUF alone.
+
+        let msg = match load_from_model_dir(dir.path()) {
+            Ok(_) => panic!("a corrupt GGUF must be a load error"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            !msg.contains("tokenizer") && !msg.contains("config.json"),
+            "error must not misattribute a GGUF failure to the tokenizer or config, got: {msg}"
+        );
+        assert!(
+            !msg.contains("http") && !msg.contains("huggingface") && !msg.contains("downloading"),
+            "corrupt-GGUF error must not reference any network fetch, got: {msg}"
+        );
+    }
+
+    /// A `--model-dir` containing only `tokenizer.json` (no GGUF at all) must
+    /// still name the GGUF as missing, the same as a fully empty directory -
+    /// proving the existence check order doesn't let a present tokenizer mask
+    /// the missing GGUF with a different (e.g. tokenizer-shaped) error.
+    #[test]
+    fn load_from_model_dir_tokenizer_only_still_names_missing_gguf() {
+        let dir = tempfile::tempdir().unwrap();
+        write_valid_tokenizer(&dir.path().join("tokenizer.json"));
+
+        let msg = match load_from_model_dir(dir.path()) {
+            Ok(_) => panic!("a tokenizer-only --model-dir must be a load error"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains(QUANT_GGUF),
+            "error must name the missing GGUF even with tokenizer.json present: {msg}"
+        );
+        assert!(
+            msg.contains("server-setup.md"),
+            "error must point at the offline docs: {msg}"
+        );
+    }
+
+    /// A `--model-dir` pointing at a path that doesn't exist at all (as
+    /// opposed to an existing non-directory file) must fail with the same
+    /// clear "not a directory" error naming the path, not a confusing
+    /// downstream OS error from inside file-open calls.
+    #[test]
+    fn load_from_model_dir_rejects_nonexistent_path() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("does-not-exist");
+
+        let msg = match load_from_model_dir(&missing) {
+            Ok(_) => panic!("a nonexistent path must not be accepted as --model-dir"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(msg.contains(&missing.display().to_string()));
+        assert!(
+            msg.contains("is not a directory"),
+            "error must clearly say the directory itself is missing, got: {msg}"
+        );
+        assert!(
+            msg.contains("server-setup.md"),
+            "error must point at the offline provisioning docs, got: {msg}"
+        );
+    }
+
     /// `load_from_model_dir` writes the embedded `config.json` into the
     /// directory when missing, mirroring `load_from_hub`'s cache layout — so
     /// an operator only ever needs to transfer the two revision-specific
@@ -591,6 +682,42 @@ mod tests {
             "embedded config.json must be written to --model-dir"
         );
         assert_eq!(std::fs::read_to_string(config_path).unwrap(), CONFIG_JSON);
+    }
+
+    /// A second server start against the same `--model-dir` (config.json now
+    /// present from the first run's auto-write) must behave identically to
+    /// the first: the existing file is used as-is, not re-written or treated
+    /// as a conflict, so the resulting error (from the still-corrupt GGUF /
+    /// tokenizer fixtures) is unchanged between runs.
+    #[test]
+    fn load_from_model_dir_second_start_reuses_written_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(QUANT_GGUF), b"not a real gguf").unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), b"not valid json").unwrap();
+
+        let first_msg = match load_from_model_dir(dir.path()) {
+            Ok(_) => panic!("corrupt fixtures must be a load error"),
+            Err(e) => format!("{e:#}"),
+        };
+        let config_path = dir.path().join("config.json");
+        assert!(config_path.exists(), "first run must write config.json");
+
+        // Simulate an operator restart: model-dir now has all three paths
+        // present, exactly like a second `spelunk-server --model-dir` start.
+        let second_msg = match load_from_model_dir(dir.path()) {
+            Ok(_) => panic!("corrupt fixtures must still be a load error on a second start"),
+            Err(e) => format!("{e:#}"),
+        };
+
+        assert_eq!(
+            first_msg, second_msg,
+            "a pre-existing config.json must not change the load outcome"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            CONFIG_JSON,
+            "the pre-existing config.json must be left as the same embedded default, not corrupted by a second write"
+        );
     }
 
     /// Zero-egress guarantee under a hostile network: even with every standard

@@ -5416,6 +5416,7 @@ dependencies = [
  "spelunk-embed",
  "sqlite-vec",
  "tempfile",
+ "tokenizers 0.23.1",
  "tokio",
  "tokio-stream",
  "tower",
