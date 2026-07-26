@@ -3,36 +3,18 @@
 //! Every test that needs an indexed project DB should call
 //! `index_fixture_project()`.  Tests that need no index still share helpers
 //! for constructing `Command` instances.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-/// Drop the machine's global/system git config for every git this process
-/// spawns, including a setup git a test runs directly. Must be process-wide,
-/// not per-`Command`: a helper only controls the git it spawns itself, never
-/// one the code under test spawns for itself.
-///
-/// A temp repo's local config does not shadow an ambient value the repo never
-/// sets. A global `commit.gpgsign = true` makes setup commits sign as the
-/// fabricated test identity below, which no contributor holds a key for, so
-/// the commit exits non-zero.
-///
-/// `/dev/null` is not a Windows path, but git skips a scope whenever its var
-/// is set, whatever the path resolves to, so this isolates on Windows too.
-pub fn isolate_git_config() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // SAFETY: every git-touching helper here calls this first and `Once`
-        // blocks the rest until it returns, so no thread can be spawning git
-        // (reading environ) while these run.
-        unsafe {
-            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-            std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
-        }
-    });
-}
+// Git-config isolation lives once in `spelunk_core::test_support`, reached
+// here via the `test-support`-featured dev-dependency in this crate's
+// Cargo.toml. `scripts/check-git-isolation.sh` enforces that a test file
+// spawning `git` wires in `isolate_git_config`/`git_command`, however
+// qualified, including through this re-export.
+pub use spelunk_core::test_support::isolate_git_config;
 
 /// Create a git repo in `dir` with a fabricated identity and one initial
 /// commit, isolated from the developer's ambient git config.

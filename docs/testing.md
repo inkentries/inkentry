@@ -159,26 +159,57 @@ ambient config exists.
 
 Every test that spawns git must call an `isolate_git_config()` helper
 first. It sets `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `/dev/null`
-for the whole process, guarded by `std::sync::Once` so it is safe to call
-from every test. The isolation must be process-wide, not scoped to one
-`Command`: a helper that only sets env on the `Command` it builds itself
-never reaches git that the code under test spawns for itself.
+for the whole process, and clears `GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`EMAIL`:
+git resolves commit identity from those env vars before it consults config
+at all, so they can override a test's own explicit `git config
+user.name`/`user.email` unless cleared too. Guarded by `std::sync::Once` so
+it is safe to call from every test. The isolation must be process-wide, not
+scoped to one `Command`: a helper that only sets env on the `Command` it
+builds itself never reaches git that the code under test spawns for itself.
 
-Four call sites carry a copy of the same helper, because a unit test
-compiled into `src/` cannot reach a file under `tests/`, and each `tests/`
-integration binary is its own compilation unit:
+For `spelunk-core` integration tests, prefer `common::git_command(cwd)` over
+calling `isolate_git_config()` and `std::process::Command::new("git")`
+separately: it bakes the isolation call into the `Command` it returns, so a
+new test file cannot construct an un-isolated one by forgetting the setup
+step.
+
+`isolate_git_config`/`git_command` have exactly two definitions, both in
+`spelunk-core`, one per side of the `src`/`tests` compilation boundary:
 
 | Location | Covers |
 |------|---------------|
-| `crates/spelunk-cli/tests/plumbing_helpers.rs` | `tests/` integration binaries for `spelunk-cli` |
-| `crates/spelunk-cli/src/cli/cmd/test_support.rs` | `src/` unit tests for `spelunk-cli` |
-| `crates/spelunk-core/src/storage/git_notes/mod.rs` (local to the `cat_file_batch` test module) | `spelunk-core` unit tests |
-| `crates/spelunk-core/tests/integration_git_notes.rs` | `spelunk-core`'s git-notes integration tests |
+| `crates/spelunk-core/src/test_support.rs` (module gated `#[cfg(any(test, feature = "test-support"))]`) | `spelunk-core`'s own `#[cfg(test)]` unit tests, and any downstream crate that enables the `test-support` feature |
+| `crates/spelunk-core/tests/common/mod.rs` (also exports `git_command`) | `spelunk-core`'s `tests/` integration binaries |
 
-CI runners carry no ambient global config, so a missing call here never
-fails CI. It only surfaces as a local test failure for a contributor who
-has one of these settings configured globally, with no indication of the
-cause.
+`spelunk-cli` has no independent copy: `src/cli/cmd/test_support.rs` and
+`tests/plumbing_helpers.rs` both `pub use spelunk_core::test_support::isolate_git_config`,
+reaching it via a `spelunk-core = { path = "../spelunk-core", features =
+["test-support"] }` dev-dependency (the same pattern
+`config::secret_store::MemoryStore` already used for a src/tests-shared test
+double before this).
+
+Two, not one, because `spelunk-core`'s own `tests/` integration binaries link
+the crate externally and can't reach a `#[cfg(test)]`-gated `src/` item
+without a *self-referencing* dev-dependency
+(`spelunk-core = { path = ".", features = ["test-support"] }` inside
+`spelunk-core`'s own `Cargo.toml`). That was tried: it compiles and passes
+against an isolated target dir, but this repo's pre-commit hook points
+`CARGO_TARGET_DIR` at the shared `target/` used by every worktree, and
+building against that shared dir (last built from a different `Cargo.lock`)
+fails with `unresolved import spelunk_core::test_support`. The
+`tests/common/mod.rs` duplicate is the real floor given that constraint, not
+an oversight.
+
+`scripts/check-git-isolation.sh` runs as the first step of CI's Check & Lint
+job and fails the build if a test file spawns `git` (`Command::new("git")`,
+however wrapped, whitespaced, or aliased) without wiring in one of the
+above: a definition or call of `isolate_git_config`, a call to
+`git_command`, or a `mod common;`/`mod plumbing_helpers;` import of the
+fixture module. It's a grep-based heuristic, not a parser (see the script's
+own header comment for exact scope and known blind spots, e.g. it can't
+trace a spawn reached through a variable), but it catches the case that
+used to slip through silently: a new test file that spawns git and forgets
+isolation entirely.
 
 ---
 

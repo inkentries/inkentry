@@ -23,33 +23,15 @@ use spelunk_core::storage::MemoryBackend;
 use spelunk_core::storage::NoteInput;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-/// Drop the machine's global/system git config for every git this process
-/// spawns, including the ones the code under test spawns itself (`run_git`
-/// inherits our env, so a per-`Command` `.env()` would not reach them).
-/// An ambient value layers under the temp repo's local config and changes what
-/// the code under test reads: a global `notes.rewriteRef` reads back as
-/// already-covered and the repo never looks unconfigured.
-///
-/// `/dev/null` is not a Windows path, but git skips a scope whenever its var is
-/// set, whatever the path resolves to, so this isolates on Windows regardless.
-fn isolate_git_config() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // SAFETY: every git-touching helper here calls this first and `Once`
-        // blocks the rest until it returns, so no thread can be spawning git
-        // (reading environ) while these run.
-        unsafe {
-            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-            std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
-        }
-    });
-}
+//
+// Git-config isolation (`isolate_git_config` / `git_command`) now lives in
+// `tests/common/mod.rs`, shared across every spelunk-core integration test
+// that spawns git rather than copy-pasted per file.
 
 /// Create a temporary git repo with one initial commit.
 /// Returns the path; the repo is cleaned up when the returned `TempDir` drops.
 fn make_temp_git_repo() -> tempfile::TempDir {
-    isolate_git_config();
+    common::isolate_git_config();
     let dir = tempfile::TempDir::new().expect("tempdir");
     let p = dir.path();
 
@@ -1554,7 +1536,7 @@ mod git_shim {
         fn drop(&mut self) {
             // SAFETY: every test in this binary is #[serial] (and nextest runs
             // one process per test), so nothing reads the environment
-            // concurrently. Same argument as `isolate_git_config` above.
+            // concurrently. Same argument as `common::isolate_git_config`.
             unsafe { std::env::set_var("PATH", &self.original_path) };
         }
     }
@@ -2271,6 +2253,28 @@ async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
     );
 }
 
+// Restores `GIT_CONFIG_GLOBAL` to `previous` on drop, including during a
+// panic unwind. A plain "set, run, restore-before-assert" sequence only
+// protects against a panic in the assertions: it still leaks the override
+// into every later test in this process if the guarded call itself panics
+// or the run is interrupted between the set and the restore.
+struct RestoreGitConfigGlobal(std::ffi::OsString);
+
+impl RestoreGitConfigGlobal {
+    fn to(previous: impl Into<std::ffi::OsString>) -> Self {
+        Self(previous.into())
+    }
+}
+
+impl Drop for RestoreGitConfigGlobal {
+    fn drop(&mut self) {
+        // SAFETY: every caller of this guard is #[serial] (and nextest
+        // gives each test its own process), so nothing reads the
+        // environment concurrently while this runs.
+        unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &self.0) };
+    }
+}
+
 /// The read is deliberately unscoped: a value the user set in *global* scope is
 /// theirs and must be honoured, so we add nothing on top of it. Pins the intent
 /// that `isolate_git_config` would otherwise hide from every test here.
@@ -2287,10 +2291,11 @@ async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
     // SAFETY: `#[serial]` keeps this the only running test under `cargo test`,
     // and nextest gives each test its own process.
     unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &global) };
+    let _restore = RestoreGitConfigGlobal::to("/dev/null");
     let status = ensure_notes_rewrite_ref(Some(root)).await;
-    // Restore before asserting: a panic below would otherwise leak the global
-    // value into every later test in this process.
-    unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null") };
+    // The guard above restores on drop, unconditionally: it already ran (or
+    // will run at end of scope) whether or not the call above panicked.
+    drop(_restore);
 
     assert_eq!(
         status,
@@ -2300,6 +2305,30 @@ async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
     assert!(
         rewrite_ref_values(root).is_empty(),
         "honouring the global value means writing no local one"
+    );
+}
+
+// Proves `RestoreGitConfigGlobal`'s `Drop` runs on unwind, not just on the
+// happy path: forces a panic between the guard's construction and where the
+// old set/restore code used to sit, then confirms the value is back
+// afterward. Backs the panic-safety fix for
+// `ensure_notes_rewrite_ref_honours_a_users_global_value` above.
+#[test]
+#[serial]
+fn restore_git_config_global_guard_restores_after_a_panic() {
+    common::isolate_git_config();
+    unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", "sentinel-before-panic") };
+
+    let result = std::panic::catch_unwind(|| {
+        let _restore = RestoreGitConfigGlobal::to("/dev/null");
+        panic!("simulated failure inside the guarded scope");
+    });
+
+    assert!(result.is_err(), "the closure must have actually panicked");
+    assert_eq!(
+        std::env::var("GIT_CONFIG_GLOBAL").as_deref(),
+        Ok("/dev/null"),
+        "the guard's Drop must run during unwind and restore the isolated value"
     );
 }
 
