@@ -2,7 +2,7 @@ use super::MemoryStore;
 use std::sync::OnceLock;
 
 /// Register the sqlite-vec extension exactly once per test process.
-/// `MemoryStore::migrate()` creates a `vec0` virtual table, which
+/// `MemoryStore::run_migrations()` creates a `vec0` virtual table, which
 /// requires the extension to be loaded before any connection is opened.
 fn register_sqlite_vec() {
     static INIT: OnceLock<()> = OnceLock::new();
@@ -1003,8 +1003,9 @@ fn entity_id_migration_backfills_but_does_not_collapse_duplicates() {
         let store = MemoryStore {
             conn,
             reembed_needed: None,
+            dropped_768: std::cell::Cell::new(false),
         };
-        store.migrate().expect("schema migration only");
+        store.run_migrations().expect("schema migration only");
         for created_at in [1_700_000_001_i64, 1_700_000_002] {
             store
                 .add_note_with_created_at(
@@ -1022,7 +1023,8 @@ fn entity_id_migration_backfills_but_does_not_collapse_duplicates() {
         store
             .execute_batch(
                 "DROP INDEX idx_notes_entity_id; \
-                 ALTER TABLE notes DROP COLUMN entity_id;",
+                 ALTER TABLE notes DROP COLUMN entity_id; \
+                 PRAGMA user_version = 0;",
             )
             .expect("drop column to simulate the older schema");
         let has_col: i64 = store
@@ -1540,5 +1542,209 @@ fn superseded_note_excluded_by_default_included_with_archived() {
     assert_eq!(
         got, want,
         "include_archived surfaces the superseded note for backfill"
+    );
+}
+
+// ── migration runner (schema version) ───────────────────────────────────────
+// `MemoryStore::run_migrations` is a forward-only runner gated on `PRAGMA
+// user_version`, mirroring `Database::run_migrations` in `storage/db.rs`.
+// These exercise the runner itself; the FTS/lifecycle/dim-upgrade tests
+// elsewhere in this file exercise what each individual step does.
+
+fn user_version(store: &MemoryStore) -> i32 {
+    store
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn notes_has_column(store: &MemoryStore, col: &str) -> bool {
+    let mut stmt = store.conn.prepare("PRAGMA table_info(notes)").unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        if row.get::<_, String>(1).unwrap() == col {
+            return true;
+        }
+    }
+    false
+}
+
+// Acceptance criterion 1: a brand-new store runs every step and ends stamped
+// at the latest version.
+#[test]
+fn fresh_memory_db_stamps_current_version() {
+    let store = open_store();
+    assert_eq!(user_version(&store), super::MEMORY_SCHEMA_VERSION);
+}
+
+// Acceptance criterion 2: re-opening an already-migrated store is a clean
+// no-op that keeps the version and touches no existing row.
+#[test]
+fn reopen_memory_db_is_idempotent() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    let store = MemoryStore::open(&path).expect("first open");
+    let (id, _) = store
+        .add_note("decision", "Keep", "body", &[], &[], None, None)
+        .unwrap();
+    drop(store);
+
+    let reopened = MemoryStore::open(&path).expect("second open");
+    assert_eq!(user_version(&reopened), super::MEMORY_SCHEMA_VERSION);
+    assert_eq!(
+        reopened.get(id).unwrap().map(|n| n.title),
+        Some("Keep".to_string()),
+        "re-opening an already-migrated store must not touch existing rows"
+    );
+}
+
+// Acceptance criterion 3: a field DB built by today's binary but stamped
+// `user_version = 0` (every store on disk before this runner shipped, since
+// nothing ever wrote the header before now) is inferred at the latest
+// version on next open, without destructively re-running any step: an
+// existing row, its embedding, and its FTS entry all survive.
+#[test]
+fn legacy_fully_migrated_memory_db_is_inferred_and_stamped_rows_survive() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    let id = {
+        let store = MemoryStore::open(&path).expect("build via runner");
+        let (id, _) = store
+            .add_note("decision", "Survives", "body text", &[], &[], None, None)
+            .unwrap();
+        let vector = vec![0.1f32; crate::embeddings::EMBEDDING_DIM];
+        store
+            .insert_embedding(id, &crate::embeddings::vec_to_blob(&vector))
+            .unwrap();
+        // Simulate a pre-runner binary: reset the header stamp.
+        store.execute_batch("PRAGMA user_version = 0").unwrap();
+        id
+    };
+
+    let store = MemoryStore::open(&path).expect("reopen legacy");
+    assert_eq!(
+        user_version(&store),
+        super::MEMORY_SCHEMA_VERSION,
+        "a fully-migrated legacy store must be inferred at the latest version"
+    );
+
+    let note = store
+        .get(id)
+        .unwrap()
+        .expect("note must survive re-inference");
+    assert_eq!(note.title, "Survives");
+    assert!(
+        store.get_embedding(id).unwrap().is_some(),
+        "an existing embedding must not be dropped by a spurious re-run of the \
+         768→896 upgrade step"
+    );
+
+    let hits: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'Survives'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1, "the FTS index must survive re-inference intact");
+}
+
+// Acceptance criterion 4: a partially-old field DB (missing only the last two
+// steps' columns) is inferred at the version just below them, and only those
+// missing steps run.
+#[test]
+fn partially_migrated_legacy_memory_db_is_inferred_then_completed() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    {
+        let store = MemoryStore::open(&path).expect("build");
+        // Strip back to a pre-uuid (v6) shape: drop the columns/indexes added
+        // by steps 7 (uuid) and 8 (entity_id), then reset the stamp so `open`
+        // must re-infer rather than trust it.
+        store
+            .execute_batch(
+                "DROP INDEX idx_notes_uuid; \
+                 DROP INDEX idx_notes_remote_id; \
+                 ALTER TABLE notes DROP COLUMN uuid; \
+                 ALTER TABLE notes DROP COLUMN remote_id; \
+                 DROP INDEX idx_notes_entity_id; \
+                 ALTER TABLE notes DROP COLUMN entity_id; \
+                 PRAGMA user_version = 0;",
+            )
+            .expect("strip to v6 shape");
+        assert_eq!(
+            MemoryStore::infer_legacy_version(&store).unwrap(),
+            6,
+            "precondition: stripping uuid/remote_id/entity_id must land inference at 6"
+        );
+    }
+
+    let store = MemoryStore::open(&path).expect("reopen partial");
+    assert_eq!(user_version(&store), super::MEMORY_SCHEMA_VERSION);
+    assert!(notes_has_column(&store, "uuid"), "step 7 must have re-run");
+    assert!(
+        notes_has_column(&store, "entity_id"),
+        "step 8 must have re-run"
+    );
+}
+
+// Acceptance criterion 5: a genuine step failure (not a tolerated
+// duplicate-column error) propagates out of `open` rather than being
+// swallowed by the "already applied" guard.
+#[test]
+fn genuine_memory_migration_failure_propagates_not_swallowed() {
+    register_sqlite_vec();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let store = MemoryStore {
+        conn,
+        reembed_needed: None,
+        dropped_768: std::cell::Cell::new(false),
+    };
+    // No `notes` table exists, so the ALTER fails with "no such table" rather
+    // than "duplicate column name": the one error the guard tolerates.
+    let err = store
+        .apply_lifecycle_migration()
+        .expect_err("a missing table must surface as an error, not a swallowed no-op");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no such table") || msg.contains("lifecycle migration"),
+        "a real migration failure must propagate, got: {msg}"
+    );
+}
+
+// Acceptance criterion 6: a store stamped with a schema version newer than
+// this binary supports (e.g. opened by an older binary after a newer one
+// wrote it) refuses with a clear message instead of mis-running steps.
+#[test]
+fn future_memory_schema_version_refuses_to_open() {
+    register_sqlite_vec();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().join("memory.db");
+
+    {
+        let store = MemoryStore::open(&path).expect("build current store");
+        store
+            .execute_batch(&format!(
+                "PRAGMA user_version = {}",
+                super::MEMORY_SCHEMA_VERSION + 1
+            ))
+            .expect("stamp a future version");
+    }
+
+    let err = match MemoryStore::open(&path) {
+        Ok(_) => panic!("an older binary must refuse a DB stamped with a newer schema version"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("newer") || msg.contains("upgrade spelunk"),
+        "the error must explain the version mismatch clearly, got: {msg}"
     );
 }
