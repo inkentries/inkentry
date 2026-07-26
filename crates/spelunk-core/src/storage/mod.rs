@@ -41,6 +41,41 @@ pub use stats::{
 use anyhow::Result;
 use std::path::Path;
 
+/// Cap a freshly-opened connection's page count when
+/// `SPELUNK_TEST_MAX_PAGE_COUNT` is set, so the crash-safety integration
+/// suite can force a deterministic `SQLITE_FULL` on the next write without a
+/// size-capped filesystem or a custom VFS. `max_page_count` is a
+/// per-connection setting (SQLite does not persist it to the file), so this
+/// must run on every `open`, not once ever. A no-op for every real user: the
+/// var is never set outside the test harness.
+pub(crate) fn apply_test_page_cap(conn: &rusqlite::Connection) -> Result<()> {
+    if let Ok(raw) = std::env::var("SPELUNK_TEST_MAX_PAGE_COUNT")
+        && let Ok(n) = raw.parse::<i64>()
+    {
+        conn.execute_batch(&format!("PRAGMA max_page_count = {n};"))?;
+    }
+    Ok(())
+}
+
+/// Block until killed, iff `SPELUNK_TEST_CRASH_POINT` names this exact point.
+/// Used by the crash-safety integration suite to land a real `SIGKILL` inside
+/// a chosen write window instead of racing wall-clock timing: the child
+/// prints a marker then blocks on a stdin read the harness never satisfies,
+/// so the harness can block on the marker line and then kill with the
+/// process provably parked at that window. A no-op for every real user.
+pub(crate) fn pause_for_crash_test(point: &str) {
+    let Ok(target) = std::env::var("SPELUNK_TEST_CRASH_POINT") else {
+        return;
+    };
+    if target != point {
+        return;
+    }
+    println!("SPELUNK_TEST_CRASH_POINT_REACHED:{point}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let mut buf = [0u8; 1];
+    let _ = std::io::Read::read(&mut std::io::stdin(), &mut buf);
+}
+
 /// Escape a user-supplied string for use in a SQLite LIKE pattern.
 ///
 /// SQLite's LIKE operator treats `%`, `_`, and the chosen escape character as

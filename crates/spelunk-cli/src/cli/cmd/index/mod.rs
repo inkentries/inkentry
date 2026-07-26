@@ -70,6 +70,7 @@ pub struct IndexArgs {
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
 
+mod crash_test_hook;
 mod embed_phase;
 mod mentions;
 mod parse_phase;

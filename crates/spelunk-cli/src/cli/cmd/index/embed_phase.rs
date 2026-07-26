@@ -694,6 +694,7 @@ async fn run_embed_phase_with_backoff(
             })
             .collect();
         db.insert_embeddings(&embeddings)?;
+        super::crash_test_hook::pause_at("after_embed_batch", &batch_num.to_string());
 
         // The batch is now durable; advance the counters and repaint the ETA
         // per chunk so it still counts down through a batch, not once per request.

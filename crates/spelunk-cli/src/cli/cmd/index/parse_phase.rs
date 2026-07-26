@@ -551,6 +551,11 @@ fn process_text_file(
     };
 
     let file_id = db.upsert_file(path_str, Some(language), &hash, stat_mtime(path))?;
+    // This is the one write in the whole per-file sequence a crash cannot
+    // recover from cleanly: the hash just committed is now current, so the
+    // resume/skip check above will treat this file as already indexed even
+    // though no chunk below has landed yet. See the crash-safety suite.
+    super::crash_test_hook::pause_at("after_index_hash_write", path_str);
     db.delete_embeddings_for_file(file_id)?;
     db.delete_chunks_for_file(file_id)?;
 
