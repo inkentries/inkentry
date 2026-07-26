@@ -3994,9 +3994,10 @@ mod tests {
     /// returned future: this is the load-bearing detail that makes the fake
     /// reproduce the actual fault rather than paper over it. A plain async
     /// loop would already stop the instant the handler's future is dropped
-    /// (ordinary Rust cancellation-on-drop  -  exactly how the existing
-    /// `ServerEmbedder` shim behaves, which is why it needs no fix). Dropping
-    /// a `JoinHandle` does **not** abort the task it points to  -  the same
+    /// (ordinary Rust cancellation-on-drop  -  the behavior any embedder
+    /// gets for free as long as it doesn't detach its work onto a separate
+    /// task, so there'd be nothing here to test). Dropping a `JoinHandle`
+    /// does **not** abort the task it points to  -  the same
     /// "detached" property `spawn_blocking` has in `NativeEmbedder`  -  so this
     /// loop only stops if it observes `cancel` itself, which is exactly what's
     /// under test.
