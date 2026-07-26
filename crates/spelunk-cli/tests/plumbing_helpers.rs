@@ -132,7 +132,7 @@ pub fn spelunk_cmd(db_path: &Path, config_path: &Path) -> Command {
 /// API base URL.  Returns the config file path.
 pub fn write_config(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
     let cfg = format!(
-        "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test-model\"\nllm_model = \"test-chat\"\n",
+        "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test-chat\"\n",
         db_path, api_base
     );
     let config_path = dir.join("config.toml");

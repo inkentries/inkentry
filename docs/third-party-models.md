@@ -1,10 +1,11 @@
 # Third-party models
 
 `spelunk-server` bundles a native embedding model, so semantic search works
-with no external endpoint. LLM-backed features are different: the server has
-no LLM of its own, and proxies those calls to an external OpenAI-compatible
-chat-completions endpoint that you configure. This page covers wiring that up,
-plus the (optional, rarer) case of relocating where embeddings are computed.
+with no external endpoint and no way to relocate it: the embedding model and
+its compute path are both pinned product-wide. LLM-backed features are
+different: the server has no LLM of its own, and proxies those calls to an
+external OpenAI-compatible chat-completions endpoint that you configure. This
+page covers wiring that up.
 
 Looking for the bundled embedder's license and provenance instead? See
 [Model attribution](model-attribution.md).
@@ -89,25 +90,13 @@ Every client already sets an explicit `server_url` to reach a team server, so
 `explore`, `memory harvest`, and index-time summaries are all unlocked with no
 extra client-side configuration.
 
-## Configuring an external embedding endpoint
+## Native embedder artifact source
 
-`--embedding-url` / `SPELUNK_EMBEDDING_URL` relocates **where** embeddings are
-computed (for example, onto a shared GPU host), not which model runs. The
-embedding model stays fixed to F2LLM-v2-330M at 896 dimensions product-wide, so
-the endpoint must serve that exact model; this is not a way to swap in a
-different embedding model.
-
-```bash
-spelunk-server --embedding-url http://127.0.0.1:1234
-```
-
-When set, the server calls out to that OpenAI-compatible embeddings endpoint
-instead of running the bundled native embedder.
-
-`SPELUNK_EMBEDDER_GGUF_REPO` is unrelated to the above: it points the *bundled
-native* embedder at an alternate source for the same F2LLM-v2-330M GGUF and
-tokenizer artifacts, not a different model. See
-[Model attribution](model-attribution.md).
+Embeddings have no external endpoint or config: the model is pinned
+product-wide to F2LLM-v2-330M at 896 dimensions, computed only by the bundled
+native embedder. `SPELUNK_EMBEDDER_GGUF_REPO` points that *bundled native*
+embedder at an alternate source for the same F2LLM-v2-330M GGUF and tokenizer
+artifacts, not a different model. See [Model attribution](model-attribution.md).
 
 ## Related
 

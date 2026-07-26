@@ -9,6 +9,22 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`spelunk-server --embedding-url` / `SPELUNK_EMBEDDING_URL` and the deprecated
+  `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` no longer exist.** The
+  embedding model is pinned product-wide to the bundled native embedder
+  (F2LLM-v2-330M@896); there is no longer any way to relocate where embeddings
+  are computed, only where LLM inference runs (`--llm-url` / `--llm-model` are
+  unaffected). Starting the server with either removed flag now fails with
+  clap's unknown-argument error instead of being accepted or silently ignored;
+  the corresponding environment variables have no effect. The CLI's
+  `embedding_model` config key is also removed: `spelunk plumbing embed` now
+  always reports the pinned model id instead of a config-configurable label.
+  Existing `config.toml` files that still carry `embedding_model` continue to
+  parse unchanged (the key is silently ignored, same as other pruned keys).
+  This is a breaking change to `spelunk-server`'s CLI surface, shipped pre-1.0.
+
 ### Fixed
 
 - **`spelunk sync` and `spelunk memory pull` no longer silently stop after

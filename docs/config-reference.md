@@ -51,18 +51,6 @@ file only accepts the fields listed under
 Path to the SQLite index database file. The project index and memory databases
 live alongside it (`index.db`, `memory.db`).
 
-### `embedding_model`
-
-- **Type:** string
-- **Default:** `f2llm-v2-330m`
-
-This is **not** a model selector. The effective embedding model is fixed
-product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension) and served by
-`spelunk-server`; nothing in `config.toml` changes it. This field is purely a
-cosmetic display label used in the `model:` field of `spelunk plumbing embed`
-JSONL output, so scripts consuming that output have a name to print. There is
-normally no reason to change it.
-
 ### `llm_model`
 
 - **Type:** string, optional
@@ -311,6 +299,7 @@ without error but do nothing:
 |-----|--------|
 | `memory_server_url` | Removed. Use `server_url`. |
 | `memory_server_key` | Removed. Use `server_key`, `spelunk auth set-key`, or `spelunk login`. |
+| `embedding_model` | Removed. The embedding model is pinned product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension), computed only by the bundled native embedder in `spelunk-server`; there is no config key or relocation option for it. |
 
 `inference_url` is not a config key at all: it is populated at runtime only,
 when spelunk auto-discovers a loopback server, and is never read from either

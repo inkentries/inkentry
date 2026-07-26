@@ -163,7 +163,7 @@ fn fixture(rt: &tokio::runtime::Runtime) -> Fixture {
     std::fs::write(
         spelunk_dir.join("config.toml"),
         format!(
-            "db_path = {:?}\napi_base_url = {:?}\nembedding_model = \"test-model\"\n\
+            "db_path = {:?}\napi_base_url = {:?}\n\
              llm_model = \"test-chat\"\nserver_url = {:?}\nproject_id = \"test-org/test-project\"\n",
             db, uri, uri,
         ),
