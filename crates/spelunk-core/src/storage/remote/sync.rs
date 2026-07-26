@@ -312,11 +312,44 @@ impl CloudSyncClient {
         anyhow::bail!("DELETE /memory/{remote_id} failed ({status}): {text}")
     }
 
-    /// Pull entries after the UUIDv7 cursor `since_id` (the max cloud
-    /// `remote_id` already synced locally — decision #183). When `since_id` is
-    /// `None` (nothing synced yet) this is a full catch-up: the
-    /// nil UUID `00000000-…` sorts before every UUIDv7, so it returns all
-    /// entries.
+    /// Maximum `limit` the server accepts on `GET /memory/since`
+    /// (`ServerDb::notes_since_id`'s `limit.clamp(1, 500)`). A request's
+    /// `limit` only needs to satisfy `limit <= MEMORY_SINCE_MAX_LIMIT`; the
+    /// server silently clamps down to this value if it's violated. Scoped to
+    /// this one endpoint, not a generic page-size ceiling.
+    pub const MEMORY_SINCE_MAX_LIMIT: i64 = 500;
+
+    /// `limit` this client requests per `/memory/since` page. Matches the
+    /// server's own default (`default_since_limit()` in handlers.rs), so
+    /// sending it explicitly behaves identically to omitting the param; sent
+    /// explicitly anyway so pagination's "did this page prove nothing
+    /// remains" check has a fixed value to compare against that can't
+    /// silently drift if the server's own default ever changes. Well under
+    /// [`MEMORY_SINCE_MAX_LIMIT`](Self::MEMORY_SINCE_MAX_LIMIT): a larger
+    /// per-page request is a pure throughput/latency tradeoff (fewer, bigger
+    /// requests vs. more, smaller ones), not a correctness lever — a
+    /// pagination loop that stops on a short page is already immune to
+    /// backlog size regardless of page size, so there is no correctness
+    /// reason to request more, and a smaller page is kinder to slow
+    /// connections and unusually large individual entries.
+    pub const MEMORY_SINCE_PULL_LIMIT: i64 = 100;
+
+    /// Pull one page of entries after the UUIDv7 cursor `since_id` (the max
+    /// cloud `remote_id` already synced locally — decision #183). When
+    /// `since_id` is `None` (nothing synced yet) this is a full catch-up
+    /// start: the nil UUID `00000000-…` sorts before every UUIDv7, so it
+    /// returns from the very beginning.
+    ///
+    /// Requests [`MEMORY_SINCE_PULL_LIMIT`](Self::MEMORY_SINCE_PULL_LIMIT)
+    /// entries and returns at most that many. This method does not paginate
+    /// on its own; a caller pulling a store's entire backlog must loop (see
+    /// `pull_and_apply_since` in spelunk-cli), calling again with the cursor
+    /// advanced to the last entry's `id` until a page comes back shorter than
+    /// the requested limit — the definitive "nothing left" signal, including
+    /// the empty-page case. A response exactly at the limit does not by
+    /// itself prove more remain, but it can never be treated as the last page
+    /// either, since the server never returns more than requested even when
+    /// more exist.
     ///
     /// A project that does not exist on the server yet (404) is treated as
     /// having nothing to pull, not an error: a spelunk-server-backed project
@@ -328,9 +361,10 @@ impl CloudSyncClient {
         // The all-zero UUID precedes every UUIDv7 in `id > $cursor` order, so it
         // is the natural "from the beginning" cursor for a first sync.
         let cursor = since_id.unwrap_or("00000000-0000-0000-0000-000000000000");
+        let limit = Self::MEMORY_SINCE_PULL_LIMIT.to_string();
         let resp = self
             .authed(self.client.get(self.url("memory/since")))
-            .query(&[("since_id", cursor)])
+            .query(&[("since_id", cursor), ("limit", limit.as_str())])
             .send()
             .await
             .context("GET /memory/since")?;
@@ -535,6 +569,12 @@ mod tests {
                 "since_id",
                 "01890000-0000-7000-8000-000000000000",
             ))
+            .and(query_param(
+                "limit",
+                CloudSyncClient::MEMORY_SINCE_PULL_LIMIT
+                    .to_string()
+                    .as_str(),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "entries": [{
                     "id": "01890000-0000-7000-8000-000000000001",
@@ -574,6 +614,58 @@ mod tests {
         assert!(entries.is_empty());
     }
 
+    #[test]
+    fn memory_since_max_limit_matches_the_server_clamp_ceiling() {
+        // `ServerDb::notes_since_id` clamps `limit` to `1..=500`. This is a
+        // regression guard on that server-side fact, not a claim about what
+        // this client requests (see `MEMORY_SINCE_PULL_LIMIT` for that).
+        assert_eq!(CloudSyncClient::MEMORY_SINCE_MAX_LIMIT, 500);
+    }
+
+    #[test]
+    fn memory_since_pull_limit_matches_the_server_default_and_stays_under_the_max() {
+        // 100 matches `default_since_limit()` (handlers.rs) — the value the
+        // server already applies with no `limit` param — chosen for slow
+        // connections and large entries, not for minimizing round trips.
+        // (100 <= 500 is self-evident from this and the sibling test above,
+        // so isn't asserted separately: both sides are compile-time
+        // constants and clippy rejects an assertion with a constant value.)
+        assert_eq!(CloudSyncClient::MEMORY_SINCE_PULL_LIMIT, 100);
+    }
+
+    #[tokio::test]
+    async fn pull_since_requests_the_page_limit_explicitly() {
+        // Sent explicitly (rather than omitted and left to the server's own
+        // default) so a caller looping pages has a fixed value to compare
+        // each page's length against, insulated from the server's default
+        // ever changing. Match on path only (not `limit`) so a wrong/missing
+        // value surfaces in the captured request instead of being masked by
+        // wiremock's 404-no-match default, which `pull_since` itself treats
+        // as an empty-but-successful pull.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        client.pull_since(None).await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let query: std::collections::HashMap<_, _> = reqs[0].url.query_pairs().collect();
+        assert_eq!(
+            query.get("limit").map(|v| v.as_ref()),
+            Some(
+                CloudSyncClient::MEMORY_SINCE_PULL_LIMIT
+                    .to_string()
+                    .as_str()
+            )
+        );
+    }
+
     #[tokio::test]
     async fn pull_since_none_uses_nil_uuid_cursor() {
         let server = MockServer::start().await;
@@ -594,6 +686,28 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let entries = client.pull_since(None).await.unwrap();
         assert!(entries.is_empty());
+    }
+
+    /// Only 404 (project not yet created) reads as "nothing to pull". A real
+    /// server error (500, or any other non-2xx/404 status) must surface as
+    /// `Err`, not be swallowed the same way — a caller looping pages (see
+    /// `pull_and_apply_since` in spelunk-cli) depends on this distinction to
+    /// tell "server has nothing yet" apart from "the request actually
+    /// failed mid-pagination".
+    #[tokio::test]
+    async fn pull_since_server_error_propagates_distinct_from_the_404_empty_case() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let err = client
+            .pull_since(None)
+            .await
+            .expect_err("a 500 must not be treated as an empty page like a 404 is");
+        assert!(format!("{err:#}").contains("memory/since"), "err: {err:#}");
     }
 
     #[tokio::test]

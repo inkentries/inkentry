@@ -11,6 +11,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk sync` and `spelunk memory pull` no longer silently stop after
+  the server's first page of entries.** A pull request never sent an
+  explicit page size, so the server applied its own 100-entry default; on a
+  first sync into an established project with more than 100 pending
+  entries, the command reported success and printed a count, but only the
+  first page ever landed locally, with no error and no indication anything
+  was missing. Both commands share the same pull path, which now requests
+  the server's maximum page size and keeps paginating, applying each page
+  as it arrives, until a page comes back short of that size. A large first
+  sync or pull now completes fully in one command instead of requiring
+  several repeated runs to converge.
 - **`spelunk index`'s embed phase now embeds locally in `local_first` mode
   even when a team `server_url` is configured.** Both the foreground (default)
   embed phase and the `--detach-embed` background worker's embedder-readiness
