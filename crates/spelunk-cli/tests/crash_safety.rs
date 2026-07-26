@@ -356,6 +356,72 @@ fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
 }
 
 #[test]
+fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
+    // Scope check on the self-heal fix, not a bug pin: an empty file (zero
+    // lines) parses to zero chunks by design (`sliding_window`'s
+    // `lines.is_empty()` short-circuit, which every language falls back to
+    // when tree-sitter finds no semantic nodes either) - `file_has_chunks`
+    // has no way to distinguish that from the crash-window half-indexed
+    // state it exists to catch, so it reprocesses this file on every plain
+    // re-index. Accepted: extra parse-phase work on a file that is legitimately
+    // empty, not a correctness issue, since it produces the same zero chunks
+    // every time.
+    let home = TempDir::new().expect("home");
+    let project = TempDir::new().expect("project");
+    std::fs::write(
+        project.path().join("normal.py"),
+        "def normal():\n    return 1\n",
+    )
+    .unwrap();
+    std::fs::write(project.path().join("empty.py"), "").unwrap();
+    let db_path = project.path().join(".spelunk").join("index.db");
+
+    let mut first = spelunk_command(home.path());
+    let first_out = first
+        .current_dir(project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".")
+        .output()
+        .expect("first index");
+    assert!(
+        first_out.status.success(),
+        "first index must succeed: {}",
+        String::from_utf8_lossy(&first_out.stderr)
+    );
+
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        assert!(
+            file_hash(&conn, "empty.py").is_some(),
+            "an empty file is still indexed (present in `files`) with a real content hash"
+        );
+        assert_eq!(
+            chunk_count_for(&conn, "empty.py"),
+            0,
+            "an empty file legitimately produces zero chunks - not a crash artifact"
+        );
+    }
+
+    // The decisive check: a second plain re-index must still *reach*
+    // empty.py's per-file processing (the pause point fires) rather than
+    // skip it. If `file_has_chunks` somehow distinguished this case,
+    // `spawn_paused_at` would time out waiting for the marker and panic.
+    let mut second = spelunk_command(home.path());
+    second
+        .current_dir(project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".");
+    let paused = spawn_paused_at(second, "after_index_hash_write:empty.py");
+    let status = release_and_wait(paused);
+    assert!(
+        status.success(),
+        "the released second re-index must finish cleanly"
+    );
+}
+
+#[test]
 fn force_reindex_heals_the_interrupted_file() {
     let f = crash_mid_target_file();
 
@@ -841,4 +907,151 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
     let status = release_and_wait(paused);
     assert!(status.success(), "the released indexer must finish cleanly");
     drop(f.server);
+}
+
+// ── Drill 9: run_lock.rs hardening ───────────────────────────────────────────
+//
+// Three properties the fix's own doc comments claim but don't yet pin with a
+// real process: (1) a SIGKILLed lock holder must not wedge every future run
+// on that project - there is no stale-lock detection/cleanup path in
+// run_lock.rs, so this only holds if the OS itself releases the advisory
+// lock on process death; (2) the lock is genuinely per-project, not
+// per-machine or per-user, so two unrelated projects indexing at the same
+// time must never contend; (3) the "release before spawning a continuation
+// child" handoff (mod.rs) is race-free against *corruption* specifically -
+// whichever process the child's own re-acquisition loses to, it must bail
+// before touching the DB, never race it - even though the handoff is not
+// race-free against the child's continuation work simply not happening (see
+// the test below for that residual gap, documented rather than fixed here).
+
+#[test]
+fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
+    // `crash_mid_target_file` SIGKILLs a `spelunk index` process while it is
+    // parked at "after_index_hash_write", which is well before either
+    // continuation-spawn site that releases the run lock explicitly - so the
+    // kill lands with the lock still held, and its file descriptor closes
+    // only because the OS reaps the process, not because any in-process
+    // cleanup ran.
+    let f = crash_mid_target_file();
+
+    let mut cmd = spelunk_command(f._home.path());
+    let out = cmd
+        .current_dir(f.project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".")
+        .output()
+        .expect("run index after the lock holder was killed");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a fresh index run after the lock holder was SIGKILLed must succeed, not report the \
+         lock as still held: {stderr}"
+    );
+    assert!(
+        !stderr.contains("already running"),
+        "the OS advisory lock must be released when the holder's process dies by SIGKILL - \
+         there is no stale-lock cleanup path in run_lock.rs, and a killed holder must not \
+         need one: {stderr}"
+    );
+    assert_integrity_ok(&f.db_path);
+}
+
+#[test]
+fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() {
+    // A lock keyed by anything broader than the single project (e.g. a
+    // shared path, or missing the project root from the key entirely) would
+    // make indexing project B hang or fail while project A's run is merely
+    // in progress - that would be a regression the fix must not introduce.
+    let home = TempDir::new().expect("home");
+
+    let project_a = TempDir::new().expect("project a");
+    write_three_file_project(project_a.path());
+    let mut cmd_a = spelunk_command(home.path());
+    cmd_a
+        .current_dir(project_a.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".");
+    let paused_a = spawn_paused_at(cmd_a, "after_index_hash_write:target.py");
+
+    let project_b = TempDir::new().expect("project b");
+    write_three_file_project(project_b.path());
+    let mut cmd_b = spelunk_command(home.path());
+    let out_b = cmd_b
+        .current_dir(project_b.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".")
+        .output()
+        .expect("run index on project b while project a's run is held open");
+
+    assert!(
+        out_b.status.success(),
+        "indexing project B must not be blocked by project A's held lock: {}",
+        String::from_utf8_lossy(&out_b.stderr)
+    );
+
+    kill_and_reap(paused_a);
+}
+
+#[test]
+fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
+    // Models the detach-embed / phases-3-5 handoff's continuation child
+    // losing its lock re-acquisition to *some* other holder (whether that is
+    // a genuinely unrelated third `spelunk index` process racing into the
+    // gap between the parent's release and the child's own acquire, or - as
+    // set up deterministically here - anything else holding the lock at that
+    // moment). `index()` re-acquires the same per-project lock
+    // unconditionally, before either `--_background-phases` or
+    // `--_embed-phases` branches into real work and before `Database::open`
+    // is even called, so a child that loses this race must bail before
+    // touching the DB at all - never interleave writes with whoever holds it.
+    let home = TempDir::new().expect("home");
+    let project = TempDir::new().expect("project");
+    write_three_file_project(project.path());
+    let db_path = project.path().join(".spelunk").join("index.db");
+
+    let mut cmd = spelunk_command(home.path());
+    cmd.current_dir(project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".");
+    let paused = spawn_paused_at(cmd, "after_index_hash_write:target.py");
+
+    let page_count_while_held = page_count(&db_path);
+
+    for mode_flag in ["--_background-phases", "--_embed-phases"] {
+        let mut child_cmd = spelunk_command(home.path());
+        let child_out = child_cmd
+            .current_dir(project.path())
+            .env("SPELUNK_NO_SERVER", "1")
+            .arg("index")
+            .arg(".")
+            .arg(mode_flag)
+            .output()
+            .expect("run continuation-mode child while the lock is held");
+
+        assert!(
+            !child_out.status.success(),
+            "a {mode_flag} child must fail while the project's lock is held by another \
+             process, not proceed"
+        );
+        let child_stderr = String::from_utf8_lossy(&child_out.stderr);
+        assert!(
+            child_stderr.contains("already running"),
+            "{mode_flag} must fail with the clean lock-contention error, not some other \
+             failure: {child_stderr}"
+        );
+        assert_eq!(
+            page_count(&db_path),
+            page_count_while_held,
+            "a {mode_flag} child that loses the lock race must never touch the db - not even \
+             open it - so the page count must be identical before and after the attempt"
+        );
+    }
+
+    assert_integrity_ok(&db_path);
+    kill_and_reap(paused);
 }
