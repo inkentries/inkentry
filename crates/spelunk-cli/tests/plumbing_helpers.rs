@@ -347,8 +347,18 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     // `.current_dir(tmp.path())`: the project-level config discovery walks up
     // from CWD, not from the `project_dir` positional arg (which may be an
     // unrelated source tree, e.g. the shared fixture).
+    //
+    // `SPELUNK_MODE=cloud_first`: this fixture's whole point is a Tier 1
+    // index with real embeddings landed via the mock `server_url` above, not
+    // exercising local-vs-remote routing. Under the default `local_first`
+    // mode an explicit `server_url` with no loopback embedder configured is
+    // now correctly refused, which would leave chunks unembedded and every
+    // KNN-dependent consumer of this fixture broken. `.spelunk/config.toml`
+    // doesn't recognize a `mode` key (see `write_project_server_config`), so
+    // this must go through the env var.
     spelunk_bin_in(tmp.path())
         .current_dir(tmp.path())
+        .env("SPELUNK_MODE", "cloud_first")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
