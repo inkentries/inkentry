@@ -103,6 +103,17 @@ Summaries are the exception: a chunk whose summary failed (say the LLM was
 unreachable) is recorded as attempted rather than missing, so a plain re-run
 skips it. Use `--force` to retry those.
 
+If a previous run was interrupted after recording a file's new content hash
+but before writing its chunks (a process kill mid-parse, for example), that
+file looks up to date by hash alone but has no chunks. A plain `spelunk index`
+detects this and reprocesses the file automatically; you don't need `--force`
+to recover from it.
+
+Only one `spelunk index` run is allowed per project at a time. If a run is
+already in progress, starting a second one fails immediately with `index
+already running (pid N), try again once it finishes` instead of writing to
+the database alongside the first run.
+
 The index also remembers the chunker configuration (currently just the
 `MAX_CHUNK_TOKENS` cap) it was built under. If a plain `spelunk index` detects
 that the running build's chunker config differs from what's recorded, it

@@ -11,6 +11,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk index` no longer skips a crash-half-indexed file forever.** If a
+  previous run was killed after recording a file's new content hash but
+  before writing its chunks, the hash-only skip check treated the file as
+  already up to date and never reprocessed it, silently leaving it
+  unsearchable until someone thought to pass `--force`. A plain `spelunk
+  index` now also checks that the file actually has stored chunks, so it
+  self-heals on the very next run.
+- **Two `spelunk index` runs on the same project could corrupt the index
+  database; a second run now fails cleanly instead.** Racing writes from two
+  concurrent `index` processes on the same project could reproducibly corrupt
+  `index.db`. A per-project lock now serializes runs: a second `spelunk
+  index` started while one is already in progress exits immediately with
+  `index already running (pid N), try again once it finishes` rather than
+  writing to the database alongside the first run.
+- **`spelunk search` and other read-only commands could fail with "database is
+  locked" while `spelunk index` was running.** Every database open re-stamped
+  a schema-version pragma even when nothing needed migrating, and that stamp
+  always opens a write transaction, so a purely read-only command could
+  contend for the write lock against a concurrent `index` run. Opening an
+  already-current database is now read-only.
 - **`spelunk sync` and `spelunk memory pull` no longer silently stop after
   the server's first page of entries.** A pull request never sent an
   explicit page size, so the server applied its own 100-entry default; on a
