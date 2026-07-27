@@ -9,6 +9,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`spelunk-server --model-dir <PATH>` (or `SPELUNK_MODEL_DIR`) loads the
+  bundled F2LLM-v2-330M embedder from a pre-provisioned local directory, with
+  zero network access.** For hosts with no route to `huggingface.co` (an
+  air-gapped network, a strict corp firewall, a build image with no egress),
+  the previous online-only Hugging Face Hub fetch had no fallback. Provision
+  the flat directory (the GGUF plus `tokenizer.json`; `config.json` is
+  optional) on a connected machine first and transfer it over; see [Server
+  setup → Air-gapped / no-egress install](docs/server-setup.md#air-gapped--no-egress-install)
+  for the full fetch-and-transfer procedure. Unset by default, so the online
+  path is unchanged for the common case.
+
 ### Removed
 
 - **`spelunk-server --embedding-url` / `SPELUNK_EMBEDDING_URL` and the deprecated

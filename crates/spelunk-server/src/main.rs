@@ -82,6 +82,15 @@ struct Args {
     #[arg(long, default_value_t = default_conflict_threshold())]
     conflict_threshold: f32,
 
+    /// Directory holding a pre-provisioned F2LLM-v2-330M GGUF + tokenizer (see
+    /// "Air-gapped / no-egress install" in docs/server-setup.md), for hosts
+    /// with no route to huggingface.co. When set, the bundled native embedder
+    /// loads from this directory instead of the Hugging Face Hub: zero
+    /// network access, at startup or at runtime. Only consulted when the
+    /// bundled native embedder is the active backend; ignored otherwise.
+    #[arg(long, env = "SPELUNK_MODEL_DIR", value_name = "PATH")]
+    model_dir: Option<PathBuf>,
+
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
     /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
     #[arg(long, env = "SPELUNK_LLM_URL")]
@@ -281,6 +290,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // Keep a handle to the embedder slot so the background load task can flip it
     // `loading → ready | unavailable` after the listener binds.
     let embedder_slot = state.embedder.clone();
+    let model_dir = args.model_dir.clone();
 
     let app = router(state);
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -326,15 +336,24 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     tracing::info!("spelunk-server listening on {scheme}://{addr}");
 
     // Load the native embedder on a background task now that health is live.
-    // `embed_hub::load_from_hub()` is blocking/CPU-heavy, so run it on the blocking
-    // pool; publish the backend into the slot on success (state → ready) or
-    // record the failure (state → unavailable). Only the native path warms up
-    // here — a disabled slot (no embed-native feature) is already terminal.
+    // Both `embed_hub::load_from_hub()` (network) and `load_from_model_dir()`
+    // (offline, when `--model-dir`/`SPELUNK_MODEL_DIR` is set) are
+    // blocking/CPU-heavy, so run whichever applies on the blocking pool;
+    // publish the backend into the slot on success (state → ready) or record
+    // the failure (state → unavailable) either way: an offline host with no
+    // (or bad) provisioned artifacts reaches the same terminal `unavailable`
+    // state as a failed Hub download, just with an error naming the offline
+    // docs instead of a connection failure. Only the native path warms up
+    // here: disabled slots are already in a terminal state.
     #[cfg(feature = "embed-native")]
     if load_native {
         let slot = embedder_slot.clone();
         tokio::spawn(async move {
-            match tokio::task::spawn_blocking(embed_hub::load_from_hub).await {
+            let load = move || match model_dir {
+                Some(dir) => embed_hub::load_from_model_dir(&dir),
+                None => embed_hub::load_from_hub(),
+            };
+            match tokio::task::spawn_blocking(load).await {
                 Ok(Ok(native)) => {
                     tracing::info!("native embedding model loaded (dim={})", NATIVE_EMBED_DIM);
                     slot.set_ready(
@@ -360,7 +379,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     }
     // Silence "unused" for the non-embed-native build (no background load).
     #[cfg(not(feature = "embed-native"))]
-    let _ = (load_native, &embedder_slot);
+    let _ = (load_native, &embedder_slot, &model_dir);
 
     let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
     match tls_config {
@@ -1167,6 +1186,65 @@ mod arg_tests {
         assert_eq!(
             args.key_file.as_deref(),
             Some(std::path::Path::new("/etc/spelunk/server-key"))
+        );
+    }
+
+    // ── Offline / air-gapped model-dir ───────────────────────────────────────
+
+    /// `--model-dir` parses as a path arg, for the air-gapped load path.
+    #[test]
+    fn model_dir_flag_parses() {
+        let args = Args::parse_from(["spelunk-server", "--model-dir", "/srv/spelunk/models"]);
+        assert_eq!(
+            args.model_dir.as_deref(),
+            Some(std::path::Path::new("/srv/spelunk/models"))
+        );
+    }
+
+    /// Unset by default: the online Hugging Face Hub path stays the default
+    /// (no regression for the common case).
+    #[test]
+    #[serial_test::serial(model_dir_env)]
+    fn model_dir_defaults_to_none() {
+        // Serialized against model_dir_env_var_is_honoured: both read/write
+        // the real process env var, and cargo test runs in threads within one
+        // process, so an unguarded reader can observe another test's
+        // temporarily-set value.
+        let prev = std::env::var("SPELUNK_MODEL_DIR").ok();
+        // SAFETY: guarded by #[serial] so no other test reads/writes this var
+        // concurrently.
+        unsafe { std::env::remove_var("SPELUNK_MODEL_DIR") };
+
+        let args = Args::parse_from(["spelunk-server"]);
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("SPELUNK_MODEL_DIR", v) };
+        }
+
+        assert_eq!(args.model_dir, None);
+    }
+
+    /// `SPELUNK_MODEL_DIR` is a first-class equal source, not just a flag:
+    /// the same convention as `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_LLM_URL`, so
+    /// a systemd unit or container entrypoint can set it without a flag.
+    #[test]
+    #[serial_test::serial(model_dir_env)]
+    fn model_dir_env_var_is_honoured() {
+        let prev = std::env::var("SPELUNK_MODEL_DIR").ok();
+        // SAFETY: guarded by #[serial] so no other test reads/writes this var
+        // concurrently; restored before returning.
+        unsafe { std::env::set_var("SPELUNK_MODEL_DIR", "/srv/spelunk/models") };
+
+        let args = Args::parse_from(["spelunk-server"]);
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("SPELUNK_MODEL_DIR", v) },
+            None => unsafe { std::env::remove_var("SPELUNK_MODEL_DIR") },
+        }
+
+        assert_eq!(
+            args.model_dir.as_deref(),
+            Some(std::path::Path::new("/srv/spelunk/models"))
         );
     }
 
