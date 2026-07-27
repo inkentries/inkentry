@@ -606,9 +606,9 @@ environment.
 ### Embedding CPU thread budget
 
 On a CPU-only host the bundled native embedder (candle) would otherwise fan a
-single embed batch across every core, briefly starving the server's own request
-handling (`/v1/health` can go unresponsive during a large index). To leave
-headroom, the server caps candle's thread count at startup.
+single embed batch across every core, leaving the server's own request handling
+to compete with it for CPU. To leave headroom, the server caps candle's thread
+count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
@@ -618,6 +618,11 @@ Precedence: `SPELUNK_EMBED_THREADS` > an already-set `RAYON_NUM_THREADS` >
 the bounded default. A pre-set `RAYON_NUM_THREADS` is respected and never
 overridden. The resolved value and its source are logged at startup
 (`embed CPU thread budget resolved`). GPU (Metal/CUDA) builds are unaffected.
+
+This budget is not what keeps the server answering while an embedder is busy,
+and lowering it will not make a slow probe fast. `/v1/health` and every other
+endpoint that does not itself embed never touch the embedder's forward pass, so
+they stay responsive for the whole of an index whatever this value is set to.
 
 This budget only bounds CPU contention *within* a single embed batch; embed
 requests themselves are still serialized behind a single mutex on both device
