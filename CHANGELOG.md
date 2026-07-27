@@ -64,6 +64,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   already applied to `memory add`/`reindex`/`search`/`timeline`/`harvest`/
   `reconcile` and `explore`. `cloud_first` is unchanged. See [ADR-004's
   2026-07-23 amendment](docs/adr/004-unified-memory-storage.md).
+- **`spelunk sync` and `spelunk memory push` now succeed on the first sync of a
+  project that has never synced before.** A sync round always pulled before
+  pushing to avoid shadowing a concurrent write, but on a project that never
+  existed server-side yet, the pre-push pull failed with an HTTP 400 against
+  the unprovisioned project. On a first sync (detected by checking whether any
+  local entry has ever synced), the sequence now reverses: push first to
+  provision the project server-side, then run a post-push pull to converge with
+  any backlog already on the server. The fix also handles adversarial server
+  crashes during first-sync push and concurrent first-sync attempts from
+  multiple clients.
 
 ### Internal
 
