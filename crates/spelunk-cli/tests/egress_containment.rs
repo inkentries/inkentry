@@ -4,14 +4,14 @@
 //! `spelunk` subprocess and fails loudly, naming the destination, if any
 //! call escapes it.
 //!
-//! ## Update-check (ADR-050) coverage — not yet implementable
+//! ## Update-check (ADR-050) coverage: not yet implementable
 //!
 //! ADR-050 (`docs/adr/050-cli-auto-update-check.md`) designs an opt-out
 //! `api.github.com` update-notification check, but at the time this suite was
 //! written no code in the workspace implements it yet: there is no
 //! `SPELUNK_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
 //! site, no `state.toml`. `update_check_unimplemented_tripwire` below is a
-//! deliberate tripwire, not a behavioral test — it fails the moment someone
+//! deliberate tripwire, not a behavioral test: it fails the moment someone
 //! adds the feature, which is the cue to replace it with real coverage of
 //! D2/D3 (trigger cadence, opt-out precedence, silent-offline swallow). Until
 //! then, every `zero_egress` test below already proves the CLI makes no
@@ -25,7 +25,7 @@
 //! depend on `spelunk-server` at all (only a `[dev-dependencies]` entry with
 //! `default-features = false`, used by unrelated relay tests). So "CLI local
 //! flows never trigger embed_hub" is a compile-time property of the
-//! dependency graph, not just a runtime observation —
+//! dependency graph, not just a runtime observation:
 //! `embed_hub_unreachable_from_cli_binary` below asserts that graph shape
 //! directly so a future Cargo.toml change that pulls `hf-hub` into the
 //! `spelunk` binary fails CI immediately. The first-run download itself
@@ -33,7 +33,7 @@
 //! endpoint) already has pinning coverage in
 //! `crates/spelunk-server/src/embed_hub.rs`'s `prequantized_gguf_repo_*`
 //! tests; this suite does not duplicate a live download against the real HF
-//! host (network-dependent and slow — ~339 MB — not appropriate for this
+//! host (network-dependent and slow, ~339 MB, not appropriate for this
 //! harness).
 
 mod egress_trap;
@@ -74,7 +74,7 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-/// `POST /v1/projects/{id}/search` — the endpoint `spelunk search --mode
+/// `POST /v1/projects/{id}/search`: the endpoint `spelunk search --mode
 /// semantic|hybrid` uses to embed the query server-side (`search_query` in
 /// `server_client.rs`); distinct from `/index/embed` (`embed_text`), which
 /// `memory search`/`memory add`/`plumbing embed` use instead.
@@ -159,7 +159,7 @@ async fn search_text_mode_zero_egress() {
     write_project(project.path());
 
     // Index once (loopback-backed) so there is something to search; this
-    // setup phase runs *outside* the trap on purpose — only the command
+    // setup phase runs *outside* the trap on purpose: only the command
     // actually under test is wired.
     {
         let inference = MockServer::start().await;
@@ -310,7 +310,7 @@ async fn graph_live_zero_egress() {
     init_git_repo(project.path());
     write_project(project.path());
     // `write_project`'s two functions never call each other, so a live scan
-    // of it alone finds zero call sites — a no-op that never actually
+    // of it alone finds zero call sites: a no-op that never actually
     // exercises the structural matcher. A real caller makes this a genuine
     // symbol lookup instead.
     std::fs::write(
@@ -423,16 +423,16 @@ async fn plumbing_embed_zero_egress() {
     // raw `Config` without first running the tier-probe/`effective_config`
     // bridge every other inference-calling command goes through (see
     // `capability::tier::Tier::effective_config`'s doc comment on why that
-    // bridge exists) — so unlike `search`/`memory search`, loopback
+    // bridge exists), so unlike `search`/`memory search`, loopback
     // auto-discovery alone (`SPELUNK_STATE_DIR`) does not reach it; only an
     // explicit `server_url` under `cloud_first` does. That URL is still a
     // loopback address here (the same mock server as every other test in
-    // this file uses), so the egress claim under test — zero non-loopback
-    // connections — is identical; only the config knob differs.
+    // this file uses), so the egress claim under test (zero non-loopback
+    // connections) is identical; only the config knob differs.
     //
     // `write_project_server_config` overwrites the whole `config.toml`, so
     // the `project_id` `init --name` just wrote must be passed back in
-    // explicitly or it's lost — `ServerInferenceClient` reads `cfg.project_id`
+    // explicitly or it's lost: `ServerInferenceClient` reads `cfg.project_id`
     // verbatim (no derive-from-git fallback; that only happens in the
     // `effective_config` bridge this code path skips), so a lost project_id
     // means an empty `{project_id}` URL segment and a 404, not an egress leak.
@@ -460,7 +460,7 @@ async fn plumbing_embed_zero_egress() {
 
 #[test]
 fn update_check_unimplemented_tripwire() {
-    // Only production `src/` trees — walking `tests/` would trip on this
+    // Only production `src/` trees: walking `tests/` would trip on this
     // very file's doc comment naming these identifiers.
     let crates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut hits = Vec::new();
@@ -481,7 +481,7 @@ fn update_check_unimplemented_tripwire() {
     }
     assert!(
         hits.is_empty(),
-        "ADR-050 update-check code has landed ({hits:?}) — replace this tripwire with real \
+        "ADR-050 update-check code has landed ({hits:?}); replace this tripwire with real \
          coverage of D2 (opt-out precedence: env > config > auto-detect), D3 (fires only when \
          due, silent + non-blocking when offline), per the story acceptance criteria",
     );
@@ -546,7 +546,7 @@ fn embed_hub_unreachable_from_cli_binary() {
 //
 // Critical per the story: a harness that only ever asserts "clean" proves
 // nothing about its own ability to detect a violation. This drives a real
-// `reqwest::Client` — the same HTTP stack every local-tier command uses —
+// `reqwest::Client` (the same HTTP stack every local-tier command uses)
 // against a rogue non-loopback host under the identical proxy-env wiring
 // `EgressTrap::wire` applies to a subprocess, and asserts the trap names the
 // destination. `#[serial]` because, unlike every other test in this file,
@@ -598,7 +598,7 @@ async fn self_test_trap_catches_rogue_call() {
     assert!(
         seen.iter().any(|d| d.contains("example.invalid")),
         "self-test failed: the egress trap did not catch a deliberate rogue call to \
-         example.invalid (rogue_call result: {rogue_call:?}) — the harness cannot be trusted \
+         example.invalid (rogue_call result: {rogue_call:?}); the harness cannot be trusted \
          to catch a real regression. Seen: {seen:?}",
     );
 }

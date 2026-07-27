@@ -3,20 +3,20 @@
 //! The product's headline privacy claim is that code never leaves the local
 //! machine unless a team `server_url` is explicitly configured. Every
 //! outbound HTTP(S) call this workspace makes goes through `reqwest`
-//! (verified by grepping the crate for raw `std::net`/socket use — there is
+//! (verified by grepping the crate for raw `std::net`/socket use: there is
 //! none), and no call site here disables env-based proxying
 //! (`Client::builder().no_proxy()` does not appear anywhere in the
 //! workspace), so pointing `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` at a sink
 //! we control, with `NO_PROXY` carving out loopback, turns every reqwest
 //! call site in the binary into an observable event without touching
 //! production code. This is pure userspace (env vars + a local HTTP
-//! server), so it works identically on macOS, Linux, and Windows — no
+//! server), so it works identically on macOS, Linux, and Windows: no
 //! netns/sandbox, no platform-conditional skip.
 //!
 //! Known boundary: `NO_PROXY` matching is hostname-level, not
 //! `host:port`-level (verified empirically: a `NO_PROXY=127.0.0.1:<port>`
 //! entry does not stop reqwest from proxying a request to a *different*
-//! `127.0.0.1:<other_port>` — both got proxied in testing, so the port
+//! `127.0.0.1:<other_port>`; both got proxied in testing, so the port
 //! qualifier was silently ignored). This trap therefore proves "nothing left
 //! the loopback interface", not "nothing reached a loopback port other than
 //! the sanctioned inference server". A stray request to an unintended
@@ -31,8 +31,8 @@ use wiremock::MockServer;
 
 /// The `Host`/CONNECT-authority header on a proxied `Request` survives even
 /// though `wiremock` never completes the CONNECT tunnel (it 404s the
-/// pseudo-request, which is enough to make `reqwest` fail the outbound call)
-/// — see `Request::from_hyper` in wiremock 0.6, which folds the CONNECT
+/// pseudo-request, which is enough to make `reqwest` fail the outbound call);
+/// see `Request::from_hyper` in wiremock 0.6, which folds the CONNECT
 /// authority-form target into a `host` header. That header is the only
 /// reliable way to name the destination for both plain HTTP and HTTPS-via-
 /// CONNECT requests.
@@ -88,7 +88,7 @@ impl EgressTrap {
     }
 
     /// Assert nothing reached the trap. Panics naming every destination seen
-    /// otherwise — the loud, specific failure the story requires instead of a
+    /// otherwise: the loud, specific failure the story requires instead of a
     /// generic "test failed".
     pub async fn assert_clean(&self) {
         let seen = self.sink.received_requests().await.expect(
@@ -103,7 +103,7 @@ impl EgressTrap {
     }
 
     /// Like [`Self::assert_clean`], but returns the destinations instead of
-    /// panicking — for the self-test that proves a rogue call is actually
+    /// panicking: for the self-test that proves a rogue call is actually
     /// caught (a passing assertion there would prove nothing).
     pub async fn destinations_seen(&self) -> Vec<String> {
         self.sink
