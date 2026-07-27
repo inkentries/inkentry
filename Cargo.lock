@@ -5222,6 +5222,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "flate2",
  "futures-util",
  "gethostname",
  "gix",

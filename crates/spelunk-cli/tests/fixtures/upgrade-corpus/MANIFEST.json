@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "wings": [
+    {
+      "artifact": "notes.bundle",
+      "expect": {
+        "era_titles": [
+          "single JSON blob era 1",
+          "JSON lines era without entity ids 1",
+          "JSON lines era without entity ids 2",
+          "entity keyed event log era 1",
+          "entity keyed event log era 2"
+        ]
+      },
+      "id": "git-notes-eras",
+      "kind": "git-notes",
+      "producer": "0.9.5"
+    },
+    {
+      "artifact": "index.db.gz",
+      "expect": {
+        "chunk_count": 3,
+        "embedding_count": 3,
+        "file_count": 2,
+        "fts_expect_path": "README.md",
+        "fts_query": "corpus",
+        "vector_storage": "float768"
+      },
+      "id": "index-v0.8.3-float768",
+      "kind": "index",
+      "producer": "0.8.3"
+    },
+    {
+      "artifact": "index.db.gz",
+      "expect": {
+        "chunk_count": 3,
+        "embedding_count": 3,
+        "file_count": 2,
+        "fts_expect_path": "README.md",
+        "fts_query": "corpus",
+        "vector_storage": "int8"
+      },
+      "id": "index-v0.9.2-pre-user-version",
+      "kind": "index",
+      "producer": "0.9.2"
+    },
+    {
+      "artifact": "memory.db.gz",
+      "expect": {
+        "active_note_count": 2,
+        "archived_title": "Retired plan for a separate vector store",
+        "memory_fts_query": "Supersedes",
+        "note_count": 4,
+        "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
+        "superseded_title": "Chunk with tree-sitter named nodes"
+      },
+      "id": "memory-v0.9.3-pre-entity-id",
+      "kind": "memory",
+      "producer": "0.9.3"
+    },
+    {
+      "artifact": "memory.db.gz",
+      "expect": {
+        "active_note_count": 2,
+        "archived_title": "Retired plan for a separate vector store",
+        "memory_fts_query": "Supersedes",
+        "note_count": 4,
+        "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
+        "superseded_title": "Chunk with tree-sitter named nodes"
+      },
+      "id": "memory-v0.9.5",
+      "kind": "memory",
+      "producer": "0.9.5"
+    },
+    {
+      "artifact": "registry.db.gz",
+      "expect": {
+        "dep_count": 1,
+        "project_count": 2
+      },
+      "id": "registry-v0.9.5",
+      "kind": "registry",
+      "producer": "0.9.5"
+    }
+  ]
+}
