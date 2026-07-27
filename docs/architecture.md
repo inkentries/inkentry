@@ -167,7 +167,7 @@ To add a new backend: implement the trait (in `spelunk-embed` for an embedder, o
 
 `src/indexer/secrets.rs` runs regex patterns against the full text that will be persisted and embedded for each chunk (docstring + content) before storage, and separately against LLM-generated summaries when they're produced (summaries don't exist yet at chunk-store time). Chunks matching known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped in full — including their docstring — and a warning naming only the symbol is logged; a secret-bearing summary is stored as an empty string instead.
 
-This scanner is **best-effort defense-in-depth, not a security boundary** — a finite set of regexes cannot catch every credential format. The actual boundary is that code never leaves the local machine unless a team `server_url` is explicitly configured; the scanner only reduces the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted) by accident.
+This scanner is **best-effort defense-in-depth, not a security boundary** — a finite set of regexes cannot catch every credential format. The actual boundary is that code never leaves the local machine unless a team `server_url` is explicitly configured; the scanner only reduces the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted) by accident. This boundary is enforced by `crates/spelunk-cli/tests/egress_containment.rs`, which traps every outbound connection across local-tier CLI flows and fails loudly, naming the destination, on any escape past loopback.
 
 ### Multi-project registry
 
