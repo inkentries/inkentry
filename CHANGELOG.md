@@ -52,6 +52,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `reconcile` and `explore`. `cloud_first` is unchanged. See [ADR-004's
   2026-07-23 amendment](docs/adr/004-unified-memory-storage.md).
 
+### Internal
+
+- **`memory.db` now opens through the same forward-only, `PRAGMA
+  user_version`-gated migration runner `index.db` already uses**, replacing
+  ad-hoc re-execution of the schema SQL with idempotency inferred from
+  `ALTER TABLE` error strings. A pre-existing store has its version inferred
+  once from table/column shape, then only the missing steps run; a store
+  stamped with a version newer than the binary supports refuses to open
+  instead of mis-running steps. No CLI flag, config key, or user-facing
+  behavior changed.
+
 ## [0.9.5] — 2026-07-24
 
 ### Changed
