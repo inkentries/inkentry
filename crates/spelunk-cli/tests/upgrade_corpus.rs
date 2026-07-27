@@ -44,6 +44,8 @@ struct Wing {
     kind: String,
     artifact: String,
     #[serde(default)]
+    sha256: String,
+    #[serde(default)]
     expect: Expect,
 }
 
@@ -55,6 +57,8 @@ struct Expect {
     chunk_count: i64,
     #[serde(default)]
     embedding_count: i64,
+    #[serde(default)]
+    graph_edge_count: i64,
     // "int8" wings keep their vectors across the upgrade; a "float768" wing
     // must lose them, because mixed-dimension vectors can never be compared.
     #[serde(default)]
@@ -76,11 +80,24 @@ struct Expect {
     #[serde(default)]
     memory_fts_query: String,
     #[serde(default)]
+    note_vector_count: i64,
+    // Whether the captured artifact already had the ADR-068 column. False marks
+    // a wing whose whole purpose is to make the backfill run.
+    #[serde(default)]
+    entity_id_present: bool,
+    #[serde(default)]
     project_count: i64,
     #[serde(default)]
     dep_count: i64,
     #[serde(default)]
-    era_titles: Vec<String>,
+    era_entries: Vec<EraEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EraEntry {
+    title: String,
+    kind: String,
+    body: String,
 }
 
 fn corpus_root() -> PathBuf {
@@ -158,10 +175,20 @@ fn vector_column_type(conn: &rusqlite::Connection, table: &str) -> String {
     .unwrap_or_else(|e| panic!("reading {table} schema: {e}"))
 }
 
-fn embedding_row_count(conn: &rusqlite::Connection, shadow: &str) -> i64 {
-    let sql = format!("SELECT count(*) FROM {shadow}");
+// Callers pass `<name>_rowids` for a vector count: a vec0 virtual table cannot
+// be counted directly, but the shadow table the extension maintains alongside
+// it is an ordinary table and has one row per stored vector.
+fn row_count(conn: &rusqlite::Connection, table: &str) -> i64 {
+    let sql = format!("SELECT count(*) FROM {table}");
     conn.query_row(&sql, [], |r| r.get(0))
-        .unwrap_or_else(|e| panic!("counting {shadow}: {e}"))
+        .unwrap_or_else(|e| panic!("counting {table}: {e}"))
+}
+
+fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let sql = format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+    conn.query_row(&sql, rusqlite::params![column], |r| r.get::<_, i64>(0))
+        .unwrap_or_else(|e| panic!("probing {table}.{column}: {e}"))
+        > 0
 }
 
 // The two SQLite header fields that move on any write transaction: the file
@@ -174,9 +201,20 @@ const VERSION_VALID_FOR: std::ops::Range<usize> = 92..96;
 //
 // Checkpointing matters because the idempotency check compares files, and a
 // write that only ever reached the -wal sidecar would otherwise read as
-// "nothing changed". Masking matters because the checkpoint is itself a write:
-// without it the counters would differ between the two reads even if the
-// second open touched nothing, which is the very thing being measured. Every
+// "nothing changed".
+//
+// Masking matters because the two stores differ in whether a redundant open
+// takes a write transaction at all, and that difference is not what is being
+// measured here. `Database::open` returns before any write once the header
+// already reads the current version, so an index wing comes out of a second
+// open byte-identical even unmasked. `MemoryStore::open` runs the entity-id
+// backfill and unique-index promotion on every open regardless of version, so
+// a memory wing takes a write that settles on identical content and moves only
+// these two counters. Measured, not assumed: with no mask at all the index
+// wings differ at no offset and the memory wings differ at exactly bytes 27
+// and 95, the low bytes of these two fields.
+//
+// So this tolerates a write that changed no content, and nothing else. Every
 // other byte, including all page content, is compared exactly.
 fn content_image(path: &Path) -> Vec<u8> {
     {
@@ -243,6 +281,29 @@ fn the_corpus_is_not_empty_and_every_wing_is_present() {
             wing.producer,
             path.display()
         );
+
+        // An artifact that no longer hashes to what was captured is no longer
+        // evidence about the release named in `producer`. The expectations in
+        // this manifest were read out of *those* bytes, so silently swapping
+        // them (a regenerated wing committed without recapturing, a fixture
+        // hand-edited to make a test pass) would leave the suite asserting one
+        // artifact's contents against another's.
+        assert!(
+            !wing.sha256.is_empty(),
+            "wing {} has no recorded artifact digest, so nothing ties the \
+             expectations below to the bytes they were read from",
+            wing.id
+        );
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("reading wing {} at {}: {e}", wing.id, path.display()));
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes);
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex, wing.sha256,
+            "wing {} no longer matches the artifact its expectations were \
+             captured from",
+            wing.id
+        );
     }
 }
 
@@ -299,6 +360,33 @@ fn every_index_wing_migrates_with_its_rows_and_content_intact() {
             wing.id,
             wing.expect.fts_query
         );
+
+        drop(db);
+        let conn = raw(&db_path);
+
+        // The code graph is a whole subsystem the file and chunk counts say
+        // nothing about: emptying graph_edges leaves both of them intact.
+        assert_eq!(
+            row_count(&conn, "graph_edges"),
+            wing.expect.graph_edge_count,
+            "wing {}: the code graph lost edges across the upgrade",
+            wing.id
+        );
+
+        // A wing already storing int8 vectors must keep every one of them. The
+        // dimension upgrade is allowed to discard 768-dimension vectors and
+        // only those; a detection bug that rebuilt an int8 table as well would
+        // silently cost the user their whole embedding index, and re-embedding
+        // is the single most expensive thing this tool asks of them.
+        if wing.expect.vector_storage != "float768" {
+            assert_eq!(
+                row_count(&conn, "embeddings_rowids"),
+                wing.expect.embedding_count,
+                "wing {}: vectors were discarded from an index that was already \
+                 int8, so the whole index would have to be re-embedded",
+                wing.id
+            );
+        }
     }
 }
 
@@ -309,10 +397,27 @@ async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact(
     let m = manifest();
     let memory_wings = wings_of_kind(&m, "memory");
     assert!(!memory_wings.is_empty(), "corpus has no memory.db wing");
+    assert!(
+        memory_wings.iter().any(|w| !w.expect.entity_id_present),
+        "every memory wing was captured after entity_id already existed, so the \
+         backfill asserted below never actually runs on anything"
+    );
 
     for wing in memory_wings {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = checkout(wing, tmp.path());
+
+        // Confirm the artifact is the era it claims before the upgrade touches
+        // it. Without this an accidentally pre-migrated fixture would make the
+        // backfill assertions below pass with the backfill never running.
+        assert_eq!(
+            has_column(&raw(&db_path), "notes", "entity_id"),
+            wing.expect.entity_id_present,
+            "wing {}: the captured artifact is not the entity_id era it is \
+             recorded as",
+            wing.id
+        );
+
         let store = MemoryStore::open(&db_path)
             .unwrap_or_else(|e| panic!("opening wing {} with the current build: {e}", wing.id));
 
@@ -399,6 +504,48 @@ async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact(
             "wing {}: entry bodies did not survive the upgrade",
             wing.id
         );
+
+        drop(store);
+        let conn = raw(&db_path);
+
+        // The ADR-068 backfill. This is the reason a pre-entity-id wing exists
+        // at all, and it is invisible to every assertion above: entries list,
+        // read and search perfectly well with the column left NULL, and only
+        // start colliding later, once something tries to key on it.
+        assert!(
+            has_column(&conn, "notes", "entity_id"),
+            "wing {}: the entity_id column is missing after the upgrade",
+            wing.id
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM notes WHERE entity_id IS NULL OR trim(entity_id) = ''",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("counting entries without an entity id"),
+            0,
+            "wing {}: the entity_id backfill left entries without one",
+            wing.id
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(DISTINCT entity_id) FROM notes", [], |r| r
+                .get::<_, i64>(0))
+                .expect("counting distinct entity ids"),
+            wing.expect.note_count,
+            "wing {}: entity ids are not distinct per entry, so the unique index \
+             they are meant to carry cannot be promoted",
+            wing.id
+        );
+
+        // Note vectors are as expensive to rebuild as index vectors and just as
+        // invisible to a list or a search-by-text.
+        assert_eq!(
+            row_count(&conn, "note_embeddings_rowids"),
+            wing.expect.note_vector_count,
+            "wing {}: note vectors were discarded across the upgrade",
+            wing.id
+        );
     }
 }
 
@@ -428,12 +575,56 @@ fn every_registry_wing_keeps_its_projects_and_dependency_links() {
             wing.id
         );
 
-        let total_deps: usize = projects
-            .iter()
-            .map(|p| registry.get_deps(p.id).expect("reading deps").len())
-            .sum();
+        // Counting rows says nothing about what is in them, and a registry row
+        // whose paths have been mangled is worse than a missing one: the
+        // project still lists, and then every command against it looks at the
+        // wrong place on disk.
+        for project in &projects {
+            assert!(
+                project.root_path.is_absolute(),
+                "wing {}: project {} lost its absolute root path ({:?})",
+                wing.id,
+                project.id,
+                project.root_path
+            );
+            assert!(
+                project.db_path.starts_with(&project.root_path),
+                "wing {}: project {} now points at a database outside its own \
+                 root ({:?} is not under {:?})",
+                wing.id,
+                project.id,
+                project.db_path,
+                project.root_path
+            );
+            assert!(
+                project.registered_at > 0,
+                "wing {}: project {} lost its registration timestamp",
+                wing.id,
+                project.id
+            );
+        }
+
+        let mut total_deps = 0i64;
+        for project in &projects {
+            for dep in registry.get_deps(project.id).expect("reading deps") {
+                total_deps += 1;
+                assert!(
+                    projects.iter().any(|p| p.id == dep.id),
+                    "wing {}: project {} depends on id {}, which is not a \
+                     registered project; the link outlived its target",
+                    wing.id,
+                    project.id,
+                    dep.id
+                );
+                assert_ne!(
+                    dep.id, project.id,
+                    "wing {}: project {} now depends on itself",
+                    wing.id, project.id
+                );
+            }
+        }
         assert_eq!(
-            total_deps as i64, wing.expect.dep_count,
+            total_deps, wing.expect.dep_count,
             "wing {}: dependency links changed across the upgrade",
             wing.id
         );
@@ -466,15 +657,43 @@ async fn git_notes_reads_every_era_on_the_ref() {
             .unwrap_or_else(|e| panic!("reading wing {} with the current build: {e}", wing.id));
 
         let titles: Vec<&str> = notes.iter().map(|n| n.title.as_str()).collect();
-        for expected in &wing.expect.era_titles {
-            assert!(
-                titles.contains(&expected.as_str()),
-                "wing {}: era entry {:?} is on the ref but the current reader missed it; saw {:?}",
-                wing.id,
-                expected,
-                titles
+        for expected in &wing.expect.era_entries {
+            let got = notes
+                .iter()
+                .find(|n| n.title == expected.title)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "wing {}: era entry {:?} is on the ref but the current \
+                         reader missed it; saw {:?}",
+                        wing.id, expected.title, titles
+                    )
+                });
+            assert_eq!(
+                got.kind, expected.kind,
+                "wing {}: entry {:?} came back under the wrong kind",
+                wing.id, expected.title
+            );
+            assert_eq!(
+                got.body, expected.body,
+                "wing {}: entry {:?} came back with the wrong body",
+                wing.id, expected.title
             );
         }
+
+        // Exactly the recorded entries, no more. The 0.9.3 era binary really
+        // does write each of its entries twice into the log, so a reader that
+        // stopped folding duplicates would hand the user the same decision
+        // several times over and every title assertion above would still pass.
+        assert_eq!(
+            notes.len(),
+            wing.expect.era_entries.len(),
+            "wing {}: the reader returned {} entries for {} distinct records on \
+             the ref; saw {:?}",
+            wing.id,
+            notes.len(),
+            wing.expect.era_entries.len(),
+            titles
+        );
     }
 }
 
@@ -528,7 +747,7 @@ fn a_float768_wing_is_rebuilt_empty_as_int8_rather_than_serving_mixed_vectors() 
             wing.id
         );
         assert_eq!(
-            embedding_row_count(&upgraded, "embeddings_rowids"),
+            row_count(&upgraded, "embeddings_rowids"),
             0,
             "wing {}: stale 768-dimension vectors survived the rebuild and would be \
              ranked against 896-dimension query vectors",
@@ -691,7 +910,7 @@ fn table_counts(dot: &Path) -> (i32, i64, i64, i32, i64) {
         index
             .query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))
             .unwrap(),
-        embedding_row_count(&index, "embeddings_rowids"),
+        row_count(&index, "embeddings_rowids"),
         read_user_version(&memory),
         memory
             .query_row("SELECT count(*) FROM notes", [], |r| r.get(0))

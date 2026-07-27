@@ -19,7 +19,7 @@ scripts/upgrade-corpus/
 
 crates/spelunk-cli/tests/
   fixtures/upgrade-corpus/
-    MANIFEST.json     one entry per wing: producer, artifact, expected content
+    MANIFEST.json     one entry per wing: producer, artifact, digest, expected content
     wings/<id>/       the artifact itself, gzipped
   upgrade_corpus.rs   opens every wing with the current build and asserts
 ```
@@ -48,15 +48,37 @@ Real, and the entire point: the binaries are the published release assets,
 pinned by the sha256 GitHub records for them. Every database file, its schema,
 its `vec0` table declarations and every row in it were written by that binary.
 
-Not real, and deliberately so: the **values** inside the 0.8.x and 0.9.x
-embedding vectors. Pre-1.0 releases embed by calling a `spelunk-server` that
-shipped an embedder which no longer exists, and a current server answers on a
-wire shape those binaries cannot parse, so neither can produce these wings.
-`embed_stub.py` serves that era's `/v1/health` and index-embed endpoints so the
-real old binary can complete a real index run. Vector values are irrelevant to a
-migration test: the dimension-upgrade path discards them wholesale, which is
-itself one of the things asserted. Vectors are derived from a hash of the chunk
-text, so regenerating does not churn the fixture.
+Not real, and deliberately so: the **values** inside the embedding vectors.
+Pre-1.0 releases embed by calling a `spelunk-server` that shipped an embedder
+which no longer exists, and a current server answers on a wire shape those
+binaries cannot parse, so neither can produce these wings. `embed_stub.py`
+serves that era's `/v1/health` and index-embed endpoints so the real old binary
+can complete a real index run. This applies to **every wing whose capture runs
+`spelunk index`**, which is both index wings and both memory wings, not only
+the 768-dimension one. Vector values are irrelevant to a migration test: what
+is asserted is that the right number of vectors survives, and that the
+dimension-upgrade path discards 768-dimension ones wholesale.
+
+Nothing the stub says about itself reaches disk: no wing contains its instance
+id, its address or its port, and no wing has an `index_meta` provenance row,
+because that table post-dates all of them.
+
+## Determinism
+
+Vector values are derived from a hash of the chunk text, so they do not churn.
+The artifacts as a whole are **not** byte-reproducible: the databases carry
+wall-clock `indexed_at` / `created_at` / `registered_at` values, note ids are
+epoch milliseconds, and the registry wing stores the absolute path of the
+`mktemp` directory it was captured in. Regenerating a wing therefore produces a
+different file even when nothing about the release changed. Do not regenerate a
+wing you did not mean to change: `--only` exists for exactly this reason.
+
+`checksums.txt` pins the release binaries, which says nothing about the
+artifacts. The artifacts are pinned separately by the `sha256` recorded per
+wing in `MANIFEST.json`, which the suite checks before asserting anything else.
+A wing that is edited or regenerated without its expectations being recaptured
+fails the suite rather than quietly asserting one artifact's contents against
+another's.
 
 ## Regenerating
 

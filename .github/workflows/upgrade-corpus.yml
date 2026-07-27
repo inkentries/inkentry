@@ -23,6 +23,8 @@ on:
       - "crates/spelunk-cli/tests/fixtures/upgrade-corpus/**"
       - "crates/spelunk-core/src/storage/**"
       - "crates/spelunk-core/migrations/**"
+      # The registry has its own wing and its own schema init path.
+      - "crates/spelunk-core/src/registry.rs"
       - "scripts/upgrade-corpus/**"
       - ".github/workflows/upgrade-corpus.yml"
   workflow_dispatch:
@@ -92,8 +94,15 @@ jobs:
           tar xzf "old-release/$asset" -C old-release
           old-release/spelunk --version
 
+      # `--exact` against a name that no longer exists runs nothing and exits 0,
+      # so the count is checked: renaming this test must break the job rather
+      # than quietly stop exercising the only leg that needs an old binary.
       - name: Assert the old binary reads a current database without losing data
         env:
           SPELUNK_OLD_BINARY: ${{ github.workspace }}/old-release/spelunk
-        run: cargo test -p spelunk-cli --test upgrade_corpus -- --ignored --exact
-          a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data
+        run: |
+          set -euo pipefail
+          cargo test -p spelunk-cli --test upgrade_corpus -- --ignored --exact \
+            a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data \
+            | tee old-binary.log
+          grep -q '^test result: ok. 1 passed' old-binary.log

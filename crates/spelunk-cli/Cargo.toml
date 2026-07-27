@@ -72,6 +72,10 @@ predicates = "3.1"
 # megabytes to tens of kilobytes, small enough to check in. Already in the
 # lockfile as a transitive dependency, so this adds no new supply-chain surface.
 flate2 = "1"
+# Upgrade-corpus fixtures only: verifies each checked-in wing still hashes to
+# the artifact its recorded expectations were captured from. Same version
+# spelunk-core already depends on, so it adds nothing to the lockfile.
+sha2 = "0.11"
 wiremock = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }

@@ -16,6 +16,7 @@ Usage: capture_expect.py <wings-dir> <manifest-path> <wing-id|tag|kind>...
 
 import contextlib
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,15 @@ import sys
 import tempfile
 
 SCHEMA = 1
+
+
+def sha256(path):
+    """Digest of the checked-in artifact exactly as it sits on disk."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 @contextlib.contextmanager
@@ -86,6 +96,10 @@ def index_expect(path):
         "file_count": scalar(conn, "SELECT count(*) FROM files"),
         "chunk_count": scalar(conn, "SELECT count(*) FROM chunks"),
         "embedding_count": scalar(conn, "SELECT count(*) FROM embeddings_rowids"),
+        # The code graph is a whole subsystem the row counts above say nothing
+        # about: a migration can leave files and chunks untouched and still
+        # empty graph_edges.
+        "graph_edge_count": scalar(conn, "SELECT count(*) FROM graph_edges"),
         "vector_storage": storage,
         "fts_query": fts_query,
         "fts_expect_path": fts_path,
@@ -125,6 +139,8 @@ def memory_expect(path):
         if words:
             fts_query = words[0]
 
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()]
+
     expect = {
         "note_count": len(notes),
         "active_note_count": sum(1 for n in notes if n[2] == "active"),
@@ -132,6 +148,14 @@ def memory_expect(path):
         "superseded_title": chain[1] if chain else "",
         "successor_title": successor[1] if successor else "",
         "memory_fts_query": fts_query,
+        # Recorded so the suite can prove a pre-ADR-068 wing really is one
+        # before it asserts the backfill filled it in. Without this an
+        # accidentally pre-migrated fixture would make the backfill assertion
+        # pass without the backfill ever running.
+        "entity_id_present": "entity_id" in columns,
+        "note_vector_count": scalar(
+            conn, "SELECT count(*) FROM note_embeddings_rowids"
+        ),
     }
     conn.close()
     return expect
@@ -173,7 +197,12 @@ def git_notes_expect(path):
             capture_output=True,
             text=True,
         ).stdout
-        titles = []
+        # Keyed by the record id the writing binary assigned, not by title.
+        # A released binary really does repeat a line in its log (0.9.3 writes
+        # each entry twice), so the number of distinct entries a reader owes
+        # the caller is the number of distinct ids, and recording that is what
+        # lets the suite catch a reader that hands duplicates back.
+        entries = {}
         for line in listing.splitlines():
             blob = line.split()[0]
             body = subprocess.run(
@@ -191,9 +220,19 @@ def git_notes_expect(path):
                 except json.JSONDecodeError:
                     continue
                 title = record.get("title")
-                if title and title not in titles:
-                    titles.append(title)
-    return {"era_titles": titles}
+                if not title:
+                    continue
+                entries.setdefault(
+                    record.get("id", title),
+                    {
+                        "title": title,
+                        "kind": record.get("kind", ""),
+                        "body": record.get("body", ""),
+                    },
+                )
+    # Sorted by str: a record missing an id falls back to its title as the key,
+    # and sorting ints against strs is a TypeError.
+    return {"era_entries": [entries[k] for k in sorted(entries, key=str)]}
 
 
 ARTIFACTS = {
@@ -225,6 +264,11 @@ def main():
             "producer": tag.lstrip("v"),
             "kind": kind,
             "artifact": artifact,
+            # checksums.txt pins the release binaries, which says nothing about
+            # the artifacts. This pins the artifacts, so a wing that changes
+            # without its expectations being recaptured is a test failure
+            # rather than something a reviewer has to notice in a binary diff.
+            "sha256": sha256(path),
             "expect": expect,
         }
 
