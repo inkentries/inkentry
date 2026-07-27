@@ -36,6 +36,7 @@ body:
         - Release tarball / zip
         - Debian package (.deb)
         - Built from source
+        - Package manager (brew / scoop)
         - Other
     validations:
       required: true
@@ -46,7 +47,7 @@ body:
       description: Which tier were you using when this happened?
       options:
         - Local only (no server)
-        - Local with auto-started loopback server
+        - Local with auto-started server (Default)
         - Team server (explicit server_url)
         - Cloud
     validations:
