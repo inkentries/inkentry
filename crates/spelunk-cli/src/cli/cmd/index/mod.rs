@@ -227,17 +227,11 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // index on a cold machine.
     if args.detach_embed && tier.is_server() && detach_embed_eligible(&tier) {
         let embed_log = background_log_path(&db_path);
-        // Release before spawning: the child re-acquires this same lock on
-        // entry, and dropping first (rather than after `spawn()` returns)
-        // closes the corruption race - the child never interleaves writes
-        // with us. It does not by itself guarantee the *child* is what wins
-        // the reacquire: an unrelated third `spelunk index` on this project
-        // can land in the gap and take the lock first, in which case the
-        // child bails clean (see run_lock.rs) but the work it was meant to
-        // do would go silently missing. `wait_for_holder_pid` below closes
-        // that second gap by confirming the spawned pid, specifically,
-        // becomes the recorded holder before telling the user work is
-        // running in the background.
+        // Dropping the lock before spawning closes the corruption race (the
+        // child never interleaves writes with us), but a third `spelunk
+        // index` can still win the reacquire in the gap; `wait_for_holder_pid`
+        // below confirms the spawned pid, specifically, becomes the holder
+        // before we report success.
         drop(run_lock.take());
         crash_test_hook::pause_at("after_run_lock_drop", "embed");
         if let EmbedSpawn::Detached {
@@ -487,14 +481,12 @@ const EMBED_WAIT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_se
 /// is gone (crashed after spawning us) rather than momentarily unreachable.
 const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
 
-/// How long a parent waits, after releasing the run lock and spawning a
-/// continuation child (`--_embed-phases` / `--_background-phases`), to see
-/// that child recorded as the lock's new holder before reporting the handoff
-/// as a background success. The release-then-spawn gap an unrelated third
-/// `spelunk index` process can win is normally low-single-digit
-/// milliseconds; this is bounded well above that plus typical re-exec
-/// startup cost, without meaningfully delaying the common case where the
-/// child wins on its very first poll.
+/// How long the parent waits, after releasing the run lock and spawning a
+/// continuation child, to see it recorded as the lock's new holder before
+/// reporting the handoff as a background success. The release-then-spawn gap
+/// a racing `spelunk index` can win is normally low-single-digit
+/// milliseconds, so this bounds well above that without delaying the common
+/// case where the child wins on its first poll.
 const HANDOFF_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Poll interval for `HANDOFF_CONFIRM_TIMEOUT`.
 const HANDOFF_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);

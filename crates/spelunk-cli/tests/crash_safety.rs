@@ -1061,17 +1061,12 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
 
 #[test]
 fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race() {
-    // The gap the previous test's drill doesn't cover: it drives the losing
-    // child directly, never the real parent-releases/parent-spawns handoff,
-    // so it cannot see what the *parent* tells the user. Before this fix, the
-    // parent printed "Embedding N chunk(s) in the background" unconditionally
-    // once `spawn()` returned `Ok`, regardless of whether the spawned child
-    // actually won the lock back or lost it to an unrelated third
-    // `spelunk index` racing into the release-then-spawn gap - so a user
-    // could be told work was proceeding when it had already silently failed.
-    // `wait_for_holder_pid` closes that by confirming the *spawned child's*
-    // pid, specifically, becomes the lock's recorded holder before the
-    // parent claims success.
+    // The previous test drives the losing child directly, never the real
+    // parent-releases/parent-spawns handoff, so it cannot see what the
+    // *parent* tells the user. This test does: the parent must not claim
+    // "embedding in the background" unless the spawned child, specifically,
+    // became the run lock's recorded holder - `wait_for_holder_pid` is what
+    // confirms that before the parent reports success.
     //
     // Reproduced deterministically (rather than by racing wall-clock timing)
     // the same way the test above does: pause the parent right after it
