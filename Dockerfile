@@ -36,7 +36,7 @@
 # process's can.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM rust:1.97.0-slim AS builder
+FROM rust:1.97.1-slim AS builder
 
 WORKDIR /build
 
