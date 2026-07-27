@@ -11,6 +11,26 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A written stability contract, [docs/stability.md](docs/stability.md), and
+  tests that enforce it.** Until now the plumbing JSONL schemas were held stable
+  by convention alone, and nothing stated which config keys, flags, exit codes,
+  or on-disk formats you may rely on across versions. The contract now declares,
+  per surface, whether it is stable (semver-bound, additive-only), best-effort,
+  or internal, covering CLI commands and flags, plumbing JSONL fields, the `/v1/`
+  HTTP API, `config.toml` keys and the project-level allowlist, and the on-disk
+  stores (`index.db`/`memory.db` migrations, `registry.db`, git-notes
+  `schema_version`, and the `.spelunk/` layout). It is equally explicit about
+  what is *not* stable: porcelain output, log and diagnostic text, and the
+  internal crate APIs. A deprecation policy (alias, then warn, then remove)
+  codifies the sequence the removed `memory_server_url` key already went
+  through. Enforcement is real, not aspirational: a committed golden schema
+  covers every plumbing command's JSONL output, so adding a field passes while
+  removing, renaming, or retyping one fails; exit codes 0/1/2 are asserted per
+  command, including that exit 2 leaves stdout empty; a guard derived from the
+  CLI's own help refuses to let a new plumbing command ship without a declared
+  schema; and the checker itself is tested, so it cannot pass by accepting
+  everything.
+
 - **`spelunk-server --model-dir <PATH>` (or `SPELUNK_MODEL_DIR`) loads the
   bundled F2LLM-v2-330M embedder from a pre-provisioned local directory, with
   zero network access.** For hosts with no route to `huggingface.co` (an
