@@ -40,6 +40,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The local `spelunk-server` no longer goes unreachable while it is
+  embedding.** During a `spelunk index` run, `/v1/health` could take seconds
+  instead of well under a millisecond, `spelunk server status` reported a
+  perfectly healthy server as `(unreachable)`, and unrelated endpoints stopped
+  answering too. The liveness probe read the embedder's per-chunk token cap
+  through the same lock the embedder holds for a whole batch of forward
+  passes, and because that read was synchronous inside an async handler it
+  tied up a request-serving thread rather than releasing it, so each
+  concurrent probe made the stall worse. The cap is fixed at model load and
+  never changes, so it no longer sits behind that lock: liveness probes,
+  `spelunk server status`, and any other endpoint now stay responsive for the
+  whole index. The `/v1/health` payload is unchanged, `limits.embedder_token_cap`
+  included.
 - **`spelunk index` no longer skips a crash-half-indexed file forever.** If a
   previous run was killed after recording a file's new content hash but
   before writing its chunks, the hash-only skip check treated the file as
