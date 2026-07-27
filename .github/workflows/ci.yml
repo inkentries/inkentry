@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["main"]
 
+# Deny by default; every job below grants only what it needs. None of these
+# jobs push commits, comment on PRs, or create releases, so `contents: read`
+# (checkout only) covers all of them.
+permissions: {}
+
 env:
   CARGO_TERM_COLOR: always
   # Force the file-backed secret store in all CI runs. The OS keychain
@@ -22,6 +27,8 @@ jobs:
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     env:
       # clippy/check/build in this job need no debug info from the dev
@@ -80,6 +87,8 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     timeout-minutes: 30
     env:
       # Test binaries don't need full debug info; this shrinks compile times
@@ -151,6 +160,8 @@ jobs:
   release-scripts:
     name: Release script tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -163,6 +174,8 @@ jobs:
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # The image compiles the release server (candle embedder) from scratch with
     # no cargo cache, so allow a generous ceiling.
     timeout-minutes: 45
@@ -223,6 +236,8 @@ jobs:
   openapi-snapshot:
     name: OpenAPI snapshot check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
