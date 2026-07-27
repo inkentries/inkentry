@@ -1,40 +1,40 @@
-//! Egress containment for local-tier flows: the only outbound connections a
-//! local-tier command may make are to the auto-discovered loopback inference
-//! server. Every test here wires `egress_trap::EgressTrap` around a real
-//! `spelunk` subprocess and fails loudly, naming the destination, if any
-//! call escapes it.
-//!
-//! ## Update-check (ADR-050) coverage: not yet implementable
-//!
-//! ADR-050 (`docs/adr/050-cli-auto-update-check.md`) designs an opt-out
-//! `api.github.com` update-notification check, but at the time this suite was
-//! written no code in the workspace implements it yet: there is no
-//! `SPELUNK_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
-//! site, no `state.toml`. `update_check_unimplemented_tripwire` below is a
-//! deliberate tripwire, not a behavioral test: it fails the moment someone
-//! adds the feature, which is the cue to replace it with real coverage of
-//! D2/D3 (trigger cadence, opt-out precedence, silent-offline swallow). Until
-//! then, every `zero_egress` test below already proves the CLI makes no
-//! `api.github.com` call in practice (it is simply one destination among
-//! "any non-loopback host", all of which are caught identically).
-//!
-//! ## embed_hub (Hugging Face download) coverage
-//!
-//! `embed_hub`/`hf-hub` live only in `spelunk-server` behind the optional
-//! `embed-native` feature; `spelunk-cli`'s production `[dependencies]` do not
-//! depend on `spelunk-server` at all (only a `[dev-dependencies]` entry with
-//! `default-features = false`, used by unrelated relay tests). So "CLI local
-//! flows never trigger embed_hub" is a compile-time property of the
-//! dependency graph, not just a runtime observation:
-//! `embed_hub_unreachable_from_cli_binary` below asserts that graph shape
-//! directly so a future Cargo.toml change that pulls `hf-hub` into the
-//! `spelunk` binary fails CI immediately. The first-run download itself
-//! (only reaches `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` on the default HF
-//! endpoint) already has pinning coverage in
-//! `crates/spelunk-server/src/embed_hub.rs`'s `prequantized_gguf_repo_*`
-//! tests; this suite does not duplicate a live download against the real HF
-//! host (network-dependent and slow, ~339 MB, not appropriate for this
-//! harness).
+// Egress containment for local-tier flows: the only outbound connections a
+// local-tier command may make are to the auto-discovered loopback inference
+// server. Every test here wires `egress_trap::EgressTrap` around a real
+// `spelunk` subprocess and fails loudly, naming the destination, if any
+// call escapes it.
+//
+// ## Update-check (ADR-050) coverage: not yet implementable
+//
+// ADR-050 (`docs/adr/050-cli-auto-update-check.md`) designs an opt-out
+// `api.github.com` update-notification check, but at the time this suite was
+// written no code in the workspace implements it yet: there is no
+// `SPELUNK_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
+// site, no `state.toml`. `update_check_unimplemented_tripwire` below is a
+// deliberate tripwire, not a behavioral test: it fails the moment someone
+// adds the feature, which is the cue to replace it with real coverage of
+// D2/D3 (trigger cadence, opt-out precedence, silent-offline swallow). Until
+// then, every `zero_egress` test below already proves the CLI makes no
+// `api.github.com` call in practice (it is simply one destination among
+// "any non-loopback host", all of which are caught identically).
+//
+// ## embed_hub (Hugging Face download) coverage
+//
+// `embed_hub`/`hf-hub` live only in `spelunk-server` behind the optional
+// `embed-native` feature; `spelunk-cli`'s production `[dependencies]` do not
+// depend on `spelunk-server` at all (only a `[dev-dependencies]` entry with
+// `default-features = false`, used by unrelated relay tests). So "CLI local
+// flows never trigger embed_hub" is a compile-time property of the
+// dependency graph, not just a runtime observation:
+// `embed_hub_unreachable_from_cli_binary` below asserts that graph shape
+// directly so a future Cargo.toml change that pulls `hf-hub` into the
+// `spelunk` binary fails CI immediately. The first-run download itself
+// (only reaches `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` on the default HF
+// endpoint) already has pinning coverage in
+// `crates/spelunk-server/src/embed_hub.rs`'s `prequantized_gguf_repo_*`
+// tests; this suite does not duplicate a live download against the real HF
+// host (network-dependent and slow, ~339 MB, not appropriate for this
+// harness).
 
 mod egress_trap;
 mod plumbing_helpers;
@@ -74,10 +74,10 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-/// `POST /v1/projects/{id}/search`: the endpoint `spelunk search --mode
-/// semantic|hybrid` uses to embed the query server-side (`search_query` in
-/// `server_client.rs`); distinct from `/index/embed` (`embed_text`), which
-/// `memory search`/`memory add`/`plumbing embed` use instead.
+// `POST /v1/projects/{id}/search`: the endpoint `spelunk search --mode
+// semantic|hybrid` uses to embed the query server-side (`search_query` in
+// `server_client.rs`); distinct from `/index/embed` (`embed_text`), which
+// `memory search`/`memory add`/`plumbing embed` use instead.
 async fn mount_search(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/search$"))
@@ -89,8 +89,8 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-/// Build a `spelunk` command isolated from ambient `SPELUNK_*` env, wired
-/// against `project` as CWD and `state_dir` for loopback auto-discovery.
+// Build a `spelunk` command isolated from ambient `SPELUNK_*` env, wired
+// against `project` as CWD and `state_dir` for loopback auto-discovery.
 fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
