@@ -344,7 +344,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // (or bad) provisioned artifacts reaches the same terminal `unavailable`
     // state as a failed Hub download, just with an error naming the offline
     // docs instead of a connection failure. Only the native path warms up
-    // here — disabled slots are already in a terminal state.
+    // here: disabled slots are already in a terminal state.
     #[cfg(feature = "embed-native")]
     if load_native {
         let slot = embedder_slot.clone();
