@@ -584,39 +584,28 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    /// Item 8: `sync_round`'s SECOND (confirmation) pull pass paginates fully
-    /// on its own when it independently has more than one page of results
-    /// (e.g. a teammate pushed a large batch in the gap between this round's
-    /// first pull and its push) — not just the first pull pass.
+    /// Item 8: on a first sync (nothing local has ever pushed or pulled
+    /// before, so `sync_round` pushes first and runs a single post-push
+    /// pull), that post-push pull paginates fully on its own when it turns
+    /// up more than one page of results (e.g. a teammate already has a
+    /// 130-entry backlog on the project by the time this round's push
+    /// provisions it and the pull runs).
     #[tokio::test]
-    async fn sync_round_second_pull_pass_paginates_fully_on_its_own() {
+    async fn sync_round_first_sync_post_push_pull_paginates_fully_on_its_own() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
         let server = wiremock::MockServer::start().await;
-        {
-            use wiremock::matchers::{method, path, query_param};
-            use wiremock::{Mock, ResponseTemplate};
-            // First pull pass (pre-push): nothing yet.
-            Mock::given(method("GET"))
-                .and(path("/v1/projects/proj/memory/since"))
-                .and(query_param("since_id", NIL_UUID))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
-                )
-                .up_to_n_times(1)
-                .mount(&server)
-                .await;
-            // This round's own push (empty local store: nothing to push).
-            Mock::given(method("POST"))
-                .and(path("/v1/projects/proj/memory/batch"))
-                .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
-                    "created": 0, "skipped": 0, "failed": 0, "results": []
-                })))
-                .mount(&server)
-                .await;
-        }
-        // Second (confirmation) pull pass reuses the SAME pre-round cursor
-        // (nil UUID, since nothing was applied by the first pass): a
-        // teammate landed a 650-entry batch in the gap, spanning two pages.
+        // This round's own push (empty local store: nothing to push).
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 0, "results": []
+            })))
+            .mount(&server)
+            .await;
+        // The single post-push pull starts from the nil UUID (no prior sync
+        // history) and must exhaust both pages.
         let page1 = page_ids(0, 100);
         let page2 = page_ids(100, 30);
         mount_pages(&server, &[page1, page2]).await;
@@ -628,7 +617,7 @@ mod tests {
         assert_eq!(outcome.pushed.attempted, 0);
         assert_eq!(
             outcome.pulled, 130,
-            "the confirmation pull pass must exhaust its own pagination too"
+            "the post-push pull on a first sync must exhaust its own pagination too"
         );
         assert_eq!(store.count().unwrap(), 130);
     }
@@ -697,18 +686,21 @@ mod tests {
         assert_eq!(applied, 5);
     }
 
-    /// If the SECOND pull (the confirmation pull after this round's own push)
-    /// fails, `sync_round` must not silently swallow that error — but it also
-    /// must not lose or misrepresent the push that already succeeded. The
-    /// push already durably landed server-side and already stamped this
-    /// round's row with its `remote_id` (inside `push_local`, which returns
-    /// before the second pull ever runs), so: (1) the error surfaces instead
-    /// of being dropped, (2) its message says the push already reached the
-    /// server rather than reading as "nothing happened", and (3) local state
-    /// is left exactly as `push_local` left it — no corruption, no
-    /// re-attempt needed, just a retryable pull on the next sync.
+    /// If the post-push pull on a first sync (nothing local has ever pushed
+    /// or pulled before, so `sync_round` pushes first and runs a single pull
+    /// afterward) fails, `sync_round` must not silently swallow that error,
+    /// but it also must not lose or misrepresent the push that already
+    /// succeeded. The push already durably landed server-side and already
+    /// stamped this round's row with its `remote_id` (inside `push_local`,
+    /// which returns before the pull ever runs), so: (1) the error surfaces
+    /// instead of being dropped, (2) its message says the push already
+    /// reached the server rather than reading as "nothing happened", and
+    /// (3) local state is left exactly as `push_local` left it: no
+    /// corruption, no re-attempt needed, just a retryable pull on the next
+    /// sync.
     #[tokio::test]
-    async fn sync_round_second_pull_failure_surfaces_the_error_without_losing_the_push() {
+    async fn sync_round_first_sync_post_push_pull_failure_surfaces_the_error_without_losing_the_push()
+     {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -720,17 +712,8 @@ mod tests {
         let cloud_id = "01890000-0000-7000-8000-0000000000b1";
 
         let server = MockServer::start().await;
-        // First pull (pre-push, empty server): 200 empty.
-        Mock::given(method("GET"))
-            .and(path("/v1/projects/proj/memory/since"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"entries": [], "count": 0})),
-            )
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        // The push itself succeeds and durably lands.
+        // The push itself succeeds and durably lands, provisioning the
+        // project.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
             .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
@@ -739,7 +722,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // The confirmation (second) pull hits a transient server error.
+        // The single post-push pull hits a transient server error.
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
             .respond_with(ResponseTemplate::new(500))
@@ -749,7 +732,7 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let err = sync_round(&store, &client, false, false)
             .await
-            .expect_err("a real second-pull error must not be swallowed as success");
+            .expect_err("a real post-push pull error must not be swallowed as success");
 
         let msg = format!("{err:#}");
         assert!(
