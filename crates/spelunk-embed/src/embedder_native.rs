@@ -1063,6 +1063,14 @@ mod tests {
     // it blocks a tokio worker rather than yielding it. These tests build an
     // embedder with a dummy inner (no model, no forward pass ever run) purely so
     // the accessor can be exercised against a genuinely held lock.
+    //
+    // These are the only tests in the workspace that fail if the accessor goes
+    // back behind that mutex. The server-side liveness suite runs against a
+    // mock backend and stays green through such a change, so do not weaken or
+    // delete these on the assumption that something downstream is watching.
+    // `embedder_with_cap` constructs `NativeEmbedder` by struct literal on
+    // purpose: moving `token_cap` back into `EmbedderInner` breaks this file at
+    // compile time rather than silently.
 
     fn dummy_weights() -> Qwen3EmbedWeights {
         let device = Device::Cpu;
@@ -1191,14 +1199,36 @@ mod tests {
             "0 means 'no extra cap': only the MAX_SEQ_LEN ceiling applies"
         );
         assert_eq!(
+            effective_token_cap(1),
+            1,
+            "the smallest cap `derive_token_cap` can produce must survive verbatim, not be \
+             rounded up or treated like the 0 sentinel"
+        );
+        assert_eq!(
             effective_token_cap(5792),
             5792,
             "a cap below the ceiling wins"
         );
         assert_eq!(
+            effective_token_cap(MAX_SEQ_LEN),
+            MAX_SEQ_LEN,
+            "a cap exactly at the ceiling is not off-by-one clamped below it"
+        );
+        assert_eq!(
+            effective_token_cap(MAX_SEQ_LEN - 1),
+            MAX_SEQ_LEN - 1,
+            "one below the ceiling is still the cap, not the ceiling"
+        );
+        assert_eq!(
             effective_token_cap(MAX_SEQ_LEN + 1),
             MAX_SEQ_LEN,
             "a cap above the ceiling must be clamped to MAX_SEQ_LEN"
+        );
+        assert_eq!(
+            effective_token_cap(usize::MAX),
+            MAX_SEQ_LEN,
+            "no cap value can push the truncation length past the model's position-embedding \
+             ceiling"
         );
     }
 

@@ -1,27 +1,27 @@
-//! Real-hardware confirmation that the local server stays usable while it is
-//! embedding, run against the actual native embedder rather than a mock.
-//!
-//! **Not a CI gate.** It is `#[ignore]`d: it needs the F2LLM model artifacts on
-//! disk (downloading them on first run), real GPU/CPU inference, and it
-//! measures wall-clock latency, none of which belong on a shared runner. The
-//! deterministic gate for the same property is
-//! `handlers::tests::liveness_under_embed` (mock embedder parked on a
-//! test-controlled signal, no model, no timing race), plus
-//! `spelunk_embed::embedder_native`'s accessor tests.
-//!
-//! Run it with:
-//!   SPELUNK_SECRET_STORE=file cargo test -p spelunk-server \
-//!     --test health_under_index_load -- --ignored --nocapture
-//!
-//! Tunable via env:
-//!   SPELUNK_HEALTH_LOAD_REPO    repo to draw real text from (default: this workspace)
-//!   SPELUNK_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
-//!
-//! This drives the HTTP surface directly rather than shelling out to the CLI.
-//! `/v1/health` is the sole endpoint `spelunk server status` reads (it renders
-//! "reachable" from `instance_id` + `version`), and `POST
-//! /v1/projects/{id}/memory/search` is the request `spelunk memory search`
-//! issues, so the assertions below are the same contract those commands see.
+// Real-hardware confirmation that the local server stays usable while it is
+// embedding, run against the actual native embedder rather than a mock.
+//
+// **Not a CI gate.** It is `#[ignore]`d: it needs the F2LLM model artifacts on
+// disk (downloading them on first run), real GPU/CPU inference, and it
+// measures wall-clock latency, none of which belong on a shared runner. The
+// deterministic gate for the same property is
+// `handlers::tests::liveness_under_embed` (mock embedder parked on a
+// test-controlled signal, no model, no timing race), plus
+// `spelunk_embed::embedder_native`'s accessor tests.
+//
+// Run it with:
+//   SPELUNK_SECRET_STORE=file cargo test -p spelunk-server \
+//     --test health_under_index_load -- --ignored --nocapture
+//
+// Tunable via env:
+//   SPELUNK_HEALTH_LOAD_REPO    repo to draw real text from (default: this workspace)
+//   SPELUNK_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
+//
+// This drives the HTTP surface directly rather than shelling out to the CLI.
+// `/v1/health` is the sole endpoint `spelunk server status` reads (it renders
+// "reachable" from `instance_id` + `version`), and `POST
+// /v1/projects/{id}/memory/search` is the request `spelunk memory search`
+// issues, so the assertions below are the same contract those commands see.
 
 #![cfg(feature = "embed-native")]
 
@@ -34,14 +34,19 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-/// Every liveness sample must come back inside this. Measured at rest is
-/// sub-millisecond; a probe that waits on the embedder's forward-pass mutex
-/// takes seconds.
+// Every liveness sample must come back inside this. Measured at rest is
+// sub-millisecond; a probe that waits on the embedder's forward-pass mutex
+// takes seconds.
 const LIVENESS_BOUND: Duration = Duration::from_millis(250);
-/// Gap between liveness samples for the whole embed phase.
+// Gap between liveness samples for the whole embed phase.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
-/// Chunks per `/index/embed` request, matching what the index phase sends.
+// Chunks per `/index/embed` request, matching what the index phase sends.
 const BATCH_CHUNKS: usize = 256;
+// Mirrors the server's own non-embed request timeout, which is crate-private.
+// Client deadlines are set relative to it so the server always gets to answer
+// first: a client-side cutoff would be indistinguishable here from the dropped
+// connection this test exists to rule out.
+const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DIM: usize = spelunk_core::embeddings::EMBEDDING_DIM;
 const PROJECT: &str = "health-under-load";
 
@@ -63,7 +68,7 @@ fn chunk_budget() -> usize {
         .unwrap_or(2048)
 }
 
-/// Collect real source text from `root`, windowed into chunk-sized pieces.
+// Collect real source text from `root`, windowed into chunk-sized pieces.
 fn collect_chunks(root: &Path, budget: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -146,8 +151,8 @@ async fn spawn_server(embedder: spelunk_server::EmbedderSlot) -> String {
     format!("http://{addr}")
 }
 
-/// A single liveness sample: the latency, and the two fields
-/// `spelunk server status` needs to print a server as reachable.
+// A single liveness sample: the latency, and the two fields
+// `spelunk server status` needs to print a server as reachable.
 struct HealthSample {
     latency: Duration,
     instance_id: String,
@@ -235,7 +240,16 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
     // embeds its query on the same serialized model, so it queues rather than
     // returning instantly; the bar is that it always gets a well-formed
     // response and eventually succeeds.
-    let search_client = client.clone();
+    //
+    // Its own client, with a timeout deliberately above the server's own
+    // request timeout: a search that queues behind an in-flight batch can
+    // legitimately outlast the probe client's short deadline, and cutting it
+    // off here would report a client-side deadline as the dropped connection
+    // this test exists to rule out.
+    let search_client = reqwest::Client::builder()
+        .timeout(SERVER_REQUEST_TIMEOUT + Duration::from_secs(15))
+        .build()
+        .expect("search http client");
     let search_base = base.clone();
     let search = tokio::spawn(async move {
         let mut succeeded = false;
@@ -260,6 +274,17 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
                         .expect("a shed 429 must carry a parseable Retry-After");
                     tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 }
+                // The server answered, but only after its own request timeout
+                // expired while the query waited its turn on the shared model.
+                // That is admission-control fairness under a saturated index,
+                // a separate concern from the liveness property under test:
+                // report it as such rather than as an unreachable server.
+                408 => panic!(
+                    "memory search was still queued on the embedder when the server's own \
+                     request timeout expired. Liveness is not the problem here (the server \
+                     answered); this is queue fairness in front of the shared model, and it \
+                     needs its own task rather than a wider change here"
+                ),
                 other => panic!("memory search returned an unexpected status {other}"),
             }
         }

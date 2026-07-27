@@ -4842,8 +4842,20 @@ mod tests {
     // race. `cap_location` is the mock's one degree of freedom, and
     // `harness_detects_a_cap_read_behind_the_forward_pass_mutex` uses it to
     // prove these bounds actually catch the coupling they guard against.
-    // The real `NativeEmbedder` accessor is pinned in `spelunk-embed`, which a
-    // mock cannot cover.
+    //
+    // Know what this module does NOT do before you rely on it. Every test here
+    // runs against `ParkingEmbedder`, so re-coupling the real
+    // `NativeEmbedder::token_cap()` to its forward-pass mutex leaves all of
+    // them green: verified by mutation, all pass with the accessor put back
+    // behind the lock. That is structural and not fixable here, because these
+    // tests cannot construct a `NativeEmbedder` without a model on disk. What
+    // this module gates is the server-side property (health, and endpoints
+    // that need no embedder, stay prompt given a backend whose cap read is
+    // lock-free) plus the sensitivity of the bound itself. The regression
+    // guard for the accessor is `spelunk_embed::embedder_native`'s
+    // `token_cap_returns_while_the_forward_pass_lock_is_held` and
+    // `token_cap_is_independent_of_embedder_busyness`. If you change the cap's
+    // storage, those are the tests that must fail.
     mod liveness_under_embed {
         use std::sync::{Arc, Condvar, Mutex};
         use std::time::{Duration, Instant};
