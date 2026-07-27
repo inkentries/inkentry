@@ -41,6 +41,7 @@ mod plumbing_helpers;
 
 use egress_trap::{EgressTrap, write_loopback_state};
 use plumbing_helpers::{init_git_repo, mount_health, mount_index_embed, spelunk_bin_in};
+use predicates::prelude::*;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -308,14 +309,27 @@ async fn graph_live_zero_egress() {
     let state_dir = TempDir::new().expect("state dir");
     init_git_repo(project.path());
     write_project(project.path());
+    // `write_project`'s two functions never call each other, so a live scan
+    // of it alone finds zero call sites — a no-op that never actually
+    // exercises the structural matcher. A real caller makes this a genuine
+    // symbol lookup instead.
+    std::fs::write(
+        project.path().join("src").join("caller.rs"),
+        "pub fn call_it() -> String {\n    greet(\"world\")\n}\n",
+    )
+    .expect("write caller.rs");
 
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
     cmd.arg("graph").arg("greet").arg("--live");
-    // `graph --live` exits non-zero when it finds nothing, but that's a
-    // result, not a crash; egress cleanliness is what this test asserts.
-    let _ = cmd.assert();
+    // `graph_live` (crates/spelunk-cli/src/cli/cmd/graph.rs) always returns
+    // `Ok(())`, matches or not, so a bare `.success()` would pass even on a
+    // silent no-op; assert the real call site in `caller.rs` was actually
+    // found.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("caller.rs"));
 
     trap.assert_clean().await;
 }
@@ -344,6 +358,9 @@ async fn plumbing_local_reads_zero_egress() {
     let db_path = project.path().join(".spelunk").join("index.db");
     let trap = EgressTrap::start().await;
 
+    // `publish-notes` is excluded deliberately: it pushes `refs/notes/spelunk`
+    // to a git remote, an explicit, expected-egress operation, not a
+    // local-tier read this zero-egress claim covers.
     for args in [
         vec!["ls-files"],
         vec!["cat-chunks", "src/lib.rs"],
@@ -362,6 +379,20 @@ async fn plumbing_local_reads_zero_egress() {
         // on an empty result); only egress cleanliness is asserted here.
         let _ = cmd.assert();
     }
+
+    // `knn` takes its query vector pre-embedded on stdin (unlike `embed`, it
+    // never calls the inference server itself), so it gets its own
+    // invocation instead of joining the no-stdin loop above.
+    let mut knn_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    trap.wire(&mut knn_cmd);
+    knn_cmd
+        .arg("plumbing")
+        .arg("--db")
+        .arg(&db_path)
+        .arg("knn")
+        .write_stdin(serde_json::json!({"vector": vec![0.1f32; 896]}).to_string());
+    // Exits 1 on an empty result set, same caveat as the loop above.
+    let _ = knn_cmd.assert();
 
     trap.assert_clean().await;
 }
