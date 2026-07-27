@@ -353,7 +353,9 @@ stored. **This is best-effort defense-in-depth, not a security boundary**: a fin
 cannot catch every credential format. The real boundary is that code never leaves the local
 machine unless a team `server_url` is explicitly configured (see above); the scanner only reduces
 the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted)
-by accident.
+by accident. That boundary is enforced by `crates/spelunk-cli/tests/egress_containment.rs`, which
+traps every outbound connection across local-tier CLI flows (`init`, `index`, `search`, `memory`,
+`graph --live`, plumbing) and fails loudly, naming the destination, on any escape past loopback.
 
 ### Prompt structure
 The ask prompt uses XML-style delimiters to separate untrusted RAG context
