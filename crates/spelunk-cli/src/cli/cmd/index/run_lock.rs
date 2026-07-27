@@ -83,7 +83,7 @@ pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
 /// every successful acquire, so it reflects the most recent holder even
 /// after that holder has since released.
 fn read_recorded_pid(spelunk_dir: &Path) -> Option<u32> {
-    std::fs::read_to_string(spelunk_dir.join(LOCK_FILE_NAME))
+    std::fs::read_to_string(spelunk_dir.join(LOCK_PID_FILE_NAME))
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
