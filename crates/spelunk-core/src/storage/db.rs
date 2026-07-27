@@ -654,13 +654,13 @@ mod tests {
         );
     }
 
-    /// `run_migrations` used to stamp `PRAGMA user_version` unconditionally on
-    /// every open, even when nothing needed migrating - and setting that
-    /// pragma always opens a write transaction, so a concurrent reader
-    /// (`spelunk search` while `spelunk index` runs) could fail with
-    /// "database is locked" on this alone, never touching a genuine
-    /// migration. Reopening an already-current DB while another connection
-    /// holds an open writer transaction must now succeed.
+    // `run_migrations` used to stamp `PRAGMA user_version` unconditionally on
+    // every open, even when nothing needed migrating - and setting that
+    // pragma always opens a write transaction, so a concurrent reader
+    // (`spelunk search` while `spelunk index` runs) could fail with
+    // "database is locked" on this alone, never touching a genuine
+    // migration. Reopening an already-current DB while another connection
+    // holds an open writer transaction must now succeed.
     #[test]
     fn opening_an_already_current_db_never_writes_so_a_concurrent_writer_cannot_lock_it_out() {
         register_sqlite_vec();
