@@ -6,10 +6,16 @@ on:
     - cron: "0 9 * * 1"
   workflow_dispatch:
 
+# Deny by default; the job below only checks out and uploads its own crash
+# artifacts on failure, neither of which needs write access to the repo.
+permissions: {}
+
 jobs:
   fuzz-parser:
     name: cargo-fuzz fuzz_parser
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
