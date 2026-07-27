@@ -12,10 +12,17 @@
 
 use anyhow::Result;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Write;
 use std::path::Path;
 
 const LOCK_FILE_NAME: &str = "index.lock";
+/// Holder pid, written and read separately from `LOCK_FILE_NAME` itself:
+/// Windows' `LockFileEx` denies even a plain read from a second handle
+/// against a locked file's exclusive byte range, unlike a POSIX advisory
+/// `flock`, which only blocks other `flock` callers, not ordinary reads. A
+/// second process's `holder_pid` lookup would silently degrade to `None` on
+/// Windows if it read the locked file itself. This sidecar is never locked,
+/// so the read-back works identically on every platform.
+const LOCK_PID_FILE_NAME: &str = "index.lock.pid";
 
 /// Held for the lifetime of one `spelunk index` process's DB-writing work.
 /// Dropping releases the OS advisory lock (the fd closes), so a killed
@@ -46,7 +53,7 @@ pub enum LockOutcome {
 pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
     std::fs::create_dir_all(spelunk_dir)?;
     let path = spelunk_dir.join(LOCK_FILE_NAME);
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -55,13 +62,13 @@ pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
 
     match file.try_lock() {
         Ok(()) => {
-            file.set_len(0)?;
-            write!(file, "{}", std::process::id())?;
-            file.sync_all().ok();
+            let pid_path = spelunk_dir.join(LOCK_PID_FILE_NAME);
+            std::fs::write(&pid_path, std::process::id().to_string()).ok();
             Ok(LockOutcome::Acquired(IndexRunLock { _file: file }))
         }
         Err(TryLockError::WouldBlock) => {
-            let holder_pid = std::fs::read_to_string(&path)
+            let pid_path = spelunk_dir.join(LOCK_PID_FILE_NAME);
+            let holder_pid = std::fs::read_to_string(&pid_path)
                 .ok()
                 .and_then(|s| s.trim().parse().ok());
             Ok(LockOutcome::HeldByOther { holder_pid })
