@@ -17,13 +17,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   or on-disk formats you may rely on across versions. The contract now declares,
   per surface, whether it is stable (semver-bound, additive-only), best-effort,
   or internal, covering CLI commands and flags, plumbing JSONL fields, the `/v1/`
-  HTTP API, `config.toml` keys and the project-level allowlist, and the on-disk
-  stores (`index.db`/`memory.db` migrations, `registry.db`, git-notes
-  `schema_version`, and the `.spelunk/` layout). It is equally explicit about
-  what is *not* stable: porcelain output, log and diagnostic text, and the
-  internal crate APIs. A deprecation policy (alias, then warn, then remove)
-  codifies the sequence the removed `memory_server_url` key already went
-  through. Enforcement is real, not aspirational: a committed golden schema
+  HTTP API, `config.toml` keys, and the on-disk stores
+  (`index.db`/`memory.db` migrations, `registry.db`, git-notes
+  `schema_version`, and the `.spelunk/` layout). For config it also freezes
+  *which file* a key may be set in, which is not the same question as whether
+  the key is supported: `server_url` is ignored in the personal global config
+  and `server_key` is ignored in the checked-in project config, both
+  deliberately. It is equally explicit about what is *not* stable:
+  human-readable porcelain text, log and diagnostic output, and the internal
+  crate APIs. The structured `--format json`/`jsonl` modes of porcelain
+  commands are a third category, called out separately: `spelunk status
+  --format json` is stable for its core fields, and every other `--format`
+  mode is best-effort. A deprecation policy (alias, then warn while the alias
+  lives, then remove) sets the sequence for future changes; the removed
+  `memory_server_url` key is documented as the precedent, including where it
+  fell short of it. Enforcement is real, not aspirational: a committed golden schema
   covers every plumbing command's JSONL output, so adding a field passes while
   removing, renaming, or retyping one fails; exit codes 0/1/2 are asserted per
   command, including that exit 2 leaves stdout empty; a guard derived from the

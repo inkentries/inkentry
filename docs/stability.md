@@ -24,8 +24,9 @@ Stating this first, because it is the part most often assumed:
 - **Porcelain output.** The human-readable text of `search`, `status`, `context`,
   `graph`, `memory`, and every other non-plumbing command. Colours, column
   widths, wording, ordering, and summary lines all change freely. Parsing them
-  with `grep`/`awk` will break. Use the plumbing commands, or `search --format
-  jsonl`, instead.
+  with `grep`/`awk` will break. Use the plumbing commands instead, or one of the
+  structured `--format` modes covered under
+  [Structured output from porcelain commands](#structured-output-from-porcelain-commands).
 - **Log and tracing text.** Message wording, `tracing` targets, span names, and
   log levels. Diagnostics on stderr from any command, including the diagnostics
   that accompany a plumbing exit 2, are advisory text and not a parseable
@@ -53,7 +54,10 @@ argument order, and exit codes, for every command listed in `spelunk --help`.
   collision with a new long flag may force a reassignment.
 - Hidden flags (clap `hide = true`, for example `publish-notes`' positional
   remote URL) are **internal**, present only for compatibility with the callers
-  that pass them.
+  that pass them. The exception is a hidden flag kept as a deprecated alias of a
+  stable one: `check --porcelain` is hidden but still honoured, and means
+  `check --format porcelain`. Those follow the deprecation policy below rather
+  than the internal rule.
 
 ### Exit codes
 
@@ -81,6 +85,28 @@ contract rather than an oversight:
 Porcelain commands use `0`/`1` with their own documented meanings (`check`
 exits `1` when the index is stale, for example) and do not follow the plumbing
 convention.
+
+### Structured output from porcelain commands
+
+Most porcelain commands take a `--format` flag that switches stdout from the
+human-readable text above to a machine-readable shape: `json` everywhere,
+plus `jsonl` on `search`, `graph`, `memory list`, and `memory since`, and
+`porcelain` on `check`. This is a **different surface** from the text output,
+and a different one again from plumbing JSONL: none of it is covered by the
+plumbing golden schema.
+
+| Surface | Level |
+|---|---|
+| `spelunk status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/spelunk-cli/src/cli/cmd/status.rs`. |
+| Every other `--format json`, `--format jsonl`, or `--format porcelain` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
+
+`status --format json` also emits a set of richer fields for tooling (`tier`,
+`mode`, `sync_pending`, `sync_last_synced_at`, `server_url`, `capabilities`,
+`embedder_state`, `embedding_count`, `embedding_pending`, `embed_worker_alive`,
+`embed_tokens`, `drift_candidates`, `usage_7d`) that are explicitly **not** in
+the stable set and may change or disappear in a minor release.
+
+If you need a surface with a test-enforced schema, use the plumbing commands.
 
 ## Plumbing JSONL
 
@@ -128,21 +154,37 @@ version. Use `GET /v1/health` for the server's real version.
 ## Config
 
 **Stable:** the key names, types, and defaults documented in
-[Config reference](config-reference.md), across all three config files
-(`~/.config/spelunk/config.toml`, `.spelunk/config.toml`, and any file passed to
-`--config`).
+[Config reference](config-reference.md).
+
+**Also stable, and just as load-bearing: which file a key may be set in.** A key
+is not simply "supported"; it is supported in a specific place. Two keys are
+deliberately restricted, and both restrictions are part of the contract:
+
+- `server_url` is **ignored in the global personal config**
+  (`~/.config/spelunk/config.toml`, including a file passed to `--config`). It
+  may come only from the checked-in `.spelunk/config.toml` or from
+  `SPELUNK_SERVER_URL`. Everyone working on a project needs the same team
+  server, which a per-developer file cannot guarantee. A global config that
+  still sets it loads fine; the value is discarded.
+- `server_key` is **ignored in the project config** (`.spelunk/config.toml`). A
+  repository must never be able to hand a secret to whoever clones it. Use
+  `spelunk auth set-key --server <url>`, `spelunk login`, or
+  `SPELUNK_SERVER_KEY`.
+
+Beyond those two:
 
 - Unrecognised keys are ignored rather than rejected. A config written for a
   newer spelunk still loads on an older one, and a config carrying a removed key
-  still loads.
+  still loads. A key ignored because it is in the wrong file behaves the same
+  way: the rest of the file is unaffected.
 - The **project-level allowlist** is itself stable. A checked-in
   `.spelunk/config.toml` is honoured for exactly `server_url`, `project_id`,
-  `server_ca`, and `[index]`. Anything else in that file is ignored by design,
-  most importantly `server_key`: a repository must never be able to hand a
-  secret to whoever clones it. Adding a key to that allowlist is additive and
+  `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
   allowed; removing one is a breaking change.
 - Environment variable overrides (`SPELUNK_*`) are stable on the same terms as
-  the keys they override.
+  the keys they override. They are not subject to the two file restrictions
+  above: `SPELUNK_SERVER_URL` and `SPELUNK_SERVER_KEY` both take effect
+  wherever they are set.
 
 ### Deprecation policy
 
@@ -150,8 +192,12 @@ Removing or renaming a stable config key follows a fixed sequence:
 
 1. **Alias.** The old key keeps working, mapped onto the new one, for at least
    one full minor release.
-2. **Warn.** Using the old key emits a deprecation warning naming the
-   replacement.
+2. **Warn.** While the alias still works, using it emits a deprecation warning
+   on stderr naming the replacement. The warning lives and dies with the alias:
+   once the key is gone there is no warning, because a load-time message whose
+   only job is to describe a key that no longer does anything is permanent code
+   for a one-release problem. See
+   [ADR-071](adr/071-per-server-client-bearer-scoping.md) for the reasoning.
 3. **Remove.** The key is dropped in the next major release, and listed under
    "Removed fields" in [Config reference](config-reference.md) and under
    `### Removed` in the changelog. It then falls back to the
@@ -169,8 +215,13 @@ This is the precedent the policy is written from.
    config kept working untouched. The environment variable
    `SPELUNK_MEMORY_SERVER_URL` was accepted as a fallback for
    `SPELUNK_SERVER_URL`.
-2. **Warn.** The environment fallback emitted
+2. **Warn.** Partially, and this is where the precedent falls short of the
+   policy above rather than setting it. The environment fallback did warn:
    `SPELUNK_MEMORY_SERVER_URL is deprecated; use SPELUNK_SERVER_URL instead`.
+   The two TOML aliases never warned at all. They were accepted silently for
+   their whole deprecation window, so the only signal a user got was the
+   changelog. Step 2 is written as a requirement for what comes next, not as a
+   description of what this example did.
 3. **Remove.** The aliases and the environment fallback were deleted, the
    changelog recorded the break, and `docs/config-reference.md` gained a
    "Removed fields" row pointing at the replacement. The keys are now unknown
@@ -224,7 +275,7 @@ that fails CI when it is broken.
 | Plumbing JSONL field names and types | `crates/spelunk-cli/tests/golden/plumbing_jsonl_schema.json` plus `crates/spelunk-cli/tests/plumbing_jsonl_contract.rs`. Each command is run for real and its output checked against the committed schema. Required fields must be present and correctly typed; **undeclared fields are accepted**, so additive change passes and removal, rename, or retype fails. |
 | Every plumbing command has a declared schema | `golden_schema_covers_every_plumbing_subcommand`, which reads the command list out of clap's own help, so a newly added command cannot ship as an unguarded stable surface. |
 | The checker itself actually rejects things | `crates/spelunk-cli/tests/schema_contract_checker.rs`. Without it, a checker that accepted everything would leave every golden file green. It drives removal, rename, and retype across every field of every declared command, and pins the reporting wrapper too, including its refusal of a command that emitted no rows at all. |
-| Each declared field is load-bearing, per command | `assert_every_declared_field_is_load_bearing` in `plumbing_jsonl_contract.rs`. Every command's real output is replayed with one declared field dropped, then retyped, and the checker must object each time. Conformance alone would pass against a checker that never rejects anything. |
+| Each declared field is load-bearing, per command | `assert_every_declared_field_is_load_bearing`, run inside every command's conformance test in `plumbing_jsonl_contract.rs`. The command's real output is replayed with one declared field dropped, then retyped, and the checker must object each time. Conformance alone would pass against a checker that never rejects anything. |
 | Plumbing exit codes 0/1/2 | `crates/spelunk-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
 | `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p spelunk-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
 | The above run on every change | `.github/workflows/stability-contract.yml`. |
