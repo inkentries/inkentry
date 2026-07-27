@@ -110,6 +110,7 @@ impl MemoryStore {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("opening memory DB at {}", path.display()))?;
+        super::apply_test_page_cap(&conn)?;
         let mut store = Self {
             conn,
             reembed_needed: None,
