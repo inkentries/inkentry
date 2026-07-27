@@ -228,26 +228,53 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     if args.detach_embed && tier.is_server() && detach_embed_eligible(&tier) {
         let embed_log = background_log_path(&db_path);
         // Release before spawning: the child re-acquires this same lock on
-        // entry, and dropping first (rather than after `spawn()` returns) is
-        // what makes that a race-free handoff instead of a timing-dependent
-        // one - the child starts running concurrently with us the instant
-        // `spawn()` is called, so releasing any later can lose the race.
+        // entry, and dropping first (rather than after `spawn()` returns)
+        // closes the corruption race - the child never interleaves writes
+        // with us. It does not by itself guarantee the *child* is what wins
+        // the reacquire: an unrelated third `spelunk index` on this project
+        // can land in the gap and take the lock first, in which case the
+        // child bails clean (see run_lock.rs) but the work it was meant to
+        // do would go silently missing. `wait_for_holder_pid` below closes
+        // that second gap by confirming the spawned pid, specifically,
+        // becomes the recorded holder before telling the user work is
+        // running in the background.
         drop(run_lock.take());
-        if let EmbedSpawn::Detached(log_in_use) =
-            spawn_embed_subprocess(&args, embed_log.as_deref())?
+        crash_test_hook::pause_at("after_run_lock_drop", "embed");
+        if let EmbedSpawn::Detached {
+            log_in_use,
+            child_pid,
+        } = spawn_embed_subprocess(&args, embed_log.as_deref())?
         {
             let stats = db.stats()?;
             let pending = stats.chunk_count - stats.embedding_count;
-            println!(
-                "Index: {} files, {} chunks. Embedding {} chunk(s) in the background\u{2026}",
-                stats.file_count, stats.chunk_count, pending,
-            );
-            if !embed_ready {
-                println!("The embedder is still loading; the background worker waits for it.");
-            }
-            println!("Run `spelunk status` to check progress.");
-            if let Some(p) = log_in_use {
-                println!("  Log: {}", p.display());
+            if run_lock::wait_for_holder_pid(
+                &spelunk_dir,
+                child_pid,
+                HANDOFF_CONFIRM_TIMEOUT,
+                HANDOFF_POLL_INTERVAL,
+            ) {
+                println!(
+                    "Index: {} files, {} chunks. Embedding {} chunk(s) in the background\u{2026}",
+                    stats.file_count, stats.chunk_count, pending,
+                );
+                if !embed_ready {
+                    println!("The embedder is still loading; the background worker waits for it.");
+                }
+                println!("Run `spelunk status` to check progress.");
+                if let Some(p) = log_in_use {
+                    println!("  Log: {}", p.display());
+                }
+            } else {
+                println!(
+                    "Index: {} files, {} chunks. Started a background process to embed {} \
+                     chunk(s), but another `spelunk index` run claimed this project's lock \
+                     before it could take over.",
+                    stats.file_count, stats.chunk_count, pending,
+                );
+                println!(
+                    "Those chunks may be left unembedded. Run `spelunk index` again once the \
+                     other run finishes to pick them up."
+                );
             }
             return Ok(());
         }
@@ -295,17 +322,36 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         if let Some(p) = in_use {
             eprintln!("  Log: {}", p.display());
         }
-        // Release before spawning, same reasoning as the detach-embed site
-        // above: the child re-acquires this lock on entry, and only
-        // dropping first makes that race-free.
+        // Release before spawning: closes the corruption race (see the
+        // detach-embed site above for the full reasoning, including why this
+        // alone does not guarantee the child specifically wins the reacquire).
         drop(run_lock.take());
-        if cmd.spawn().is_ok() {
-            return Ok(());
+        crash_test_hook::pause_at("after_run_lock_drop", "background_phases");
+        match cmd.spawn() {
+            Ok(child) => {
+                if run_lock::wait_for_holder_pid(
+                    &spelunk_dir,
+                    child.id(),
+                    HANDOFF_CONFIRM_TIMEOUT,
+                    HANDOFF_POLL_INTERVAL,
+                ) {
+                    return Ok(());
+                }
+                eprintln!(
+                    "Warning: another `spelunk index` run claimed this project's lock before \
+                     the background job could take over; graph rank, spec discovery, and \
+                     summaries were not completed. Run `spelunk index` again once the other run \
+                     finishes."
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                // Fall through and run phases 3-5 inline as fallback,
+                // unprotected by the run lock already dropped above (see the
+                // detach-embed site's comment on this same tradeoff).
+                tracing::warn!("failed to spawn background indexer; running inline: {e}");
+            }
         }
-        // Fall through and run phases 3-5 inline as fallback, unprotected by
-        // the run lock already dropped above (see the detach-embed site's
-        // comment on this same tradeoff).
-        tracing::warn!("failed to spawn background indexer; running inline");
     }
 
     run_phases_3_to_5(&args, &cfg, &db, &root_canonical, &db_path).await
@@ -350,9 +396,13 @@ fn redirect_to_background_log<'a>(
 enum EmbedSpawn<'a> {
     /// Spawn failed; caller embeds inline.
     Inline,
-    /// Running detached, with the diagnostics log actually in use (if any) so
-    /// the caller can point the user at it.
-    Detached(Option<&'a std::path::Path>),
+    /// Running detached: the diagnostics log actually in use (if any) so the
+    /// caller can point the user at it, and the child's pid so the caller can
+    /// confirm it (and not a racing third process) became the lock's holder.
+    Detached {
+        log_in_use: Option<&'a std::path::Path>,
+        child_pid: u32,
+    },
 }
 
 /// Build the argv shared by every detached re-exec that continues indexing in
@@ -403,7 +453,10 @@ fn spawn_embed_subprocess<'a>(
     cmd.args(["--batch-size", &args.batch_size.to_string()]);
     let in_use = redirect_to_background_log(&mut cmd, log);
     match cmd.spawn() {
-        Ok(_) => Ok(EmbedSpawn::Detached(in_use)),
+        Ok(child) => Ok(EmbedSpawn::Detached {
+            log_in_use: in_use,
+            child_pid: child.id(),
+        }),
         Err(e) => {
             tracing::warn!("failed to spawn detached embed process; embedding inline: {e}");
             Ok(EmbedSpawn::Inline)
@@ -433,6 +486,18 @@ const EMBED_WAIT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_se
 /// Consecutive offline probes tolerated before the worker concludes the server
 /// is gone (crashed after spawning us) rather than momentarily unreachable.
 const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
+
+/// How long a parent waits, after releasing the run lock and spawning a
+/// continuation child (`--_embed-phases` / `--_background-phases`), to see
+/// that child recorded as the lock's new holder before reporting the handoff
+/// as a background success. The release-then-spawn gap an unrelated third
+/// `spelunk index` process can win is normally low-single-digit
+/// milliseconds; this is bounded well above that plus typical re-exec
+/// startup cost, without meaningfully delaying the common case where the
+/// child wins on its very first poll.
+const HANDOFF_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Poll interval for `HANDOFF_CONFIRM_TIMEOUT`.
+const HANDOFF_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Wait until the server's embedder can serve, polling `/v1/health` with a
 /// bounded backoff. Returns the final observed tier; the caller re-derives
@@ -1226,6 +1291,16 @@ mod tests {
     #[test]
     fn embed_wait_max_offline_probes_is_10() {
         assert_eq!(EMBED_WAIT_MAX_OFFLINE_PROBES, 10);
+    }
+
+    #[test]
+    fn handoff_confirm_timeout_is_2s() {
+        assert_eq!(HANDOFF_CONFIRM_TIMEOUT.as_secs(), 2);
+    }
+
+    #[test]
+    fn handoff_poll_interval_is_20ms() {
+        assert_eq!(HANDOFF_POLL_INTERVAL.as_millis(), 20);
     }
 
     // ── wait_for_embedder: local_first routes to loopback, not server_url ────
