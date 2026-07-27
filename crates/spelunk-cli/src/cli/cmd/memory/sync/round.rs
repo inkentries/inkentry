@@ -551,4 +551,253 @@ mod tests {
             "an established client must still pull, then push, then pull again: {methods:?}"
         );
     }
+
+    // ── crash-before-record edge case: `max_remote_id()` reads only local
+    // state, never the server ───────────────────────────────────────────────
+
+    // `pre_round_cursor.is_none()` cannot distinguish "this project has never
+    // been synced by anyone" from "this row was already pushed and the
+    // server durably has it, but the local `remote_id` stamp never landed"
+    // (a process crash between the server's 207 response and `push_local`'s
+    // own `set_remote_id` write). `max_remote_id()` only ever reads the local
+    // `notes` table (see its doc comment), so it cannot tell these apart. The
+    // branch does not need to: a retry's push re-sends the same stable
+    // `external_id`, the server dedupes and answers `skipped` rather than a
+    // fresh `created`, and `push_local` stamps `remote_id` from a `skipped`
+    // result exactly like a `created` one, so the store still converges to
+    // established within this very round, without ever needing a pre-push
+    // pull to have run.
+    #[tokio::test]
+    async fn sync_round_first_sync_recovers_a_push_that_landed_before_a_crash() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let (_tmp, store) = fresh_store();
+        store
+            .add_note(
+                "decision",
+                "T1",
+                "pushed once, crashed before the local remote_id was recorded",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        let ext = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        assert!(
+            store.max_remote_id().unwrap().is_none(),
+            "the crash means this row's remote_id was never durably stamped locally"
+        );
+
+        let server = MockServer::start().await;
+        // The project is already provisioned (the crashed run's push landed
+        // server-side), so `/memory/since` succeeds unconditionally here,
+        // unlike the never-provisioned case above.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .mount(&server)
+            .await;
+        // The retry's push re-sends the same external_id; the server already
+        // has it, so it comes back `skipped` with the SAME cloud id it
+        // minted the first time around, not a fresh `created`.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 1, "failed": 0,
+                "results": [{"status": "skipped", "external_id": ext, "id": "cloud-t1-preexisting"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let outcome = sync_round(&store, &client, false, false)
+            .await
+            .expect("a skipped-not-created push must not be treated as a failure");
+
+        assert_eq!(
+            outcome.pushed.skipped, 1,
+            "the retry sees its own earlier push as already known to the server"
+        );
+        assert!(
+            store
+                .note_id_for_remote_id("cloud-t1-preexisting")
+                .unwrap()
+                .is_some(),
+            "a skipped result must still stamp remote_id, recovering the crash-lost state"
+        );
+        assert!(
+            store.max_remote_id().unwrap().is_some(),
+            "the store must now be established, so the next sync takes the pull-push-pull path"
+        );
+    }
+
+    // ── total push failure on a first sync: the follow-up pull's failure
+    // must still surface cleanly, not panic or get silently swallowed ──────
+
+    // When the push itself never lands (a transport-level failure on the
+    // only chunk, not a per-item 4xx), nothing is provisioned server-side and
+    // no `remote_id` is stamped. `sync_round_first` still runs its post-push
+    // pull unconditionally, which then hits the exact never-provisioned 400
+    // the original bug exhibited. That compound failure must come back as a
+    // real `Err` naming the pull failure, not panic, not silently succeed,
+    // and not leave the store looking established when nothing landed.
+    #[tokio::test]
+    async fn sync_round_first_sync_surfaces_pull_error_when_push_never_lands() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let (_tmp, store) = fresh_store();
+        store
+            .add_note("decision", "T1", "never lands", &[], &[], None, None)
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // The push chunk itself fails outright: nothing is provisioned and
+        // no result item exists to stamp a remote_id from.
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        // The project is still unprovisioned, so the post-push pull gets the
+        // same 400 a pre-push pull would have.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string("invalid project id: expected a UUID, got a slug"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let err = sync_round(&store, &client, false, false).await.expect_err(
+            "a pull failure after a totally failed push must still surface as an error",
+        );
+
+        assert!(
+            format!("{err:#}").contains("post-push pull failed"),
+            "the error must carry the first-sync pull-failure context: {err:#}"
+        );
+        assert!(
+            store.max_remote_id().unwrap().is_none(),
+            "nothing landed, so a retry must still take the first-sync branch"
+        );
+    }
+
+    // ── concurrent first syncs: two never-before-synced clients racing to
+    // provision the same project must not trip the pre-push-pull bug for
+    // either of them ─────────────────────────────────────────────────────
+
+    /// Mock `/memory/batch` responder that provisions the project and echoes
+    /// back a generated cloud id per pushed `external_id`, so two different
+    /// clients pushing two different entries concurrently each get a
+    /// coherent per-item result rather than a hardcoded single id.
+    struct BatchProvisionsEcho {
+        provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl wiremock::Respond for BatchProvisionsEcho {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            self.provisioned
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let entries = body["entries"].as_array().cloned().unwrap_or_default();
+            let results: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    let ext = e["external_id"].as_str().unwrap_or_default();
+                    serde_json::json!({
+                        "status": "created", "external_id": ext, "id": format!("cloud-{ext}")
+                    })
+                })
+                .collect();
+            wiremock::ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": results.len(), "skipped": 0, "failed": 0, "results": results
+            }))
+        }
+    }
+
+    // Each client's own `sync_round_first` always pushes before it pulls, so
+    // each one's own pull only ever runs after its own push has already set
+    // `provisioned`; interleaving with the other client cannot reopen the
+    // pre-push-pull window for either. This exercises that under genuine
+    // concurrent execution (both rounds polled together via `tokio::join!`,
+    // sharing one mock server and one `provisioned` flag) rather than
+    // asserting it only holds sequentially.
+    #[tokio::test]
+    async fn sync_round_two_concurrent_first_syncs_both_succeed_without_pre_push_pull() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let (_tmp_x, store_x) = fresh_store();
+        store_x
+            .add_note(
+                "decision",
+                "X1",
+                "client X's own new entry",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        let (_tmp_y, store_y) = fresh_store();
+        store_y
+            .add_note(
+                "decision",
+                "Y1",
+                "client Y's own new entry",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj-race-first/memory/since"))
+            .respond_with(SinceUntilProvisioned {
+                provisioned: provisioned.clone(),
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj-race-first/memory/batch"))
+            .respond_with(BatchProvisionsEcho {
+                provisioned: provisioned.clone(),
+            })
+            .mount(&server)
+            .await;
+
+        let client_x = CloudSyncClient::new(&server.uri(), "proj-race-first", None, None).unwrap();
+        let client_y = CloudSyncClient::new(&server.uri(), "proj-race-first", None, None).unwrap();
+
+        let (outcome_x, outcome_y) = tokio::join!(
+            sync_round(&store_x, &client_x, false, false),
+            sync_round(&store_y, &client_y, false, false),
+        );
+
+        assert_eq!(
+            outcome_x
+                .expect("X's round must not surface the pre-push-pull 400")
+                .pushed
+                .created,
+            1
+        );
+        assert_eq!(
+            outcome_y
+                .expect("Y's round must not surface the pre-push-pull 400")
+                .pushed
+                .created,
+            1
+        );
+    }
 }
