@@ -1058,3 +1058,78 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
     assert_integrity_ok(&db_path);
     kill_and_reap(paused);
 }
+
+#[test]
+fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race() {
+    // The previous test drives the losing child directly, never the real
+    // parent-releases/parent-spawns handoff, so it cannot see what the
+    // *parent* tells the user. This test does: the parent must not claim
+    // "embedding in the background" unless the spawned child, specifically,
+    // became the run lock's recorded holder - `wait_for_holder_pid` is what
+    // confirms that before the parent reports success.
+    //
+    // Reproduced deterministically (rather than by racing wall-clock timing)
+    // the same way the test above does: pause the parent right after it
+    // releases the lock and before it spawns its continuation child, let an
+    // entirely separate `spelunk index` process win and hold the lock in
+    // that window, then resume the parent and inspect what it told the user.
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let f = embed_fixture(&rt);
+
+    let mut cmd = spelunk_command(f._home.path());
+    cmd.current_dir(f.project.path())
+        .env("SPELUNK_MODE", "cloud_first")
+        .arg("index")
+        .arg(".")
+        .arg("--detach-embed")
+        .arg("--no-summaries");
+    let paused_parent = spawn_paused_at(cmd, "after_run_lock_drop:embed");
+    let parent_stdout = paused_parent.stdout_so_far.clone();
+
+    // The parent's own parse phase (upstream of the pause point above) has
+    // already hashed `one.py`/`two.py`, so a third `spelunk index` run over
+    // them now would see unchanged hashes and skip straight past the
+    // hash-write pause point without ever hitting it. A brand new file the
+    // parent never saw gives the third process something to actually hash.
+    std::fs::write(
+        f.project.path().join("three.py"),
+        "def three():\n    return 3\n",
+    )
+    .expect("write third file");
+
+    // The parent has released the lock but not yet spawned its continuation
+    // child. A genuinely separate process wins it here and holds it well
+    // past the child's own (bounded) confirmation window below.
+    let mut third_cmd = spelunk_command(f._home.path());
+    third_cmd
+        .current_dir(f.project.path())
+        .env("SPELUNK_NO_SERVER", "1")
+        .arg("index")
+        .arg(".");
+    let paused_third = spawn_paused_at(third_cmd, "after_index_hash_write:three.py");
+
+    let status = release_and_wait(paused_parent);
+    assert!(
+        status.success(),
+        "the parent must still exit cleanly even though its handoff was raced away"
+    );
+
+    let stdout = parent_stdout.lock().unwrap().clone();
+    assert!(
+        !stdout.contains("in the background"),
+        "must not claim embedding is proceeding in the background when the spawned child never \
+         confirmed it took over the lock: {stdout}"
+    );
+    assert!(
+        stdout.contains("claimed this project's lock"),
+        "must tell the user why the background handoff could not be confirmed: {stdout}"
+    );
+    assert!(
+        stdout.contains("Run `spelunk index` again"),
+        "must give the user a concrete recovery step rather than leaving the chunks silently \
+         unembedded forever: {stdout}"
+    );
+
+    kill_and_reap(paused_third);
+    assert_integrity_ok(&f.db_path);
+}
