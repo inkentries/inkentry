@@ -906,7 +906,10 @@ For a one-directional transfer, use `spelunk memory push` (local → server) or
 
 Low-level commands for agents and scripts. All emit JSONL and exit non-zero on
 error (exit 1 for "no results", exit 2 for errors). See
-[plumbing-and-porcelain.md](plumbing-and-porcelain.md).
+[plumbing-and-porcelain.md](plumbing-and-porcelain.md). These field names,
+types, and exit codes are semver-bound and test-enforced; the
+[stability contract](stability.md) says exactly what may change and what may
+not.
 
 ```
 spelunk plumbing cat-chunks <file>     # indexed chunks for a file

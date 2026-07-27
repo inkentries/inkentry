@@ -331,6 +331,7 @@ field here.
 
 ## What's next
 
+- [Stability contract](stability.md) - which of these keys semver freezes, which file each may be set in, and the deprecation policy for removing one
 - [Server setup](server-setup.md) - `server_url` / `server_key` in a team deployment
 - [Project memory](memory.md) - `store_in_git_notes` and memory backends
 - [Commands reference](commands.md) - `-c, --config` and per-command overrides

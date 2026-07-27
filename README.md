@@ -160,6 +160,7 @@ the first five minutes to running a shared memory server for a team.
 - [Memory](docs/memory.md): decisions, context, and requirements across sessions
 - [Agent Guide](docs/agent-guide.md): wiring spelunk into AI coding agents
 - [Commands](docs/commands.md): full reference for every subcommand
+- [Stability contract](docs/stability.md): which surfaces semver freezes, and which are free to change
 - [Architecture](docs/architecture.md): system design for contributors
 - [Examples](docs/examples/): real-world workflows
 

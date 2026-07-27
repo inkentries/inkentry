@@ -11,6 +11,34 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A written stability contract, [docs/stability.md](docs/stability.md), and
+  tests that enforce it.** Until now the plumbing JSONL schemas were held stable
+  by convention alone, and nothing stated which config keys, flags, exit codes,
+  or on-disk formats you may rely on across versions. The contract now declares,
+  per surface, whether it is stable (semver-bound, additive-only), best-effort,
+  or internal, covering CLI commands and flags, plumbing JSONL fields, the `/v1/`
+  HTTP API, `config.toml` keys, and the on-disk stores
+  (`index.db`/`memory.db` migrations, `registry.db`, git-notes
+  `schema_version`, and the `.spelunk/` layout). For config it also freezes
+  *which file* a key may be set in, which is not the same question as whether
+  the key is supported: `server_url` is ignored in the personal global config
+  and `server_key` is ignored in the checked-in project config, both
+  deliberately. It is equally explicit about what is *not* stable:
+  human-readable porcelain text, log and diagnostic output, and the internal
+  crate APIs. The structured `--format json`/`jsonl` modes of porcelain
+  commands are a third category, called out separately: `spelunk status
+  --format json` is stable for its core fields, and every other `--format`
+  mode is best-effort. A deprecation policy (alias, then warn while the alias
+  lives, then remove) sets the sequence for future changes; the removed
+  `memory_server_url` key is documented as the precedent, including where it
+  fell short of it. Enforcement is real, not aspirational: a committed golden schema
+  covers every plumbing command's JSONL output, so adding a field passes while
+  removing, renaming, or retyping one fails; exit codes 0/1/2 are asserted per
+  command, including that exit 2 leaves stdout empty; a guard derived from the
+  CLI's own help refuses to let a new plumbing command ship without a declared
+  schema; and the checker itself is tested, so it cannot pass by accepting
+  everything.
+
 - **`spelunk-server --model-dir <PATH>` (or `SPELUNK_MODEL_DIR`) loads the
   bundled F2LLM-v2-330M embedder from a pre-provisioned local directory, with
   zero network access.** For hosts with no route to `huggingface.co` (an
