@@ -91,7 +91,6 @@ struct Args {
     #[arg(long, env = "SPELUNK_MODEL_DIR", value_name = "PATH")]
     model_dir: Option<PathBuf>,
 
-
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
     /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
     #[arg(long, env = "SPELUNK_LLM_URL")]
@@ -1205,8 +1204,23 @@ mod arg_tests {
     /// Unset by default: the online Hugging Face Hub path stays the default
     /// (no regression for the common case).
     #[test]
+    #[serial_test::serial(model_dir_env)]
     fn model_dir_defaults_to_none() {
+        // Serialized against model_dir_env_var_is_honoured: both read/write
+        // the real process env var, and cargo test runs in threads within one
+        // process, so an unguarded reader can observe another test's
+        // temporarily-set value.
+        let prev = std::env::var("SPELUNK_MODEL_DIR").ok();
+        // SAFETY: guarded by #[serial] so no other test reads/writes this var
+        // concurrently.
+        unsafe { std::env::remove_var("SPELUNK_MODEL_DIR") };
+
         let args = Args::parse_from(["spelunk-server"]);
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("SPELUNK_MODEL_DIR", v) };
+        }
+
         assert_eq!(args.model_dir, None);
     }
 

@@ -131,7 +131,7 @@ pub fn load_from_hub() -> Result<NativeEmbedder> {
 /// Load the F2LLM-v2-330M embedder from a directory an operator provisioned
 /// out-of-band (`spelunk-server --model-dir <path>` /
 /// `SPELUNK_MODEL_DIR`), with zero network access. Unlike [`load_from_hub`],
-/// this function never references `hf_hub` — the offline path is a pure
+/// this function never references `hf_hub`: the offline path is a pure
 /// filesystem read, so there is no code path here for a corp firewall to
 /// block. See "Air-gapped / no-egress install" in `docs/server-setup.md` for
 /// the fetch-and-transfer procedure that produces this directory on a
@@ -502,7 +502,7 @@ mod tests {
 
     /// An empty `--model-dir` (no artifacts provisioned yet) must fail with a
     /// clear error naming the missing GGUF and pointing at the offline docs
-    /// section — never a bare Hugging Face Hub connection error, since this
+    /// section, never a bare Hugging Face Hub connection error, since this
     /// path never touches `hf_hub` at all.
     #[test]
     fn load_from_model_dir_missing_gguf_names_file_and_docs() {
@@ -549,7 +549,7 @@ mod tests {
 
     /// Both artifacts present but corrupt: the error must come from the local
     /// parse (naming the specific bad file), matching `load_from_path`'s
-    /// existing per-file error behaviour — never a network error, never a
+    /// existing per-file error behaviour: never a network error, never a
     /// panic (proving "no crash loop" starts from a `Result`, not a `unwrap`).
     #[test]
     fn load_from_model_dir_corrupt_tokenizer_errors_locally() {
@@ -663,7 +663,7 @@ mod tests {
     }
 
     /// `load_from_model_dir` writes the embedded `config.json` into the
-    /// directory when missing, mirroring `load_from_hub`'s cache layout — so
+    /// directory when missing, mirroring `load_from_hub`'s cache layout, so
     /// an operator only ever needs to transfer the two revision-specific
     /// files (GGUF + tokenizer) and a second load from the same directory is
     /// fully self-contained.
@@ -722,7 +722,7 @@ mod tests {
 
     /// Zero-egress guarantee under a hostile network: even with every standard
     /// proxy env var pointed at an address nothing listens on,
-    /// `load_from_model_dir` must behave identically to a clean environment —
+    /// `load_from_model_dir` must behave identically to a clean environment:
     /// same error, and fast (no hang waiting on a dead proxy). The only way
     /// that holds is if the code path never attempts a network request at
     /// all. Guards against a future edit reintroducing an `hf_hub`/`reqwest`

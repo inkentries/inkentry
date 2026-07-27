@@ -100,9 +100,9 @@ artifacts, not a different model. See [Model attribution](model-attribution.md).
 
 ## Running with no network access at all
 
-`--embedding-url` above still calls out over the network, just to a
-different (self-hosted) endpoint. For a host with no route out at all, not
-even to an internal endpoint, `--model-dir` / `SPELUNK_MODEL_DIR` loads the
+`SPELUNK_EMBEDDER_GGUF_REPO` above still calls out over the network, just to a
+different (self-hosted) source. For a host with no route out at all, not
+even to an alternate source, `--model-dir` / `SPELUNK_MODEL_DIR` loads the
 bundled native embedder from a directory you provision ahead of time instead
 of fetching it from Hugging Face Hub. See [Server setup → Air-gapped /
 no-egress install](server-setup.md#air-gapped--no-egress-install) for the

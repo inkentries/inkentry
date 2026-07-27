@@ -667,8 +667,8 @@ export SPELUNK_MODEL_DIR=/srv/spelunk/models
 spelunk-server
 ```
 
-Only consulted when the bundled native embedder is the active backend
-(`--embedding-url` unset); ignored otherwise.
+Only consulted when the bundled native embedder is enabled (the
+`embed-native` build feature); ignored otherwise.
 
 ### Directory layout
 

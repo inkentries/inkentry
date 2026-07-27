@@ -1091,10 +1091,13 @@ mod tests {
         }
     }
 
-    // NOTE: both `which_spelunk_server_*` tests mutate the process-global `PATH`.
-    // Cargo runs unit tests multi-threaded by default, so they are pinned to the
-    // same `#[serial(path_env)]` group to keep them from racing each other (and
-    // any future PATH-touching test in this crate).
+    // NOTE: both `which_spelunk_server_*` tests mutate the process-global `PATH`,
+    // including setting it to "" entirely. Cargo runs unit tests multi-threaded
+    // by default, so they are pinned to the `path_env` serial group, along with
+    // every test that spawns a `DummyProc::graceful()`/`ignores_sigterm()`
+    // subprocess: those resolve the bare command name "sleep" via PATH, so an
+    // empty PATH from a concurrently-running sibling makes the spawn itself
+    // fail with ENOENT, not just the assertion under test.
 
     #[test]
     #[serial(path_env)]
@@ -1733,7 +1736,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[serial(server_start_lock)]
+    #[serial(server_start_lock, path_env)]
     fn process_matches_server_false_for_unrelated_process() {
         let proc = DummyProc::graceful();
         assert!(
@@ -1768,7 +1771,7 @@ mod tests {
     /// happen.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial(server_start_lock)]
+    #[serial(server_start_lock, path_env)]
     async fn wait_for_exit_false_for_live_process() {
         let proc = DummyProc::graceful();
         assert!(
@@ -1781,7 +1784,7 @@ mod tests {
     /// reported stopped once the PID is confirmed gone.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial(server_start_lock)]
+    #[serial(server_start_lock, path_env)]
     async fn terminate_and_wait_stops_graceful_process() {
         let proc = DummyProc::graceful();
         assert!(pid_is_alive(proc.pid));
@@ -1795,7 +1798,7 @@ mod tests {
     /// falls back to for a wedged daemon.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial(server_start_lock)]
+    #[serial(server_start_lock, path_env)]
     async fn force_kill_reaps_sigterm_ignoring_process() {
         let proc = DummyProc::ignores_sigterm();
         assert!(pid_is_alive(proc.pid));
@@ -1819,7 +1822,7 @@ mod tests {
     /// behaviour the fix is about — previously only exercised by hand.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial(server_start_lock)]
+    #[serial(server_start_lock, path_env)]
     async fn terminate_and_wait_escalates_when_sigterm_ignored() {
         let proc = DummyProc::ignores_sigterm();
         assert!(pid_is_alive(proc.pid));
