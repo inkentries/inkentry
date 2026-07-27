@@ -695,10 +695,13 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
             .unwrap()
     };
 
-    // Large enough to need far more than the +2-page cap margin below, small
-    // enough to stay under the OS argv-length limit (`ArgumentListTooLong`
-    // above ~256KB-1MB depending on platform).
-    let huge_body = "y".repeat(150_000);
+    // Large enough to need far more than the +2-page cap margin below (FTS5
+    // indexing alone roughly doubles the stored bytes), small enough to stay
+    // under a single-process-argument command line on every CI platform:
+    // Windows' CreateProcess caps the whole command line around 32KB, and
+    // Linux caps a single argv entry at 128KB (32 pages) regardless of the
+    // much larger total argv+envp budget.
+    let huge_body = "y".repeat(20_000);
     let out = memory_add(
         home.path(),
         Some((
