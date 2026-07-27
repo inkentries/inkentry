@@ -64,6 +64,30 @@ harvest` does not consult this field at all: for both commands, whether a chat
 model is actually available depends on the capability tier (a reachable
 inference server with a model loaded), independent of this setting.
 
+### `llm_url`
+
+- **Type:** string, optional
+- **Default:** unset
+
+Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
+or Ollama, a self-hosted gateway). When set, the auto-spawned local
+`spelunk-server` is started against it and gains LLM capability; when unset,
+the daemon runs without one.
+
+Personal config or `SPELUNK_LLM_URL` only. A value in a checked-in
+`.spelunk/config.toml` is ignored, like any key outside the project-level
+allowlist: an endpoint URL is a per-developer choice, and committing one points
+the whole team at one machine.
+
+The credential for this endpoint is never a config field. Store it with
+`spelunk auth set-key --llm` (it goes to the OS secret store) or set
+`SPELUNK_LLM_KEY`. The CLI resolves it only when it spawns the daemon, and
+passes it to that process out of band, so the detached daemon never opens the
+keychain itself.
+
+A daemon already running keeps the configuration it was started with. Restart
+it with `spelunk server stop && spelunk server start` after changing `llm_url`.
+
 ### `llm_context_length`
 
 - **Type:** integer
@@ -281,6 +305,10 @@ in CI) to set a shared team credential per developer instead.
 llm_model = "google/gemma-3n-e4b"
 llm_context_length = 8192
 
+# Chat-completions endpoint the local spelunk-server is started against.
+# Store its credential with `spelunk auth set-key --llm`, never here.
+llm_url = "http://127.0.0.1:1234"
+
 # Keep memory close to commits (default)
 store_in_git_notes = true
 ```
@@ -315,6 +343,9 @@ TOML file.
 | `SPELUNK_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `spelunk login` tokens) |
 | `SPELUNK_PROJECT_ID` | `project_id` |
 | `SPELUNK_SERVER_CA` | `server_ca` |
+| `SPELUNK_LLM_URL` | `llm_url` |
+| `SPELUNK_LLM_MODEL` | `llm_model` |
+| `SPELUNK_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `spelunk auth set-key --llm`). Not a `config.toml` field. |
 | `SPELUNK_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
 | `SPELUNK_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
 | `SPELUNK_CLOUD_URL` | spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |

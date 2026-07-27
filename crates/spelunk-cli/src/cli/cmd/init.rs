@@ -119,7 +119,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     let server_line: Option<String> = {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
-            match super::server::ensure_server_running(7777).await {
+            match super::server::ensure_server_running(7777, &cfg).await {
                 Ok((port, true)) => Some(format!(
                     "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
                 )),

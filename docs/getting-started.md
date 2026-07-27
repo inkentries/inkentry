@@ -332,11 +332,28 @@ spelunk server stop     # if one is already running
 spelunk server start    # starts with the endpoint configured above
 ```
 
+Or set them once in `~/.config/spelunk/config.toml` instead of exporting them,
+which the CLI passes on to every daemon it starts:
+
+```toml
+llm_url = "http://127.0.0.1:1234"
+llm_model = "your-chat-model-id"
+```
+
+If the endpoint needs a key, store it once with `spelunk auth set-key --llm`
+(it is read from stdin or a prompt and kept in your OS secret store, never in a
+config file). The CLI hands it to the daemon it starts; the daemon never reads
+your keychain itself.
+
 Or, if you run `spelunk-server` yourself, pass the flags directly:
 
 ```bash
 spelunk-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
+
+with `--llm-key-file /path/to/key` (or `SPELUNK_LLM_KEY`) if the endpoint is
+keyed. A key over plaintext `http://` to anything but loopback is refused at
+startup: use `https://` for a remote endpoint.
 
 This is an advanced override; most users never set it: `explore`, summaries,
 and `memory harvest` are simply unavailable without an LLM configured, and

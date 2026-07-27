@@ -46,8 +46,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::color::cprintln;
+use super::daemon_llm::LlmSpawn;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use spelunk_core::config::Config;
 
 use crate::capability::spelunk_state_dir;
 
@@ -401,6 +403,16 @@ pub struct ServerStartArgs {
     /// Path to the server SQLite database (default: ~/.local/state/spelunk/server.db)
     #[arg(long)]
     pub db: Option<PathBuf>,
+
+    /// Base URL of an OpenAI-compatible chat completions endpoint for this
+    /// daemon. Overrides `SPELUNK_LLM_URL` and `llm_url` in the personal config.
+    #[arg(long)]
+    pub llm_url: Option<String>,
+
+    /// LLM model name for this daemon. Overrides `SPELUNK_LLM_MODEL` and
+    /// `llm_model` in the personal config.
+    #[arg(long)]
+    pub llm_model: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -412,9 +424,9 @@ pub struct ServerLogsArgs {
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
-pub async fn server(args: ServerArgs) -> Result<()> {
+pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
     match args.command {
-        ServerCommand::Start(a) => cmd_start(a).await,
+        ServerCommand::Start(a) => cmd_start(a, &cfg).await,
         ServerCommand::Stop => cmd_stop().await,
         ServerCommand::Status => cmd_status().await,
         ServerCommand::Logs(a) => cmd_logs(a),
@@ -444,7 +456,7 @@ pub(crate) async fn probe_local_relay_port() -> Option<u16> {
 /// healthy, returns immediately with `freshly_started = false`.
 ///
 /// Called by `spelunk init` to auto-spawn the server when running interactively.
-pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
+pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16, bool)> {
     let state_dir = spelunk_state_dir()?;
     create_state_dir(&state_dir)?;
 
@@ -478,11 +490,12 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
     let port = find_available_port(start_port, PORT_RANGE)?;
 
     let log_file = open_log_file_for_append(&log_path(&state_dir))?;
+    let llm = LlmSpawn::resolve(cfg, None, None)?;
 
     #[cfg(unix)]
-    let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
+    let child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
     #[cfg(windows)]
-    let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
+    let child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
 
     let pid = child.id();
     write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
@@ -514,7 +527,7 @@ pub async fn ensure_server_running(start_port: u16) -> Result<(u16, bool)> {
 
 // ── start ─────────────────────────────────────────────────────────────────────
 
-async fn cmd_start(args: ServerStartArgs) -> Result<()> {
+async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
     let state_dir = spelunk_state_dir()?;
     create_state_dir(&state_dir)?;
 
@@ -597,11 +610,12 @@ async fn cmd_start(args: ServerStartArgs) -> Result<()> {
 
     // ── Spawn daemonised process ─────────────────────────────────────────────
     let log_file = open_log_file_for_append(&log_path(&state_dir))?;
+    let llm = LlmSpawn::resolve(cfg, args.llm_url.as_deref(), args.llm_model.as_deref())?;
 
     #[cfg(unix)]
-    let child = spawn_daemon_unix(&bin, &db, port, log_file)?;
+    let child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
     #[cfg(windows)]
-    let child = spawn_daemon_windows(&bin, &db, port, log_file)?;
+    let child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
 
     let pid = child.id();
 
@@ -709,15 +723,21 @@ fn find_available_port(start: u16, range: u16) -> Result<u16> {
 ///
 /// The returned `Vec` contains every argument **after** the binary path, in
 /// order, as it would be appended to `std::process::Command`.
-pub(super) fn build_daemon_args(db: &Path, port: u16) -> Vec<std::ffi::OsString> {
-    vec![
+///
+/// `llm` contributes only its non-secret values; its credential travels in the
+/// child environment instead (see [`super::daemon_llm`]), so no input can put
+/// a key into a world-readable process table entry.
+pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
         "--host".into(),
         "127.0.0.1".into(),
         "--port".into(),
         port.to_string().into(),
         "--db".into(),
         db.as_os_str().into(),
-    ]
+    ];
+    args.extend(llm.args());
+    args
 }
 
 /// Spawn the server on Unix.
@@ -735,13 +755,17 @@ fn spawn_daemon_unix(
     bin: &Path,
     db: &Path,
     port: u16,
+    llm: &LlmSpawn,
     log_file: std::fs::File,
 ) -> Result<std::process::Child> {
     let log_file_err = log_file.try_clone().context("cloning log file handle")?;
 
     let mut cmd = std::process::Command::new(bin);
-    for arg in build_daemon_args(db, port) {
+    for arg in build_daemon_args(db, port, llm) {
         cmd.arg(arg);
+    }
+    for (name, value) in llm.child_env() {
+        cmd.env(name, value);
     }
     let child = cmd
         .stdin(std::process::Stdio::null())
@@ -763,14 +787,18 @@ fn spawn_daemon_windows(
     bin: &Path,
     db: &Path,
     port: u16,
+    llm: &LlmSpawn,
     log_file: std::fs::File,
 ) -> Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
     let mut cmd = std::process::Command::new(bin);
-    for arg in build_daemon_args(db, port) {
+    for arg in build_daemon_args(db, port, llm) {
         cmd.arg(arg);
+    }
+    for (name, value) in llm.child_env() {
+        cmd.env(name, value);
     }
     let child = cmd
         .stdin(std::process::Stdio::null())
@@ -1160,7 +1188,7 @@ mod tests {
     fn spawn_daemon_args_bind_loopback() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
-        let args = build_daemon_args(&db, 7777);
+        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
 
         // Collect as strings for readable assertions.
         let args_str: Vec<String> = args
@@ -1193,7 +1221,7 @@ mod tests {
     fn spawn_daemon_args_do_not_bind_wildcard() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
-        let args = build_daemon_args(&db, 7777);
+        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1212,7 +1240,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let port: u16 = 7780;
-        let args = build_daemon_args(&db, port);
+        let args = build_daemon_args(&db, port, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1238,7 +1266,7 @@ mod tests {
     fn spawn_daemon_args_include_db_path() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("server.db");
-        let args = build_daemon_args(&db, 7777);
+        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1256,6 +1284,58 @@ mod tests {
             db_value,
             &db.to_string_lossy().into_owned(),
             "daemon arg --db value should match supplied db path"
+        );
+    }
+
+    // An unconfigured LLM must leave the daemon command line exactly as it was
+    // before LLM wiring existed, so an existing install spawns identically.
+    #[test]
+    fn spawn_daemon_args_without_llm_are_host_port_db_only() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("server.db");
+        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
+
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            args_str,
+            vec![
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                "7777".to_string(),
+                "--db".to_string(),
+                db.to_string_lossy().into_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn spawn_daemon_args_carry_the_llm_url_and_model_but_never_the_key() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("server.db");
+        let llm = LlmSpawn {
+            url: Some("https://gateway.example".to_string()),
+            model: Some("gpt-oss".to_string()),
+            key: Some("sk-llm-secret".to_string()),
+        };
+        let args = build_daemon_args(&db, 7777, &llm);
+
+        let args_str: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(args_str.contains(&"--llm-url".to_string()));
+        assert!(args_str.contains(&"https://gateway.example".to_string()));
+        assert!(args_str.contains(&"--llm-model".to_string()));
+        assert!(args_str.contains(&"gpt-oss".to_string()));
+        assert!(
+            args_str.iter().all(|a| !a.contains("sk-llm-secret")),
+            "the LLM credential must never reach the process table: {args_str:?}"
         );
     }
 

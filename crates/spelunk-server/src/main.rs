@@ -18,6 +18,9 @@ use spelunk_core::embeddings::MODEL_ID as NATIVE_MODEL_ID;
 #[cfg(feature = "embed-native")]
 use spelunk_server::embed_hub;
 
+mod server_llm;
+use server_llm::{ServerLlm, check_llm_transport, resolve_llm_key};
+
 #[derive(Parser, Debug)]
 #[command(
     name = "spelunk-server",
@@ -99,6 +102,17 @@ struct Args {
     /// LLM model name (e.g. `google/gemma-3n-e4b`). Overrides `SPELUNK_LLM_MODEL`.
     #[arg(long, env = "SPELUNK_LLM_MODEL", default_value = "")]
     llm_model: String,
+
+    /// Credential for the `--llm-url` endpoint, passed inline. Visible in the
+    /// process table: prefer `--llm-key-file` or `SPELUNK_LLM_KEY`. Distinct
+    /// from `--key`, which is this server's own inbound bearer.
+    #[arg(long, value_name = "KEY")]
+    llm_key: Option<String>,
+
+    /// File whose whole (trimmed) contents are the `--llm-url` credential.
+    /// An unreadable path is fatal, never a fall-through to another source.
+    #[arg(long, value_name = "PATH")]
+    llm_key_file: Option<PathBuf>,
 
     /// Print the OpenAPI spec as JSON and exit (for Postman / Newman import).
     #[arg(long)]
@@ -190,6 +204,22 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // Fail fast, before touching the DB or warming the embedder.
     check_bind_safety(&args.host, args.port, api_key.is_some(), tls_enabled)?;
 
+    // The upstream LLM credential never comes from a keychain: this process is
+    // usually a detached daemon with no user session, so a keychain read would
+    // be an invisible, unanswerable authorization prompt. The spawning CLI
+    // resolves it and hands it over out of band.
+    let env_llm_key = std::env::var("SPELUNK_LLM_KEY").ok();
+    let llm_key = resolve_llm_key(
+        args.llm_key.as_deref(),
+        args.llm_key_file.as_deref(),
+        env_llm_key.as_deref(),
+    )?;
+    // Alongside the bind check, and for the same reason: refuse a credential
+    // over a plaintext non-loopback hop before touching the DB or the embedder.
+    if let Some(url) = &args.llm_url {
+        check_llm_transport(url, llm_key.is_some())?;
+    }
+
     let db = ServerDb::open(&args.db, args.embedding_dim, NATIVE_MODEL_ID)
         .with_context(|| format!("opening server db at {}", args.db.display()))?;
 
@@ -240,7 +270,6 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         }
     };
 
-    // Build the optional LLM backend.
     let llm: Option<Arc<dyn spelunk_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url {
         let model = if args.llm_model.is_empty() {
             "default".to_string()
@@ -256,6 +285,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
             client,
             base_url,
             model,
+            api_key: llm_key,
         }))
     } else {
         None
@@ -689,122 +719,6 @@ fn effective_uid() -> Option<u32> {
     #[cfg(not(unix))]
     {
         None
-    }
-}
-
-// ── Inline LLM for the server binary ─────────────────────────────────────────
-
-struct ServerLlm {
-    client: reqwest::Client,
-    base_url: String,
-    model: String,
-}
-
-#[async_trait::async_trait]
-impl spelunk_core::llm::LlmBackend for ServerLlm {
-    async fn generate(
-        &self,
-        messages: &[spelunk_core::llm::Message],
-        max_tokens: usize,
-        tx: tokio::sync::mpsc::Sender<spelunk_core::llm::Token>,
-        json_schema: Option<serde_json::Value>,
-    ) -> anyhow::Result<()> {
-        use futures_util::StreamExt;
-
-        #[derive(serde::Serialize)]
-        struct ChatReq<'a> {
-            model: &'a str,
-            messages: Vec<ChatMsg<'a>>,
-            stream: bool,
-            max_tokens: usize,
-            temperature: f32,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            response_format: Option<serde_json::Value>,
-        }
-        #[derive(serde::Serialize)]
-        struct ChatMsg<'a> {
-            role: &'a str,
-            content: &'a str,
-        }
-        #[derive(serde::Deserialize)]
-        struct StreamChunk {
-            choices: Vec<StreamChoice>,
-        }
-        #[derive(serde::Deserialize)]
-        struct StreamChoice {
-            delta: Delta,
-        }
-        #[derive(serde::Deserialize)]
-        struct Delta {
-            content: Option<String>,
-        }
-
-        let chat_messages: Vec<ChatMsg> = messages
-            .iter()
-            .map(|m| ChatMsg {
-                role: &m.role,
-                content: &m.content,
-            })
-            .collect();
-
-        let response_format =
-            json_schema.map(|s| serde_json::json!({ "type": "json_schema", "json_schema": s }));
-
-        let req = ChatReq {
-            model: &self.model,
-            messages: chat_messages,
-            stream: true,
-            max_tokens,
-            temperature: 0.7,
-            response_format,
-        };
-
-        let mut stream = self
-            .client
-            .post(format!("{}/v1/chat/completions", self.base_url))
-            .json(&req)
-            .send()
-            .await
-            .context("calling LLM server")?
-            .error_for_status()
-            .context("LLM server returned an error")?
-            .bytes_stream();
-
-        let mut buffer = String::new();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.context("reading SSE byte chunk")?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-            while let Some(pos) = buffer.find("\n\n") {
-                let event = buffer[..pos].to_string();
-                buffer.drain(..pos + 2);
-
-                for line in event.lines() {
-                    let data = match line.strip_prefix("data: ") {
-                        Some(d) => d,
-                        None => continue,
-                    };
-                    if data == "[DONE]" {
-                        return Ok(());
-                    }
-                    if data.is_empty() {
-                        continue;
-                    }
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        for choice in chunk.choices {
-                            if let Some(content) = choice.delta.content
-                                && !content.is_empty()
-                                && tx.send(content).await.is_err()
-                            {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 
