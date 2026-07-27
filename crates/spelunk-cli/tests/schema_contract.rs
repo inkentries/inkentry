@@ -81,6 +81,17 @@ impl Scalar {
             Scalar::Null => value.is_null(),
         }
     }
+
+    fn example(self) -> serde_json::Value {
+        match self {
+            Scalar::String => serde_json::json!("x"),
+            Scalar::Integer => serde_json::json!(1),
+            Scalar::Number => serde_json::json!(1.5),
+            Scalar::Boolean => serde_json::json!(true),
+            Scalar::Object => serde_json::json!({}),
+            Scalar::Null | Scalar::Any => serde_json::Value::Null,
+        }
+    }
 }
 
 impl FieldType {
@@ -118,6 +129,38 @@ impl FieldType {
                 None => false,
             },
         })
+    }
+
+    // Some value this declaration accepts, so a conforming row can be built from
+    // the contract alone rather than from whatever a command happens to emit.
+    pub fn example(&self) -> serde_json::Value {
+        let value = match &self.alternatives[0] {
+            Alternative::Scalar(s) => s.example(),
+            Alternative::Array(item) => serde_json::Value::Array(vec![item.example()]),
+        };
+        assert!(
+            self.matches(&value),
+            "example for {:?} does not satisfy it: {value}",
+            self.spelling
+        );
+        value
+    }
+
+    // Some value this declaration rejects, for driving the retype mutation.
+    // `None` when the declaration accepts everything, which is itself worth
+    // knowing: such a field is declared but unguarded.
+    pub fn counterexample(&self) -> Option<serde_json::Value> {
+        [
+            serde_json::json!("a string"),
+            serde_json::json!(7),
+            serde_json::json!(7.5),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!({"nested": 1}),
+            serde_json::json!([{"nested": 1}]),
+        ]
+        .into_iter()
+        .find(|candidate| !self.matches(candidate))
     }
 }
 
@@ -178,6 +221,23 @@ pub fn parse_golden(raw: &str) -> BTreeMap<String, CommandSchema> {
             (name.clone(), schema)
         })
         .collect()
+}
+
+// Build a row that satisfies a schema, using only what the contract declares.
+//
+// Deriving it from the contract instead of from real output is what lets a
+// mutation sweep run over every declared command without needing nine live
+// fixtures, and keeps the sweep honest: nothing here can be copied from what
+// the code currently emits.
+pub fn conforming_row(schema: &CommandSchema) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    for (field, ty) in &schema.required {
+        obj.insert(field.clone(), ty.example());
+    }
+    for (field, ty) in &schema.optional {
+        obj.insert(field.clone(), ty.example());
+    }
+    serde_json::Value::Object(obj)
 }
 
 // A single contract violation, reported rather than panicked so one run can

@@ -73,6 +73,61 @@ fn assert_empty(label: &str, output: &std::process::Output) {
     );
 }
 
+// ── the three codes are distinct, and 2 covers usage errors too ──────────────
+
+// One command, all three codes, in one place. The per-command tests below check
+// each code where it is reachable, but nothing there would notice if two of the
+// three collapsed onto the same number, which is the break that silently turns
+// "no results" into "failed" for every script downstream.
+#[test]
+fn the_three_exit_codes_are_distinct_for_a_single_command() {
+    let (_tmp, db, cfg) = index_fixture_project();
+
+    let results = spelunk_cmd(&db, &cfg)
+        .args(["cat-chunks", "src/lib.rs"])
+        .output()
+        .unwrap();
+    let empty = spelunk_cmd(&db, &cfg)
+        .args(["cat-chunks", "src/never_indexed.rs"])
+        .output()
+        .unwrap();
+    let (_t2, missing_db, cfg2) = unindexed_project();
+    let error = spelunk_cmd(&missing_db, &cfg2)
+        .args(["cat-chunks", "src/lib.rs"])
+        .output()
+        .unwrap();
+
+    let codes: Vec<Option<i32>> = vec![
+        results.status.code(),
+        empty.status.code(),
+        error.status.code(),
+    ];
+    assert_eq!(
+        codes,
+        vec![Some(0), Some(EMPTY), Some(HARD_ERROR)],
+        "results, empty, and error must land on three different codes"
+    );
+    assert!(!results.stdout.is_empty(), "exit 0 carries the results");
+    assert!(empty.stdout.is_empty(), "exit 1 carries none");
+    assert!(error.stdout.is_empty(), "exit 2 carries none");
+}
+
+// A usage error is not an empty result set, so clap's own exit path has to land
+// on 2 as well. If it ever returned 1, a script would read a typo'd flag as
+// "the query matched nothing" and carry on.
+#[test]
+fn an_unknown_flag_is_a_hard_error_not_an_empty_result() {
+    let (_tmp, db, cfg) = index_fixture_project();
+
+    for args in [
+        vec!["ls-files", "--no-such-flag"],
+        vec!["knn", "--limit", "not-a-number"],
+    ] {
+        let out = spelunk_cmd(&db, &cfg).args(&args).output().unwrap();
+        assert_hard_error(&format!("plumbing {}", args.join(" ")), &out);
+    }
+}
+
 // ── cat-chunks ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -171,6 +226,7 @@ fn hash_file_exit_codes() {
         .output()
         .unwrap();
     assert_exit("hash-file results", &ok, 0);
+    assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
     let err = spelunk_cmd(&db, &cfg)
         .arg("hash-file")
