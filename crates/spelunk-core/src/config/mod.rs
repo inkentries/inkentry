@@ -2108,6 +2108,102 @@ project_id = "team/new"
         );
     }
 
+    // Broader than the guard above, which only names the LLM key: the ordinary
+    // load path reads no secret at all, so any store read added later goes red
+    // here rather than only a credential-shaped one.
+    #[test]
+    #[serial_test::serial]
+    fn config_load_reads_nothing_at_all_from_an_injected_store() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "llm_url = \"http://127.0.0.1:1234\"\nllm_model = \"gpt-oss\"\n",
+        )
+        .unwrap();
+
+        let store = RecordingStore::default();
+        store
+            .set(secret_store::KEY_LLM_KEY, "sk-llm-secret")
+            .unwrap();
+        store.set(KEY_SERVER_KEY, "sk-sp-server").unwrap();
+        store.reads.lock().unwrap().clear();
+
+        Config::load_with_store_from(Some(&global), &store, None).unwrap();
+
+        let reads = store.reads.lock().unwrap().clone();
+        assert!(
+            reads.is_empty(),
+            "a config load with no legacy plaintext key to migrate must read no secret: {reads:?}"
+        );
+    }
+
+    // `Config::load` resolves its own store, so the RecordingStore guards above
+    // cannot observe that path at all: a store read added there would go
+    // unnoticed, and on macOS would be a keychain authorization on every
+    // command. An unparseable secrets.toml makes any read fail whatever the
+    // backend, so loading successfully is the proof.
+    #[test]
+    #[serial_test::serial]
+    fn the_public_load_entry_point_reads_no_secret_either() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+        std::fs::write(tmp.path().join("secrets.toml"), "not = valid = toml\n").unwrap();
+
+        let prev_store = std::env::var(secret_store::ENV_SECRET_STORE).ok();
+        unsafe {
+            std::env::set_var("SPELUNK_CONFIG_DIR", tmp.path());
+            std::env::set_var(secret_store::ENV_SECRET_STORE, "file");
+        }
+        let loaded = Config::load(Some(&global));
+        unsafe {
+            std::env::remove_var("SPELUNK_CONFIG_DIR");
+            match &prev_store {
+                Some(v) => std::env::set_var(secret_store::ENV_SECRET_STORE, v),
+                None => std::env::remove_var(secret_store::ENV_SECRET_STORE),
+            }
+        }
+
+        let cfg = loaded.expect("Config::load must not read the secret store");
+        assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
+    }
+
+    // An explicitly empty SPELUNK_LLM_URL is an override like any other value,
+    // so it blanks the personal config rather than falling through to it. The
+    // spawn path then normalizes the blank away and configures no endpoint.
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_env_set_to_empty_still_overrides_the_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_URL", "") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+
+        assert_eq!(cfg.unwrap().llm_url.as_deref(), Some(""));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_model_env_set_to_empty_still_overrides_the_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+
+        assert_eq!(cfg.unwrap().llm_model.as_deref(), Some(""));
+    }
+
     // A MemoryStore that records every key passed to `get`.
     #[derive(Default)]
     struct RecordingStore {

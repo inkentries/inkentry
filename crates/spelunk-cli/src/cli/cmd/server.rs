@@ -1339,6 +1339,102 @@ mod tests {
         );
     }
 
+    // `build_daemon_args` and `child_env` only describe the split; this drives
+    // the spawn helper that has to apply it. The parent deliberately carries no
+    // SPELUNK_LLM_KEY, so inheritance cannot be what delivers the credential:
+    // only an explicit `cmd.env` on the child can put it there.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn the_spawned_child_receives_the_key_in_its_environment_and_never_in_argv() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: pinned to the `path_env` serial group, which is the only
+        // group in this module that mutates process-global environment.
+        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+
+        let tmp = TempDir::new().unwrap();
+        let record = tmp.path().join("record.txt");
+        let fake_server = tmp.path().join("fake-spelunk-server");
+        std::fs::write(
+            &fake_server,
+            format!(
+                "#!/bin/sh\n{{ echo \"ARGV $*\"; env; }} > '{}'\n",
+                record.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_server, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let llm = LlmSpawn {
+            url: Some("https://gateway.example".to_string()),
+            model: Some("gpt-oss".to_string()),
+            key: Some("sk-llm-secret".to_string()),
+        };
+        let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
+        let mut child =
+            spawn_daemon_unix(&fake_server, &tmp.path().join("server.db"), 7777, &llm, log)
+                .expect("spawning the recording stand-in");
+        child.wait().unwrap();
+
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        let argv = recorded.lines().next().unwrap_or_default().to_string();
+
+        assert!(
+            recorded
+                .lines()
+                .any(|l| l == "SPELUNK_LLM_KEY=sk-llm-secret"),
+            "the credential must reach the child environment: {recorded}"
+        );
+        assert!(
+            argv.contains("--llm-url https://gateway.example"),
+            "the endpoint belongs in argv: {argv}"
+        );
+        assert!(
+            !argv.contains("sk-llm-secret"),
+            "the credential must never reach the process table: {argv}"
+        );
+    }
+
+    // The mirror of the test above: with nothing resolved, the child must not
+    // gain an entry we invented.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn a_keyless_spawn_adds_no_key_entry_to_the_child_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: see the sibling test; same serial group.
+        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+
+        let tmp = TempDir::new().unwrap();
+        let record = tmp.path().join("record.txt");
+        let fake_server = tmp.path().join("fake-spelunk-server");
+        std::fs::write(
+            &fake_server,
+            format!("#!/bin/sh\nenv > '{}'\n", record.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_server, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
+        let mut child = spawn_daemon_unix(
+            &fake_server,
+            &tmp.path().join("server.db"),
+            7777,
+            &LlmSpawn::default(),
+            log,
+        )
+        .expect("spawning the recording stand-in");
+        child.wait().unwrap();
+
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        assert!(
+            !recorded.contains("SPELUNK_LLM_KEY"),
+            "no credential resolved, so none should have been set: {recorded}"
+        );
+    }
+
     // ── probe_local_relay_port: non-starting local-daemon detection (D6) ─────
 
     /// Restores `SPELUNK_STATE_DIR` on drop, so a panic mid-test can't leak a

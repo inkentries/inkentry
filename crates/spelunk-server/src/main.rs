@@ -741,6 +741,37 @@ mod arg_tests {
         );
     }
 
+    // `--llm-key` deliberately carries no clap `env` attribute. With one,
+    // SPELUNK_LLM_KEY would populate `args.llm_key`, which `resolve_llm_key`
+    // ranks above `--llm-key-file`, silently inverting the documented
+    // precedence. Precedence lives in `resolve_llm_key` alone, so this pins the
+    // absence against a future tidy-up.
+    #[test]
+    #[serial_test::serial(llm_key_env)]
+    fn the_key_env_var_does_not_populate_the_inline_key_arg() {
+        // SAFETY: pinned to the `llm_key_env` serial group, so no other test
+        // reads or writes SPELUNK_LLM_KEY concurrently.
+        unsafe { std::env::set_var("SPELUNK_LLM_KEY", "sk-from-env") };
+        let args = Args::parse_from(["spelunk-server"]);
+        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+
+        assert_eq!(
+            args.llm_key, None,
+            "SPELUNK_LLM_KEY must not reach args.llm_key: it would outrank --llm-key-file"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(llm_key_env)]
+    fn the_key_env_var_does_not_populate_the_key_file_arg_either() {
+        // SAFETY: see the sibling test; same serial group.
+        unsafe { std::env::set_var("SPELUNK_LLM_KEY", "/etc/passwd") };
+        let args = Args::parse_from(["spelunk-server"]);
+        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+
+        assert_eq!(args.llm_key_file, None);
+    }
+
     /// `--host 0.0.0.0` still binds all interfaces when explicitly requested
     /// (e.g. the container entrypoint / a shared team server).
     #[test]

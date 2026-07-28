@@ -315,6 +315,120 @@ mod tests {
         );
     }
 
+    // `SPELUNK_LLM_URL=""` reaches Config as `Some("")`, which is an override
+    // that blanks the personal config rather than falling through to it. The
+    // end state is no endpoint, not an `--llm-url ""` argument.
+    #[test]
+    #[serial_test::serial]
+    fn a_blank_config_url_configures_no_endpoint() {
+        clear_env();
+        let store = MemoryStore::default();
+        let spawn = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("   "), Some("gpt-oss")),
+            None,
+            None,
+            &store,
+        )
+        .unwrap();
+
+        assert!(spawn.args().is_empty(), "got {:?}", strings(&spawn.args()));
+    }
+
+    // A blank flag value is an empty override, not an instruction to clear the
+    // configured endpoint: the lower-precedence source still applies.
+    #[test]
+    #[serial_test::serial]
+    fn a_blank_url_override_falls_back_to_the_configured_url() {
+        clear_env();
+        let store = MemoryStore::default();
+        let spawn = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("http://127.0.0.1:1234"), None),
+            Some("  "),
+            None,
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(
+            strings(&spawn.args()),
+            vec!["--llm-url".to_string(), "http://127.0.0.1:1234".to_string()]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_blank_model_override_falls_back_to_the_configured_model() {
+        clear_env();
+        let store = MemoryStore::default();
+        let spawn = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("http://127.0.0.1:1234"), Some("gpt-oss")),
+            None,
+            Some(""),
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(
+            strings(&spawn.args()),
+            vec![
+                "--llm-url".to_string(),
+                "http://127.0.0.1:1234".to_string(),
+                "--llm-model".to_string(),
+                "gpt-oss".to_string(),
+            ]
+        );
+    }
+
+    // A store can hold a blank entry that `set_with_store` would have rejected
+    // (written by an older build, or hand-edited into secrets.toml). It must
+    // read as no credential, not as an empty-string one the child then carries.
+    #[test]
+    #[serial_test::serial]
+    fn a_blank_stored_key_yields_no_child_env_entry() {
+        clear_env();
+        let store = MemoryStore::default();
+        store
+            .set(spelunk_core::config::secret_store::KEY_LLM_KEY, "   ")
+            .unwrap();
+        let spawn = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("http://127.0.0.1:1234"), None),
+            None,
+            None,
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(spawn.key, None);
+        assert!(spawn.child_env().is_empty());
+    }
+
+    // Trimming is what makes a stray newline from a piped `auth set-key` behave,
+    // so the value handed to the child must be the trimmed one.
+    #[test]
+    #[serial_test::serial]
+    fn a_stored_key_reaches_the_child_trimmed() {
+        clear_env();
+        let store = MemoryStore::default();
+        store
+            .set(
+                spelunk_core::config::secret_store::KEY_LLM_KEY,
+                "  sk-llm-secret\n",
+            )
+            .unwrap();
+        let spawn = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("http://127.0.0.1:1234"), None),
+            None,
+            None,
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(
+            spawn.child_env(),
+            vec![("SPELUNK_LLM_KEY", "sk-llm-secret".to_string())]
+        );
+    }
+
     // A `{:?}` on this struct must never be the thing that leaks the key.
     #[test]
     #[serial_test::serial]
