@@ -5,6 +5,13 @@ use anyhow::Result;
 
 use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore};
 
+mod local_embed;
+
+pub(in crate::cli::cmd::memory) use local_embed::{
+    LocalEmbedPolicy, local_embed_summary, unembedded_warning,
+};
+use local_embed::{repair_local_embeddings, usable_vector};
+
 /// How many entries go in each `POST /memory/batch` request. Kept small so even
 /// the worst case (text-only, the server re-embedding a full chunk on a cold
 /// embedder) finishes with wide margin under the request timeout, and a
@@ -46,6 +53,15 @@ pub(in crate::cli::cmd::memory) struct PushSummary {
     /// command layer report honest partial progress plus a resume hint and exit
     /// non-zero, instead of discarding the chunks that already landed.
     pub interrupted: Option<String>,
+    /// Push-set rows whose missing local vector this push minted and committed
+    /// to `memory.db`. Reported separately from `created`/`skipped`/`failed`,
+    /// which are all about what the *destination* did.
+    pub embedded_locally: usize,
+    /// Push-set rows that still have no usable local vector after the repair
+    /// pass: no local embedder was reachable, or that row's embed call failed.
+    /// Drives the one counted warning the command layer emits. Always 0 when
+    /// the repair does not apply ([`LocalEmbedPolicy::Skip`]).
+    pub without_local_vector: usize,
 }
 
 /// One-way push entry point reused by `spelunk memory push`.
@@ -59,12 +75,27 @@ pub(in crate::cli::cmd::memory) async fn push_local_oneway(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<PushSummary> {
-    push_local(local, client, include_archived, accepts_pushed_vectors).await
+    push_local(
+        local,
+        client,
+        include_archived,
+        accepts_pushed_vectors,
+        local_embed,
+    )
+    .await
 }
 
 /// Push local entries to the cloud in batches, then propagate tombstones for any
-/// archived rows that exist cloud-side. Each entry is text-only unless
+/// archived rows that exist cloud-side.
+///
+/// Before the batch is built, `local_embed` decides whether push-set rows that
+/// lack a local vector are embedded through the loopback embedder and committed
+/// to `memory.db`: without that repair a pushed row stays invisible to semantic
+/// `memory search` locally, with nothing telling the user.
+///
+/// Each entry is text-only unless
 /// `accepts_pushed_vectors` is set and the row has a local fp32/896 embedding,
 /// in which case that vector is attached (the server stores it without
 /// re-embedding).
@@ -78,12 +109,14 @@ pub(super) async fn push_local(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<PushSummary> {
     push_local_reporting(
         local,
         client,
         include_archived,
         accepts_pushed_vectors,
+        local_embed,
         |done, total| {
             // Transient cumulative status on stderr; the final one-line summary
             // stays on stdout in the command layer.
@@ -102,6 +135,7 @@ async fn push_local_reporting(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    local_embed: &LocalEmbedPolicy<'_>,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<PushSummary> {
     let rows = local.rows_for_sync(include_archived)?;
@@ -113,6 +147,8 @@ async fn push_local_reporting(
             failed: 0,
             already_synced: 0,
             interrupted: None,
+            embedded_locally: 0,
+            without_local_vector: 0,
         });
     }
 
@@ -137,6 +173,10 @@ async fn push_local_reporting(
         .filter(|r| !r.archived && r.remote_id.is_some())
         .count();
     let attempted = live.len();
+    // Repair the local store BEFORE the batch is built, so a freshly-minted
+    // vector is available to `maybe_attach_vector` below and the pushed rows
+    // are searchable locally afterwards.
+    let repair = repair_local_embeddings(local, &live, local_embed).await?;
     // Progress is only worth emitting when the push actually spans multiple
     // chunks; a single-chunk push stays quiet (no noise on small pushes).
     let multi_chunk = attempted.div_ceil(PUSH_BATCH_CHUNK_SIZE) > 1;
@@ -151,10 +191,7 @@ async fn push_local_reporting(
             // wrong-length or missing embedding falls back to text-only rather
             // than poisoning the whole batch with a 4xx.
             let vector = if accepts_pushed_vectors {
-                local
-                    .get_embedding(r.local_id)?
-                    .map(|blob| spelunk_core::embeddings::blob_to_vec(&blob))
-                    .filter(|v| v.len() == spelunk_core::embeddings::EMBEDDING_DIM)
+                usable_vector(local.get_embedding(r.local_id)?)
             } else {
                 None
             };
@@ -266,6 +303,8 @@ async fn push_local_reporting(
         failed,
         already_synced,
         interrupted,
+        embedded_locally: repair.embedded,
+        without_local_vector: repair.without_vector,
     })
 }
 
@@ -273,5 +312,11 @@ async fn push_local_reporting(
 mod chunking_tests;
 #[cfg(test)]
 mod counting_tests;
+#[cfg(test)]
+mod embed_routing_tests;
+#[cfg(test)]
+mod embed_scope_tests;
+#[cfg(test)]
+mod embed_tests;
 #[cfg(test)]
 mod vector_tests;
