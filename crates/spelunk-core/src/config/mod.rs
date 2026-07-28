@@ -24,8 +24,7 @@ pub use persist::{
     save_server_key_with, write_project_slug,
 };
 pub use predicates::{
-    is_loopback_url, is_loopback_url_missing_port, looks_like_uuid, no_server_env_set,
-    validate_transport_url,
+    is_loopback_url, is_loopback_url_missing_port, no_server_env_set, validate_transport_url,
 };
 pub use project_id::derive_project_id;
 pub use sync_mode::SyncMode;

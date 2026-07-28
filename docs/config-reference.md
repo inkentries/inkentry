@@ -172,9 +172,9 @@ there anyway is silently dropped and never resolves to a credential. See
 - **Default:** unset (derived at runtime if absent)
 - **Env override:** `SPELUNK_PROJECT_ID`
 
-Human-readable project slug used to route memory on a team `spelunk-server`. If
-the server routes projects by an internal UUID, the CLI resolves the slug for you
-on first use and caches the result locally. Required when `server_url` points at
+Human-readable project slug used to route memory on a team `spelunk-server`. It
+is sent to the server exactly as configured, whether it is a slug or a UUID:
+there is no lookup and nothing is cached. Required when `server_url` points at
 a non-loopback address (or provide it once via `spelunk sync --project <slug>`).
 If `server_url` is a loopback address, `project_id` may be omitted: spelunk
 derives a stable id from the project's git remote, or from a hash of the local
