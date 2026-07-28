@@ -126,8 +126,44 @@ run list "$CLI_BIN" memory list
 grep -q "Skew smoke decision" "$WORK/list.out" || fail "memory list lost the decision entry"
 grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note entry"
 
-run search "$CLI_BIN" memory search "skew smoke decision"
-grep -q "Skew smoke decision" "$WORK/search.out" || fail "memory search did not surface the decision entry"
+# Search is the one step whose outcome depends on something other than the
+# wire contract: the server embeds the query, so it needs the model loaded.
+# Wait for the embedder to settle before judging the result, otherwise this
+# step measures model download speed rather than version skew. An earlier
+# draft of this script did exactly that and produced a convincing false
+# positive: an old CLI "failing" against a new server purely because the new
+# server was a debug build and was still warming up.
+echo "-- waiting for embedder to settle"
+EMBEDDER_STATE="unknown"
+for _ in $(seq 1 "${SKEW_EMBEDDER_TIMEOUT_SECS:-300}"); do
+  EMBEDDER_STATE="$(curl -sf -m 2 "$BASE/v1/health" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("embedder",{}).get("state","unknown"))' \
+    2>/dev/null || echo unknown)"
+  case "$EMBEDDER_STATE" in
+    ready|unavailable|disabled) break ;;
+  esac
+  sleep 1
+done
+echo "   embedder state: $EMBEDDER_STATE"
+
+echo "-- search"
+if ( cd "$WORK/a" && "$CLI_BIN" memory search "skew smoke decision" ) >"$WORK/search.out" 2>&1; then
+  grep -q "Skew smoke decision" "$WORK/search.out" \
+    || { cat "$WORK/search.out" >&2; fail "memory search succeeded but did not surface the decision entry"; }
+elif [ "$EMBEDDER_STATE" = "ready" ]; then
+  cat "$WORK/search.out" >&2
+  fail "memory search failed against a ready embedder (CLI $CLI_VERSION -> server $SERVER_VERSION)"
+else
+  # Not a pass for search, but not a skew failure either. The one thing that
+  # must still hold is that the refusal is the *documented* one: an old client
+  # and a new server still agreeing on the shape of a not-ready error is
+  # itself part of the contract under test. A protocol-level failure here
+  # (404, 405, a deserialization error) is a real break and must not be
+  # waved through by this branch.
+  grep -Eqi 'embedder|embedding model|warming up|503' "$WORK/search.out" \
+    || { cat "$WORK/search.out" >&2; fail "memory search failed for a reason unrelated to embedder readiness"; }
+  echo "   search skipped: embedder never became ready (state=$EMBEDDER_STATE), refusal was the documented one"
+fi
 
 run push "$CLI_BIN" memory push
 grep -q "created 2" "$WORK/push.out" \
