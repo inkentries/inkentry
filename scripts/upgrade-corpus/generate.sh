@@ -51,8 +51,11 @@ STUB_PORT="${SPELUNK_CORPUS_STUB_PORT:-7799}"
 # reach the OS keychain and block on an interactive prompt.
 export SPELUNK_SECRET_STORE=file
 
-# Fixed identity and timestamps so a regeneration run reproduces the same
-# bundle instead of churning the fixture on every invocation.
+# Pinned so git-level metadata is not a source of churn between regeneration
+# runs. This does not make a wing byte-reproducible: note ids are epoch millis
+# and created_at is wall-clock, both captured by the released binary itself and
+# outside this script's control. Compare wings by the MANIFEST sha256, never by
+# expecting two runs to produce identical bytes.
 export GIT_AUTHOR_NAME="spelunk corpus"
 export GIT_AUTHOR_EMAIL="corpus@spelunk.invalid"
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
