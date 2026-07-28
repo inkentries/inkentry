@@ -79,7 +79,7 @@ INHERITED_ENV_ALLOWLIST="PATH TMPDIR TMP TEMP LANG LC_ALL LC_CTYPE TERM USER LOG
 # it unconditionally, and filing it as inherited declared the invoking user's
 # real HOME permitted, which is the first version of the hole this allowlist
 # exists to close.
-OWNED_ENV="HOME SPELUNK_SECRET_STORE SPELUNK_SERVER_URL XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
+OWNED_ENV="HOME SPELUNK_SECRET_STORE SPELUNK_SERVER_URL SPELUNK_STATE_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
 
 # SKEW_* are this script's own knobs, read here and by nothing under test.
 env_is_allowed() {
@@ -157,6 +157,13 @@ export XDG_CONFIG_HOME="$WORK/home/.config"
 export XDG_STATE_HOME="$WORK/home/.local/state"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
+# Set explicitly because the CLI does not read XDG_STATE_HOME: it resolves this
+# directory from SPELUNK_STATE_DIR or from `dirs::home_dir()`, which on Windows
+# is a Registry lookup rather than $HOME. Naming it here keeps the port file
+# written below and the file the CLI reads the same path on every platform.
+export SPELUNK_STATE_DIR="$XDG_STATE_HOME/spelunk"
+mkdir -p "$SPELUNK_STATE_DIR"
+
 # Set explicitly rather than left to the isolated HOME: an invoking user with
 # XDG_DATA_HOME already pointing at their real data dir would otherwise leak
 # straight past the isolation above.
@@ -207,6 +214,18 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 [ -n "$HEALTH" ] || { cat "$WORK/server.log" >&2; fail "server never answered /v1/health"; }
+
+# Route inference at the peer as well. SPELUNK_SERVER_URL does not: in the
+# default local_first mode an explicit server_url is a memory sync replica only,
+# and inference resolves through loopback auto-discovery, which reads this file
+# (`capability/probe.rs` step 3a). Written after the health check so a server
+# that never came up leaves no file claiming it did.
+#
+# Without it the search step below fails outright in CI, and on a developer box
+# fails worse: auto-discovery falls through to the default port 7777, embeds
+# against whatever current-version server is listening there, and reports
+# success having crossed no skew boundary at all.
+printf '%s\n' "$PORT" >"$SPELUNK_STATE_DIR/server.port"
 
 SERVER_VERSION="$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
 CLI_VERSION="$("$CLI_BIN" --version | awk '{print $NF}')"
