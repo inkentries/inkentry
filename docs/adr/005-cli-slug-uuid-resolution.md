@@ -78,6 +78,12 @@ No new cloud-api endpoint is needed.
 > take `Path<String>` and accept a slug **or** a UUID. The self-hosted
 > spelunk-server has always accepted either.
 >
+> The two per-entry routes are the exception: `GET` and `DELETE
+> /memory/{entry_id}` are still `Path<(Uuid, Uuid)>`, so the project parameter
+> is UUID-only on those two. It does not affect the passthrough, which is why
+> they are absent from the list above, but it constrains any later work that
+> makes `cloud_first` serve memory against the hosted API.
+>
 > The mechanism was not merely redundant against the self-hosted peer, it was
 > breaking it: a self-hosted spelunk-server answers `GET /v1/projects` in a
 > shape the resolver cannot deserialize, so the documented `cloud_first` client

@@ -28,7 +28,8 @@
 server_url = "https://spelunk.internal"
 
 # Human-readable project slug. Required when server_url points at a non-loopback
-# host. The CLI resolves the slug to the server's internal id on first use.
+# host. It is sent to the server exactly as configured, slug or UUID: nothing is
+# looked up and nothing is cached.
 project_id = "acme/my-app"
 
 # Sync mode: "offline" | "local_first" | "cloud_first".
