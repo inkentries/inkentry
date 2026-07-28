@@ -9,33 +9,69 @@ pub fn no_server_env_set() -> bool {
     )
 }
 
-/// Return `true` if `url` targets a loopback address (`127.x.x.x`, `localhost`, `::1`).
+/// Return `true` if `url` targets a loopback address (`127.0.0.0/8`, `localhost`, `::1`).
 ///
-/// This is a lightweight string check — no DNS resolution.
+/// The authority is parsed, never prefix-matched: userinfo is removed, the port
+/// and IPv6 brackets are stripped, and what remains must be `localhost` or an
+/// address literal that the standard library parses and reports as loopback.
+/// Decoration around a loopback-looking host therefore cannot smuggle a
+/// different host past the check: `127.0.0.1.evil.example` and
+/// `127.0.0.1@evil.example` both name `evil.example` and are not loopback.
+///
+/// This is a lightweight string check: no DNS resolution.
 pub fn is_loopback_url(url: &str) -> bool {
-    // Strip scheme and authority prefix up to the host.
-    let host_part = url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://");
+    url_host(url).is_some_and(host_is_loopback)
+}
 
-    // Extract the host (before any path or port).
-    let host = if let Some(idx) = host_part.find('/') {
-        &host_part[..idx]
-    } else {
-        host_part
-    };
-    // Drop port if present (handle IPv6 bracketed form too).
-    let host = if host.starts_with('[') {
-        // IPv6: [::1]:port or [::1]
-        host.trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or(host)
-    } else {
-        host.split(':').next().unwrap_or(host)
+/// Extract the host from `url`: scheme, userinfo, port and IPv6 brackets removed.
+fn url_host(url: &str) -> Option<&str> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+
+    // The authority ends at the first `/`, `?` or `#`. Without bounding it,
+    // an `@` later in the query would move the apparent host past the real
+    // one: `http://evil.example/?@127.0.0.1`.
+    let authority = match rest.find(['/', '?', '#']) {
+        Some(idx) => &rest[..idx],
+        None => rest,
     };
 
-    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.starts_with("127.")
+    // Userinfo is everything before the *last* `@`: in `127.0.0.1:1234@host`
+    // the leading text is a credential shaped like `host:port`, not a host.
+    let host_port = match authority.rfind('@') {
+        Some(idx) => &authority[idx + 1..],
+        None => authority,
+    };
+
+    if let Some(after_bracket) = host_port.strip_prefix('[') {
+        return after_bracket.split(']').next();
+    }
+    // Several colons and no brackets means a bare IPv6 literal, which must not
+    // be truncated at the first colon the way `host:port` is.
+    if host_port.matches(':').count() > 1 {
+        return Some(host_port);
+    }
+    host_port.split(':').next()
+}
+
+/// `true` when `host` is exactly `localhost` or an address literal in
+/// `127.0.0.0/8` / `::1`.
+///
+/// Address literals go through the standard library's parsers, which reject the
+/// non-canonical forms a hand-rolled check tends to admit: `127.999.0.1` is out
+/// of range and `0127.0.0.1` has a leading zero, so neither parses, and neither
+/// can ride in on a `127.` prefix.
+fn host_is_loopback(host: &str) -> bool {
+    if host == "localhost" {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    host.parse::<std::net::Ipv6Addr>()
+        .is_ok_and(|v6| v6.is_loopback())
 }
 
 /// Return `true` when `url` targets a loopback host (see [`is_loopback_url`])
@@ -71,12 +107,20 @@ pub fn is_loopback_url_missing_port(url: &str) -> bool {
 /// clear. There is no opt-out env var: the fix is always "use https, or
 /// loopback".
 ///
-/// Like [`is_loopback_url`], this is a lightweight string check on the literal
-/// host — there is no DNS resolution. A `/etc/hosts` alias or other custom DNS
-/// entry that resolves to a loopback address but isn't spelled `127.x.x.x`,
-/// `::1`, or `localhost` is **not** recognised as loopback and is rejected;
-/// this is intentional (fail closed, not open) and the known limitation of a
-/// string-based check.
+/// Like [`is_loopback_url`], this is a lightweight check on the literal host
+/// with no DNS resolution. Two distinct consequences, which are easy to
+/// conflate:
+///
+/// * A `/etc/hosts` alias or other custom DNS entry that resolves to a loopback
+///   address but isn't spelled `127.x.x.x`, `::1`, or `localhost` is **not**
+///   recognised as loopback and is rejected. This is intentional (fail closed,
+///   not open) and the known limitation of a string-based check.
+/// * The authority is *parsed* rather than prefix-matched: userinfo is stripped
+///   at the last `@`, the authority ends at the first `/`, `?` or `#`, and the
+///   remaining host must parse as an exact literal. Decoration around a
+///   loopback-looking host cannot smuggle a different host past the check, so
+///   `http://127.0.0.1@evil.example` and `http://127.0.0.1.evil.example` are
+///   rejected as the non-loopback hosts they are.
 ///
 /// Returns `Ok(())` for a valid URL, or a one-line `Err` naming the fix.
 pub fn validate_transport_url(url: &str) -> Result<(), String> {
@@ -139,6 +183,73 @@ mod tests {
     fn is_loopback_url_rejects_address_with_127_in_path() {
         // Should NOT match just because "127" appears somewhere
         assert!(!is_loopback_url("http://example.com/proxy/127.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_host_that_merely_starts_with_a_loopback_literal() {
+        assert!(!is_loopback_url("http://127.0.0.1.evil.example"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_userinfo_that_looks_like_a_loopback_host() {
+        assert!(!is_loopback_url("http://127.0.0.1@evil.example"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_userinfo_shaped_like_host_and_port() {
+        // The colon makes the credential look like `host:port` to a check that
+        // splits on `:` before it strips userinfo.
+        assert!(!is_loopback_url("http://127.0.0.1:1234@evil.example"));
+    }
+
+    #[test]
+    fn is_loopback_url_accepts_real_loopback_host_carrying_userinfo() {
+        // Stripping userinfo must not swing the other way and reject a
+        // genuinely loopback host that happens to carry credentials.
+        assert!(is_loopback_url("http://evil.example@127.0.0.1:7777"));
+        assert!(is_loopback_url("http://user:pass@localhost:7777"));
+    }
+
+    #[test]
+    fn is_loopback_url_splits_userinfo_on_the_last_at_sign() {
+        assert!(is_loopback_url("http://a@b@127.0.0.1:7777"));
+        assert!(!is_loopback_url("http://127.0.0.1@a@evil.example"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_octet_out_of_range() {
+        assert!(!is_loopback_url("http://127.999.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_non_canonical_leading_zero_octet() {
+        // Pinned deliberately: `0127.0.0.1` is not a canonical dotted quad, so
+        // it is rejected rather than normalised to 127.0.0.1.
+        assert!(!is_loopback_url("http://0127.0.0.1"));
+        assert!(!is_loopback_url("http://127.00.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_at_sign_beyond_the_authority() {
+        // The query and fragment are not part of the authority, so an `@`
+        // inside them must not relocate the host.
+        assert!(!is_loopback_url("http://evil.example/?@127.0.0.1"));
+        assert!(!is_loopback_url("http://evil.example?@127.0.0.1"));
+        assert!(!is_loopback_url("http://evil.example#@127.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_accepts_expanded_ipv6_loopback() {
+        // Consequence of parsing the literal instead of comparing it to the
+        // string "::1": every spelling the parser calls loopback is loopback.
+        assert!(is_loopback_url("http://[0:0:0:0:0:0:0:1]:7777"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_partial_loopback_literals() {
+        assert!(!is_loopback_url("http://127.0.0"));
+        assert!(!is_loopback_url("http://127.0.0.1.2"));
+        assert!(!is_loopback_url("http://localhost.evil.example"));
     }
 
     // ── is_loopback_url_missing_port ─────────────────────────────────────────
@@ -239,5 +350,22 @@ mod tests {
     #[test]
     fn validate_transport_url_accepts_bare_ipv6_loopback_no_port() {
         assert!(validate_transport_url("http://[::1]/").is_ok());
+    }
+
+    // A bearer travels over plaintext http only to loopback, so an authority
+    // that merely looks like loopback must not clear this gate.
+    #[test]
+    fn validate_transport_url_rejects_spoofed_loopback_authorities() {
+        for url in [
+            "http://127.0.0.1.evil.example",
+            "http://127.0.0.1@evil.example",
+            "http://127.0.0.1:1234@evil.example",
+            "http://127.0.0.1.evil.example:7777/v1/health",
+        ] {
+            let err = validate_transport_url(url)
+                .expect_err("a host that only looks like loopback must be rejected");
+            assert!(err.contains("loopback"), "{url}: error must name the fix");
+            assert!(err.contains("https"), "{url}: error must name the fix");
+        }
     }
 }
