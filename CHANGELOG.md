@@ -68,6 +68,27 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk memory push` and `spelunk sync` now embed what they push, so a
+  pushed entry stays findable by `spelunk memory search` locally.** A push
+  shipped entries that had never been embedded (a `memory add` with no embedder
+  running, an import, a pulled entry) and left the local `memory.db` exactly as
+  it found it. The push reported `created`, and those rows remained invisible to
+  semantic `memory search` on your own machine, with nothing saying so and no
+  hint that `spelunk memory reindex` was the cure. Both commands now embed every
+  entry in the push set that lacks a usable local vector before the batch is
+  built, through the same local embedder and the same document text
+  `memory reindex` uses, and commit each vector as it completes. Note this
+  changes nothing about what travels: `kind`, `title`, and `body` were always
+  sent on every push, and the optional vector fields are additive. What changes
+  is that the local store is left correct, and that a destination advertising
+  `accepts_pushed_vectors` can now store the entry as-is instead of re-embedding
+  it. With no local embedder reachable the push still runs to completion exactly
+  as before, text-only, and says how many entries went out unembedded and how to
+  fix them; the summary line reports how many were embedded locally. Skipped in
+  `cloud_first` mode with a `server_url` set, where `memory.db` is not the store
+  of record and `memory reindex` does not apply either. Rows that were already
+  synced are outside the push set and are not embedded by this change.
+
 - **The local `spelunk-server` no longer goes unreachable while it is
   embedding.** During a `spelunk index` run, `/v1/health` could take seconds
   instead of well under a millisecond, `spelunk server status` reported a

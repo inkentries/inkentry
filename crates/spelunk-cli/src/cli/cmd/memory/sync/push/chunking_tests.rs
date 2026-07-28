@@ -156,7 +156,9 @@ async fn push_chunks_cover_every_entry_exactly_once() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s = push_local(&store, &client, false, false).await.unwrap();
+    let s = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!(
         (s.attempted, s.created, s.skipped, s.failed),
         (120, 120, 0, 0)
@@ -212,7 +214,9 @@ async fn multi_chunk_push_threads_slug_into_every_request_path() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "acme/app", None, None).unwrap();
 
-    let s = push_local(&store, &client, false, false).await.unwrap();
+    let s = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s.attempted, s.created), (60, 60));
     assert!(s.interrupted.is_none());
 
@@ -251,7 +255,9 @@ async fn interrupted_push_stops_and_resumes_from_the_remainder() {
         .await;
     let client1 = CloudSyncClient::new(&server1.uri(), "proj", None, None).unwrap();
 
-    let s1 = push_local(&store, &client1, false, false).await.unwrap();
+    let s1 = push_local(&store, &client1, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert!(
         s1.interrupted.is_some(),
         "a mid-push failure marks the summary interrupted"
@@ -287,7 +293,9 @@ async fn interrupted_push_stops_and_resumes_from_the_remainder() {
         .await;
     let client2 = CloudSyncClient::new(&server2.uri(), "proj", None, None).unwrap();
 
-    let s2 = push_local(&store, &client2, false, false).await.unwrap();
+    let s2 = push_local(&store, &client2, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert!(s2.interrupted.is_none());
     assert_eq!(
         (s2.attempted, s2.created),
@@ -342,7 +350,9 @@ async fn interrupted_on_a_later_chunk_counts_only_the_chunks_that_landed() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s = push_local(&store, &client, false, false).await.unwrap();
+    let s = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert!(s.interrupted.is_some());
     assert_eq!(
         (s.attempted, s.created, s.skipped),
@@ -392,7 +402,9 @@ async fn interrupted_push_skips_the_tombstone_delete_pass() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s = push_local(&store, &client, true, false).await.unwrap();
+    let s = push_local(&store, &client, true, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert!(s.interrupted.is_some());
     assert_eq!(s.created, 0, "the only live chunk failed");
 
@@ -449,7 +461,9 @@ async fn overlapping_repush_tallies_skipped_and_leaves_no_duplicates() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s = push_local(&store, &client, false, false).await.unwrap();
+    let s = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s.attempted, s.created, s.skipped, s.failed), (4, 2, 2, 0));
     assert!(s.interrupted.is_none());
     assert!(
@@ -466,7 +480,9 @@ async fn overlapping_repush_tallies_skipped_and_leaves_no_duplicates() {
         "no local duplicates from the round trip"
     );
 
-    let s2 = push_local(&store, &client, false, false).await.unwrap();
+    let s2 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s2.attempted, s2.already_synced), (0, 4));
     assert_eq!(
         server.received_requests().await.unwrap().len(),
@@ -491,9 +507,16 @@ async fn multi_chunk_push_reports_cumulative_progress_after_each_chunk() {
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
     let mut progress: Vec<(usize, usize)> = Vec::new();
-    let s = push_local_reporting(&store, &client, false, false, |done, total| {
-        progress.push((done, total));
-    })
+    let s = push_local_reporting(
+        &store,
+        &client,
+        false,
+        false,
+        &LocalEmbedPolicy::Skip,
+        |done, total| {
+            progress.push((done, total));
+        },
+    )
     .await
     .unwrap();
 
@@ -536,9 +559,16 @@ async fn single_chunk_push_is_one_request_and_emits_no_progress() {
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
     let mut calls = 0usize;
-    let s = push_local_reporting(&store, &client, false, false, |_, _| calls += 1)
-        .await
-        .unwrap();
+    let s = push_local_reporting(
+        &store,
+        &client,
+        false,
+        false,
+        &LocalEmbedPolicy::Skip,
+        |_, _| calls += 1,
+    )
+    .await
+    .unwrap();
     assert_eq!(calls, 0, "a single-chunk push emits no progress");
     assert_eq!(
         server.received_requests().await.unwrap().len(),
@@ -592,7 +622,9 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
     // First push: creates both, persists the server-minted id on each row.
-    let s1 = push_local(&store, &client, false, false).await.unwrap();
+    let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s1.attempted, s1.created, s1.skipped), (2, 2, 0));
     assert_eq!(
         store.note_id_for_remote_id(cloud_a).unwrap(),
@@ -609,7 +641,9 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
     // and no batch request is sent — the re-sync is a no-op. `attempted` must
     // reflect that (not the raw row count), so callers never report "Pushed
     // N" when nothing was sent.
-    let s2 = push_local(&store, &client, false, false).await.unwrap();
+    let s2 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s2.attempted, s2.created, s2.already_synced), (0, 0, 2));
     assert_eq!(
         server.received_requests().await.unwrap().len(),

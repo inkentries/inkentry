@@ -88,7 +88,7 @@ pub(in crate::cli::cmd::memory) fn parse_iso_to_secs(s: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::push::push_local;
+    use super::super::push::{LocalEmbedPolicy, push_local};
     use super::super::round::sync_round;
     use super::super::test_support::{fresh_store, register_sqlite_vec, spawn_spelunk_server};
     use super::*;
@@ -156,7 +156,9 @@ mod tests {
             .unwrap();
         let client_a = CloudSyncClient::new(&base_url, "proj", None, None).unwrap();
 
-        let push1 = push_local(&store_a, &client_a, false, false).await.unwrap();
+        let push1 = push_local(&store_a, &client_a, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(
             push1.created, 1,
             "client A's own entry must land on the server"
@@ -172,7 +174,9 @@ mod tests {
             .add_note("decision", "B1", "teammate B's entry", &[], &[], None, None)
             .unwrap();
         let client_b = CloudSyncClient::new(&base_url, "proj", None, None).unwrap();
-        let push_b = push_local(&store_b, &client_b, false, false).await.unwrap();
+        let push_b = push_local(&store_b, &client_b, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(
             push_b.created, 1,
             "teammate B's entry must land on the server"
@@ -227,7 +231,7 @@ mod tests {
             .unwrap();
         let client_a = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
         assert_eq!(
-            push_local(&store_a, &client_a, false, false)
+            push_local(&store_a, &client_a, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -257,7 +261,7 @@ mod tests {
             .add_note("decision", "C1", "client C's entry", &[], &[], None, None)
             .unwrap();
         assert_eq!(
-            push_local(&store_c, &client_c, false, false)
+            push_local(&store_c, &client_c, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -285,7 +289,7 @@ mod tests {
             .unwrap();
         let client_b = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
         assert_eq!(
-            push_local(&store_b, &client_b, false, false)
+            push_local(&store_b, &client_b, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -321,7 +325,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            push_local(&store_b, &client_b, false, false)
+            push_local(&store_b, &client_b, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -552,7 +556,9 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let outcome = sync_round(&store, &client, false, false).await.unwrap();
+        let outcome = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
 
         assert_eq!(
             outcome.pulled, 160,
@@ -612,7 +618,9 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let outcome = sync_round(&store, &client, false, false).await.unwrap();
+        let outcome = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
 
         assert_eq!(outcome.pushed.attempted, 0);
         assert_eq!(
@@ -730,7 +738,7 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let err = sync_round(&store, &client, false, false)
+        let err = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
             .await
             .expect_err("a real post-push pull error must not be swallowed as success");
 

@@ -45,7 +45,9 @@ async fn push_local_does_not_stamp_remote_id_for_a_failed_status_item() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s1 = push_local(&store, &client, false, false).await.unwrap();
+    let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!((s1.attempted, s1.created, s1.skipped), (1, 0, 0));
 
     // The row must NOT carry the id the server handed back — it stays
@@ -106,7 +108,9 @@ async fn push_local_reconciles_counts_from_results_not_aggregate_ints() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s1 = push_local(&store, &client, false, false).await.unwrap();
+    let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     // Reconciled from `results[]`, not the misleading aggregate zeros.
     assert_eq!(
         (s1.attempted, s1.created, s1.skipped, s1.failed),
@@ -163,7 +167,9 @@ async fn push_local_partial_failure_reports_the_real_successes() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s1 = push_local(&store, &client, false, false).await.unwrap();
+    let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!(
         (s1.attempted, s1.created, s1.skipped, s1.failed),
         (2, 1, 0, 1),
@@ -227,7 +233,9 @@ async fn push_local_total_failure_reports_zero_created_and_skipped() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    let s1 = push_local(&store, &client, false, false).await.unwrap();
+    let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+        .await
+        .unwrap();
     assert_eq!(
         (s1.attempted, s1.created, s1.skipped, s1.failed),
         (2, 0, 0, 2),
