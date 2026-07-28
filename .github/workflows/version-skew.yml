@@ -1,0 +1,138 @@
+name: Version skew
+
+# Runs the support window in docs/version-skew.md against real artifacts.
+#
+# Every other contract test in this repo talks to a mock or to a fixture
+# written to the shape we believe a peer has, so none of them can falsify that
+# belief. This job is the exception: it puts the current build and the previous
+# *released* build on a socket together and drives the end-to-end memory flow
+# in both directions. It is deliberately its own workflow rather than a job
+# bolted onto ci.yml, so a skew break reads as a skew break.
+#
+# The `/v1/` schema half of the contract is covered elsewhere and is not
+# repeated here: `openapi-snapshot` in ci.yml regenerates the spec from the
+# running binary and diffs it against docs/openapi.json.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The OS keychain is unavailable in headless runners. Released binaries
+  # pre-date the fix that made this unnecessary, so it matters most here.
+  SPELUNK_SECRET_STORE: file
+
+jobs:
+  binary-skew:
+    name: Current build against the previous release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_TEST_DEBUG: 0
+      # Bounds how long the smoke test waits for the server-side embedder
+      # before it stops judging the search step. The model is a large download
+      # on a cold runner, and search readiness is not what this job measures;
+      # every wire assertion in the script is independent of it.
+      SKEW_EMBEDDER_TIMEOUT_SECS: 150
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install libdbus (keyring sync-secret-service backend)
+        run: sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-v2-
+
+      # The previous release is "the newest published tag that is not the
+      # version in this tree". Taking the newest tag unconditionally would
+      # silently compare a just-tagged release against itself, and the smoke
+      # script's own equal-version guard would then fail the job for a
+      # confusing reason.
+      - name: Resolve the previous released version
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "spelunk-cli") | .version')"
+          echo "current version: $current"
+
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --json tagName \
+            --jq '.[].tagName' | grep -v "^v${current}$" | head -n 1)"
+
+          if [ -z "$prev" ]; then
+            echo "ERROR: could not resolve a previous release to test against" >&2
+            exit 1
+          fi
+          echo "previous release: $prev"
+          echo "tag=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Download the previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.prev.outputs.tag }}
+        run: |
+          set -euo pipefail
+          asset="spelunk-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p prev-release
+
+          # This job downloads and then *executes* a binary, so the download is
+          # pinned to the digest the release itself publishes rather than
+          # trusted on the strength of having come from the right URL.
+          expected="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"${asset}\") | .digest")"
+          if [ -z "$expected" ]; then
+            echo "ERROR: release $TAG publishes no asset named $asset" >&2
+            exit 1
+          fi
+
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir prev-release
+          actual="sha256:$(sha256sum "prev-release/${asset}" | awk '{print $1}')"
+          if [ "$actual" != "$expected" ]; then
+            echo "ERROR: digest mismatch for $asset" >&2
+            echo "  expected: $expected" >&2
+            echo "  actual:   $actual" >&2
+            exit 1
+          fi
+          echo "digest verified: $actual"
+
+          tar -xzf "prev-release/${asset}" -C prev-release
+          chmod +x prev-release/spelunk prev-release/spelunk-server
+          ./prev-release/spelunk --version
+          ./prev-release/spelunk-server --version
+
+      - name: Build the current binaries
+        run: cargo build --release -p spelunk-cli -p spelunk-server --bins
+
+      - name: Current CLI against the previous released server
+        run: |
+          ./scripts/skew-smoke.sh \
+            target/release/spelunk \
+            prev-release/spelunk-server
+
+      - name: Previous released CLI against the current server
+        run: |
+          ./scripts/skew-smoke.sh \
+            prev-release/spelunk \
+            target/release/spelunk-server
