@@ -501,3 +501,132 @@ async fn harvest_stops_with_the_no_llm_message_when_none_is_available() {
     );
     assert_no_internal_names(&text);
 }
+
+// ── memory harvest --source claude-code ───────────────────────────────────
+//
+// The Claude Code harvester builds its own clients, so the git source passing
+// says nothing about it.
+
+fn write_claude_history(path: &Path, project_root: &Path, session: &str) {
+    // `project` is matched against the git workdir the command discovers, which
+    // is canonical; on macOS the temp dir is a symlink, so an uncanonicalised
+    // path here would silently filter every session out.
+    let root = std::fs::canonicalize(project_root).expect("canonicalize project root");
+    let entry = serde_json::json!({
+        "display": "we chose sqlite over postgres for the local index",
+        "pastedContents": {},
+        "timestamp": 1_800_000_000_000i64,
+        "project": root.to_string_lossy(),
+        "sessionId": session,
+    });
+    std::fs::write(path, format!("{entry}\n")).expect("write history.jsonl");
+}
+
+fn claude_payload(session: &str) -> String {
+    serde_json::json!({
+        "entries": [{
+            "session_id": session,
+            "kind": "decision",
+            "title": "Use sqlite for the local index",
+            "body": "Chosen over postgres to keep the local setup dependency free.",
+            "tags": ["storage"],
+        }]
+    })
+    .to_string()
+}
+
+fn claude_harvest_cmd(
+    home: &Path,
+    project: &Path,
+    mem: &Path,
+    state_dir: &Path,
+    history: &Path,
+) -> assert_cmd::Command {
+    let mut cmd = base_cmd(home, project);
+    cmd.env("SPELUNK_STATE_DIR", state_dir)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--db")
+        .arg(mem)
+        .arg("--source")
+        .arg("claude-code")
+        .arg("--history-file")
+        .arg(history)
+        .arg("--confirm");
+    cmd
+}
+
+#[tokio::test]
+async fn claude_code_harvest_splits_extraction_to_the_remote_and_embedding_to_the_loopback() {
+    const SESSION: &str = "session-abc";
+    let loopback = server_mock(None).await;
+    let remote = server_mock(Some(claude_payload(SESSION))).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path());
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    write_server_config(project.path(), &remote.uri());
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+    let history = home.path().join("history.jsonl");
+    write_claude_history(&history, project.path(), SESSION);
+
+    let mem = project.path().join("memory.db");
+    let output = claude_harvest_cmd(home.path(), project.path(), &mem, &state_dir, &history)
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(
+        count_path(&remote, "/llm/complete").await > 0,
+        "the remote is the only LLM available and must serve extraction:\n{text}"
+    );
+    assert!(
+        count_path(&loopback, "/index/embed").await > 0,
+        "dedup vectors must still be embedded locally:\n{text}"
+    );
+    assert_eq!(
+        count_path(&remote, "/index/embed").await,
+        0,
+        "routing extraction to the remote must not divert embedding there:\n{text}"
+    );
+}
+
+#[tokio::test]
+async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served() {
+    const SESSION: &str = "session-def";
+    let loopback = server_mock(None).await;
+    let remote = server_mock(Some(claude_payload(SESSION))).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path());
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    write_server_config(project.path(), &remote.uri());
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+    let history = home.path().join("history.jsonl");
+    write_claude_history(&history, project.path(), SESSION);
+
+    let mem = project.path().join("memory.db");
+    let output = claude_harvest_cmd(home.path(), project.path(), &mem, &state_dir, &history)
+        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        "the restart is the only useful instruction here:\n{text}"
+    );
+    assert_eq!(
+        count_path(&remote, "/llm/complete").await,
+        0,
+        "session content must never reach a remote LLM the user did not choose:\n{text}"
+    );
+    assert_no_internal_names(&text);
+}
