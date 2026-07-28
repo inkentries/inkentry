@@ -12,18 +12,135 @@ Looking for the bundled embedder's license and provenance instead? See
 
 ## Configuring an external LLM endpoint
 
-Flags and environment variables (verified against `spelunk-server --help`,
-v0.9.4):
+The CLI never talks to an LLM directly, only through `spelunk-server`. So the
+endpoint is always the *server's* configuration. How you set it depends on
+which server you mean.
+
+### If you use the auto-managed local daemon
+
+Configure it on the client. The CLI resolves the endpoint and hands it to every
+daemon it starts, so you set it once rather than per launch.
+
+| Setting | Personal `config.toml` | Environment | `spelunk server start` flag |
+|---|---|---|---|
+| Endpoint | `llm_url` | `SPELUNK_LLM_URL` | `--llm-url` |
+| Model | `llm_model` | `SPELUNK_LLM_MODEL` | `--llm-model` |
+| Credential | not a config key, by design | `SPELUNK_LLM_KEY` | no flag, by design |
+
+`llm_url` and `llm_model` are read from the **personal** config
+(`~/.config/spelunk/config.toml`) only. A value in a checked-in
+`.spelunk/config.toml` is ignored: an endpoint URL is a per-developer choice,
+and committing one points the whole team at one machine. See
+[Config reference](config-reference.md#llm_url).
+
+The credential is not a config key at all. Store it once with:
+
+```bash
+spelunk auth set-key --llm
+```
+
+It is read from stdin if piped, otherwise from an interactive prompt, and kept
+in your OS secret store (macOS Keychain, Linux Secret Service, Windows
+Credential Manager, or an owner-only `secrets.toml` when no keychain is
+available). It is never accepted as a flag value or a positional argument. Set
+`SPELUNK_LLM_KEY` instead when you need a non-interactive path such as CI.
+
+**Precedence**, highest first:
+
+| Value | Order |
+|---|---|
+| Endpoint | `spelunk server start --llm-url` (that daemon only) > `SPELUNK_LLM_URL` > `llm_url` in the personal config > unset |
+| Model | `spelunk server start --llm-model` > `SPELUNK_LLM_MODEL` > `llm_model` in the personal config > unset |
+| Credential | `SPELUNK_LLM_KEY` > the secret-store entry written by `spelunk auth set-key --llm` > unset |
+
+A model with no endpoint is not a configuration: if nothing resolves an
+endpoint, the daemon starts without an LLM whatever the model is set to.
+
+An **empty** value is handled differently in the two override positions. They
+answer the same-shaped question in opposite directions, so it is worth knowing
+which is which before it surprises you:
+
+- `SPELUNK_LLM_URL=""` counts as an override like any other, so it **blanks**
+  the personal config's `llm_url` rather than falling through to it. The net
+  result is no endpoint, which makes an exported empty value a way to switch
+  the configured endpoint off for a shell. `SPELUNK_LLM_MODEL=""` does the same
+  to `llm_model`.
+- `--llm-url ""` does the opposite: a blank flag value is not treated as an
+  instruction, so it is **discarded** and the environment or config value still
+  applies. `--llm-model ""` behaves the same way.
+
+The short rule: an environment variable that is *set* always wins, even when
+empty; a flag has to carry a value to win.
+
+Both halves are covered by tests, so neither will change by accident. They are
+described here as current behaviour rather than promised by the
+[stability contract](stability.md#config), because the two positions answer the
+same question in opposite directions and reconciling them is still open. Pass a
+value you mean, and the question does not arise.
+
+### If you run `spelunk-server` yourself
+
+Pass flags to the binary (verified against `spelunk-server --help`, v0.9.5):
 
 | Flag | Env | Purpose |
 |---|---|---|
 | `--llm-url` | `SPELUNK_LLM_URL` | Base URL of an OpenAI-compatible chat-completions server (e.g. LM Studio, Ollama, vLLM). |
 | `--llm-model` | `SPELUNK_LLM_MODEL` | Model name to send to that endpoint (e.g. `google/gemma-3n-e4b`). |
+| `--llm-key` | | Credential for that endpoint, passed inline. Visible in the process table, so prefer the alternatives. |
+| `--llm-key-file` | `SPELUNK_LLM_KEY` | File whose whole trimmed contents are the credential. An unreadable path is fatal, never a fall-through to another source. |
 
-These are flags to **`spelunk-server`**, not CLI `config.toml` keys: the CLI
-never talks to an LLM directly, only through the server. There is no
-authentication option for the endpoint itself: the server sends unauthenticated
-requests, so point it at a trusted local or internal endpoint, not a public one.
+Precedence here is `--llm-key` > `--llm-key-file` > `SPELUNK_LLM_KEY` > unset.
+`SPELUNK_LLM_KEY` deliberately does not populate `--llm-key`, so setting the
+variable cannot silently outrank a `--llm-key-file` you also passed.
+
+`--llm-key` is the endpoint's credential, and is a different secret from
+`--key`, which is this server's own inbound bearer.
+
+A blank value from any source, on either side, reads as unset rather than as an
+empty credential.
+
+### Security properties
+
+These are design constraints, not incidental behaviour, so they are stated
+rather than left to be inferred:
+
+- **The credential never travels in an argument from the CLI.** No input to
+  `spelunk` causes `--llm-key` or `--llm-key-file` to be emitted into the
+  spawned daemon's argv, because argv is world-readable through the process
+  table. The endpoint URL and model do travel as arguments: neither is secret,
+  and `ps` showing which endpoint a daemon serves is a diagnostic feature.
+- **The spawned daemon never reads your OS secret store.** It is detached and
+  long-lived, and on macOS a keychain read from a background process with no
+  user session raises an authorization prompt that nobody can see or answer.
+  The CLI resolves the credential in your own session and passes it to the
+  child out of band, in its environment. Nothing else in the daemon reaches for
+  a secret store.
+- **Resolving the credential costs nothing on other commands.** It is not a
+  config field and is not read when configuration loads; only the code path
+  that spawns a daemon reads it. An ordinary `spelunk search` does not
+  authorize against your keychain for it.
+- **A credential is not sent over plaintext to another host.** If a credential
+  resolves and the endpoint is a plaintext `http://` URL to anything other than
+  loopback, `spelunk-server` refuses to start:
+
+  ```
+  Error: invalid server URL "http://192.168.1.10:1234": plaintext http:// is only
+  allowed to a loopback address (127.0.0.1/::1/localhost); use https:// for any
+  other host. An LLM key is configured, so "http://192.168.1.10:1234" would send
+  it in the clear: use an https:// endpoint, or unset the key
+  ```
+
+  The check applies **only when a credential is present**, so an existing
+  keyless LAN endpoint (LM Studio or Ollama on `http://192.168.x.x:1234`) keeps
+  working exactly as before. If you hit this refusal, the endpoint is one you
+  are authenticating to over an unencrypted network hop: switch it to `https://`
+  or drop the credential.
+- **The credential is never printed.** Not by `spelunk auth set-key --llm`, not
+  in the server's logs at any level, and not in the refusal message above.
+- **A keyless endpoint stays keyless.** With no credential resolved the
+  upstream request carries no `Authorization` header at all, byte-identical to
+  previous releases, so a local endpoint that rejects unexpected headers is
+  unaffected.
 
 ### What this unlocks
 
@@ -47,16 +164,48 @@ With no LLM configured on the server:
 
 ### Loopback (local dev) setup
 
-Export the variables, then restart the auto-managed local daemon so the
-new process inherits them (a daemon already running keeps its old
-configuration until restarted):
+Set the endpoint once in your personal config:
+
+```toml
+# ~/.config/spelunk/config.toml
+llm_url = "http://127.0.0.1:1234"   # your LM Studio / Ollama / vLLM endpoint
+llm_model = "your-chat-model-id"
+```
+
+If the endpoint needs a credential, store it now:
 
 ```bash
-export SPELUNK_LLM_URL="http://127.0.0.1:1234"   # your LM Studio / Ollama / vLLM endpoint
-export SPELUNK_LLM_MODEL="your-chat-model-id"
+spelunk auth set-key --llm     # reads from stdin or a prompt, never argv
+```
 
+Then restart the auto-managed daemon, because **a daemon already running keeps
+the configuration it was started with**:
+
+```bash
 spelunk server stop      # if one is already running
-spelunk server start     # the new daemon inherits the variables above
+spelunk server start     # picks up the configuration above
+```
+
+A change to `llm_url`, `llm_model`, or the stored credential does not reach a
+running daemon. Nothing restarts it for you: killing a daemon as a side effect
+of an unrelated command is worse than a stale configuration, so the restart is
+yours to make.
+
+Environment variables work as well, and take precedence over the config file:
+
+```bash
+export SPELUNK_LLM_URL="http://127.0.0.1:1234"
+export SPELUNK_LLM_MODEL="your-chat-model-id"
+export SPELUNK_LLM_KEY="<your-endpoint-credential>"   # only if the endpoint is keyed
+
+spelunk server stop
+spelunk server start
+```
+
+Or override them for a single daemon without changing either:
+
+```bash
+spelunk server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
 `spelunk explore` and `spelunk memory harvest` now work against the
@@ -83,8 +232,14 @@ Pass the same two flags when you start the deployed `spelunk-server` (see
 ```bash
 spelunk-server --host 0.0.0.0 --port 7777 \
   --tls-cert /etc/spelunk/tls-cert --tls-key /etc/spelunk/tls-key \
-  --llm-url http://llm-host:1234 --llm-model your-chat-model-id
+  --llm-url https://llm-host:1234 --llm-model your-chat-model-id \
+  --llm-key-file /etc/spelunk/llm-key
 ```
+
+Drop `--llm-key-file` if the endpoint takes no credential, in which case
+`--llm-url http://llm-host:1234` is accepted too. With a credential, a
+plaintext `http://` endpoint on any host but loopback is refused at startup
+(see [Security properties](#security-properties)).
 
 Every client already sets an explicit `server_url` to reach a team server, so
 `explore`, `memory harvest`, and index-time summaries are all unlocked with no

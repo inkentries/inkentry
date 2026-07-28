@@ -28,7 +28,12 @@ Load order (later overrides earlier):
    directory (project-level, team-wide). Only `server_url`, `project_id`,
    `server_ca`, and `[index]` are read from this file.
 4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`,
-   `SPELUNK_PROJECT_ID`, `SPELUNK_SERVER_CA`, `SPELUNK_MODE`.
+   `SPELUNK_PROJECT_ID`, `SPELUNK_SERVER_CA`, `SPELUNK_LLM_URL`,
+   `SPELUNK_LLM_MODEL`, `SPELUNK_MODE`.
+
+A variable that is **set** overrides the file even when its value is empty:
+`SPELUNK_LLM_URL=""` blanks a configured `llm_url` rather than falling through
+to it. Unset the variable to let the file value apply.
 
 Override the global config file path with `-c, --config <path>` on any command
 (also settable via `SPELUNK_CONFIG_DIR`, which overrides the whole
@@ -55,38 +60,70 @@ live alongside it (`index.db`, `memory.db`).
 
 - **Type:** string, optional
 - **Default:** unset
+- **Env override:** `SPELUNK_LLM_MODEL`
 
-A local presence flag, not a model selector: when unset, `spelunk explore` is
-hidden from `--help` (it still runs if invoked directly). The value itself is
-never sent to `spelunk-server` and does not choose which chat model actually
-runs; that is resolved by whichever server the CLI reaches. `spelunk memory
-harvest` does not consult this field at all: for both commands, whether a chat
-model is actually available depends on the capability tier (a reachable
-inference server with a model loaded), independent of this setting.
+Two unrelated jobs, which is worth untangling before you set it.
+
+**Configuration.** Together with `llm_url` below, it is the model name a daemon
+the CLI starts sends to that endpoint, passed as the daemon's `--llm-model`. It
+is ignored without an `llm_url`: a model with no endpoint is not a
+configuration.
+
+**A local presence flag.** When unset, `spelunk explore` is hidden from
+`--help` (it still runs if invoked directly). This is cosmetic. The value is
+not attached to any inference request the CLI makes, so it does not choose the
+model on a server the CLI merely reaches, such as a team `server_url`; that
+server's own configuration decides. `spelunk memory harvest` does not consult
+this field at all. For both commands, whether a chat model is actually
+available depends on the capability tier (a reachable inference server with a
+model loaded), independent of this setting.
 
 ### `llm_url`
 
 - **Type:** string, optional
 - **Default:** unset
+- **Env override:** `SPELUNK_LLM_URL`
 
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
-`spelunk-server` is started against it and gains LLM capability; when unset,
-the daemon runs without one.
+`spelunk-server` is started against it and gains LLM capability, which is what
+`spelunk explore`, `spelunk memory harvest`, and index-time summaries need.
+When unset, the daemon runs without an LLM.
 
-Personal config or `SPELUNK_LLM_URL` only. A value in a checked-in
-`.spelunk/config.toml` is ignored, like any key outside the project-level
-allowlist: an endpoint URL is a per-developer choice, and committing one points
-the whole team at one machine.
+Personal config only. A value in a checked-in `.spelunk/config.toml` is
+ignored, like any key outside the project-level allowlist: an endpoint URL is a
+per-developer choice, and committing one points the whole team at one machine.
 
-The credential for this endpoint is never a config field. Store it with
-`spelunk auth set-key --llm` (it goes to the OS secret store) or set
-`SPELUNK_LLM_KEY`. The CLI resolves it only when it spawns the daemon, and
-passes it to that process out of band, so the detached daemon never opens the
-keychain itself.
+**Precedence**, highest first: `spelunk server start --llm-url` (for that
+daemon only) > `SPELUNK_LLM_URL` > `llm_url` here > unset. An empty value is
+handled differently in the two override positions: `SPELUNK_LLM_URL=""`
+overrides and blanks this field, leaving no endpoint at all, while
+`--llm-url ""` is discarded and leaves the environment or config value in
+place. A variable that is set wins even when empty; a flag has to carry a value
+to win.
+
+**The credential for this endpoint is never a config field**, here or anywhere
+else. Store it with `spelunk auth set-key --llm`, which reads it from stdin or
+a prompt and keeps it in the OS secret store, or set `SPELUNK_LLM_KEY` (which
+wins over the stored value). Two properties of that are deliberate:
+
+- The CLI reads the credential **only** on the code path that spawns a daemon.
+  It is not loaded with the rest of your configuration, so no ordinary command
+  authorizes against your keychain for it.
+- The spawned daemon **never opens the OS secret store itself.** It is detached,
+  and a keychain read from a background process with no user session raises a
+  prompt nobody can answer. The CLI resolves the credential in your session and
+  passes it to the child out of band, in its environment, never in an argument.
+
+`spelunk-server` refuses to start when a credential resolves and `llm_url` is a
+plaintext `http://` URL to a non-loopback host, naming the URL in the error.
+The check is scoped to a credential being present, so a keyless LAN endpoint on
+`http://192.168.x.x:1234` is unaffected. See
+[Third-party models](third-party-models.md#security-properties).
 
 A daemon already running keeps the configuration it was started with. Restart
-it with `spelunk server stop && spelunk server start` after changing `llm_url`.
+it with `spelunk server stop && spelunk server start` after changing `llm_url`,
+`llm_model`, or the stored credential.
 
 ### `llm_context_length`
 
@@ -295,19 +332,23 @@ with repo access, so the project config has no field for it at all: a stray
 normally. Use `spelunk auth set-key --server <url>` (or `SPELUNK_SERVER_KEY`
 in CI) to set a shared team credential per developer instead.
 
+**`llm_url` is not accepted here either**, for a related reason: it is the
+endpoint a credential is presented to, and it is a per-developer choice. A
+committed value would point every teammate's local daemon at whichever machine
+the author happened to be running an LLM on. Set it in the personal config or
+via `SPELUNK_LLM_URL`.
+
 ## `~/.config/spelunk/config.toml` (personal)
 
 ```toml
 # ~/.config/spelunk/config.toml
 
-# Un-hides `spelunk explore` from --help (cosmetic only; see the field
-# descriptions above for what actually gates explore/harvest availability)
+# Chat-completions endpoint the local spelunk-server is started against, and
+# the model it is asked for. Store the endpoint's credential with
+# `spelunk auth set-key --llm`, never here.
+llm_url = "http://127.0.0.1:1234"
 llm_model = "google/gemma-3n-e4b"
 llm_context_length = 8192
-
-# Chat-completions endpoint the local spelunk-server is started against.
-# Store its credential with `spelunk auth set-key --llm`, never here.
-llm_url = "http://127.0.0.1:1234"
 
 # Keep memory close to commits (default)
 store_in_git_notes = true

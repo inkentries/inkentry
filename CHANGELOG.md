@@ -11,35 +11,41 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **A configurable LLM endpoint that actually reaches the local server.** You can
-  now set `llm_url` in `~/.config/spelunk/config.toml`, or `SPELUNK_LLM_URL` /
-  `SPELUNK_LLM_MODEL`, or `spelunk server start --llm-url/--llm-model`, and store
-  the endpoint's credential with `spelunk auth set-key --llm` (read from stdin or
-  a prompt, kept in the OS secret store). Previously only an exported environment
+- **A configurable LLM endpoint that actually reaches the local server, and a
+  place to keep its credential.** You can now set `llm_url` and `llm_model` in
+  `~/.config/spelunk/config.toml`, override either with `SPELUNK_LLM_URL` /
+  `SPELUNK_LLM_MODEL` or per launch with `spelunk server start
+  --llm-url/--llm-model`, and store the endpoint's credential with `spelunk auth
+  set-key --llm` (read from stdin or a prompt, kept in the OS secret store,
+  overridable with `SPELUNK_LLM_KEY`). Previously only an exported environment
   variable reached the auto-spawned `spelunk-server`, because the CLI passed it
-  nothing but host, port, and database path; a `config.toml` setting was silently
+  nothing but host, port, and database path: a `config.toml` setting was silently
   dropped, and there was no way to configure a credential at all, so a keyed
-  endpoint could not be used.
+  endpoint could not be used. Both keys are read from the **personal** config
+  only; a value in a checked-in `.spelunk/config.toml` is ignored, so cloning a
+  repository cannot point your local daemon at someone else's machine.
 
-  The credential is not a config field and is never read during a normal
-  `spelunk` command: only the code path that spawns the daemon resolves it, so
-  no other command pays a keychain authorization for it. The daemon itself never
-  opens the keychain, which it could not do reliably anyway as a detached process
-  with no user session. The CLI resolves the value and hands it over out of band,
-  in the child's environment; the endpoint URL and model travel as ordinary
-  arguments, since neither is secret and seeing which endpoint a daemon serves in
-  `ps` is useful. No input causes the credential to appear in an argument.
+  The credential is not a config field and is not read when configuration loads.
+  Only the code path that spawns the daemon resolves it, so no ordinary command
+  authorizes against your keychain for it. The daemon itself never opens the
+  secret store, which as a detached process with no user session it could not do
+  without raising a prompt nobody can answer: the CLI resolves the value and
+  hands it over out of band, in the child's environment. The endpoint URL and
+  model travel as ordinary arguments, since neither is secret and seeing which
+  endpoint a daemon serves in `ps` is useful, but **no input causes the
+  credential to appear in an argument**, and none of this prints it.
 
   `spelunk-server` gained `--llm-key` and `--llm-key-file` alongside
-  `SPELUNK_LLM_KEY`, sends the resolved credential as a bearer token upstream,
-  and refuses to start when a credential is configured against a plaintext
-  `http://` endpoint on a non-loopback host. That check applies only when a
+  `SPELUNK_LLM_KEY`, sends a resolved credential as a bearer token upstream, and
+  refuses to start when a credential is configured against a plaintext `http://`
+  endpoint on a non-loopback host, naming the URL. That check applies only when a
   credential is present, so an existing keyless LAN endpoint (LM Studio or Ollama
-  on your network) keeps working exactly as before, as does an endpoint with no
-  credential configured, which is still sent no `Authorization` header.
+  on your network) keeps working exactly as before, and an endpoint with no
+  credential is still sent no `Authorization` header at all.
 
   A daemon that is already running keeps the configuration it started with;
-  restart it to pick up a change.
+  restart it with `spelunk server stop && spelunk server start` to pick up a
+  change. Nothing restarts it for you.
 
 - **A written stability contract, [docs/stability.md](docs/stability.md), and
   tests that enforce it.** Until now the plumbing JSONL schemas were held stable
