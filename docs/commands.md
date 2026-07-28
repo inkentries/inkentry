@@ -856,8 +856,10 @@ of adding a duplicate, so the printed pull count reflects only genuinely new
 rows. Pre-promotion, a pull can still add a distinct row alongside matching
 local content, same as `memory add`.
 
-**Backfilling missing embeddings:** a note's semantic vector is minted only at
-`memory add` time, so a note added while the embedder was down, or carried
+**Backfilling missing embeddings:** a note's semantic vector is minted at
+`memory add` time, and again by `memory push` / `sync` for any entry in the set
+they are about to push that still lacks one. A note that misses both, added
+while the embedder was down and never pushed, or carried
 through the 768→896 embedding-dimension upgrade (which drops the old vectors),
 stays present-but-unembedded: still found by text search, `list`, `timeline`,
 and `context`, but absent from semantic `memory search`. `spelunk memory
@@ -899,6 +901,25 @@ spelunk sync [--project <slug>] [--source <path>] [--include-archived]
 
 For a one-directional transfer, use `spelunk memory push` (local → server) or
 `spelunk memory pull` (server → local).
+
+**The push embeds what it pushes.** Before the batch is built, both `spelunk
+sync` and `spelunk memory push` embed every entry in the push set that has no
+usable local vector, through the local loopback embedder and using the same
+document text `spelunk memory reindex` uses, and commit each vector to
+`memory.db`. A pushed entry is then findable by semantic `memory search` locally
+without a separate `reindex`. This changes what is stored locally, not what is
+sent: `kind`, `title`, and `body` are serialised on every push and always were,
+and the vector fields are additive. The step is skipped in `cloud_first` mode
+with a `server_url` set, the same condition `memory reindex` declines under. With
+no local embedder reachable the push still completes, text-only, with the exit
+code it always had, and prints one warning naming how many entries went out
+without a local embedding and that `spelunk memory reindex` is the cure. The
+summary line reports the local embed count separately from `created` /
+`skipped` / `failed`, for example `Sync complete. Pushed 4 entries (created 4,
+skipped 0), applied 1 new remote entries. Embedded 2 locally.` Entries already
+synced, and entries arriving via `memory pull`, are outside the push set and are
+not embedded by this step. See [Backfilling missing
+embeddings](memory.md#backfilling-missing-embeddings).
 
 ---
 
