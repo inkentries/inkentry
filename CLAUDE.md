@@ -234,7 +234,21 @@ cli/
 main.rs            — entry point: parse args, register sqlite-vec, start Axum server
 lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
 db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
-handlers.rs        — Axum route handlers for all /v1/ endpoints
+handlers/
+  mod.rs           — shared validation/rate-limit helpers, module re-exports
+  health.rs        — GET /v1/health
+  projects.rs      — list_projects, project_stats
+  notes.rs         — note CRUD wire types + add/list/get/search/delete/archive/supersede handlers
+  batch.rs         — POST /memory/batch (wire parity with cloud-api)
+  sync.rs          — harvested_shas, GET /memory/since, GET /memory/stream (SSE)
+  index.rs         — POST /index/embed (server-side embedding, not stored)
+  search.rs        — POST /search (query-embedding proxy for CLI-side KNN)
+  explore.rs       — POST /explore (LLM reasoning loop, SSE)
+  llm.rs           — POST /llm/complete (generic streaming completion primitive)
+  tests/           — #[cfg(test)] suite, split by theme; see mod.rs for the file list
+    support.rs     — shared app/router builders + HTTP helpers used by every theme
+    *_tests.rs     — one file per theme (notes, health, embed, search/explore, batch,
+                     batch dedupe, sync, timeout, concurrency, liveness-under-embed)
 embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
                      `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
                      calls spelunk-embed's `NativeEmbedder::load_from_path`. The only place in the
