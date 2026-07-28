@@ -115,6 +115,12 @@ Tests that open a `Database` call `common::open_test_db()`. They are still
 annotated `#[serial_test::serial]`, but see the next section for what that
 annotation actually buys under the test runner CI uses.
 
+`spelunk-cli` integration tests reach the same guard through
+`tests/plumbing_helpers.rs::register_sqlite_vec`, alongside the other shared
+fixtures in that module. They need it whenever they open a `rusqlite`
+connection of their own against a DB a spawned `spelunk` binary wrote:
+registration is per-process, so the child's does not carry over.
+
 ### `#[serial]` does not mean what it used to under nextest
 
 CI runs tests with `cargo nextest run`, which gives every test its own OS

@@ -16,6 +16,24 @@ use tempfile::TempDir;
 // qualified, including through this re-export.
 pub use spelunk_core::test_support::isolate_git_config;
 
+// A spawned `spelunk` binary registers sqlite-vec for its own process, but a
+// `rusqlite::Connection` opened here does not inherit that: without this, any
+// query touching a `vec0` table (`embeddings`, memory vectors) fails, and an
+// assertion reading through `unwrap_or(0)` misreports the error as "empty".
+// `sqlite3_auto_extension` is process-global, so the `OnceLock` is what keeps
+// concurrent tests in one binary from racing on it.
+pub fn register_sqlite_vec() {
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
+
 /// Create a git repo in `dir` with a fabricated identity and one initial
 /// commit, isolated from the developer's ambient git config.
 ///
