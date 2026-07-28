@@ -1678,4 +1678,336 @@ mod tests {
             .push(serde_json::json!("a.capability.from.the.future"));
         assert_capabilities_survived("an unrecognised capability string", extra_capability).await;
     }
+
+    // ── Independent re-enumeration of the health body's members ──────────────
+    //
+    // "No strict member remains" is the whole value of the lenient read, so it
+    // is re-derived here rather than taken from a list. The member names come
+    // from the body a real v0.9.5 peer sends, plus the one member this CLI
+    // models that no peer sends yet, so a member added to `HealthBody` without
+    // a lenient read is caught by the same loop that covers today's.
+
+    fn unreadable_shapes() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            ("a present null", serde_json::Value::Null),
+            (
+                "an unknown enum variant",
+                serde_json::json!("a_variant_from_the_future"),
+            ),
+            ("a wrong scalar type", serde_json::json!(-7)),
+            (
+                "a malformed nested object",
+                serde_json::json!({ "nested": { "deeply": [null, { "a": -1 }] } }),
+            ),
+        ]
+    }
+
+    // A discarded body is unmistakable: capabilities collapse to
+    // `legacy_memory_only()`, limits vanish and the embedder reads Unknown, on
+    // a body that plainly carried all three. Every signal is asserted except
+    // the one belonging to the field under test, which is allowed to degrade.
+    async fn assert_only_the_mutated_field_degraded(
+        field: &str,
+        shape: &str,
+        mutated: serde_json::Value,
+    ) {
+        let tier = probe_recorded(mutated).await;
+        let caps_semantic = matches!(tier.caps(), Some(c) if c.search_semantic && c.index_embed);
+        let limits_read = tier.server_limits().is_some();
+
+        assert!(
+            caps_semantic || limits_read,
+            "`{field}` holding {shape}: the whole health body was discarded, \
+             not just that field"
+        );
+        if field != "capabilities" {
+            assert!(
+                caps_semantic,
+                "`{field}` holding {shape}: the advertised capabilities went \
+                 with it"
+            );
+        }
+        if field != "limits" {
+            assert!(
+                limits_read,
+                "`{field}` holding {shape}: the advertised limits went with it"
+            );
+        }
+        if field != "embedder" {
+            assert_eq!(
+                tier.embedder_state(),
+                Some(EmbedderState::Ready),
+                "`{field}` holding {shape}: the embedder state went with it"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_member_of_the_recorded_health_body_degrades_alone() {
+        let template = recorded_health("health-v0.9.5-ready.json");
+        let mut members: std::collections::BTreeSet<String> = template
+            .as_object()
+            .expect("health body is an object")
+            .keys()
+            .cloned()
+            .collect();
+        // Modelled by this CLI but absent from every recorded body, so the
+        // fixture's own keys would not reach it.
+        members.insert("accepts_pushed_vectors".to_string());
+
+        assert!(
+            members.len() >= 9,
+            "the recorded body no longer carries the members this test exists \
+             to mutate: {members:?}"
+        );
+
+        for field in members {
+            for (shape, value) in unreadable_shapes() {
+                let mut body = recorded_health("health-v0.9.5-ready.json");
+                body[&field] = value;
+                assert_only_the_mutated_field_degraded(&field, shape, body).await;
+            }
+        }
+    }
+
+    // The nested level the top-level helper cannot speak for: a member of
+    // `limits` or `embedder` that this CLI cannot read must still cost at most
+    // its own parent object.
+    #[tokio::test]
+    async fn a_malformed_nested_member_costs_at_most_its_own_parent() {
+        for (parent, member) in [
+            ("limits", "embed_request_timeout_secs"),
+            ("limits", "max_batch_chunks"),
+            ("limits", "embedder_token_cap"),
+            ("embedder", "state"),
+            ("embedder", "detail"),
+        ] {
+            for (shape, value) in unreadable_shapes() {
+                let mut body = recorded_health("health-v0.9.5-ready.json");
+                body[parent][member] = value;
+                let tier = probe_recorded(body).await;
+
+                assert!(
+                    matches!(tier.caps(), Some(c) if c.search_semantic && c.index_embed),
+                    "`{parent}.{member}` holding {shape}: the whole health body \
+                     was discarded, not just `{parent}`"
+                );
+                if parent == "limits" {
+                    assert_eq!(
+                        tier.embedder_state(),
+                        Some(EmbedderState::Ready),
+                        "`{parent}.{member}` holding {shape}: the embedder \
+                         state went with it"
+                    );
+                } else {
+                    assert!(
+                        tier.server_limits().is_some(),
+                        "`{parent}.{member}` holding {shape}: the advertised \
+                         limits went with it"
+                    );
+                }
+            }
+        }
+    }
+
+    // The asymmetry the top-level fix does not remove, pinned so it is a
+    // decision rather than a surprise: `limits` is read all-or-nothing, so one
+    // unreadable member discards the members alongside it that parsed fine.
+    // `embedder` does not behave this way, because its only member has its own
+    // lenient read.
+    #[tokio::test]
+    async fn one_unreadable_limit_discards_the_readable_limits_beside_it() {
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        assert_eq!(
+            body["limits"]["max_batch_chunks"],
+            serde_json::json!(256),
+            "this test needs a readable sibling limit to lose"
+        );
+        body["limits"]["embed_request_timeout_secs"] = serde_json::Value::Null;
+
+        let tier = probe_recorded(body).await;
+        assert_eq!(
+            tier.server_limits(),
+            None,
+            "`limits` is documented as degrading whole-object; if that changed \
+             to a per-member degrade, this test should be replaced rather than \
+             relaxed"
+        );
+    }
+
+    // ── The warning path ─────────────────────────────────────────────────────
+    //
+    // The warnings exist because silence is what let a single strict field
+    // discard whole bodies unnoticed. A log line added to surface a silent
+    // failure has to be checked for firing at all, and for what it carries.
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("captured logs mutex")).into_owned()
+        }
+    }
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("captured logs mutex")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogs;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    // The subscriber default is thread-local and `#[tokio::test]` is a
+    // current-thread runtime, so the guard covers the awaits inside it without
+    // disturbing tests running in parallel on other threads.
+    async fn probe_capturing_warnings(body: serde_json::Value) -> (Tier, String) {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        let tier = probe_recorded(body).await;
+        drop(guard);
+        (tier, logs.text())
+    }
+
+    async fn probe_raw_capturing_warnings(raw: &str) -> (Tier, String) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(raw))
+            .mount(&server)
+            .await;
+        let tier = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
+            .await
+            .expect("probe of a raw peer body must succeed");
+        drop(guard);
+        (tier, logs.text())
+    }
+
+    #[tokio::test]
+    async fn every_degraded_field_names_itself_in_a_warning() {
+        for field in [
+            "capabilities",
+            "instance_id",
+            "started_by",
+            "embedding_dim",
+            "embedder",
+            "limits",
+            "accepts_pushed_vectors",
+        ] {
+            let mut body = recorded_health("health-v0.9.5-ready.json");
+            // A negative integer is unreadable for every member of the struct,
+            // which an unknown object is not: `embedder` tolerates a reshape
+            // into one and reads it as Unknown rather than degrading.
+            body[field] = serde_json::json!(-7);
+            let (_, logs) = probe_capturing_warnings(body).await;
+            assert!(
+                logs.contains(&format!("field `{field}`")),
+                "degrading `{field}` logged nothing that names it, so the \
+                 failure is as silent as it was before: {logs}"
+            );
+        }
+
+        let mut nested = recorded_health("health-v0.9.5-ready.json");
+        nested["embedder"]["state"] = serde_json::Value::Null;
+        let (_, logs) = probe_capturing_warnings(nested).await;
+        assert!(
+            logs.contains("field `embedder.state`"),
+            "a degraded nested member must name itself too: {logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_is_not_a_health_object_warns_and_bounds_the_snippet() {
+        let (tier, logs) = probe_raw_capturing_warnings("ok").await;
+        assert!(
+            matches!(tier.caps(), Some(c) if !c.search_semantic),
+            "a plain-text body must still take the legacy reading"
+        );
+        assert!(
+            logs.contains("could not parse the /v1/health body"),
+            "the fallback arm must not be silent: {logs}"
+        );
+
+        let payload = "A".repeat(100_000);
+        let (_, big_logs) = probe_raw_capturing_warnings(&payload).await;
+        assert!(
+            big_logs.len() < 4_000,
+            "the fallback warning grew with the body it was reporting on \
+             ({} bytes logged for a 100 kB body)",
+            big_logs.len()
+        );
+    }
+
+    // The bounded snippet is not the only thing the warnings emit. serde
+    // renders a wrong-typed string by quoting the value itself, so the
+    // per-field warning carries whatever that field held, at whatever length
+    // it held it. `/v1/health` is unauthenticated and the body is attacker
+    // controlled the moment `server_url` points somewhere unintended.
+    #[tokio::test]
+    async fn a_degraded_field_does_not_echo_its_own_value_into_the_log() {
+        let secret = format!("ghp_{}", "s3cr3t".repeat(4));
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        body["started_by"] = serde_json::json!(secret);
+
+        let (_, logs) = probe_capturing_warnings(body).await;
+        assert!(
+            !logs.contains(&secret),
+            "the warning for an unreadable field quoted the field's own value \
+             into the log: {logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_degraded_field_warning_is_bounded_by_the_field_it_reports_on() {
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        body["started_by"] = serde_json::json!("B".repeat(100_000));
+
+        let (_, logs) = probe_capturing_warnings(body).await;
+        assert!(
+            logs.len() < 4_000,
+            "the per-field warning grew with the value it was reporting on \
+             ({} bytes logged for one 100 kB field)",
+            logs.len()
+        );
+    }
+
+    #[test]
+    fn the_body_snippet_bounds_a_multibyte_body_without_splitting_a_character() {
+        let raw = "\u{1f600}".repeat(10_000);
+        let snippet = health_body_snippet(raw.as_bytes());
+        assert!(snippet.ends_with("..."), "a long body must be marked cut");
+        assert!(
+            snippet.chars().count() <= 203,
+            "snippet ran to {} chars",
+            snippet.chars().count()
+        );
+    }
 }

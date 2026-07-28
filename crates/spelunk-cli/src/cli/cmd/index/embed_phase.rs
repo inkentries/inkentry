@@ -876,6 +876,26 @@ mod tests {
         assert_eq!(resolve_batch_ceiling(16, Some(256)), 16);
     }
 
+    // `limits` is read all-or-nothing, so a peer that advertised a cap this
+    // CLI could use loses it whenever any other member of the same object is
+    // unreadable. What the client then plans around is this, not the cap the
+    // peer published: the chunk axis has no conservative fallback, only this
+    // CLI's own maximum. The time axis does have one
+    // (`resolve_target_batch_seconds` below), which is why the two must be
+    // judged separately rather than as one "assume the legacy profile".
+    #[test]
+    fn absent_server_limits_leave_the_chunk_ceiling_at_this_clis_own_maximum() {
+        let advertised = resolve_batch_ceiling(0, Some(16));
+        let degraded = resolve_batch_ceiling(0, None);
+        assert_eq!(advertised, 16);
+        assert_eq!(degraded, MAX_BATCH);
+        assert!(
+            degraded > advertised,
+            "losing a small advertised cap raises the ceiling rather than \
+             lowering it, which is the opposite of a conservative fallback"
+        );
+    }
+
     // ── resolve_target_batch_seconds: server-limits-aware target clamping ───
 
     #[test]
