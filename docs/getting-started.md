@@ -354,10 +354,23 @@ so an existing LM Studio or Ollama box on your LAN keeps working.
 
 `explore`, `memory harvest` and index-time chunk summaries all pick up an
 LLM-configured local daemon automatically, and fall back to a `server_url` that
-provides an LLM when your local one does not. See
-[Third-party models](third-party-models.md#configuring-an-external-llm-endpoint)
-for the full precedence and security details, the absence behavior, and the
-team-server equivalent.
+provides an LLM when your local one does not.
+
+Two things are worth knowing before you hit them:
+
+- **A daemon that was already running does not have your new `llm_url`.** In
+  that case spelunk stops and asks you to restart it rather than falling back to
+  a remote LLM, so under the default `local_first` mode a configured local
+  endpoint means your code is not sent elsewhere. That guarantee does not hold
+  under `mode = "cloud_first"`, where `server_url` is the inference target
+  already.
+- **`spelunk index` never fails over a missing LLM.** It prints why summaries
+  were skipped and exits 0. Pass `--no-summaries` to skip the step silently.
+  `explore` and `memory harvest` do fail, since neither can run without an LLM.
+
+See [Third-party models](third-party-models.md#how-spelunk-finds-an-llm) for the
+routing rule, the exact messages, the full precedence and security details, and
+the team-server equivalent.
 
 This is an advanced override; most users never set it: `explore`, summaries,
 and `memory harvest` are simply unavailable without an LLM configured, and

@@ -175,7 +175,15 @@ capability/      — Tier 0/1 capability detection (server reachable probe, cach
   probe.rs       — loopback auto-discovery, explicit server_url health probing, the Tier cache
   diagnostics.rs — probe-failure classification + TLS error rendering
   guard.rs       — require_tier1 / require_explicit_server_url: feature-gating checks
-server_client.rs — ServerLlmClient + ServerEmbedClient: HTTP clients for spelunk-server inference endpoints
+  llm_route.rs:    LlmRoute + resolve_llm_route: where LLM calls go (local tier /
+                   explicit server_url / nowhere-with-a-reason). Separate from embed
+                   routing; never consults Config::resolve_inference_url
+  llm_message.rs:  no_llm_message: the user-facing text over (NoLlmReason x LlmFeature),
+                   shared by index summaries, explore and memory harvest
+server_client.rs:  ServerInferenceClient, the single HTTP client for spelunk-server's
+                   inference endpoints, plus ServerEmbedAdapter / ServerLlmAdapter, two
+                   thin trait adapters over the same Arc. Embedding and LLM can resolve
+                   to different base URLs, so a caller needing both builds two clients
 
 cli/
   mod.rs         — clap structs (Cli, Command, *Args)
@@ -295,8 +303,11 @@ embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal
 ## Inference Backend
 
 All AI inference goes through **spelunk-server**. The CLI calls the server via
-`ServerLlmClient` and `ServerEmbedClient` in `crates/spelunk-cli/src/server_client.rs`
-— these are the only places in spelunk-cli that issue AI inference requests.
+`ServerInferenceClient` in `crates/spelunk-cli/src/server_client.rs`: the only
+place in spelunk-cli that issues AI inference requests. `ServerEmbedAdapter` and
+`ServerLlmAdapter` in the same file are thin trait adapters over one `Arc` of
+that client, not separate clients. (There is no `ServerLlmClient` or
+`ServerEmbedClient`; those names are long gone.)
 
 `spelunk-core` defines the `EmbeddingBackend` and `LlmBackend` traits
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
@@ -315,7 +326,25 @@ itself.
 `capability/` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
 
-**Inference vs. memory storage are separate concerns.** Reaching the server for inference (`ServerLlmClient` / `ServerEmbedClient`) does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config/sync_mode.rs`.
+**Embed routing and LLM routing are separate rules and can resolve to different
+servers in one command.** Embedding uses `Config::resolve_inference_url` plus
+`capability::get_inference_tier`, unchanged: under the default `local_first`
+mode it prefers the local tier even when `server_url` is set. LLM inference uses
+`capability::resolve_llm_route` (`capability/llm_route.rs`), which never
+consults `resolve_inference_url`. Its order is: explicit offline gives nothing
+and probes nothing; a local tier advertising `llm.complete` wins; a set
+`llm_url` whose local server does not serve an LLM **stops** rather than falling
+through to the remote (the privacy guard, which by construction does not apply
+in `cloud_first`, where the inference tier already is `server_url`); otherwise an
+LLM-capable `server_url`; otherwise nothing. `Capabilities.llm_complete`
+(`capability/state.rs`) is the availability signal, parsed from `/v1/health`.
+Keying on `explore` instead would misfire across version skew, since `explore`
+predates the `/llm/complete` route. A call site needing both concerns builds two
+clients: see `cli/cmd/memory/harvest.rs::harvest_clients` for the shape. The
+user-facing text for every no-LLM outcome comes from
+`capability::no_llm_message`, never from an ad-hoc string at the call site.
+
+**Inference vs. memory storage are separate concerns.** Reaching the server for inference does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config/sync_mode.rs`.
 
 ---
 

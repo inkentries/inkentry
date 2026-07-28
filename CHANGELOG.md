@@ -74,9 +74,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   knowing: if you have configured `llm_url` but the running local server does
   not serve an LLM, spelunk stops and asks you to restart it rather than
   quietly using a remote LLM instead. You asked for a local one; sending your
-  code somewhere else would not be a fallback. Summaries are optional, so
-  `index` skips them and still exits 0 (`--no-summaries` silences the notice);
-  `explore` and `memory harvest` cannot do their job without an LLM and fail.
+  code somewhere else would not be a fallback. That holds under the default
+  `local_first` mode and under `offline`; it does not apply under
+  `mode = "cloud_first"`, where the configured `server_url` is already your
+  inference target and answers LLM calls too. Summaries are optional, so `index`
+  skips them and still exits 0 (`--no-summaries` silences the notice); `explore`
+  and `memory harvest` cannot do their job without an LLM and fail.
 
 - **`spelunk server start` no longer blames your firewall for a daemon that
   refused to start.** It waited out the full 30-second liveness timeout and then

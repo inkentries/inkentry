@@ -94,6 +94,14 @@ Personal config only. A value in a checked-in `.spelunk/config.toml` is
 ignored, like any key outside the project-level allowlist: an endpoint URL is a
 per-developer choice, and committing one points the whole team at one machine.
 
+Setting this field is also a statement about where your code may go. Under the
+default `local_first` mode (and under `offline`), if `llm_url` is set but the
+running local server was not started with it, spelunk stops and asks you to
+restart the server rather than falling back to an LLM on `server_url`. Under
+`mode = "cloud_first"` that does not apply, because `server_url` is the
+inference target there already. See
+[Third-party models → The local-LLM guarantee](third-party-models.md#the-local-llm-guarantee-and-where-it-stops).
+
 **Precedence**, highest first: `spelunk server start --llm-url` (for that
 daemon only) > `SPELUNK_LLM_URL` > `llm_url` here > unset. An empty value is
 handled differently in the two override positions: `SPELUNK_LLM_URL=""`
@@ -190,6 +198,12 @@ configured `server_url` means `local_first`. `SPELUNK_NO_SERVER=1` forces
 read from the personal config, not from `.spelunk/config.toml`. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.
+
+`mode` also decides which server answers LLM calls for `spelunk explore`,
+`spelunk memory harvest` and index-time summaries, and it is the one setting
+that changes whether a configured [`llm_url`](#llm_url) keeps your code off a
+remote LLM. See
+[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm).
 
 ### `server_key`
 
