@@ -35,38 +35,62 @@ done
 CLI_BIN="$(cd "$(dirname "$CLI_BIN")" && pwd)/$(basename "$CLI_BIN")"
 SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 
-# Scrub the whole SPELUNK_* namespace before setting anything, then re-export
-# only what this script owns. Every path the binaries resolve (config, state,
-# registry, model, and the file secret store at <config_dir>/secrets.toml) is
-# selected by a variable in this namespace, and each is consulted *before*
-# HOME, so overriding HOME cannot cover any of them.
+# Reduce the environment to an allowlist before anything is launched. Every
+# path these binaries resolve for config, state, registry, model and secrets is
+# selected by an environment variable, and each of those is consulted *before*
+# HOME, so overriding HOME cannot cover any of them by construction.
 #
-# A denylist of the known ones has been wrong three times running. This is the
-# inverse: a variable added to the tree later is excluded by default, and
-# assert_only_owned_spelunk_env below fails the run if anything unowned is
-# present when the binaries start.
+# An allowlist rather than a list of known overrides, because the list has been
+# wrong every time it has been checked: three successive audits each found more
+# than the last, and the namespace moves on its own (SPELUNK_OLD_BINARY arrived
+# and SPELUNK_NO_SLUG_CACHE left while this branch was open). Scrubbing by the
+# SPELUNK_ prefix is not enough either: CREDENTIALS_DIRECTORY is read by
+# spelunk-server to resolve its API key from systemd LoadCredential=, and is a
+# secret path with no prefix at all. Anything not named below is gone, so a
+# variable added to the tree later is excluded by default rather than by
+# memory.
 #
-# The sharpest case is why this is not cosmetic: SPELUNK_SECRET_STORE=file
-# below exists to keep old released binaries off the OS keyring, but with
-# SPELUNK_CONFIG_DIR inherited it would have pointed them at the developer's
-# real secrets.toml, to read and to write. The guard would have become the
-# exposure.
-for _inherited in $(env | sed -n 's/^\(SPELUNK_[A-Za-z0-9_]*\)=.*/\1/p'); do
-  unset "$_inherited"
+# Why this is not cosmetic: SPELUNK_SECRET_STORE=file below exists to keep old
+# released binaries off the OS keyring, but the file store is
+# <config_dir>/secrets.toml and spelunk_config_dir() honours SPELUNK_CONFIG_DIR
+# first. With that variable inherited, the guard would have pointed those
+# binaries at the developer's real secrets.toml, to read and to write.
+
+# Needed to run at all: find binaries, make temp dirs, decode UTF-8, verify TLS
+# for the model download. None of them selects spelunk state. `_`, PWD, OLDPWD
+# and SHLVL are bash's own bookkeeping, re-set by the shell whatever we do here.
+INHERITED_ENV_ALLOWLIST="PATH HOME TMPDIR TMP TEMP LANG LC_ALL LC_CTYPE TERM USER LOGNAME SHELL SSL_CERT_FILE SSL_CERT_DIR _ PWD OLDPWD SHLVL"
+
+# Set by this script itself, below. Listed so the assertion can tell what it
+# owns from what leaked in.
+OWNED_ENV="SPELUNK_SECRET_STORE SPELUNK_SERVER_URL XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
+
+# SKEW_* are this script's own knobs, read here and by nothing under test.
+env_is_allowed() {
+  case "$1" in
+    SKEW_*) return 0 ;;
+  esac
+  case " $INHERITED_ENV_ALLOWLIST $OWNED_ENV " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+env_names() { env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'; }
+
+for _name in $(env_names); do
+  env_is_allowed "$_name" || unset "$_name" 2>/dev/null || true
 done
-unset _inherited
+unset _name
 
-# Everything this script is allowed to hand the binaries under test. Anything
-# else in the namespace is a leak from the invoking shell.
-OWNED_SPELUNK_ENV="SPELUNK_SECRET_STORE SPELUNK_SERVER_URL"
-
-assert_only_owned_spelunk_env() {
+# Backstop for a later edit that exports something new before the binaries
+# start. Without it the allowlist above is only correct until someone adds a
+# line under it.
+assert_env_is_allowlisted() {
   local name
-  for name in $(env | sed -n 's/^\(SPELUNK_[A-Za-z0-9_]*\)=.*/\1/p'); do
-    case " $OWNED_SPELUNK_ENV " in
-      *" $name "*) ;;
-      *) fail "$name reached the binaries under test; it is not one this script sets, so the run would have pointed them at real user state" ;;
-    esac
+  for name in $(env_names); do
+    env_is_allowed "$name" \
+      || fail "$name reached the binaries under test; it is not one this script sets, so the run would have pointed them at real user state"
   done
 }
 
@@ -146,7 +170,7 @@ BASE="http://127.0.0.1:${PORT}"
 # namespace at the moment the first binary under test starts.
 export SPELUNK_SERVER_URL="$BASE"
 
-assert_only_owned_spelunk_env
+assert_env_is_allowlisted
 
 echo "== starting server: $SERVER_BIN on $BASE"
 "$SERVER_BIN" --port "$PORT" --db "$WORK/server.db" >"$WORK/server.log" 2>&1 &
