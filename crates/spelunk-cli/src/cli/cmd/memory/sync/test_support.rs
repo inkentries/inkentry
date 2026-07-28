@@ -1,5 +1,5 @@
-//! Shared test fixtures for the `sync` module's submodule test suites
-//! ([`super::push`], [`super::pull`], [`super::round`]).
+// Shared test fixtures for the `sync` module's submodule test suites
+// (`super::push`, `super::pull`, `super::round`).
 
 use crate::storage::MemoryStore;
 
@@ -18,9 +18,9 @@ pub(super) fn register_sqlite_vec() {
     });
 }
 
-/// Spin up a real `spelunk-server` axum router (the production router) on
-/// an ephemeral loopback port, serving the team-hosting
-/// `/v1/projects/*/memory*` routes this test's `CloudSyncClient`s talk to.
+// Spin up a real `spelunk-server` axum router (the production router) on
+// an ephemeral loopback port, serving the team-hosting
+// `/v1/projects/*/memory*` routes this test's `CloudSyncClient`s talk to.
 pub(super) async fn spawn_spelunk_server() -> std::net::SocketAddr {
     register_sqlite_vec();
     let db_dir = tempfile::TempDir::new().unwrap();
@@ -83,17 +83,17 @@ impl Drop for LoopbackEmbedder {
     }
 }
 
-/// The fp32 vector [`spawn_loopback_embedder`]'s `/index/embed` route returns.
-/// L2-normalised and 896-dim, so it survives the push's own dimension guard.
+// The fp32 vector `spawn_loopback_embedder`'s `/index/embed` route returns.
+// L2-normalised and 896-dim, so it survives the push's own dimension guard.
 pub(super) fn stub_vector() -> Vec<f32> {
     let dim = spelunk_core::embeddings::EMBEDDING_DIM;
     vec![1.0 / (dim as f32).sqrt(); dim]
 }
 
-/// Start a mocked loopback inference server for `project_id` and point
-/// auto-discovery at it. `failing_title_marker`, when given, makes the embed
-/// route 500 for any request whose body contains it, so a single row's embed
-/// failure can be exercised without failing the rest.
+// Start a mocked loopback inference server for `project_id` and point
+// auto-discovery at it. `failing_title_marker`, when given, makes the embed
+// route 500 for any request whose body contains it, so a single row's embed
+// failure can be exercised without failing the rest.
 pub(super) async fn spawn_loopback_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
@@ -149,8 +149,8 @@ pub(super) async fn spawn_loopback_embedder(
     }
 }
 
-/// Open a fresh local memory store in a new tempdir, returning both (the
-/// tempdir must be kept alive by the caller for the store's lifetime).
+// Open a fresh local memory store in a new tempdir, returning both (the
+// tempdir must be kept alive by the caller for the store's lifetime).
 pub(super) fn fresh_store() -> (tempfile::TempDir, MemoryStore) {
     register_sqlite_vec();
     let tmp = tempfile::TempDir::new().unwrap();

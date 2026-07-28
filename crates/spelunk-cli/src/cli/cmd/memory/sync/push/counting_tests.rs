@@ -1,6 +1,6 @@
-//! Stamping- and counting-honesty tests for [`super::push_local`]: `remote_id`
-//! is only stamped for durably-persisted statuses, and tallies reconcile
-//! against `results[]` rather than trusting the server's aggregate ints.
+// Stamping- and counting-honesty tests for `super::push_local`: `remote_id`
+// is only stamped for durably-persisted statuses, and tallies reconcile
+// against `results[]` rather than trusting the server's aggregate ints.
 
 use super::super::test_support::register_sqlite_vec;
 use super::*;

@@ -1,5 +1,5 @@
-//! What the pre-batch local-embedding repair deliberately does NOT touch: rows
-//! outside the push set, and content handling it must leave alone.
+// What the pre-batch local-embedding repair deliberately does NOT touch: rows
+// outside the push set, and content handling it must leave alone.
 
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
 use super::*;

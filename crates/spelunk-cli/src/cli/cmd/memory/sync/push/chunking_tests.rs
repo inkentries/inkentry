@@ -1,4 +1,4 @@
-//! Chunking, resumability, and progress-reporting tests for [`super::push_local`].
+// Chunking, resumability, and progress-reporting tests for `super::push_local`.
 
 use super::super::test_support::register_sqlite_vec;
 use super::*;

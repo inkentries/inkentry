@@ -173,14 +173,14 @@ mod tests {
     // differently-configured in-process probes in one test binary would see
     // stale tiers from whichever test's probe ran first.
 
-    /// The primary repro, fixed: a client with local-only, never-pushed
-    /// content, running the actual `sync_round` sequence against a project
-    /// that already has a teammate's prior entry (pushed strictly before
-    /// this round begins),
-    /// ends the round with that teammate entry applied - not 0. This is
-    /// exactly the case the existing `two_established_clients_...` test
-    /// deliberately routes around (see its own comment) because, before this
-    /// fix, `memory_sync`'s push-then-pull order shadowed it permanently.
+    // The primary repro, fixed: a client with local-only, never-pushed
+    // content, running the actual `sync_round` sequence against a project
+    // that already has a teammate's prior entry (pushed strictly before
+    // this round begins),
+    // ends the round with that teammate entry applied - not 0. This is
+    // exactly the case the existing `two_established_clients_...` test
+    // deliberately routes around (see its own comment) because, before this
+    // fix, `memory_sync`'s push-then-pull order shadowed it permanently.
     #[tokio::test]
     async fn sync_round_pulls_teammates_prior_entry_on_a_first_round_with_local_content() {
         let addr = spawn_spelunk_server().await;
@@ -241,10 +241,10 @@ mod tests {
         assert!(titles.contains(&"A1".to_string()) && titles.contains(&"C1".to_string()));
     }
 
-    /// Idempotence + no double-counting: running `sync_round` twice back to
-    /// back with nothing new to push or pull is a no-op both times, and the
-    /// round's own just-pushed row (harmlessly re-fetched by the second,
-    /// pre-round-cursor pull) is never counted twice or duplicated locally.
+    // Idempotence + no double-counting: running `sync_round` twice back to
+    // back with nothing new to push or pull is a no-op both times, and the
+    // round's own just-pushed row (harmlessly re-fetched by the second,
+    // pre-round-cursor pull) is never counted twice or duplicated locally.
     #[tokio::test]
     async fn sync_round_twice_with_nothing_new_is_idempotent_and_never_double_counts() {
         let addr = spawn_spelunk_server().await;
@@ -278,18 +278,18 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
     }
 
-    /// The race window a plain reorder cannot close: a teammate's push
-    /// that lands on the server strictly between this round's own first pull
-    /// and its own push must still be picked up within this same round (via
-    /// the second pull, reusing the pre-round cursor) rather than being
-    /// permanently shadowed by the round's own push becoming the new
-    /// `MAX(remote_id)`.
-    ///
-    /// Real network concurrency can't be forced deterministically in a unit
-    /// test, so this composes `sync_round`'s exact same three calls
-    /// (`pull_and_apply_since` / `push_local` / `pull_and_apply_since`,
-    /// reusing one `pre_round_cursor`) with the teammate's push manually
-    /// interleaved at the precise point the race window occupies.
+    // The race window a plain reorder cannot close: a teammate's push
+    // that lands on the server strictly between this round's own first pull
+    // and its own push must still be picked up within this same round (via
+    // the second pull, reusing the pre-round cursor) rather than being
+    // permanently shadowed by the round's own push becoming the new
+    // `MAX(remote_id)`.
+    //
+    // Real network concurrency can't be forced deterministically in a unit
+    // test, so this composes `sync_round`'s exact same three calls
+    // (`pull_and_apply_since` / `push_local` / `pull_and_apply_since`,
+    // reusing one `pre_round_cursor`) with the teammate's push manually
+    // interleaved at the precise point the race window occupies.
     #[tokio::test]
     async fn sync_round_catches_a_teammate_push_landing_between_its_own_pull_and_push() {
         let addr = spawn_spelunk_server().await;
@@ -359,10 +359,10 @@ mod tests {
         assert!(titles.contains(&"B1".to_string()));
     }
 
-    /// `memory pull` (one-way, no push) is unaffected by the `sync_round`
-    /// two-phase reconciliation added for `sync`. It keeps
-    /// deriving a single cursor from the store itself via `pull_and_apply`,
-    /// unmodified.
+    // `memory pull` (one-way, no push) is unaffected by the `sync_round`
+    // two-phase reconciliation added for `sync`. It keeps
+    // deriving a single cursor from the store itself via `pull_and_apply`,
+    // unmodified.
     #[tokio::test]
     async fn pull_and_apply_one_way_pull_still_derives_its_own_single_cursor() {
         let addr = spawn_spelunk_server().await;
@@ -412,11 +412,11 @@ mod tests {
     // provisions it, so the pre-push pull on a first sync has nothing valid
     // to query yet.
 
-    /// Mock `/memory/since` responder that fails like the real bug (400)
-    /// until this project has been provisioned by a push, then succeeds:
-    /// models "the project does not exist yet" without depending on the real
-    /// cloud-api's own id-resolution details, which are out of scope for
-    /// this client-side fix.
+    // Mock `/memory/since` responder that fails like the real bug (400)
+    // until this project has been provisioned by a push, then succeeds:
+    // models "the project does not exist yet" without depending on the real
+    // cloud-api's own id-resolution details, which are out of scope for
+    // this client-side fix.
     struct SinceUntilProvisioned {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
@@ -433,9 +433,9 @@ mod tests {
         }
     }
 
-    /// Mock `/memory/batch` responder that marks the project provisioned as
-    /// it lands the push, so a subsequent `/memory/since` call (via
-    /// [`SinceUntilProvisioned`]) succeeds.
+    // Mock `/memory/batch` responder that marks the project provisioned as
+    // it lands the push, so a subsequent `/memory/since` call (via
+    // `SinceUntilProvisioned`) succeeds.
     struct BatchProvisions {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
         external_id: String,
@@ -729,10 +729,10 @@ mod tests {
     // provision the same project must not trip the pre-push-pull bug for
     // either of them ─────────────────────────────────────────────────────
 
-    /// Mock `/memory/batch` responder that provisions the project and echoes
-    /// back a generated cloud id per pushed `external_id`, so two different
-    /// clients pushing two different entries concurrently each get a
-    /// coherent per-item result rather than a hardcoded single id.
+    // Mock `/memory/batch` responder that provisions the project and echoes
+    // back a generated cloud id per pushed `external_id`, so two different
+    // clients pushing two different entries concurrently each get a
+    // coherent per-item result rather than a hardcoded single id.
     struct BatchProvisionsEcho {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }

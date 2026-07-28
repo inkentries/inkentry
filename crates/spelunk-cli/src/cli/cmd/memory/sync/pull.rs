@@ -122,17 +122,17 @@ mod tests {
     // up the actual `spelunk-server` axum router, matching the pattern in
     // `outbox.rs`'s `spawn_spelunk_server`.
 
-    /// Reproduces the walk-the-store bug: a client that has already pushed
-    /// and synced once (an "established" client) never sees a teammate's
-    /// later entries on a subsequent sync, even though a fresh client would
-    /// pull the full set. Before the fix, client A's first push stamps its
-    /// own row's `remote_id` from the batch ack's `id` field, which the real
-    /// server (bug) fills with the raw autoincrement row id ("1", "2", ...)
-    /// instead of `sync_id`. That digit-string sorts lexically AFTER every
-    /// real UUIDv7 `sync_id` (which starts with a much smaller hex nibble for
-    /// any current timestamp), so `max_remote_id()`'s cursor becomes that row
-    /// id and `since_id=<cursor>` on the second pull matches nothing, even
-    /// though the server holds teammate B's newer entry.
+    // Reproduces the walk-the-store bug: a client that has already pushed
+    // and synced once (an "established" client) never sees a teammate's
+    // later entries on a subsequent sync, even though a fresh client would
+    // pull the full set. Before the fix, client A's first push stamps its
+    // own row's `remote_id` from the batch ack's `id` field, which the real
+    // server (bug) fills with the raw autoincrement row id ("1", "2", ...)
+    // instead of `sync_id`. That digit-string sorts lexically AFTER every
+    // real UUIDv7 `sync_id` (which starts with a much smaller hex nibble for
+    // any current timestamp), so `max_remote_id()`'s cursor becomes that row
+    // id and `since_id=<cursor>` on the second pull matches nothing, even
+    // though the server holds teammate B's newer entry.
     #[tokio::test]
     async fn established_client_pulls_teammates_entries_added_after_its_first_sync() {
         register_sqlite_vec();
@@ -202,21 +202,21 @@ mod tests {
         );
     }
 
-    /// Three-way steady state, each established client syncing across
-    /// multiple rounds: rules out an off-by-one in cursor advancement that a
-    /// two-client, single-extra-round test (see above) could miss (e.g. a
-    /// cursor that only "catches up" once and then drifts on a later round).
-    ///
-    /// Client C joins second, via a pull-only first sync (see the doc
-    /// comment on `store_c`'s setup below for why: joining via push+pull in
-    /// one round is a separate, real ordering issue, not this story's bug).
-    /// After that, both A and C are established clients holding a cursor
-    /// derived purely from pulls/pushes of their own already-caught-up
-    /// state, and teammate B pushes twice, in two separate rounds. Each of A
-    /// and C must pick up exactly the right delta on each of their own
-    /// subsequent pulls: never 0 (the bug this story fixes), never a
-    /// duplicate re-application, and never the other established client's
-    /// own entries re-surfacing.
+    // Three-way steady state, each established client syncing across
+    // multiple rounds: rules out an off-by-one in cursor advancement that a
+    // two-client, single-extra-round test (see above) could miss (e.g. a
+    // cursor that only "catches up" once and then drifts on a later round).
+    //
+    // Client C joins second, via a pull-only first sync (see the doc
+    // comment on `store_c`'s setup below for why: joining via push+pull in
+    // one round is a separate, real ordering issue, not this story's bug).
+    // After that, both A and C are established clients holding a cursor
+    // derived purely from pulls/pushes of their own already-caught-up
+    // state, and teammate B pushes twice, in two separate rounds. Each of A
+    // and C must pick up exactly the right delta on each of their own
+    // subsequent pulls: never 0 (the bug this story fixes), never a
+    // duplicate re-application, and never the other established client's
+    // own entries re-surfacing.
     #[tokio::test]
     async fn two_established_clients_each_pull_correctly_across_multiple_rounds() {
         register_sqlite_vec();
@@ -379,8 +379,8 @@ mod tests {
     // (including a full page at that request limit) without needing that
     // many real rows in a live server.
 
-    /// Deterministic, lexically-increasing ids so `since_id` cursors compare
-    /// the same way real UUIDv7 cloud ids do.
+    // Deterministic, lexically-increasing ids so `since_id` cursors compare
+    // the same way real UUIDv7 cloud ids do.
     fn page_ids(start: usize, count: usize) -> Vec<String> {
         (start..start + count)
             .map(|i| format!("01890000-0000-7000-8000-{i:012x}"))
@@ -405,10 +405,10 @@ mod tests {
 
     const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
-    /// Mounts one `/memory/since` mock per page, matched by the exact
-    /// `since_id` it must be requested with (the prior page's last id, or the
-    /// nil UUID for the very first request). Each mock must be hit exactly
-    /// `times` times.
+    // Mounts one `/memory/since` mock per page, matched by the exact
+    // `since_id` it must be requested with (the prior page's last id, or the
+    // nil UUID for the very first request). Each mock must be hit exactly
+    // `times` times.
     async fn mount_pages_times(server: &wiremock::MockServer, pages: &[Vec<String>], times: u64) {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, ResponseTemplate};
@@ -432,8 +432,8 @@ mod tests {
         mount_pages_times(server, pages, 1).await;
     }
 
-    /// Item 1: a backlog smaller than one page is a single request, and every
-    /// entry lands.
+    // Item 1: a backlog smaller than one page is a single request, and every
+    // entry lands.
     #[tokio::test]
     async fn pull_and_apply_since_single_page_matches_prior_behavior() {
         let server = wiremock::MockServer::start().await;
@@ -448,9 +448,9 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    /// Item 2: a backlog spanning exactly two pages (100 then 40, the
-    /// requested page limit) is fetched in two requests, the second cursor is
-    /// the first page's last id, and every entry is applied exactly once.
+    // Item 2: a backlog spanning exactly two pages (100 then 40, the
+    // requested page limit) is fetched in two requests, the second cursor is
+    // the first page's last id, and every entry is applied exactly once.
     #[tokio::test]
     async fn pull_and_apply_since_two_pages_advances_cursor_to_last_id_of_prior_page() {
         let server = wiremock::MockServer::start().await;
@@ -467,8 +467,8 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    /// Item 3: three-plus pages (100 + 100 + 45) keep looping past two
-    /// iterations, not just handling the two-page case.
+    // Item 3: three-plus pages (100 + 100 + 45) keep looping past two
+    // iterations, not just handling the two-page case.
     #[tokio::test]
     async fn pull_and_apply_since_three_pages_loops_past_two_iterations() {
         let server = wiremock::MockServer::start().await;
@@ -485,10 +485,10 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
     }
 
-    /// Item 4: a page landing exactly on the limit is always followed by
-    /// exactly one more request (never assumed to be the last page), and
-    /// that follow-up returning short ends the loop immediately (never a
-    /// third, unnecessary request).
+    // Item 4: a page landing exactly on the limit is always followed by
+    // exactly one more request (never assumed to be the last page), and
+    // that follow-up returning short ends the loop immediately (never a
+    // third, unnecessary request).
     #[tokio::test]
     async fn pull_and_apply_since_full_page_triggers_exactly_one_more_request() {
         let server = wiremock::MockServer::start().await;
@@ -504,8 +504,8 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    /// Item 5: an already fully-synced project (empty first page) terminates
-    /// after that one request instead of looping forever.
+    // Item 5: an already fully-synced project (empty first page) terminates
+    // after that one request instead of looping forever.
     #[tokio::test]
     async fn pull_and_apply_since_empty_first_page_terminates_after_one_request() {
         let server = wiremock::MockServer::start().await;
@@ -519,11 +519,11 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    /// Item 6: `sync_round`'s reported `pulled` count (what `spelunk sync`'s
-    /// completion message prints) is the TRUE total across every page, not
-    /// just the first. `memory_sync` itself can't be driven directly in this
-    /// binary (see `sync_round`'s own doc comment on the per-process tier
-    /// cache), so this asserts on the exact value the message interpolates.
+    // Item 6: `sync_round`'s reported `pulled` count (what `spelunk sync`'s
+    // completion message prints) is the TRUE total across every page, not
+    // just the first. `memory_sync` itself can't be driven directly in this
+    // binary (see `sync_round`'s own doc comment on the per-process tier
+    // cache), so this asserts on the exact value the message interpolates.
     #[tokio::test]
     async fn sync_round_pulled_count_reflects_every_page_not_just_the_first() {
         let server = wiremock::MockServer::start().await;
@@ -570,11 +570,11 @@ mod tests {
         assert_eq!(store.count().unwrap(), 160);
     }
 
-    /// Item 7: the one-way `spelunk memory pull` entry point (`pull_and_apply`,
-    /// which derives its own cursor from the store rather than being handed
-    /// one) also paginates fully — proven through `pull_and_apply` directly,
-    /// not just through `sync_round`, since both merely wrap the same shared
-    /// `pull_and_apply_since`.
+    // Item 7: the one-way `spelunk memory pull` entry point (`pull_and_apply`,
+    // which derives its own cursor from the store rather than being handed
+    // one) also paginates fully, proven through `pull_and_apply` directly,
+    // not just through `sync_round`, since both merely wrap the same shared
+    // `pull_and_apply_since`.
     #[tokio::test]
     async fn pull_and_apply_one_way_also_paginates_fully() {
         let server = wiremock::MockServer::start().await;
@@ -590,12 +590,12 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    /// Item 8: on a first sync (nothing local has ever pushed or pulled
-    /// before, so `sync_round` pushes first and runs a single post-push
-    /// pull), that post-push pull paginates fully on its own when it turns
-    /// up more than one page of results (e.g. a teammate already has a
-    /// 130-entry backlog on the project by the time this round's push
-    /// provisions it and the pull runs).
+    // Item 8: on a first sync (nothing local has ever pushed or pulled
+    // before, so `sync_round` pushes first and runs a single post-push
+    // pull), that post-push pull paginates fully on its own when it turns
+    // up more than one page of results (e.g. a teammate already has a
+    // 130-entry backlog on the project by the time this round's push
+    // provisions it and the pull runs).
     #[tokio::test]
     async fn sync_round_first_sync_post_push_pull_paginates_fully_on_its_own() {
         use wiremock::matchers::{method, path};
@@ -630,12 +630,12 @@ mod tests {
         assert_eq!(store.count().unwrap(), 130);
     }
 
-    /// Item 9: re-running a pull after an interrupted/partial prior run
-    /// (some entries already applied locally from an earlier page) must not
-    /// double-count `applied` for entries seen again — regression-guards the
-    /// existing dedupe-by-`remote_id` specifically under the new loop, since
-    /// a naive re-implementation could re-tally a page it had already
-    /// applied once before.
+    // Item 9: re-running a pull after an interrupted/partial prior run
+    // (some entries already applied locally from an earlier page) must not
+    // double-count `applied` for entries seen again: regression-guards the
+    // existing dedupe-by-`remote_id` specifically under the new loop, since
+    // a naive re-implementation could re-tally a page it had already
+    // applied once before.
     #[tokio::test]
     async fn pull_and_apply_since_rerun_after_partial_prior_run_does_not_double_count() {
         let server = wiremock::MockServer::start().await;
@@ -657,9 +657,9 @@ mod tests {
         assert_eq!(store.count().unwrap(), 140, "and never re-inserted");
     }
 
-    /// Item 10a: a project not yet created on the server (404 on the very
-    /// first page request) still applies 0 and returns success, not an
-    /// error, unchanged by the new loop.
+    // Item 10a: a project not yet created on the server (404 on the very
+    // first page request) still applies 0 and returns success, not an
+    // error, unchanged by the new loop.
     #[tokio::test]
     async fn pull_and_apply_since_404_on_first_page_is_still_zero_not_an_error() {
         use wiremock::matchers::{method, path};
@@ -679,9 +679,9 @@ mod tests {
         assert_eq!(applied, 0);
     }
 
-    /// Item 10b: a `None` cursor still starts the loop's first request from
-    /// the nil UUID (full catch-up), unchanged by the new loop wrapping the
-    /// cursor for its own subsequent iterations.
+    // Item 10b: a `None` cursor still starts the loop's first request from
+    // the nil UUID (full catch-up), unchanged by the new loop wrapping the
+    // cursor for its own subsequent iterations.
     #[tokio::test]
     async fn pull_and_apply_since_none_cursor_still_starts_at_nil_uuid() {
         let server = wiremock::MockServer::start().await;
@@ -694,18 +694,18 @@ mod tests {
         assert_eq!(applied, 5);
     }
 
-    /// If the post-push pull on a first sync (nothing local has ever pushed
-    /// or pulled before, so `sync_round` pushes first and runs a single pull
-    /// afterward) fails, `sync_round` must not silently swallow that error,
-    /// but it also must not lose or misrepresent the push that already
-    /// succeeded. The push already durably landed server-side and already
-    /// stamped this round's row with its `remote_id` (inside `push_local`,
-    /// which returns before the pull ever runs), so: (1) the error surfaces
-    /// instead of being dropped, (2) its message says the push already
-    /// reached the server rather than reading as "nothing happened", and
-    /// (3) local state is left exactly as `push_local` left it: no
-    /// corruption, no re-attempt needed, just a retryable pull on the next
-    /// sync.
+    // If the post-push pull on a first sync (nothing local has ever pushed
+    // or pulled before, so `sync_round` pushes first and runs a single pull
+    // afterward) fails, `sync_round` must not silently swallow that error,
+    // but it also must not lose or misrepresent the push that already
+    // succeeded. The push already durably landed server-side and already
+    // stamped this round's row with its `remote_id` (inside `push_local`,
+    // which returns before the pull ever runs), so: (1) the error surfaces
+    // instead of being dropped, (2) its message says the push already
+    // reached the server rather than reading as "nothing happened", and
+    // (3) local state is left exactly as `push_local` left it: no
+    // corruption, no re-attempt needed, just a retryable pull on the next
+    // sync.
     #[tokio::test]
     async fn sync_round_first_sync_post_push_pull_failure_surfaces_the_error_without_losing_the_push()
      {
@@ -763,12 +763,12 @@ mod tests {
         );
     }
 
-    /// A network/server failure on a LATER page (not the first) must not
-    /// corrupt or silently drop the pages that already succeeded: the loop
-    /// applies each page as it arrives, so a first-page success is durably
-    /// in the local store even though the overall call returns `Err`. A
-    /// naive rewrite (e.g. buffering all pages before applying any) would
-    /// instead lose the first page's entries when a later page fails.
+    // A network/server failure on a LATER page (not the first) must not
+    // corrupt or silently drop the pages that already succeeded: the loop
+    // applies each page as it arrives, so a first-page success is durably
+    // in the local store even though the overall call returns `Err`. A
+    // naive rewrite (e.g. buffering all pages before applying any) would
+    // instead lose the first page's entries when a later page fails.
     #[tokio::test]
     async fn pull_and_apply_since_error_on_a_later_page_keeps_earlier_pages_applied_and_is_retryable()
      {
@@ -842,14 +842,14 @@ mod tests {
         );
     }
 
-    /// A page whose entries fail to deserialize (here: an entry missing the
-    /// required `id` field, the value pagination advances the cursor from)
-    /// must fail the WHOLE page atomically rather than partially applying
-    /// the entries that happened to parse fine. `SinceBody`/`RemoteEntry`
-    /// deserialize the full response body before `pull_and_apply_since` ever
-    /// sees a single entry, so this is really a regression guard: a future
-    /// change that streamed/parsed entries one at a time could silently
-    /// apply a prefix before hitting the bad entry.
+    // A page whose entries fail to deserialize (here: an entry missing the
+    // required `id` field, the value pagination advances the cursor from)
+    // must fail the WHOLE page atomically rather than partially applying
+    // the entries that happened to parse fine. `SinceBody`/`RemoteEntry`
+    // deserialize the full response body before `pull_and_apply_since` ever
+    // sees a single entry, so this is really a regression guard: a future
+    // change that streamed/parsed entries one at a time could silently
+    // apply a prefix before hitting the bad entry.
     #[tokio::test]
     async fn pull_and_apply_since_malformed_entry_missing_id_fails_the_page_atomically() {
         use wiremock::matchers::{method, path};
@@ -887,12 +887,12 @@ mod tests {
         );
     }
 
-    /// The server's `count` field is documented (see `pull_since`'s wire
-    /// comment) as redundant with `entries.len()`, never a "more remain"
-    /// signal — so the loop's termination must be driven by the actual
-    /// number of entries returned, not by trusting `count`. A server (or a
-    /// test double) that reports an inflated `count` alongside a genuinely
-    /// short `entries` array must still be treated as the last page.
+    // The server's `count` field is documented (see `pull_since`'s wire
+    // comment) as redundant with `entries.len()`, never a "more remain"
+    // signal, so the loop's termination must be driven by the actual
+    // number of entries returned, not by trusting `count`. A server (or a
+    // test double) that reports an inflated `count` alongside a genuinely
+    // short `entries` array must still be treated as the last page.
     #[tokio::test]
     async fn pull_and_apply_since_terminates_on_actual_entries_len_not_a_lying_count_field() {
         use wiremock::matchers::{method, path};

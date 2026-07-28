@@ -1,4 +1,4 @@
-//! Pushed-vector fast-path tests for [`super::push_local`].
+// Pushed-vector fast-path tests for `super::push_local`.
 
 use super::super::test_support::register_sqlite_vec;
 use super::*;
@@ -11,8 +11,8 @@ use super::*;
 // exercises the full `push_local` wiring: it reads the local embedding and
 // consults the gate, which the `maybe_attach_vector` unit test cannot.
 
-/// Insert an active note plus a valid L2-normalised fp32/896 embedding,
-/// returning its local id + external uuid.
+// Insert an active note plus a valid L2-normalised fp32/896 embedding,
+// returning its local id + external uuid.
 fn note_with_embedding(store: &MemoryStore) -> (i64, String) {
     store
         .add_note("decision", "One", "first", &[], &[], None, None)
@@ -100,17 +100,17 @@ async fn push_local_stays_text_only_when_server_declines() {
     );
 }
 
-/// `note_embeddings` is a `vec0` virtual table with a `FLOAT[896]` column
-/// (migration `004_memory.sql`) — sqlite-vec enforces that exact
-/// dimension AT INSERT TIME, for every write path (there is only one:
-/// `insert_embedding`). So a "leftover pre-896 768-dim row" — unlike the
-/// code-chunk `embeddings` table, which DID have a legacy 768-dim era
-/// with an explicit recreate-on-open migration in `db.rs` — can never
-/// actually be written for memory notes: there was never a 768-dim
-/// memory-embedding vintage to migrate from, and the store itself
-/// refuses the write. Confirmed here rather than assumed, since it is
-/// exactly the scenario `push_local`'s dimension guard names in its
-/// comment.
+// `note_embeddings` is a `vec0` virtual table with a `FLOAT[896]` column
+// (migration `004_memory.sql`): sqlite-vec enforces that exact
+// dimension AT INSERT TIME, for every write path (there is only one:
+// `insert_embedding`). So a "leftover pre-896 768-dim row" (unlike the
+// code-chunk `embeddings` table, which DID have a legacy 768-dim era
+// with an explicit recreate-on-open migration in `db.rs`) can never
+// actually be written for memory notes: there was never a 768-dim
+// memory-embedding vintage to migrate from, and the store itself
+// refuses the write. Confirmed here rather than assumed, since it is
+// exactly the scenario `push_local`'s dimension guard names in its
+// comment.
 #[tokio::test]
 async fn insert_embedding_rejects_wrong_dimension_vector() {
     use tempfile::TempDir;

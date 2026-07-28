@@ -1,9 +1,9 @@
-//! Where the pre-batch local embed is allowed to go, and what happens when it
-//! cannot run at all.
-//!
-//! The load-bearing invariant here: the embed must reach the loopback embedder
-//! and never the configured team `server_url`. Routing it there would re-create
-//! the exact server-side re-embedding the repair exists to remove.
+// Where the pre-batch local embed is allowed to go, and what happens when it
+// cannot run at all.
+//
+// The load-bearing invariant here: the embed must reach the loopback embedder
+// and never the configured team `server_url`. Routing it there would re-create
+// the exact server-side re-embedding the repair exists to remove.
 
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
 use super::*;

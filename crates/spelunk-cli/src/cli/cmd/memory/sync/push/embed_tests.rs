@@ -1,5 +1,5 @@
-//! Pre-batch local-embedding repair tests for [`super::push_local`]: a pushed
-//! row must not be left invisible to semantic `memory search` locally.
+// Pre-batch local-embedding repair tests for `super::push_local`: a pushed
+// row must not be left invisible to semantic `memory search` locally.
 
 use super::super::test_support::{fresh_store, spawn_loopback_embedder, stub_vector};
 use super::*;
