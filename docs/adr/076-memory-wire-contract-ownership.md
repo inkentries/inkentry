@@ -277,6 +277,42 @@ advantage.
 
 ## Decision
 
+> **Amendment: the `GET /v1/projects` divergence is no longer reachable from
+> the CLI, and Table 2's route-surface row is sharpened.** The inventory above
+> records what the three implementations looked like on 2026-07-26 and is left
+> as provenance. Both findings were accurate as written; this records what has
+> changed under them.
+>
+> **Table 1's `GET /v1/projects` row, and the prose under it.** The finding was
+> correct: this was a live, reachable bug, and the documented `cloud_first`
+> client configuration for a self-hosted team server hit it on every memory
+> command. The slug to UUID resolver named there, `resolve_cloud_project_uuid`,
+> has now been deleted, along with its `.spelunk/cloud-project-id.lock` cache
+> and its `CloudProjectItem` / `CloudProjectListResponse` wire types.
+> `Config.project_id` is passed verbatim as the project path segment, so the
+> memory-backend open path issues no `GET /v1/projects` request at all and the
+> response-shape divergence between the two peers is unreachable from the CLI.
+> That deletion, not a reconciliation of the two shapes, is what retires the
+> row. See the amendment on the Decision section of
+> [ADR-005](005-cli-slug-uuid-resolution.md).
+>
+> **Table 2's route-surface row stands, and the verification pass it asks for
+> has been done.** It undercounts. The mismatch is not three of
+> `RemoteMemoryBackend`'s six CRUD methods but all six, because the divergence
+> is an identity mismatch before it is a routing one: cloud-api keys memory
+> entries by a UUIDv7 while `RemoteMemoryBackend`'s wire vocabulary is `i64`
+> end to end, so `add` and `list` fail on the entry id itself before any route
+> lookup is reached. The row's conclusion, that these are two protocols rather
+> than a set of route typos a shim could close, survives the pass and is
+> strengthened by it.
+>
+> Making `cloud_first` work against the hosted API is therefore a change to the
+> memory identity model rather than a route-surface patch, and it is tracked
+> separately from this ADR. Nothing in it is retracted here.
+>
+> Live surface: `open_remote_memory_backend_with_bearer` in
+> `crates/spelunk-core/src/storage/mod.rs`.
+
 **Split the contract by leg, matching each to the tool whose release model
 already fits it, and keep contract tests under both:**
 

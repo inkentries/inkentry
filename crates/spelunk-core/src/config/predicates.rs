@@ -9,16 +9,6 @@ pub fn no_server_env_set() -> bool {
     )
 }
 
-/// Return `true` if `s` parses as a canonical UUID (any version).
-///
-/// Used by the cloud-api slug→UUID resolution path (ADR-005): a `project_id`
-/// that is already a UUID is used directly against `/v1/projects/{uuid}/…`,
-/// while a non-UUID value is treated as a human slug and resolved via
-/// `GET /v1/projects`.
-pub fn looks_like_uuid(s: &str) -> bool {
-    uuid::Uuid::parse_str(s).is_ok()
-}
-
 /// Return `true` if `url` targets a loopback address (`127.x.x.x`, `localhost`, `::1`).
 ///
 /// This is a lightweight string check — no DNS resolution.
@@ -249,25 +239,5 @@ mod tests {
     #[test]
     fn validate_transport_url_accepts_bare_ipv6_loopback_no_port() {
         assert!(validate_transport_url("http://[::1]/").is_ok());
-    }
-
-    // ── looks_like_uuid (ADR-005) ────────────────────────────────────────────
-
-    #[test]
-    fn looks_like_uuid_accepts_canonical_uuids() {
-        assert!(looks_like_uuid("018f4e2a-1234-7abc-8def-000000000001"));
-        assert!(looks_like_uuid("00000000-0000-0000-0000-000000000000"));
-        // uppercase hex is valid
-        assert!(looks_like_uuid("018F4E2A-1234-7ABC-8DEF-000000000001"));
-    }
-
-    #[test]
-    fn looks_like_uuid_rejects_slugs() {
-        assert!(!looks_like_uuid("spelunk"));
-        assert!(!looks_like_uuid("acme/my-app"));
-        assert!(!looks_like_uuid("local/9f2a8b3c4d5e6f70"));
-        assert!(!looks_like_uuid(""));
-        // a UUID missing a section is not a UUID
-        assert!(!looks_like_uuid("018f4e2a-1234-7abc-8def"));
     }
 }

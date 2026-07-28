@@ -258,8 +258,8 @@ migrated a store is not supported.
 discovers one.
 
 **Internal:** everything else in that directory, including lock files, pid
-sidecars, background logs, and the cloud project id cache. Names, formats, and
-existence may change.
+sidecars, and background logs. Names, formats, and existence may change, and an
+internal file may be removed outright.
 
 `~/.config/spelunk/` (config and registry) and `~/.local/state/spelunk/`
 (runtime state for the local server) follow the same split: the config file is

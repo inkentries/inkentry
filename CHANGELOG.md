@@ -52,6 +52,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- **`SPELUNK_NO_SLUG_CACHE` no longer does anything, and
+  `.spelunk/cloud-project-id.lock` is no longer written or read.** Both existed
+  only to serve the slug-to-UUID translation removed under Fixed below. The lock
+  file was deliberately left out of `.spelunk/.gitignore` so a team would share
+  one resolved identity, so a repo that reached the hosted API this way now
+  carries a tracked file that means nothing. Delete it whenever you like:
+  nothing reads it, nothing regenerates it, and there is no migration to run,
+  because the resolver and the passthrough that replaced it key on the same
+  org-unique slug and select the same project.
 - **`spelunk-server --embedding-url` / `SPELUNK_EMBEDDING_URL` and the deprecated
   `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` no longer exist.** The
   embedding model is pinned product-wide to the bundled native embedder
@@ -81,6 +90,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `spelunk server status`, and any other endpoint now stay responsive for the
   whole index. The `/v1/health` payload is unchanged, `limits.embedder_token_cap`
   included.
+- **`mode = "cloud_first"` against a self-hosted team server no longer fails
+  before it starts.** With a non-loopback `server_url` and a human
+  `project_id`, every memory command tried to translate the slug into an
+  internal UUID by calling `GET /v1/projects` first, and then keyed the whole
+  session by whatever came back. A self-hosted spelunk-server keys projects by
+  the slug itself and answers that endpoint in a different shape, so the
+  translation could not succeed and the command died with a parse error before
+  touching memory at all. `project_id` is now sent exactly as configured, slug
+  or UUID: both a self-hosted server and the hosted cloud API accept either, so
+  there was never anything to translate. The documented three-line
+  `cloud_first` config works as written.
 - **`spelunk index` no longer skips a crash-half-indexed file forever.** If a
   previous run was killed after recording a file's new content hash but
   before writing its chunks, the hash-only skip check treated the file as

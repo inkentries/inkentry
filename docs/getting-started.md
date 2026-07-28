@@ -172,11 +172,10 @@ spelunk search "where do we validate auth tokens"
 project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
 git-derived identity (`host/owner/repo` when an `origin` remote exists, else
 `local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an
-explicit one for a repo without a remote. Both `.spelunk/config.toml` and
-`.spelunk/cloud-project-id.lock` stay tracked, since they are meant to be
-committed and shared, so the whole team resolves to one project identity. An
-existing `project_id` or `.spelunk/.gitignore` is never overwritten, so
-re-running `init` is safe.
+explicit one for a repo without a remote. `.spelunk/config.toml` stays tracked,
+since it is meant to be committed and shared, so the whole team resolves to one
+project identity. An existing `project_id` or `.spelunk/.gitignore` is never
+overwritten, so re-running `init` is safe.
 
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
@@ -473,10 +472,10 @@ back to an owner-only `~/.config/spelunk/secrets.toml`. For the full
 credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
 [Commands reference](commands.md#spelunk-auth).
 
-`project_id` stays a human-readable slug. If the server routes projects by an
-internal UUID (as a team/cloud memory server does), the CLI resolves the slug
-for you on first use and caches the result locally, so no manual UUID lookup is
-needed. See [Server setup](server-setup.md#client-configuration) for details.
+`project_id` stays a human-readable slug, and it is sent to the server exactly
+as configured. Both a self-hosted spelunk-server and the hosted cloud API accept
+either a slug or a UUID as the project key, so nothing is looked up and nothing
+is cached. See [Server setup](server-setup.md#client-configuration) for details.
 
 After setup, all `spelunk memory` commands transparently use the server. Seed it
 with your existing local memory, then keep recording decisions as usual:
