@@ -441,10 +441,10 @@ impl Config {
         if let Ok(v) = std::env::var("SPELUNK_SERVER_CA") {
             cfg.server_ca = Some(v);
         }
-        if let Ok(v) = std::env::var("SPELUNK_LLM_URL") {
+        if let Ok(v) = std::env::var(llm_key::ENV_LLM_URL) {
             cfg.llm_url = Some(v);
         }
-        if let Ok(v) = std::env::var("SPELUNK_LLM_MODEL") {
+        if let Ok(v) = std::env::var(llm_key::ENV_LLM_MODEL) {
             cfg.llm_model = Some(v);
         }
         // SPELUNK_MODE overrides the configured sync mode. An

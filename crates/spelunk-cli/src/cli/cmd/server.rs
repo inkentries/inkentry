@@ -493,9 +493,9 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
     let llm = LlmSpawn::resolve(cfg, None, None)?;
 
     #[cfg(unix)]
-    let child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
+    let mut child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
     #[cfg(windows)]
-    let child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
+    let mut child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
 
     let pid = child.id();
     write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
@@ -509,17 +509,25 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
     // 30 s comfortably covers a cold listener bind even on Windows; it only
     // bounds the give-up time and is free in the happy path (200 ms poll,
     // returns on first success).
-    let ready = wait_for_health(port, Duration::from_secs(30)).await;
-    if !ready {
-        // Liveness genuinely not achieved within the timeout — most commonly a
-        // firewall blocking the loopback listener. Don't warn merely because the
-        // model is still loading (health is live before that).
-        tracing::warn!(
-            "spelunk-server started (pid={pid}) but /v1/health did not respond within 30 s. \
-             A firewall may be blocking the local server (allow it, e.g. accept the Windows \
-             Defender Firewall prompt), or the process failed to start — check \
-             `spelunk server logs`."
-        );
+    match wait_for_health(port, Duration::from_secs(30), &mut child).await {
+        StartOutcome::Ready => {}
+        StartOutcome::Exited(status) => {
+            tracing::warn!(
+                "spelunk-server (pid={pid}) exited immediately ({status}) instead of serving \
+                 port {port}. It rejected its own startup configuration; the reason is the \
+                 last line of `spelunk server logs`."
+            );
+        }
+        StartOutcome::TimedOut => {
+            // The process is still alive and still silent, which is what a
+            // blocked loopback listener looks like. Don't warn merely because
+            // the model is still loading (health is live before that).
+            tracing::warn!(
+                "spelunk-server started (pid={pid}) but /v1/health did not respond within 30 s. \
+                 A firewall may be blocking the local server (allow it, e.g. accept the Windows \
+                 Defender Firewall prompt). Check `spelunk server logs`."
+            );
+        }
     }
 
     Ok((port, true))
@@ -613,9 +621,9 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
     let llm = LlmSpawn::resolve(cfg, args.llm_url.as_deref(), args.llm_model.as_deref())?;
 
     #[cfg(unix)]
-    let child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
+    let mut child = spawn_daemon_unix(&bin, &db, port, &llm, log_file)?;
     #[cfg(windows)]
-    let child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
+    let mut child = spawn_daemon_windows(&bin, &db, port, &llm, log_file)?;
 
     let pid = child.id();
 
@@ -628,20 +636,30 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
 
     // Wait up to 30 s for the server to become reachable (liveness, not model
     // readiness — /v1/health is live at bind, before any model download).
-    let ready = wait_for_health(port, Duration::from_secs(30)).await;
-    if ready {
-        println!("spelunk-server started (pid={pid}, port={port}).");
-        println!("  Log: {}", log_path(&state_dir).display());
-    } else {
-        // Fires only on genuine liveness-timeout — typically a firewall blocking
-        // the loopback listener, or a process that failed to start.
-        eprintln!(
-            "warning: spelunk-server process started (pid={pid}) but /v1/health did not \
-             respond on port {port} within 30 s. A firewall may be blocking the local \
-             server (allow it, e.g. accept the Windows Defender Firewall prompt), or the \
-             process failed to start. Check the log: {}",
-            log_path(&state_dir).display()
-        );
+    match wait_for_health(port, Duration::from_secs(30), &mut child).await {
+        StartOutcome::Ready => {
+            println!("spelunk-server started (pid={pid}, port={port}).");
+            println!("  Log: {}", log_path(&state_dir).display());
+        }
+        StartOutcome::Exited(status) => {
+            eprintln!(
+                "warning: spelunk-server (pid={pid}) exited immediately ({status}) instead of \
+                 serving port {port}. It rejected its own startup configuration; the reason is \
+                 the last line of the log: {}",
+                log_path(&state_dir).display()
+            );
+        }
+        StartOutcome::TimedOut => {
+            // Still running, still silent: that is what a blocked loopback
+            // listener looks like, and it is the only case a firewall explains.
+            eprintln!(
+                "warning: spelunk-server process started (pid={pid}) but /v1/health did not \
+                 respond on port {port} within 30 s. A firewall may be blocking the local \
+                 server (allow it, e.g. accept the Windows Defender Firewall prompt). Check \
+                 the log: {}",
+                log_path(&state_dir).display()
+            );
+        }
     }
 
     Ok(())
@@ -740,6 +758,22 @@ pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std
     args
 }
 
+/// Pin the child's LLM environment to what the CLI resolved.
+///
+/// Shared by both spawn helpers so neither platform can drift into leaving one
+/// of the three variables to inheritance. Removing a variable is as load-bearing
+/// as setting one: `spelunk-server` reads `SPELUNK_LLM_URL`/`SPELUNK_LLM_MODEL`
+/// through clap `env`, so anything left inherited is a value the daemon acts on
+/// that this process already decided against.
+fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
+    for (name, value) in llm.child_env() {
+        match value {
+            Some(v) => cmd.env(name, v),
+            None => cmd.env_remove(name),
+        };
+    }
+}
+
 /// Spawn the server on Unix.
 ///
 /// Uses a single `fork`+`exec` via `std::process::Command::spawn()`.  The
@@ -764,9 +798,7 @@ fn spawn_daemon_unix(
     for arg in build_daemon_args(db, port, llm) {
         cmd.arg(arg);
     }
-    for (name, value) in llm.child_env() {
-        cmd.env(name, value);
-    }
+    apply_llm_child_env(&mut cmd, llm);
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
@@ -797,9 +829,7 @@ fn spawn_daemon_windows(
     for arg in build_daemon_args(db, port, llm) {
         cmd.arg(arg);
     }
-    for (name, value) in llm.child_env() {
-        cmd.env(name, value);
-    }
+    apply_llm_child_env(&mut cmd, llm);
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
@@ -811,16 +841,41 @@ fn spawn_daemon_windows(
     Ok(child)
 }
 
-/// Poll `GET http://127.0.0.1:{port}/v1/health` until it responds or timeout.
-async fn wait_for_health(port: u16, timeout: Duration) -> bool {
+/// Why a freshly spawned daemon did or did not become reachable.
+enum StartOutcome {
+    /// `/v1/health` responded.
+    Ready,
+    /// The process is gone. Whatever went wrong, it is not the network.
+    Exited(std::process::ExitStatus),
+    /// Still running, but never answered within the timeout.
+    TimedOut,
+}
+
+/// Poll `GET http://127.0.0.1:{port}/v1/health` until it responds, the child
+/// exits, or the timeout elapses.
+///
+/// Watching the child is what separates "nothing can reach the listener" from
+/// "there is no listener". A daemon that refused its own configuration exits in
+/// milliseconds, and blaming a firewall for that (after a full 30 s wait) sends
+/// the user to the wrong place entirely.
+async fn wait_for_health(
+    port: u16,
+    timeout: Duration,
+    child: &mut std::process::Child,
+) -> StartOutcome {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if probe_health(port).await.is_some() {
-            return true;
+            return StartOutcome::Ready;
+        }
+        // Checked after the probe so a daemon that answers and then exits in
+        // the same tick still counts as having started.
+        if let Ok(Some(status)) = child.try_wait() {
+            return StartOutcome::Exited(status);
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    false
+    StartOutcome::TimedOut
 }
 
 /// Single non-retrying health probe. Returns the `instance_id` on success.
@@ -1432,6 +1487,159 @@ mod tests {
         assert!(
             !recorded.contains("SPELUNK_LLM_KEY"),
             "no credential resolved, so none should have been set: {recorded}"
+        );
+    }
+
+    // The LLM variables the child must never simply inherit.
+    const LLM_ENV: [&str; 3] = ["SPELUNK_LLM_URL", "SPELUNK_LLM_MODEL", "SPELUNK_LLM_KEY"];
+
+    // Restores the LLM and secret-store variables on drop, so a panic mid-test
+    // cannot leak a mutated environment into another test.
+    struct LlmEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl LlmEnvGuard {
+        // Clear every LLM variable and point the secret store at an empty file
+        // store under `config_dir`, so whatever a spawned child ends up with
+        // can only have come from what the code under test resolved.
+        fn isolated(config_dir: &Path) -> Self {
+            let names = ["SPELUNK_SECRET_STORE", "SPELUNK_CONFIG_DIR"];
+            let saved = LLM_ENV
+                .iter()
+                .chain(names.iter())
+                .map(|n| (*n, std::env::var_os(n)))
+                .collect();
+            // SAFETY: every user of this guard is in the `path_env` serial
+            // group, which is the only group in this module mutating
+            // process-global environment.
+            unsafe {
+                for name in LLM_ENV {
+                    std::env::remove_var(name);
+                }
+                std::env::set_var("SPELUNK_SECRET_STORE", "file");
+                std::env::set_var("SPELUNK_CONFIG_DIR", config_dir);
+            }
+            Self(saved)
+        }
+
+        // Export `value` for `name`, as a user's shell would.
+        fn export(&self, name: &str, value: &str) {
+            // SAFETY: see `isolated`.
+            unsafe { std::env::set_var(name, value) };
+        }
+    }
+
+    impl Drop for LlmEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `isolated`.
+            unsafe {
+                for (name, prev) in &self.0 {
+                    match prev {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    // Write a stand-in for `spelunk-server` into `dir` that records its argv
+    // and environment and exits. Returns the record path.
+    #[cfg(unix)]
+    fn recording_server_named(dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let record = dir.join("record.txt");
+        let bin = dir.join(name);
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n{{ echo \"ARGV $*\"; env; }} > '{}'\n",
+                record.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        record
+    }
+
+    // `spelunk-server` reads SPELUNK_LLM_URL/MODEL through clap `env`, so a
+    // variable this process resolved away has to be cleared on the child, not
+    // merely left out of argv. The exported empty endpoint is the case that
+    // makes it visible: it means "no endpoint", and inheriting it hands the
+    // daemon a present-but-empty one instead.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn a_spawn_that_resolved_nothing_clears_the_inherited_llm_variables() {
+        let tmp = TempDir::new().unwrap();
+        let record = recording_server_named(tmp.path(), "fake-spelunk-server");
+        let guard = LlmEnvGuard::isolated(tmp.path());
+        guard.export("SPELUNK_LLM_URL", "");
+        guard.export("SPELUNK_LLM_MODEL", "stale-model");
+        guard.export("SPELUNK_LLM_KEY", "");
+
+        let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
+        let mut child = spawn_daemon_unix(
+            &tmp.path().join("fake-spelunk-server"),
+            &tmp.path().join("server.db"),
+            7777,
+            &LlmSpawn::default(),
+            log,
+        )
+        .expect("spawning the recording stand-in");
+        child.wait().unwrap();
+
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        for name in LLM_ENV {
+            assert!(
+                !recorded.lines().any(|l| l.starts_with(&format!("{name}="))),
+                "{name} was inherited by the child although nothing resolved it: {recorded}"
+            );
+        }
+    }
+
+    // `build_daemon_args` and `child_env` prove only what an already resolved
+    // `LlmSpawn` renders to. This drives `ensure_server_running` itself, so
+    // dropping the resolution at that call site cannot stay green.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial(path_env, server_state_dir_env)]
+    async fn ensure_server_running_hands_the_configured_endpoint_to_the_daemon() {
+        let tmp = TempDir::new().unwrap();
+        let record = recording_server_named(tmp.path(), "spelunk-server");
+
+        let _path = PathGuard::capture();
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        // SAFETY: `#[serial(path_env, ...)]` serialises this against every
+        // other PATH-mutating test; `PathGuard` restores PATH on panic.
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:{}", tmp.path().display(), old_path.to_string_lossy()),
+            )
+        };
+        let _state = StateDirGuard::set(&tmp.path().join("state"));
+        let _env = LlmEnvGuard::isolated(tmp.path());
+
+        let cfg = Config {
+            llm_url: Some("http://endpoint.invalid:1234".to_string()),
+            llm_model: Some("from-config".to_string()),
+            ..Config::default()
+        };
+        let (_port, freshly_started) = ensure_server_running(19800, &cfg)
+            .await
+            .expect("auto-start against the recording stand-in");
+        assert!(freshly_started);
+
+        let recorded = std::fs::read_to_string(&record)
+            .unwrap_or_else(|e| panic!("the daemon stand-in recorded nothing ({e})"));
+        let argv = recorded.lines().next().unwrap_or_default();
+        assert!(
+            argv.contains("--llm-url http://endpoint.invalid:1234"),
+            "the configured endpoint never reached the auto-started daemon: {argv}"
+        );
+        assert!(
+            argv.contains("--llm-model from-config"),
+            "the configured model never reached the auto-started daemon: {argv}"
         );
     }
 

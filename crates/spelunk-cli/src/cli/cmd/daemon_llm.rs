@@ -80,31 +80,54 @@ impl LlmSpawn {
         Self::resolve_with_store(cfg, url_override, model_override, store.as_ref())
     }
 
+    /// The endpoint the daemon is to be configured with, and the model to send
+    /// it, or `None` when no endpoint resolved.
+    ///
+    /// A model with no endpoint to send it to is not a configuration, so the
+    /// model is reachable only through the endpoint. Both output channels read
+    /// the configuration from here, which is what keeps them from disagreeing.
+    fn endpoint(&self) -> Option<(&str, Option<&str>)> {
+        Some((self.url.as_deref()?, self.model.as_deref()))
+    }
+
     /// The daemon arguments carrying the non-secret LLM values.
     ///
-    /// Empty unless an endpoint URL resolved: a model without an endpoint is
-    /// not a configuration, and emitting nothing keeps the daemon arg list
+    /// Empty unless an endpoint URL resolved, which keeps the daemon arg list
     /// byte-identical to an unconfigured spawn.
     pub(super) fn args(&self) -> Vec<OsString> {
-        let Some(url) = &self.url else {
+        let Some((url, model)) = self.endpoint() else {
             return Vec::new();
         };
         let mut args: Vec<OsString> = vec!["--llm-url".into(), url.into()];
-        if let Some(model) = &self.model {
+        if let Some(model) = model {
             args.push("--llm-model".into());
             args.push(model.into());
         }
         args
     }
 
-    /// The environment entries to set on the child, which is where the
-    /// credential travels. An explicit entry also pins the value against
-    /// whatever the child would otherwise inherit from this process.
-    pub(super) fn child_env(&self) -> Vec<(&'static str, String)> {
-        match &self.key {
-            Some(key) => vec![(llm_key::ENV_LLM_KEY, key.clone())],
-            None => Vec::new(),
-        }
+    /// How the child's three LLM environment variables must be set, in order:
+    /// `Some` means set to that value, `None` means unset it on the child.
+    ///
+    /// Every variable is named on every spawn. The child otherwise inherits
+    /// this process's environment, and `spelunk-server`'s `--llm-url` /
+    /// `--llm-model` carry clap `env` attributes, so an inherited value the CLI
+    /// deliberately resolved away would still reach the daemon behind its back:
+    /// an exported `SPELUNK_LLM_URL=""` arrives as a present-but-empty endpoint
+    /// rather than as no endpoint. Naming all three makes the daemon's view
+    /// exactly what this process resolved, whatever the parent exported.
+    ///
+    /// The credential travels here and nowhere else.
+    pub(super) fn child_env(&self) -> Vec<(&'static str, Option<String>)> {
+        let (url, model) = match self.endpoint() {
+            Some((url, model)) => (Some(url.to_string()), model.map(str::to_string)),
+            None => (None, None),
+        };
+        vec![
+            (llm_key::ENV_LLM_URL, url),
+            (llm_key::ENV_LLM_MODEL, model),
+            (llm_key::ENV_LLM_KEY, self.key.clone()),
+        ]
     }
 }
 
@@ -133,6 +156,22 @@ mod tests {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn env_entry(spawn: &LlmSpawn, name: &str) -> Option<String> {
+        let env = spawn.child_env();
+        let found = env.iter().find(|(n, _)| *n == name);
+        assert!(
+            found.is_some(),
+            "{name} must be named on every spawn, or the child inherits it: {:?}",
+            env.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            env.iter().filter(|(n, _)| *n == name).count(),
+            1,
+            "{name} must be named exactly once"
+        );
+        found.unwrap().1.clone()
     }
 
     #[test]
@@ -247,13 +286,15 @@ mod tests {
         )
         .unwrap();
 
-        let env = spawn.child_env();
-        assert_eq!(env, vec![("SPELUNK_LLM_KEY", "sk-llm-secret".to_string())]);
+        assert_eq!(
+            env_entry(&spawn, "SPELUNK_LLM_KEY"),
+            Some("sk-llm-secret".to_string())
+        );
     }
 
     #[test]
     #[serial_test::serial]
-    fn no_key_means_no_child_env_entry() {
+    fn no_key_means_the_child_entry_is_cleared_not_left_inherited() {
         clear_env();
         let store = MemoryStore::default();
         let spawn = LlmSpawn::resolve_with_store(
@@ -264,7 +305,58 @@ mod tests {
         )
         .unwrap();
 
-        assert!(spawn.child_env().is_empty());
+        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_KEY"), None);
+    }
+
+    // The daemon reads SPELUNK_LLM_URL / SPELUNK_LLM_MODEL through clap `env`,
+    // so anything this process resolved away has to be cleared on the child
+    // rather than merely left out of argv. An exported `SPELUNK_LLM_URL=""` is
+    // the case that made this visible: it resolves to no endpoint here and used
+    // to arrive at the daemon as a present-but-empty one.
+    #[test]
+    #[serial_test::serial]
+    fn a_resolved_endpoint_is_pinned_on_the_child_and_an_unresolved_one_is_cleared() {
+        clear_env();
+        let store = MemoryStore::default();
+
+        let configured = LlmSpawn::resolve_with_store(
+            &cfg_with(Some("http://127.0.0.1:1234"), Some("gpt-oss")),
+            None,
+            None,
+            &store,
+        )
+        .unwrap();
+        assert_eq!(
+            env_entry(&configured, "SPELUNK_LLM_URL"),
+            Some("http://127.0.0.1:1234".to_string())
+        );
+        assert_eq!(
+            env_entry(&configured, "SPELUNK_LLM_MODEL"),
+            Some("gpt-oss".to_string())
+        );
+
+        let blanked =
+            LlmSpawn::resolve_with_store(&cfg_with(Some(""), Some("")), None, None, &store)
+                .unwrap();
+        assert_eq!(env_entry(&blanked, "SPELUNK_LLM_URL"), None);
+        assert_eq!(env_entry(&blanked, "SPELUNK_LLM_MODEL"), None);
+    }
+
+    // A model resolved without an endpoint emits no argv flag, so the child's
+    // model variable must be cleared too: leaving it set would configure a
+    // model the CLI decided not to send.
+    #[test]
+    #[serial_test::serial]
+    fn a_model_without_an_endpoint_is_cleared_on_the_child() {
+        clear_env();
+        let store = MemoryStore::default();
+        let spawn =
+            LlmSpawn::resolve_with_store(&cfg_with(None, Some("gpt-oss")), None, None, &store)
+                .unwrap();
+
+        assert!(spawn.args().is_empty());
+        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_URL"), None);
+        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_MODEL"), None);
     }
 
     // Config::load has already folded SPELUNK_LLM_URL over the config file, so
@@ -399,7 +491,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(spawn.key, None);
-        assert!(spawn.child_env().is_empty());
+        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_KEY"), None);
     }
 
     // Trimming is what makes a stray newline from a piped `auth set-key` behave,
@@ -424,8 +516,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            spawn.child_env(),
-            vec![("SPELUNK_LLM_KEY", "sk-llm-secret".to_string())]
+            env_entry(&spawn, "SPELUNK_LLM_KEY"),
+            Some("sk-llm-secret".to_string())
         );
     }
 

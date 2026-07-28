@@ -43,9 +43,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   on your network) keeps working exactly as before, and an endpoint with no
   credential is still sent no `Authorization` header at all.
 
+  What the CLI resolves is exactly what the daemon it starts sees. All three LLM
+  variables are set on the child rather than inherited from your shell, so an
+  exported `SPELUNK_LLM_URL=""` genuinely switches the endpoint off for that
+  shell instead of reaching the daemon as a configured-but-empty one.
+
   A daemon that is already running keeps the configuration it started with;
   restart it with `spelunk server stop && spelunk server start` to pick up a
   change. Nothing restarts it for you.
+
+### Fixed
+
+- **`spelunk server start` no longer blames your firewall for a daemon that
+  refused to start.** It waited out the full 30-second liveness timeout and then
+  suggested a firewall whatever had gone wrong, including when the daemon had
+  already exited over its own configuration. It now notices the process is gone,
+  says so immediately, and points at the log; the firewall suggestion is kept for
+  the case it actually describes, a daemon still running and still not answering.
 
 - **A written stability contract, [docs/stability.md](docs/stability.md), and
   tests that enforce it.** Until now the plumbing JSONL schemas were held stable

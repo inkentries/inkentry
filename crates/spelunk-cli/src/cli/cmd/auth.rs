@@ -23,7 +23,8 @@ pub struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommand {
-    /// Store a bearer key for a self-hosted spelunk-server, read from stdin/prompt
+    /// Store a credential, read from stdin/prompt: a self-hosted spelunk-server's
+    /// bearer key (`--server`) or the LLM endpoint's key (`--llm`)
     SetKey(AuthSetKeyArgs),
     /// List servers with a stored key (origins only, never prints key material)
     ListServers,

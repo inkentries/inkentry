@@ -126,8 +126,8 @@ fn the_refusal_never_echoes_an_inline_key() {
 #[ignore = "reproduces a known fail-open in the shared loopback predicate"]
 fn a_key_over_a_host_that_merely_looks_like_loopback_is_refused() {
     for url in [
-        "http://127.0.0.1.evil.example",
-        "http://127.0.0.1@evil.example",
+        "http://127.0.0.1.example.invalid",
+        "http://127.0.0.1@example.invalid",
     ] {
         let out = start_with(url, Some("sk-llm-secret"));
         let stderr = String::from_utf8_lossy(&out.stderr);

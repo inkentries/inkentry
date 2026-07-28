@@ -18,6 +18,15 @@ use super::secret_store::{KEY_LLM_KEY, SecretStore};
 /// that have no keychain.
 pub const ENV_LLM_KEY: &str = "SPELUNK_LLM_KEY";
 
+/// Environment variable overriding [`Config::llm_url`](super::Config::llm_url).
+///
+/// Named here rather than spelled inline so the loader that reads it and the
+/// spawn path that pins it on the child cannot drift apart.
+pub const ENV_LLM_URL: &str = "SPELUNK_LLM_URL";
+
+/// Environment variable overriding [`Config::llm_model`](super::Config::llm_model).
+pub const ENV_LLM_MODEL: &str = "SPELUNK_LLM_MODEL";
+
 /// Trim `raw` and treat a blank result as "no key".
 ///
 /// A set-but-empty value is what `${SPELUNK_LLM_KEY:-}` expands to in a

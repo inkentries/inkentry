@@ -72,11 +72,18 @@ which is which before it surprises you:
 The short rule: an environment variable that is *set* always wins, even when
 empty; a flag has to carry a value to win.
 
-Both halves are covered by tests, so neither will change by accident. They are
-described here as current behaviour rather than promised by the
-[stability contract](stability.md#config), because the two positions answer the
-same question in opposite directions and reconciling them is still open. Pass a
-value you mean, and the question does not arise.
+The off-switch works because the CLI sets all three LLM variables on the daemon
+it starts, rather than letting the daemon inherit them. `spelunk-server` reads
+`SPELUNK_LLM_URL` and `SPELUNK_LLM_MODEL` itself, so a value the CLI resolved
+away would otherwise still reach it: an exported empty endpoint would arrive as
+a configured-but-empty one. Whatever the CLI resolves is what the daemon sees,
+and nothing else is.
+
+Both halves are covered by tests, including through a real spawn, so neither
+will change by accident. They are described here as current behaviour rather
+than promised by the [stability contract](stability.md#config), because the two
+positions answer the same question in opposite directions and reconciling them
+is still open. Pass a value you mean, and the question does not arise.
 
 ### If you run `spelunk-server` yourself
 
@@ -87,11 +94,13 @@ Pass flags to the binary (verified against `spelunk-server --help`, v0.9.5):
 | `--llm-url` | `SPELUNK_LLM_URL` | Base URL of an OpenAI-compatible chat-completions server (e.g. LM Studio, Ollama, vLLM). |
 | `--llm-model` | `SPELUNK_LLM_MODEL` | Model name to send to that endpoint (e.g. `google/gemma-3n-e4b`). |
 | `--llm-key` | | Credential for that endpoint, passed inline. Visible in the process table, so prefer the alternatives. |
-| `--llm-key-file` | `SPELUNK_LLM_KEY` | File whose whole trimmed contents are the credential. An unreadable path is fatal, never a fall-through to another source. |
+| `--llm-key-file` | | File whose whole trimmed contents are the credential. An unreadable path is fatal, never a fall-through to another source. |
 
-Precedence here is `--llm-key` > `--llm-key-file` > `SPELUNK_LLM_KEY` > unset.
-`SPELUNK_LLM_KEY` deliberately does not populate `--llm-key`, so setting the
-variable cannot silently outrank a `--llm-key-file` you also passed.
+Neither key flag is bound to an environment variable, deliberately. The
+credential can still come from `SPELUNK_LLM_KEY`, but it enters at its own rank
+rather than through a flag: precedence is `--llm-key` > `--llm-key-file` >
+`SPELUNK_LLM_KEY` > unset. Binding the variable to `--llm-key` would let merely
+exporting it silently outrank a `--llm-key-file` you also passed.
 
 `--llm-key` is the endpoint's credential, and is a different secret from
 `--key`, which is this server's own inbound bearer.
