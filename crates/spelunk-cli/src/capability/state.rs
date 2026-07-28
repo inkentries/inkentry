@@ -23,8 +23,18 @@ pub enum EmbedderState {
     /// Server built without the native embedder (`embed-native` feature): no
     /// in-process model to load, ever. Embed endpoints return a permanent 400.
     Disabled,
-    /// Field absent from the health body (server pre-dates it). Unknown state.
+    /// Field absent from the health body (server pre-dates it), or set to a
+    /// state this build does not know. Unknown state.
+    ///
+    // `other` matters more than it looks. Without it an unrecognised state
+    // string fails to deserialize, and because this enum sits inside the
+    // health body, that failure takes the *whole* body down with it: the CLI
+    // falls back to the legacy plain-text branch and silently discards
+    // `limits`, `embedding_dim`, and every capability the server advertised.
+    // A newer server adding a state value is explicitly allowed by the
+    // additive-only rule in docs/stability.md, so it must cost nothing.
     #[default]
+    #[serde(other)]
     Unknown,
 }
 

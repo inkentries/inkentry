@@ -1298,4 +1298,131 @@ mod tests {
              transition, not return a value pinned by the first call; got {second:?}"
         );
     }
+
+    // ── Recorded peer responses (version skew) ───────────────────────────────
+    //
+    // Everything above this line builds its health body with `health_body()`,
+    // which is the shape we *believe* a peer has. These replay bodies captured
+    // from real released `spelunk-server` binaries instead, so they can
+    // contradict that belief rather than confirm it. Provenance for each file
+    // is recorded in docs/version-skew.md.
+
+    fn recorded_health(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/skew")
+            .join(name);
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read recorded fixture {}: {e}", path.display()));
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("parse recorded fixture {}: {e}", path.display()))
+    }
+
+    async fn probe_recorded(body: serde_json::Value) -> Tier {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None)
+            .await
+            .expect("probe of a recorded peer body must succeed")
+    }
+
+    // v0.8.0 and v0.9.0 genuinely omit `embedder`, `embedding_dim`, and
+    // `limits`: these files are what those binaries actually sent, not a
+    // hand-built "imagine an old server" body. Each absent optional must land
+    // on its documented conservative default rather than erroring or being
+    // read as "unlimited".
+    #[tokio::test]
+    async fn recorded_legacy_peers_degrade_to_documented_defaults() {
+        for name in ["health-v0.8.0.json", "health-v0.9.0.json"] {
+            let body = recorded_health(name);
+            assert!(
+                body.get("limits").is_none() && body.get("embedder").is_none(),
+                "{name} is supposed to be the absent-optionals fixture, but it \
+                 carries those fields; re-record it or fix the test's premise"
+            );
+
+            let tier = probe_recorded(body).await;
+            assert_eq!(
+                tier.embedder_state(),
+                Some(EmbedderState::Unknown),
+                "{name}: an absent `embedder` object must read as Unknown"
+            );
+            assert_eq!(
+                tier.server_limits(),
+                None,
+                "{name}: absent `limits` must stay None, never be confused with \
+                 an absence of limits"
+            );
+        }
+    }
+
+    // The other half of the same contract: when a real peer does send the
+    // optional objects, they must actually be read rather than defaulted away.
+    // Without this, a parser that dropped every optional on the floor would
+    // still pass the legacy test above.
+    #[tokio::test]
+    async fn recorded_current_peers_parse_their_optional_objects() {
+        for name in ["health-v0.9.4-ready.json", "health-v0.9.5-ready.json"] {
+            let tier = probe_recorded(recorded_health(name)).await;
+            assert_eq!(
+                tier.embedder_state(),
+                Some(EmbedderState::Ready),
+                "{name}: a ready embedder must be read as Ready"
+            );
+            let limits = tier
+                .server_limits()
+                .unwrap_or_else(|| panic!("{name}: `limits` was sent and must parse"));
+            assert_eq!(limits.max_batch_chunks, 256, "{name}: max_batch_chunks");
+            assert_eq!(
+                limits.embed_request_timeout_secs, 1800,
+                "{name}: embed_request_timeout_secs"
+            );
+            assert!(
+                matches!(tier.caps(), Some(c) if c.search_semantic && c.index_embed),
+                "{name}: a ready peer advertising semantic capabilities must \
+                 surface them"
+            );
+        }
+    }
+
+    // A peer newer than this CLI will send fields this CLI has never heard of.
+    // Ignoring them is the whole basis of the additive-only evolution rule in
+    // docs/stability.md, so it is asserted against a real recorded body with
+    // unknown fields grafted on rather than against a synthetic one.
+    #[tokio::test]
+    async fn unknown_fields_from_a_newer_peer_are_ignored() {
+        let baseline = probe_recorded(recorded_health("health-v0.9.5-ready.json")).await;
+
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        let obj = body.as_object_mut().expect("health body is an object");
+        obj.insert("a_field_from_the_future".into(), serde_json::json!("hello"));
+        obj.insert(
+            "nested_future_object".into(),
+            serde_json::json!({ "deep": [1, 2, 3] }),
+        );
+        obj.insert("limits_v2".into(), serde_json::json!({ "unknown": true }));
+        // A new enum member in an existing open field, which is the additive
+        // change most likely to be mistaken for a parse error.
+        obj["embedder"]["state"] = serde_json::json!("recalibrating");
+
+        let with_unknowns = probe_recorded(body).await;
+
+        assert_eq!(
+            with_unknowns.server_limits(),
+            baseline.server_limits(),
+            "unknown sibling fields must not disturb the fields this CLI does read"
+        );
+        assert_eq!(
+            with_unknowns.embedder_state(),
+            Some(EmbedderState::Unknown),
+            "an unrecognised `embedder.state` must fall back to Unknown rather \
+             than failing the whole probe"
+        );
+    }
 }
