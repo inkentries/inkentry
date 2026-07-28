@@ -63,9 +63,17 @@ async fn an_empty_push_set_makes_no_embed_calls() {
         (summary.embedded_locally, summary.without_local_vector),
         (0, 0)
     );
-    assert_eq!(
-        embed_count(&loopback.server.received_requests().await.unwrap()),
-        0
+    // Stronger than "no embed call": the discovery probe (`GET /v1/health`)
+    // that resolving an embedder performs must not happen either, or an empty
+    // push would pay for an embedder it never needed.
+    assert!(
+        loopback
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty(),
+        "an empty push set must not even probe for an embedder"
     );
     assert!(
         team.received_requests().await.unwrap().is_empty(),

@@ -179,6 +179,39 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
     assert!(!body.contains("vector"), "must ship text-only: {body}");
 }
 
+#[test]
+fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
+    // The one case a live mock cannot pin without owning port 7777: loopback
+    // auto-discovery finding nothing while a team `server_url` IS configured.
+    // `probe_loopback` yields `Tier::Offline` there, whose `effective_config`
+    // is a no-op, and outside `cloud_first` `resolve_inference_url` reads
+    // `inference_url` alone. So the config the embedder is resolved from
+    // produces no client at all rather than falling back to `server_url`:
+    // the repair degrades to text-only instead of embedding remotely.
+    let cfg = Config {
+        server_url: Some("https://cloud.invalid.example:1".to_string()),
+        project_id: Some("proj".to_string()),
+        mode: None,
+        ..Default::default()
+    };
+    let eff =
+        crate::capability::Tier::Offline.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
+    assert_eq!(
+        eff.server_url.as_deref(),
+        Some("https://cloud.invalid.example:1"),
+        "the sync destination is untouched: only inference routing is at issue"
+    );
+    assert_eq!(
+        eff.resolve_inference_url(),
+        None,
+        "a configured team server_url must never become the embed target"
+    );
+    assert!(
+        crate::server_client::ServerInferenceClient::from_config(&eff).is_none(),
+        "no loopback embedder must mean no embedder, not the team server"
+    );
+}
+
 #[tokio::test]
 async fn no_local_embedder_sends_no_embed_request_to_the_team_server() {
     let (tmp, store) = fresh_store();
@@ -320,6 +353,84 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
     let body = String::from_utf8(reqs[0].body.clone()).unwrap();
     assert!(!body.contains("vector"), "wire payload unchanged: {body}");
     drop(loopback);
+}
+
+// The repair and `memory reindex` must agree, config shape by config shape, on
+// when a local embedding is meaningful at all. They are two independent
+// expressions of the same condition today; without this they can drift apart
+// silently, leaving a push repairing a store `reindex` refuses to touch (or
+// vice versa).
+#[tokio::test]
+#[serial_test::serial]
+async fn the_repair_applies_exactly_where_reindex_does() {
+    use crate::cli::cmd::memory::MemoryReindexArgs;
+    use crate::cli::cmd::memory::reindex::memory_reindex;
+
+    let prev_no_server = std::env::var_os("SPELUNK_NO_SERVER");
+    unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+
+    let team = "https://cloud.invalid.example:1".to_string();
+    let shapes = [
+        ("cloud_first + server_url", Some(SyncMode::CloudFirst), true),
+        (
+            "cloud_first, no server_url",
+            Some(SyncMode::CloudFirst),
+            false,
+        ),
+        ("local_first + server_url", Some(SyncMode::LocalFirst), true),
+        (
+            "local_first, no server_url",
+            Some(SyncMode::LocalFirst),
+            false,
+        ),
+        ("default mode + server_url", None, true),
+        ("offline + server_url", Some(SyncMode::Offline), true),
+    ];
+
+    for (label, mode, with_server_url) in shapes {
+        let (tmp, store) = fresh_store();
+        // `reindex` opens the path itself; nothing may hold a second handle.
+        drop(store);
+        let mem_path = tmp.path().join("memory.db");
+        let cfg = Config {
+            server_url: with_server_url.then(|| team.clone()),
+            project_id: Some("proj".to_string()),
+            mode,
+            ..Default::default()
+        };
+
+        let repair_skipped = matches!(
+            LocalEmbedPolicy::for_push(&cfg, &mem_path),
+            LocalEmbedPolicy::Skip
+        );
+        // `--dry-run` returns before any embedder is resolved, so this observes
+        // reindex's applicability check and nothing else.
+        let reindex_refused = memory_reindex(
+            MemoryReindexArgs {
+                force: false,
+                include_archived: false,
+                dry_run: true,
+                format: "json".to_string(),
+            },
+            &mem_path,
+            &cfg,
+            None,
+        )
+        .await
+        .is_err();
+
+        assert_eq!(
+            repair_skipped, reindex_refused,
+            "{label}: the push repair and `memory reindex` must apply under \
+             identical conditions"
+        );
+    }
+
+    unsafe {
+        if let Some(v) = prev_no_server {
+            std::env::set_var("SPELUNK_NO_SERVER", v);
+        }
+    }
 }
 
 #[test]

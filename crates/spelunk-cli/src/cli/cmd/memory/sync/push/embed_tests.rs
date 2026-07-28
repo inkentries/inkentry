@@ -134,13 +134,16 @@ async fn push_embeds_the_same_document_string_reindex_does() {
 async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id, uuid) = add_note(&store, "Already", "embedded");
-    store
-        .insert_embedding(id, &spelunk_core::embeddings::vec_to_blob(&stub_vector()))
-        .unwrap();
+    let (id_a, uuid_a) = add_note(&store, "Already", "embedded");
+    let (id_b, uuid_b) = add_note(&store, "Also already", "embedded");
+    for id in [id_a, id_b] {
+        store
+            .insert_embedding(id, &spelunk_core::embeddings::vec_to_blob(&stub_vector()))
+            .unwrap();
+    }
 
     let team = MockServer::start().await;
-    mount_batch_created(&team, &[&uuid]).await;
+    mount_batch_created(&team, &[&uuid_a, &uuid_b]).await;
     let client = CloudSyncClient::new(&team.uri(), "proj", None, None).unwrap();
 
     let cfg = team_cfg();
@@ -155,9 +158,19 @@ async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
     .unwrap();
 
     assert_eq!(summary.embedded_locally, 0);
+    // Not just "no embed call": no traffic at all. Resolving the embedder is
+    // itself a discovery probe (`GET /v1/health`), so a push set that is
+    // already fully embedded must never reach the resolver in the first place.
+    // Asserting only on `/index/embed` would still pass if the client were
+    // resolved eagerly and then went unused.
     assert!(
-        embed_docs(&loopback.server.received_requests().await.unwrap()).is_empty(),
-        "a row with a usable vector must cost no embed call"
+        loopback
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty(),
+        "a fully embedded push set must not even probe for an embedder"
     );
     drop(loopback);
 }
