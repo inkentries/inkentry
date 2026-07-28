@@ -250,6 +250,39 @@ recorded memory. The promise is *not* that the SQL schema stays fixed.
 Migrations are **forward-only**. Downgrading spelunk after an upgrade has
 migrated a store is not supported.
 
+### Downgrading, and why `user_version` can go backwards
+
+"Not supported" does not mean "prevented", and the two stores behave
+differently when an older binary opens a newer one. Both behaviours below were
+measured against real released binaries by the
+[upgrade corpus](../scripts/upgrade-corpus/README.md), not inferred.
+
+**`memory.db` refuses.** A store stamped above the build's own
+`MEMORY_SCHEMA_VERSION` is rejected with an upgrade message, which is the row
+in the table above. Memory is not derived data, so refusing is the designed
+outcome.
+
+**`index.db` does not refuse.** It reads cleanly and re-stamps its
+`PRAGMA user_version` down to its own. If you are debugging an `index.db` whose
+`user_version` appears to have gone *backwards*, this is what happened: an
+older spelunk opened it. It is not corruption, and nothing was lost.
+
+The rewind is not a quirk of one release. It falls out of how the migration
+runner works in every build: it returns early only when the stamp already
+equals its own `CURRENT_SCHEMA_VERSION`, and otherwise runs whatever steps are
+above the value it read and stamps its own version at the end. A stamp *above*
+its own is therefore written back down. Concretely, v0.9.3 rewinds an
+`index.db` that a current build had stamped 15 back to 14.
+
+It self-heals. The steps above the rewound version are individually idempotent,
+so the next open by a current build re-runs them as no-ops and re-stamps the
+current version. No row is lost in either direction.
+
+What makes this safe rather than merely survivable is the invariant that a
+binary never leaves the stamp *above* its own version. If it did, a newer build
+would skip migrations it had never actually run, and that is the case where
+data would be damaged. The corpus asserts that bound directly.
+
 ### `.spelunk/` layout
 
 **Stable:** the directory name `.spelunk/` at the project root, and the names
@@ -278,6 +311,8 @@ that fails CI when it is broken.
 | Each declared field is load-bearing, per command | `assert_every_declared_field_is_load_bearing`, run inside every command's conformance test in `plumbing_jsonl_contract.rs`. The command's real output is replayed with one declared field dropped, then retyped, and the checker must object each time. Conformance alone would pass against a checker that never rejects anything. |
 | Plumbing exit codes 0/1/2 | `crates/spelunk-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
 | `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p spelunk-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
+| On-disk forward compatibility, for every store above | `crates/spelunk-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. Artifacts written by **real released binaries** are opened with the current build and checked for surviving rows, content, embeddings, the entity-id backfill, and full-text hits, plus upgrade idempotence. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
+| The stamp is never left above the opening build's version | The same suite, against a pinned older release opening a current store. This is the bound that keeps the `user_version` rewind safe, since a newer build must never skip migrations it has not run. |
 | The above run on every change | `.github/workflows/stability-contract.yml`. |
 
 ### Changing a stable surface deliberately
