@@ -1425,4 +1425,89 @@ mod tests {
              than failing the whole probe"
         );
     }
+
+    // ── Blast radius of a single unreadable field ────────────────────────────
+    //
+    // `parse_health` maps *any* deserialization error onto the legacy
+    // plain-text branch, so one field this CLI cannot read discards the entire
+    // body: capabilities, embedding_dim and limits all vanish at once, with no
+    // log line to say so. That amplification is what made the `embedder.state`
+    // defect expensive, and it is a property of the parser rather than of that
+    // one field. These assert the amplification does not fire for shapes a peer
+    // can legitimately send.
+    //
+    // The signature of the fallback is unmistakable: limits None *and*
+    // capabilities emptied, on a body that carries both.
+    // Asserted on the *siblings* of the mutated field, never on the field
+    // itself: the mutated field is allowed to degrade to its documented
+    // default. `capabilities` is the sibling that makes the amplification
+    // unambiguous, because the legacy fallback replaces it with
+    // `legacy_memory_only()` and semantic search disappears from a body that
+    // plainly advertised it.
+    async fn assert_capabilities_survived(label: &str, mutated: serde_json::Value) {
+        let tier = probe_recorded(mutated).await;
+        assert!(
+            matches!(tier.caps(), Some(c) if c.search_semantic && c.index_embed),
+            "{label}: the whole health body was discarded, not just the field \
+             under test; every advertised capability was lost with it, and \
+             nothing was logged to say so"
+        );
+    }
+
+    // This server serialises absent optionals as an explicit JSON `null` rather
+    // than omitting the key: both recorded v0.9.x bodies carry
+    // `embedder.detail: null`, and the v0.9.4/v0.9.5 loading bodies carry
+    // `limits.embedder_token_cap: null`. So `null` is a shape this peer family
+    // demonstrably emits, and `#[serde(default)]` does not cover it: it fills in
+    // a *missing* key, never a present one holding `null`.
+    //
+    // `#[serde(other)]` closed the unrecognised-string case on `embedder.state`.
+    // It does not close the `null` case, which reaches the identical outcome
+    // through the identical field.
+    #[tokio::test]
+    async fn null_embedder_state_does_not_discard_the_rest_of_the_health_body() {
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        body["embedder"]["state"] = serde_json::Value::Null;
+        assert_capabilities_survived("embedder.state: null", body).await;
+    }
+
+    // `limits` is tolerated as a whole (`Option<ServerLimits>`) but strict
+    // inside: `embed_request_timeout_secs` and `max_batch_chunks` have no
+    // default, so a null or absent value there takes the entire body down. The
+    // third member of the same struct, `embedder_token_cap`, is already sent as
+    // `null` by real binaries, so nulling-when-unknown is this server's
+    // established habit for exactly this object.
+    #[tokio::test]
+    async fn a_null_limit_does_not_discard_the_rest_of_the_health_body() {
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        body["limits"]["max_batch_chunks"] = serde_json::Value::Null;
+        assert_capabilities_survived("limits.max_batch_chunks: null", body).await;
+    }
+
+    // The tolerances that do hold, pinned so a later tightening of the health
+    // structs cannot quietly reintroduce the amplification above.
+    #[tokio::test]
+    async fn tolerated_health_body_shapes_keep_the_rest_of_the_body() {
+        let mut absent_token_cap = recorded_health("health-v0.9.5-ready.json");
+        absent_token_cap["limits"]
+            .as_object_mut()
+            .expect("limits is an object")
+            .remove("embedder_token_cap");
+        assert_capabilities_survived("limits without embedder_token_cap", absent_token_cap).await;
+
+        let mut reshaped_embedder = recorded_health("health-v0.9.5-ready.json");
+        reshaped_embedder["embedder"] = serde_json::json!({ "states": [{ "name": "ready" }] });
+        assert_capabilities_survived("embedder reshaped by a newer peer", reshaped_embedder).await;
+
+        let mut null_embedder = recorded_health("health-v0.9.5-ready.json");
+        null_embedder["embedder"] = serde_json::Value::Null;
+        assert_capabilities_survived("embedder: null", null_embedder).await;
+
+        let mut extra_capability = recorded_health("health-v0.9.5-ready.json");
+        extra_capability["capabilities"]
+            .as_array_mut()
+            .expect("capabilities is an array")
+            .push(serde_json::json!("a.capability.from.the.future"));
+        assert_capabilities_survived("an unrecognised capability string", extra_capability).await;
+    }
 }
