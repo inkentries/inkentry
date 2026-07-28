@@ -473,6 +473,52 @@ mod tests {
         );
     }
 
+    // The boundary of the privacy guard, pinned so a change to it is visible.
+    //
+    // In `cloud_first` the inference tier IS the configured `server_url`, so
+    // step 2 matches on the remote and step 3 never runs: a set `llm_url` does
+    // not stop an LLM call from going to the remote. That is consistent rather
+    // than an escape hatch, because `cloud_first` already routes embedding to
+    // the same remote, so chunk text leaves the machine there either way. In
+    // `local_first`, which is the default whenever `server_url` is set, the
+    // guard does apply.
+    #[test]
+    fn cloud_first_routes_to_the_remote_even_with_llm_url_set() {
+        let cfg = Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            llm_url: Some("http://127.0.0.1:1234".to_string()),
+            mode: Some(spelunk_core::config::SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        let tier = server_tier("https://team.example:7777", true, false);
+        let route = local_route(&cfg, root(), &tier).expect("step 2 matches on the remote");
+        assert!(matches!(route, LlmRoute::Local(_)), "got {route:?}");
+        assert_eq!(route.target_url(), Some("https://team.example:7777"));
+    }
+
+    // The same config in `local_first`, for contrast: there the guard stops the
+    // call rather than sending it to the remote.
+    #[test]
+    fn local_first_with_the_same_config_stops_instead_of_using_the_remote() {
+        let cfg = Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            llm_url: Some("http://127.0.0.1:1234".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_mode(),
+            spelunk_core::config::SyncMode::LocalFirst
+        );
+        let tier = server_tier("http://127.0.0.1:7777", false, true);
+        let route = local_route(&cfg, root(), &tier).expect("the guard must apply");
+        assert_eq!(
+            route.reason(),
+            Some(NoLlmReason::LocalConfiguredButNotServed)
+        );
+    }
+
     #[test]
     fn local_route_defers_to_the_remote_when_no_local_llm_was_asked_for() {
         let cfg = Config {

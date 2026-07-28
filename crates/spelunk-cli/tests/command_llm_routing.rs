@@ -310,6 +310,12 @@ async fn explore_stops_with_the_restart_message_when_the_local_llm_is_not_served
         text.contains("spelunk server stop") && text.contains("spelunk server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
+    // The privacy guard rendered as prose: never nudge a user who asked for a
+    // local LLM toward the remote this run deliberately avoided.
+    assert!(
+        !text.contains("server_url"),
+        "the message must not offer the remote as a way out:\n{text}"
+    );
     assert_eq!(
         count_path(&remote, "/llm/complete").await,
         0,
@@ -464,6 +470,12 @@ async fn harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served
         text.contains("spelunk server stop") && text.contains("spelunk server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
+    // The privacy guard rendered as prose: never nudge a user who asked for a
+    // local LLM toward the remote this run deliberately avoided.
+    assert!(
+        !text.contains("server_url"),
+        "the message must not offer the remote as a way out:\n{text}"
+    );
     assert_eq!(
         count_path(&remote, "/llm/complete").await,
         0,
@@ -498,6 +510,146 @@ async fn harvest_stops_with_the_no_llm_message_when_none_is_available() {
     assert!(
         text.contains("server_url"),
         "must offer the remote route:\n{text}"
+    );
+    assert_no_internal_names(&text);
+}
+
+// ── memory harvest --source failures ──────────────────────────────────────
+//
+// The third harvest source. It builds its clients at its own call site, so the
+// git source passing says nothing about it, exactly as with claude-code.
+
+// The failures harvester only looks at commits whose subject reads as a
+// failure signal, so the fixture's feature commit alone yields an empty run
+// that never reaches client construction.
+fn write_failure_commit(dir: &Path) {
+    std::fs::write(
+        dir.join("src").join("guard.rs"),
+        "pub fn guard(v: &[u8]) -> u8 {\n    *v.first().unwrap_or(&0)\n}\n",
+    )
+    .expect("write guard.rs");
+    let run = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["add", "."]);
+    run(&[
+        "commit",
+        "-q",
+        "-m",
+        "fix: stop the indexer panicking on empty input",
+    ]);
+}
+
+// The failures schema carries no `kind`, unlike the git source's.
+fn failures_payload() -> String {
+    serde_json::json!({
+        "entries": [{
+            "sha": "HEAD",
+            "title": "Empty input panicked the indexer",
+            "body": "Guard the first-element read instead of indexing directly.",
+            "tags": ["reliability"],
+        }]
+    })
+    .to_string()
+}
+
+fn failures_harvest_cmd(
+    home: &Path,
+    project: &Path,
+    mem: &Path,
+    state_dir: &Path,
+) -> assert_cmd::Command {
+    let mut cmd = base_cmd(home, project);
+    cmd.env("SPELUNK_STATE_DIR", state_dir)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--db")
+        .arg(mem)
+        .arg("--source")
+        .arg("failures")
+        .arg("--branch")
+        .arg("HEAD");
+    cmd
+}
+
+#[tokio::test]
+async fn failures_harvest_splits_extraction_to_the_remote_and_embedding_to_the_loopback() {
+    let loopback = server_mock(None).await;
+    let remote = server_mock(Some(failures_payload())).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path());
+    write_failure_commit(project.path());
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    write_server_config(project.path(), &remote.uri());
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+
+    let mem = project.path().join("memory.db");
+    let output = failures_harvest_cmd(home.path(), project.path(), &mem, &state_dir)
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(
+        count_path(&remote, "/llm/complete").await > 0,
+        "the remote is the only LLM available and must serve extraction:\n{text}"
+    );
+    assert!(
+        count_path(&loopback, "/index/embed").await > 0,
+        "dedup vectors must still be embedded locally:\n{text}"
+    );
+    assert_eq!(
+        count_path(&remote, "/index/embed").await,
+        0,
+        "routing extraction to the remote must not divert embedding there:\n{text}"
+    );
+}
+
+#[tokio::test]
+async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served() {
+    let loopback = server_mock(None).await;
+    let remote = server_mock(Some(failures_payload())).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path());
+    write_failure_commit(project.path());
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    write_server_config(project.path(), &remote.uri());
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+
+    let mem = project.path().join("memory.db");
+    let output = failures_harvest_cmd(home.path(), project.path(), &mem, &state_dir)
+        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        "the restart is the only useful instruction here:\n{text}"
+    );
+    // The privacy guard rendered as prose: never nudge a user who asked for a
+    // local LLM toward the remote this run deliberately avoided.
+    assert!(
+        !text.contains("server_url"),
+        "the message must not offer the remote as a way out:\n{text}"
+    );
+    assert_eq!(
+        count_path(&remote, "/llm/complete").await,
+        0,
+        "commit content must never reach a remote LLM the user did not choose:\n{text}"
     );
     assert_no_internal_names(&text);
 }
@@ -622,6 +774,12 @@ async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_i
     assert!(
         text.contains("spelunk server stop") && text.contains("spelunk server start"),
         "the restart is the only useful instruction here:\n{text}"
+    );
+    // The privacy guard rendered as prose: never nudge a user who asked for a
+    // local LLM toward the remote this run deliberately avoided.
+    assert!(
+        !text.contains("server_url"),
+        "the message must not offer the remote as a way out:\n{text}"
     );
     assert_eq!(
         count_path(&remote, "/llm/complete").await,

@@ -344,6 +344,12 @@ async fn configured_local_llm_not_served_skips_and_never_reaches_the_remote() {
         combined.contains("llm_url"),
         "the message must name the setting that is being ignored:\n{combined}"
     );
+    // The privacy guard rendered as prose: a user who asked for a local LLM
+    // must not be nudged toward the remote one this run deliberately avoided.
+    assert!(
+        !combined.contains("server_url"),
+        "the notice must not offer the remote as a way out:\n{combined}"
+    );
     assert_no_internal_names(&combined);
 }
 
