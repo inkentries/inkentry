@@ -382,6 +382,122 @@ async fn probe_url(
     }
 }
 
+/// Read one `/v1/health` field, degrading a value this CLI cannot read to that
+/// field's default instead of failing the whole body.
+///
+/// Without this, a strict field nested inside a tolerated structure costs the
+/// entire response: `parse_health` maps any deserialization error onto the
+/// legacy plain-text branch, so `capabilities`, `embedding_dim` and `limits`
+/// are all discarded together because of one field. That amplification is the
+/// defect, not any single field's strictness, and the additive-only rule in
+/// docs/stability.md means a newer peer is allowed to send shapes this build
+/// has never seen.
+fn lenient_or_default<'de, D, T>(de: D, field: &str) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    use serde::Deserialize;
+
+    let raw = serde_json::Value::deserialize(de)?;
+    match T::deserialize(&raw) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            tracing::warn!(
+                "ignoring unreadable /v1/health field `{field}` ({e}): falling back \
+                 to this CLI's default for it and keeping the rest of the body"
+            );
+            Ok(T::default())
+        }
+    }
+}
+
+macro_rules! lenient_health_field {
+    ($fn_name:ident, $ty:ty, $wire_name:literal) => {
+        fn $fn_name<'de, D>(de: D) -> Result<$ty, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            lenient_or_default::<D, $ty>(de, $wire_name)
+        }
+    };
+}
+
+lenient_health_field!(lenient_capabilities, Vec<String>, "capabilities");
+lenient_health_field!(lenient_instance_id, Option<String>, "instance_id");
+lenient_health_field!(lenient_started_by, Option<u32>, "started_by");
+lenient_health_field!(lenient_embedding_dim, usize, "embedding_dim");
+lenient_health_field!(lenient_embedder, Option<EmbedderBody>, "embedder");
+lenient_health_field!(lenient_embedder_state, EmbedderState, "embedder.state");
+lenient_health_field!(lenient_limits, Option<ServerLimits>, "limits");
+lenient_health_field!(
+    lenient_accepts_pushed_vectors,
+    bool,
+    "accepts_pushed_vectors"
+);
+
+#[derive(serde::Deserialize)]
+struct EmbedderBody {
+    #[serde(default, deserialize_with = "lenient_embedder_state")]
+    state: EmbedderState,
+}
+
+#[derive(serde::Deserialize)]
+struct HealthBody {
+    #[serde(default, deserialize_with = "lenient_capabilities")]
+    capabilities: Vec<String>,
+    #[serde(default, deserialize_with = "lenient_instance_id")]
+    instance_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_started_by")]
+    started_by: Option<u32>,
+    /// Embedding dimension produced by this server's embedder.
+    /// Absent on old servers that pre-date this field; defaults to 0 (skip check).
+    #[serde(default, deserialize_with = "lenient_embedding_dim")]
+    embedding_dim: usize,
+    /// Embedder readiness sub-object. Absent on older servers
+    /// → `embedder_state` stays `Unknown`.
+    #[serde(default, deserialize_with = "lenient_embedder")]
+    embedder: Option<EmbedderBody>,
+    /// Server-enforced `/index/embed` limits.
+    /// Absent on older servers → `server_limits` stays `None`.
+    ///
+    /// Unreadable inner members degrade the whole object to `None` rather than
+    /// to invented numbers: `None` means "assume the conservative legacy
+    /// profile", while a made-up `max_batch_chunks` would push requests the
+    /// server rejects with `413`.
+    #[serde(default, deserialize_with = "lenient_limits")]
+    limits: Option<ServerLimits>,
+    /// Whether the server accepts a client-pushed embedding vector on
+    /// `POST /memory/batch`. Top-level bool, not a
+    /// `capabilities` entry. Absent on servers without the accept side
+    /// (older servers, the OSS team server) → defaults false.
+    #[serde(default, deserialize_with = "lenient_accepts_pushed_vectors")]
+    accepts_pushed_vectors: bool,
+}
+
+/// Conservative reading assumed for a server whose `/v1/health` body is not a
+/// readable JSON object at all: the legacy plain-text `ok` responder.
+/// `embedding_dim = 0` skips the dimension check in `probe_url`.
+fn legacy_plain_text_health() -> (Capabilities, usize, EmbedderState, Option<ServerLimits>) {
+    (
+        Capabilities::legacy_memory_only(),
+        0,
+        EmbedderState::Unknown,
+        None,
+    )
+}
+
+/// Bounded, lossy rendering of a health body for a log line.
+fn health_body_snippet(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let head: String = text.chars().take(200).collect();
+    if head.len() < text.len() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
 /// Parse the health response body and return `(Capabilities, embedding_dim,
 /// embedder_state, server_limits)`.
 ///
@@ -402,39 +518,19 @@ async fn parse_health(
     url: &str,
     resp: reqwest::Response,
 ) -> (Capabilities, usize, EmbedderState, Option<ServerLimits>) {
-    #[derive(serde::Deserialize)]
-    struct EmbedderBody {
-        #[serde(default)]
-        state: EmbedderState,
-    }
+    let raw = match resp.bytes().await {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::warn!(
+                "could not read the /v1/health body from spelunk-server at {url} ({e}): \
+                 treating it as a legacy plain-text server, so semantic search, \
+                 index embed and harvest will be reported unavailable"
+            );
+            return legacy_plain_text_health();
+        }
+    };
 
-    #[derive(serde::Deserialize)]
-    struct HealthBody {
-        #[serde(default)]
-        capabilities: Vec<String>,
-        instance_id: Option<String>,
-        started_by: Option<u32>,
-        /// Embedding dimension produced by this server's embedder.
-        /// Absent on old servers that pre-date this field; defaults to 0 (skip check).
-        #[serde(default)]
-        embedding_dim: usize,
-        /// Embedder readiness sub-object. Absent on older servers
-        /// → `embedder_state` stays `Unknown`.
-        #[serde(default)]
-        embedder: Option<EmbedderBody>,
-        /// Server-enforced `/index/embed` limits.
-        /// Absent on older servers → `server_limits` stays `None`.
-        #[serde(default)]
-        limits: Option<ServerLimits>,
-        /// Whether the server accepts a client-pushed embedding vector on
-        /// `POST /memory/batch`. Top-level bool, not a
-        /// `capabilities` entry. Absent on servers without the accept side
-        /// (older servers, the OSS team server) → defaults false.
-        #[serde(default)]
-        accepts_pushed_vectors: bool,
-    }
-
-    match resp.json::<HealthBody>().await {
+    match serde_json::from_slice::<HealthBody>(&raw) {
         Ok(body) => {
             let embedder_state = body
                 .embedder
@@ -464,15 +560,19 @@ async fn parse_health(
             caps.accepts_pushed_vectors = body.accepts_pushed_vectors;
             (caps, body.embedding_dim, embedder_state, body.limits)
         }
-        Err(_) => {
-            // Legacy server returns plain-text "ok": conservative fallback.
-            // embedding_dim = 0 skips the dimension check; state Unknown; no limits.
-            (
-                Capabilities::legacy_memory_only(),
-                0,
-                EmbedderState::Unknown,
-                None,
-            )
+        Err(e) => {
+            // Silence here is what let a single strict field discard whole
+            // health bodies unnoticed: every field above degrades on its own
+            // now, so reaching this arm means the body was not a readable
+            // health object at all, and that is worth saying out loud.
+            tracing::warn!(
+                "could not parse the /v1/health body from spelunk-server at {url} ({e}): \
+                 treating it as a legacy plain-text server, so semantic search, \
+                 index embed and harvest will be reported unavailable and any \
+                 advertised limits ignored. body: {}",
+                health_body_snippet(&raw)
+            );
+            legacy_plain_text_health()
         }
     }
 }
@@ -1482,6 +1582,74 @@ mod tests {
         let mut body = recorded_health("health-v0.9.5-ready.json");
         body["limits"]["max_batch_chunks"] = serde_json::Value::Null;
         assert_capabilities_survived("limits.max_batch_chunks: null", body).await;
+    }
+
+    // The counterpart sibling for the one mutation where `capabilities` is
+    // itself the field under test: it is allowed to degrade to its own default,
+    // so `limits` becomes the field that proves the body was not discarded.
+    async fn assert_limits_survived(label: &str, mutated: serde_json::Value) {
+        let tier = probe_recorded(mutated).await;
+        assert!(
+            tier.server_limits().is_some(),
+            "{label}: the whole health body was discarded, not just the field \
+             under test; the server's advertised limits were lost with it"
+        );
+    }
+
+    // The same defect shape as the two above, on the six remaining members of
+    // the health body. None of these was pinned before, and every one of them
+    // discarded the entire body: a strict field nested inside a tolerated
+    // structure costs `capabilities`, `embedding_dim` and `limits` together.
+    // Each mutation is allowed to lose its own field and nothing else.
+    #[tokio::test]
+    async fn every_health_field_degrades_alone_rather_than_taking_the_body_down() {
+        // A number field holding an explicit null, which is how this server
+        // family already serialises the optionals it does not know
+        // (`embedder.detail`, `limits.embedder_token_cap`).
+        let mut null_dim = recorded_health("health-v0.9.5-ready.json");
+        null_dim["embedding_dim"] = serde_json::Value::Null;
+        assert_capabilities_survived("embedding_dim: null", null_dim).await;
+
+        let mut null_bool = recorded_health("health-v0.9.5-ready.json");
+        null_bool["accepts_pushed_vectors"] = serde_json::Value::Null;
+        assert_capabilities_survived("accepts_pushed_vectors: null", null_bool).await;
+
+        // Both identity fields are informational only: one is logged at debug,
+        // the other drives a multi-user warning. Neither is worth the whole
+        // body, so a peer that widens either type must not break the probe.
+        let mut string_uid = recorded_health("health-v0.9.5-ready.json");
+        string_uid["started_by"] = serde_json::json!("501");
+        assert_capabilities_survived("started_by as a string", string_uid).await;
+
+        let mut numeric_instance = recorded_health("health-v0.9.5-ready.json");
+        numeric_instance["instance_id"] = serde_json::json!(12345);
+        assert_capabilities_survived("instance_id as a number", numeric_instance).await;
+
+        // `limits` reshaped wholesale, rather than nulled member by member.
+        let mut limits_array = recorded_health("health-v0.9.5-ready.json");
+        limits_array["limits"] = serde_json::json!([]);
+        assert_capabilities_survived("limits sent as an array", limits_array).await;
+
+        // A member with no default simply missing, which is the shape a peer
+        // that retires a limit would send.
+        let mut partial_limits = recorded_health("health-v0.9.5-ready.json");
+        partial_limits["limits"]
+            .as_object_mut()
+            .expect("limits is an object")
+            .remove("embed_request_timeout_secs");
+        assert_capabilities_survived("limits without embed_request_timeout_secs", partial_limits)
+            .await;
+
+        let mut scalar_embedder = recorded_health("health-v0.9.5-ready.json");
+        scalar_embedder["embedder"] = serde_json::json!(5);
+        assert_capabilities_survived("embedder sent as a scalar", scalar_embedder).await;
+
+        // `capabilities` is the one field whose own default is indistinguishable
+        // from the legacy fallback's effect on it, so `limits` is the sibling
+        // that shows the rest of the body survived.
+        let mut null_caps = recorded_health("health-v0.9.5-ready.json");
+        null_caps["capabilities"] = serde_json::Value::Null;
+        assert_limits_survived("capabilities: null", null_caps).await;
     }
 
     // The tolerances that do hold, pinned so a later tightening of the health
