@@ -2197,4 +2197,99 @@ mod tests {
             snippet.chars().count()
         );
     }
+
+    // The two arms above were each pinned by the body that broke that one arm.
+    // A body is only ever routed to a single arm, so neither test can see a
+    // regression in the other, and the arms were found unbounded one at a time
+    // for exactly that reason. This drives every shape a peer can put on the
+    // wire through the same two assertions.
+    const CREDENTIAL_SHAPED: &str = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+
+    fn hostile_health_bodies() -> Vec<(&'static str, String)> {
+        // Every credential is placed past the snippet's 200-char bound, so a
+        // hit means the body was rendered further than the bound allows.
+        let filler = "z".repeat(100_000);
+        let hostile_object = serde_json::json!({
+            "status": "ok",
+            "version": filler,
+            "capabilities": CREDENTIAL_SHAPED,
+            "instance_id": -1,
+            "started_by": CREDENTIAL_SHAPED,
+            "embedding_dim": CREDENTIAL_SHAPED,
+            "embedder": CREDENTIAL_SHAPED,
+            "limits": {
+                "embed_request_timeout_secs": CREDENTIAL_SHAPED,
+                "max_batch_chunks": CREDENTIAL_SHAPED,
+                "embedder_token_cap": CREDENTIAL_SHAPED,
+            },
+            "accepts_pushed_vectors": CREDENTIAL_SHAPED,
+        })
+        .to_string();
+
+        vec![
+            (
+                "valid JSON string",
+                serde_json::json!(format!("{filler}{CREDENTIAL_SHAPED}")).to_string(),
+            ),
+            ("valid JSON number", format!("1{}", "0".repeat(100_000))),
+            (
+                "valid JSON array",
+                serde_json::json!([filler, CREDENTIAL_SHAPED]).to_string(),
+            ),
+            ("valid JSON boolean", "true".to_string()),
+            ("valid JSON null", "null".to_string()),
+            ("valid JSON object with hostile values", hostile_object),
+            (
+                "invalid JSON carrying a credential",
+                format!("{{\"capabilities\": [\"{filler}{CREDENTIAL_SHAPED}\""),
+            ),
+            (
+                "deeply nested",
+                format!("{}{}", "[".repeat(4096), "]".repeat(4096)),
+            ),
+            (
+                "plain text carrying a credential",
+                format!("{filler}{CREDENTIAL_SHAPED}"),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn no_health_warning_renders_a_hostile_peer_body_unbounded() {
+        for (label, body) in hostile_health_bodies() {
+            let (_, logs) = probe_raw_capturing_warnings(&body).await;
+            assert!(
+                logs.len() < 8_000,
+                "the warning for `{label}` grew with the {}-byte body it was \
+                 reporting on ({} bytes logged)",
+                body.len(),
+                logs.len()
+            );
+            assert!(
+                !logs.contains(CREDENTIAL_SHAPED),
+                "the warning for `{label}` rendered peer bytes from past the \
+                 snippet bound, so a credential in the body reached the log: {logs}"
+            );
+        }
+    }
+
+    // The head of a non-object body is rendered on purpose: at that point the
+    // peer is not a spelunk server and the sample is the only diagnostic. What
+    // must hold is that the deliberate exposure stops at its stated bound
+    // rather than running to the end of whatever the peer sent.
+    #[tokio::test]
+    async fn the_deliberate_body_snippet_stops_at_its_bound() {
+        let past_the_bound = format!("{}{CREDENTIAL_SHAPED}", "h".repeat(300));
+        let (_, logs) = probe_raw_capturing_warnings(&past_the_bound).await;
+        assert!(
+            !logs.contains(CREDENTIAL_SHAPED),
+            "content 300 characters into the body was rendered, so the snippet \
+             bound is not the limit of what a peer can put in the log: {logs}"
+        );
+        assert!(
+            logs.contains("hhh"),
+            "the snippet rendered none of the body, which leaves the operator \
+             with no sample of what the peer actually sent: {logs}"
+        );
+    }
 }
