@@ -145,11 +145,20 @@ state, or a different deployment.
 Two specific limits worth naming:
 
 - The smoke test's search step depends on the server-side embedder having
-  loaded a model, which is not a wire-contract property. It waits for the
-  embedder to settle and, if it never does, accepts the documented
-  not-ready refusal instead of a result. An earlier draft that did not wait
-  produced a convincing false positive: an old CLI appearing to fail against a
-  new server, purely because that server was a debug build still warming up.
+  loaded a model, which is not a wire-contract property. It waits up to
+  `SKEW_EMBEDDER_TIMEOUT_SECS` (wall clock, default 300) for the embedder to
+  settle. An earlier draft that did not wait produced a convincing false
+  positive: an old CLI appearing to fail against a new server, purely because
+  that server was a debug build still warming up.
+
+  If the embedder never settles, the run **fails** rather than quietly
+  proceeding: search is the only step that drives the query-embedding path
+  across the skew boundary, and a run that skipped it proved much less than it
+  appears to have. Point `SKEW_MODEL_CACHE` at a directory that outlives the
+  run (CI caches one) so the model download is paid once, or set
+  `SKEW_ALLOW_SKIPPED_SEARCH=1` to accept the gap deliberately. A peer that
+  publishes no `embedder` object at all, which is every release before v0.9.x,
+  is detected directly instead of being waited on.
 - The smoke test refuses to run two identical versions against each other,
   because a skew test that is not skewed passes while proving nothing.
 

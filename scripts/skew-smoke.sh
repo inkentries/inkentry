@@ -5,6 +5,11 @@
 #
 #   usage: skew-smoke.sh <path-to-spelunk> <path-to-spelunk-server>
 #
+#   SKEW_EMBEDDER_TIMEOUT_SECS  wall-clock wait for the embedder (default 300)
+#   SKEW_MODEL_CACHE            model directory kept outside the isolated HOME,
+#                               so the model is downloaded once rather than per run
+#   SKEW_ALLOW_SKIPPED_SEARCH   set to 1 to pass without exercising search
+#
 # Every other contract test in this repo talks to a mock or a fixture written
 # to the shape we *believe* a peer has. This script is the only one that puts
 # two independently built artifacts on a socket together, so it is the only one
@@ -58,6 +63,39 @@ free_port() {
   python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
 
+# Isolation, applied before anything is launched. This used to be set after the
+# server was already running, so the comment claiming it was in force was true
+# of the CLI only: the server inherited the invoking user's real HOME, and with
+# it their config, registry and secret store. That matters here more than
+# anywhere else in the repo, because the binaries under test are old releases
+# that pre-date the file secret-store default and will reach a real OS keyring.
+export HOME="$WORK/home"
+export XDG_CONFIG_HOME="$WORK/home/.config"
+export XDG_STATE_HOME="$WORK/home/.local/state"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+
+# Set explicitly rather than left to the isolated HOME: an invoking user with
+# XDG_DATA_HOME already pointing at their real data dir would otherwise leak
+# straight past the isolation above.
+export XDG_DATA_HOME="$WORK/home/.local/share"
+mkdir -p "$XDG_DATA_HOME"
+
+# The embedder model is a large read-only download rather than user state, so
+# it is the one thing a caller may keep outside the isolated HOME: without it
+# the server re-downloads the model every run and never reaches `ready` inside
+# the timeout. Nothing the isolation exists to protect lives here. Linked into
+# place rather than selected by an env var, because the server resolves its
+# model directory from the platform data dir and offers no override of its own.
+if [ -n "${SKEW_MODEL_CACHE:-}" ]; then
+  mkdir -p "$SKEW_MODEL_CACHE"
+  case "$(uname -s)" in
+    Darwin) MODEL_PARENT="$HOME/Library/Application Support/spelunk" ;;
+    *)      MODEL_PARENT="$XDG_DATA_HOME/spelunk" ;;
+  esac
+  mkdir -p "$MODEL_PARENT"
+  ln -s "$SKEW_MODEL_CACHE" "$MODEL_PARENT/models"
+fi
+
 PORT="$(free_port)"
 BASE="http://127.0.0.1:${PORT}"
 
@@ -87,12 +125,6 @@ echo "== CLI $CLI_VERSION  <->  server $SERVER_VERSION"
 # what the first one pushed. Left to `spelunk init` it would be a per-directory
 # content hash and the pull would legitimately find nothing.
 PROJECT_ID="local/skewsmoke"
-
-# Isolated HOME: never touch the invoking user's config, registry, or keyring.
-export HOME="$WORK/home"
-export XDG_CONFIG_HOME="$WORK/home/.config"
-export XDG_STATE_HOME="$WORK/home/.local/state"
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
 # Explicit server URL, so the CLI talks to the binary under test and never
 # auto-discovers some other server already listening on the default port.
@@ -140,15 +172,33 @@ grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note en
 # draft of this script did exactly that and produced a convincing false
 # positive: an old CLI "failing" against a new server purely because the new
 # server was a debug build and was still warming up.
-echo "-- waiting for embedder to settle"
+embedder_state() {
+  curl -sf -m 2 "$BASE/v1/health" 2>/dev/null \
+    | python3 -c 'import json, sys
+body = json.load(sys.stdin)
+embedder = body.get("embedder")
+print("absent" if embedder is None else (embedder.get("state") or "unknown"))' 2>/dev/null \
+    || echo unreachable
+}
+
+EMBEDDER_TIMEOUT="${SKEW_EMBEDDER_TIMEOUT_SECS:-300}"
+echo "-- waiting up to ${EMBEDDER_TIMEOUT}s for embedder to settle"
+# A wall-clock deadline rather than an iteration count. Counting iterations made
+# the real bound up to three times this value, because each pass also pays a 1s
+# sleep and a curl worth up to `-m 2`.
+EMBEDDER_DEADLINE=$(( $(date +%s) + EMBEDDER_TIMEOUT ))
 EMBEDDER_STATE="unknown"
-for _ in $(seq 1 "${SKEW_EMBEDDER_TIMEOUT_SECS:-300}"); do
-  EMBEDDER_STATE="$(curl -sf -m 2 "$BASE/v1/health" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("embedder",{}).get("state","unknown"))' \
-    2>/dev/null || echo unknown)"
+while :; do
+  EMBEDDER_STATE="$(embedder_state)"
+  # `absent` is terminal and was previously invisible: a peer older than v0.9.x
+  # publishes no `embedder` object at all, read the same as `unknown`, so every
+  # run against one burned the entire timeout waiting for a state it can never
+  # report. `unknown` from a peer that does publish the object stays
+  # non-terminal, because that one can still resolve.
   case "$EMBEDDER_STATE" in
-    ready|unavailable|disabled) break ;;
+    ready|unavailable|disabled|absent) break ;;
   esac
+  [ "$(date +%s)" -lt "$EMBEDDER_DEADLINE" ] || break
   sleep 1
 done
 echo "   embedder state: $EMBEDDER_STATE"
@@ -169,7 +219,21 @@ else
   # waved through by this branch.
   grep -Eqi 'embedder|embedding model|warming up|503' "$WORK/search.out" \
     || { cat "$WORK/search.out" >&2; fail "memory search failed for a reason unrelated to embedder readiness"; }
-  echo "   search skipped: embedder never became ready (state=$EMBEDDER_STATE), refusal was the documented one"
+
+  # Skipping search is not free, and it used to be silent. It is the only step
+  # that drives the query-embedding path across the skew boundary, and a warm
+  # model cache on a developer box is the only reason it ever looked cheap: the
+  # isolation above hands the server a cold cache, so a runner without
+  # SKEW_MODEL_CACHE lands here every time. Failing by default is what stops
+  # the job going green while its most valuable assertion never ran.
+  if [ "${SKEW_ALLOW_SKIPPED_SEARCH:-0}" != "1" ]; then
+    cat "$WORK/search.out" >&2
+    fail "memory search was never exercised: embedder state=$EMBEDDER_STATE after \
+waiting up to ${EMBEDDER_TIMEOUT}s, so this run asserted the wire contract but not the \
+query-embedding path. Point SKEW_MODEL_CACHE at a warm model cache, raise \
+SKEW_EMBEDDER_TIMEOUT_SECS, or set SKEW_ALLOW_SKIPPED_SEARCH=1 to accept the gap"
+  fi
+  echo "   WARNING: search skipped, embedder never became ready (state=$EMBEDDER_STATE); refusal was the documented one"
 fi
 
 run push "$CLI_BIN" memory push

@@ -36,11 +36,14 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_PROFILE_TEST_DEBUG: 0
-      # Bounds how long the smoke test waits for the server-side embedder
-      # before it stops judging the search step. The model is a large download
-      # on a cold runner, and search readiness is not what this job measures;
-      # every wire assertion in the script is independent of it.
-      SKEW_EMBEDDER_TIMEOUT_SECS: 150
+      # Wall-clock bound on the smoke test's wait for the server-side embedder.
+      # The script fails rather than skipping the search step if this expires,
+      # so the model cache below is what makes it reachable.
+      SKEW_EMBEDDER_TIMEOUT_SECS: 300
+      # The script runs the server under an isolated HOME, so its model cache
+      # is cold unless pointed somewhere that outlives the run. Only the model
+      # download lives here; config, registry and secret store stay isolated.
+      SKEW_MODEL_CACHE: ${{ github.workspace }}/.skew-model-cache/models
     steps:
       - uses: actions/checkout@v7
 
@@ -124,6 +127,50 @@ jobs:
 
       - name: Build the current binaries
         run: cargo build --release -p spelunk-cli -p spelunk-server --bins
+
+      - name: Cache the embedder model
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.skew-model-cache
+          key: ${{ runner.os }}-skew-embedder-model-v1
+
+      # Downloading the model here rather than inside the skew runs keeps the
+      # failure attributable: a model that will not load is a warm-up failure,
+      # not a version-skew break. It also means the smoke runs below start from
+      # a warm cache, which is the difference between the search step running
+      # and the job failing for having skipped it.
+      - name: Warm the embedder model cache
+        run: |
+          set -euo pipefail
+          # Linked into place the same way the smoke script does it, so both
+          # populate and read one directory.
+          warm_data="$RUNNER_TEMP/warm-home/.local/share"
+          mkdir -p "$SKEW_MODEL_CACHE" "$warm_data/spelunk"
+          ln -sfn "$SKEW_MODEL_CACHE" "$warm_data/spelunk/models"
+
+          HOME="$RUNNER_TEMP/warm-home" XDG_DATA_HOME="$warm_data" \
+            target/release/spelunk-server --port 7999 --db "$RUNNER_TEMP/warm.db" \
+            >"$RUNNER_TEMP/warm.log" 2>&1 &
+          warm_pid=$!
+          trap 'kill "$warm_pid" 2>/dev/null || true' EXIT
+
+          deadline=$(( $(date +%s) + 900 ))
+          state=unknown
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            state="$(curl -sf -m 5 http://127.0.0.1:7999/v1/health \
+              | jq -r '.embedder.state // "unknown"' 2>/dev/null || echo unknown)"
+            case "$state" in
+              loading|unknown) ;;
+              *) break ;;
+            esac
+            sleep 5
+          done
+          echo "embedder state after warm-up: $state"
+          if [ "$state" != "ready" ]; then
+            cat "$RUNNER_TEMP/warm.log" >&2
+            echo "ERROR: embedder never became ready; the skew runs would have to skip search" >&2
+            exit 1
+          fi
 
       - name: Current CLI against the previous released server
         run: |
