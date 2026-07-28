@@ -53,12 +53,27 @@ SPELUNK_SECRET_STORE=file cargo build --all-targets --features rich-formats
 ## 4. Tests + doctests
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo nextest run
-SPELUNK_SECRET_STORE=file cargo test --doc
+SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo nextest run
+SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo test --doc
 ```
 
 Scope to the crate you touched while iterating (`-p spelunk-cli`), but run the full suite before
 the PR.
+
+### Isolate the suite from your own spelunk config
+
+`SPELUNK_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
+default configuration instead of yours.
+
+Only five test files set it themselves; every other test inherits `~/.config/spelunk/config.toml`.
+So if you have configured spelunk for your own use, particularly a `server_url` with
+`mode = "cloud_first"`, the suite picks that up and starts talking to a real server. That has
+already interfered with real runs: tests that should be hermetic fail, hang, or pass for the wrong
+reason depending on whether that server happens to be healthy.
+
+Your own `spelunk` usage and the repo's test runs are different concerns and must not share
+configuration. Pointing the suite at a throwaway directory is the cheapest way to keep them apart,
+and it matches what CI already gets by having no user config at all.
 
 ## 5. Git isolation lint
 
