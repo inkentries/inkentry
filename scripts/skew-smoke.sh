@@ -23,6 +23,13 @@ for bin in "$CLI_BIN" "$SERVER_BIN"; do
   [ -x "$bin" ] || { echo "FAIL: not an executable: $bin" >&2; exit 1; }
 done
 
+# Resolved to absolute paths up front, because the steps below invoke the CLI
+# from inside a scratch project directory. A relative path like
+# `target/release/spelunk` silently stops resolving after that `cd`, which is
+# how CI would be invoking this.
+CLI_BIN="$(cd "$(dirname "$CLI_BIN")" && pwd)/$(basename "$CLI_BIN")"
+SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
+
 # The released binaries pre-date the keychain fix and will block on a real
 # macOS Keychain prompt without this. It is exported rather than passed per
 # command so every child the CLI spawns inherits it too.
