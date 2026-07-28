@@ -5,8 +5,9 @@
 Tests live under `crates/*/tests/` (integration-style, one binary per file)
 plus `#[cfg(test)]` blocks colocated with the code they cover across all four
 crates. The suite spans unit logic, real-SQLite integration, in-process
-server-handler tests, CLI end-to-end tests, property-based tests, and a
-scheduled fuzzing job.
+server-handler tests, CLI end-to-end tests, property-based tests, an upgrade
+corpus of artifacts written by real released binaries, and a scheduled fuzzing
+job.
 
 The embedder stack is the native candle F2LLM path (`spelunk-embed`, gated by
 the `embed-native` feature), not an external OpenAI-compatible endpoint. See
@@ -83,6 +84,58 @@ added or renamed):
 Cross-crate HTTP boundaries (spelunk-server's own endpoints, sync/relay, auth)
 are mocked with `wiremock` where a test needs an HTTP server without a real
 network dependency.
+
+---
+
+## Upgrade corpus (the "DB museum")
+
+Every other migration test in this repo builds an old database shape by hand.
+That tests what we *believe* the old format was. The upgrade corpus tests what
+it **is**: artifacts written by real, downloaded, released spelunk binaries,
+checked in and opened with the current build on every relevant change.
+
+```
+crates/spelunk-cli/tests/upgrade_corpus.rs                the suite
+crates/spelunk-cli/tests/fixtures/upgrade-corpus/         MANIFEST.json + gzipped wings
+scripts/upgrade-corpus/                                   the generator
+.github/workflows/upgrade-corpus.yml                      CI job
+```
+
+Six wings, all produced by actual releases, covering the pre-`user_version`
+`index.db` whose version has to be inferred from its table shapes, a real
+`FLOAT[768]` vector table, memory stores either side of the entity-id backfill,
+a registry with a dependency link, and all three git-notes eras on one ref.
+
+```sh
+SPELUNK_SECRET_STORE=file cargo test -p spelunk-cli --test upgrade_corpus
+```
+
+It needs no network and no server: the fixtures are checked in, and the suite
+expands each gzipped wing into a temp dir, since opening a database migrates it
+and would otherwise destroy the fixture on first run. One test is `#[ignore]`d
+because it needs a downloaded release binary in `SPELUNK_OLD_BINARY`; CI runs
+that leg separately.
+
+This suite is what enforces the on-disk half of the
+[stability contract](stability.md#on-disk-formats). If you change a migration,
+this is the test that tells you whether real field data survives it, and its
+assertions are deliberately specific: they were built by injecting each
+data-destroying regression into the real migration paths and confirming the
+suite went red, so weakening one to make it pass is almost always the wrong
+move.
+
+Two things it documents that are easy to hit and hard to guess:
+
+- an older binary opening a newer `index.db` re-stamps `PRAGMA user_version`
+  **downwards**, which is not corruption. See
+  [Downgrading, and why `user_version` can go backwards](stability.md#downgrading-and-why-user_version-can-go-backwards).
+- adding a wing at each release, and the one assertion that is expected to flip
+  when a release carrying the `memory.db` version guard is captured, are covered
+  in [the corpus README](../scripts/upgrade-corpus/README.md).
+
+Regenerating a wing is scripted but not reproducible byte for byte (wall-clock
+timestamps, epoch-milli ids, absolute capture paths), so regenerate only the
+wing you mean to change, with `generate.sh --only <wing-id>`.
 
 ---
 
