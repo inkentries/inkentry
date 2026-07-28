@@ -42,9 +42,21 @@ is more recoverable than a hard one that is correct in principle.
 
 What is guaranteed instead:
 
-- Absent optional fields fall back to a documented conservative default, never
-  to an optimistic one. An older peer that omits `limits` is treated as
-  enforcing the legacy budget, never as having no limit.
+- Absent or unreadable optional fields fall back to a documented conservative
+  default, never to an optimistic one, and they fall back **one field at a
+  time**. A member of `limits` this build cannot read costs that member only:
+  a peer advertising `max_batch_chunks: 16` next to an unreadable sibling
+  keeps the 16. Reading the object all-or-nothing would discard it and leave
+  the client planning around 256, which is the `413` this tolerance exists to
+  prevent, so an all-or-nothing degrade is the more permissive choice here and
+  not the safer one.
+- A peer that omits `limits` altogether is treated as enforcing the legacy
+  profile, which is two separate fallbacks and not one: a 30s `/index/embed`
+  budget on the time axis, and 256 chunks per request on the chunk axis. 256
+  is that server family's own hard cap (`MAX_EMBED_BATCH`, `413` above it), so
+  it is the legacy limit rather than the absence of one. Check the two axes
+  separately: treating "assume the legacy profile" as a single conservative
+  default is exactly what hid the chunk axis before.
 - Unknown fields, and unknown values in an open enum, are ignored rather than
   failing the request that carried them.
 - A genuinely incompatible response produces a diagnostic naming the peer URL,

@@ -392,7 +392,15 @@ async fn probe_url(
 /// defect, not any single field's strictness, and the additive-only rule in
 /// docs/stability.md means a newer peer is allowed to send shapes this build
 /// has never seen.
-fn lenient_or_default<'de, D, T>(de: D, field: &str) -> Result<T, D::Error>
+///
+/// The warning names the field, the shape this build expected and what the
+/// degrade costs, and deliberately renders **none** of the value. `/v1/health`
+/// is unauthenticated and its body is whatever `server_url` resolves to, so a
+/// field's contents are peer-controlled and unbounded: serde's own error text
+/// quotes a wrong-typed string in full, which turned a 100 kB field into a
+/// 100 kB log line and echoed credential-shaped values verbatim. The received
+/// JSON kind carries the diagnostic value without carrying the value itself.
+fn lenient_or_default<'de, D, T>(de: D, field: &str, expected: &str) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned + Default,
@@ -402,44 +410,142 @@ where
     let raw = serde_json::Value::deserialize(de)?;
     match T::deserialize(&raw) {
         Ok(value) => Ok(value),
-        Err(e) => {
+        Err(_) => {
+            let kind = json_kind(&raw);
             tracing::warn!(
-                "ignoring unreadable /v1/health field `{field}` ({e}): falling back \
-                 to this CLI's default for it and keeping the rest of the body"
+                "ignoring unreadable /v1/health field `{field}`: expected {expected}, \
+                 got {kind}. Falling back to this CLI's default for it and keeping the \
+                 rest of the body. The value is not logged"
             );
             Ok(T::default())
         }
     }
 }
 
+/// Name of a JSON value's kind, from a fixed vocabulary, for a log line that
+/// must not carry the value.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
 macro_rules! lenient_health_field {
-    ($fn_name:ident, $ty:ty, $wire_name:literal) => {
+    ($fn_name:ident, $ty:ty, $wire_name:literal, $expected:literal) => {
         fn $fn_name<'de, D>(de: D) -> Result<$ty, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
-            lenient_or_default::<D, $ty>(de, $wire_name)
+            lenient_or_default::<D, $ty>(de, $wire_name, $expected)
         }
     };
 }
 
-lenient_health_field!(lenient_capabilities, Vec<String>, "capabilities");
-lenient_health_field!(lenient_instance_id, Option<String>, "instance_id");
-lenient_health_field!(lenient_started_by, Option<u32>, "started_by");
-lenient_health_field!(lenient_embedding_dim, usize, "embedding_dim");
-lenient_health_field!(lenient_embedder, Option<EmbedderBody>, "embedder");
-lenient_health_field!(lenient_embedder_state, EmbedderState, "embedder.state");
-lenient_health_field!(lenient_limits, Option<ServerLimits>, "limits");
+lenient_health_field!(
+    lenient_capabilities,
+    Vec<String>,
+    "capabilities",
+    "an array of capability strings"
+);
+lenient_health_field!(
+    lenient_instance_id,
+    Option<String>,
+    "instance_id",
+    "a string"
+);
+lenient_health_field!(
+    lenient_started_by,
+    Option<u32>,
+    "started_by",
+    "a non-negative integer uid"
+);
+lenient_health_field!(
+    lenient_embedding_dim,
+    usize,
+    "embedding_dim",
+    "a non-negative integer"
+);
+lenient_health_field!(
+    lenient_embedder,
+    Option<EmbedderBody>,
+    "embedder",
+    "an object carrying a `state`"
+);
+lenient_health_field!(
+    lenient_embedder_state,
+    EmbedderState,
+    "embedder.state",
+    "a known embedder state string"
+);
+lenient_health_field!(
+    lenient_limits,
+    Option<ServerLimitsBody>,
+    "limits",
+    "an object of server-enforced limits"
+);
+lenient_health_field!(
+    lenient_embed_request_timeout_secs,
+    Option<u64>,
+    "limits.embed_request_timeout_secs",
+    "a non-negative integer number of seconds"
+);
+lenient_health_field!(
+    lenient_max_batch_chunks,
+    Option<usize>,
+    "limits.max_batch_chunks",
+    "a non-negative integer number of chunks"
+);
+lenient_health_field!(
+    lenient_embedder_token_cap,
+    Option<usize>,
+    "limits.embedder_token_cap",
+    "a non-negative integer number of tokens"
+);
 lenient_health_field!(
     lenient_accepts_pushed_vectors,
     bool,
-    "accepts_pushed_vectors"
+    "accepts_pushed_vectors",
+    "a boolean"
 );
 
 #[derive(serde::Deserialize)]
 struct EmbedderBody {
     #[serde(default, deserialize_with = "lenient_embedder_state")]
     state: EmbedderState,
+}
+
+/// Wire shape of `/v1/health`'s `limits`, read one member at a time so an
+/// unreadable member costs only itself.
+///
+/// Reading the object all-or-nothing was the more permissive choice, not the
+/// conservative one: a peer advertising `max_batch_chunks: 16` alongside one
+/// member this build cannot read lost the 16, and `resolve_batch_ceiling` then
+/// planned around this CLI's own maximum of 256, which is the `413` the
+/// tolerance exists to avoid. Each member is `None` when absent or unreadable,
+/// which the embed phase already reads as "not advertised".
+#[derive(serde::Deserialize)]
+struct ServerLimitsBody {
+    #[serde(default, deserialize_with = "lenient_embed_request_timeout_secs")]
+    embed_request_timeout_secs: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_max_batch_chunks")]
+    max_batch_chunks: Option<usize>,
+    #[serde(default, deserialize_with = "lenient_embedder_token_cap")]
+    embedder_token_cap: Option<usize>,
+}
+
+impl From<ServerLimitsBody> for ServerLimits {
+    fn from(body: ServerLimitsBody) -> Self {
+        ServerLimits {
+            embed_request_timeout_secs: body.embed_request_timeout_secs,
+            max_batch_chunks: body.max_batch_chunks,
+            embedder_token_cap: body.embedder_token_cap,
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -459,14 +565,11 @@ struct HealthBody {
     #[serde(default, deserialize_with = "lenient_embedder")]
     embedder: Option<EmbedderBody>,
     /// Server-enforced `/index/embed` limits.
-    /// Absent on older servers → `server_limits` stays `None`.
-    ///
-    /// Unreadable inner members degrade the whole object to `None` rather than
-    /// to invented numbers: `None` means "assume the conservative legacy
-    /// profile", while a made-up `max_batch_chunks` would push requests the
-    /// server rejects with `413`.
+    /// Absent, or not an object at all, on older servers → `server_limits`
+    /// stays `None`. Present but partly unreadable keeps the members that did
+    /// parse (see `ServerLimitsBody`).
     #[serde(default, deserialize_with = "lenient_limits")]
-    limits: Option<ServerLimits>,
+    limits: Option<ServerLimitsBody>,
     /// Whether the server accepts a client-pushed embedding vector on
     /// `POST /memory/batch`. Top-level bool, not a
     /// `capabilities` entry. Absent on servers without the accept side
@@ -487,15 +590,20 @@ fn legacy_plain_text_health() -> (Capabilities, usize, EmbedderState, Option<Ser
     )
 }
 
-/// Bounded, lossy rendering of a health body for a log line.
-fn health_body_snippet(raw: &[u8]) -> String {
-    let text = String::from_utf8_lossy(raw);
+/// Bounded rendering of peer-controlled text for a log line. Cuts on a
+/// character boundary so a multibyte body cannot be split mid-character.
+fn bounded_for_log(text: &str) -> String {
     let head: String = text.chars().take(200).collect();
     if head.len() < text.len() {
         format!("{head}...")
     } else {
         head
     }
+}
+
+/// Bounded, lossy rendering of a health body for a log line.
+fn health_body_snippet(raw: &[u8]) -> String {
+    bounded_for_log(&String::from_utf8_lossy(raw))
 }
 
 /// Parse the health response body and return `(Capabilities, embedding_dim,
@@ -530,7 +638,28 @@ async fn parse_health(
         }
     };
 
-    match serde_json::from_slice::<HealthBody>(&raw) {
+    // Parsed in two steps so the failure can be described without rendering
+    // serde's error: `invalid type: string "...", expected struct HealthBody`
+    // quotes the whole body back, so a 100 kB JSON string would have produced a
+    // 100 kB log line through the one arm whose snippet was already bounded.
+    // A `serde_json` syntax error carries only a code and a line/column, never
+    // input, so that one is safe to render (bounded anyway).
+    let value = match serde_json::from_slice::<serde_json::Value>(&raw) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::warn!(
+                "could not parse the /v1/health body from spelunk-server at {url} as \
+                 JSON ({}): treating it as a legacy plain-text server, so semantic \
+                 search, index embed and harvest will be reported unavailable and any \
+                 advertised limits ignored. body: {}",
+                bounded_for_log(&e.to_string()),
+                health_body_snippet(&raw)
+            );
+            return legacy_plain_text_health();
+        }
+    };
+
+    match <HealthBody as serde::Deserialize>::deserialize(&value) {
         Ok(body) => {
             let embedder_state = body
                 .embedder
@@ -558,18 +687,24 @@ async fn parse_health(
             // `accepts_pushed_vectors` is a top-level health bool, not a
             // `capabilities` array entry, so it is applied after the array parse.
             caps.accepts_pushed_vectors = body.accepts_pushed_vectors;
-            (caps, body.embedding_dim, embedder_state, body.limits)
+            (
+                caps,
+                body.embedding_dim,
+                embedder_state,
+                body.limits.map(ServerLimits::from),
+            )
         }
-        Err(e) => {
+        Err(_) => {
             // Silence here is what let a single strict field discard whole
             // health bodies unnoticed: every field above degrades on its own
-            // now, so reaching this arm means the body was not a readable
-            // health object at all, and that is worth saying out loud.
+            // now, so reaching this arm means the body was valid JSON that is
+            // not a health object at all, and that is worth saying out loud.
             tracing::warn!(
-                "could not parse the /v1/health body from spelunk-server at {url} ({e}): \
-                 treating it as a legacy plain-text server, so semantic search, \
-                 index embed and harvest will be reported unavailable and any \
-                 advertised limits ignored. body: {}",
+                "could not parse the /v1/health body from spelunk-server at {url}: it \
+                 is {}, not a health object. Treating it as a legacy plain-text \
+                 server, so semantic search, index embed and harvest will be reported \
+                 unavailable and any advertised limits ignored. body: {}",
+                json_kind(&value),
                 health_body_snippet(&raw)
             );
             legacy_plain_text_health()
@@ -798,8 +933,8 @@ mod tests {
         let limits = result
             .server_limits()
             .expect("server_limits must be Some when the health body carries `limits`");
-        assert_eq!(limits.embed_request_timeout_secs, 1800);
-        assert_eq!(limits.max_batch_chunks, 256);
+        assert_eq!(limits.embed_request_timeout_secs, Some(1800));
+        assert_eq!(limits.max_batch_chunks, Some(256));
         assert_eq!(limits.embedder_token_cap, Some(5792));
     }
 
@@ -1478,9 +1613,14 @@ mod tests {
             let limits = tier
                 .server_limits()
                 .unwrap_or_else(|| panic!("{name}: `limits` was sent and must parse"));
-            assert_eq!(limits.max_batch_chunks, 256, "{name}: max_batch_chunks");
             assert_eq!(
-                limits.embed_request_timeout_secs, 1800,
+                limits.max_batch_chunks,
+                Some(256),
+                "{name}: max_batch_chunks"
+            );
+            assert_eq!(
+                limits.embed_request_timeout_secs,
+                Some(1800),
                 "{name}: embed_request_timeout_secs"
             );
             assert!(
@@ -1810,28 +1950,56 @@ mod tests {
         }
     }
 
-    // The asymmetry the top-level fix does not remove, pinned so it is a
-    // decision rather than a surprise: `limits` is read all-or-nothing, so one
-    // unreadable member discards the members alongside it that parsed fine.
-    // `embedder` does not behave this way, because its only member has its own
-    // lenient read.
+    // Replaces one_unreadable_limit_discards_the_readable_limits_beside_it,
+    // which pinned the all-or-nothing read as a decision. It was the wrong
+    // decision on the chunk axis: losing an advertised cap raises the ceiling
+    // this CLI plans around to its own maximum, so the degrade was more
+    // permissive than what the peer published, not more conservative.
     #[tokio::test]
-    async fn one_unreadable_limit_discards_the_readable_limits_beside_it() {
+    async fn one_unreadable_limit_keeps_the_readable_limits_beside_it() {
         let mut body = recorded_health("health-v0.9.5-ready.json");
         assert_eq!(
             body["limits"]["max_batch_chunks"],
             serde_json::json!(256),
-            "this test needs a readable sibling limit to lose"
+            "this test needs a readable sibling limit to keep"
         );
+        body["limits"]["max_batch_chunks"] = serde_json::json!(16);
+        body["limits"]["embed_request_timeout_secs"] = serde_json::Value::Null;
+
+        let limits = probe_recorded(body)
+            .await
+            .server_limits()
+            .expect("a partly unreadable `limits` must still yield the object");
+        assert_eq!(
+            limits.max_batch_chunks,
+            Some(16),
+            "the advertised chunk cap was discarded because a sibling member \
+             was unreadable"
+        );
+        assert_eq!(
+            limits.embed_request_timeout_secs, None,
+            "the unreadable member itself must degrade to not-advertised"
+        );
+    }
+
+    // The cap a peer publishes is what the embed phase must plan around, so
+    // the assertion above is carried through to the value that actually sizes
+    // a request rather than stopping at the parsed struct.
+    #[tokio::test]
+    async fn a_partly_unreadable_limits_object_still_lowers_the_chunk_ceiling() {
+        let mut body = recorded_health("health-v0.9.5-ready.json");
+        body["limits"]["max_batch_chunks"] = serde_json::json!(16);
         body["limits"]["embed_request_timeout_secs"] = serde_json::Value::Null;
 
         let tier = probe_recorded(body).await;
-        assert_eq!(
-            tier.server_limits(),
-            None,
-            "`limits` is documented as degrading whole-object; if that changed \
-             to a per-member degrade, this test should be replaced rather than \
-             relaxed"
+        let advertised = tier
+            .server_limits()
+            .and_then(|l| l.max_batch_chunks)
+            .expect("the advertised chunk cap must survive its sibling");
+        assert!(
+            advertised < 256,
+            "a peer capping batches at 16 must not leave this CLI planning \
+             around a larger number ({advertised})"
         );
     }
 
@@ -1961,6 +2129,25 @@ mod tests {
         assert!(
             big_logs.len() < 4_000,
             "the fallback warning grew with the body it was reporting on \
+             ({} bytes logged for a 100 kB body)",
+            big_logs.len()
+        );
+    }
+
+    // The 100 kB body above is not valid JSON, so it only ever reached a
+    // syntax error, and those carry no input. A body that *is* valid JSON but
+    // is not an object reaches the struct error instead, and that one quotes
+    // the whole body back. Same 100 kB, different arm, and only this one was
+    // unbounded. The 200-char snippet stays deliberate: at this point the peer
+    // is not a spelunk server at all, and without a sample of what it did send
+    // the failure is undiagnosable.
+    #[tokio::test]
+    async fn a_valid_json_body_that_is_not_an_object_is_bounded_too() {
+        let payload = serde_json::json!("C".repeat(100_000)).to_string();
+        let (_, big_logs) = probe_raw_capturing_warnings(&payload).await;
+        assert!(
+            big_logs.len() < 4_000,
+            "the fallback warning grew with a valid-JSON body it could not read \
              ({} bytes logged for a 100 kB body)",
             big_logs.len()
         );

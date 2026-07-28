@@ -61,13 +61,19 @@ impl EmbedderState {
 /// legacy 30s / no-embed-exemption profile", which is exactly the
 /// version-skew case a newer CLI can hit talking to an older, long-running
 /// server (see `embed_phase.rs`'s calibration-vs-server-budget clamping).
+///
+/// Every member is independently optional because a peer advertises them
+/// independently: `None` on a member means "this peer did not advertise it, or
+/// advertised it in a shape this build cannot read", and each consumer applies
+/// its own legacy fallback. Reading the object all-or-nothing instead would
+/// discard a member that parsed fine because a sibling did not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerLimits {
     /// Wall-clock budget (seconds) the server allows a single `/index/embed`
     /// request before returning `408`.
-    pub embed_request_timeout_secs: u64,
+    pub embed_request_timeout_secs: Option<u64>,
     /// Max chunks accepted in a single `/index/embed` request (`413` above this).
-    pub max_batch_chunks: usize,
+    pub max_batch_chunks: Option<usize>,
     /// Per-chunk token truncation cap the embedder enforces, if known.
     pub embedder_token_cap: Option<usize>,
 }
