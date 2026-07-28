@@ -56,14 +56,30 @@ SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 # first. With that variable inherited, the guard would have pointed those
 # binaries at the developer's real secrets.toml, to read and to write.
 
-# Needed to run at all: find binaries, make temp dirs, decode UTF-8, verify TLS
-# for the model download. None of them selects spelunk state. `_`, PWD, OLDPWD
-# and SHLVL are bash's own bookkeeping, re-set by the shell whatever we do here.
-INHERITED_ENV_ALLOWLIST="PATH HOME TMPDIR TMP TEMP LANG LC_ALL LC_CTYPE TERM USER LOGNAME SHELL SSL_CERT_FILE SSL_CERT_DIR _ PWD OLDPWD SHLVL"
+# Needed to run at all: find binaries, make temp dirs, decode UTF-8. None of
+# them selects spelunk state.
+#
+# SSL_CERT_FILE and SSL_CERT_DIR were permitted here, justified as needed to
+# verify TLS for the model download. That premise was false: nothing in this
+# workspace reads either one. reqwest is pinned to rustls-tls against
+# webpki-roots, and neither rustls-native-certs nor openssl-probe appears in
+# Cargo.lock. An entry nothing reads is not inert, it is a standing permission,
+# and this pair would become a blessed trust-redirect the day someone switches
+# to native roots. Removed rather than re-justified.
+#
+# `_`, PWD, OLDPWD and SHLVL are bash's own bookkeeping, re-set by the shell
+# whatever we do here. SHELLOPTS and BASHOPTS are named for a narrower reason:
+# bash marks them readonly, so the scrub below cannot unset them, and the
+# backstop would then abort the run reporting that the binaries had been pointed
+# at real user state, which is untrue of a shell option list.
+INHERITED_ENV_ALLOWLIST="PATH TMPDIR TMP TEMP LANG LC_ALL LC_CTYPE TERM USER LOGNAME SHELL _ PWD OLDPWD SHLVL SHELLOPTS BASHOPTS"
 
 # Set by this script itself, below. Listed so the assertion can tell what it
-# owns from what leaked in.
-OWNED_ENV="SPELUNK_SECRET_STORE SPELUNK_SERVER_URL XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
+# owns from what leaked in. HOME is owned, not inherited: the script overwrites
+# it unconditionally, and filing it as inherited declared the invoking user's
+# real HOME permitted, which is the first version of the hole this allowlist
+# exists to close.
+OWNED_ENV="HOME SPELUNK_SECRET_STORE SPELUNK_SERVER_URL XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
 
 # SKEW_* are this script's own knobs, read here and by nothing under test.
 env_is_allowed() {
@@ -93,6 +109,14 @@ assert_env_is_allowlisted() {
       || fail "$name reached the binaries under test; it is not one this script sets, so the run would have pointed them at real user state"
   done
 }
+
+# On macOS a child may still report __CF_USER_TEXT_ENCODING after the scrub
+# above removed it. That is not a permission and could not be made one:
+# CoreFoundation re-injects the variable inside CF-linked processes, below the
+# level a shell can reach. A python3 launched from here sees it in os.environ; an
+# `env` launched from here does not, so the assertion above, which reads this
+# script's own environment, can neither observe it nor act on it. It is a
+# text-encoding hint and selects no spelunk path.
 
 # The released binaries pre-date the keychain fix and will block on a real
 # macOS Keychain prompt without this. It is exported rather than passed per
