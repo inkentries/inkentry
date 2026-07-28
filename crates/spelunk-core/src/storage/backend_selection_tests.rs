@@ -254,6 +254,99 @@ async fn cloud_first_local_derived_slug_is_one_encoded_segment() {
     assert_eq!(decoded, "local/9f2a8b3c4d5e6f70");
 }
 
+// `project_id` is opaque to the CLI and the peer's slug key is case-sensitive,
+// so nothing on the way out may normalise its case. Every other fixture in this
+// file is already lowercase, which would hide a case-folding transform.
+#[tokio::test]
+#[serial_test::serial]
+#[cfg_attr(windows, ignore)]
+async fn cloud_first_mixed_case_project_id_is_not_normalised() {
+    clear_env();
+    let server = MockServer::start().await;
+    mount_stats(&server, "GitHub.com%2FOwner%2FRepo-CamelCase", 13).await;
+
+    let url = non_loopback_alias(&server);
+    let be = open_seam(
+        &cloud_first_cfg(&url, "GitHub.com/Owner/Repo-CamelCase"),
+        &url,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(be.count().await.unwrap(), 13);
+    assert_no_preflight(&server).await;
+}
+
+// A raw UUID is equally opaque: canonical UUIDs are case-insensitive, but the
+// peer keys on the string, so an uppercase one must not be folded either.
+#[tokio::test]
+#[serial_test::serial]
+#[cfg_attr(windows, ignore)]
+async fn cloud_first_uppercase_uuid_is_not_normalised() {
+    clear_env();
+    const UPPER_UUID: &str = "018F4E2A-1234-7ABC-8DEF-0000000000AA";
+
+    let server = MockServer::start().await;
+    mount_stats(&server, UPPER_UUID, 2).await;
+
+    let url = non_loopback_alias(&server);
+    let be = open_seam(&cloud_first_cfg(&url, UPPER_UUID), &url)
+        .await
+        .unwrap();
+
+    assert_eq!(be.count().await.unwrap(), 2);
+    assert_no_preflight(&server).await;
+}
+
+// A repo that reached the hosted API before the passthrough still carries the
+// resolver's cache file, which maps the slug to a different string. Nothing
+// reads it any more: the configured `project_id` is the only project key, and
+// the file is not rewritten either.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_leftover_project_id_cache_on_disk_changes_nothing() {
+    clear_env();
+    let home = tempfile::TempDir::new().unwrap();
+    let original_home = std::env::var("HOME").ok();
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("SPELUNK_SECRET_STORE", "file");
+    }
+
+    let server = MockServer::start().await;
+    mount_stats(&server, "team%2Fproj", 4).await;
+
+    let spelunk_dir = tempfile::TempDir::new().unwrap();
+    let mem_path = spelunk_dir.path().join("memory.db");
+    let stale = spelunk_dir.path().join("cloud-project-id.lock");
+    const STALE_BODY: &str =
+        "slug = \"team/proj\"\nuuid = \"018f4e2a-1234-7abc-8def-00000000beef\"\n";
+    std::fs::write(&stale, STALE_BODY).unwrap();
+
+    let cfg = cloud_first_cfg(&server.uri(), "team/proj");
+    let be = open_memory_backend(&cfg, &mem_path, None).await.unwrap();
+
+    unsafe {
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        std::env::remove_var("SPELUNK_SECRET_STORE");
+    }
+
+    assert_eq!(be.count().await.unwrap(), 4);
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/v1/projects/team%2Fproj/stats".to_string()],
+        "a leftover cache file must not divert the configured project id"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&stale).unwrap(),
+        STALE_BODY,
+        "nothing may rewrite the retired cache file either"
+    );
+}
+
 // The loopback peer takes the same passthrough as any other, and nothing is
 // cached beside `memory.db`.
 #[tokio::test]

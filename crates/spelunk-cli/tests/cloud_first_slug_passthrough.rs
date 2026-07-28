@@ -241,6 +241,13 @@ fn cloud_first_project(ca_pem: &str, port: u16, project_id: &str) -> (TempDir, P
         ),
     );
     let server_url = format!("https://0.0.0.0:{port}");
+    // Without this the test would keep passing if `0.0.0.0` were ever
+    // reclassified as loopback, while silently no longer covering the
+    // non-loopback peer it exists to prove.
+    assert!(
+        !spelunk_core::config::is_loopback_url(&server_url),
+        "test seam precondition: {server_url} must be classified non-loopback"
+    );
     plumbing_helpers::write_project_server_config(tmp.path(), &server_url, project_id);
     (tmp, mem_path, cfg)
 }
