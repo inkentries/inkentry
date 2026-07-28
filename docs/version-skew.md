@@ -27,9 +27,14 @@ The team-server window is one minor version in each direction. It is *not* a
 promise that wider gaps fail, and in practice they often work: it is the range
 that is tested, and therefore the range a break is treated as a bug in.
 
-`GET /v1/health` carries the peer's real version in its `version` field, which
-is how any of this is observable at runtime. `info.version` inside the OpenAPI
-spec is a placeholder and must not be used for this.
+`GET /v1/health` carries the peer's real version in its `version` field.
+`info.version` inside the OpenAPI spec is a placeholder (`0.1.0` regardless of
+the build) and must not be used for this.
+
+Read that as the version being *available*, not as it being *checked*. The CLI
+does not parse `version` from the health body and does not compare it to its
+own, so nothing below is enforced by a version comparison. Everything the CLI
+does about skew it does structurally, by tolerating the shape of what arrived.
 
 ### Outside the window
 
@@ -40,27 +45,43 @@ alternative reads as safer than it is: a hard version gate turns every
 the person who is upgrading the server. A soft failure that names the versions
 is more recoverable than a hard one that is correct in principle.
 
-What is guaranteed instead:
+Whether the CLI should ever refuse a pairing outright, and whether a mismatched
+loopback server should warn or refuse, are open decisions. No such gate exists
+today, and this document is a policy statement rather than a description of one.
 
-- Absent or unreadable optional fields fall back to a documented conservative
-  default, never to an optimistic one, and they fall back **one field at a
-  time**. A member of `limits` this build cannot read costs that member only:
-  a peer advertising `max_batch_chunks: 16` next to an unreadable sibling
-  keeps the 16. Reading the object all-or-nothing would discard it and leave
-  the client planning around 256, which is the `413` this tolerance exists to
-  prevent, so an all-or-nothing degrade is the more permissive choice here and
-  not the safer one.
+What holds instead:
+
+- Every field of the health body degrades **on its own**. A value this build
+  cannot read costs that field and nothing beside it, where it used to discard
+  the entire body. That applies to the members of `limits` too: a peer
+  advertising `max_batch_chunks: 16` next to an unreadable sibling keeps the
+  16. Reading the object all-or-nothing would discard the 16 and leave the
+  client planning around its own maximum of 256, so an all-or-nothing degrade
+  is the more permissive choice here, not the safer one.
 - A peer that omits `limits` altogether is treated as enforcing the legacy
-  profile, which is two separate fallbacks and not one: a 30s `/index/embed`
-  budget on the time axis, and 256 chunks per request on the chunk axis. 256
-  is that server family's own hard cap (`MAX_EMBED_BATCH`, `413` above it), so
-  it is the legacy limit rather than the absence of one. Check the two axes
-  separately: treating "assume the legacy profile" as a single conservative
-  default is exactly what hid the chunk axis before.
+  profile, and that is **two separate fallbacks, not one**. On the time axis
+  the CLI assumes a 30s server-side `/index/embed` budget and targets batches
+  of 20s, two thirds of it. On the chunk axis it plans around 256 chunks per
+  request. Check the axes separately: reading "assume the legacy profile" as a
+  single conservative default is exactly what hid the chunk axis, where the
+  fallback is this CLI's own maximum and carries no margin at all.
+
+  Both numbers were checked against the releases that actually omit `limits`,
+  v0.8.0 through v0.9.2. Checking them against the current server would have
+  proved nothing: it advertises `limits`, so it is never the peer this fallback
+  describes. On the chunk axis every one of those releases carries
+  `const MAX_BATCH: usize = 256` and answers `413` above it, so 256 is what
+  those peers genuinely enforce rather than a cautious guess. On the time axis
+  the 30s is the blanket request timeout v0.9.2 applies with no `/index/embed`
+  exemption; v0.8.0 through v0.9.1 impose no wall-clock budget at all, so
+  assuming one there is conservative rather than measured.
 - Unknown fields, and unknown values in an open enum, are ignored rather than
-  failing the request that carried them.
-- A genuinely incompatible response produces a diagnostic naming the peer URL,
-  not a panic or a silent empty result.
+  failing the response that carried them.
+- A body that is not a health object at all produces a warning naming the peer
+  URL and the consequence, not a panic and not a silent empty result. See
+  [When a capability goes missing](#when-a-capability-goes-missing) for how to
+  see it: these are `warn`-level log lines, and the CLI logs at `error` unless
+  `RUST_LOG` says otherwise.
 
 ## What evolution is allowed
 
@@ -75,6 +96,45 @@ has to tolerate:
   degrade that one field, never the whole response.
 - **An older peer omits fields the CLI expects.** The CLI must supply the
   documented default. Every optional in the health body already does this.
+
+## When a capability goes missing
+
+The health body is how the CLI learns what a peer can do, so a field it cannot
+read shows up later as a capability that is quietly not there. `spelunk status`
+is where you see the result: `capabilities`, `embedder_state`, and
+`has_semantic_search` under `--format json`.
+
+Until recently one unreadable field cost you all of them. Any single value the
+CLI could not parse, anywhere in the body, made it discard the whole response
+and fall back to treating the peer as a legacy plain-text server: semantic
+search, index embed, and harvest all reported unavailable, every advertised
+limit dropped, and nothing logged to say why. A newer server adding one enum
+value, which the additive-only rule expressly permits, was enough to trigger it.
+
+Now each field degrades on its own, and says so. The catch is that it says so at
+`warn` level, and the CLI logs at `error` unless `RUST_LOG` is set, so the
+warnings are there but off by default:
+
+```
+RUST_LOG=warn spelunk status
+```
+
+Two shapes of warning can appear:
+
+- **One field could not be read.** The line names the field, the shape this
+  build expected, and what the fallback costs. It deliberately does **not**
+  print the value. `/v1/health` needs no authentication and its body is
+  whatever `server_url` resolves to, so a field's contents are peer-controlled
+  and unbounded; the received JSON kind (`a string`, `an object`) carries the
+  diagnostic value without reproducing the value itself.
+- **The body was not a health object at all.** The line names the peer URL, the
+  consequence, and a bounded sample of what did arrive. This one is now the
+  only route to the legacy fallback, because no individual field can reach it
+  any more. In practice it means the URL is not a spelunk server.
+
+If the capabilities you expect are missing and no warning appears, the peer
+genuinely did not advertise them. That distinction, between a peer that said no
+and a peer whose answer could not be read, is the whole point of the warnings.
 
 ## A live cross-peer divergence
 
@@ -100,6 +160,13 @@ test exists to make that a loud failure rather than a discovery in production.
 Reconciling the two peers is out of scope for this repository, which owns only
 one of them.
 
+The table itself is a **note, not a check**. cloud-api's schema lives in another
+repository and is not vendored here, so nothing in this repo verifies those two
+rows or notices when either one changes. Only the second row is checked, by the
+`openapi-snapshot` job. Read the first as documentation of what was true when it
+was transcribed. The test named above pins the CLI's immunity, which is what
+actually protects you, and that holds whatever the two peers do next.
+
 ## Enforcement, and what it is worth
 
 | Promise | Enforced by | Against what |
@@ -107,6 +174,7 @@ one of them.
 | Absent optionals degrade to documented defaults | `recorded_legacy_peers_degrade_to_documented_defaults` | Real recorded peer responses |
 | Present optionals are actually read | `recorded_current_peers_parse_their_optional_objects` | Real recorded peer responses |
 | Unknown fields and enum values are ignored | `unknown_fields_from_a_newer_peer_are_ignored` | Real recorded response, unknown fields added |
+| No field can take the whole body down with it | `every_health_field_degrades_alone_rather_than_taking_the_body_down` | Every member of the recorded body, mutated one at a time |
 | The project id stays opaque | `project_id_stays_opaque_across_both_peers_id_types` | Two peers' published id shapes |
 | Two real binaries complete the memory flow | `scripts/skew-smoke.sh`, run both ways by `.github/workflows/version-skew.yml` | Real released binaries |
 | `/v1/` matches `docs/openapi.json` | `openapi-snapshot` job in `.github/workflows/ci.yml` | The running binary |
@@ -118,22 +186,37 @@ tests is a mock written to the shape we *believe* that peer has, which means
 almost nothing here can falsify a premise about a real peer. Where a fixture is
 real, that is worth knowing; where it is not, that is worth knowing more.
 
-**Recorded from a real released binary** (`crates/spelunk-cli/tests/fixtures/skew/`):
+**Recorded from a running binary** (`crates/spelunk-cli/tests/fixtures/skew/`).
+Released binaries where the version is released, the current build where it is
+not, which is the distinction the last column exists to make:
 
-| File | Source |
-|---|---|
-| `health-v0.8.0.json` | `GET /v1/health` from the released v0.8.0 `spelunk-server` |
-| `health-v0.9.0.json` | `GET /v1/health` from the released v0.9.0 `spelunk-server` |
-| `health-v0.9.4-loading.json` | released v0.9.4 `spelunk-server`, embedder still loading |
-| `health-v0.9.4-ready.json` | released v0.9.4 `spelunk-server`, embedder ready |
-| `health-v0.9.5-loading.json` | current build, embedder still loading |
-| `health-v0.9.5-ready.json` | current build, embedder ready |
-| `openapi-v0.9.4.json` | `spelunk-server --print-openapi` from the released v0.9.4 binary |
+| File | Source | Released binary |
+|---|---|---|
+| `health-v0.8.0.json` | `GET /v1/health` from the v0.8.0 `spelunk-server` | yes |
+| `health-v0.9.0.json` | `GET /v1/health` from the v0.9.0 `spelunk-server` | yes |
+| `health-v0.9.4-loading.json` | v0.9.4 `spelunk-server`, embedder still loading | yes |
+| `health-v0.9.4-ready.json` | v0.9.4 `spelunk-server`, embedder ready | yes |
+| `health-v0.9.5-loading.json` | current build, embedder still loading | no |
+| `health-v0.9.5-ready.json` | current build, embedder ready | no |
+| `openapi-v0.9.4.json` | `spelunk-server --print-openapi` from the v0.9.4 binary | yes |
 
 The v0.8.0 and v0.9.0 bodies are the interesting ones: they genuinely omit
 `embedder`, `embedding_dim`, and `limits`, so the absent-optional path is
 exercised by a peer that really did behave that way rather than by a synthetic
 body asserting our belief about one.
+
+`openapi-v0.9.4.json` is a verbatim recording and is the one file in this
+repository exempt from the house style rules on punctuation and issue
+references. Editing it to conform would make it no longer a recording of what
+that binary emits, which is the only property it has.
+
+A recording is evidence only for as long as the live peer still sends the same
+shape, and nothing was watching for that drift. `health-v0.9.5-ready.json` is
+therefore also compared against a live body by a test in `spelunk-server`, so
+the current server changing its health keys fails there rather than silently
+turning a fixture into fiction. The v0.8.x and v0.9.0 recordings have no such
+guard and cannot have one: those binaries are frozen, which is exactly why
+their recordings stay useful.
 
 **Hand-written to our belief:** the `health_body()` helper in
 `crates/spelunk-cli/src/capability/probe.rs`, which predates this document, and
@@ -173,6 +256,24 @@ Two specific limits worth naming:
   is detected directly instead of being waited on.
 - The smoke test refuses to run two identical versions against each other,
   because a skew test that is not skewed passes while proving nothing.
+
+And two gaps in what is covered at all, worth knowing before treating the table
+above as a coverage claim:
+
+- **Only the response direction is checked against schemas.** There are
+  recorded peer responses replayed against CLI deserialization, but no fixtures
+  validating what the CLI *sends* against a peer's schema. The recorded
+  `openapi-v0.9.4.json` is committed and ready for exactly that, and nothing
+  consumes it yet. The smoke test covers the request direction only in the
+  sense that a real peer accepted the real calls it made.
+- **Fixtures cannot catch a divergence both peers tolerate.** The project id
+  above is the worked example: because it crosses the wire as an opaque string,
+  every request and response fixture passes whether the peer calls it a `uuid`
+  or an `int64`. A query parameter a peer accepts and then ignores is the same
+  class of thing, and one such case is pinned in
+  `crates/spelunk-core/src/storage/remote/tests.rs` rather than fixed. Where the
+  two ends disagree without either one erroring, only a test that compares the
+  two contracts directly will see it.
 
 ## What's next
 

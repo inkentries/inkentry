@@ -50,6 +50,33 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   for the full fetch-and-transfer procedure. Unset by default, so the online
   path is unchanged for the common case.
 
+- **A version-skew support policy, [docs/version-skew.md](docs/version-skew.md),
+  and a CI job that runs two real binaries against each other.** The stability
+  contract says what a surface promises within one version; nothing said what
+  happens when the CLI and the server it is talking to are different versions,
+  which is the normal case rather than the exception. The policy now states the
+  supported window per peer (a team `spelunk-server` one minor version either
+  side, an auto-discovered loopback server at the same version, the hosted API
+  at any version since it evolves additively within `/v1/`), and what holds
+  outside that window. Outside it the CLI keeps working on a best-effort basis
+  rather than refusing to run, deliberately: a hard version gate turns every
+  "upgrade the CLI before the server" ordering into an outage for the person
+  doing the upgrade. The document is equally explicit about what is *not*
+  promised, including that the CLI does not compare its version against the
+  peer's at all today, and about what the tests behind it can and cannot show:
+  the peer health responses replayed in the suite are recordings from real
+  released binaries rather than mocks written to the shape we assumed, the
+  request direction is not validated against any peer schema yet, and the
+  hosted API is not represented in this repository at all, so the divergence
+  table in the document is a transcribed note that will go stale silently
+  rather than a check. A new `version-skew` workflow puts the current build and
+  the previous release on a socket together in both directions and drives the
+  full memory flow (add, list, search, push, sync, and pull into a fresh
+  checkout), verifying each downloaded release asset against its published
+  digest before running it. The job refuses to pass if the two binaries turn out
+  to be the same version, or if the embedder never became ready so the search
+  step never ran: both would go green while proving nothing.
+
 ### Removed
 
 - **`SPELUNK_NO_SLUG_CACHE` no longer does anything, and
@@ -76,6 +103,33 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   This is a breaking change to `spelunk-server`'s CLI surface, shipped pre-1.0.
 
 ### Fixed
+
+- **One unreadable field in a server's health response no longer costs you
+  every capability that server advertised.** The CLI reads `GET /v1/health` to
+  learn what a server can do. If any single value in that response was in a
+  shape this build could not parse, the whole response was discarded and the
+  server was treated as a legacy plain-text one: semantic search, index embed,
+  and harvest all reported unavailable, the advertised `/index/embed` limits
+  dropped, the embedding dimension lost, and nothing logged to say why. It took
+  very little to trigger. A newer server adding one value to an existing enum
+  field, which the stability contract expressly permits as an additive change,
+  was enough to silently degrade every older CLI that met it; so was a field
+  holding an explicit `null`, which this server family emits routinely for
+  values it has nothing to report. Every field of the health body now degrades
+  on its own: a value the CLI cannot read falls back to that field's documented
+  default and costs nothing beside it, including inside the nested `limits`
+  object, so a server advertising `max_batch_chunks: 16` next to one unreadable
+  sibling keeps the 16 instead of leaving the client planning around its own
+  maximum of 256. The guarantee is now that no single field can take the whole
+  body down, and it is enforced by a test that mutates every member of a
+  recorded server response in turn, so a field added later without a lenient
+  read fails the same check. Degrading is also no longer silent: the CLI warns,
+  naming the field, the shape it expected, and what the fallback costs. Those
+  warnings are `warn`-level, so run `RUST_LOG=warn spelunk status` to see them.
+  They deliberately never print the field's value: `/v1/health` needs no
+  authentication and its body is whatever `server_url` resolves to, so its
+  contents are peer-controlled, and a diagnostic line is no place to reproduce
+  them.
 
 - **`spelunk memory push` and `spelunk sync` now embed what they push, so a
   pushed entry stays findable by `spelunk memory search` locally.** A push
