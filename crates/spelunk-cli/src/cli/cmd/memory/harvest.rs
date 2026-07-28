@@ -85,6 +85,33 @@ pub(super) async fn memory_harvest(
     }
 }
 
+/// Build harvest's two inference clients: one for embedding (dedup vectors),
+/// one for LLM extraction.
+///
+/// They resolve independently and can land on different servers, so a single
+/// shared client would silently send one of the two to the wrong place.
+pub(super) async fn harvest_clients(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+) -> Result<(ServerInferenceClient, ServerInferenceClient)> {
+    let embed_server =
+        ServerInferenceClient::from_config(cfg).ok_or_else(harvest_requires_server)?;
+    let project_root = mem_path.parent().unwrap_or(mem_path);
+    let route = capability::resolve_llm_route(cfg, project_root).await;
+    let Some(llm_server) = route.client() else {
+        anyhow::bail!(
+            "{}",
+            capability::no_llm_message(
+                route
+                    .reason()
+                    .unwrap_or(capability::NoLlmReason::NoLlmAnywhere),
+                capability::LlmFeature::MemoryHarvest,
+            )
+        );
+    };
+    Ok((embed_server, llm_server))
+}
+
 async fn memory_harvest_git(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
@@ -196,7 +223,7 @@ async fn memory_harvest_git(
         }
     });
 
-    let server = ServerInferenceClient::from_config(cfg).ok_or_else(harvest_requires_server)?;
+    let (embed_server, llm_server) = harvest_clients(cfg, mem_path).await?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -289,7 +316,7 @@ async fn memory_harvest_git(
 
         let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let raw_json = match server
+        let raw_json = match llm_server
             .llm_complete(&messages, max_tokens, Some(schema.clone()))
             .await
         {
@@ -356,7 +383,7 @@ async fn memory_harvest_git(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vec = match server.embed_text(&embed_text).await {
+            let vec = match embed_server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
@@ -581,7 +608,7 @@ async fn memory_harvest_failures(
         }
     });
 
-    let server = ServerInferenceClient::from_config(cfg).ok_or_else(harvest_requires_server)?;
+    let (embed_server, llm_server) = harvest_clients(cfg, mem_path).await?;
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -654,7 +681,7 @@ async fn memory_harvest_failures(
 
         let messages = vec![LlmMessage::system(system), LlmMessage::user(user)];
 
-        let raw_json = match server
+        let raw_json = match llm_server
             .llm_complete(&messages, max_tokens, Some(schema.clone()))
             .await
         {
@@ -719,7 +746,7 @@ async fn memory_harvest_failures(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vec = match server.embed_text(&embed_text).await {
+            let vec = match embed_server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(

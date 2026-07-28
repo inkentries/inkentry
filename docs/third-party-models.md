@@ -156,20 +156,33 @@ rather than left to be inferred:
 - **`spelunk explore`**: the interactive LLM reasoning loop (`/explore`).
 - **`spelunk memory harvest`**: LLM-based decision extraction from commits and
   agent sessions.
-- **`spelunk index` chunk summaries**: see the caveat below; this one needs an
-  explicitly configured `server_url` in addition to the server having an LLM.
+- **`spelunk index` chunk summaries**: LLM-written summaries of each indexed
+  chunk.
+
+All three use the same rule to find an LLM:
+
+1. If your local server serves one, that is used.
+2. Otherwise, if a configured `server_url` serves one, that is used.
+3. Otherwise there is no LLM, and the command says so.
+
+There is one deliberate exception to step 2. If you have configured `llm_url`
+but the running local server does not serve an LLM (because it was started
+before you set it), spelunk stops and asks you to restart it rather than
+falling back to the remote. You asked for a local LLM; sending your code to a
+remote one instead would not be a graceful fallback.
 
 ### Absence behavior
 
-With no LLM configured on the server:
+With no LLM available:
 
 - `spelunk explore` and `spelunk memory harvest` fail with an actionable error
-  naming `server_url` (or, if no server is reachable at all, pointing at
-  `spelunk server start`).
+  naming both ways to get one (`llm_url` for a local endpoint, `server_url` for
+  a server that provides one).
 - The server's own `/explore` and `/llm/complete` routes return `503` with
   `"This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."`
-- `spelunk index` prints `Skipping summaries (no server_url configured)` to
-  stderr and continues; a missing LLM never fails an index run.
+- `spelunk index` prints the same guidance and continues, since summaries are
+  optional; a missing LLM never fails an index run. Pass `--no-summaries` to
+  skip the step without the notice.
 
 ### Loopback (local dev) setup
 
@@ -217,21 +230,10 @@ Or override them for a single daemon without changing either:
 spelunk server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-`spelunk explore` and `spelunk memory harvest` now work against the
-auto-discovered loopback server, no `config.toml` change needed, since both
-commands fill in the loopback URL for you when no explicit `server_url` is set.
-
-**Index-time summaries are the exception.** They are gated on an *explicitly
-configured* `server_url`, not merely on a reachable server, so they stay off
-even against an LLM-configured loopback daemon unless you also set:
-
-```toml
-# .spelunk/config.toml
-server_url = "http://127.0.0.1:7777"
-```
-
-(A loopback `http://` value is allowed here; see
-[Server setup → Client configuration](server-setup.md#client-configuration).)
+`spelunk explore`, `spelunk memory harvest` and index-time summaries now all
+work against the auto-discovered loopback server, no `config.toml` change
+needed: they fill in the loopback URL for you when no explicit `server_url` is
+set.
 
 ### Team server setup
 

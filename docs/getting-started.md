@@ -352,10 +352,9 @@ but loopback is refused at startup rather than sending the credential in the
 clear: use `https://` for a remote endpoint. A keyless endpoint is unaffected,
 so an existing LM Studio or Ollama box on your LAN keeps working.
 
-`explore` and `memory harvest` pick up an LLM-configured local daemon
-automatically. Index-time chunk summaries are the exception: they additionally
-need an *explicit* `server_url` in `.spelunk/config.toml` (even a loopback one),
-not just a reachable server. See
+`explore`, `memory harvest` and index-time chunk summaries all pick up an
+LLM-configured local daemon automatically, and fall back to a `server_url` that
+provides an LLM when your local one does not. See
 [Third-party models](third-party-models.md#configuring-an-external-llm-endpoint)
 for the full precedence and security details, the absence behavior, and the
 team-server equivalent.

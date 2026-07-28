@@ -926,9 +926,11 @@ async fn test_index_prints_note_when_no_server_configured() {
         .arg(&project_dir)
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "Skipping summaries (no server_url configured)",
-        ));
+        // Offline is the reason here, so that is what the notice must name.
+        // Summaries no longer key off `server_url`, so a notice mentioning it
+        // would be the old bug rather than a passing assertion.
+        .stderr(predicate::str::contains("Skipping chunk summaries"))
+        .stderr(predicate::str::contains("offline mode is on"));
 }
 
 #[test]

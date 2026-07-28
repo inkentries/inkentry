@@ -15,7 +15,7 @@ use crate::{
     config::Config,
     embeddings::vec_to_blob,
     indexer::secrets::contains_secret,
-    server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
+    server_client::LlmMessage,
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -47,7 +47,7 @@ pub(super) async fn harvest_claude_code(
     backend_override: Option<&str>,
 ) -> Result<()> {
     // Tier-0 gate: harvest requires server inference.
-    let server = ServerInferenceClient::from_config(cfg).ok_or_else(harvest_requires_server)?;
+    let (embed_server, llm_server) = super::harvest::harvest_clients(cfg, mem_path).await?;
 
     // 1. Require explicit confirmation.
     if !args.confirm {
@@ -306,7 +306,7 @@ pub(super) async fn harvest_claude_code(
 
         let messages = vec![LlmMessage::system(system), LlmMessage::user(user.clone())];
 
-        let raw_json = match server
+        let raw_json = match llm_server
             .llm_complete(&messages, max_tokens, Some(schema.clone()))
             .await
         {
@@ -380,7 +380,7 @@ pub(super) async fn harvest_claude_code(
             }
 
             let embed_text = format!("title: {title} | text: {body}");
-            let vec = match server.embed_text(&embed_text).await {
+            let vec = match embed_server.embed_text(&embed_text).await {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(

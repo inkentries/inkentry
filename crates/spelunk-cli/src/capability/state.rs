@@ -72,6 +72,17 @@ pub struct Capabilities {
     pub memory_search: bool,
     pub memory_harvest: bool,
     pub explore: bool,
+    /// The server serves `POST /llm/complete`, advertised as `llm.complete`.
+    ///
+    /// The only trustworthy "this server has an LLM" signal. `explore` cannot
+    /// stand in for it: `explore` predates both this capability and the
+    /// `/llm/complete` route, so a server old enough to advertise `explore`
+    /// alone has no LLM route at all.
+    ///
+    /// Kept out of `spelunk status --format json` (which serializes this
+    /// struct wholesale) so that payload's shape is unchanged.
+    #[serde(skip_serializing)]
+    pub llm_complete: bool,
     /// Reserved (ADR-002 `/plan`): parsed from server caps but hidden from all
     /// user-facing output until a `spelunk plan` command ships.
     #[serde(skip_serializing)]
@@ -99,6 +110,7 @@ impl Capabilities {
             memory_search: memory,
             memory_harvest: memory,
             explore: has("explore"),
+            llm_complete: has("llm.complete"),
             plan: has("plan"),
             // Not derivable from the `capabilities` array: it is a separate
             // top-level bool set by `parse_health` from the health body.
@@ -117,6 +129,7 @@ impl Capabilities {
             memory_search: true,
             memory_harvest: false,
             explore: false,
+            llm_complete: false,
             plan: false,
             // A legacy plain-text server pre-dates the pushed-vector accept side.
             accepts_pushed_vectors: false,
@@ -134,6 +147,7 @@ impl Capabilities {
             memory_search: true,
             memory_harvest: true,
             explore: true,
+            llm_complete: true,
             plan: true,
             accepts_pushed_vectors: true,
         }
@@ -202,6 +216,57 @@ mod tests {
         assert!(!caps.memory_pull);
         assert!(!caps.memory_search);
         assert!(!caps.memory_harvest);
+    }
+
+    // ── llm.complete ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_server_caps_llm_complete_sets_the_flag() {
+        let caps = Capabilities::from_server_caps(&["memory", "explore", "llm.complete"]);
+        assert!(caps.llm_complete);
+    }
+
+    // Version skew: `llm.complete` and the `/llm/complete` route landed
+    // together, while `explore` predates both. A server advertising only
+    // `explore` has no LLM route at all, so `explore` must never stand in for
+    // the LLM signal.
+    #[test]
+    fn from_server_caps_explore_without_llm_complete_is_not_llm_capable() {
+        let caps = Capabilities::from_server_caps(&["memory", "index.embed", "explore", "plan"]);
+        assert!(caps.explore);
+        assert!(!caps.llm_complete);
+    }
+
+    #[test]
+    fn from_server_caps_without_explore_or_llm_complete_is_not_llm_capable() {
+        let caps = Capabilities::from_server_caps(&["memory", "index.embed"]);
+        assert!(!caps.explore);
+        assert!(!caps.llm_complete);
+    }
+
+    #[test]
+    fn legacy_memory_only_is_not_llm_capable() {
+        assert!(!Capabilities::legacy_memory_only().llm_complete);
+    }
+
+    #[test]
+    fn all_is_llm_capable() {
+        assert!(Capabilities::all().llm_complete);
+    }
+
+    // `spelunk status --format json` serializes `Capabilities` wholesale
+    // (`status.rs`), so a newly-parsed field must stay out of that object or
+    // the documented status payload changes shape.
+    #[test]
+    fn llm_complete_is_not_serialized_into_status_json() {
+        let value = serde_json::to_value(Capabilities::all()).expect("serialize capabilities");
+        let object = value
+            .as_object()
+            .expect("capabilities serialize as an object");
+        assert!(
+            !object.contains_key("llm_complete"),
+            "llm_complete must not reach `spelunk status --format json`: {object:?}"
+        );
     }
 
     #[test]
