@@ -14,7 +14,9 @@
 
 mod plumbing_helpers;
 
-use plumbing_helpers::{mount_health, mount_index_embed, write_project_server_config};
+use plumbing_helpers::{
+    mount_health, mount_index_embed, register_sqlite_vec, write_project_server_config,
+};
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -24,25 +26,6 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 const MARKER_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The `embeddings` table is a `vec0` virtual table, which needs the
-/// `sqlite_vec` extension registered before any connection in *this* process
-/// can read it - the spawned `spelunk` binary registers it for itself, but a
-/// raw `rusqlite::Connection::open` from the test process does not get that
-/// for free. Without this, a query against `embeddings` fails and
-/// `embedding_count`'s `.unwrap_or(0)` would silently misreport "empty"
-/// instead of surfacing the real error.
-fn register_sqlite_vec() {
-    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    ONCE.get_or_init(|| {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
-    });
-}
 
 // ── Process plumbing ─────────────────────────────────────────────────────────
 
