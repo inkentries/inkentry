@@ -177,6 +177,30 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   crashes during first-sync push and concurrent first-sync attempts from
   multiple clients.
 
+### Security
+
+- **A `server_url` whose host only *looks* like loopback no longer clears the
+  plaintext-transport guard.** Deciding "is this loopback?" was a prefix test,
+  `host.starts_with("127.")`, applied to a string from which URL userinfo had
+  never been stripped. Two authority shapes therefore passed as loopback while
+  naming somebody else's host: `http://127.0.0.1.evil.example`, where the real
+  host is `evil.example` and only the leading label looks like an address, and
+  `http://127.0.0.1@evil.example`, where everything before the `@` is a
+  credential and the real host is again `evil.example`. Because that predicate
+  is what decides whether a bearer token may travel over plaintext `http://`,
+  configuring either shape sent the bearer in the clear to a host the operator
+  did not intend, at every call site that gates on it: opening a remote memory
+  backend, the sync client's keyed constructor, the CLI capability probe, and
+  the inference client. The authority is now parsed rather than pattern-matched:
+  it ends at the first `/`, `?` or `#`, userinfo is removed at the last `@`, the
+  port and IPv6 brackets are stripped, and the remaining host must be
+  `localhost` or an address literal the standard library parses and reports as
+  loopback. As a side effect, non-canonical literals that previously rode in on
+  the `127.` prefix (`127.999.0.1`, `0127.0.0.1`) are rejected too. Unchanged,
+  and still deliberate: this check does no DNS resolution, so a `/etc/hosts`
+  alias that resolves to loopback but isn't spelled as a loopback literal is
+  still rejected rather than accepted.
+
 ### Internal
 
 - **`memory.db` now opens through the same forward-only, `PRAGMA
