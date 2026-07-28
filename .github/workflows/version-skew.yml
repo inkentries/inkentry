@@ -122,8 +122,11 @@ jobs:
 
           tar -xzf "prev-release/${asset}" -C prev-release
           chmod +x prev-release/spelunk prev-release/spelunk-server
-          ./prev-release/spelunk --version
-          ./prev-release/spelunk-server --version
+          # Explicit on the command rather than relying on the job-level env,
+          # because these two binaries pre-date the file-store default and this
+          # runner has a dbus keyring installed for the build.
+          SPELUNK_SECRET_STORE=file ./prev-release/spelunk --version
+          SPELUNK_SECRET_STORE=file ./prev-release/spelunk-server --version
 
       - name: Build the current binaries
         run: cargo build --release -p spelunk-cli -p spelunk-server --bins
@@ -149,6 +152,7 @@ jobs:
           ln -sfn "$SKEW_MODEL_CACHE" "$warm_data/spelunk/models"
 
           HOME="$RUNNER_TEMP/warm-home" XDG_DATA_HOME="$warm_data" \
+            SPELUNK_SECRET_STORE=file \
             target/release/spelunk-server --port 7999 --db "$RUNNER_TEMP/warm.db" \
             >"$RUNNER_TEMP/warm.log" 2>&1 &
           warm_pid=$!

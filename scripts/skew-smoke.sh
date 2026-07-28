@@ -35,6 +35,41 @@ done
 CLI_BIN="$(cd "$(dirname "$CLI_BIN")" && pwd)/$(basename "$CLI_BIN")"
 SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 
+# Scrub the whole SPELUNK_* namespace before setting anything, then re-export
+# only what this script owns. Every path the binaries resolve (config, state,
+# registry, model, and the file secret store at <config_dir>/secrets.toml) is
+# selected by a variable in this namespace, and each is consulted *before*
+# HOME, so overriding HOME cannot cover any of them.
+#
+# A denylist of the known ones has been wrong three times running. This is the
+# inverse: a variable added to the tree later is excluded by default, and
+# assert_only_owned_spelunk_env below fails the run if anything unowned is
+# present when the binaries start.
+#
+# The sharpest case is why this is not cosmetic: SPELUNK_SECRET_STORE=file
+# below exists to keep old released binaries off the OS keyring, but with
+# SPELUNK_CONFIG_DIR inherited it would have pointed them at the developer's
+# real secrets.toml, to read and to write. The guard would have become the
+# exposure.
+for _inherited in $(env | sed -n 's/^\(SPELUNK_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$_inherited"
+done
+unset _inherited
+
+# Everything this script is allowed to hand the binaries under test. Anything
+# else in the namespace is a leak from the invoking shell.
+OWNED_SPELUNK_ENV="SPELUNK_SECRET_STORE SPELUNK_SERVER_URL"
+
+assert_only_owned_spelunk_env() {
+  local name
+  for name in $(env | sed -n 's/^\(SPELUNK_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    case " $OWNED_SPELUNK_ENV " in
+      *" $name "*) ;;
+      *) fail "$name reached the binaries under test; it is not one this script sets, so the run would have pointed them at real user state" ;;
+    esac
+  done
+}
+
 # The released binaries pre-date the keychain fix and will block on a real
 # macOS Keychain prompt without this. It is exported rather than passed per
 # command so every child the CLI spawns inherits it too.
@@ -83,9 +118,15 @@ mkdir -p "$XDG_DATA_HOME"
 # The embedder model is a large read-only download rather than user state, so
 # it is the one thing a caller may keep outside the isolated HOME: without it
 # the server re-downloads the model every run and never reaches `ready` inside
-# the timeout. Nothing the isolation exists to protect lives here. Linked into
-# place rather than selected by an env var, because the server resolves its
-# model directory from the platform data dir and offers no override of its own.
+# the timeout. Nothing the isolation exists to protect lives here.
+#
+# Still a symlink, but not for the reason previously given here. SPELUNK_MODEL_DIR
+# does exist (`spelunk-server --model-dir`), so "offers no override of its own"
+# was simply false. It is the wrong override for this job: it selects a
+# *pre-provisioned* GGUF plus tokenizer for air-gapped installs and bypasses the
+# Hugging Face download path entirely, whereas what needs redirecting is that
+# download path's own cache, `data_local_dir()/spelunk/models`. Setting it here
+# would point the server at artifacts this script never fetched.
 if [ -n "${SKEW_MODEL_CACHE:-}" ]; then
   mkdir -p "$SKEW_MODEL_CACHE"
   case "$(uname -s)" in
@@ -98,6 +139,14 @@ fi
 
 PORT="$(free_port)"
 BASE="http://127.0.0.1:${PORT}"
+
+# Explicit server URL, so the CLI talks to the binary under test and never
+# auto-discovers some other server already listening on the default port. Set
+# here rather than after the launch below so one assertion can cover the whole
+# namespace at the moment the first binary under test starts.
+export SPELUNK_SERVER_URL="$BASE"
+
+assert_only_owned_spelunk_env
 
 echo "== starting server: $SERVER_BIN on $BASE"
 "$SERVER_BIN" --port "$PORT" --db "$WORK/server.db" >"$WORK/server.log" 2>&1 &
@@ -125,10 +174,6 @@ echo "== CLI $CLI_VERSION  <->  server $SERVER_VERSION"
 # what the first one pushed. Left to `spelunk init` it would be a per-directory
 # content hash and the pull would legitimately find nothing.
 PROJECT_ID="local/skewsmoke"
-
-# Explicit server URL, so the CLI talks to the binary under test and never
-# auto-discovers some other server already listening on the default port.
-export SPELUNK_SERVER_URL="$BASE"
 
 make_project() {
   local dir="$1"
