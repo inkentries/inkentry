@@ -10,6 +10,7 @@
 //
 // Regenerate with scripts/upgrade-corpus/generate.sh.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -549,6 +550,25 @@ async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact(
     }
 }
 
+// The project paths exactly as the capturing release wrote them. Read before
+// the current build opens the file, so it is a record of the artifact rather
+// than of what today's migrations produce.
+fn captured_project_paths(conn: &rusqlite::Connection) -> BTreeMap<i64, (String, String)> {
+    let mut stmt = conn
+        .prepare("SELECT id, root_path, db_path FROM projects")
+        .expect("preparing the captured-paths query");
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+            ))
+        })
+        .expect("querying captured project paths");
+    rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()
+        .expect("reading captured project paths")
+}
+
 #[test]
 #[serial_test::serial]
 fn every_registry_wing_keeps_its_projects_and_dependency_links() {
@@ -558,7 +578,22 @@ fn every_registry_wing_keeps_its_projects_and_dependency_links() {
 
     for wing in registry_wings {
         let tmp = tempfile::tempdir().unwrap();
-        checkout(wing, tmp.path());
+        let db_path = checkout(wing, tmp.path());
+        let captured = captured_project_paths(&raw(&db_path));
+
+        // Nothing below can show that a path survived if the artifact never
+        // held a usable one. `starts_with` matches whole components and reads
+        // the string alone, so it says the same thing on every platform.
+        for (id, (root, db)) in &captured {
+            assert!(
+                !root.is_empty() && Path::new(db).starts_with(Path::new(root)),
+                "wing {}: project {} was captured without a database under its \
+                 own root, so the comparison below has nothing to preserve",
+                wing.id,
+                id
+            );
+        }
+
         // SPELUNK_REGISTRY_DIR is the only way to point Registry::open at a
         // temp copy; dirs::config_dir() is not redirectable on every platform.
         unsafe { std::env::set_var("SPELUNK_REGISTRY_DIR", tmp.path()) };
@@ -579,22 +614,35 @@ fn every_registry_wing_keeps_its_projects_and_dependency_links() {
         // whose paths have been mangled is worse than a missing one: the
         // project still lists, and then every command against it looks at the
         // wrong place on disk.
+        //
+        // The check is equality with the captured bytes, not a shape test.
+        // These paths belong to the machine the wing was captured on, so
+        // `is_absolute` and every other host-OS path predicate answers for the
+        // runner rather than for the artifact: a POSIX path is not absolute to
+        // a Windows host, whatever the migration did to it. Equality is the
+        // same question everywhere, and it is the stronger one anyway, since a
+        // path rewritten to some other absolute path is still mangled.
         for project in &projects {
-            assert!(
-                project.root_path.is_absolute(),
-                "wing {}: project {} lost its absolute root path ({:?})",
+            let (root, db) = captured.get(&project.id).unwrap_or_else(|| {
+                panic!(
+                    "wing {}: project {} is not one of the rows the capturing \
+                     release wrote",
+                    wing.id, project.id
+                )
+            });
+            assert_eq!(
+                project.root_path,
+                Path::new(root),
+                "wing {}: project {} came back with a rewritten root path",
                 wing.id,
-                project.id,
-                project.root_path
+                project.id
             );
-            assert!(
-                project.db_path.starts_with(&project.root_path),
-                "wing {}: project {} now points at a database outside its own \
-                 root ({:?} is not under {:?})",
-                wing.id,
-                project.id,
+            assert_eq!(
                 project.db_path,
-                project.root_path
+                Path::new(db),
+                "wing {}: project {} came back with a rewritten database path",
+                wing.id,
+                project.id
             );
             assert!(
                 project.registered_at > 0,

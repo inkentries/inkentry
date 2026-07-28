@@ -90,6 +90,24 @@ epoch milliseconds, and the registry wing stores the absolute path of the
 different file even when nothing about the release changed. Do not regenerate a
 wing you did not mean to change: `--only` exists for exactly this reason.
 
+## Captured paths are foreign paths
+
+A path stored inside a wing belongs to the machine that captured it, so it is a
+**portability** constraint as well as a reproducibility one. The suite runs on
+Windows as well as macOS and Linux, and a macOS path is not a valid path there:
+`Path::is_absolute` is false for `/private/var/...` on Windows, which needs a
+drive or UNC prefix, and `canonicalize`, `exists` and separator handling are
+host-OS questions in the same way.
+
+So assert a captured path by comparing it with what the artifact holds, read
+out of the wing before the current build opens it, never by asking the host
+whether it looks like a path. Equality is the same question on every runner and
+is the stronger check anyway: a path rewritten to a different absolute path is
+still mangled. Whole-component operations that only read the string, such as
+`Path::starts_with`, are safe. This is what
+`every_registry_wing_keeps_its_projects_and_dependency_links` does with the
+`registry-v0.9.5` wing.
+
 `checksums.txt` pins the release binaries, which says nothing about the
 artifacts. The artifacts are pinned separately by the `sha256` recorded per
 wing in `MANIFEST.json`, which the suite checks before asserting anything else.
@@ -129,7 +147,9 @@ churn the others.
 
 The test is data-driven off `MANIFEST.json`, so a new wing of an existing kind
 needs no Rust changes. A genuinely new *kind* of artifact needs a builder in
-`generate.sh`, a reader in `capture_expect.py`, and an opener in the test.
+`generate.sh`, a reader in `capture_expect.py`, and an opener in the test. If it
+stores paths, read [Captured paths are foreign paths](#captured-paths-are-foreign-paths)
+before writing assertions about them.
 
 ## Size
 
