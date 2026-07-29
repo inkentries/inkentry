@@ -65,7 +65,9 @@ the PR.
 `SPELUNK_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
 default configuration instead of yours.
 
-Only five test files set it themselves; every other test inherits `~/.config/spelunk/config.toml`.
+A test only escapes your own config if the helper that spawns the process pins `SPELUNK_CONFIG_DIR`
+itself (`plumbing_helpers::spelunk_bin_in` and the handful of files that build their own `Command`);
+anything else inherits `~/.config/spelunk/config.toml`.
 So if you have configured spelunk for your own use, particularly a `server_url` with
 `mode = "cloud_first"`, the suite picks that up and starts talking to a real server. That has
 already interfered with real runs: tests that should be hermetic fail, hang, or pass for the wrong
