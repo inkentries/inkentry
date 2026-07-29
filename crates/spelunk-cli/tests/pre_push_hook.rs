@@ -46,26 +46,29 @@ fn spelunk_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_spelunk"))
 }
 
-/// A `git` invocation in `dir` with an isolated identity and config.
-///
-/// `git push` runs the pre-push hook, which execs a spelunk child. That child
-/// runs `Config::load`, which reads `<HOME>/.config/spelunk/config.toml` and
-/// resolves a secret store, defaulting to the OS keychain when
-/// `SPELUNK_SECRET_STORE` is unset. git is the only thing standing between a
-/// test and that child, so both have to be pinned here: pinning them on the
-/// spelunk commands a test runs directly leaves the hook's child ambient.
-///
-/// `HOME` redirects that config dir on unix only. `spelunk_config_dir()` goes
-/// through `dirs::home_dir()`, which on Windows is
-/// `SHGetKnownFolderPath(FOLDERID_Profile)` and reads no environment variable,
-/// so there is nothing to pin: a test whose premise needs the *ambient* config
-/// to be the seeded one has to be `#[cfg(unix)]`. `SPELUNK_SECRET_STORE=file`
-/// still keeps the child off the keychain everywhere, which is what the rest of
-/// this suite needs.
+// A `git` invocation in `dir` with an isolated identity and config.
+//
+// `git push` runs the pre-push hook, which execs a spelunk child. That child
+// runs `Config::load`, which reads a config dir and resolves a secret store,
+// defaulting to the OS keychain when `SPELUNK_SECRET_STORE` is unset. git is
+// the only thing standing between a test and that child, so all of it has to be
+// pinned here: pinning it on the spelunk commands a test runs directly leaves
+// the hook's child ambient.
+//
+// `HOME` alone does not pin the config dir, because `spelunk_config_dir()`
+// returns `SPELUNK_CONFIG_DIR` before it consults `dirs::home_dir()`. Anything
+// this helper does not set is inherited from the test process, so a runner that
+// exports `SPELUNK_CONFIG_DIR` (the documented way to isolate the suite from a
+// developer's own config) silently wins over `HOME` and points the hook's child
+// at a directory no test seeded. `SPELUNK_CONFIG_DIR` is therefore derived from
+// `home` and set explicitly, the same way `spelunk_bin_in` does it for the
+// direct-spawn path. That also makes the pin work on Windows, where
+// `dirs::home_dir()` reads no environment variable at all.
 fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         .env("HOME", home)
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
         .env("SPELUNK_SECRET_STORE", "file")
         .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
@@ -127,13 +130,19 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-/// Like [`bin`], but runs an arbitrary copy of the binary rather than the one
-/// cargo built. Used to control the path the shim embeds.
+// Like `bin`, but runs an arbitrary copy of the binary rather than the one
+// cargo built. Used to control the path the shim embeds.
+//
+// This cannot go through `spelunk_bin_in`, which always resolves the
+// cargo-built binary, so it repeats that helper's isolation by hand and has to
+// keep `SPELUNK_CONFIG_DIR` among it: without the pin this spawn inherits the
+// runner's ambient value, which wins over `HOME`.
 fn bin_at(exe: &Path, home: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(exe);
     cmd.current_dir(cwd)
         .env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", home)
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
         .env_remove("XDG_CONFIG_HOME")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")

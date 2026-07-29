@@ -81,6 +81,14 @@ fn index_command(project: &Path) -> std::process::Command {
     cmd.current_dir(project)
         .env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", project)
+        // Derived from this test's own `HOME` rather than inherited: an ambient
+        // `SPELUNK_CONFIG_DIR` wins over `HOME`, so without this every test in
+        // the file would share one config and secret store instead of getting
+        // an isolated one.
+        .env(
+            "SPELUNK_CONFIG_DIR",
+            project.join(".config").join("spelunk"),
+        )
         .env("SPELUNK_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
         .arg("index")
