@@ -7,8 +7,12 @@ use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note, NoteId};
 use crate::embeddings::blob_to_vec;
 
+mod cloud_api;
+mod peer;
 mod sync;
 mod wire_types;
+pub use cloud_api::CloudApiMemoryBackend;
+pub(super) use peer::{PeerDialect, detect_dialect};
 pub use sync::{BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry};
 pub use wire_types::ConflictInfo;
 use wire_types::*;
@@ -243,7 +247,10 @@ impl MemoryBackend for RemoteMemoryBackend {
 
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
         let resp = self
-            .authed(self.client.get(self.url(&format!("memory/{}", encode_path_segment(&id)))))
+            .authed(
+                self.client
+                    .get(self.url(&format!("memory/{}", encode_path_segment(&id)))),
+            )
             .send()
             .await
             .context("GET /memory/{id}")?;
@@ -275,10 +282,10 @@ impl MemoryBackend for RemoteMemoryBackend {
 
     async fn archive(&self, id: NoteId) -> Result<bool> {
         let resp = self
-            .authed(self.client.post(self.url(&format!(
-                "memory/{}/archive",
-                encode_path_segment(&id)
-            ))))
+            .authed(
+                self.client
+                    .post(self.url(&format!("memory/{}/archive", encode_path_segment(&id)))),
+            )
             .send()
             .await
             .context("POST /memory/{id}/archive")?
@@ -293,13 +300,10 @@ impl MemoryBackend for RemoteMemoryBackend {
     async fn supersede(&self, old_id: NoteId, new_id: NoteId) -> Result<bool> {
         let body = SupersedeRequest { new_id };
         let resp = self
-            .authed(
-                self.client
-                    .post(self.url(&format!(
-                        "memory/{}/supersede",
-                        encode_path_segment(&old_id)
-                    ))),
-            )
+            .authed(self.client.post(self.url(&format!(
+                "memory/{}/supersede",
+                encode_path_segment(&old_id)
+            ))))
             .json(&body)
             .send()
             .await

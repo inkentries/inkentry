@@ -20,8 +20,8 @@ mod common;
 use serial_test::serial;
 use spelunk_core::storage::GitNotesBackend;
 use spelunk_core::storage::MemoryBackend;
-use spelunk_core::storage::NoteInput;
 use spelunk_core::storage::NoteId;
+use spelunk_core::storage::NoteInput;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 //

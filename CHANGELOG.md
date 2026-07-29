@@ -11,6 +11,45 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`mode = "cloud_first"` now serves memory against the hosted API, not only a
+  self-hosted spelunk-server.** Remote agents need a project whose memory has no
+  local store at all, because running a full index before each session is not
+  feasible for them. The two peers expose different memory routes, so which
+  dialect to speak is settled once, when the backend opens, by reading the
+  capability list `/v1/health` already advertises: a peer that offers SSE
+  streaming is the hosted API, and anything else, including a probe that times
+  out, is unreachable, or answers without a capability list, is treated as a
+  self-hosted server. That fallback means a self-hosted deployment takes exactly
+  the code path it took before, and gains no new way to fail when the backend
+  opens.
+
+  Against the hosted API, listing and searching share one route distinguished by
+  a query parameter, entry counts come from the total the list route already
+  computes, archiving is a `DELETE`, and supersession is expressed as a batch
+  edge. Harvest's duplicate check filters client-side, since the hosted API has
+  no `source_commit` filter: correct, but proportional to the size of the
+  project rather than an indexed lookup.
+
+  Two operations are limited for now. `spelunk memory show` and `spelunk memory
+  archive` address a single entry, and the hosted API accepts only a project
+  UUID on those two routes, unlike the four routes beside them which take a slug
+  or a UUID. Configure `project_id` as the project's UUID to use them; with a
+  slug they report that constraint rather than failing with an opaque error.
+  Adding, listing, searching and counting work with either form.
+
+### Changed
+
+- **A memory entry's id is now an opaque token rather than an integer.** The
+  local store and a self-hosted server number entries sequentially; the hosted
+  API identifies them by UUID, which no integer can carry. Ids are therefore
+  passed through as opaque values and narrowed back to an integer only by the
+  stores that have one. Commands that take an id accept whichever form the
+  project's own store uses, and an id from the wrong kind of store now says so
+  instead of reporting the entry as missing.
+
+  `--format json` output is unchanged for existing projects: a numeric id still
+  serializes as a JSON number, and only a non-numeric id serializes as a string.
+
 - **A written stability contract, [docs/stability.md](docs/stability.md), and
   tests that enforce it.** Until now the plumbing JSONL schemas were held stable
   by convention alone, and nothing stated which config keys, flags, exit codes,

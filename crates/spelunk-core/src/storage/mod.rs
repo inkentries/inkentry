@@ -219,12 +219,25 @@ async fn open_remote_memory_backend_with_bearer(
     // is given as `projects.slug`, and cloud-api's project path params resolve
     // a slug or a UUID (cloud-api 66fd265). `CloudSyncClient` has always passed
     // it through this way.
-    Ok(Box::new(RemoteMemoryBackend {
-        client,
-        base_url: url.to_string(),
-        project_id,
-        api_key: bearer,
-    }))
+    //
+    // Which memory dialect that peer speaks is settled once, here, rather than
+    // branched on inside every CRUD method. Any uncertain probe resolves to the
+    // team-server dialect, which is what this function returned unconditionally
+    // before the probe existed.
+    match remote::detect_dialect(&client, url).await {
+        remote::PeerDialect::CloudApi => Ok(Box::new(remote::CloudApiMemoryBackend {
+            client,
+            base_url: url.to_string(),
+            project_id,
+            api_key: bearer,
+        })),
+        remote::PeerDialect::TeamServer => Ok(Box::new(RemoteMemoryBackend {
+            client,
+            base_url: url.to_string(),
+            project_id,
+            api_key: bearer,
+        })),
+    }
 }
 
 // ── Tests for escape_like ─────────────────────────────────────────────────────

@@ -2,8 +2,8 @@
 // picks, what reaches the wire, and what it refuses to route at.
 
 use super::open_memory_backend;
-use crate::storage::memory::NoteId;
 use crate::config::{Config, SyncMode};
+use crate::storage::memory::NoteId;
 use anyhow::Result;
 use std::sync::OnceLock;
 use wiremock::matchers::{method, path};
@@ -109,6 +109,16 @@ async fn open_seam(cfg: &Config, url: &str) -> Result<Box<dyn super::MemoryBacke
     super::open_remote_memory_backend_with_store(cfg, url, &store).await
 }
 
+// Paths requested, minus the peer probe: it is issued on every open by design
+// and is not what these assertions are pinning.
+async fn memory_paths(server: &MockServer) -> Vec<String> {
+    requested_paths(server)
+        .await
+        .into_iter()
+        .filter(|p| p != "/v1/health")
+        .collect()
+}
+
 async fn requested_paths(server: &MockServer) -> Vec<String> {
     server
         .received_requests()
@@ -119,20 +129,23 @@ async fn requested_paths(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
-// Opening the cloud-routing backend costs no round trip: the configured
-// `project_id` is the project key, so there is nothing to look up, and no
-// capability of the peer is inspected before the first real memory call.
-// Every mock below is mounted without either route, so a reintroduced
-// pre-flight would fail the request rather than trip this assertion; it is
-// here to name the invariant the tests are protecting.
-async fn assert_no_preflight(server: &MockServer) {
+// The configured `project_id` is the project key, so opening the backend never
+// looks one up. `GET /v1/projects` is the retired slug-to-UUID resolver: a
+// self-hosted server answers it in a shape the resolver could not deserialize,
+// so reintroducing it would break the documented `cloud_first` configuration at
+// open and take every memory command with it. That is the harm this names.
+//
+// A `GET /v1/health` peer probe IS issued, to pick the memory dialect. It
+// cannot cause the same harm, because every failure to answer it resolves to
+// the self-hosted dialect: the mocks below mount no `/v1/health`, so each of
+// these tests exercises that fallback and proves the self-hosted path is
+// reached exactly as it was before the probe existed.
+async fn assert_no_project_lookup(server: &MockServer) {
     let paths = requested_paths(server).await;
-    for preflight in ["/v1/projects", "/v1/health"] {
-        assert!(
-            !paths.iter().any(|p| p == preflight),
-            "opening the backend must not issue {preflight}; saw {paths:?}"
-        );
-    }
+    assert!(
+        !paths.iter().any(|p| p == "/v1/projects"),
+        "opening the backend must not resolve the project; saw {paths:?}"
+    );
 }
 
 #[tokio::test]
@@ -188,7 +201,7 @@ async fn cloud_first_slug_reaches_server_verbatim() {
         .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 7);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
 }
 
 #[tokio::test]
@@ -207,7 +220,7 @@ async fn cloud_first_raw_uuid_reaches_server_verbatim() {
         .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 3);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
 }
 
 // `derive_project_id` slugs contain `/`. The whole slug must occupy one
@@ -227,7 +240,7 @@ async fn cloud_first_git_remote_slug_is_one_encoded_segment() {
         .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 11);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
     let decoded = percent_encoding::percent_decode_str("github.com%2Fowner%2Frepo")
         .decode_utf8()
         .unwrap();
@@ -248,7 +261,7 @@ async fn cloud_first_local_derived_slug_is_one_encoded_segment() {
         .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 5);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
     let decoded = percent_encoding::percent_decode_str("local%2F9f2a8b3c4d5e6f70")
         .decode_utf8()
         .unwrap();
@@ -275,7 +288,7 @@ async fn cloud_first_mixed_case_project_id_is_not_normalised() {
     .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 13);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
 }
 
 // A raw UUID is equally opaque: canonical UUIDs are case-insensitive, but the
@@ -296,7 +309,7 @@ async fn cloud_first_uppercase_uuid_is_not_normalised() {
         .unwrap();
 
     assert_eq!(be.count().await.unwrap(), 2);
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
 }
 
 // A repo that reached the hosted API before the passthrough still carries the
@@ -337,7 +350,7 @@ async fn a_leftover_project_id_cache_on_disk_changes_nothing() {
 
     assert_eq!(be.count().await.unwrap(), 4);
     assert_eq!(
-        requested_paths(&server).await,
+        memory_paths(&server).await,
         vec!["/v1/projects/team%2Fproj/stats".to_string()],
         "a leftover cache file must not divert the configured project id"
     );
@@ -379,9 +392,9 @@ async fn cloud_first_loopback_slug_needs_no_lookup() {
 
     assert_eq!(be.count().await.unwrap(), 2);
     assert_eq!(
-        requested_paths(&server).await,
+        memory_paths(&server).await,
         vec!["/v1/projects/team%2Fproj/stats".to_string()],
-        "the memory call must be the only request the open path makes"
+        "the memory call must be the only memory request the open path makes"
     );
     assert!(
         !spelunk_dir.path().join("cloud-project-id.lock").exists(),
@@ -492,7 +505,7 @@ async fn documented_self_hosted_cloud_first_config_round_trips() {
     assert_eq!(notes[0].id, NoteId::from_i64(42));
     assert_eq!(notes[0].title, "Use sqlite-vec");
 
-    assert_no_preflight(&server).await;
+    assert_no_project_lookup(&server).await;
 }
 
 #[tokio::test]
@@ -700,4 +713,68 @@ async fn no_server_kill_switch_forces_local() {
         "SPELUNK_NO_SERVER=1 forces offline → local backend"
     );
     unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+}
+
+// ── the peer probe picks the dialect, and never strands the self-hosted one ──
+
+#[tokio::test]
+#[serial_test::serial]
+#[cfg_attr(windows, ignore)]
+async fn a_health_probe_advertising_memory_stream_selects_the_cloud_dialect() {
+    clear_env();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["memory", "memory.stream"],
+        })))
+        .mount(&server)
+        .await;
+
+    let url = non_loopback_alias(&server);
+    let be = open_seam(&cloud_first_cfg(&url, "proj"), &url)
+        .await
+        .unwrap();
+    assert_eq!(be.backend_kind(), "cloud-api");
+}
+
+// A self-hosted server that answers health without the cloud capability, and
+// one that cannot answer it at all, must both land on the dialect they used
+// before the probe existed.
+#[tokio::test]
+#[serial_test::serial]
+#[cfg_attr(windows, ignore)]
+async fn a_team_server_health_probe_keeps_the_self_hosted_dialect() {
+    clear_env();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "capabilities": ["memory", "index.embed", "search.semantic"],
+        })))
+        .mount(&server)
+        .await;
+
+    let url = non_loopback_alias(&server);
+    let be = open_seam(&cloud_first_cfg(&url, "proj"), &url)
+        .await
+        .unwrap();
+    assert_eq!(be.backend_kind(), "remote");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[cfg_attr(windows, ignore)]
+async fn an_unanswerable_health_probe_keeps_the_self_hosted_dialect() {
+    clear_env();
+    // No `/v1/health` mounted at all: the probe 404s, which must not change
+    // which backend opens.
+    let server = MockServer::start().await;
+    let url = non_loopback_alias(&server);
+    let be = open_seam(&cloud_first_cfg(&url, "proj"), &url)
+        .await
+        .unwrap();
+    assert_eq!(be.backend_kind(), "remote");
 }
