@@ -197,11 +197,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   `localhost` or an address literal the standard library parses and reports as
   loopback. The backslash is part of that delimiter set because the URL parser
   that opens the connection treats it as a path separator for `http`/`https`,
-  so `http://evil.example\@127.0.0.1` names `evil.example`, not loopback. As a side effect, non-canonical literals that previously rode in on
-  the `127.` prefix (`127.999.0.1`, `0127.0.0.1`) are rejected too. Unchanged,
-  and still deliberate: this check does no DNS resolution, so a `/etc/hosts`
-  alias that resolves to loopback but isn't spelled as a loopback literal is
-  still rejected rather than accepted.
+  so `http://evil.example\@127.0.0.1` names `evil.example`, not loopback.
+  One user-visible consequence: only a full dotted quad counts as a loopback
+  literal now, so IPv4 spellings that previously rode in on the `127.` prefix
+  are rejected, whether they were invalid (`127.999.0.1`), non-canonical
+  (`0127.0.0.1`, `127.0.0.001`) or merely abbreviated (`127.1`). Write the
+  address out as `127.0.0.1` if you were using one of those. Unchanged, and
+  still deliberate: this check does no DNS resolution, so a `/etc/hosts` alias
+  that resolves to loopback but isn't spelled as a loopback literal is still
+  rejected rather than accepted.
 
 ### Internal
 
