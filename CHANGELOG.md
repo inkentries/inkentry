@@ -192,10 +192,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   did not intend, at every call site that gates on it: opening a remote memory
   backend, the sync client's keyed constructor, the CLI capability probe, and
   the inference client. The authority is now parsed rather than pattern-matched:
-  it ends at the first `/`, `?` or `#`, userinfo is removed at the last `@`, the
-  port and IPv6 brackets are stripped, and the remaining host must be
+  it ends at the first `/`, `?`, `#` or `\`, userinfo is removed at the last
+  `@`, the port and IPv6 brackets are stripped, and the remaining host must be
   `localhost` or an address literal the standard library parses and reports as
-  loopback. As a side effect, non-canonical literals that previously rode in on
+  loopback. The backslash is part of that delimiter set because the URL parser
+  that opens the connection treats it as a path separator for `http`/`https`,
+  so `http://evil.example\@127.0.0.1` names `evil.example`, not loopback. As a side effect, non-canonical literals that previously rode in on
   the `127.` prefix (`127.999.0.1`, `0127.0.0.1`) are rejected too. Unchanged,
   and still deliberate: this check does no DNS resolution, so a `/etc/hosts`
   alias that resolves to loopback but isn't spelled as a loopback literal is

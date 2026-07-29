@@ -30,10 +30,13 @@ fn url_host(url: &str) -> Option<&str> {
         .or_else(|| url.strip_prefix("https://"))
         .unwrap_or(url);
 
-    // The authority ends at the first `/`, `?` or `#`. Without bounding it,
-    // an `@` later in the query would move the apparent host past the real
-    // one: `http://evil.example/?@127.0.0.1`.
-    let authority = match rest.find(['/', '?', '#']) {
+    // The authority ends at the first `/`, `?`, `#` or `\`. Without bounding
+    // it, an `@` later in the URL would move the apparent host past the real
+    // one: `http://evil.example/?@127.0.0.1`. The backslash belongs in that set
+    // because a WHATWG URL parser (which is what actually opens the
+    // connection) treats it as a path separator for http(s), so in
+    // `http://evil.example\@127.0.0.1` the host is `evil.example`.
+    let authority = match rest.find(['/', '?', '#', '\\']) {
         Some(idx) => &rest[..idx],
         None => rest,
     };
@@ -116,8 +119,8 @@ pub fn is_loopback_url_missing_port(url: &str) -> bool {
 ///   recognised as loopback and is rejected. This is intentional (fail closed,
 ///   not open) and the known limitation of a string-based check.
 /// * The authority is *parsed* rather than prefix-matched: userinfo is stripped
-///   at the last `@`, the authority ends at the first `/`, `?` or `#`, and the
-///   remaining host must parse as an exact literal. Decoration around a
+///   at the last `@`, the authority ends at the first `/`, `?`, `#` or `\`, and
+///   the remaining host must parse as an exact literal. Decoration around a
 ///   loopback-looking host cannot smuggle a different host past the check, so
 ///   `http://127.0.0.1@evil.example` and `http://127.0.0.1.evil.example` are
 ///   rejected as the non-loopback hosts they are.
@@ -236,6 +239,18 @@ mod tests {
         assert!(!is_loopback_url("http://evil.example/?@127.0.0.1"));
         assert!(!is_loopback_url("http://evil.example?@127.0.0.1"));
         assert!(!is_loopback_url("http://evil.example#@127.0.0.1"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_backslash_delimited_authority() {
+        // A URL parser following the WHATWG rules ends the authority at a
+        // backslash for http(s), so the real host here is `evil.example` and
+        // everything from the backslash on is the path. Treating the backslash
+        // as an ordinary character would put `127.0.0.1` after the last `@` and
+        // read the whole thing as loopback.
+        assert!(!is_loopback_url(r"http://evil.example\@127.0.0.1"));
+        assert!(!is_loopback_url(r"http://evil.example\@127.0.0.1:7777"));
+        assert!(!is_loopback_url(r"http://evil.example\\@127.0.0.1"));
     }
 
     #[test]
@@ -361,6 +376,7 @@ mod tests {
             "http://127.0.0.1@evil.example",
             "http://127.0.0.1:1234@evil.example",
             "http://127.0.0.1.evil.example:7777/v1/health",
+            r"http://evil.example\@127.0.0.1",
         ] {
             let err = validate_transport_url(url)
                 .expect_err("a host that only looks like loopback must be rejected");
