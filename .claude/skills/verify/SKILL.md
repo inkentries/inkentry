@@ -65,13 +65,14 @@ the PR.
 `SPELUNK_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
 default configuration instead of yours.
 
-A test only escapes your own config if the helper that spawns the process pins `SPELUNK_CONFIG_DIR`
-itself (`plumbing_helpers::spelunk_bin_in` and the handful of files that build their own `Command`);
-anything else inherits `~/.config/spelunk/config.toml`.
+A spawned `spelunk` escapes your own config by one of two routes: the helper that spawns it pins
+`SPELUNK_CONFIG_DIR` itself (`plumbing_helpers::spelunk_bin_in`, and the handful of files that build
+their own `Command`), or you export `SPELUNK_CONFIG_DIR` for the whole run as above and the child
+inherits that. With neither, the child reads `~/.config/spelunk/config.toml`.
 So if you have configured spelunk for your own use, particularly a `server_url` with
-`mode = "cloud_first"`, the suite picks that up and starts talking to a real server. That has
-already interfered with real runs: tests that should be hermetic fail, hang, or pass for the wrong
-reason depending on whether that server happens to be healthy.
+`mode = "cloud_first"`, a run without the export picks that up and starts talking to a real server.
+That has already interfered with real runs: tests that should be hermetic fail, hang, or pass for
+the wrong reason depending on whether that server happens to be healthy.
 
 Your own `spelunk` usage and the repo's test runs are different concerns and must not share
 configuration. Pointing the suite at a throwaway directory is the cheapest way to keep them apart,
