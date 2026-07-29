@@ -449,15 +449,13 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 /// mode reaches users through the keychain, the default store when
 /// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
 ///
-/// Unix-only because the seeded config has to be the *ambient* one, which is the
-/// case the hook's child hits: it takes no `--config`. `spelunk_config_dir()`
-/// resolves that path through `dirs::home_dir()`, which reads `$HOME` on unix but
-/// calls `SHGetKnownFolderPath(FOLDERID_Profile)` on Windows, consulting no
-/// environment at all. There is no var to pin there, and seeding the real profile
-/// would break every other test in this suite.
-/// [`a_broken_config_is_tolerated_for_a_best_effort_publish`] covers the same
-/// arm on every platform through `--config`.
-#[cfg(unix)]
+// The seeded config has to be the *ambient* one, which is the case the hook's
+// child hits: it takes no `--config`. `git_cmd` pins `SPELUNK_CONFIG_DIR` at the
+// seeded directory and `spelunk_config_dir()` returns that before it consults
+// `dirs::home_dir()`, so the premise holds on every platform. That pin is what
+// makes this reachable on Windows, where `dirs::home_dir()` calls
+// `SHGetKnownFolderPath(FOLDERID_Profile)` and reads no environment variable, so
+// a `HOME` redirect alone would leave the child on the real profile.
 #[test]
 fn an_unloadable_config_does_not_block_the_branch_push() {
     let home = TempDir::new().unwrap();
@@ -506,12 +504,11 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
     );
 }
 
-/// The `--best-effort` config tolerance itself, on every platform.
-///
-/// The end-to-end guard above can only isolate an ambient config on unix, so the
-/// arm that keeps a hook's push alive would otherwise go unexercised on Windows.
-/// `--config` reaches the same branch: the command ignores `cfg`, so the publish
-/// still runs and the exit stays 0.
+// The `--best-effort` config tolerance reached through `--config` rather than an
+// ambient config dir. The guard above drives the ambient path the hook's child
+// actually takes; this pins the same arm to the explicit flag, so a regression in
+// either route is caught on its own. The command ignores `cfg`, so the publish
+// still runs and the exit stays 0.
 #[test]
 fn a_broken_config_is_tolerated_for_a_best_effort_publish() {
     let home = TempDir::new().unwrap();
