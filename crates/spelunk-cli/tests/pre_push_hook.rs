@@ -442,13 +442,13 @@ fn failed_notes_push_does_not_block_the_branch_push() {
     );
 }
 
-/// A config that will not load must not cost the user their branch push either.
-///
-/// The config loads before the command dispatch, so a broken one aborted the
-/// push with a bare `?` before `--best-effort` was ever consulted. The failure
-/// mode reaches users through the keychain, the default store when
-/// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
-///
+// A config that will not load must not cost the user their branch push either.
+//
+// The config loads before the command dispatch, so a broken one aborted the
+// push with a bare `?` before `--best-effort` was ever consulted. The failure
+// mode reaches users through the keychain, the default store when
+// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
+//
 // The seeded config has to be the *ambient* one, which is the case the hook's
 // child hits: it takes no `--config`. `git_cmd` pins `SPELUNK_CONFIG_DIR` at the
 // seeded directory and `spelunk_config_dir()` returns that before it consults
