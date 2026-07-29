@@ -1206,6 +1206,21 @@ mod tests {
         assert!(err.contains("https"));
     }
 
+    // The inference client gates on the same validator, so an authority that
+    // only looks like loopback must not reach the point of carrying a bearer.
+    #[test]
+    fn transport_validator_rejects_spoofed_loopback_authorities() {
+        for url in [
+            "http://127.0.0.1.evil.example",
+            "http://127.0.0.1@evil.example",
+            "http://127.0.0.1:1234@evil.example",
+        ] {
+            let err = spelunk_core::config::validate_transport_url(url)
+                .expect_err("a host that only looks like loopback must be rejected");
+            assert!(err.contains("loopback"), "{url}: {err}");
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn from_config_accepts_loopback_http_inference_url() {

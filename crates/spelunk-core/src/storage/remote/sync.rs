@@ -779,6 +779,21 @@ mod tests {
     }
 
     #[test]
+    fn new_with_key_rejects_spoofed_loopback_authorities() {
+        for url in [
+            "http://127.0.0.1.evil.example",
+            "http://127.0.0.1@evil.example",
+            "http://127.0.0.1:1234@evil.example",
+        ] {
+            let err = match CloudSyncClient::new(url, "proj", Some("secret"), None) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{url} must not be accepted as loopback"),
+            };
+            assert!(err.contains("plaintext http"), "{url}: {err}");
+        }
+    }
+
+    #[test]
     fn new_keyless_construction_unaffected_by_transport() {
         // No bearer to leak, so even a non-loopback plaintext dev server is fine.
         assert!(CloudSyncClient::new("http://team-server:7777", "proj", None, None).is_ok());
