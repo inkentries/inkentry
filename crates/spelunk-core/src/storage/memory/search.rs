@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::notes::{row_to_note, row_to_note_with_distance};
-use super::{MemoryStore, Note};
+use super::{MemoryStore, Note, NoteId};
 
 impl MemoryStore {
     /// Semantic KNN search. Returns active notes ordered by ascending distance.
@@ -109,23 +109,23 @@ impl MemoryStore {
 
         const K: f64 = 60.0;
 
-        let mut scores: HashMap<i64, f64> = HashMap::new();
-        let mut by_id: HashMap<i64, Note> = HashMap::new();
+        let mut scores: HashMap<NoteId, f64> = HashMap::new();
+        let mut by_id: HashMap<NoteId, Note> = HashMap::new();
 
         for (rank, note) in vec_results.into_iter().enumerate() {
             let rrf = 1.0 / (K + (rank + 1) as f64);
-            *scores.entry(note.id).or_insert(0.0) += rrf;
-            by_id.entry(note.id).or_insert(note);
+            *scores.entry(note.id.clone()).or_insert(0.0) += rrf;
+            by_id.entry(note.id.clone()).or_insert(note);
         }
 
         for (rank, note) in text_results.into_iter().enumerate() {
             let rrf = 1.0 / (K + (rank + 1) as f64);
-            *scores.entry(note.id).or_insert(0.0) += rrf;
-            by_id.entry(note.id).or_insert(note);
+            *scores.entry(note.id.clone()).or_insert(0.0) += rrf;
+            by_id.entry(note.id.clone()).or_insert(note);
         }
 
         // Sort descending by RRF score, take top `limit`.
-        let mut ranked: Vec<(i64, f64)> = scores.into_iter().collect();
+        let mut ranked: Vec<(NoteId, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         ranked.truncate(limit);
 

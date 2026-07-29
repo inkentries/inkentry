@@ -85,3 +85,8 @@ pub(super) fn full_db_snapshot(
         full_table_snapshot(store, "note_embeddings", "note_id"),
     )
 }
+
+// Expected `Note::superseded_by` for a store-minted rowid.
+pub(super) fn sup(id: i64) -> Option<crate::storage::memory::NoteId> {
+    Some(crate::storage::memory::NoteId::from_i64(id))
+}

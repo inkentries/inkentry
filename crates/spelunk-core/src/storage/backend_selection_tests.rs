@@ -2,6 +2,7 @@
 // picks, what reaches the wire, and what it refuses to route at.
 
 use super::open_memory_backend;
+use crate::storage::memory::NoteId;
 use crate::config::{Config, SyncMode};
 use anyhow::Result;
 use std::sync::OnceLock;
@@ -488,7 +489,7 @@ async fn documented_self_hosted_cloud_first_config_round_trips() {
 
     let notes = be.list(None, 10, false, None).await.unwrap();
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].id, 42);
+    assert_eq!(notes[0].id, NoteId::from_i64(42));
     assert_eq!(notes[0].title, "Use sqlite-vec");
 
     assert_no_preflight(&server).await;
@@ -570,12 +571,19 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
         valid_at: None,
         supersedes: None,
     };
-    assert_eq!(be.add(input).await.unwrap().0, 42);
+    assert_eq!(be.add(input).await.unwrap().0, NoteId::from_i64(42));
     assert_eq!(be.list(None, 10, false, None).await.unwrap().len(), 1);
-    assert_eq!(be.get(42).await.unwrap().unwrap().id, 42);
+    assert_eq!(
+        be.get(NoteId::from_i64(42)).await.unwrap().unwrap().id,
+        NoteId::from_i64(42)
+    );
     assert_eq!(be.search(&[], "sqlite", 5, None).await.unwrap().len(), 1);
-    assert!(be.archive(42).await.unwrap());
-    assert!(be.supersede(42, 43).await.unwrap());
+    assert!(be.archive(NoteId::from_i64(42)).await.unwrap());
+    assert!(
+        be.supersede(NoteId::from_i64(42), NoteId::from_i64(43))
+            .await
+            .unwrap()
+    );
     assert_eq!(be.count().await.unwrap(), 1);
     assert!(be.harvested_shas().await.unwrap().contains("deadbeef"));
 }

@@ -21,6 +21,7 @@ use serial_test::serial;
 use spelunk_core::storage::GitNotesBackend;
 use spelunk_core::storage::MemoryBackend;
 use spelunk_core::storage::NoteInput;
+use spelunk_core::storage::NoteId;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 //
@@ -227,7 +228,7 @@ async fn git_notes_archive_hides_entry() {
         .await
         .expect("add");
 
-    let archived = backend.archive(id).await.expect("archive");
+    let archived = backend.archive(id.clone()).await.expect("archive");
     assert!(archived);
 
     let active = backend
@@ -262,7 +263,12 @@ async fn git_notes_unsupported_methods_return_errors() {
     assert!(backend.has_source_ref("abc123").await.is_err());
     assert!(backend.add_edge(1, 2, "relates_to").await.is_err());
     assert!(backend.get_edges(1).await.is_err());
-    assert!(backend.supersede(1, 2).await.is_err());
+    assert!(
+        backend
+            .supersede(NoteId::from_i64(1), NoteId::from_i64(2))
+            .await
+            .is_err()
+    );
 }
 
 // ── append_to_git_notes write-through helper ─────────────────────────────────
@@ -641,9 +647,9 @@ async fn git_notes_adr_conformance_read_skips_prose() {
     let notes = backend.list(None, 100, false, None).await.expect("list");
 
     assert_eq!(notes.len(), 3, "three records, prose skipped");
-    assert_eq!(notes[0].id, 1);
-    assert_eq!(notes[1].id, 2);
-    assert_eq!(notes[2].id, 3);
+    assert_eq!(notes[0].id, NoteId::from_i64(1));
+    assert_eq!(notes[1].id, NoteId::from_i64(2));
+    assert_eq!(notes[2].id, NoteId::from_i64(3));
     assert_eq!(notes[0].title, "use stripe for payment processing");
     assert_eq!(
         notes[2].title,
@@ -698,9 +704,9 @@ async fn git_notes_add_preserves_prose_and_siblings() {
     // Four records now readable, originals intact and in order.
     let notes = backend.list(None, 100, false, None).await.expect("list");
     assert_eq!(notes.len(), 4, "three original + one appended");
-    assert_eq!(notes[0].id, 1);
-    assert_eq!(notes[1].id, 2);
-    assert_eq!(notes[2].id, 3);
+    assert_eq!(notes[0].id, NoteId::from_i64(1));
+    assert_eq!(notes[1].id, NoteId::from_i64(2));
+    assert_eq!(notes[2].id, NoteId::from_i64(3));
     assert_eq!(notes[3].title, "a fourth decision");
 }
 
@@ -714,7 +720,10 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     write_raw_note(root, &adr_conformance_blob());
 
     let backend = GitNotesBackend::with_root(root.to_path_buf());
-    let archived = backend.archive(2).await.expect("archive middle");
+    let archived = backend
+        .archive(NoteId::from_i64(2))
+        .await
+        .expect("archive middle");
     assert!(archived, "middle record archived");
 
     // Prose retained.
@@ -727,12 +736,19 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
 
     // Records 1 and 3 still active; only record 2 archived.
     let active = backend.list(None, 100, false, None).await.expect("active");
-    let active_ids: Vec<i64> = active.iter().map(|n| n.id).collect();
-    assert_eq!(active_ids, vec![1, 3], "only the middle record is hidden");
+    let active_ids: Vec<NoteId> = active.iter().map(|n| n.id.clone()).collect();
+    assert_eq!(
+        active_ids,
+        vec![NoteId::from_i64(1), NoteId::from_i64(3)],
+        "only the middle record is hidden"
+    );
 
     let all = backend.list(None, 100, true, None).await.expect("all");
     assert_eq!(all.len(), 3, "all three records still present");
-    let rec2 = all.iter().find(|n| n.id == 2).expect("record 2 present");
+    let rec2 = all
+        .iter()
+        .find(|n| n.id == NoteId::from_i64(2))
+        .expect("record 2 present");
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }
 
@@ -765,7 +781,7 @@ async fn git_notes_backend_archive_appends_never_rewrites() {
         .to_string();
     let original_record: NoteRecord = serde_json::from_str(&original_line).expect("parse original");
 
-    let archived = backend.archive(id).await.expect("archive");
+    let archived = backend.archive(id.clone()).await.expect("archive");
     assert!(archived);
 
     let after = read_raw_note(root);
@@ -784,7 +800,8 @@ async fn git_notes_backend_archive_appends_never_rewrites() {
     let update: NoteRecord = serde_json::from_str(lines[1]).expect("parse appended record");
     assert_eq!(update.status, "archived");
     assert_ne!(
-        update.id, id,
+        NoteId::from_i64(update.id),
+        id.clone(),
         "the appended state-update mints its own id, never reusing the \
          original rowid"
     );
@@ -815,7 +832,7 @@ async fn git_notes_backend_archive_twice_is_idempotent() {
         .await
         .expect("add");
 
-    assert!(backend.archive(id).await.expect("first archive"));
+    assert!(backend.archive(id.clone()).await.expect("first archive"));
     assert!(backend.archive(id).await.expect("second archive"));
 
     let all = backend.list(None, 10, true, None).await.expect("list all");
@@ -1851,29 +1868,29 @@ async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
             .expect("add");
         ids.push(id);
     }
-    let distinct: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    let distinct: std::collections::HashSet<NoteId> = ids.iter().cloned().collect();
     assert_eq!(distinct.len(), ENTRIES, "setup: the ids must be distinct");
 
     let mut tasks = Vec::new();
     for id in ids {
         let root = root.clone();
         tasks.push(tokio::spawn(async move {
-            let result = GitNotesBackend::with_root(root).archive(id).await;
+            let result = GitNotesBackend::with_root(root).archive(id.clone()).await;
             (id, result)
         }));
     }
 
-    let mut failed: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut failed: std::collections::HashSet<NoteId> = std::collections::HashSet::new();
     let mut failure_msgs = Vec::new();
-    let mut not_found: Vec<i64> = Vec::new();
+    let mut not_found: Vec<NoteId> = Vec::new();
     for task in tasks {
         let (id, result) = task.await.expect("archive task should not panic");
         match result {
             Ok(true) => {}
             Ok(false) => not_found.push(id),
             Err(e) => {
-                failed.insert(id);
                 failure_msgs.push(format!("archive of {id} failed: {e:#}"));
+                failed.insert(id);
             }
         }
     }
@@ -1898,7 +1915,7 @@ async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
     // Exactly the visibly-failed archives may remain active: an active entry
     // whose archive reported success is a silently revived/lost archive, and
     // an archived entry whose archive reported failure wrote after erroring.
-    let active: std::collections::HashSet<i64> = backend
+    let active: std::collections::HashSet<NoteId> = backend
         .list(Some("decision"), 100, false, None)
         .await
         .expect("list active")
@@ -3615,7 +3632,7 @@ use spelunk_core::storage::memory::Note;
 /// created — the shape `append_state_update`'s `base` parameter expects.
 fn note_for(title: &str, id: i64, created_at: i64) -> Note {
     Note {
-        id,
+        id: NoteId::from_i64(id),
         kind: "decision".to_string(),
         title: title.to_string(),
         body: format!("body for {title}"),
