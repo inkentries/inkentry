@@ -113,11 +113,12 @@ mod tests {
         );
     }
 
+    // TEST-NET-1 (RFC 5737) is reserved for documentation and never routes, so
+    // this cannot be answered by whatever else the suite has bound. Reusing a
+    // just-dropped mock server's port would race: another test can claim it.
     #[tokio::test]
     async fn an_unreachable_probe_falls_back_to_the_team_dialect() {
-        let server = MockServer::start().await;
-        let uri = server.uri();
-        drop(server);
+        let uri = "http://192.0.2.1:7777".to_string();
         assert_eq!(
             detect_dialect(&client(), &uri).await,
             PeerDialect::TeamServer
