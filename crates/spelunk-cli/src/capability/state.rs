@@ -23,8 +23,18 @@ pub enum EmbedderState {
     /// Server built without the native embedder (`embed-native` feature): no
     /// in-process model to load, ever. Embed endpoints return a permanent 400.
     Disabled,
-    /// Field absent from the health body (server pre-dates it). Unknown state.
+    /// Field absent from the health body (server pre-dates it), or set to a
+    /// state this build does not know. Unknown state.
+    ///
+    // `other` matters more than it looks. Without it an unrecognised state
+    // string fails to deserialize, and because this enum sits inside the
+    // health body, that failure takes the *whole* body down with it: the CLI
+    // falls back to the legacy plain-text branch and silently discards
+    // `limits`, `embedding_dim`, and every capability the server advertised.
+    // A newer server adding a state value is explicitly allowed by the
+    // additive-only rule in docs/stability.md, so it must cost nothing.
     #[default]
+    #[serde(other)]
     Unknown,
 }
 
@@ -51,13 +61,19 @@ impl EmbedderState {
 /// legacy 30s / no-embed-exemption profile", which is exactly the
 /// version-skew case a newer CLI can hit talking to an older, long-running
 /// server (see `embed_phase.rs`'s calibration-vs-server-budget clamping).
+///
+/// Every member is independently optional because a peer advertises them
+/// independently: `None` on a member means "this peer did not advertise it, or
+/// advertised it in a shape this build cannot read", and each consumer applies
+/// its own legacy fallback. Reading the object all-or-nothing instead would
+/// discard a member that parsed fine because a sibling did not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerLimits {
     /// Wall-clock budget (seconds) the server allows a single `/index/embed`
     /// request before returning `408`.
-    pub embed_request_timeout_secs: u64,
+    pub embed_request_timeout_secs: Option<u64>,
     /// Max chunks accepted in a single `/index/embed` request (`413` above this).
-    pub max_batch_chunks: usize,
+    pub max_batch_chunks: Option<usize>,
     /// Per-chunk token truncation cap the embedder enforces, if known.
     pub embedder_token_cap: Option<usize>,
 }

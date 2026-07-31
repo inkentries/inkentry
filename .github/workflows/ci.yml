@@ -32,9 +32,9 @@ jobs:
     timeout-minutes: 15
     env:
       # clippy/check/build in this job need no debug info from the dev
-      # profile; the full workspace build (all-targets, rich-formats, incl.
-      # the embedder dep tree) has been observed to exhaust runner disk
-      # (ENOSPC) with debug info on. Mirrors CARGO_PROFILE_TEST_DEBUG below.
+      # profile; the full workspace build (rich-formats, incl. the embedder
+      # dep tree) has been observed to exhaust runner disk (ENOSPC) with debug
+      # info on. Mirrors CARGO_PROFILE_TEST_DEBUG below.
       CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
@@ -71,14 +71,19 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all -- --check
 
+      # --lib --bins --tests --benches (not --all-targets): examples are never
+      # part of the regular build/lint/test gates. Several examples
+      # (chunk_quality_eval, embed_bench) directly depend on the native
+      # embedder and are meant to be run explicitly with the right features,
+      # not swept in by a workspace-wide command that doesn't grant them.
       - name: Clippy (rich-formats)
-        run: cargo clippy --all-targets --features rich-formats -- -D warnings
+        run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
 
       - name: Check (rich-formats)
-        run: cargo check --all-targets --features rich-formats
+        run: cargo check --lib --bins --tests --benches --features rich-formats
 
       - name: Build (rich-formats)
-        run: cargo build --all-targets --features rich-formats
+        run: cargo build --lib --bins --tests --benches --features rich-formats
 
       - name: Disk usage (after build)
         if: always()
@@ -151,8 +156,11 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # --lib --bins --tests --benches (not the nextest default, which also
+      # builds examples): examples are never part of the regular test gate,
+      # see the Check & Lint job's Clippy step comment above.
       - name: Run tests
-        run: cargo nextest run ${{ matrix.test-flags }}
+        run: cargo nextest run --lib --bins --tests --benches ${{ matrix.test-flags }}
 
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}

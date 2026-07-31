@@ -6,14 +6,57 @@ use anyhow::{Context, Result};
 use candle_core::quantized::{QMatMul, QTensor, gguf_file};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::{Activation, Embedding, Module, RmsNorm, rotary_emb::rope};
-use candle_transformers::models::qwen3::Config as Qwen3Config;
-use candle_transformers::utils::repeat_kv;
 use tokenizers::Tokenizer;
 
 use crate::error::EmbedError;
 
 /// Embedding dimension produced by F2LLM-v2-330M (hidden_size = 896).
 pub const DIM: usize = 896;
+
+/// Qwen3 `config.json` shape, deserialized directly from the model's config
+/// file. Copied from `candle_transformers::models::qwen3::Config` rather than
+/// depending on the `candle-transformers` crate for it: that crate bundles
+/// ~125 unrelated model architectures (llama, whisper, stable-diffusion,
+/// clip, ...) with no per-model feature gating, so pulling it in just for this
+/// struct and `repeat_kv` below costs real compile time and `target/` disk
+/// space even though the unused code is eliminated from the final linked
+/// binary by LTO. Field set must stay in sync with upstream if ever bumped.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+struct Config {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    head_dim: usize,
+    attention_bias: bool,
+    num_key_value_heads: usize,
+    max_position_embeddings: usize,
+    sliding_window: Option<usize>,
+    max_window_layers: usize,
+    tie_word_embeddings: bool,
+    rope_theta: f64,
+    rms_norm_eps: f64,
+    use_sliding_window: bool,
+    hidden_act: Activation,
+}
+
+/// Repeats each of `xs`'s key/value heads `n_rep` times along the head axis
+/// (grouped-query attention). Copied from `candle_transformers::utils::repeat_kv`;
+/// see the `Config` doc comment above for why this isn't a dependency.
+fn repeat_kv(xs: Tensor, n_rep: usize) -> Result<Tensor> {
+    if n_rep == 1 {
+        Ok(xs)
+    } else {
+        let (b_sz, n_kv_head, seq_len, head_dim) = xs.dims4()?;
+        Ok(Tensor::cat(&vec![&xs; n_rep], 2)?.reshape((
+            b_sz,
+            n_kv_head * n_rep,
+            seq_len,
+            head_dim,
+        ))?)
+    }
+}
 
 /// Hard ceiling for token sequences (max_position_embeddings).
 const MAX_SEQ_LEN: usize = 40960;
@@ -185,7 +228,7 @@ impl Qwen3EmbedWeights {
     /// Build the model from the cached Q8_0 GGUF, placing every tensor on
     /// `device`. Q8_0 projection weights become `QMatMul`; the embedding table
     /// is dequantized to F16 for the gather; RMSNorm weights are F32.
-    fn from_gguf(path: &Path, cfg: &Qwen3Config, device: &Device) -> Result<Self> {
+    fn from_gguf(path: &Path, cfg: &Config, device: &Device) -> Result<Self> {
         let mut file = std::fs::File::open(path)
             .with_context(|| format!("opening quantized GGUF {}", path.display()))?;
         let content = gguf_file::Content::read(&mut file)
@@ -549,7 +592,7 @@ impl NativeEmbedder {
             anyhow::anyhow!("loading tokenizer from {}: {e}", tokenizer_path.display())
         })?;
 
-        let config: Qwen3Config = serde_json::from_str(
+        let config: Config = serde_json::from_str(
             &std::fs::read_to_string(config_path)
                 .with_context(|| format!("reading config.json {}", config_path.display()))?,
         )
@@ -564,7 +607,7 @@ impl NativeEmbedder {
     fn from_files(
         gguf_path: &Path,
         tokenizer: Tokenizer,
-        config: Qwen3Config,
+        config: Config,
         device: Device,
     ) -> Result<Self> {
         let on_gpu = !matches!(device, Device::Cpu);

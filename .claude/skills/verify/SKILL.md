@@ -40,20 +40,25 @@ SPELUNK_SECRET_STORE=file cargo fmt --all -- --check
 
 ## 2. Clippy: zero warnings
 
+`--lib --bins --tests --benches`, not `--all-targets`: examples are never part
+of the regular build/lint/test gates (several depend on the native embedder
+and are meant to be run explicitly with the right features, not swept in by a
+workspace-wide command that doesn't grant them).
+
 ```bash
-SPELUNK_SECRET_STORE=file cargo clippy --all-targets --features rich-formats -- -D warnings
+SPELUNK_SECRET_STORE=file cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
 ```
 
 ## 3. Build
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo build --all-targets --features rich-formats
+SPELUNK_SECRET_STORE=file cargo build --lib --bins --tests --benches --features rich-formats
 ```
 
 ## 4. Tests + doctests
 
 ```bash
-SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo nextest run
+SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo nextest run --lib --bins --tests --benches
 SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo test --doc
 ```
 

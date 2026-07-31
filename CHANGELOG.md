@@ -107,6 +107,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   for the full fetch-and-transfer procedure. Unset by default, so the online
   path is unchanged for the common case.
 
+- **A version-skew support policy, [docs/version-skew.md](docs/version-skew.md),
+  and a CI job that runs two real binaries against each other.** A new `version-skew` 
+  workflow puts the current build and the previous release on a socket together in 
+  both directions and drives the full memory flow (add, list, search, push, sync, and 
+  pull into a fresh checkout), verifying each downloaded release asset against its 
+  published digest before running it.
+
 ### Removed
 
 - **`SPELUNK_NO_SLUG_CACHE` no longer does anything, and
@@ -133,6 +140,12 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   This is a breaking change to `spelunk-server`'s CLI surface, shipped pre-1.0.
 
 ### Fixed
+
+- **One unreadable field in a server's health response no longer costs you
+  every capability that server advertised.** The CLI reads `GET /v1/health` to
+  learn what a server can do. The guarantee is now that no single field can take
+  the whole body down, and it is enforced by a test that mutates every member 
+  of a recorded server response in turn.
 
 - **`spelunk memory push` and `spelunk sync` now embed what they push, so a
   pushed entry stays findable by `spelunk memory search` locally.** A push
