@@ -154,22 +154,114 @@ rather than left to be inferred:
 ### What this unlocks
 
 - **`spelunk explore`**: the interactive LLM reasoning loop (`/explore`).
-- **`spelunk memory harvest`**: LLM-based decision extraction from commits and
-  agent sessions.
-- **`spelunk index` chunk summaries**: see the caveat below; this one needs an
-  explicitly configured `server_url` in addition to the server having an LLM.
+- **`spelunk memory harvest`**: LLM-based decision extraction. All three sources
+  need an LLM: `--source git` (commits), `--source claude-code` (agent session
+  history), and `--source failures`.
+- **`spelunk index` chunk summaries**: LLM-written summaries of each indexed
+  chunk.
 
-### Absence behavior
+### How spelunk finds an LLM
 
-With no LLM configured on the server:
+LLM inference and embedding are routed **separately**, and the two can end up on
+different servers in the same command. Nothing on this page changes where your
+code is embedded: embedding keeps its own rule, in which the default
+`local_first` mode always prefers the local embedder even when `server_url` is
+set. What follows is the LLM rule only.
 
-- `spelunk explore` and `spelunk memory harvest` fail with an actionable error
-  naming `server_url` (or, if no server is reachable at all, pointing at
-  `spelunk server start`).
-- The server's own `/explore` and `/llm/complete` routes return `503` with
-  `"This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."`
-- `spelunk index` prints `Skipping summaries (no server_url configured)` to
-  stderr and continues; a missing LLM never fails an index run.
+In order:
+
+1. **Offline mode** (`SPELUNK_NO_SERVER=1`, or `mode = "offline"`): there is no
+   LLM, and nothing is probed.
+2. **Your local server serves an LLM**: it is used.
+3. **`llm_url` is set but your local server does not serve an LLM**: spelunk
+   stops and asks you to restart the server. It does **not** fall through to
+   `server_url`. See [The local-LLM guarantee](#the-local-llm-guarantee-and-where-it-stops).
+4. **A configured `server_url` serves an LLM**: it is used.
+5. **Otherwise**: no LLM is available.
+
+Availability at steps 2 and 4 is decided by what the reachable server reports in
+its `/v1/health` capabilities, not by what your config file says. A setting
+cannot tell you whether the running daemon ever picked it up, which is the whole
+point of step 3.
+
+A server built before LLM support existed advertises `explore` without being
+able to answer LLM calls. That case is detected and treated as "no LLM here",
+so an older team server does not turn into a broken route.
+
+### Why your summaries were skipped
+
+`spelunk index` prints one of three notices to stderr and **exits 0**: summaries
+are optional, and a missing LLM never fails an index run. The notice is ordinary
+output, not a log line, so you do not need `RUST_LOG` to see it.
+
+**No LLM anywhere** (rule 5):
+
+```
+Skipping chunk summaries: no LLM is available.
+There are two ways to get one:
+  set `llm_url` in ~/.config/spelunk/config.toml to your own chat-completions endpoint, then run `spelunk server stop` and `spelunk server start`;
+  or set `server_url` to a spelunk server that already provides one.
+Pass `--no-summaries` to `spelunk index` to skip this step without the notice.
+```
+
+**A local LLM is configured, but the running server does not serve it** (rule 3).
+This is the stale-daemon case: you set `llm_url` after the daemon was already
+running.
+
+```
+Skipping chunk summaries: your local spelunk server is running without the LLM endpoint you set in `llm_url`, so it cannot answer LLM requests.
+A running server keeps the settings it started with, so restart it to pick yours up:
+  spelunk server stop
+  spelunk server start
+```
+
+**Offline mode** (rule 1):
+
+```
+Skipping chunk summaries: offline mode is on, so no inference will run.
+Turn offline mode off to enable it: unset SPELUNK_NO_SERVER, or remove `mode = "offline"` from your spelunk config.
+```
+
+`spelunk explore` and `spelunk memory harvest` use the same three messages with
+their own opening line (`'spelunk explore' cannot run: ...`), and they **fail**
+rather than skipping, because neither can do its job without an LLM. One
+difference is worth knowing: in offline mode those two commands never reach the
+LLM rule at all. They stop earlier, on the embedding requirement, with the
+pre-existing `requires spelunk-server` error. The offline notice above is
+something only `spelunk index` prints.
+
+If summaries do run but a batch fails (the endpoint is up but returns an error,
+say), the run reports how many batches produced nothing and points you at
+`RUST_LOG=warn` for the underlying cause, which is a log line rather than
+ordinary output:
+
+```
+Warning: 1 of 1 summary batch(es) produced no summary; those chunks are indexed without one. Re-run with `spelunk index --force` to retry (`RUST_LOG=warn` shows the cause).
+```
+
+### The local-LLM guarantee, and where it stops
+
+**In `local_first` (the default) and in `offline`: if you have set `llm_url`,
+your code is never sent to a remote LLM.** If the local server is not serving
+that endpoint, spelunk stops and tells you to restart it rather than quietly
+using `server_url` instead. That is deliberate, not an accident of ordering: you
+asked for a local LLM, and substituting a remote one would be a privacy
+surprise, not a graceful fallback. The message for that case never mentions
+`server_url`, so it cannot nudge you toward the very thing you did not choose.
+
+**In `cloud_first` this guarantee does not apply.** There the configured
+`server_url` *is* your inference target, so it is matched at rule 2 and rule 3
+never runs: LLM calls go to that server even with `llm_url` set. This is
+consistent rather than contradictory, because `cloud_first` already routes
+embedding to the same server, so your chunk text reaches it either way. But it
+is a real boundary. If you want the guarantee, stay on `local_first` (or
+`offline`); `mode` is read from your personal config or `SPELUNK_MODE`, never
+from a checked-in `.spelunk/config.toml`.
+
+### If the server itself has no LLM
+
+The server's own `/explore` and `/llm/complete` routes return `503` with
+`"This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."`
 
 ### Loopback (local dev) setup
 
@@ -217,21 +309,10 @@ Or override them for a single daemon without changing either:
 spelunk server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-`spelunk explore` and `spelunk memory harvest` now work against the
-auto-discovered loopback server, no `config.toml` change needed, since both
-commands fill in the loopback URL for you when no explicit `server_url` is set.
-
-**Index-time summaries are the exception.** They are gated on an *explicitly
-configured* `server_url`, not merely on a reachable server, so they stay off
-even against an LLM-configured loopback daemon unless you also set:
-
-```toml
-# .spelunk/config.toml
-server_url = "http://127.0.0.1:7777"
-```
-
-(A loopback `http://` value is allowed here; see
-[Server setup → Client configuration](server-setup.md#client-configuration).)
+`spelunk explore`, `spelunk memory harvest` and index-time summaries now all
+work against the auto-discovered loopback server, no `config.toml` change
+needed: they fill in the loopback URL for you when no explicit `server_url` is
+set.
 
 ### Team server setup
 

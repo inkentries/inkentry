@@ -28,6 +28,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk index` no longer skips every chunk summary, and says something you
+  can act on when it genuinely cannot make one.** Summaries were gated on
+  configuration that had nothing to do with whether an LLM was reachable, so
+  the summary pass was effectively off for everyone. LLM availability is now
+  decided by what your server actually reports, not by your config: if you've
+  set `llm_url` but your local server isn't currently serving an LLM, spelunk
+  asks you to restart it rather than silently falling back to a remote one.
+  `spelunk explore` and `spelunk memory harvest` share the same fix. Summaries
+  stay optional and `index` still exits 0 (`--no-summaries` silences the
+  notice); `explore` and `memory harvest` now fail loudly instead of silently
+  doing nothing.
+
 - **`spelunk server start` no longer blames your firewall for a daemon that
   refused to start.** It waited out the full 30-second liveness timeout and then
   suggested a firewall whatever had gone wrong, including when the daemon had

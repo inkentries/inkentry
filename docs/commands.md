@@ -88,7 +88,7 @@ spelunk index <path> [options]
 | `--batch-size <n>` | 0 (auto) | Cap on the embedding batch size (chunks per server request); the embed phase calibrates the actual size from measured throughput, up to this cap. 0 leaves the cap at the server's own 256-chunk limit |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
-| `--no-summaries` | false | Skip LLM summary generation even when `server_url` is configured |
+| `--no-summaries` | false | Skip LLM summary generation, and the notice explaining why it was skipped, even when an LLM is available |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
 | `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`spelunk init` does this automatically) |
@@ -102,6 +102,15 @@ longer need `--force` just to fill in missing embeddings.
 Summaries are the exception: a chunk whose summary failed (say the LLM was
 unreachable) is recorded as attempted rather than missing, so a plain re-run
 skips it. Use `--force` to retry those.
+
+**Summaries need an LLM, and never fail the index.** If no LLM can be reached,
+`spelunk index` prints a notice naming the reason and what to do, then exits 0
+with everything else (files, chunks, embeddings) indexed as usual. The three
+reasons are: no LLM anywhere, an `llm_url` your running local server was not
+started with, and offline mode. See
+[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm)
+for the routing rule and the exact messages. LLM routing is resolved separately
+from embedding: which server embeds your code is unaffected by any of this.
 
 If a previous run was interrupted after recording a file's new content hash
 but before writing its chunks (a process kill mid-parse, for example), that
@@ -319,7 +328,11 @@ spelunk search "$X.unwrap()" --mode ast-grep     # structural pattern (metavaria
 
 Agentic search: the server's LLM iteratively calls spelunk's own tools (search,
 graph, read) to answer an open-ended question. Requires a server with an LLM
-backend configured.
+backend configured; without one the command fails with a message naming the
+reason and what to do (see
+[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm)).
+Its embedding and its LLM calls resolve independently and can land on different
+servers.
 
 ```
 spelunk explore "<question>" [options]
@@ -860,6 +873,14 @@ and `--db <path>`.
 cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-visibility)).
 Results from linked projects carry a `[from: <project>]` badge in text output
 and `source_project` / `source_project_path` fields in JSON.
+
+**`memory harvest` needs an LLM.** All three sources (`--source git`,
+`--source claude-code`, `--source failures`) use it for extraction, and the
+command fails with a message naming the reason and what to do when none is
+reachable. See
+[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm).
+Extraction and the dedup embedding resolve independently and can land on
+different servers.
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`
