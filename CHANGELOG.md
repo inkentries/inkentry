@@ -55,31 +55,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`spelunk index` no longer skips every chunk summary, and says something you
-  can act on when it genuinely cannot make one.** Summaries were gated twice on
-  configuration that has nothing to do with whether an LLM is reachable: a
-  project with no `server_url` was skipped outright, and a project *with* one
-  failed while reporting `server_url is set but could not build
-  ServerInferenceClient for summaries`. Between the two, the summary pass was
-  effectively off for everyone. Both gates are gone. LLM inference now resolves
-  on its own rule, separate from embedding: your local server serves it when it
-  has an LLM, otherwise a `server_url` that provides one does, otherwise the
-  command tells you the two ways to get one. `spelunk explore` and `spelunk
-  memory harvest` follow the same rule and now read the same way; embedding
-  keeps routing exactly as it did, so this cannot move where your code is
-  embedded.
-
-  Availability is decided by what the reachable server actually reports, not by
-  what your config says, because a setting cannot tell you whether the running
-  daemon picked it up. That distinction has one visible consequence worth
-  knowing: if you have configured `llm_url` but the running local server does
-  not serve an LLM, spelunk stops and asks you to restart it rather than
-  quietly using a remote LLM instead. You asked for a local one; sending your
-  code somewhere else would not be a fallback. That holds under the default
-  `local_first` mode and under `offline`; it does not apply under
-  `mode = "cloud_first"`, where the configured `server_url` is already your
-  inference target and answers LLM calls too. Summaries are optional, so `index`
-  skips them and still exits 0 (`--no-summaries` silences the notice); `explore`
-  and `memory harvest` cannot do their job without an LLM and fail.
+  can act on when it genuinely cannot make one.** Summaries were gated on
+  configuration that had nothing to do with whether an LLM was reachable, so
+  the summary pass was effectively off for everyone. LLM availability is now
+  decided by what your server actually reports, not by your config: if you've
+  set `llm_url` but your local server isn't currently serving an LLM, spelunk
+  asks you to restart it rather than silently falling back to a remote one.
+  `spelunk explore` and `spelunk memory harvest` share the same fix. Summaries
+  stay optional and `index` still exits 0 (`--no-summaries` silences the
+  notice); `explore` and `memory harvest` now fail loudly instead of silently
+  doing nothing.
 
 - **`spelunk server start` no longer blames your firewall for a daemon that
   refused to start.** It waited out the full 30-second liveness timeout and then
