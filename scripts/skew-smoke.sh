@@ -215,17 +215,16 @@ for _ in $(seq 1 40); do
 done
 [ -n "$HEALTH" ] || { cat "$WORK/server.log" >&2; fail "server never answered /v1/health"; }
 
-# Route inference at the peer as well. SPELUNK_SERVER_URL does not: in the
-# default local_first mode an explicit server_url is a memory sync replica only,
-# and inference resolves through loopback auto-discovery, which reads this file
-# (`capability/probe.rs` step 3a). Written after the health check so a server
-# that never came up leaves no file claiming it did.
-#
-# Without it the search step below fails outright in CI, and on a developer box
-# fails worse: auto-discovery falls through to the default port 7777, embeds
-# against whatever current-version server is listening there, and reports
-# success having crossed no skew boundary at all.
-printf '%s\n' "$PORT" >"$SPELUNK_STATE_DIR/server.port"
+# The state-dir port file is deliberately NOT written yet. It is what makes
+# this server discoverable both for loopback inference routing (needed by the
+# search step below) and, as an unavoidable side effect, as an ADR-037 "local
+# relay": under the default local_first mode, `memory add`'s post-write nudge
+# and `memory list`/`search`'s poll_and_apply both probe that same file, and
+# either would silently push+ack these entries to the server ahead of the
+# explicit push/repush/sync assertions below, making them report "already
+# synced" for a reason that has nothing to do with version skew. Push/sync
+# only need `SPELUNK_SERVER_URL` (already exported above), so the port file is
+# written further down, right before the one step that actually needs it.
 
 SERVER_VERSION="$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
 CLI_VERSION="$("$CLI_BIN" --version | awk '{print $NF}')"
@@ -276,6 +275,29 @@ run add-note "$CLI_BIN" memory add -k note \
 run list "$CLI_BIN" memory list
 grep -q "Skew smoke decision" "$WORK/list.out" || fail "memory list lost the decision entry"
 grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note entry"
+
+run push "$CLI_BIN" memory push
+grep -q "created 2" "$WORK/push.out" \
+  || { cat "$WORK/push.out" >&2; fail "push did not report 2 created entries across the skew boundary"; }
+
+# Re-push must be idempotent on external_id. A server that lost that dedupe
+# would look identical to a working one on the first push alone.
+run repush "$CLI_BIN" memory push
+grep -q "already synced" "$WORK/repush.out" \
+  || { cat "$WORK/repush.out" >&2; fail "re-push was not idempotent"; }
+
+run sync "$CLI_BIN" memory sync
+
+# Route inference at the peer as well, now that the explicit push/repush/sync
+# assertions above are done. SPELUNK_SERVER_URL does not do this: in the
+# default local_first mode an explicit server_url is a memory sync replica
+# only, and inference resolves through loopback auto-discovery, which reads
+# this file (`capability/probe.rs` step 3a). Without it the search step below
+# fails outright in CI, and on a developer box fails worse: auto-discovery
+# falls through to the default port 7777, embeds against whatever
+# current-version server is listening there, and reports success having
+# crossed no skew boundary at all.
+printf '%s\n' "$PORT" >"$SPELUNK_STATE_DIR/server.port"
 
 # Search is the one step whose outcome depends on something other than the
 # wire contract: the server embeds the query, so it needs the model loaded.
@@ -347,18 +369,6 @@ SKEW_EMBEDDER_TIMEOUT_SECS, or set SKEW_ALLOW_SKIPPED_SEARCH=1 to accept the gap
   fi
   echo "   WARNING: search skipped, embedder never became ready (state=$EMBEDDER_STATE); refusal was the documented one"
 fi
-
-run push "$CLI_BIN" memory push
-grep -q "created 2" "$WORK/push.out" \
-  || { cat "$WORK/push.out" >&2; fail "push did not report 2 created entries across the skew boundary"; }
-
-# Re-push must be idempotent on external_id. A server that lost that dedupe
-# would look identical to a working one on the first push alone.
-run repush "$CLI_BIN" memory push
-grep -q "already synced" "$WORK/repush.out" \
-  || { cat "$WORK/repush.out" >&2; fail "re-push was not idempotent"; }
-
-run sync "$CLI_BIN" memory sync
 
 # The real assertion. A second, empty checkout of the same project must be able
 # to read back what the first one wrote, which exercises the response half of
