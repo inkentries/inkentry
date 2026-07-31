@@ -26,6 +26,25 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   on your network) keeps working exactly as before, and an endpoint with no
   credential is still sent no `Authorization` header at all.
 
+- **`mode = "cloud_first"` now serves memory against the hosted API, not only a
+  self-hosted spelunk-server.**
+
+  `project_id` may be a slug or a UUID against either peer for every memory
+  operation, including `spelunk memory show` and `spelunk memory archive`.
+
+### Changed
+
+- **A memory entry's id is now an opaque token rather than an integer.** The
+  local store and a self-hosted server number entries sequentially; the hosted
+  API identifies them by UUID, which no integer can carry. Ids are therefore
+  passed through as opaque values and narrowed back to an integer only by the
+  stores that have one. Commands that take an id accept whichever form the
+  project's own store uses, and an id from the wrong kind of store now says so
+  instead of reporting the entry as missing.
+
+  `--format json` output is unchanged for existing projects: a numeric id still
+  serializes as a JSON number, and only a non-numeric id serializes as a string.
+
 ### Fixed
 
 - **`spelunk index` no longer skips every chunk summary, and says something you

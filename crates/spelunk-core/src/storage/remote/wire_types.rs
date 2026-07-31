@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::super::memory::Note;
+use super::super::memory::{Note, NoteId};
 
 // ── Wire types (match server JSON schema) ─────────────────────────────────────
 
@@ -20,7 +20,7 @@ pub(super) struct AddNoteRequest {
 
 #[derive(Deserialize)]
 pub(super) struct AddNoteResponse {
-    pub(super) id: i64,
+    pub(super) id: NoteId,
     #[serde(default)]
     pub(super) conflicts: Vec<ConflictInfo>,
     /// Server-assigned cross-machine id, if the server minted one. Absent on
@@ -33,14 +33,14 @@ pub(super) struct AddNoteResponse {
 /// close to an existing active entry (HTTP 409).
 #[derive(Debug, Deserialize, Clone)]
 pub struct ConflictInfo {
-    pub id: i64,
+    pub id: NoteId,
     pub title: String,
     pub similarity: f32,
 }
 
 #[derive(Deserialize)]
 pub(super) struct NoteResponse {
-    pub(super) id: i64,
+    pub(super) id: NoteId,
     pub(super) kind: String,
     pub(super) title: String,
     pub(super) body: String,
@@ -48,7 +48,7 @@ pub(super) struct NoteResponse {
     pub(super) linked_files: Vec<String>,
     pub(super) created_at: i64,
     pub(super) status: String,
-    pub(super) superseded_by: Option<i64>,
+    pub(super) superseded_by: Option<NoteId>,
     #[serde(default)]
     pub(super) source_ref: Option<String>,
     #[serde(default)]
@@ -95,7 +95,7 @@ pub(super) struct SearchRequest {
 
 #[derive(Serialize)]
 pub(super) struct SupersedeRequest {
-    pub(super) new_id: i64,
+    pub(super) new_id: NoteId,
 }
 
 #[derive(Deserialize)]
