@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
                 config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db");
             cli::cmd::memory_sync(args, &mem_path, &cfg).await
         }
-        Command::Server(args) => cli::cmd::server(args).await,
+        Command::Server(args) => cli::cmd::server(args, cfg).await,
         Command::Login(args) => cli::cmd::login(args).await,
         Command::Logout(args) => cli::cmd::logout(args).await,
         Command::Org(args) => cli::cmd::org(args).await,

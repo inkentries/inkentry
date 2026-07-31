@@ -303,9 +303,15 @@ fn cloud_first_reads_remotely_with_the_configured_slug_verbatim() {
         vec![PROJECT_SLUG.to_string()],
         "the configured project_id must reach the server verbatim, in one segment"
     );
+    // `/v1/health` is the peer probe that picks the memory dialect; it is
+    // issued on every open by design. What this pins is that no *project*
+    // lookup happens and the read itself is a single request.
     assert_eq!(
-        seen.paths(),
+        seen.paths()
+            .into_iter()
+            .filter(|p| p != "/v1/health")
+            .collect::<Vec<_>>(),
         vec!["/v1/projects/github.com%2Fowner%2Frepo/memory".to_string()],
-        "the memory read must be the only request the mode makes"
+        "the memory read must be the only memory request the mode makes"
     );
 }

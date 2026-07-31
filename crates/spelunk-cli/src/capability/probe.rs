@@ -2292,4 +2292,21 @@ mod tests {
              with no sample of what the peer actually sent: {logs}"
         );
     }
+
+    // A spoofed-loopback authority must be refused by the probe before any
+    // request leaves, exactly as a plainly non-loopback host is. No mock server
+    // is mounted: reaching the network at all would be the failure.
+    #[tokio::test]
+    async fn probe_url_rejects_spoofed_loopback_authorities() {
+        for url in [
+            "http://127.0.0.1.evil.example",
+            "http://127.0.0.1@evil.example",
+            "http://127.0.0.1:1234@evil.example",
+        ] {
+            let err = probe_url(url, std::time::Duration::from_millis(1), false, None)
+                .await
+                .expect_err("a host that only looks like loopback must be rejected");
+            assert!(err.contains("loopback"), "{url}: {err}");
+        }
+    }
 }

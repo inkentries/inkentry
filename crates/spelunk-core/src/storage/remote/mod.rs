@@ -4,11 +4,15 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::HashSet;
 
 use super::backend::{MemoryBackend, NoteInput};
-use super::memory::{MemoryEdge, Note};
+use super::memory::{MemoryEdge, Note, NoteId};
 use crate::embeddings::blob_to_vec;
 
+mod cloud_api;
+mod peer;
 mod sync;
 mod wire_types;
+pub use cloud_api::CloudApiMemoryBackend;
+pub(super) use peer::{PeerDialect, detect_dialect};
 pub use sync::{BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry};
 pub use wire_types::ConflictInfo;
 use wire_types::*;
@@ -43,6 +47,15 @@ const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
 /// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
 pub(super) fn encode_project_id(project_id: &str) -> String {
     utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
+}
+
+/// Percent-encode a note id for safe use as a single URL path segment.
+///
+/// Ids are opaque tokens supplied by the caller, so an id containing `/` or
+/// `%` would otherwise re-shape the request path rather than address an entry.
+/// A no-op for the ids either peer actually mints (decimal integers, UUIDs).
+fn encode_path_segment(id: &NoteId) -> String {
+    utf8_percent_encode(id.as_str(), PROJECT_ID_SEGMENT).to_string()
 }
 
 /// HTTP client for the spelunk-server REST API.
@@ -81,7 +94,7 @@ impl RemoteMemoryBackend {
 
 #[async_trait]
 impl MemoryBackend for RemoteMemoryBackend {
-    async fn add(&self, input: NoteInput) -> Result<(i64, bool)> {
+    async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
         let embedding = input.embedding.as_deref().map(blob_to_vec);
         let body = AddNoteRequest {
             kind: input.kind,
@@ -232,9 +245,12 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(resp.into_iter().map(Into::into).collect())
     }
 
-    async fn get(&self, id: i64) -> Result<Option<Note>> {
+    async fn get(&self, id: NoteId) -> Result<Option<Note>> {
         let resp = self
-            .authed(self.client.get(self.url(&format!("memory/{id}"))))
+            .authed(
+                self.client
+                    .get(self.url(&format!("memory/{}", encode_path_segment(&id)))),
+            )
             .send()
             .await
             .context("GET /memory/{id}")?;
@@ -264,9 +280,12 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(resp.count)
     }
 
-    async fn archive(&self, id: i64) -> Result<bool> {
+    async fn archive(&self, id: NoteId) -> Result<bool> {
         let resp = self
-            .authed(self.client.post(self.url(&format!("memory/{id}/archive"))))
+            .authed(
+                self.client
+                    .post(self.url(&format!("memory/{}/archive", encode_path_segment(&id)))),
+            )
             .send()
             .await
             .context("POST /memory/{id}/archive")?
@@ -278,13 +297,13 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(resp.changed)
     }
 
-    async fn supersede(&self, old_id: i64, new_id: i64) -> Result<bool> {
+    async fn supersede(&self, old_id: NoteId, new_id: NoteId) -> Result<bool> {
         let body = SupersedeRequest { new_id };
         let resp = self
-            .authed(
-                self.client
-                    .post(self.url(&format!("memory/{old_id}/supersede"))),
-            )
+            .authed(self.client.post(self.url(&format!(
+                "memory/{}/supersede",
+                encode_path_segment(&old_id)
+            ))))
             .json(&body)
             .send()
             .await

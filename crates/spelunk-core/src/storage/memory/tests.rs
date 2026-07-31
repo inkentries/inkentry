@@ -53,7 +53,7 @@ fn supersede_happy_path() {
     // (a) old note must be archived with superseded_by set
     let old_note = store.get(old_id).unwrap().expect("old note must exist");
     assert_eq!(old_note.status, "archived");
-    assert_eq!(old_note.superseded_by, Some(new_id));
+    assert_eq!(old_note.superseded_by, sup(new_id));
 
     // (b) a memory_edges row must exist linking new → old
     assert_eq!(
@@ -120,7 +120,7 @@ fn add_note_superseding_happy_path_archives_old_and_links_new() {
 
     let old_note = store.get(old_id).unwrap().expect("old note must exist");
     assert_eq!(old_note.status, "archived");
-    assert_eq!(old_note.superseded_by, Some(new_id));
+    assert_eq!(old_note.superseded_by, sup(new_id));
 
     assert_eq!(
         count_edges(&store, new_id, old_id, "supersedes"),
@@ -162,7 +162,7 @@ fn add_note_superseding_rejects_already_archived_old_and_writes_nothing() {
     let old_note = store.get(old_id).unwrap().expect("old note must exist");
     assert_eq!(
         old_note.superseded_by,
-        Some(successor_a),
+        sup(successor_a),
         "OLD's successor link must still point at the first, not the rejected second, successor"
     );
 
@@ -2017,4 +2017,9 @@ fn legacy_inference_preserves_distinct_multi_row_content_not_just_row_count() {
             "note {id}'s own title must be findable via FTS after re-inference"
         );
     }
+}
+
+// Expected `Note::superseded_by` for a store-minted rowid.
+fn sup(id: i64) -> Option<crate::storage::memory::NoteId> {
+    Some(crate::storage::memory::NoteId::from_i64(id))
 }

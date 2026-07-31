@@ -102,6 +102,17 @@ No new cloud-api endpoint is needed.
 > Live surface: `open_remote_memory_backend_with_bearer` in
 > `crates/spelunk-core/src/storage/mod.rs`, and `RemoteMemoryBackend::url` /
 > `encode_project_id` in `crates/spelunk-core/src/storage/remote/mod.rs`.
+>
+> **Second amendment: the per-entry-route exception above is also retired.**
+> `GET`/`DELETE /v1/projects/{project_id}/memory/{entry_id}` now accept a
+> project slug or a UUID, matching every other memory route, closing the last
+> gap this ADR flagged as "constrains any later work that makes `cloud_first`
+> serve memory against the hosted API." `CloudApiMemoryBackend` (added to
+> serve exactly that later work) no longer rejects a slug `project_id` on
+> `get`/`archive`/`supersede` (`per_entry_project` and its call sites removed
+> from `crates/spelunk-core/src/storage/remote/cloud_api.rs`). With this gone,
+> a slug-configured `cloud_first` project works identically against both
+> peers for every memory operation.
 
 ### D1. Slug detection and resolution trigger
 

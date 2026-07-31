@@ -157,8 +157,9 @@ version. Use `GET /v1/health` for the server's real version.
 [Config reference](config-reference.md).
 
 **Also stable, and just as load-bearing: which file a key may be set in.** A key
-is not simply "supported"; it is supported in a specific place. Two keys are
-deliberately restricted, and both restrictions are part of the contract:
+is not simply "supported"; it is supported in a specific place. Three keys are
+called out by name, because each is one a reader would otherwise reasonably
+guess wrong about, and each restriction is part of the contract:
 
 - `server_url` is **ignored in the global personal config**
   (`~/.config/spelunk/config.toml`, including a file passed to `--config`). It
@@ -170,8 +171,16 @@ deliberately restricted, and both restrictions are part of the contract:
   repository must never be able to hand a secret to whoever clones it. Use
   `spelunk auth set-key --server <url>`, `spelunk login`, or
   `SPELUNK_SERVER_KEY`.
+- `llm_url` is **ignored in the project config**, which follows from the
+  allowlist below rather than being an exception to it, and is named here
+  because it looks like `server_url` and is not. An LLM endpoint is a
+  per-developer choice: a committed value points every teammate's local daemon
+  at whichever machine the author was running a model on. Set it in the
+  personal config or via `SPELUNK_LLM_URL`. Its credential is not a config key
+  in either file (`spelunk auth set-key --llm` or `SPELUNK_LLM_KEY`), on the
+  same reasoning as `server_key`.
 
-Beyond those two:
+Beyond those three:
 
 - Unrecognised keys are ignored rather than rejected. A config written for a
   newer spelunk still loads on an older one, and a config carrying a removed key
@@ -182,9 +191,11 @@ Beyond those two:
   `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
   allowed; removing one is a breaking change.
 - Environment variable overrides (`SPELUNK_*`) are stable on the same terms as
-  the keys they override. They are not subject to the two file restrictions
-  above: `SPELUNK_SERVER_URL` and `SPELUNK_SERVER_KEY` both take effect
-  wherever they are set.
+  the keys they override. They are not subject to the file restrictions above:
+  `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, and `SPELUNK_LLM_URL` all take
+  effect wherever they are set. What a variable set to an **empty** value does
+  is documented in [Config reference](config-reference.md) but is not frozen
+  here.
 
 ### Deprecation policy
 

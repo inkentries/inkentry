@@ -76,7 +76,7 @@ pub(super) async fn memory_timeline(
 fn print_timeline_entry(n: &crate::storage::memory::Note) {
     let ts = n.valid_at.unwrap_or(n.created_at);
     let marker = if n.status == "active" { "●" } else { "○" };
-    let sup = if let Some(id) = n.superseded_by {
+    let sup = if let Some(id) = &n.superseded_by {
         format!(" → #{id}")
     } else {
         String::new()

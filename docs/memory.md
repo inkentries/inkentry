@@ -175,6 +175,23 @@ project_id = "my-awesome-app"
 mode = "cloud_first"
 ```
 
+`server_url` may point at a self-hosted `spelunk-server` or at the hosted API.
+The two expose different memory routes, so spelunk settles which to speak when
+the backend opens, by reading the capability list `/v1/health` already
+advertises. A peer advertising SSE memory streaming is the hosted API; anything
+else, including a probe that times out, is unreachable, or answers without a
+capability list, is treated as a self-hosted server. The probe is
+unauthenticated and never sends your server key.
+
+`project_id` may be a slug or a UUID against either peer; every memory
+command, including `spelunk memory show` and `spelunk memory archive`, resolves
+either form the same way.
+
+Against the hosted API, `spelunk memory harvest`'s duplicate check filters
+locally, because that API has no server-side commit filter. It stays correct,
+but its cost grows with the size of the project rather than staying an indexed
+lookup.
+
 **`offline`** guarantees no server contact at all, even with `server_url`
 set. `SPELUNK_NO_SERVER=1` forces it regardless of config.
 

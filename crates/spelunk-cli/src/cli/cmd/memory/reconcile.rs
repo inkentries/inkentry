@@ -361,7 +361,10 @@ async fn reconcile_project(
     // left alone; the oldest is the stable edge target.
     let mut entity_to_local: HashMap<String, i64> = HashMap::new();
     for n in &existing_notes {
-        entity_to_local.entry(note_entity_id(n)).or_insert(n.id);
+        // Read straight out of memory.db, so every id here is a rowid.
+        if let Some(rowid) = n.id.as_i64() {
+            entity_to_local.entry(note_entity_id(n)).or_insert(rowid);
+        }
     }
 
     // ── Step 4: build reconcile set (source rows not in memory.db) ───────────

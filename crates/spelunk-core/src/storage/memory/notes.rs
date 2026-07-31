@@ -1,13 +1,13 @@
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 
-use super::{MemoryStore, Note};
+use super::{MemoryStore, Note, NoteId};
 
 // ── row mappers ──────────────────────────────────────────────────────────────
 
 pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     Ok(Note {
-        id: row.get(0)?,
+        id: NoteId::from_i64(row.get(0)?),
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
@@ -15,7 +15,7 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
         created_at: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get(8)?,
+        superseded_by: row.get::<_, Option<i64>>(8)?.map(NoteId::from_i64),
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,
@@ -30,7 +30,7 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
 
 pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     Ok(Note {
-        id: row.get(0)?,
+        id: NoteId::from_i64(row.get(0)?),
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
@@ -38,7 +38,7 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
         created_at: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get(8)?,
+        superseded_by: row.get::<_, Option<i64>>(8)?.map(NoteId::from_i64),
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,

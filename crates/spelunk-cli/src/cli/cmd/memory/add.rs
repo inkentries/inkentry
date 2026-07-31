@@ -7,7 +7,7 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
+        GitNotesBackend, MemoryBackend, NoteId, NoteInput, NoteRecord, RewriteRefStatus,
         append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
     },
 };
@@ -118,14 +118,14 @@ pub(super) async fn memory_add(
     // carrier instead of reading OLD a second time.
     let mut backend_for_add: Option<Box<dyn MemoryBackend + Send>> = None;
     let mut old_note_for_carrier = None;
-    if let Some(old_id) = args.supersedes {
+    if let Some(old_id) = args.supersedes.clone() {
         let old = if pre_init_notes {
             GitNotesBackend::with_root(project_root.to_path_buf())
-                .get(old_id)
+                .get(old_id.clone())
                 .await?
         } else {
             let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
-            let old = backend.get(old_id).await?;
+            let old = backend.get(old_id.clone()).await?;
             backend_for_add = Some(backend);
             old
         };
@@ -146,7 +146,7 @@ pub(super) async fn memory_add(
     // opened above for the E4 pre-flight read (`backend_for_add`) instead of
     // opening it twice.
     let (id, created) = if pre_init_notes {
-        (now_millis(), true)
+        (NoteId::from_i64(now_millis()), true)
     } else {
         let backend = match backend_for_add.take() {
             Some(backend) => backend,
@@ -162,7 +162,7 @@ pub(super) async fn memory_add(
                 embedding,
                 source_ref: None,
                 valid_at,
-                supersedes: args.supersedes,
+                supersedes: args.supersedes.clone(),
             })
             .await?
     };
@@ -180,7 +180,7 @@ pub(super) async fn memory_add(
         let new_entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
         let record = NoteRecord {
             schema_version: 1,
-            id,
+            id: id.as_i64().unwrap_or_else(now_millis),
             kind: args.kind.clone(),
             title: title.clone(),
             body: body.clone(),
@@ -251,7 +251,7 @@ pub(super) async fn memory_add(
         // re-reading OLD a second time — it was already validated `active`
         // there, before either write in this function ran (ADR-068 E4).
         if let Some(old_note) = old_note_for_carrier {
-            let old_id = old_note.id;
+            let old_id = old_note.id.clone();
             let invalid_at = old_note.invalid_at.or_else(|| Some(now_secs()));
             if let Err(e) = append_state_update(
                 Some(project_root),

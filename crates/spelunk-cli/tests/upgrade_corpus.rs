@@ -464,12 +464,17 @@ async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact(
                     wing.id, wing.expect.superseded_title
                 )
             });
-        let successor_id = superseded.superseded_by.unwrap_or_else(|| {
-            panic!(
-                "wing {}: entry {:?} lost its supersede link",
-                wing.id, wing.expect.superseded_title
-            )
-        });
+        // `MemoryStore` is the local store, so its ids are always rowids.
+        let successor_id = superseded
+            .superseded_by
+            .as_ref()
+            .and_then(|id| id.as_i64())
+            .unwrap_or_else(|| {
+                panic!(
+                    "wing {}: entry {:?} lost its supersede link",
+                    wing.id, wing.expect.superseded_title
+                )
+            });
         let successor = store
             .get(successor_id)
             .expect("reading the successor entry")
@@ -496,7 +501,7 @@ async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact(
         );
 
         let body = store
-            .get(superseded.id)
+            .get(superseded.id.as_i64().expect("local rowid"))
             .expect("re-reading the superseded entry")
             .expect("superseded entry present")
             .body;
