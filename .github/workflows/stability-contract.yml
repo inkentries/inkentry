@@ -51,9 +51,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
+          # Shares the `Linux-cargo-v3-` namespace with ci.yml's `test` job;
+          # see the comment there for why the prefix jumped from `-v2-`.
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-cargo-v3-
 
       # Runs first: if the checker itself stopped rejecting anything, the two
       # jobs below would pass while guaranteeing nothing.
