@@ -106,31 +106,11 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   path is unchanged for the common case.
 
 - **A version-skew support policy, [docs/version-skew.md](docs/version-skew.md),
-  and a CI job that runs two real binaries against each other.** The stability
-  contract says what a surface promises within one version; nothing said what
-  happens when the CLI and the server it is talking to are different versions,
-  which is the normal case rather than the exception. The policy now states the
-  supported window per peer (a team `spelunk-server` one minor version either
-  side, an auto-discovered loopback server at the same version, the hosted API
-  at any version since it evolves additively within `/v1/`), and what holds
-  outside that window. Outside it the CLI keeps working on a best-effort basis
-  rather than refusing to run, deliberately: a hard version gate turns every
-  "upgrade the CLI before the server" ordering into an outage for the person
-  doing the upgrade. The document is equally explicit about what is *not*
-  promised, including that the CLI does not compare its version against the
-  peer's at all today, and about what the tests behind it can and cannot show:
-  the peer health responses replayed in the suite are recordings from real
-  released binaries rather than mocks written to the shape we assumed, the
-  request direction is not validated against any peer schema yet, and the
-  hosted API is not represented in this repository at all, so the divergence
-  table in the document is a transcribed note that will go stale silently
-  rather than a check. A new `version-skew` workflow puts the current build and
-  the previous release on a socket together in both directions and drives the
-  full memory flow (add, list, search, push, sync, and pull into a fresh
-  checkout), verifying each downloaded release asset against its published
-  digest before running it. The job refuses to pass if the two binaries turn out
-  to be the same version, or if the embedder never became ready so the search
-  step never ran: both would go green while proving nothing.
+  and a CI job that runs two real binaries against each other.** A new `version-skew` 
+  workflow puts the current build and the previous release on a socket together in 
+  both directions and drives the full memory flow (add, list, search, push, sync, and 
+  pull into a fresh checkout), verifying each downloaded release asset against its 
+  published digest before running it.
 
 ### Removed
 
