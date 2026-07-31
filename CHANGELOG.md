@@ -161,30 +161,9 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 - **One unreadable field in a server's health response no longer costs you
   every capability that server advertised.** The CLI reads `GET /v1/health` to
-  learn what a server can do. If any single value in that response was in a
-  shape this build could not parse, the whole response was discarded and the
-  server was treated as a legacy plain-text one: semantic search, index embed,
-  and harvest all reported unavailable, the advertised `/index/embed` limits
-  dropped, the embedding dimension lost, and nothing logged to say why. It took
-  very little to trigger. A newer server adding one value to an existing enum
-  field, which the stability contract expressly permits as an additive change,
-  was enough to silently degrade every older CLI that met it; so was a field
-  holding an explicit `null`, which this server family emits routinely for
-  values it has nothing to report. Every field of the health body now degrades
-  on its own: a value the CLI cannot read falls back to that field's documented
-  default and costs nothing beside it, including inside the nested `limits`
-  object, so a server advertising `max_batch_chunks: 16` next to one unreadable
-  sibling keeps the 16 instead of leaving the client planning around its own
-  maximum of 256. The guarantee is now that no single field can take the whole
-  body down, and it is enforced by a test that mutates every member of a
-  recorded server response in turn, so a field added later without a lenient
-  read fails the same check. Degrading is also no longer silent: the CLI warns,
-  naming the field, the shape it expected, and what the fallback costs. Those
-  warnings are `warn`-level, so run `RUST_LOG=warn spelunk status` to see them.
-  They deliberately never print the field's value: `/v1/health` needs no
-  authentication and its body is whatever `server_url` resolves to, so its
-  contents are peer-controlled, and a diagnostic line is no place to reproduce
-  them.
+  learn what a server can do. The guarantee is now that no single field can take
+  the whole body down, and it is enforced by a test that mutates every member 
+  of a recorded server response in turn.
 
 - **`spelunk memory push` and `spelunk sync` now embed what they push, so a
   pushed entry stays findable by `spelunk memory search` locally.** A push
