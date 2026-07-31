@@ -9,10 +9,16 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// How long the probe waits before falling back. Deliberately far below the
-/// 30s CRUD timeout: this is a liveness question, and a slow answer must not
-/// stall the command that triggered it.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the probe waits before falling back.
+///
+/// Deliberately far below the 30s CRUD timeout: a server that cannot answer a
+/// liveness question promptly is not one this client should stall on, and the
+/// real request that follows carries its own, longer budget. An unreachable
+/// server therefore costs this much before the command proceeds to fail on its
+/// own terms, which is why it is kept small rather than merely "under 30s":
+/// platforms where a connection to an unreachable host hangs rather than
+/// refusing pay it in full, on every memory command.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The capability that separates the two peers.
 ///
