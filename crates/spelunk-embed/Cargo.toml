@@ -31,6 +31,15 @@ native = [
 # metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
 metal = ["native", "candle-core/metal", "candle-nn/metal"]
 
+[[example]]
+name = "embed_bench"
+path = "examples/embed_bench.rs"
+# Uses NativeEmbedder/tokenizers/tokio directly; without this, a build that
+# resolves spelunk-embed without `native` (e.g. spelunk-cli's own dependency
+# graph, or a workspace-wide `--all-targets` that doesn't unify `native` in for
+# this example) still auto-discovers the example and fails to compile it.
+required-features = ["native"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
