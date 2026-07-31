@@ -9,6 +9,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.6] — 2026-07-31
+
 ### Added
 
 - **A configurable LLM endpoint and a place to keep its credential.** You can now set `llm_url` and `llm_model` in
