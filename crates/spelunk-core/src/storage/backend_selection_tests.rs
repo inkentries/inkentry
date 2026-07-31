@@ -693,6 +693,37 @@ async fn cloud_first_rejects_non_loopback_http() {
     assert!(msg.contains("https"), "error must name the fix; got: {msg}");
 }
 
+// The same guard, against authorities that only look like loopback. These
+// reached the remote backend before the authority was parsed rather than
+// prefix-matched, which put the bearer on the wire in the clear to the host
+// after the `@` or the suffix.
+#[tokio::test]
+#[serial_test::serial]
+async fn cloud_first_rejects_spoofed_loopback_http() {
+    clear_env();
+    for url in [
+        "http://127.0.0.1.evil.example:7777",
+        "http://127.0.0.1@evil.example:7777",
+        "http://127.0.0.1:1234@evil.example:7777",
+    ] {
+        let cfg = Config {
+            server_url: Some(url.to_string()),
+            project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            mode: Some(SyncMode::CloudFirst),
+            server_key: Some("secret".to_string()),
+            ..Default::default()
+        };
+        let err = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
+            .await
+            .map(|_| ())
+            .expect_err("a host that only looks like loopback must be rejected");
+        assert!(
+            err.to_string().contains("loopback"),
+            "{url}: error must name the fix; got: {err}"
+        );
+    }
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn no_server_kill_switch_forces_local() {
