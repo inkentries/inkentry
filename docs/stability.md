@@ -342,6 +342,8 @@ If a change to a stable surface is intended:
 
 ## What's next
 
+- [Version skew](version-skew.md): what happens when the two ends of a
+  connection are different versions
 - [Plumbing and porcelain](plumbing-and-porcelain.md): why the split exists and
   how to script against it
 - [Commands](commands.md): the full CLI reference

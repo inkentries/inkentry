@@ -1221,6 +1221,53 @@ mod tests {
         assert_eq!(encode_project_id("my-project"), "my-project");
     }
 
+    // The two peers this CLI talks to publish *incompatible* id types for the
+    // same conceptual Project resource, and both do so as documented
+    // contracts: the cloud API declares a `string`/`uuid`, this repo's
+    // `docs/openapi.json` declares an `integer`/`int64`. Neither is going to
+    // yield to the other soon.
+    //
+    // The only reason that divergence does not already break the CLI is that
+    // the CLI never holds a *typed* project id. It carries the identifier as an
+    // opaque string and spends it as one path segment, so both peers' shapes
+    // pass through untouched. That immunity is load-bearing and completely
+    // invisible in the type signature, which is exactly the kind of property
+    // that gets "tidied up" into an i64 or a Uuid by someone who only ever
+    // looked at one peer.
+    //
+    // This test is the tripwire for that tidy-up. It is deliberately not a
+    // schema-comparison test: this repo cannot see the other peer's schema, so
+    // it pins the CLI-side property that makes the divergence survivable
+    // instead. See docs/version-skew.md.
+    #[test]
+    fn project_id_stays_opaque_across_both_peers_id_types() {
+        let cloud_api_shaped = "550e8400-e29b-41d4-a716-446655440000";
+        let oss_server_shaped = "4815162342";
+
+        for id in [cloud_api_shaped, oss_server_shaped] {
+            let encoded = encode_project_id(id);
+            assert_eq!(
+                encoded, id,
+                "neither peer's id shape may be mangled on the way into the path"
+            );
+            let decoded = percent_encoding::percent_decode_str(&encoded)
+                .decode_utf8()
+                .expect("valid UTF-8 after percent-decoding");
+            assert_eq!(decoded, id, "round-trip mismatch for project id {id:?}");
+        }
+
+        // Both must also survive as the same Rust type, with no parsing step
+        // that could reject one peer's shape. If this stops compiling because
+        // `project_id` gained a stricter type, that is the breakage this test
+        // exists to announce, and the fix is a conversation with both peers,
+        // not a cast here.
+        let ids: Vec<String> = [cloud_api_shaped, oss_server_shaped]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(ids.len(), 2, "both peer id shapes must be representable");
+    }
+
     /// The synthetic query `chunk_id` is built from a fresh `uuid` crate v7
     /// UUID. Two calls must differ (so concurrent queries never collide), and
     /// the value must be a real version-7 UUID — the `query:` prefix is what

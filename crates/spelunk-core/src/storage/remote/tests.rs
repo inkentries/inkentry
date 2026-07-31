@@ -135,3 +135,76 @@ async fn search_sends_query_text_not_precomputed_embedding() {
         result.err().map(|e| e.to_string())
     );
 }
+
+// ── CLI to peer: query parameters this server does not accept ────────────────
+//
+// Pins live drift rather than desired behaviour. `spelunk_server::handlers::
+// ListQuery` deserialises exactly three names from `GET /memory`: `kind`,
+// `limit`, `archived`. Axum's `Query` extractor ignores anything else, so the
+// two parameters below are accepted by the transport, dropped by the handler,
+// and never reported to the caller.
+//
+// The `source_ref` case is the one with teeth: `has_source_ref` decides whether
+// a commit has already been harvested purely from whether the filtered list
+// came back non-empty. With the filter dropped, the server answers with the
+// project's newest entries regardless of the sha asked about, so the answer is
+// "yes" for every commit as soon as the project holds any memory at all.
+//
+// When the server grows these parameters (or the client stops sending them),
+// this test is the thing that has to change, and its failure is the reminder
+// that `has_source_ref` was reading a filtered list that was never filtered.
+#[tokio::test]
+async fn list_sends_query_parameters_the_oss_server_silently_drops() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/local%2Fabc123/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+
+    let backend = RemoteMemoryBackend {
+        client: reqwest::Client::new(),
+        base_url: server.uri(),
+        project_id: "local/abc123".to_string(),
+        api_key: None,
+    };
+
+    backend
+        .list(None, 5, false, Some(1_700_000_000))
+        .await
+        .expect("list must reach the mock");
+    backend
+        .list_by_source_ref("deadbeefcafe", 1, true, None)
+        .await
+        .expect("list_by_source_ref must reach the mock");
+
+    let queries: Vec<String> = server
+        .received_requests()
+        .await
+        .expect("mock server records requests")
+        .iter()
+        .map(|r| r.url.query().unwrap_or_default().to_string())
+        .collect();
+
+    let accepted_by_the_server = ["kind", "limit", "archived"];
+    let sent: Vec<&str> = queries
+        .iter()
+        .flat_map(|q| q.split('&'))
+        .filter_map(|pair| pair.split('=').next())
+        .filter(|name| !accepted_by_the_server.contains(name))
+        .collect();
+
+    assert!(
+        sent.contains(&"as_of"),
+        "expected `list` to still be sending the unsupported `as_of` parameter; \
+         if it stopped, delete this test. Sent: {sent:?}"
+    );
+    assert!(
+        sent.contains(&"source_ref"),
+        "expected `list_by_source_ref` to still be sending the unsupported \
+         `source_ref` parameter; if it stopped, delete this test. Sent: {sent:?}"
+    );
+}

@@ -201,3 +201,60 @@ async fn health_reflects_load_failure() {
     );
     assert_eq!(json["embedding_dim"], json!(0));
 }
+
+// The CLI's version-skew suite replays recorded peer health bodies. Those
+// recordings are only evidence of what a peer sends while the live body still
+// carries the same keys: once this handler and the recording drift, the replay
+// keeps passing against a shape no peer emits. The `handlers.rs` split is
+// exactly the kind of change that can drop a key without any test here
+// noticing, so the live body is compared to the recording rather than assumed
+// equal to it.
+#[tokio::test]
+async fn live_health_keys_match_the_recorded_peer_fixture() {
+    fn keys(value: &Value, at: &str) -> Vec<String> {
+        let mut names: Vec<String> = value
+            .as_object()
+            .unwrap_or_else(|| panic!("`{at}` must be an object"))
+            .keys()
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    let recorded: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spelunk-cli/tests/fixtures/skew/health-v0.9.5-ready.json"
+    )))
+    .expect("recorded fixture must be JSON");
+
+    let live = get_health_json(make_app_with_embedder(4)).await;
+
+    assert_eq!(
+        keys(&live, "live body"),
+        keys(&recorded, "recorded body"),
+        "the live health body and the recorded peer fixture no longer carry the \
+         same top-level keys, so the skew replay is asserting against a shape no \
+         peer sends"
+    );
+    for nested in ["embedder", "limits"] {
+        assert_eq!(
+            keys(&live[nested], nested),
+            keys(&recorded[nested], nested),
+            "`{nested}` drifted between the live body and the recorded fixture"
+        );
+    }
+
+    // The CLI's lenient reads distinguish "absent" from "present and null", so
+    // an omitted-rather-than-null token cap would silently change which branch
+    // a peer without one exercises.
+    let (app, _) = make_app(0.92);
+    let no_embedder = get_health_json(app).await;
+    assert!(
+        no_embedder["limits"]
+            .as_object()
+            .expect("limits must be an object")
+            .contains_key("embedder_token_cap"),
+        "embedder_token_cap must be emitted as an explicit null, not omitted"
+    );
+}
