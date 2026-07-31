@@ -6,8 +6,8 @@ use super::*;
 
 const UUID: &str = "9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f";
 const UUID_2: &str = "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d";
-// The two per-entry routes accept only a project UUID, so the shared fixture
-// uses one; `slug_backend` below covers the slug case deliberately.
+// Shared fixture project id; `slug_backend` below exercises the slug case
+// separately for every route, including the two that once rejected it.
 const PROJECT: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
 fn backend(server: &MockServer) -> CloudApiMemoryBackend {
@@ -459,11 +459,13 @@ async fn every_request_carries_the_bearer() {
     );
 }
 
-// ── the two per-entry routes are UUID-only in the project segment ────────────
+// ── all six routes accept a project slug, not only a UUID ────────────────────
 
-// `GET`/`DELETE /memory/{entry_id}` are typed `Path<(Uuid, Uuid)>` server-side
-// while their four sibling routes take a slug or a UUID. Without this guard the
-// user sees an opaque path-deserialization 400 naming neither cause nor fix.
+// `GET`/`DELETE /memory/{entry_id}` used to be typed `Path<(Uuid, Uuid)>`
+// server-side, unlike their four sibling routes, so a slug `project_id`
+// worked for list/search/add but not for get/archive/supersede. Both routes
+// now take `Path<(String, Uuid)>` like their siblings, so a slug works
+// identically everywhere.
 fn slug_backend(server: &MockServer) -> CloudApiMemoryBackend {
     CloudApiMemoryBackend {
         client: reqwest::Client::builder().build().unwrap(),
@@ -474,29 +476,41 @@ fn slug_backend(server: &MockServer) -> CloudApiMemoryBackend {
 }
 
 #[tokio::test]
-async fn a_slug_project_names_the_constraint_on_get() {
+async fn a_slug_project_gets_an_entry() {
     let server = MockServer::start().await;
-    let err = slug_backend(&server)
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/projects/my-project/memory/{UUID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(entry(UUID, "t")))
+        .mount(&server)
+        .await;
+
+    let note = slug_backend(&server)
         .get(UUID.parse().unwrap())
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("my-project"), "must name the slug: {err}");
-    assert!(err.contains("UUID"), "must name the fix: {err}");
+        .unwrap();
+    assert!(note.is_some());
 }
 
 #[tokio::test]
-async fn a_slug_project_names_the_constraint_on_archive() {
+async fn a_slug_project_archives_an_entry() {
     let server = MockServer::start().await;
-    let err = slug_backend(&server)
-        .archive(UUID.parse().unwrap())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("UUID"), "must name the fix: {err}");
+    Mock::given(method("DELETE"))
+        .and(path(format!("/v1/projects/my-project/memory/{UUID}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    assert!(
+        slug_backend(&server)
+            .archive(UUID.parse().unwrap())
+            .await
+            .unwrap()
+    );
 }
 
-// Listing and adding take `Path<String>`, so a slug must keep working there.
+// Listing and adding already took `Path<String>` before this change; keep
+// them covered alongside get/archive so the whole set is exercised in one
+// place.
 #[tokio::test]
 async fn a_slug_project_still_lists_and_adds() {
     let server = MockServer::start().await;

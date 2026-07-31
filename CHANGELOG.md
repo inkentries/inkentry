@@ -30,12 +30,8 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   no `source_commit` filter: correct, but proportional to the size of the
   project rather than an indexed lookup.
 
-  Two operations are limited for now. `spelunk memory show` and `spelunk memory
-  archive` address a single entry, and the hosted API accepts only a project
-  UUID on those two routes, unlike the four routes beside them which take a slug
-  or a UUID. Configure `project_id` as the project's UUID to use them; with a
-  slug they report that constraint rather than failing with an opaque error.
-  Adding, listing, searching and counting work with either form.
+  `project_id` may be a slug or a UUID against either peer for every memory
+  operation, including `spelunk memory show` and `spelunk memory archive`.
 
 ### Changed
 

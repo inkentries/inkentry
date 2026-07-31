@@ -6,8 +6,12 @@
 //! staying a distinct type is what makes "self-hosted `cloud_first` is
 //! unchanged" true by construction instead of by care.
 //!
-//! Every route used here already ships on the cloud API; nothing in this file
-//! requires a server-side change.
+//! Every route used here ships on the cloud API today: `get`/`archive` (and
+//! `supersede`, which reads both entries first) originally required a
+//! project UUID rather than a slug on their two per-entry routes, a
+//! constraint the hosted API has since lifted so the project segment now
+//! behaves identically to every other memory route (see ADR-005's second
+//! amendment).
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -133,27 +137,7 @@ impl CloudApiMemoryBackend {
         })
     }
 
-    /// The project segment for the two per-entry routes.
-    ///
-    /// `GET` and `DELETE /memory/{entry_id}` are typed `Path<(Uuid, Uuid)>`
-    /// server-side, so unlike their four sibling routes they reject a project
-    /// slug. Catching that here turns an opaque path-deserialization 400 into a
-    /// message that names the configuration at fault.
-    fn per_entry_project(&self) -> Result<()> {
-        if uuid::Uuid::parse_str(&self.project_id).is_ok() {
-            return Ok(());
-        }
-        anyhow::bail!(
-            "this operation addresses a single entry, and the hosted API accepts only a \
-             project UUID on that route, not the slug '{}' configured as `project_id`. \
-             Set `project_id` to the project's UUID to use it. Listing, searching and \
-             adding entries work with either form.",
-            self.project_id
-        )
-    }
-
     async fn fetch(&self, id: &NoteId) -> Result<Option<EntryResponse>> {
-        self.per_entry_project()?;
         let resp = self
             .authed(
                 self.client
@@ -323,7 +307,6 @@ impl MemoryBackend for CloudApiMemoryBackend {
     /// A 404 counts as success, matching `CloudSyncClient::delete_remote`: the
     /// caller asked for the entry to be gone and it is.
     async fn archive(&self, id: NoteId) -> Result<bool> {
-        self.per_entry_project()?;
         let resp = self
             .authed(
                 self.client

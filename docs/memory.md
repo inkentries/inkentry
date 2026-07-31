@@ -183,18 +183,9 @@ else, including a probe that times out, is unreachable, or answers without a
 capability list, is treated as a self-hosted server. The probe is
 unauthenticated and never sends your server key.
 
-Two commands are limited against the hosted API. `spelunk memory show` and
-`spelunk memory archive` address a single entry, and the hosted API accepts only
-a project UUID on those two routes, while the routes beside them take a slug or
-a UUID. Set `project_id` to the project's UUID to use them:
-
-```toml
-project_id = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
-```
-
-With a slug configured, those two commands report the constraint instead of
-failing with an opaque error; adding, listing, searching and counting work with
-either form.
+`project_id` may be a slug or a UUID against either peer; every memory
+command, including `spelunk memory show` and `spelunk memory archive`, resolves
+either form the same way.
 
 Against the hosted API, `spelunk memory harvest`'s duplicate check filters
 locally, because that API has no server-side commit filter. It stays correct,
