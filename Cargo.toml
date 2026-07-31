@@ -35,12 +35,12 @@ pretty_assertions = "1"
 serial_test = "4"
 wiremock    = "0.6"
 dirs        = "6"
-# Native embedder stack (F2LLM-v2-330M via candle). Depended on unconditionally
-# by the `spelunk-embed` crate; versions pinned here so the candle trio stays on
-# one runtime line.
+# Native embedder stack (F2LLM-v2-330M via candle). Optional deps of the
+# `spelunk-embed` crate, gated behind its default-on `native` feature; versions
+# pinned here so the candle pair stays on one runtime line. No candle-transformers:
+# see the `Config`/`repeat_kv` doc comment in spelunk-embed/src/embedder_native.rs.
 candle-core = "0.11.0"
 candle-nn   = "0.11.0"
-candle-transformers = "0.11.0"
 tokenizers  = "0.23"
 # OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
 # Service via zbus, Windows Credential Manager). `v1` is keyring 4's
@@ -56,3 +56,7 @@ keyring     = { version = "4", default-features = false, features = ["v1"] }
 lto           = true
 codegen-units = 1
 opt-level     = 3
+# Only the release workflow's Linux job stripped binaries (a manual `strip`
+# step after build); macOS and Windows release artifacts, and any local
+# `cargo build --release`, shipped full symbol tables. This applies uniformly.
+strip         = true
