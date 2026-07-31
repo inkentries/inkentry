@@ -9,6 +9,7 @@ mod project_id;
 mod sync_mode;
 mod tls;
 
+pub mod llm_key;
 pub mod secret_store;
 pub mod server_keys;
 
@@ -106,8 +107,20 @@ pub struct Config {
 
     /// Chat model id, resolved by spelunk-server, for `ask` and `memory harvest`.
     /// When unset, commands that require a chat model are unavailable.
+    /// `SPELUNK_LLM_MODEL` overrides this.
     #[serde(default)]
     pub llm_model: Option<String>,
+
+    /// Base URL of an OpenAI-compatible chat completions endpoint (a local
+    /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
+    /// auto-spawned `spelunk-server` so it gains LLM capability.
+    ///
+    /// Personal config (`~/.config/spelunk/config.toml`) or `SPELUNK_LLM_URL`
+    /// only, never `.spelunk/config.toml`: a checked-in endpoint points the
+    /// whole team at one developer's machine, and it is the natural sibling of
+    /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
+    #[serde(default)]
+    pub llm_url: Option<String>,
 
     // ── spelunk-server (optional) ─────────────────────────────────────────────
     /// URL of the spelunk-server instance, e.g. `https://spelunk.internal.example.com`
@@ -258,6 +271,7 @@ impl Default for Config {
         Self {
             db_path: Self::default_db_path(),
             llm_model: None,
+            llm_url: None,
             server_url: None,
             server_key: None,
             project_id: None,
@@ -426,6 +440,12 @@ impl Config {
         // Env wins over either config file (personal or project-level).
         if let Ok(v) = std::env::var("SPELUNK_SERVER_CA") {
             cfg.server_ca = Some(v);
+        }
+        if let Ok(v) = std::env::var(llm_key::ENV_LLM_URL) {
+            cfg.llm_url = Some(v);
+        }
+        if let Ok(v) = std::env::var(llm_key::ENV_LLM_MODEL) {
+            cfg.llm_model = Some(v);
         }
         // SPELUNK_MODE overrides the configured sync mode. An
         // unrecognised value is a hard error — silently falling back to a
@@ -647,6 +667,8 @@ mod tests {
             std::env::remove_var("SPELUNK_PROJECT_ID");
             std::env::remove_var("SPELUNK_MODE");
             std::env::remove_var("SPELUNK_NO_SERVER");
+            std::env::remove_var("SPELUNK_LLM_URL");
+            std::env::remove_var("SPELUNK_LLM_MODEL");
         }
     }
 
@@ -1915,5 +1937,293 @@ project_id = "team/new"
         let cfg = load_hermetic(&global).unwrap();
 
         assert_eq!(cfg.server_ca.as_deref(), Some("/from/config.pem"));
+    }
+
+    // ── llm_url / llm_model ──────────────────────────────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_loads_from_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+
+        let cfg = load_hermetic(&global).unwrap();
+
+        assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_absent_from_personal_config_stays_none() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();
+
+        let cfg = load_hermetic(&global).unwrap();
+
+        assert_eq!(cfg.llm_url, None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_in_project_config_is_ignored() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "").unwrap();
+
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(project.join(".spelunk")).unwrap();
+        std::fs::write(
+            project.join(".spelunk").join("config.toml"),
+            "llm_url = \"http://team-box.example:1234\"\n",
+        )
+        .unwrap();
+
+        let store = MemoryStore::default();
+        let cfg = Config::load_with_store_from(Some(&global), &store, Some(&project)).unwrap();
+
+        assert_eq!(
+            cfg.llm_url, None,
+            "an endpoint URL in a checked-in project config must not configure the CLI"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_env_overrides_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_URL", "https://gateway.example") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+
+        assert_eq!(
+            cfg.unwrap().llm_url.as_deref(),
+            Some("https://gateway.example")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_env_applies_when_personal_config_sets_nothing() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_URL", "https://gateway.example") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+
+        assert_eq!(
+            cfg.unwrap().llm_url.as_deref(),
+            Some("https://gateway.example")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_model_env_overrides_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_model = \"from-config\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "from-env") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+
+        assert_eq!(cfg.unwrap().llm_model.as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_model_env_applies_when_personal_config_sets_nothing() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "from-env") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+
+        assert_eq!(cfg.unwrap().llm_model.as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn save_auth_tokens_preserves_llm_url() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "llm_model = \"gpt-oss\"\nllm_url = \"http://127.0.0.1:1234\"\n",
+        )
+        .unwrap();
+        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+
+        let cfg = load_hermetic(&path).unwrap();
+        assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
+        assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
+        assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
+    }
+
+    // The daemon-spawn path is the only reader of the LLM credential, so a
+    // plain `Config::load` must not pay for a secret-store read of it.
+    #[test]
+    #[serial_test::serial]
+    fn config_load_never_reads_the_llm_key_from_the_store() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+
+        let store = RecordingStore::default();
+        store
+            .set(secret_store::KEY_LLM_KEY, "sk-llm-secret")
+            .unwrap();
+        store.reads.lock().unwrap().clear();
+
+        let cfg = Config::load_with_store_from(Some(&global), &store, None).unwrap();
+
+        assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
+        assert!(
+            !store
+                .reads
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|k| k == secret_store::KEY_LLM_KEY),
+            "Config::load must not read the LLM key: reads were {:?}",
+            store.reads.lock().unwrap()
+        );
+    }
+
+    // Broader than the guard above, which only names the LLM key: the ordinary
+    // load path reads no secret at all, so any store read added later goes red
+    // here rather than only a credential-shaped one.
+    #[test]
+    #[serial_test::serial]
+    fn config_load_reads_nothing_at_all_from_an_injected_store() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(
+            &global,
+            "llm_url = \"http://127.0.0.1:1234\"\nllm_model = \"gpt-oss\"\n",
+        )
+        .unwrap();
+
+        let store = RecordingStore::default();
+        store
+            .set(secret_store::KEY_LLM_KEY, "sk-llm-secret")
+            .unwrap();
+        store.set(KEY_SERVER_KEY, "sk-sp-server").unwrap();
+        store.reads.lock().unwrap().clear();
+
+        Config::load_with_store_from(Some(&global), &store, None).unwrap();
+
+        let reads = store.reads.lock().unwrap().clone();
+        assert!(
+            reads.is_empty(),
+            "a config load with no legacy plaintext key to migrate must read no secret: {reads:?}"
+        );
+    }
+
+    // `Config::load` resolves its own store, so the RecordingStore guards above
+    // cannot observe that path at all: a store read added there would go
+    // unnoticed, and on macOS would be a keychain authorization on every
+    // command. An unparseable secrets.toml makes any read fail whatever the
+    // backend, so loading successfully is the proof.
+    #[test]
+    #[serial_test::serial]
+    fn the_public_load_entry_point_reads_no_secret_either() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+        std::fs::write(tmp.path().join("secrets.toml"), "not = valid = toml\n").unwrap();
+
+        let prev_store = std::env::var(secret_store::ENV_SECRET_STORE).ok();
+        unsafe {
+            std::env::set_var("SPELUNK_CONFIG_DIR", tmp.path());
+            std::env::set_var(secret_store::ENV_SECRET_STORE, "file");
+        }
+        let loaded = Config::load(Some(&global));
+        unsafe {
+            std::env::remove_var("SPELUNK_CONFIG_DIR");
+            match &prev_store {
+                Some(v) => std::env::set_var(secret_store::ENV_SECRET_STORE, v),
+                None => std::env::remove_var(secret_store::ENV_SECRET_STORE),
+            }
+        }
+
+        let cfg = loaded.expect("Config::load must not read the secret store");
+        assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
+    }
+
+    // An explicitly empty SPELUNK_LLM_URL is an override like any other value,
+    // so it blanks the personal config rather than falling through to it. The
+    // spawn path then normalizes the blank away and configures no endpoint.
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_env_set_to_empty_still_overrides_the_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_URL", "") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+
+        assert_eq!(cfg.unwrap().llm_url.as_deref(), Some(""));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_model_env_set_to_empty_still_overrides_the_personal_config() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("config.toml");
+        std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();
+
+        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "") };
+        let cfg = load_hermetic(&global);
+        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+
+        assert_eq!(cfg.unwrap().llm_model.as_deref(), Some(""));
+    }
+
+    // A MemoryStore that records every key passed to `get`.
+    #[derive(Default)]
+    struct RecordingStore {
+        inner: MemoryStore,
+        reads: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl SecretStore for RecordingStore {
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            self.reads.lock().unwrap().push(key.to_string());
+            self.inner.get(key)
+        }
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            self.inner.set(key, value)
+        }
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+        fn kind(&self) -> &'static str {
+            "recording"
+        }
     }
 }

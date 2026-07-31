@@ -11,6 +11,30 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A configurable LLM endpoint and a place to keep its credential.** You can now set `llm_url` and `llm_model` in
+  `~/.config/spelunk/config.toml`, override either with `SPELUNK_LLM_URL` /
+  `SPELUNK_LLM_MODEL` or per launch with `spelunk server start
+  --llm-url/--llm-model`, and store the endpoint's credential with `spelunk auth
+  set-key --llm` (read from stdin or a prompt, kept in the OS secret store,
+  overridable with `SPELUNK_LLM_KEY`).
+
+  `spelunk-server` gained `--llm-key` and `--llm-key-file` alongside
+  `SPELUNK_LLM_KEY`, sends a resolved credential as a bearer token upstream, and
+  refuses to start when a credential is configured against a plaintext `http://`
+  endpoint on a non-loopback host, naming the URL. That check applies only when a
+  credential is present, so an existing keyless LAN endpoint (LM Studio or Ollama
+  on your network) keeps working exactly as before, and an endpoint with no
+  credential is still sent no `Authorization` header at all.
+
+### Fixed
+
+- **`spelunk server start` no longer blames your firewall for a daemon that
+  refused to start.** It waited out the full 30-second liveness timeout and then
+  suggested a firewall whatever had gone wrong, including when the daemon had
+  already exited over its own configuration. It now notices the process is gone,
+  says so immediately, and points at the log; the firewall suggestion is kept for
+  the case it actually describes, a daemon still running and still not answering.
+
 - **A written stability contract, [docs/stability.md](docs/stability.md), and
   tests that enforce it.** Until now the plumbing JSONL schemas were held stable
   by convention alone, and nothing stated which config keys, flags, exit codes,

@@ -86,6 +86,10 @@ config/
   tls.rs         — custom CA trust-anchor application
   secret_store.rs — OS keychain / file secret-store backend
   server_keys.rs — per-origin server-key map + bearer_for() resolution (ADR-071)
+  llm_key.rs     — LLM endpoint credential: SPELUNK_LLM_KEY / secret-store resolution,
+                   plus the SPELUNK_LLM_URL / SPELUNK_LLM_MODEL variable names. Deliberately
+                   not a Config field and never read by Config::load; only the daemon-spawn
+                   path resolves it
 utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
@@ -177,9 +181,13 @@ cli/
   mod.rs         — clap structs (Cli, Command, *Args)
   cmd/
     mod.rs       — re-exports one pub fn per subcommand
-    auth.rs      — `spelunk auth set-key/list-servers` handlers (ADR-071)
+    auth.rs      — `spelunk auth set-key/list-servers` handlers (ADR-071); `--llm` stores
+                   the LLM endpoint credential
     check.rs     — `spelunk check` handler
     context.rs   — `spelunk context` handler (agent session entry point)
+    daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
+                   splits them across argv (url, model) and the child environment (all
+                   three, pinned so nothing is left to inheritance)
     explore.rs   — `spelunk explore` handler
     graph.rs     — `spelunk graph` handler
     helpers.rs   — shared output / progress helpers
@@ -249,6 +257,10 @@ handlers/
     support.rs     — shared app/router builders + HTTP helpers used by every theme
     *_tests.rs     — one file per theme (notes, health, embed, search/explore, batch,
                      batch dedupe, sync, timeout, concurrency, liveness-under-embed)
+server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind `--llm-url`,
+                     plus resolve_llm_key (--llm-key / --llm-key-file / SPELUNK_LLM_KEY) and
+                     check_llm_transport, which refuses to start when a credential would
+                     travel in the clear
 embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
                      `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
                      calls spelunk-embed's `NativeEmbedder::load_from_path`. The only place in the
@@ -294,7 +306,11 @@ owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. There is no external embedder
 backend: embedding always runs through the bundled native engine. The LLM
 backend (with its own external HTTP shim, `--llm-url`) lives in spelunk-server
-(`main.rs`).
+(`server_llm.rs`). The endpoint, model and credential that shim runs on are
+resolved client-side by `spelunk-cli`'s `cli/cmd/daemon_llm.rs` and handed to
+the spawned daemon: url and model in argv, the credential in the child
+environment only, because the detached daemon must never open the keychain
+itself.
 
 `capability/` probes server availability at startup and exposes a `Tier`
 enum so commands degrade gracefully when no server is configured.
