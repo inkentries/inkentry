@@ -79,16 +79,14 @@ pub(super) async fn harvest_claude_code(
 
     // 3. Resolve current git repo root.
     let cwd = std::env::current_dir().context("getting current directory")?;
-    let repo_root = gix::discover(&cwd)
-        .context("Not inside a git repository — cannot determine project root for filtering.")?
-        .workdir()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Not inside a git worktree — cannot determine project root for filtering."
-            )
-        })?
+    let repo = gix::discover(&cwd)
+        .context("Not inside a git repository — cannot determine project root for filtering.")?;
+    let workdir = repo.workdir().ok_or_else(|| {
+        anyhow::anyhow!("Not inside a git worktree — cannot determine project root for filtering.")
+    })?;
+    let repo_root = std::fs::canonicalize(workdir)
+        .context("canonicalizing repository root")?
         .to_string_lossy()
-        .trim_end_matches('/')
         .to_string();
 
     // 4. Parse --since into milliseconds threshold.
