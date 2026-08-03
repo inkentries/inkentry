@@ -162,7 +162,7 @@ jobs:
             ${{ runner.os }}-cargo-v3-
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-nextest
 
