@@ -9,6 +9,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The team `spelunk-server`'s memory read endpoints now return an object
+  envelope instead of a bare JSON array.** `GET /memory` and `POST
+  /memory/search` return `{ "entries": [...], "total": N }`, and `GET
+  /memory/harvested-shas` returns `{ "shas": [...] }`. A JSON response root is
+  now always an object, never a bare array (ADR-076: the memory wire contract).
+
+  The CLI reads both shapes, so a newer CLI keeps working against an older team
+  server across the version-skew support window. A CLI released before this
+  change cannot read the envelope from a newer server on these three endpoints;
+  upgrade the CLI to match. See `docs/version-skew.md`. The `GET
+  /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added

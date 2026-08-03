@@ -17,6 +17,15 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::require_project;
 
+/// Object envelope for the harvested-SHAs read endpoint.
+///
+/// A JSON response root must be an object, never a bare array of primitives
+/// (ADR-076: the memory wire contract).
+#[derive(Serialize, ToSchema)]
+pub struct HarvestedShasResponse {
+    pub shas: Vec<String>,
+}
+
 /// Return all git commit SHAs stored in note tags for a project.
 ///
 /// Each harvested commit is tagged `git:<sha>`. Clients call this endpoint
@@ -28,7 +37,7 @@ use super::require_project;
         ("project_id" = String, Path, description = "Project slug"),
     ),
     responses(
-        (status = 200, description = "List of harvested git SHAs", body = Vec<String>),
+        (status = 200, description = "List of harvested git SHAs", body = HarvestedShasResponse),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
     ),
@@ -42,7 +51,7 @@ pub async fn harvested_shas(
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
     let shas = db.harvested_shas(project.id)?;
-    Ok(Json(shas))
+    Ok(Json(HarvestedShasResponse { shas }))
 }
 
 // ── Poll / SSE endpoints ──────────────────────────────────────────────────────

@@ -369,10 +369,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ServerNote"
-                  }
+                  "$ref": "#/components/schemas/NoteListResponse"
                 }
               }
             }
@@ -580,10 +577,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
+                  "$ref": "#/components/schemas/HarvestedShasResponse"
                 }
               }
             }
@@ -650,10 +644,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ServerNote"
-                  }
+                  "$ref": "#/components/schemas/NoteListResponse"
                 }
               }
             }
@@ -1746,6 +1737,21 @@
           }
         }
       },
+      "HarvestedShasResponse": {
+        "type": "object",
+        "description": "Object envelope for the harvested-SHAs read endpoint.\n\nA JSON response root must be an object, never a bare array of primitives\n(ADR-076: the memory wire contract).",
+        "required": [
+          "shas"
+        ],
+        "properties": {
+          "shas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "description": "Server capabilities reported in the health response.",
@@ -1862,6 +1868,26 @@
               "$ref": "#/components/schemas/LlmCompleteMessage"
             },
             "description": "Non-empty list of chat messages."
+          }
+        }
+      },
+      "NoteListResponse": {
+        "type": "object",
+        "description": "Object envelope for the list and search read endpoints.\n\nA JSON response root must be an object, never a bare array (ADR-076: the\nmemory wire contract). `entries` carries the notes; `total` is their count\nin this response, which is already `limit`-capped, not a project-wide count\n(that has its own `/stats` route).",
+        "required": [
+          "entries",
+          "total"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerNote"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

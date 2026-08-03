@@ -87,6 +87,56 @@ impl From<NoteResponse> for Note {
     }
 }
 
+/// Tolerant reader for the `list` and `search` read endpoints.
+///
+/// A team `spelunk-server` at or after the wire-contract fix wraps notes in an
+/// `{ "entries": [...], "total": N }` object (ADR-076: a JSON response root
+/// must be an object, never a bare array). Older servers still in the
+/// version-skew support window emit a bare `[...]` array. Accepting both is
+/// what keeps a newer CLI working against an older team server: the common
+/// real-world skew, since a CLI is upgraded ahead of a team server running on
+/// someone else's schedule. See `docs/version-skew.md`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(super) enum NoteListPayload {
+    Enveloped {
+        #[serde(default)]
+        entries: Vec<NoteResponse>,
+    },
+    Bare(Vec<NoteResponse>),
+}
+
+impl NoteListPayload {
+    pub(super) fn into_notes(self) -> Vec<NoteResponse> {
+        match self {
+            NoteListPayload::Enveloped { entries } => entries,
+            NoteListPayload::Bare(notes) => notes,
+        }
+    }
+}
+
+/// Tolerant reader for the `harvested-shas` endpoint. Same rationale as
+/// [`NoteListPayload`]: newer servers send `{ "shas": [...] }`, older ones a
+/// bare `["sha", ...]` array of primitives.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(super) enum HarvestedShasPayload {
+    Enveloped {
+        #[serde(default)]
+        shas: Vec<String>,
+    },
+    Bare(Vec<String>),
+}
+
+impl HarvestedShasPayload {
+    pub(super) fn into_shas(self) -> Vec<String> {
+        match self {
+            HarvestedShasPayload::Enveloped { shas } => shas,
+            HarvestedShasPayload::Bare(shas) => shas,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(super) struct SearchRequest {
     pub(super) query: String,

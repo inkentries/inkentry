@@ -16,3 +16,4 @@ mod notes_tests;
 mod search_explore_tests;
 mod sync_tests;
 mod timeout_tests;
+mod wire_shape_tests;

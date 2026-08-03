@@ -90,6 +90,18 @@ pub struct CountResponse {
     pub count: i64,
 }
 
+/// Object envelope for the list and search read endpoints.
+///
+/// A JSON response root must be an object, never a bare array (ADR-076: the
+/// memory wire contract). `entries` carries the notes; `total` is their count
+/// in this response, which is already `limit`-capped, not a project-wide count
+/// (that has its own `/stats` route).
+#[derive(Serialize, ToSchema)]
+pub struct NoteListResponse {
+    pub entries: Vec<crate::db::ServerNote>,
+    pub total: usize,
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct SupersedeRequest {
     /// ID of the new note that replaces the superseded one.
@@ -265,7 +277,7 @@ pub async fn add_note(
         ListQuery,
     ),
     responses(
-        (status = 200, description = "List of notes", body = Vec<crate::db::ServerNote>),
+        (status = 200, description = "List of notes", body = NoteListResponse),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
     ),
@@ -285,7 +297,11 @@ pub async fn list_notes(
         params.limit,
         params.archived,
     )?;
-    Ok(Json(notes))
+    let total = notes.len();
+    Ok(Json(NoteListResponse {
+        entries: notes,
+        total,
+    }))
 }
 
 /// Get a single memory entry by ID.
@@ -326,7 +342,7 @@ pub async fn get_note(
     ),
     request_body = SearchRequest,
     responses(
-        (status = 200, description = "Nearest neighbours", body = Vec<crate::db::ServerNote>),
+        (status = 200, description = "Nearest neighbours", body = NoteListResponse),
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
@@ -367,7 +383,11 @@ pub async fn search_notes(
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
     let notes = db.search_notes(project.id, &query_vec, body.limit)?;
-    Ok(Json(notes))
+    let total = notes.len();
+    Ok(Json(NoteListResponse {
+        entries: notes,
+        total,
+    }))
 }
 
 /// Delete a memory entry permanently.
