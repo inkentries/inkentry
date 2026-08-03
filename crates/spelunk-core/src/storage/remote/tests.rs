@@ -208,3 +208,133 @@ async fn list_sends_query_parameters_the_oss_server_silently_drops() {
          `source_ref` parameter; if it stopped, delete this test. Sent: {sent:?}"
     );
 }
+
+// ── Wire-shape tolerance ─────────────────────────────────────────────────────
+//
+// The read endpoints must accept both shapes a team server can send: the
+// object envelope a server at or after the ADR-076 wire-contract fix returns
+// (`{entries, total}` / `{shas}`), and the bare array an older server still in
+// the version-skew support window returns. Accepting both is what keeps a
+// newer CLI working against an older team server. See docs/version-skew.md.
+
+fn note_json(title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": 1,
+        "kind": "decision",
+        "title": title,
+        "body": "b",
+        "tags": [],
+        "linked_files": [],
+        "created_at": 0,
+        "status": "active",
+        "superseded_by": null,
+    })
+}
+
+fn backend_at(uri: String) -> RemoteMemoryBackend {
+    RemoteMemoryBackend {
+        client: reqwest::Client::new(),
+        base_url: uri,
+        project_id: "proj".to_string(),
+        api_key: None,
+    }
+}
+
+#[tokio::test]
+async fn list_accepts_object_envelope_from_newer_server() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "entries": [note_json("A")],
+            "total": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let notes = backend_at(server.uri())
+        .list(None, 10, false, None)
+        .await
+        .expect("list must parse the object envelope");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].title, "A");
+}
+
+#[tokio::test]
+async fn list_accepts_bare_array_from_older_server() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([note_json("A")])))
+        .mount(&server)
+        .await;
+
+    let notes = backend_at(server.uri())
+        .list(None, 10, false, None)
+        .await
+        .expect("list must still parse a legacy bare array");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].title, "A");
+}
+
+#[tokio::test]
+async fn search_accepts_object_envelope_from_newer_server() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/proj/memory/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "entries": [note_json("hit")],
+            "total": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
+    let notes = backend_at(server.uri())
+        .search(&query_blob, "q", 5, None)
+        .await
+        .expect("search must parse the object envelope");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].title, "hit");
+}
+
+#[tokio::test]
+async fn harvested_shas_accepts_both_shapes() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let enveloped = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory/harvested-shas"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "shas": ["abc"] })),
+        )
+        .mount(&enveloped)
+        .await;
+    let shas = backend_at(enveloped.uri())
+        .harvested_shas()
+        .await
+        .expect("harvested_shas must parse the object envelope");
+    assert!(shas.contains("abc"), "got: {shas:?}");
+
+    let bare = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory/harvested-shas"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["def"])))
+        .mount(&bare)
+        .await;
+    let shas = backend_at(bare.uri())
+        .harvested_shas()
+        .await
+        .expect("harvested_shas must still parse a legacy bare array");
+    assert!(shas.contains("def"), "got: {shas:?}");
+}

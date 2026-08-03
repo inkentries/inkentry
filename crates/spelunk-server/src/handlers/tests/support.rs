@@ -271,7 +271,8 @@ pub(super) async fn list_notes_via_http(app: axum::Router, slug: &str) -> Vec<Va
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    body["entries"].as_array().cloned().unwrap_or_default()
 }
 
 pub(super) fn note_item(title: &str, external_id: &str) -> Value {

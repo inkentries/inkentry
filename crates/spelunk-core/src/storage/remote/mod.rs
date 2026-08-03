@@ -184,10 +184,10 @@ impl MemoryBackend for RemoteMemoryBackend {
             .context("POST /memory/search")?
             .error_for_status()
             .context("server returned error for POST /memory/search")?
-            .json::<Vec<NoteResponse>>()
+            .json::<NoteListPayload>()
             .await
             .context("parsing search response")?;
-        Ok(resp.into_iter().map(Into::into).collect())
+        Ok(resp.into_notes().into_iter().map(Into::into).collect())
     }
 
     /// Remote backend: BM25 text search is not supported — falls back to semantic search.
@@ -239,10 +239,10 @@ impl MemoryBackend for RemoteMemoryBackend {
             .context("GET /memory")?
             .error_for_status()
             .context("server returned error for GET /memory")?
-            .json::<Vec<NoteResponse>>()
+            .json::<NoteListPayload>()
             .await
             .context("parsing list response")?;
-        Ok(resp.into_iter().map(Into::into).collect())
+        Ok(resp.into_notes().into_iter().map(Into::into).collect())
     }
 
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
@@ -335,10 +335,10 @@ impl MemoryBackend for RemoteMemoryBackend {
             .context("GET /memory (source_ref filter)")?
             .error_for_status()
             .context("server returned error for GET /memory")?
-            .json::<Vec<NoteResponse>>()
+            .json::<NoteListPayload>()
             .await
             .context("parsing list response")?;
-        Ok(resp.into_iter().map(Into::into).collect())
+        Ok(resp.into_notes().into_iter().map(Into::into).collect())
     }
 
     async fn harvested_shas(&self) -> Result<HashSet<String>> {
@@ -349,10 +349,10 @@ impl MemoryBackend for RemoteMemoryBackend {
             .context("GET /memory/harvested-shas")?
             .error_for_status()
             .context("server returned error for GET /memory/harvested-shas")?
-            .json::<Vec<String>>()
+            .json::<HarvestedShasPayload>()
             .await
             .context("parsing harvested-shas response")?;
-        Ok(resp.into_iter().collect())
+        Ok(resp.into_shas().into_iter().collect())
     }
 
     async fn has_source_ref(&self, sha: &str) -> Result<bool> {

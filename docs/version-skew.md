@@ -136,6 +136,47 @@ If the capabilities you expect are missing and no warning appears, the peer
 genuinely did not advertise them. That distinction, between a peer that said no
 and a peer whose answer could not be read, is the whole point of the warnings.
 
+## The memory read-endpoint envelope
+
+The team server's three memory *read* endpoints wrap their result in an object,
+never a bare array (ADR-076: a JSON response root must be an object):
+
+| Endpoint | Shape |
+|---|---|
+| `GET /v1/projects/{id}/memory` (list) | `{ "entries": [...], "total": N }` |
+| `POST /v1/projects/{id}/memory/search` | `{ "entries": [...], "total": N }` |
+| `GET /v1/projects/{id}/memory/harvested-shas` | `{ "shas": [...] }` |
+
+Servers before this change returned a bare `[...]` (or, for harvested-shas, a
+bare `["sha", ...]`). That is a wire-shape change, so it is handled the way this
+document handles every other skew: structurally, by tolerating what arrives, on
+the side that can be changed.
+
+- **Newer CLI to older server** is the common direction (a CLI upgrades ahead
+  of a team server on someone else's schedule) and is covered in full. The
+  team-server memory client (`storage/remote/wire_types.rs`) reads both shapes:
+  an untagged reader accepts the object envelope from a current server and the
+  legacy bare array from any server still inside the *n-1* window. Nothing about
+  this direction breaks.
+- **Older CLI to newer server** cannot be made to work by tolerance: an already
+  released CLI only knows the bare array, and a single JSON body cannot be both
+  an array and an object at once. This direction is therefore effectively gated
+  on a minimum CLI version for these three endpoints. It is the less common
+  direction, it is bounded to three read paths, and the CLI and team server ship
+  in lockstep from one repo at one version, so the recovery is the same
+  "upgrade the CLI" the rest of this document assumes.
+
+The server emits the envelope *unconditionally* rather than negotiating the
+shape per request. Serving the bare array to some callers would keep it reachable
+forever, which is exactly the invariant ADR-076 exists to retire, and would
+leave nothing for the wire-shape pin test to hold. The bounded one-direction
+break is the accepted cost of making "the root is always an object" true rather
+than aspirational.
+
+Out of scope, and deliberately still a bare array: `GET …/memory/since?t=<epoch>`
+keeps its documented legacy shape (its `?since_id=` cursor mode already returns
+`{entries, count}`), and `GET /v1/projects` is unchanged.
+
 ## A live cross-peer divergence
 
 The two peers publish incompatible types for the same conceptual Project
@@ -176,6 +217,8 @@ actually protects you, and that holds whatever the two peers do next.
 | Unknown fields and enum values are ignored | `unknown_fields_from_a_newer_peer_are_ignored` | Real recorded response, unknown fields added |
 | No field can take the whole body down with it | `every_health_field_degrades_alone_rather_than_taking_the_body_down` | Every member of the recorded body, mutated one at a time |
 | The project id stays opaque | `project_id_stays_opaque_across_both_peers_id_types` | Two peers' published id shapes |
+| Memory read endpoints return an object envelope | `*_returns_object_envelope_not_bare_array` (spelunk-server `wire_shape_tests`) | The running handlers |
+| The CLI reads both the envelope and a legacy bare array | `list_accepts_*` / `search_accepts_*` / `harvested_shas_accepts_both_shapes` (`storage/remote/tests.rs`), plus `cloud_first_reads_remotely_with_the_configured_slug_verbatim` end to end | Mock responses in both shapes; a real bare-array subprocess |
 | Two real binaries complete the memory flow | `scripts/skew-smoke.sh`, run both ways by `.github/workflows/version-skew.yml` | Real released binaries |
 | `/v1/` matches `docs/openapi.json` | `openapi-snapshot` job in `.github/workflows/ci.yml` | The running binary |
 
