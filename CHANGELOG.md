@@ -48,6 +48,50 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   commit the file yourself so the slug travels with the repo. The docs describe
   committing it as an explicit user step (ADR-077 D5).
 
+- **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
+  pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
+  the SQLite files and logs but not the lock, so a `git add -A` staged and
+  committed `index.lock.pid` — which holds a machine-local process id that churns
+  and conflicts across machines. New projects ignore both via an `index.lock*`
+  line. Existing projects (whose `.gitignore` init never overwrites) can add it
+  manually:
+
+  ```sh
+  echo "index.lock*" >> .spelunk/.gitignore
+  ```
+- **`spelunk plumbing embed` now finds a running `spelunk-server` the same way
+  every other server-backed command does.** It reported `requires
+  spelunk-server` even while a healthy local server was running and `search
+  --mode semantic` / `memory search` used it, because `embed` gated directly on
+  a configured `server_url` and skipped the capability-tier resolution the other
+  commands run. It now honours the auto-started / auto-discovered loopback
+  server (and `SPELUNK_SERVER_URL`), so `echo "text" | spelunk plumbing embed`
+  emits the vector whenever a ready server is reachable, restoring the
+  `echo … | spelunk plumbing embed --query | spelunk plumbing knn` pipeline. The
+  locked-feature error is unchanged when no server is reachable.
+- **`spelunk memory harvest` no longer crashes on a repo with fewer than 11
+  commits.** The default `HEAD~10..HEAD` range named `HEAD~10`, a commit that
+  does not exist in a shallow history, so `git log` aborted with a raw
+  `fatal: bad revision 'HEAD~10..HEAD'`. The range is now clamped to the commits
+  that actually exist (the most recent `min(10, commit_count)`, root included),
+  so harvest works on any repo with at least one commit. A custom `--git-range`
+  or `--branch` is passed through unchanged. Harvest also runs its
+  LLM-capability precheck before resolving the git range now, matching `spelunk
+  explore`: with no LLM configured the actionable locked-feature message is
+  shown regardless of repo size, rather than a raw git error on a short history.
+- **A partial `[auth]` table in `config.toml` no longer bricks every command.**
+  `[auth]` is login-managed, but `--org` is an optional scoping flag and
+  hand-editing the config is a documented workflow, so a login without an org
+  (no `org_id`) or a trimmed table left the CLI unable to run anything —
+  including commands that need no credentials (`status`, `search`, `context`).
+  Every `[auth]` field is now optional: a missing/empty `access_token` reads as
+  "not logged in" (no bearer sent), a missing `expires_at` as expired, and a
+  missing `org_id` applies no scoping, instead of a hard parse error.
+- **A `config.toml` that fails to parse now names the file, the offending key,
+  and the remedy** instead of a bare, unactionable `Error: parsing config.toml`.
+  An unrecognised `mode` value names the bad value and lists the valid modes
+  (`offline`, `local_first`, `cloud_first`), matching the `SPELUNK_MODE`
+  message.
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
@@ -91,6 +135,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   to the entry's creation time, evaluated independently of archived status
   across list, text, semantic, and hybrid search. `--archived` again controls
   only the current-state view, orthogonal to `--as-of`.
+- **`spelunk memory timeline <topic>` now filters by the topic instead of
+  dumping the whole store.** The topic argument was ignored: every query
+  returned every entry (a nonsense topic returned the same set as a real one),
+  because the local path fetched the nearest-neighbour set sized to `--limit`
+  and, for any store smaller than the limit, that was simply everything. Timeline
+  now routes the topic through the same no-server full-text path as `memory
+  search --mode text`, so a topic returns only its related entries and an
+  unrelated topic returns none — still sorted ascending by `valid_at`, and still
+  including superseded/archived entries so you can see how understanding evolved.
+  As a bonus, `memory timeline` no longer needs a running inference server: it
+  matches on text, not embeddings.
 
 ## [0.9.6] — 2026-07-31
 

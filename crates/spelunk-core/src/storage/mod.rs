@@ -28,12 +28,14 @@ pub use git_notes::{
     append_to_git_notes, ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes, publish_notes,
 };
 pub use graph::GraphEdge;
-pub use memory::{DedupeSummary, MemoryEdge, MemoryStore, NoteId, NotesImportMarker, SyncRow};
+pub use memory::{
+    DedupeSummary, MemoryEdge, MemoryStore, NoteId, NotesImportMarker, SyncEdge, SyncRow,
+};
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{NoteRecord, now_millis, now_secs};
 pub use remote::{
-    BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry,
-    RemoteMemoryBackend,
+    BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
+    RemoteMemoryBackend, SyncEdgePush,
 };
 pub use specs::{SpecRecord, StaleSpec};
 pub use stats::{

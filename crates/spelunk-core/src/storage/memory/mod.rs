@@ -16,7 +16,7 @@ mod sync;
 pub use dedupe::DedupeSummary;
 pub use import_state::NotesImportMarker;
 pub use note_id::NoteId;
-pub use sync::SyncRow;
+pub use sync::{SyncEdge, SyncRow};
 
 #[cfg(test)]
 mod tests;

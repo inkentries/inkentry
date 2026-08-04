@@ -168,7 +168,8 @@ spelunk search "where do we validate auth tokens"
 ```
 
 `init` also writes `.spelunk/.gitignore` so the machine-specific SQLite
-(`index.db*`, `memory.db*`) stays out of version control, and records the
+(`index.db*`, `memory.db*`) and the per-run index lock (`index.lock*`, whose
+`.pid` sidecar holds a local process id) stay out of version control, and records the
 project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
 git-derived identity (`host/owner/repo` when an `origin` remote exists, else
 `local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an

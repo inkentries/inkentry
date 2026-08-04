@@ -224,17 +224,38 @@ pub struct Config {
 ///
 /// Written by `spelunk login` / `spelunk org switch`; rotated by the token
 /// refresh path. The file is written `0600` (see [`save_auth_tokens_to`]).
+///
+/// Every field is `#[serde(default)]`, so a partial `[auth]` table never fails
+/// the whole config load. `--org` is a documented optional scoping flag and
+/// hand-editing the config is a documented workflow, so a login without an org
+/// (no `org_id`) or a trimmed table must not brick commands that need no
+/// credentials. An absent field is read as its "unset" form, which the
+/// consumers already treat sensibly:
+/// * missing `access_token` ⇒ empty ⇒ not logged in (no bearer resolved, see
+///   [`Config::load_with_store_from`] and [`server_keys::bearer_for`]);
+/// * missing `expires_at` ⇒ `0` ⇒ [`AuthTokens::is_expired_at`] reports
+///   expired, so an unknown expiry can never read as "still valid";
+/// * missing `org_id` ⇒ empty ⇒ no organisation scoping (the same empty-string
+///   sentinel the login/refresh paths already use).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthTokens {
     /// Short-lived WorkOS access token, sent as `Authorization: Bearer`.
+    /// Empty (or absent) means "not logged in": no bearer is resolved.
+    #[serde(default)]
     pub access_token: String,
     /// Long-lived rotating refresh token. Exchanged directly at WorkOS
     /// `/user_management/authenticate` (refresh grant) to rotate the
-    /// access token or switch organisation.
+    /// access token or switch organisation. Empty when the table predates a
+    /// login or was hand-trimmed; the refresh path then simply cannot rotate.
+    #[serde(default)]
     pub refresh_token: String,
     /// Absolute expiry of `access_token`, as a Unix timestamp (seconds).
+    /// Absent ⇒ `0`, which [`AuthTokens::is_expired_at`] treats as expired.
+    #[serde(default)]
     pub expires_at: i64,
-    /// WorkOS organisation the tokens are scoped to.
+    /// WorkOS organisation the tokens are scoped to. Empty when logged in
+    /// without an org (`--org` omitted); no scoping is applied.
+    #[serde(default)]
     pub org_id: String,
 }
 
@@ -248,6 +269,9 @@ impl AuthTokens {
 
     /// Expiry check against an explicit `now` (Unix seconds) — testable form of
     /// [`AuthTokens::is_expired`]. Treats the token as expired 30 s early.
+    ///
+    /// A missing `expires_at` deserialises to `0`, so this reports expired for
+    /// any realistic `now`: an unknown expiry is never read as "still valid".
     pub fn is_expired_at(&self, now: i64) -> bool {
         const SKEW_SECS: i64 = 30;
         now >= self.expires_at - SKEW_SECS
@@ -352,7 +376,7 @@ impl Config {
         let mut cfg: Config = if global_path.exists() {
             let raw = std::fs::read_to_string(&global_path)
                 .with_context(|| format!("reading config at {}", global_path.display()))?;
-            toml::from_str(&raw).context("parsing config.toml")?
+            parse_global_config(&raw, &global_path)?
         } else {
             Config::default()
         };
@@ -380,7 +404,7 @@ impl Config {
             let raw = std::fs::read_to_string(&proj_path)
                 .with_context(|| format!("reading project config at {}", proj_path.display()))?;
             let proj: ProjectConfig =
-                toml::from_str(&raw).context("parsing .spelunk/config.toml")?;
+                toml::from_str(&raw).map_err(|e| config_parse_error(&proj_path, e))?;
 
             if let Some(v) = proj.server_url {
                 cfg.server_url = Some(v);
@@ -454,8 +478,8 @@ impl Config {
         if let Ok(v) = std::env::var("SPELUNK_MODE") {
             let parsed = SyncMode::parse(&v).with_context(|| {
                 format!(
-                    "SPELUNK_MODE={v:?} is not a valid sync mode \
-                     (expected one of: offline, local_first, cloud_first)"
+                    "SPELUNK_MODE={v:?} is not a valid sync mode (expected one of: {})",
+                    SyncMode::valid_values()
                 )
             })?;
             cfg.mode = Some(parsed);
@@ -474,7 +498,12 @@ impl Config {
         cfg.server_key = if let Some(v) = env_server_key {
             Some(v)
         } else {
-            cfg.auth.as_ref().map(|auth| auth.access_token.clone())
+            // An empty (or absent) `[auth].access_token` means "not logged in":
+            // it must resolve to no bearer, never an empty-string `Some("")`.
+            cfg.auth
+                .as_ref()
+                .map(|auth| auth.access_token.clone())
+                .filter(|token| !token.is_empty())
         };
 
         Ok(cfg)
@@ -535,6 +564,52 @@ fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
          value, remove server_url from config; otherwise add the port your server \
          actually listens on."
     ))
+}
+
+/// Build an actionable error for a `config.toml` that failed to parse.
+///
+/// The bare `.context("parsing config.toml")` this replaces was unusable: an
+/// [`anyhow::Error`]'s `Display` shows only its top context, so the file path
+/// and the toml crate's own diagnostic (the offending key/line) never reached
+/// the user. This produces a single self-contained message that names the
+/// **file**, embeds the toml diagnostic that pinpoints the **offending key**,
+/// and states the **remedy**.
+fn config_parse_error(path: &Path, source: toml::de::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "could not parse the spelunk config file {path}:\n{source}\n\
+         Fix the offending key shown above, or remove it to fall back to the default.",
+        path = path.display(),
+    )
+}
+
+/// Parse the global personal `config.toml`, turning any failure into an
+/// actionable error (see [`config_parse_error`]).
+///
+/// An unrecognised `mode` is singled out so the message names the bad value
+/// and lists the accepted set explicitly — the same guidance as the
+/// `SPELUNK_MODE` env-var error — rather than relying on however serde/toml
+/// happens to render the underlying enum error.
+fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
+    toml::from_str::<Config>(raw).map_err(|source| {
+        if let Some(bad) = bad_mode_value(raw) {
+            return anyhow::anyhow!(
+                "invalid `mode` value {bad:?} in the spelunk config file {path} \
+                 (expected one of: {valid})",
+                path = path.display(),
+                valid = SyncMode::valid_values(),
+            );
+        }
+        config_parse_error(path, source)
+    })
+}
+
+/// If `raw` sets `mode` to a string that is not a valid [`SyncMode`], return
+/// that offending value. Runs only on the error path, so the extra parse is
+/// off the happy path.
+fn bad_mode_value(raw: &str) -> Option<String> {
+    let table = raw.parse::<toml::Table>().ok()?;
+    let value = table.get("mode")?.as_str()?;
+    SyncMode::parse(value).is_none().then(|| value.to_string())
 }
 
 impl Config {
@@ -1312,6 +1387,144 @@ project_id = "team/proj"
         let auth = cfg.auth.expect("auth table should load");
         assert_eq!(auth.refresh_token, "rt-sample");
         assert_eq!(auth.org_id, "org_sample");
+    }
+
+    // ── [auth] partial-table tolerance ─────────────────────────────────────────
+    //
+    // `--org` is an optional scoping flag and hand-editing the config is a
+    // documented workflow, so a login-without-org or a trimmed `[auth]` table
+    // must not brick every command with a parse error. Each field is tolerated
+    // when absent (missing token ⇒ not logged in, missing expiry ⇒ expired).
+
+    // A `[auth]` table missing `org_id` still loads: the access token resolves
+    // as the bearer and the org is simply empty (no scoping).
+    #[test]
+    #[serial_test::serial]
+    fn auth_block_missing_org_id_still_loads() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[auth]\n\
+             access_token = \"at\"\n\
+             refresh_token = \"rt\"\n\
+             expires_at = 4000000000\n",
+        )
+        .unwrap();
+
+        let cfg = load_hermetic(&path).expect("a [auth] table without org_id must still parse");
+        assert_eq!(cfg.server_key.as_deref(), Some("at"));
+        let auth = cfg.auth.expect("auth table should load");
+        assert_eq!(auth.org_id, "", "missing org_id is treated as no scoping");
+    }
+
+    // A `[auth]` table missing `expires_at` loads and the token is treated as
+    // expired (an unknown expiry must never read as "still valid").
+    #[test]
+    #[serial_test::serial]
+    fn auth_block_missing_expires_at_is_treated_as_expired() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[auth]\n\
+             access_token = \"at\"\n\
+             refresh_token = \"rt\"\n\
+             org_id = \"org_x\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_hermetic(&path).expect("a [auth] table without expires_at must still parse");
+        let auth = cfg.auth.expect("auth table should load");
+        assert!(
+            auth.is_expired_at(1),
+            "a token with no expiry must be treated as expired"
+        );
+    }
+
+    // A `[auth]` table with no access token means "not logged in": no bearer is
+    // resolved (an empty token must never become a `Some("")` bearer).
+    #[test]
+    #[serial_test::serial]
+    fn auth_block_missing_access_token_means_not_logged_in() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[auth]\n\
+             refresh_token = \"rt\"\n\
+             org_id = \"org_x\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_hermetic(&path).expect("a [auth] table without access_token must parse");
+        assert_eq!(
+            cfg.server_key, None,
+            "a missing/empty access token must resolve to no bearer"
+        );
+    }
+
+    // The reported failure mode: an otherwise-fine config with a bare `[auth]`
+    // header (every field trimmed away) must still load rather than error.
+    #[test]
+    #[serial_test::serial]
+    fn bare_auth_header_does_not_brick_load() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "llm_model = \"gpt-oss\"\n[auth]\n").unwrap();
+
+        let cfg = load_hermetic(&path).expect("a bare [auth] header must not brick the load");
+        assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
+        assert_eq!(cfg.server_key, None);
+    }
+
+    // ── actionable parse-error messages ────────────────────────────────────────
+
+    // An unrecognised `mode` names the bad value AND lists the valid modes AND
+    // the file, mirroring the `SPELUNK_MODE` env-var message.
+    #[test]
+    #[serial_test::serial]
+    fn invalid_mode_value_error_names_value_modes_and_file() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "mode = \"bogus_mode\"\n").unwrap();
+
+        let err = load_hermetic(&path).unwrap_err().to_string();
+        assert!(err.contains("bogus_mode"), "must name the bad value: {err}");
+        assert!(err.contains("offline"), "must list valid modes: {err}");
+        assert!(err.contains("local_first"), "must list valid modes: {err}");
+        assert!(err.contains("cloud_first"), "must list valid modes: {err}");
+        assert!(
+            err.contains(&path.display().to_string()),
+            "must name the config file: {err}"
+        );
+    }
+
+    // A genuinely malformed config (a type error here) produces a message that
+    // names the file and points at a remedy, not a bare "parsing config.toml".
+    #[test]
+    #[serial_test::serial]
+    fn malformed_config_error_names_file_and_remedy() {
+        clear_spelunk_env();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        // `llm_context_length` is a usize; a string is a hard type error.
+        std::fs::write(&path, "llm_context_length = \"lots\"\n").unwrap();
+
+        let err = load_hermetic(&path).unwrap_err().to_string();
+        assert!(
+            err.contains(&path.display().to_string()),
+            "must name the config file: {err}"
+        );
+        assert!(
+            err.contains("remove") || err.contains("Fix"),
+            "must point at a remedy: {err}"
+        );
     }
 
     /// `SPELUNK_SERVER_KEY` (CI) overrides the `[auth]` access token.
