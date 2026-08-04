@@ -23,6 +23,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   upgrade the CLI to match. See `docs/version-skew.md`. The `GET
   /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
 
+### Fixed
+
+- **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
+  actionable error when no server is reachable, instead of silently reporting
+  "No results found." and exiting 0.** These modes need a server to embed the
+  query, so with none reachable (including under `SPELUNK_NO_SERVER=1`) they now
+  emit the same locked-feature error as the other inference-backed commands
+  (`'spelunk search' requires spelunk-server. Run `spelunk server start` ...`)
+  and exit non-zero. Previously the empty fallback result read to an agent or
+  script as "this code does not exist" rather than "the feature is unavailable".
+  The default `auto` mode is unchanged: it still announces its degradation and
+  falls back to ast-grep.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added
