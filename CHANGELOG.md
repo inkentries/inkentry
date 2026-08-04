@@ -25,6 +25,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
+  pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
+  the SQLite files and logs but not the lock, so a `git add -A` staged and
+  committed `index.lock.pid` — which holds a machine-local process id that churns
+  and conflicts across machines. New projects ignore both via an `index.lock*`
+  line. Existing projects (whose `.gitignore` init never overwrites) can add it
+  manually:
+
+  ```sh
+  echo "index.lock*" >> .spelunk/.gitignore
+  ```
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
