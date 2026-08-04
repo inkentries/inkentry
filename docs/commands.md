@@ -20,8 +20,8 @@ always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 Initialise spelunk for the current project: register it, start the local server
 if needed, parse and chunk the source tree, hand the embedding pass to a
 detached background worker, and (when inside a git repo with an `origin` remote)
-configure the fetch refspec so project memory notes travel automatically on
-`git fetch`.
+configure the fetch refspec — then fetch the notes ref once — so a single `init`
+after a clone pulls in the team's project memory.
 
 ```
 spelunk init [options]
@@ -33,21 +33,36 @@ spelunk init [options]
 | `--no-index` | false | Skip the initial index run |
 | `--name <slug>` | derived | Explicit project slug. Overrides the git-derived default; use it for projects without a git remote. |
 
-`init` writes the project slug to `.spelunk/config.toml` (committed, so the whole
-team shares one identity). The slug defaults to the git-derived value:
+`init` writes the project slug to `.spelunk/config.toml` but takes **no git
+action on it** — commit it yourself so the slug travels with the repo and the
+whole team shares one identity:
+
+```bash
+git add .spelunk/config.toml && git commit -m "Add spelunk project slug"
+```
+
+`init` prints a one-line reminder to do this; committing the file is a step you
+own, not something `init` performs. The slug defaults to the git-derived value:
 `host/owner/repo` when an `origin` remote exists, else `local/<blake3-hex>` of the
 canonical path. Pass `--name` to set an explicit slug for a repo without a remote
-or to choose your own. An existing `project_id` in config is never rewritten, so
+or to choose your own. Without a committed slug, a fresh clone of a remote-less
+repo derives a different per-clone identity, and a `--name` slug cannot be
+re-derived at all. An existing `project_id` in config is never rewritten, so
 re-running `init` (or running it after a rename) does not change an established
 slug.
 
 **Memory notes travel with the repository:** When run inside a git repo with an
 `origin` remote, `init` configures `remote.origin.fetch` so teammates'
 `refs/notes/spelunk` arrives on `git fetch`, landing on the tracking ref
-`refs/notes/origin/spelunk`. `memory list`, `context`, and `init` merge that
-tracking ref into your own notes, so *reading* teammates' memory needs no extra
-step. *Publishing* yours is opt-in: your memory stays local until you install the
-pre-push hook, and the init output names the command that does it. See
+`refs/notes/origin/spelunk`, and does a one-time best-effort fetch of that ref
+so a **single** `init` after a clone hydrates teammates' memory (the fetch is
+non-fatal, so `init` still succeeds offline). Thereafter every default read path
+— `memory list`, `memory search`, `memory show`, and `context` — folds the
+tracking ref into your own notes and imports it into `memory.db` when the notes
+ref has moved since the last import, so *reading* a teammate's newly-fetched
+memory needs no re-`init` and no extra step. *Publishing* yours is opt-in: your
+memory stays local until you install the pre-push hook, and the init output
+names the command that does it. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
 **Memory survives history rewrites:** `init` also points `notes.rewriteRef` at
@@ -58,10 +73,14 @@ rewrites are local. Note that `git merge --squash` and cherry-picking onto a
 divergent base still do not carry notes. See [Surviving history
 rewrites](memory.md#surviving-history-rewrites).
 
-If the repo already carries memory on `refs/notes/spelunk`, `init` also hydrates
-the new `memory.db` from those notes: every entry not already present is imported
+If the repo already carries memory on `refs/notes/spelunk` — whether written
+locally or just fetched by the step above — `init` also hydrates the new
+`memory.db` from those notes: every entry not already present is imported
 (idempotent, no embeddings), and it prints `Memory:  imported N entries from git
-notes` when any were imported. See [Project memory](memory.md) for details.
+notes` when any were imported. Because the refspec is configured and the notes
+ref fetched *before* this import, one `init` after a clone is enough; later
+fetches are picked up automatically by the read paths. See [Project
+memory](memory.md) for details.
 
 **Example:**
 

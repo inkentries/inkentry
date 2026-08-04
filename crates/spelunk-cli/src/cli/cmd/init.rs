@@ -193,15 +193,34 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 6b. Import git-notes memory into the project memory.db ────────────────
-    // Entries recorded on `refs/notes/spelunk` before init (git-notes fallback
-    // or write-through) are invisible to the SQLite-backed `memory list` until
-    // imported. No enclosing git repo → nothing to import. Non-fatal: a failure
-    // here must not sink init.
+    // ── 6b. Configure the notes fetch refspec, fetch, then import (ADR-077 D3) ─
+    // Order is load-bearing. On a fresh clone the tracking ref has never been
+    // fetched, so the import has to run AFTER the refspec is configured and a
+    // fetch has populated `refs/notes/origin/spelunk` — otherwise a single
+    // `init` imports nothing and the user needs a second one. The read-path
+    // import (ADR-077 D1) is the durable guarantee for anything fetched later;
+    // the one fetch here is what makes ONE `init` after clone self-sufficient.
+
+    // 1. Configure the `origin` notes fetch refspec (only inside a git repo).
+    let notes_lines = if git_root.is_some() {
+        configure_notes_refspec(&project_root).await
+    } else {
+        Vec::new()
+    };
+
+    // 2 + 3. Best-effort fetch of the notes ref, then merge + import into the
+    // project memory.db. Entries on `refs/notes/spelunk` (a teammate's, or a
+    // pre-init write-through) are invisible to the SQLite-backed reads until
+    // imported. No enclosing git repo → nothing to do. Non-fatal throughout: a
+    // failure here (offline fetch included) must not sink init.
     let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
         let mem_path = spelunk_dir.join("memory.db");
-        // Fold in anything a previous `git fetch` left on the tracking ref
-        // before hydrating, so teammates' entries import too (ADR-069 D5).
+        // Best-effort, bounded fetch: populates the tracking ref so the very
+        // first `init` after clone hydrates teammates' memory. Skipped without
+        // an `origin`; a failure (offline) is ignored.
+        fetch_notes_best_effort(&project_root).await;
+        // Fold anything on the tracking ref into the working ref before
+        // hydrating, so teammates' entries import too (ADR-069 D5 / ADR-077 D3).
         crate::storage::merge_tracking_notes(Some(git_root)).await;
         match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
             Ok(0) => None,
@@ -213,13 +232,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     } else {
         None
-    };
-
-    // ── 7. Configure git-notes refspec on `origin` (only inside a git repo) ───
-    let notes_lines = if git_root.is_some() {
-        configure_notes_refspec(&project_root).await
-    } else {
-        Vec::new()
     };
 
     // ── 8. Print success summary ──────────────────────────────────────────────
@@ -239,6 +251,17 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             "  Project: {}  (from {})",
             project_slug,
             config_path.display()
+        );
+    }
+    // D5 (ADR-077): `init` writes config.toml but takes no git action on it, so
+    // it must tell the user to commit it — the slug travels with the repo only
+    // once it is committed (a remote-less repo derives a per-clone slug, and a
+    // `--name` slug cannot be re-derived at all). A print informs; it never
+    // touches the index.
+    if wrote_slug {
+        println!(
+            "           wrote .spelunk/config.toml — commit it so your project slug \
+             travels with the repo"
         );
     }
     println!("  Hook:    {}", hook_status);
@@ -280,6 +303,57 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
     }
     if let Err(e) = std::fs::write(&gitignore_path, GITIGNORE) {
         eprintln!("Warning: could not write {}: {e}", gitignore_path.display());
+    }
+}
+
+/// Best-effort fetch of the notes ref so the first `init` after a clone
+/// hydrates teammates' memory (ADR-077 D3).
+///
+/// Bounded and non-fatal: skipped without an `origin`, fetches only the notes
+/// refspec (never branches), and a failure — offline, or an unreachable
+/// remote — is ignored so `init` still succeeds. A hard time budget with
+/// `kill_on_drop` keeps a black-holed remote from hanging `init`.
+async fn fetch_notes_best_effort(project_root: &std::path::Path) {
+    use std::process::Stdio;
+    const NOTES_FETCH_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
+    const FETCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+    let has_origin = tokio::process::Command::new("git")
+        .current_dir(project_root)
+        .args(["remote", "get-url", "origin"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !has_origin {
+        return;
+    }
+
+    let mut child = match tokio::process::Command::new("git")
+        .current_dir(project_root)
+        .args(["fetch", "origin", NOTES_FETCH_REFSPEC])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("init notes fetch skipped (spawn failed): {e}");
+            return;
+        }
+    };
+    // On timeout the future is dropped and `kill_on_drop` reaps the child, so a
+    // hung fetch cannot leave `init` waiting or orphan a git process.
+    if tokio::time::timeout(FETCH_BUDGET, child.wait())
+        .await
+        .is_err()
+    {
+        tracing::debug!("init notes fetch timed out; continuing (read paths still import later)");
     }
 }
 

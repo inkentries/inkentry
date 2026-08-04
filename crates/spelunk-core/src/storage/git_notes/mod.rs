@@ -14,9 +14,11 @@ mod backend_impl;
 mod fold;
 mod lock;
 mod publish;
+mod refs;
 
 pub use lock::{LOCK_WAIT_BUDGET, LockAttempt, NotesLock, lock_notes};
 pub use publish::{PublishOutcome, SkipReason, publish_notes};
+pub use refs::NotesRefs;
 
 // ── Carry config: surviving history rewrites ─────────────────────────────────
 

@@ -14,6 +14,12 @@ pub(super) async fn memory_show(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    // Fold in any fetched teammate notes before the lookup, so an entry a
+    // teammate just published is visible by id on the default path without a
+    // re-init (ADR-077 D1). Gated on notes-ref OID movement; local only, no
+    // network.
+    super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, backend_override).await;
+
     super::outbox::poll_and_apply(cfg, mem_path).await;
 
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;

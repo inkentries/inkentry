@@ -175,19 +175,20 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         None => crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db"),
     };
 
-    // `git fetch` lands teammates' notes on a tracking ref that nothing else
-    // merges, so without this they stay invisible (ADR-069 D5). Local-only, no
-    // network; a no-op outside a git repo or with nothing fetched.
-    crate::storage::merge_tracking_notes(None).await;
-
-    // Discovery nudge: warn once when unimported server.db notes exist.
-    crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
-    crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
-
     let be = match args.backend.as_str() {
         "git-notes" => Some("git-notes"),
         _ => None,
     };
+
+    // A teammate's `git fetch` lands their notes on a tracking ref that nothing
+    // else merges into `memory.db`, so without this they stay invisible on the
+    // default context path (ADR-077 D1). Gated on notes-ref OID movement; local
+    // only, no network; a no-op outside a git repo or with nothing fetched.
+    crate::cli::cmd::memory::reconcile::refresh_read_path_from_git_notes(&cfg, &mem_path, be).await;
+
+    // Discovery nudge: warn once when unimported server.db notes exist.
+    crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
+    crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
     let backend = open_memory_backend(&cfg, &mem_path, be).await?;
 
     let mut sections = collect_sections(

@@ -172,10 +172,22 @@ spelunk search "where do we validate auth tokens"
 project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
 git-derived identity (`host/owner/repo` when an `origin` remote exists, else
 `local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an
-explicit one for a repo without a remote. `.spelunk/config.toml` stays tracked,
-since it is meant to be committed and shared, so the whole team resolves to one
-project identity. An existing `project_id` or `.spelunk/.gitignore` is never
-overwritten, so re-running `init` is safe.
+explicit one for a repo without a remote.
+
+`init` writes `.spelunk/config.toml` but takes no git action on it — **commit it
+yourself** so your project slug travels with the repo and the whole team
+resolves to one project identity:
+
+```bash
+git add .spelunk/config.toml && git commit -m "Add spelunk project slug"
+```
+
+This is a step you own, not something `init` does for you. Without a committed
+slug, a fresh clone of a remote-less repo derives a different per-clone identity,
+and an explicit `--name` slug cannot be re-derived at all — either way the team
+would resolve to more than one project until the file is committed. An existing
+`project_id` or `.spelunk/.gitignore` is never overwritten, so re-running `init`
+is safe.
 
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
