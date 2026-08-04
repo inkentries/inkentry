@@ -399,6 +399,32 @@ mod tests {
         }
     }
 
+    // Anti-drift guard: every kind a retrieval path selects on must be a
+    // canonical kind that `memory add --kind` accepts. Retrieval selects on a
+    // subset of NOTE_KINDS (not every valid kind appears in the default context
+    // view), so this asserts membership, not equality — but it means a kind
+    // that `context` filters on can never be one `memory add` would reject,
+    // which is exactly the silent-drop the kind-validation fix closes.
+    #[test]
+    fn every_retrieval_kind_is_a_canonical_kind() {
+        use spelunk_core::storage::is_valid_note_kind;
+        for section in SECTIONS {
+            assert!(
+                is_valid_note_kind(section.kind),
+                "context section kind {:?} is not a canonical memory kind",
+                section.kind
+            );
+        }
+        for kind in PACK_PRIORITY {
+            assert!(
+                is_valid_note_kind(kind),
+                "pack-priority kind {kind:?} is not a canonical memory kind"
+            );
+        }
+        // `memory failures` selects on this kind; it must be canonical too.
+        assert!(is_valid_note_kind("antipattern"));
+    }
+
     #[test]
     fn default_limits_are_small_for_every_section() {
         // Regression: question/requirement defaults were once 500.

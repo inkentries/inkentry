@@ -25,6 +25,10 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk memory add --kind` now rejects an unknown kind instead of silently
+  storing it.** Previously any string was accepted, so a typo (`--kind
+  decisions`, `--kind desicion`) stored an entry with no retrieval path. The
+  default (`note`) and every valid kind are unaffected.
 - **`spelunk search --mode text` now scores query words as independent terms
   instead of matching the whole query as a contiguous phrase.** A multi-word
   query ranks chunks that contain the terms in **any order**, and a chunk
