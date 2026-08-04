@@ -414,8 +414,11 @@ pub(crate) fn maybe_warn_stale(db_path: &std::path::Path) {
     if !db_path.exists() {
         return;
     }
+    // In-project probe: indexed paths are relative to the project root, which is
+    // the cwd for these commands.
+    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if let Ok(db) = Database::open(db_path)
-        && let Ok(report) = db.sample_staleness_check(20)
+        && let Ok(report) = db.staleness_report(&root, Some(20))
         && report.stale > 0
     {
         eprintln!(
@@ -431,9 +434,11 @@ pub(crate) fn index_is_stale(db_path: &std::path::Path) -> bool {
     if !db_path.exists() {
         return false;
     }
+    // In-project probe: indexed paths are relative to the project root (cwd).
+    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     Database::open(db_path)
         .ok()
-        .and_then(|db| db.sample_staleness_check(20).ok())
+        .and_then(|db| db.staleness_report(&root, Some(20)).ok())
         .is_some_and(|report| report.stale > 0)
 }
 

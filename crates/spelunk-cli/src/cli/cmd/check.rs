@@ -44,25 +44,16 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     }
 
     let db = Database::open(&db_path)?;
-    let stored = db.all_file_hashes()?;
 
-    let mut stale: Vec<String> = Vec::new();
-
-    // Check every indexed file against its current on-disk hash.
-    for (path, stored_hash) in &stored {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let current = format!("{}", blake3::hash(&bytes));
-                if current != *stored_hash {
-                    stale.push(path.clone());
-                }
-            }
-            Err(_) => {
-                // File deleted since last index.
-                stale.push(path.clone());
-            }
-        }
-    }
+    // In-project probe: indexed paths are stored relative to the project root,
+    // which is the cwd for this command. Route through the shared
+    // `staleness_report` (with `None` = check every file) so `spelunk check` and
+    // the cross-project `links check` compute freshness through one identical
+    // code path against the right root.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let report = db.staleness_report(&cwd, None)?;
+    let total = report.sampled;
+    let stale = report.stale_paths;
 
     let effective = if args.porcelain {
         "porcelain"
@@ -70,14 +61,14 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
         crate::utils::effective_format(&args.format)
     };
     let fresh = stale.is_empty();
-    let last_indexed: Option<i64> = db.stats().ok().and_then(|s| s.last_indexed);
+    let last_indexed: Option<i64> = report.last_indexed_at;
 
     if effective == "porcelain" {
         let last_ts = last_indexed.unwrap_or(0);
         println!(
             "stale={} total={} last_indexed={}",
             stale.len(),
-            stored.len(),
+            total,
             last_ts
         );
         if args.files {
@@ -107,7 +98,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "fresh": fresh,
-                "indexed_files": stored.len(),
+                "indexed_files": total,
                 "stale_files": stale.len(),
                 "stale": stale,
                 "last_indexed_at": last_indexed,
@@ -117,7 +108,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
             }))?
         );
     } else if fresh {
-        println!("Index is up to date. ({} files indexed)", stored.len());
+        println!("Index is up to date. ({total} files indexed)");
     } else {
         println!("{} file(s) changed since last index:", stale.len());
         for p in &stale {

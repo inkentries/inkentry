@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk links check` / `spelunk links list` no longer report a freshly
+  indexed linked project as stale.** The cross-project freshness probe resolved
+  each linked index's stored (root-relative) file paths against the *linking*
+  project's working directory instead of the linked project's own root, so every
+  sampled file looked "changed" and the documented CI gate ("`links check` exits
+  non-zero if any linked index is stale or missing") false-failed on a clean
+  checkout. Both the cross-project probe and the in-project `spelunk check` now
+  run through one shared staleness function anchored at the correct project root,
+  so they agree: a freshly indexed linked project reports fresh, while a linked
+  project with a file modified since indexing still reports stale.
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
