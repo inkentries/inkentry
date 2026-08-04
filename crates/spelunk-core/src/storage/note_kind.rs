@@ -102,7 +102,10 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_naming_value_and_listing_kinds() {
         let err = parse_note_kind("decisions").expect_err("must reject");
-        assert!(err.contains("decisions"), "must name the offending value: {err}");
+        assert!(
+            err.contains("decisions"),
+            "must name the offending value: {err}"
+        );
         for kind in NOTE_KINDS {
             assert!(err.contains(kind), "must list valid kind {kind}: {err}");
         }

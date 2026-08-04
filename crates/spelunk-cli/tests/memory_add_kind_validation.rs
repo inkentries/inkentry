@@ -146,11 +146,7 @@ fn unknown_kind_is_rejected_and_stores_nothing() {
         .stderr(predicate::str::contains("note"))
         .stderr(predicate::str::contains("antipattern"));
 
-    assert_eq!(
-        row_count(&mem_db),
-        0,
-        "an unknown kind must store no row"
-    );
+    assert_eq!(row_count(&mem_db), 0, "an unknown kind must store no row");
 }
 
 // ── realistic typos are rejected (the exact silent-drop the bug caused) ────────
@@ -176,10 +172,6 @@ fn realistic_typo_kinds_are_rejected_and_store_nothing() {
             .stderr(predicate::str::contains(typo))
             .stderr(predicate::str::contains("decision"));
 
-        assert_eq!(
-            row_count(&mem_db),
-            0,
-            "typo kind {typo} must store no row"
-        );
+        assert_eq!(row_count(&mem_db), 0, "typo kind {typo} must store no row");
     }
 }
