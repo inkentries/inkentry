@@ -139,12 +139,39 @@ pub(super) async fn memory_add(
         }
     }
 
+    // ── Relate-to pre-flight ─────────────────────────────────────────────────
+    // Like the supersede pre-flight above, the `--relates-to` target is checked
+    // to exist *before* the new entry is written, so a bad id fails cleanly
+    // instead of leaving an orphaned new note with a dangling edge (SQLite's
+    // `memory_edges` FK is not enforced, so nothing else would catch it).
+    // Unlike supersede this does NOT require the target to be `active` and never
+    // archives it — a relates_to link is non-superseding. Skipped pre-init
+    // (there is no local graph to read or to hold an edge). Reuses/opens
+    // `backend_for_add` so the backend is opened at most once.
+    if let Some(rel_id) = args.relates_to
+        && !pre_init_notes
+    {
+        let backend = match backend_for_add.take() {
+            Some(backend) => backend,
+            None => open_memory_backend(cfg, mem_path, backend_override).await?,
+        };
+        let target_exists = backend.get(NoteId::from_i64(rel_id)).await?.is_some();
+        backend_for_add = Some(backend);
+        if !target_exists {
+            anyhow::bail!("No memory entry with id {rel_id} to relate to.");
+        }
+    }
+
     // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
     // server, or (with `--backend git-notes`) git notes itself. Pre-init there
     // is no primary; the write-through carrier below is the sole writer, so mint
     // an id the same way the backends do (`now_millis`). Reuses the backend
     // opened above for the E4 pre-flight read (`backend_for_add`) instead of
     // opening it twice.
+    // Held past the write so the `--relates-to` edge below can be recorded
+    // through the same backend handle (`None` pre-init, where there is no
+    // primary store).
+    let mut primary_backend: Option<Box<dyn MemoryBackend + Send>> = None;
     let (id, created) = if pre_init_notes {
         (NoteId::from_i64(now_millis()), true)
     } else {
@@ -152,7 +179,7 @@ pub(super) async fn memory_add(
             Some(backend) => backend,
             None => open_memory_backend(cfg, mem_path, backend_override).await?,
         };
-        backend
+        let added = backend
             .add(NoteInput {
                 kind: args.kind.clone(),
                 title: title.clone(),
@@ -164,8 +191,32 @@ pub(super) async fn memory_add(
                 valid_at,
                 supersedes: args.supersedes.clone(),
             })
-            .await?
+            .await?;
+        primary_backend = Some(backend);
+        added
     };
+
+    // ── Relate-to edge (mirror of --supersedes, without the archiving) ───────
+    // `--supersedes` writes a `supersedes` edge *and* archives OLD (handled
+    // inside `add_note_superseding` above); a `relates_to` link is
+    // non-superseding, so it only writes the edge and leaves both entries
+    // active. A single directed `relates_to` row is visible from BOTH
+    // endpoints: `get_edges` returns it as outgoing from the new entry and
+    // incoming to the target, so `memory graph`/`memory show` render it from
+    // either id. The edge lives in the local SQLite graph (`memory_edges`);
+    // the git-notes and remote backends report edge ops unsupported/no-op, so
+    // this is confined to the SQLite backend (and skipped pre-init). The
+    // target's existence was validated in the pre-flight above.
+    if let Some(rel_id) = args.relates_to
+        && let Some(backend) = primary_backend.as_ref()
+        && backend.backend_kind() == "sqlite"
+        && let Some(new_id) = id.as_i64()
+    {
+        backend
+            .add_edge(new_id, rel_id, "relates_to")
+            .await
+            .with_context(|| format!("recording relates_to edge to #{rel_id}"))?;
+    }
 
     // ── Git-notes write-through carrier ──────────────────────────────────────
     // The single write path to `refs/notes/spelunk` both pre- and post-`init`,

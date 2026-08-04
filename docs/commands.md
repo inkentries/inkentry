@@ -323,6 +323,13 @@ PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
 index, so it needs `spelunk index` first; `ast-grep` and the `auto` default
 work with no index at all.
 
+`text` mode scores the query's words as **independent terms** (BM25): a
+multi-word query ranks chunks that contain the terms in **any order** — a chunk
+containing more of the terms ranks above one containing fewer — rather than
+requiring them to appear as one contiguous phrase. Matching is case-insensitive
+and not stemmed (`bursts` matches `bursts`, not `burst`), following the FTS
+tokenizer.
+
 In `ast-grep` mode (and the `auto` fallback used when there is no index or
 server), a plain-string query matches case-insensitively as a substring of
 identifiers and file text, so `Billing` finds `BillingEntity`. A query
