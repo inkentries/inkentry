@@ -13,7 +13,10 @@ mod sync;
 mod wire_types;
 pub use cloud_api::CloudApiMemoryBackend;
 pub(super) use peer::{PeerDialect, detect_dialect};
-pub use sync::{BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry};
+pub use sync::{
+    BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
+    SyncEdgePush,
+};
 pub use wire_types::ConflictInfo;
 use wire_types::*;
 

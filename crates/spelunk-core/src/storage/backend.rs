@@ -33,11 +33,13 @@ pub trait MemoryBackend: Send {
     /// `MemoryStore::add_note`). Backends that cannot detect this (git notes,
     /// remote) always return `true`.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)>;
-    /// Semantic search over ALL notes (incl. archived), ordered by valid_at/created_at ASC.
+    /// Topic-filtered search over ALL notes (incl. archived), ordered by
+    /// valid_at/created_at ASC — the `memory timeline` retrieval.
     ///
-    /// `query`: the raw query text. Local backends search by `query_blob` (a
-    /// pre-computed embedding) and ignore it; the remote backend has no local
-    /// embedder and sends `query` to the server, which embeds it server-side.
+    /// `query`: the raw query text. The local backend filters by full-text
+    /// (FTS5) relevance to `query` and ignores `query_blob`, so `timeline`
+    /// needs no inference server; the remote backend has no local embedder and
+    /// sends `query` to the server, which embeds it server-side.
     async fn search_timeline(
         &self,
         query_blob: &[u8],
@@ -174,11 +176,11 @@ impl MemoryBackend for LocalMemoryBackend {
 
     async fn search_timeline(
         &self,
-        query_blob: &[u8],
-        _query: &str,
+        _query_blob: &[u8],
+        query: &str,
         limit: usize,
     ) -> Result<Vec<Note>> {
-        self.store.lock().await.search_timeline(query_blob, limit)
+        self.store.lock().await.search_timeline(query, limit)
     }
 
     async fn search(
