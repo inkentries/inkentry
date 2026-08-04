@@ -29,10 +29,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
   query, so with none reachable (including under `SPELUNK_NO_SERVER=1`) they now
-  emit the same locked-feature error as the other inference-backed commands
-  (`'spelunk search' requires spelunk-server. Run `spelunk server start` ...`)
-  and exit non-zero. Previously the empty fallback result read to an agent or
-  script as "this code does not exist" rather than "the feature is unavailable".
+  emit the same locked-feature error as the other inference-backed commands.
   The default `auto` mode is unchanged: it still announces its degradation and
   falls back to ast-grep.
 
