@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk plumbing embed` now finds a running `spelunk-server` the same way
+  every other server-backed command does.** It reported `requires
+  spelunk-server` even while a healthy local server was running and `search
+  --mode semantic` / `memory search` used it, because `embed` gated directly on
+  a configured `server_url` and skipped the capability-tier resolution the other
+  commands run. It now honours the auto-started / auto-discovered loopback
+  server (and `SPELUNK_SERVER_URL`), so `echo "text" | spelunk plumbing embed`
+  emits the vector whenever a ready server is reachable, restoring the
+  `echo … | spelunk plumbing embed --query | spelunk plumbing knn` pipeline. The
+  locked-feature error is unchanged when no server is reachable.
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
