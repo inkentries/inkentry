@@ -27,13 +27,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 - **`spelunk memory add --kind` now rejects an unknown kind instead of silently
   storing it.** Previously any string was accepted, so a typo (`--kind
-  decisions`, `--kind desicion`) stored an entry that no retrieval path —
-  `memory list --kind decision`, `spelunk context`, `memory failures` — could
-  ever surface, even though the command printed `Stored [...]` and exited 0.
-  `memory add` now validates `--kind` against the nine canonical kinds
-  (`decision`, `context`, `requirement`, `note`, `question`, `answer`,
-  `handoff`, `intent`, `antipattern`) and exits non-zero with a message naming
-  the offending value and listing the valid kinds; nothing is written. The
+  decisions`, `--kind desicion`) stored an entry with no retrieval path. The
   default (`note`) and every valid kind are unaffected.
 
 ## [0.9.6] — 2026-07-31
