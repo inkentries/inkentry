@@ -81,6 +81,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   to the entry's creation time, evaluated independently of archived status
   across list, text, semantic, and hybrid search. `--archived` again controls
   only the current-state view, orthogonal to `--as-of`.
+- **`spelunk memory timeline <topic>` now filters by the topic instead of
+  dumping the whole store.** The topic argument was ignored: every query
+  returned every entry (a nonsense topic returned the same set as a real one),
+  because the local path fetched the nearest-neighbour set sized to `--limit`
+  and, for any store smaller than the limit, that was simply everything. Timeline
+  now routes the topic through the same no-server full-text path as `memory
+  search --mode text`, so a topic returns only its related entries and an
+  unrelated topic returns none — still sorted ascending by `valid_at`, and still
+  including superseded/archived entries so you can see how understanding evolved.
+  As a bonus, `memory timeline` no longer needs a running inference server: it
+  matches on text, not embeddings.
 
 ## [0.9.6] — 2026-07-31
 
