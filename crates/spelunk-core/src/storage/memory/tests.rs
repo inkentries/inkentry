@@ -1696,6 +1696,155 @@ fn partially_migrated_legacy_memory_db_is_inferred_then_completed() {
     );
 }
 
+// ── point-in-time (`--as-of`) reconstruction ────────────────────────────────
+// The as-of filter must return exactly the entries live at instant T:
+//     COALESCE(valid_at, created_at) <= T AND (invalid_at IS NULL OR invalid_at > T)
+// independent of archived status. Two boundaries are pinned here:
+//   * an entry invalidated AFTER T (a since-superseded decision) is present at
+//     T without needing include_archived (the then-current decision);
+//   * an entry whose valid_at is AFTER T is absent — including the case where
+//     valid_at is inherited from created_at (stored NULL), which must be read
+//     as created_at, not as "always valid".
+// The `--archived` dimension must not change which historically-live entries
+// appear, so the list case is asserted with include_archived both false and
+// true.
+
+const DAY: i64 = 86_400;
+// 2026-01-01T00:00:00Z, the base every date below is offset from.
+const Y2026: i64 = 1_767_225_600;
+const JAN_15: i64 = Y2026 + 14 * DAY; // superseded decision becomes valid
+const MAR_01_NOON: i64 = Y2026 + 59 * DAY + 12 * 3_600; // probe, before the supersede
+const MAY_01: i64 = Y2026 + 120 * DAY; // probe, still before the supersede
+const JUN_20: i64 = Y2026 + 170 * DAY; // supersede instant: old.invalid_at, new.valid_at
+const JUL_01: i64 = Y2026 + 181 * DAY; // probe, after the supersede
+const AUG_04: i64 = Y2026 + 215 * DAY; // "today": the created-today entry's created_at
+
+fn id_set(notes: &[super::Note]) -> std::collections::BTreeSet<i64> {
+    notes.iter().filter_map(|n| n.id.as_i64()).collect()
+}
+
+// Seed a real supersede chain plus one entry created "today" with no explicit
+// valid_at. Returns (old_decision, new_decision, created_today). All three
+// share the FTS term "quorum" so search_text can retrieve every one.
+//
+//   old_decision   valid JAN_15, superseded → status archived, invalid_at JUN_20
+//   new_decision   valid JUN_20, active successor
+//   created_today  created AUG_04, valid_at stored NULL (inherits created_at)
+fn seed_as_of_chain(store: &MemoryStore) -> (i64, i64, i64) {
+    let (old_id, _) = store
+        .add_note(
+            "decision",
+            "Cache writes synchronously",
+            "quorum write-through",
+            &[],
+            &[],
+            None,
+            Some(JAN_15),
+        )
+        .unwrap();
+    let (new_id, _) = store
+        .add_note_superseding(
+            "decision",
+            "Cache writes asynchronously",
+            "quorum write-behind",
+            &[],
+            &[],
+            Some(JUN_20),
+            old_id,
+        )
+        .unwrap();
+    // add_note_superseding stamps the old entry's invalid_at with wall-clock
+    // now(); pin it to the historical supersede instant so the point-in-time
+    // boundary is deterministic. This is exactly the archived + invalid_at
+    // state a reconciled/harvested supersede leaves behind.
+    store
+        .conn
+        .execute(
+            "UPDATE notes SET invalid_at = ?1 WHERE id = ?2",
+            rusqlite::params![JUN_20, old_id],
+        )
+        .unwrap();
+    // Created "today" with no --valid-at: valid_at is stored NULL and the
+    // as-of filter must treat it as created_at, not as "always valid".
+    let (today_id, _) = store
+        .add_note_with_created_at(
+            "decision",
+            "Cache eviction policy",
+            "quorum lru",
+            &[],
+            &[],
+            None,
+            "active",
+            AUG_04,
+        )
+        .unwrap();
+    (old_id, new_id, today_id)
+}
+
+// list --as-of must reconstruct the exact set live at T, and that set must not
+// depend on include_archived (the archived flag controls the *current* view,
+// never which historically-live entries a point-in-time query returns).
+#[test]
+fn list_as_of_reconstructs_point_in_time_ignoring_archived() {
+    let store = open_store();
+    let (old_id, new_id, today_id) = seed_as_of_chain(&store);
+
+    // (as_of, expected live ids) for a `--kind decision` listing.
+    let cases: &[(i64, &[i64])] = &[
+        // Before the supersede: the old decision is the then-current one; the
+        // successor is not yet valid and the created-today entry is future.
+        (MAR_01_NOON, &[old_id]),
+        (MAY_01, &[old_id]),
+        // After the supersede: the old decision is gone (invalid_at <= T), the
+        // successor is live, the created-today entry is still future.
+        (JUL_01, &[new_id]),
+        // "Today": the created-today entry finally becomes valid; the old
+        // decision stays gone.
+        (AUG_04, &[new_id, today_id]),
+    ];
+
+    for (as_of, expected) in cases {
+        let want: std::collections::BTreeSet<i64> = expected.iter().copied().collect();
+        for include_archived in [false, true] {
+            let got = id_set(
+                &store
+                    .list_filtered(Some("decision"), None, 100, include_archived, Some(*as_of))
+                    .unwrap(),
+            );
+            assert_eq!(
+                got, want,
+                "as_of={as_of} include_archived={include_archived}: point-in-time \
+                 set must match and must not depend on archived status"
+            );
+        }
+    }
+}
+
+// search --as-of (text mode) must apply the same corrected filter: a
+// since-superseded (archived) entry live at T is returned, and an entry whose
+// inherited valid_at is after T is not. search_text has no include_archived
+// flag, so as_of alone must surface the archived-but-then-live entry.
+#[test]
+fn search_text_as_of_reconstructs_point_in_time_ignoring_archived() {
+    let store = open_store();
+    let (old_id, new_id, today_id) = seed_as_of_chain(&store);
+
+    let cases: &[(i64, &[i64])] = &[
+        (MAR_01_NOON, &[old_id]),
+        (JUL_01, &[new_id]),
+        (AUG_04, &[new_id, today_id]),
+    ];
+    for (as_of, expected) in cases {
+        let want: std::collections::BTreeSet<i64> = expected.iter().copied().collect();
+        let got = id_set(&store.search_text("quorum", 50, Some(*as_of)).unwrap());
+        assert_eq!(
+            got, want,
+            "search_text as_of={as_of}: point-in-time set must match regardless \
+             of archived status"
+        );
+    }
+}
+
 // Acceptance criterion 5: a genuine step failure (not a tolerated
 // duplicate-column error) propagates out of `open` rather than being
 // swallowed by the "already applied" guard.
