@@ -26,14 +26,6 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
-  It was clearing the cloud token pair (the `[auth]` block written by `spelunk
-  login`) as a side effect of clearing the one named self-hosted server key,
-  forcing an unnecessary browser device login to get back in. `--server <url>`
-  now clears only that one origin's key, `--servers` clears only every stored
-  server key, and both leave the cloud token pair intact; bare `spelunk logout`
-  still clears only the cloud pair. Each form now touches exactly one
-  credential store. The `--server`/`--servers` help text no longer says
-  "Also clear…", which implied the cloud pair was cleared too.
 - **`spelunk memory list --as-of` and `spelunk memory search --as-of` now
   reconstruct the past correctly, without needing `--archived`.** A
   point-in-time query asks "what was the state of memory at instant T", so it
