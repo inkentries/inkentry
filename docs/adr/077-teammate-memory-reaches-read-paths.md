@@ -1,6 +1,5 @@
 # ADR-077: Teammate memory reaches read paths — import the notes carrier into `memory.db` on read, gated by a notes-ref OID marker
 
-**Status:** Proposed
 **Date:** 2026-08-04
 **Deciders:** founder (Johan); architect
 **Relationship to prior ADRs:** completes
