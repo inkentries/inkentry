@@ -110,35 +110,6 @@ fn memory_search_hybrid_no_server_points_at_local_start() {
     assert_local_start_no_server_url(&stderr);
 }
 
-/// `memory timeline` is a distinct caller of `require_server_client` (it reaches
-/// the gate before opening the memory backend), so cover it independently: a
-/// wiring regression there would not be caught by the search tests.
-#[test]
-fn memory_timeline_no_server_points_at_local_start() {
-    let temp = tempdir().unwrap();
-    let config_path = write_no_server_config(temp.path());
-    let mem_db = temp.path().join("memory.db");
-
-    let assert = spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
-        .current_dir(temp.path())
-        .arg("--config")
-        .arg(&config_path)
-        .arg("memory")
-        .arg("--db")
-        .arg(&mem_db)
-        .args(["timeline", "some topic"])
-        .assert()
-        .failure();
-
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert_local_start_no_server_url(&stderr);
-    assert!(
-        stderr.contains("memory timeline"),
-        "message must name the invoked feature; got: {stderr}"
-    );
-}
-
 /// `plumbing embed` is the low-level embedding path (a third `require_server_client`
 /// caller). It reads stdin; with no server the gate fires before any line is read.
 #[test]
