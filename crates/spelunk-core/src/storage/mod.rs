@@ -3,6 +3,7 @@ pub mod db;
 pub mod entity_id;
 pub mod git_notes;
 pub mod memory;
+pub mod note_kind;
 pub mod note_record;
 pub mod remote;
 
@@ -28,6 +29,7 @@ pub use git_notes::{
 };
 pub use graph::GraphEdge;
 pub use memory::{DedupeSummary, MemoryEdge, MemoryStore, NoteId, SyncRow};
+pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{NoteRecord, now_millis, now_secs};
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, RemoteEntry,

@@ -32,6 +32,42 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   emit the same locked-feature error as the other inference-backed commands.
   The default `auto` mode is unchanged: it still announces its degradation and
   falls back to ast-grep.
+- **`spelunk memory add --relates-to <id>` now records the relationship.** The
+  flag was accepted and the entry stored, but it was never wired to the edge
+  layer, so no `relates_to` edge was written and neither `memory graph` nor
+  `memory show` showed any link from either side. It now creates a `relates_to`
+  edge that is visible from both entries, and — unlike `--supersedes` — archives
+  neither of them (a relates_to link is non-superseding). A `--relates-to`
+  pointing at an id that doesn't exist is now rejected before anything is
+  written, rather than storing an entry with a dangling link.
+- **`spelunk memory add --kind` now rejects an unknown kind instead of silently
+  storing it.** Previously any string was accepted, so a typo (`--kind
+  decisions`, `--kind desicion`) stored an entry with no retrieval path. The
+  default (`note`) and every valid kind are unaffected.
+- **`spelunk search --mode text` now scores query words as independent terms
+  instead of matching the whole query as a contiguous phrase.** A multi-word
+  query ranks chunks that contain the terms in **any order**, and a chunk
+  containing more of the terms ranks above one containing fewer (BM25
+  bag-of-words, as documented). Previously the raw query was passed to FTS5 as a
+  single quoted phrase, so word order alone decided whether there was a hit —
+  e.g. `leaky bucket` matched a chunk but `bucket leaky` returned nothing.
+  Matching stays case-insensitive and unstemmed (`bursts` matches `bursts`, not
+  `burst`), following the FTS tokenizer.
+- **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
+- **`spelunk memory list --as-of` and `spelunk memory search --as-of` now
+  reconstruct the past correctly, without needing `--archived`.** A
+  point-in-time query asks "what was the state of memory at instant T", so it
+  must return every entry that was live at T regardless of its status today.
+  Two defects broke that. An entry superseded or archived *after* T was hidden
+  unless you also passed `--archived`, so the then-current decision went
+  missing from the very query meant to surface it. And an entry created with no
+  explicit `--valid-at` stored a NULL validity start, which the filter read as
+  "valid since forever", so entries created *after* T still appeared in queries
+  about the past. The as-of window is now exactly `valid_at <= T AND
+  (invalid_at IS NULL OR invalid_at > T)`, with a missing `valid_at` defaulting
+  to the entry's creation time, evaluated independently of archived status
+  across list, text, semantic, and hybrid search. `--archived` again controls
+  only the current-state view, orthogonal to `--as-of`.
 
 ## [0.9.6] — 2026-07-31
 
