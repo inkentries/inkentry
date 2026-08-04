@@ -25,6 +25,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A partial `[auth]` table in `config.toml` no longer bricks every command.**
+  `[auth]` is login-managed, but `--org` is an optional scoping flag and
+  hand-editing the config is a documented workflow, so a login without an org
+  (no `org_id`) or a trimmed table left the CLI unable to run anything —
+  including commands that need no credentials (`status`, `search`, `context`).
+  Every `[auth]` field is now optional: a missing/empty `access_token` reads as
+  "not logged in" (no bearer sent), a missing `expires_at` as expired, and a
+  missing `org_id` applies no scoping, instead of a hard parse error.
+- **A `config.toml` that fails to parse now names the file, the offending key,
+  and the remedy** instead of a bare, unactionable `Error: parsing config.toml`.
+  An unrecognised `mode` value names the bad value and lists the valid modes
+  (`offline`, `local_first`, `cloud_first`), matching the `SPELUNK_MODE`
+  message.
 - **`spelunk memory add --kind` now rejects an unknown kind instead of silently
   storing it.** Previously any string was accepted, so a typo (`--kind
   decisions`, `--kind desicion`) stored an entry with no retrieval path. The
