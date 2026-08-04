@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk check --format porcelain` now emits only the stable `key=value`
+  summary on stdout.** It previously also wrote the human diagnostics — the
+  `Server: … ✓` reachability line, the "Active agent sessions" list, and the
+  `⚠ Overlap:` warning (with their Unicode glyphs) — to the same stdout stream,
+  so a script doing `spelunk check --format porcelain | while read -r line`
+  had to filter out prose. Those diagnostics now go to **stderr** in porcelain
+  mode, keeping the signal for a human watching the terminal while leaving
+  stdout machine-parseable. Text (human) mode is unchanged: the diagnostics
+  still print to stdout. Exit codes are unchanged in both modes (0 fresh,
+  1 stale).
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
