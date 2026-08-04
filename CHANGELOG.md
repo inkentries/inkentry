@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk plumbing embed` now finds a running `spelunk-server` the same way
+  every other server-backed command does.** It reported `requires
+  spelunk-server` even while a healthy local server was running and `search
+  --mode semantic` / `memory search` used it, because `embed` gated directly on
+  a configured `server_url` and skipped the capability-tier resolution the other
+  commands run. It now honours the auto-started / auto-discovered loopback
+  server (and `SPELUNK_SERVER_URL`), so `echo "text" | spelunk plumbing embed`
+  emits the vector whenever a ready server is reachable, restoring the
+  `echo … | spelunk plumbing embed --query | spelunk plumbing knn` pipeline. The
+  locked-feature error is unchanged when no server is reachable.
 - **`spelunk memory harvest` no longer crashes on a repo with fewer than 11
   commits.** The default `HEAD~10..HEAD` range named `HEAD~10`, a commit that
   does not exist in a shallow history, so `git log` aborted with a raw
