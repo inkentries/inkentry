@@ -6,10 +6,7 @@
 //! founder-review correction): a developer recovering from a broken cloud
 //! login should not silently lose the server key(s) they use on other
 //! projects. Clearing those is an explicit, separate action via `--servers`
-//! (all of them) or `--server <url>` (just one). The scoping is symmetric:
-//! those two forms clear **only** server keys and leave the cloud `[auth]`
-//! pair untouched, so clearing one self-hosted key never signs the developer
-//! out of spelunk.cloud. Each form touches exactly one credential store.
+//! (all of them) or `--server <url>` (just one).
 
 use anyhow::{Context as _, Result};
 use clap::Args;
