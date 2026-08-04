@@ -38,6 +38,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   An unrecognised `mode` value names the bad value and lists the valid modes
   (`offline`, `local_first`, `cloud_first`), matching the `SPELUNK_MODE`
   message.
+- **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
+  actionable error when no server is reachable, instead of silently reporting
+  "No results found." and exiting 0.** These modes need a server to embed the
+  query, so with none reachable (including under `SPELUNK_NO_SERVER=1`) they now
+  emit the same locked-feature error as the other inference-backed commands.
+  The default `auto` mode is unchanged: it still announces its degradation and
+  falls back to ast-grep.
+- **`spelunk memory add --relates-to <id>` now records the relationship.** The
+  flag was accepted and the entry stored, but it was never wired to the edge
+  layer, so no `relates_to` edge was written and neither `memory graph` nor
+  `memory show` showed any link from either side. It now creates a `relates_to`
+  edge that is visible from both entries, and — unlike `--supersedes` — archives
+  neither of them (a relates_to link is non-superseding). A `--relates-to`
+  pointing at an id that doesn't exist is now rejected before anything is
+  written, rather than storing an entry with a dangling link.
 - **`spelunk memory add --kind` now rejects an unknown kind instead of silently
   storing it.** Previously any string was accepted, so a typo (`--kind
   decisions`, `--kind desicion`) stored an entry with no retrieval path. The
