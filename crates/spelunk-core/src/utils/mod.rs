@@ -402,10 +402,7 @@ mod tests {
     fn fts5_match_multi_word_joins_literal_terms_with_or() {
         // Each word is a separate quoted literal combined with OR, so the query
         // matches the terms independently rather than as one ordered phrase.
-        assert_eq!(
-            fts5_match_query("leaky bucket"),
-            "\"leaky\" OR \"bucket\""
-        );
+        assert_eq!(fts5_match_query("leaky bucket"), "\"leaky\" OR \"bucket\"");
         assert_eq!(
             fts5_match_query("token bucket bursts"),
             "\"token\" OR \"bucket\" OR \"bursts\""
@@ -443,7 +440,10 @@ mod tests {
             fts5_match_query("say\"hi there"),
             "\"say\"\"hi\" OR \"there\""
         );
-        assert_eq!(fts5_match_query("be\0fore after"), "\"before\" OR \"after\"");
+        assert_eq!(
+            fts5_match_query("be\0fore after"),
+            "\"before\" OR \"after\""
+        );
     }
 
     // ── strip_ansi ────────────────────────────────────────────────────────────

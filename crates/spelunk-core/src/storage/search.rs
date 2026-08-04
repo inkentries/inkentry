@@ -360,7 +360,9 @@ mod tests {
         )
         .expect("insert chunk");
 
-        let hits = db.search_text("token bucket bursts", 10).expect("search ok");
+        let hits = db
+            .search_text("token bucket bursts", 10)
+            .expect("search ok");
 
         // Both chunks share the term "bucket", so both are candidates under
         // bag-of-words scoring.
