@@ -800,10 +800,12 @@ impl GitNotesBackend {
             if kind_filter.is_some_and(|k| record.kind != k) {
                 return false;
             }
-            if !include_archived && record.status == "archived" {
-                return false;
-            }
             if let Some(ts) = as_of {
+                // A point-in-time query is governed entirely by the temporal
+                // window, independent of archived status: an entry archived or
+                // superseded AFTER T was live at T and must be returned. So the
+                // archived gate below is skipped whenever `as_of` is set, and
+                // `include_archived` only affects the current-view listing.
                 let effective = record.valid_at.unwrap_or(record.created_at);
                 if effective > ts {
                     return false;
@@ -811,6 +813,10 @@ impl GitNotesBackend {
                 if record.invalid_at.is_some_and(|ia| ia <= ts) {
                     return false;
                 }
+                return true;
+            }
+            if !include_archived && record.status == "archived" {
+                return false;
             }
             true
         });
