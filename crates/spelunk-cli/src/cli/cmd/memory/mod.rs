@@ -96,8 +96,15 @@ pub struct MemoryAddArgs {
     #[arg(long)]
     pub from_url: Option<String>,
 
-    /// Kind: decision, context, requirement, note, question, answer, handoff, intent, antipattern
-    #[arg(short, long, default_value = "note")]
+    /// Kind: decision, context, requirement, note, question, answer, handoff, intent, antipattern.
+    /// An unknown kind is rejected (it would be invisible to `memory list`,
+    /// `context`, and `memory failures`).
+    #[arg(
+        short,
+        long,
+        default_value = "note",
+        value_parser = spelunk_core::storage::parse_note_kind
+    )]
     pub kind: String,
 
     /// Comma-separated tags (e.g. auth,database)
