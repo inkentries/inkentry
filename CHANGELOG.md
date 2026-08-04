@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk memory harvest` no longer crashes on a repo with fewer than 11
+  commits.** The default `HEAD~10..HEAD` range named `HEAD~10`, a commit that
+  does not exist in a shallow history, so `git log` aborted with a raw
+  `fatal: bad revision 'HEAD~10..HEAD'`. The range is now clamped to the commits
+  that actually exist (the most recent `min(10, commit_count)`, root included),
+  so harvest works on any repo with at least one commit. A custom `--git-range`
+  or `--branch` is passed through unchanged. Harvest also runs its
+  LLM-capability precheck before resolving the git range now, matching `spelunk
+  explore`: with no LLM configured the actionable locked-feature message is
+  shown regardless of repo size, rather than a raw git error on a short history.
 - **A partial `[auth]` table in `config.toml` no longer bricks every command.**
   `[auth]` is login-managed, but `--org` is an optional scoping flag and
   hand-editing the config is a documented workflow, so a login without an org
