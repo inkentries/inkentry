@@ -423,7 +423,12 @@ impl MemoryStore {
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
         let limit = limit.min(500);
-        let status_clause = if include_archived {
+        // A point-in-time (`as_of`) query is governed entirely by the temporal
+        // window below, independent of archived status: an entry archived or
+        // superseded AFTER T was live at T and must be listed, so the
+        // active-only gate is dropped whenever `as_of` is set. `include_archived`
+        // then only affects the current-view listing (`as_of` = None).
+        let status_clause = if include_archived || as_of.is_some() {
             ""
         } else {
             "AND status = 'active'"
@@ -444,8 +449,12 @@ impl MemoryStore {
             params.push(Box::new(format!("{prefix}%")));
         }
         if let Some(ts) = as_of {
+            // `valid_at` is stored NULL when no explicit --valid-at was given;
+            // such an entry became valid at created_at, so COALESCE makes the
+            // lower boundary use created_at rather than treating NULL as "valid
+            // since forever" (which let future-dated entries leak into the past).
             conditions.push_str(&format!(
-                " AND (valid_at IS NULL OR valid_at <= ?{p}) AND (invalid_at IS NULL OR invalid_at > ?{p})",
+                " AND COALESCE(valid_at, created_at) <= ?{p} AND (invalid_at IS NULL OR invalid_at > ?{p})",
                 p = params.len() + 1
             ));
             params.push(Box::new(ts));
