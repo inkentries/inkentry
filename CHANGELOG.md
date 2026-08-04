@@ -23,6 +23,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   upgrade the CLI to match. See `docs/version-skew.md`. The `GET
   /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
 
+### Fixed
+
+- **`spelunk memory add --relates-to <id>` now records the relationship.** The
+  flag was accepted and the entry stored, but it was never wired to the edge
+  layer, so no `relates_to` edge was written and neither `memory graph` nor
+  `memory show` showed any link from either side. It now creates a `relates_to`
+  edge that is visible from both entries, and — unlike `--supersedes` — archives
+  neither of them (a relates_to link is non-superseding). A `--relates-to`
+  pointing at an id that doesn't exist is now rejected before anything is
+  written, rather than storing an entry with a dangling link.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added
