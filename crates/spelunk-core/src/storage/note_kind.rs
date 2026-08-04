@@ -54,8 +54,8 @@ pub fn parse_note_kind(kind: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    /// The canonical set is exactly the nine documented kinds — pins the
-    /// contract so neither an accidental addition nor a removal slips through.
+    // The canonical set is exactly the nine documented kinds — pins the
+    // contract so neither an accidental addition nor a removal slips through.
     #[test]
     fn canonical_set_is_exactly_the_nine_documented_kinds() {
         let mut got = NOTE_KINDS.to_vec();
@@ -96,9 +96,9 @@ mod tests {
         }
     }
 
-    /// The rejection message must name the offending value and list every valid
-    /// kind, so the CLI (and any other caller) can surface a self-correcting
-    /// error.
+    // The rejection message must name the offending value and list every valid
+    // kind, so the CLI (and any other caller) can surface a self-correcting
+    // error.
     #[test]
     fn parse_rejects_unknown_naming_value_and_listing_kinds() {
         let err = parse_note_kind("decisions").expect_err("must reject");
