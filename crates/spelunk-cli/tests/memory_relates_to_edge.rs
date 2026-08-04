@@ -96,21 +96,17 @@ fn note_row_count(mem_db: &Path) -> i64 {
 
 fn note_status(mem_db: &Path, id: i64) -> String {
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row(
-        "SELECT status FROM notes WHERE id = ?1",
-        [id],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT status FROM notes WHERE id = ?1", [id], |r| {
+        r.get::<_, String>(0)
+    })
     .expect("note status")
 }
 
 fn superseded_by(mem_db: &Path, id: i64) -> Option<i64> {
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row(
-        "SELECT superseded_by FROM notes WHERE id = ?1",
-        [id],
-        |r| r.get::<_, Option<i64>>(0),
-    )
+    conn.query_row("SELECT superseded_by FROM notes WHERE id = ?1", [id], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
     .expect("superseded_by")
 }
 
@@ -129,8 +125,10 @@ fn total_edges(mem_db: &Path) -> i64 {
         return 0;
     }
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row("SELECT COUNT(*) FROM memory_edges", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0)
+    conn.query_row("SELECT COUNT(*) FROM memory_edges", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .unwrap_or(0)
 }
 
 // `memory graph <id> --format json` parsed into a serde_json Value.
@@ -154,9 +152,8 @@ fn has_edge(edges: &Value, endpoint_field: &str, other: i64, kind: &str) -> bool
     edges
         .as_array()
         .map(|arr| {
-            arr.iter().any(|e| {
-                e[endpoint_field].as_i64() == Some(other) && e["kind"] == kind
-            })
+            arr.iter()
+                .any(|e| e[endpoint_field].as_i64() == Some(other) && e["kind"] == kind)
         })
         .unwrap_or(false)
 }
@@ -191,8 +188,16 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
     );
 
     // Non-superseding: neither entry archived, neither superseded_by set.
-    assert_eq!(note_status(&mem_db, target), "active", "target must stay active");
-    assert_eq!(note_status(&mem_db, linker), "active", "linker must stay active");
+    assert_eq!(
+        note_status(&mem_db, target),
+        "active",
+        "target must stay active"
+    );
+    assert_eq!(
+        note_status(&mem_db, linker),
+        "active",
+        "linker must stay active"
+    );
     assert_eq!(superseded_by(&mem_db, target), None);
     assert_eq!(superseded_by(&mem_db, linker), None);
 
@@ -241,7 +246,11 @@ fn relates_to_a_missing_target_is_rejected_and_stores_nothing() {
         0,
         "a rejected --relates-to must not leave an orphaned entry"
     );
-    assert_eq!(total_edges(&mem_db), 0, "no edge on a rejected --relates-to");
+    assert_eq!(
+        total_edges(&mem_db),
+        0,
+        "no edge on a rejected --relates-to"
+    );
 }
 
 // ── (3) contrast guard: --supersedes still archives, --relates-to does not ────
