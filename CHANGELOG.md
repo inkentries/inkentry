@@ -25,6 +25,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
+  pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
+  the SQLite files and logs but not the lock, so a `git add -A` staged and
+  committed `index.lock.pid` — which holds a machine-local process id that churns
+  and conflicts across machines. New projects ignore both via an `index.lock*`
+  line. Existing projects (whose `.gitignore` init never overwrites) can add it
+  manually:
+
+  ```sh
+  echo "index.lock*" >> .spelunk/.gitignore
+  ```
 - **`spelunk plumbing embed` now finds a running `spelunk-server` the same way
   every other server-backed command does.** It reported `requires
   spelunk-server` even while a healthy local server was running and `search
