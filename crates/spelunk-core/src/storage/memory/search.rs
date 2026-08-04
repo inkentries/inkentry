@@ -8,10 +8,16 @@ impl MemoryStore {
     /// When `as_of` is `Some(ts)`, only entries valid at that Unix timestamp are returned.
     pub fn search(&self, query_blob: &[u8], limit: usize, as_of: Option<i64>) -> Result<Vec<Note>> {
         let limit = limit.min(100);
-        let as_of_clause = if as_of.is_some() {
-            "AND (n.valid_at IS NULL OR n.valid_at <= ?2) AND (n.invalid_at IS NULL OR n.invalid_at > ?2)"
+        // A point-in-time query is governed entirely by the temporal window,
+        // independent of archived status: an entry superseded/archived AFTER T
+        // was live at T and must be returned. So with `as_of` set the
+        // active-only gate is dropped and the window alone filters. COALESCE
+        // reads a NULL valid_at (no explicit --valid-at) as created_at rather
+        // than treating NULL as "valid since forever".
+        let where_clause = if as_of.is_some() {
+            "WHERE COALESCE(n.valid_at, n.created_at) <= ?2 AND (n.invalid_at IS NULL OR n.invalid_at > ?2)"
         } else {
-            ""
+            "WHERE n.status = 'active'"
         };
         let sql = format!(
             "WITH knn AS (
@@ -25,8 +31,7 @@ impl MemoryStore {
                     n.valid_at, n.invalid_at, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
-             WHERE  n.status = 'active'
-             {as_of_clause}
+             {where_clause}
              ORDER  BY k.distance"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -45,10 +50,13 @@ impl MemoryStore {
     /// When `as_of` is `Some(ts)`, only entries valid at that Unix timestamp are returned.
     pub fn search_text(&self, query: &str, limit: usize, as_of: Option<i64>) -> Result<Vec<Note>> {
         let limit = limit.min(1_000);
-        let as_of_clause = if as_of.is_some() {
-            "AND (n.valid_at IS NULL OR n.valid_at <= ?2) AND (n.invalid_at IS NULL OR n.invalid_at > ?2)"
+        // See `search`: with `as_of` set the temporal window filters on its own,
+        // independent of archived status, so a since-superseded entry live at T
+        // is still retrieved; COALESCE reads a NULL valid_at as created_at.
+        let live_clause = if as_of.is_some() {
+            "COALESCE(n.valid_at, n.created_at) <= ?2 AND (n.invalid_at IS NULL OR n.invalid_at > ?2)"
         } else {
-            ""
+            "n.status = 'active'"
         };
         let sql = format!(
             "SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
@@ -57,8 +65,7 @@ impl MemoryStore {
              FROM memory_fts
              JOIN notes n ON memory_fts.rowid = n.id
              WHERE memory_fts MATCH ?1
-               AND n.status = 'active'
-             {as_of_clause}
+               AND {live_clause}
              ORDER BY bm25_score
              LIMIT {limit}"
         );
@@ -312,20 +319,60 @@ mod tests {
         let store = open_store();
         // Topic A: retry backoff. valid_at chosen out of order (300, 100, 200).
         store
-            .add_note("decision", "Retry backoff", "use exponential backoff on retry", &[], &[], None, Some(300))
+            .add_note(
+                "decision",
+                "Retry backoff",
+                "use exponential backoff on retry",
+                &[],
+                &[],
+                None,
+                Some(300),
+            )
             .unwrap();
         store
-            .add_note("context", "Backoff ceiling", "cap the retry backoff delay", &[], &[], None, Some(100))
+            .add_note(
+                "context",
+                "Backoff ceiling",
+                "cap the retry backoff delay",
+                &[],
+                &[],
+                None,
+                Some(100),
+            )
             .unwrap();
         store
-            .add_note("note", "Jitter", "add jitter to the backoff schedule", &[], &[], None, Some(200))
+            .add_note(
+                "note",
+                "Jitter",
+                "add jitter to the backoff schedule",
+                &[],
+                &[],
+                None,
+                Some(200),
+            )
             .unwrap();
         // Topic B: pagination. Unrelated — must never surface for a backoff query.
         store
-            .add_note("decision", "Cursor pagination", "paginate results with an opaque cursor", &[], &[], None, Some(150))
+            .add_note(
+                "decision",
+                "Cursor pagination",
+                "paginate results with an opaque cursor",
+                &[],
+                &[],
+                None,
+                Some(150),
+            )
             .unwrap();
         store
-            .add_note("context", "Page size", "clamp the pagination page size to 100", &[], &[], None, Some(250))
+            .add_note(
+                "context",
+                "Page size",
+                "clamp the pagination page size to 100",
+                &[],
+                &[],
+                None,
+                Some(250),
+            )
             .unwrap();
         store
     }
@@ -391,12 +438,31 @@ mod tests {
     fn search_timeline_includes_archived_entries() {
         let store = open_store();
         let (id, _) = store
-            .add_note("decision", "Old backoff policy", "retry backoff was linear", &[], &[], None, Some(100))
+            .add_note(
+                "decision",
+                "Old backoff policy",
+                "retry backoff was linear",
+                &[],
+                &[],
+                None,
+                Some(100),
+            )
             .unwrap();
         store
-            .add_note("decision", "New backoff policy", "retry backoff is now exponential", &[], &[], None, Some(200))
+            .add_note(
+                "decision",
+                "New backoff policy",
+                "retry backoff is now exponential",
+                &[],
+                &[],
+                None,
+                Some(200),
+            )
             .unwrap();
-        assert!(store.archive(id).expect("archive ok"), "note should archive");
+        assert!(
+            store.archive(id).expect("archive ok"),
+            "note should archive"
+        );
 
         let timeline = store.search_timeline("backoff", 20).expect("timeline ok");
         assert_eq!(
