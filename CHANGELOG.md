@@ -23,6 +23,20 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   upgrade the CLI to match. See `docs/version-skew.md`. The `GET
   /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
 
+### Fixed
+
+- **`spelunk memory timeline <topic>` now filters by the topic instead of
+  dumping the whole store.** The topic argument was ignored: every query
+  returned every entry (a nonsense topic returned the same set as a real one),
+  because the local path fetched the nearest-neighbour set sized to `--limit`
+  and, for any store smaller than the limit, that was simply everything. Timeline
+  now routes the topic through the same no-server full-text path as `memory
+  search --mode text`, so a topic returns only its related entries and an
+  unrelated topic returns none — still sorted ascending by `valid_at`, and still
+  including superseded/archived entries so you can see how understanding evolved.
+  As a bonus, `memory timeline` no longer needs a running inference server: it
+  matches on text, not embeddings.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added
