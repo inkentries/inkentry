@@ -472,14 +472,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
 
-        // Hermetic git: drop global/system config so a developer's
-        // core.excludesfile can neither mask nor manufacture the ignore.
+        // Hermetic git: the shared fixture drops global/system config (and
+        // author identity) so a developer's core.excludesfile can neither mask
+        // nor manufacture the ignore.
+        crate::cli::cmd::test_support::isolate_git_config();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
                 .current_dir(repo)
                 .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .output()
                 .expect("spawn git")
         };
