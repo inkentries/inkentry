@@ -29,6 +29,21 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   storing it.** Previously any string was accepted, so a typo (`--kind
   decisions`, `--kind desicion`) stored an entry with no retrieval path. The
   default (`note`) and every valid kind are unaffected.
+- **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
+- **`spelunk memory list --as-of` and `spelunk memory search --as-of` now
+  reconstruct the past correctly, without needing `--archived`.** A
+  point-in-time query asks "what was the state of memory at instant T", so it
+  must return every entry that was live at T regardless of its status today.
+  Two defects broke that. An entry superseded or archived *after* T was hidden
+  unless you also passed `--archived`, so the then-current decision went
+  missing from the very query meant to surface it. And an entry created with no
+  explicit `--valid-at` stored a NULL validity start, which the filter read as
+  "valid since forever", so entries created *after* T still appeared in queries
+  about the past. The as-of window is now exactly `valid_at <= T AND
+  (invalid_at IS NULL OR invalid_at > T)`, with a missing `valid_at` defaulting
+  to the entry's creation time, evaluated independently of archived status
+  across list, text, semantic, and hybrid search. `--archived` again controls
+  only the current-state view, orthogonal to `--as-of`.
 
 ## [0.9.6] — 2026-07-31
 
