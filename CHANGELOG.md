@@ -29,6 +29,15 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   storing it.** Previously any string was accepted, so a typo (`--kind
   decisions`, `--kind desicion`) stored an entry with no retrieval path. The
   default (`note`) and every valid kind are unaffected.
+- **`spelunk search --mode text` now scores query words as independent terms
+  instead of matching the whole query as a contiguous phrase.** A multi-word
+  query ranks chunks that contain the terms in **any order**, and a chunk
+  containing more of the terms ranks above one containing fewer (BM25
+  bag-of-words, as documented). Previously the raw query was passed to FTS5 as a
+  single quoted phrase, so word order alone decided whether there was a hit —
+  e.g. `leaky bucket` matched a chunk but `bucket leaky` returned nothing.
+  Matching stays case-insensitive and unstemmed (`bursts` matches `bursts`, not
+  `burst`), following the FTS tokenizer.
 - **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
 - **`spelunk memory list --as-of` and `spelunk memory search --as-of` now
   reconstruct the past correctly, without needing `--archived`.** A
