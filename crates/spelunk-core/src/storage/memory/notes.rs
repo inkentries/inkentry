@@ -474,6 +474,70 @@ impl MemoryStore {
         Ok(notes)
     }
 
+    /// List notes whose `entity_id` is in `entity_ids`, newest first, applying
+    /// the same archived / point-in-time gate as [`list_filtered`].
+    ///
+    /// Powers `memory list --source-ref` on the SQLite-primary path: a
+    /// `memory add` entry records its commit only as the git-notes attachment,
+    /// never in the `source_ref` column, so the set of ids anchored to the
+    /// requested commit is resolved from the notes ref
+    /// ([`GitNotesBackend::entity_ids_anchored_to`]) and the authoritative rows
+    /// are read back here — the listing then carries this store's own ids and
+    /// status, exactly as a plain `memory list` would.
+    pub fn list_by_entity_ids(
+        &self,
+        entity_ids: &[String],
+        limit: usize,
+        include_archived: bool,
+        as_of: Option<i64>,
+    ) -> Result<Vec<Note>> {
+        if entity_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let limit = limit.min(500);
+        // See `list_filtered`: an `as_of` window governs on its own, so the
+        // active-only gate is dropped whenever it is set.
+        let status_clause = if include_archived || as_of.is_some() {
+            ""
+        } else {
+            "AND status = 'active'"
+        };
+
+        // Safety: only bind-param placeholders (never the ids themselves) are
+        // interpolated into the query string; every value goes through params.
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
+        let placeholders: Vec<String> = entity_ids
+            .iter()
+            .map(|e| {
+                params.push(Box::new(e.clone()));
+                format!("?{}", params.len())
+            })
+            .collect();
+        let mut conditions = format!(
+            "WHERE entity_id IN ({}) {status_clause}",
+            placeholders.join(", ")
+        );
+        if let Some(ts) = as_of {
+            conditions.push_str(&format!(
+                " AND COALESCE(valid_at, created_at) <= ?{p} AND (invalid_at IS NULL OR invalid_at > ?{p})",
+                p = params.len() + 1
+            ));
+            params.push(Box::new(ts));
+        }
+
+        let sql = format!(
+            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, source_ref, valid_at, invalid_at
+             FROM notes {conditions} ORDER BY created_at DESC LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        let notes = stmt
+            .query_map(params_refs.as_slice(), row_to_note)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(notes)
+    }
+
     /// Mark an entry as archived (hidden from search and ask context).
     pub fn archive(&self, id: i64) -> Result<bool> {
         let changed = self.conn.execute(

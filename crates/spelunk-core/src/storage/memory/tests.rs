@@ -2172,3 +2172,67 @@ fn legacy_inference_preserves_distinct_multi_row_content_not_just_row_count() {
 fn sup(id: i64) -> Option<crate::storage::memory::NoteId> {
     Some(crate::storage::memory::NoteId::from_i64(id))
 }
+
+// ── list_by_entity_ids ───────────────────────────────────────────────────────
+
+// `list_by_entity_ids` returns exactly the rows whose entity_id is requested,
+// and applies the same active-only / include_archived gate as `list_filtered`.
+// This is the SQLite read-back that `memory list --source-ref` uses once the
+// git-notes anchor has resolved which entities belong to the commit.
+#[test]
+fn list_by_entity_ids_selects_and_respects_archived() {
+    use crate::storage::entity_id::entity_id;
+
+    let store = open_store();
+    let (id_a, _) = store
+        .add_note("decision", "A", "body a", &[], &[], None, None)
+        .unwrap();
+    store
+        .add_note("decision", "B", "body b", &[], &[], None, None)
+        .unwrap();
+
+    let ea = entity_id("decision", "A", "body a");
+    let eb = entity_id("decision", "B", "body b");
+
+    // Only the requested entity comes back.
+    let only_a = store
+        .list_by_entity_ids(&[ea.clone()], 50, false, None)
+        .unwrap();
+    assert_eq!(only_a.len(), 1);
+    assert_eq!(only_a[0].title, "A");
+
+    // Both when both ids are requested.
+    let both = store
+        .list_by_entity_ids(&[ea.clone(), eb.clone()], 50, false, None)
+        .unwrap();
+    assert_eq!(both.len(), 2);
+
+    // An empty id list is a no-op, not a full-table scan.
+    assert!(
+        store
+            .list_by_entity_ids(&[], 50, false, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    // An unknown id matches nothing.
+    assert!(
+        store
+            .list_by_entity_ids(&["deadbeef".to_string()], 50, false, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Archiving A hides it by default, but include_archived surfaces it again.
+    store.archive(id_a).unwrap();
+    assert!(
+        store
+            .list_by_entity_ids(&[ea.clone()], 50, false, None)
+            .unwrap()
+            .is_empty(),
+        "archived entry must be hidden when include_archived is false"
+    );
+    let with_archived = store.list_by_entity_ids(&[ea], 50, true, None).unwrap();
+    assert_eq!(with_archived.len(), 1, "include_archived must surface it");
+    assert_eq!(with_archived[0].status, "archived");
+}
