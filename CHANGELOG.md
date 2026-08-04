@@ -25,6 +25,7 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
 - **`spelunk memory list --as-of` and `spelunk memory search --as-of` now
   reconstruct the past correctly, without needing `--archived`.** A
   point-in-time query asks "what was the state of memory at instant T", so it
