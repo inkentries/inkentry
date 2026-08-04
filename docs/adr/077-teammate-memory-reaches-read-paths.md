@@ -78,8 +78,8 @@ re-derived on a fresh clone — a repo with no remote derives `local/<blake3-hex
 from the local path (`derive_project_id`, `crates/spelunk-core/src/config/project_id.rs`),
 which differs per clone, and an explicit `--name` slug cannot be re-derived at
 all — the promise "the slug travels with the repo" is not kept, and the user
-needs a second `init`. This ADR decides the `init`-stages-config half of that
-overlap. The `.spelunk/.gitignore` half (ensuring `config.toml` is not ignored
+needs a second `init`. This ADR decides how `init` handles that overlap (D5).
+The `.spelunk/.gitignore` half (ensuring `config.toml` is not ignored
 while the SQLite files are) is owned by a separate change and is not designed
 here.
 
@@ -89,8 +89,9 @@ here.
 ref has moved since the last import, checked by comparing the ref OID against a
 marker persisted in `memory.db`. `init` configures the refspec and fetches notes
 *before* its import pass so one `init` suffices after clone. No new git hook.
-`init` stages `.spelunk/config.toml` so the committed-carrier promise is
-actionable.**
+`init` writes `.spelunk/config.toml` as today and performs no git operation on
+it; the docs (and an optional one-line `init` advisory) tell the user to commit
+it so the slug travels with the repo.**
 
 ### D1 — read paths import from the carrier, gated on a notes-ref OID marker
 
@@ -193,20 +194,36 @@ gate, so a hook would be both redundant with the read path and incomplete
 relative to it. Publishing memory stays on the existing opt-in **pre-push** hook
 (ADR-069 D1/D7), unchanged.
 
-### D5 — `init` stages `.spelunk/config.toml`, and does not commit it
+### D5 — `init` writes `.spelunk/config.toml` but performs no git operation on it
 
-`init` `git add`s `.spelunk/config.toml` after writing the slug, best-effort and
-non-fatal like the rest of `init`. It does **not** commit.
+`init` writes `.spelunk/config.toml` via `write_project_slug` exactly as today,
+then performs **no** git operation on it — no `git add`, no commit. Making the
+file travel with the repo is a commit the developer owns; `init`'s only job is to
+make sure they know to make it.
 
-Staging makes the file appear in `git status`, teed up for the developer's next
-commit, which is what turns the docs' "committed, travels with the repo" promise
-into something that actually happens for a remote-less repo or an explicit
-`--name` slug (the cases where the slug cannot be re-derived on a fresh clone).
-Auto-committing was rejected: `init` is a setup command that indexes, spawns a
-server, and writes several files, and slipping a commit into the user's
-in-progress index and history at that moment is surprising and can entangle with
-work they are composing. Staging is trivially reversible (`git restore --staged`)
-and non-destructive; a commit is neither. This decision assumes the sibling
+- **The docs carry the instruction.** `docs/getting-started.md` and
+  `docs/commands.md` already say `.spelunk/config.toml` is committed and travels
+  with the repo. They must state this as a step the user performs — commit
+  `.spelunk/config.toml` after `init` — not as a property that materialises on its
+  own.
+- **`init` MAY print a one-line advisory** after writing the slug (e.g. "wrote
+  `.spelunk/config.toml` — commit it so your project slug travels with the repo").
+  A print informs; it does not touch the index, and it is the entire extent of
+  `init`'s involvement with git for this file.
+
+Why it matters is unchanged: when the slug cannot be re-derived on a fresh clone —
+a remote-less repo derives a per-clone `local/<blake3-hex>` from the local path,
+and an explicit `--name` slug cannot be re-derived at all — a clone that lacks a
+committed `config.toml` has no project slug until a second `init`. Committing the
+file is what closes that gap.
+
+`git add` from `init` was rejected. If spelunk does not have the authority to
+commit the file, it does not have the authority to stage it either: staging
+silently mutates the developer's index, and a staged change they did not notice in
+`git status` can ride along into an unrelated commit — exactly the surprise `init`
+should not create. A commit is worse still. So `init` writes the file and stops;
+making it durable is a one-line commit the user owns, learned from the docs and
+the optional advisory. This decision still assumes the sibling
 `.spelunk/.gitignore` change keeps `config.toml` tracked while ignoring
 `index.db*` / `memory.db*`; the two must agree on that split.
 
@@ -226,7 +243,7 @@ and non-destructive; a commit is neither. This decision assumes the sibling
   wrote. The single fetch in D3 is confined to `init`, a user-initiated setup
   action.
 - **Not** designing the `.spelunk/.gitignore` change (sibling task); D5 decides
-  only the `init`-stages-`config.toml` question.
+  only how `init` treats `config.toml` (write it, take no git action on it).
 
 ## Consequences
 
@@ -245,10 +262,6 @@ and non-destructive; a commit is neither. This decision assumes the sibling
   unconditional merge subprocess; the OID gate short-circuits in process.
 - **A memory schema migration lands** (step 10, `notes_import_state`). It is
   additive and idempotent, consistent with the existing forward-only runner.
-- **The false-close guard is a hard requirement on the tests.** The acceptance
-  round trip must read the **default** `memory.db` path end to end (two clones,
-  fetch, no manual re-init), not `--backend git-notes`. See Implementation
-  contract.
 - **Revisit if:** a normal fetch starts landing thousands of divergent annotated
   objects (the axis ADR-069 flagged as the one that degrades to seconds), in
   which case the import cost per fetch — not per read — becomes the thing to
@@ -268,68 +281,3 @@ and non-destructive; a commit is neither. This decision assumes the sibling
   unchanged and still runs on the write path into both `memory.db` and the note,
   so imported content was already scanned at its origin.
 - The D2 marker holds only a git object id, no secret.
-
-## Implementation contract
-
-> The architect does not write the Rust or the tests. This section is the
-> contract the implementer drives off, and it is reproduced in the handoff report.
-
-### Acceptance criteria
-
-- **Two-clone round trip on the DEFAULT read path, end to end.** Clone A adds a
-  memory entry (`memory add`, `store_in_git_notes = true`) and publishes the notes
-  ref to a bare origin. Clone B (a fresh `git clone`) runs `init` once, then a
-  plain `git fetch`, then `spelunk memory list` **with no `--backend git-notes`
-  and no second `init`** — and the entry appears. The same holds for
-  `memory search`, `memory show <id>`, and `context`. This assertion, on the
-  SQLite `memory.db` path, is the criterion that a mere refspec/merge existence
-  check does not satisfy.
-- **Fresh-clone single-init.** In Clone B, one `init` (with the D3 fetch)
-  followed by a read surfaces A's entry — the `clone → init → fetch → init again`
-  sequence is no longer required.
-- **Hot-path is subprocess-free in steady state.** With nothing fetched since the
-  last import, a read spawns no `git notes merge` subprocess and runs no
-  `import_git_notes_into_memory` note-blob walk (assert via the D2 marker being
-  unchanged / a merge-invocation seam).
-- **Import fires exactly on ref movement.** After a fetch that advances
-  `refs/notes/spelunk`, the next read imports; an immediately following read with
-  no new fetch does not import again.
-- **Offline `init` still succeeds.** With no reachable `origin`, `init` completes
-  (D3 fetch is best-effort) and configures the refspec.
-- **`init` stages `config.toml`.** After `init` in a repo, `.spelunk/config.toml`
-  is staged (present in `git diff --cached --name-only`) and no commit was created
-  by `init`.
-- **No regression to local-only or cloud-routing reads.** With no git repo, or on
-  a `cloud_first` config, reads behave exactly as today (no import attempt).
-
-### Canon-TDD test list
-
-1. `read_path_surfaces_fetched_teammate_note_via_default_sqlite_backend` — two
-   clones + bare origin; after fetch, `memory list` (no backend override) in
-   Clone B contains A's entry.
-2. `search_surfaces_fetched_teammate_note_on_default_path` — same setup;
-   `memory search` (text mode) returns A's entry.
-3. `show_surfaces_fetched_teammate_note_on_default_path` — same setup;
-   `memory show <id>` resolves an imported entry.
-4. `context_surfaces_fetched_teammate_note_on_default_path` — same setup;
-   `context` includes A's decision/requirement.
-5. `single_init_after_clone_imports_without_manual_refetch_reinit` — Clone B runs
-   one `init`; a subsequent read surfaces A's entry (D3).
-6. `read_skips_import_when_notes_ref_unchanged` — after a first importing read, a
-   second read with no intervening fetch does not re-run the import (marker
-   unchanged; import seam not called).
-7. `read_imports_after_notes_ref_advances` — a fetch advances the working ref;
-   the next read imports and the marker updates.
-8. `read_path_import_does_no_network` — with origin unreachable, a read still
-   merges+imports the local tracking ref and surfaces previously-fetched entries.
-9. `import_marker_persisted_in_memory_db_and_survives_reopen` — the OID marker
-   round-trips through a `MemoryStore` reopen (migration step 10).
-10. `init_offline_succeeds_and_configures_refspec` — no origin reachable; `init`
-    exits 0 and the fetch refspec is present.
-11. `init_stages_config_toml_without_committing` — after `init`,
-    `.spelunk/config.toml` is staged and `git log` shows no init-authored commit.
-12. `import_dedups_colliding_ids_across_two_authors` — A and B each author a
-    distinct entry that collides on local rowid; after B fetches A's note, B's
-    default read shows both, deduped by `entity_id` (no loss, no double count).
-13. `no_git_repo_read_makes_no_import_attempt` — a read outside any git repo
-    behaves as today (regression guard).
