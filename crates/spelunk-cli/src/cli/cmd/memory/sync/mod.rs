@@ -164,6 +164,13 @@ pub async fn memory_sync(
     if pushed.without_local_vector > 0 {
         eprintln!("{}", unembedded_warning(pushed.without_local_vector));
     }
+    // Appended to the success summaries so relates_to propagation is visible
+    // without cluttering the (unchanged) failure/interrupted framing.
+    let edges_note = if pushed.edges_pushed > 0 {
+        format!(" Linked {} relationship edge(s).", pushed.edges_pushed)
+    } else {
+        String::new()
+    };
 
     if pushed.attempted == 0 {
         println!(
@@ -200,22 +207,24 @@ pub async fn memory_sync(
         );
     } else if pushed.failed > 0 {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.{}",
+            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.{}{}",
             pushed.attempted,
             pushed.created,
             pushed.skipped,
             pushed.failed,
             pulled,
-            local_embed_summary(&pushed)
+            local_embed_summary(&pushed),
+            edges_note
         );
     } else {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.{}",
+            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.{}{}",
             pushed.attempted,
             pushed.created,
             pushed.skipped,
             pulled,
-            local_embed_summary(&pushed)
+            local_embed_summary(&pushed),
+            edges_note
         );
     }
     Ok(())
