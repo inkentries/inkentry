@@ -23,6 +23,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   upgrade the CLI to match. See `docs/version-skew.md`. The `GET
   /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
 
+### Fixed
+
+- **`spelunk search --mode text` now scores query words as independent terms
+  instead of matching the whole query as a contiguous phrase.** A multi-word
+  query ranks chunks that contain the terms in **any order**, and a chunk
+  containing more of the terms ranks above one containing fewer (BM25
+  bag-of-words, as documented). Previously the raw query was passed to FTS5 as a
+  single quoted phrase, so word order alone decided whether there was a hit —
+  e.g. `leaky bucket` matched a chunk but `bucket leaky` returned nothing.
+  Matching stays case-insensitive and unstemmed (`bursts` matches `bursts`, not
+  `burst`), following the FTS tokenizer.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added
