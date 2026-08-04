@@ -23,6 +23,18 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   upgrade the CLI to match. See `docs/version-skew.md`. The `GET
   /memory/since?t=` legacy mode is unchanged, and still returns a bare array.
 
+### Fixed
+
+- **`spelunk logout --server <url>` no longer signs you out of spelunk.cloud.**
+  It was clearing the cloud token pair (the `[auth]` block written by `spelunk
+  login`) as a side effect of clearing the one named self-hosted server key,
+  forcing an unnecessary browser device login to get back in. `--server <url>`
+  now clears only that one origin's key, `--servers` clears only every stored
+  server key, and both leave the cloud token pair intact; bare `spelunk logout`
+  still clears only the cloud pair. Each form now touches exactly one
+  credential store. The `--server`/`--servers` help text no longer says
+  "Also clear…", which implied the cloud pair was cleared too.
+
 ## [0.9.6] — 2026-07-31
 
 ### Added
