@@ -25,6 +25,13 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
+  actionable error when no server is reachable, instead of silently reporting
+  "No results found." and exiting 0.** These modes need a server to embed the
+  query, so with none reachable (including under `SPELUNK_NO_SERVER=1`) they now
+  emit the same locked-feature error as the other inference-backed commands.
+  The default `auto` mode is unchanged: it still announces its degradation and
+  falls back to ast-grep.
 - **`spelunk memory add --relates-to <id>` now records the relationship.** The
   flag was accepted and the entry stored, but it was never wired to the edge
   layer, so no `relates_to` edge was written and neither `memory graph` nor
