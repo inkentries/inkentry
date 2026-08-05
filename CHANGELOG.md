@@ -42,6 +42,24 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   backend now serves `--source-ref` directly by the same commit anchor instead
   of returning an unsupported-operation error.
 
+- **`spelunk check --format porcelain` now emits only the stable `key=value`
+  summary on stdout.** It previously also wrote the human diagnostics — the
+  `Server: … ✓` reachability line, the "Active agent sessions" list, and the
+  `⚠ Overlap:` warning (with their Unicode glyphs) — to the same stdout stream,
+  so a script doing `spelunk check --format porcelain | while read -r line`
+  had to filter out prose. Those diagnostics now go to **stderr** in porcelain
+  mode, keeping the signal for a human watching the terminal while leaving
+  stdout machine-parseable. Text (human) mode is unchanged: the diagnostics
+  still print to stdout. Exit codes are unchanged in both modes (0 fresh,
+  1 stale).
+- **`spelunk explore` is now listed in the top-level `spelunk --help` command
+  list.** The agentic-search command was hidden from `--help` whenever no chat
+  model was configured, so a user or agent enumerating capabilities from
+  `--help` never discovered it — even though `spelunk explore --help` and the
+  command itself always worked. It now always lists, like the other commands
+  that need infrastructure the user may not have (`sync`, `login`, `org`).
+  Running `spelunk explore` without an LLM still fails with the same
+  locked-feature message as before; only its visibility in `--help` changed.
 - **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
   pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
   the SQLite files and logs but not the lock, so a `git add -A` staged and
