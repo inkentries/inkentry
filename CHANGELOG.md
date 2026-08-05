@@ -25,6 +25,29 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A teammate's fetched memory now reaches the default `memory.db` read
+  paths, not just the git ref.** Team memory lives on git notes
+  (`refs/notes/spelunk`) and is queried through the project's SQLite
+  `memory.db`, but nothing imported a fetched teammate's notes into that store
+  except `spelunk init`, so their newly-published entries stayed invisible on
+  the default read path until a manual re-`init`. Now `memory list`, `memory
+  search`, `memory show`, and `context` fold the fetched tracking ref into your
+  notes and import it into `memory.db` — but only when the notes ref has moved
+  since the last import, gated by an OID marker persisted in `memory.db`, so the
+  steady-state read spawns no git subprocess and does no import walk. `memory
+  search` and `memory show` previously did not consult the tracking ref at all
+  and now do. Reading needs no `--backend git-notes` and no re-`init` (ADR-077).
+- **A single `spelunk init` after a clone now hydrates the team's memory.**
+  `init` configures the notes fetch refspec and does a one-time, best-effort
+  fetch of the notes ref *before* its import pass, so the fresh-clone
+  `init → git fetch → init again` dance is gone. Offline `init` still succeeds
+  and still configures the refspec; the fetch is non-fatal.
+- **`spelunk init` no longer risks silently staging `.spelunk/config.toml`.**
+  `init` writes the project slug to `.spelunk/config.toml` and takes no git
+  action on it — no `git add`, no commit — and prints a one-line reminder to
+  commit the file yourself so the slug travels with the repo. The docs describe
+  committing it as an explicit user step (ADR-077 D5).
+
 - **`spelunk memory list --source-ref <sha>` now finds entries anchored to a
   commit by git notes, not just harvested entries.** Every entry written by
   `spelunk memory add` (with the default git-notes write-through) is anchored to

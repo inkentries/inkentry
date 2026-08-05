@@ -7,12 +7,14 @@ use std::path::Path;
 mod dedupe;
 mod edges;
 mod entity_id_migration;
+mod import_state;
 mod note_id;
 mod notes;
 mod search;
 mod sync;
 
 pub use dedupe::DedupeSummary;
+pub use import_state::NotesImportMarker;
 pub use note_id::NoteId;
 pub use sync::{SyncEdge, SyncRow};
 
@@ -25,7 +27,7 @@ mod tests;
 /// order they run (the field order), not filename order. Mirrors
 /// `storage::db::CURRENT_SCHEMA_VERSION` for `index.db`, kept as a distinct
 /// constant/name because the two DBs version independently.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 9;
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 10;
 
 /// One entry in the migration runner: (target version, migration body).
 type MemoryMigrationStep = (i32, fn(&MemoryStore) -> Result<()>);
@@ -180,6 +182,7 @@ impl MemoryStore {
             (7, Self::apply_uuid_migration),
             (8, Self::apply_entity_id_column_migration),
             (9, Self::apply_dim_upgrade_migration),
+            (10, Self::apply_notes_import_state_migration),
         ];
         debug_assert_eq!(
             steps.last().map(|(v, _)| *v),
@@ -252,7 +255,7 @@ impl MemoryStore {
         // Checking only the first column would infer that step "done" from a
         // half-applied ALTER and skip it forever, leaving the second column
         // permanently missing.
-        let ladder: [(i32, bool); 9] = [
+        let ladder: [(i32, bool); 10] = [
             (1, has_table("notes")?),
             (
                 2,
@@ -271,6 +274,7 @@ impl MemoryStore {
             ),
             (8, notes_has_column("entity_id")?),
             (9, has_table("schema_v896_note_embeddings")?),
+            (10, has_table("notes_import_state")?),
         ];
         // Highest version whose predicate and all lower ones hold.
         let mut version = 0;
@@ -468,6 +472,19 @@ impl MemoryStore {
                  (sentinel INTEGER PRIMARY KEY);",
             )
             .context("creating v896 note_embeddings marker")?;
+        Ok(())
+    }
+
+    /// Create the `notes_import_state` marker table (ADR-077 D2): a single-row
+    /// record of the notes-ref OIDs seen at the last merge/import, so a read
+    /// with the refs unchanged skips the merge subprocess and the import walk.
+    /// Additive and idempotent (`CREATE TABLE IF NOT EXISTS`).
+    fn apply_notes_import_state_migration(&self) -> Result<()> {
+        self.conn
+            .execute_batch(include_str!(
+                "../../../migrations/025_notes_import_state.sql"
+            ))
+            .context("running memory notes_import_state migration")?;
         Ok(())
     }
 }

@@ -14,11 +14,6 @@ pub(super) async fn memory_list(
     backend_override: Option<&str>,
     pre_init_notes: bool,
 ) -> Result<()> {
-    // `git fetch` lands teammates' notes on a tracking ref that nothing else
-    // merges, so without this they stay invisible (ADR-069 D5). Local-only, no
-    // network; a no-op outside a git repo or with nothing fetched.
-    crate::storage::merge_tracking_notes(None).await;
-
     // Read from git notes when it's the explicit backend (`--backend git-notes`)
     // or the ADR-068 D3 pre-init carrier: `mem_path` is a placeholder in both, so
     // skip the SQLite-oriented nudge and cross-project pass (they'd open the
@@ -29,6 +24,11 @@ pub(super) async fn memory_list(
     } else {
         backend_override
     };
+
+    // A teammate's `git fetch` lands their notes on a tracking ref that nothing
+    // else merges into `memory.db`, so without this they stay invisible on the
+    // default read path (ADR-077 D1).
+    super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, effective_override).await;
 
     // Discovery nudge: warn once when unimported server.db notes exist.
     if !git_notes {
