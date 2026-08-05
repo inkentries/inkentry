@@ -514,6 +514,90 @@ async fn harvest_stops_with_the_no_llm_message_when_none_is_available() {
     assert_no_internal_names(&text);
 }
 
+// Regression: the built-in default range `HEAD~10..HEAD` names `HEAD~10`, a
+// commit that does not exist in a repo with fewer than 11 commits, so an
+// unclamped range makes `git log` abort with a raw `fatal: bad revision`. The
+// range must clamp to the commits that actually exist, and the single commit in
+// this one-commit fixture must still be harvested. Uses the DEFAULT range (no
+// `--branch`), unlike the routing tests above, so the clamp is what is under
+// test.
+#[tokio::test]
+async fn harvest_clamps_the_default_range_on_a_shallow_repo() {
+    let loopback = server_mock(Some(harvest_payload())).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path()); // one commit
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+
+    let mem = project.path().join("memory.db");
+    let output = base_cmd(home.path(), project.path())
+        .env("SPELUNK_STATE_DIR", &state_dir)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--db")
+        .arg(&mem)
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(
+        !text.contains("bad revision"),
+        "the default range must clamp on a shallow repo, not hit `bad revision`:\n{text}"
+    );
+    assert!(
+        output.status.success(),
+        "harvest must succeed on a one-commit repo:\n{text}"
+    );
+    assert!(
+        count_path(&loopback, "/llm/complete").await > 0,
+        "the single available commit must be sent to the LLM for extraction:\n{text}"
+    );
+}
+
+// Regression: with no LLM available, `harvest` on a shallow repo must surface
+// the actionable no-LLM message, never a raw `git log` `bad revision` error.
+// The LLM precheck runs before the git range is resolved, so how many commits
+// the repo has cannot change which message the user sees.
+#[tokio::test]
+async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
+    let loopback = server_mock(None).await; // embedding only, no LLM
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path()); // one commit
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+
+    let mem = project.path().join("memory.db");
+    let output = base_cmd(home.path(), project.path())
+        .env("SPELUNK_STATE_DIR", &state_dir)
+        .arg("memory")
+        .arg("harvest")
+        .arg("--db")
+        .arg(&mem)
+        .output()
+        .expect("run harvest");
+    let text = combined(&output);
+
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        !text.contains("bad revision"),
+        "the LLM precheck must fire before the git range resolves, so a shallow \
+         repo never surfaces a raw git error:\n{text}"
+    );
+    assert!(
+        text.contains("llm_url") && text.contains("server_url"),
+        "the actionable no-LLM message must name both routes to an LLM:\n{text}"
+    );
+    assert_no_internal_names(&text);
+}
+
 // ── memory harvest --source failures ──────────────────────────────────────
 //
 // The third harvest source. It builds its clients at its own call site, so the

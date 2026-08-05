@@ -1,4 +1,3 @@
-use super::color::cprintln;
 use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
@@ -28,6 +27,26 @@ use crate::{
     storage::{Database, open_memory_backend},
     utils::{format_age, worktree_modified_files},
 };
+
+/// Emit one human-readable diagnostic line for `check` (server reachability,
+/// active intents, overlap warnings).
+///
+/// In `porcelain` mode stdout is reserved for the stable `key=value` contract,
+/// so these lines go to **stderr** instead — still visible to a human watching
+/// the terminal, but never mixed into the stdout a script parses with
+/// `while read -r line`. ANSI color is stripped there, since stderr consumers
+/// don't opt into the `--color` policy (the Unicode glyphs themselves are kept,
+/// as they carry meaning, not color). In text mode the line goes to stdout,
+/// honoring the color policy exactly as before.
+fn emit_check_diagnostic(line: &str, porcelain: bool) {
+    if porcelain {
+        eprintln!("{}", spelunk_core::utils::strip_ansi(line));
+    } else if crate::cli::cmd::color::color_enabled() {
+        println!("{line}");
+    } else {
+        println!("{}", spelunk_core::utils::strip_ansi(line));
+    }
+}
 
 pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     // ADR-067: fail closed in an un-init'd dir rather than checking the
@@ -127,9 +146,10 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     // (so the user sees the "unreachable" hint); we don't nag when nothing was
     // configured and no local server was found.
     if effective == "text" || effective == "porcelain" {
+        let porcelain = effective == "porcelain";
         let tier = capability::get_tier(&cfg).await;
         if tier.is_server() || cfg.server_url.is_some() {
-            match tier {
+            let line = match tier {
                 capability::Tier::Server { url, caps, .. } => {
                     let features: Vec<&str> = [
                         caps.search_semantic.then_some("semantic search"),
@@ -143,7 +163,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                     } else {
                         features.join(", ")
                     };
-                    cprintln!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)");
+                    format!("Server:  {url}  \x1b[32m✓\x1b[0m  ({feature_str} available)")
                 }
                 capability::Tier::Offline => {
                     let url = cfg.server_url.as_deref().unwrap_or("?");
@@ -153,32 +173,35 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
                         }
                         _ => "unreachable, offline mode".to_string(),
                     };
-                    cprintln!("Server:  {url}  \x1b[31m✗\x1b[0m  {label}");
+                    format!("Server:  {url}  \x1b[31m✗\x1b[0m  {label}")
                 }
-            }
+            };
+            emit_check_diagnostic(&line, porcelain);
         }
     }
 
     // Show active intent entries (text mode only; silently skip if memory unavailable).
     if effective == "text" || effective == "porcelain" {
+        let porcelain = effective == "porcelain";
         let mem_path = db_path.with_file_name("memory.db");
         if let Ok(backend) = open_memory_backend(&cfg, &mem_path, None).await
             && let Ok(intents) = backend.list(Some("intent"), 20, false, None).await
             && !intents.is_empty()
         {
-            println!("Active agent sessions:");
+            emit_check_diagnostic("Active agent sessions:", porcelain);
             for n in &intents {
                 let age = format_age(n.created_at);
-                if n.linked_files.is_empty() {
-                    println!("  · \"{}\"  ({})", n.title, age);
+                let line = if n.linked_files.is_empty() {
+                    format!("  · \"{}\"  ({})", n.title, age)
                 } else {
-                    println!(
+                    format!(
                         "  · \"{}\"  linked: {}  ({})",
                         n.title,
                         n.linked_files.join(", "),
                         age
-                    );
-                }
+                    )
+                };
+                emit_check_diagnostic(&line, porcelain);
             }
 
             // File overlap warning: compare intent linked_files with worktree changes.
@@ -191,7 +214,10 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
 
                 for file in &modified {
                     if intent_files.contains(file) {
-                        println!("⚠  Overlap: {file} is listed in an active intent");
+                        emit_check_diagnostic(
+                            &format!("⚠  Overlap: {file} is listed in an active intent"),
+                            porcelain,
+                        );
                     }
                 }
             }

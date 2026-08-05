@@ -561,6 +561,13 @@ spelunk memory list --as-of 2026-01-01
 spelunk memory list --source-ref abc1234
 ```
 
+`--source-ref <sha>` returns every entry associated with that commit, matched
+two ways: harvested entries carry the commit SHA they were harvested from in
+their `source_ref` provenance field, and entries added with `spelunk memory add`
+are anchored to a commit by the git note that carries them (the same note you
+see under `git notes --ref=spelunk show <sha>`). Both are found; the SHA may be
+given in full or as a prefix.
+
 `question` and `answer` entries show titles only in list view to avoid context saturation. Use `spelunk memory show <id>` to read the full body.
 
 ## Cross-project visibility
@@ -662,13 +669,15 @@ spelunk memory graph 42 --format json
 `spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `spelunk-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/spelunk/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
 
 ```bash
-# Default: last 10 commits
+# Default: last 10 commits (fewer if the repo has fewer than 10)
 spelunk memory harvest
 
 # Custom range
 spelunk memory harvest --git-range HEAD~30..HEAD
 spelunk memory harvest --git-range v1.0..HEAD
 ```
+
+The default range is clamped to the commits that actually exist, so harvest works on a brand-new repo with a single commit — it never fails with a raw `git` "bad revision" error just because the history is shorter than the range.
 
 Already-harvested commits are skipped (tracked via a `git:<sha>` tag). Routine commits ("fix typo", "wip", etc.) are ignored by the LLM.
 

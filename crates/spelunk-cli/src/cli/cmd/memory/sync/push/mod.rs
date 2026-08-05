@@ -1,9 +1,11 @@
 //! Push local memory entries to the cloud (`spelunk sync` and the one-way
 //! `spelunk memory push`).
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 
-use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore};
+use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, SyncEdgePush};
 
 mod local_embed;
 
@@ -62,6 +64,11 @@ pub(in crate::cli::cmd::memory) struct PushSummary {
     /// Drives the one counted warning the command layer emits. Always 0 when
     /// the repair does not apply ([`LocalEmbedPolicy::Skip`]).
     pub without_local_vector: usize,
+    /// `relates_to` edges the cloud confirmed it stored during this push (their
+    /// second endpoint reached the cloud this round). Best-effort and secondary
+    /// to entries: a failure to push them warns but never fails the push. See
+    /// [`push_relates_to_edges`].
+    pub edges_pushed: usize,
 }
 
 /// One-way push entry point reused by `spelunk memory push`.
@@ -149,6 +156,7 @@ async fn push_local_reporting(
             interrupted: None,
             embedded_locally: 0,
             without_local_vector: 0,
+            edges_pushed: 0,
         });
     }
 
@@ -157,6 +165,11 @@ async fn push_local_reporting(
     let mut created = 0u32;
     let mut skipped = 0u32;
     let mut failed = 0u32;
+    // Local row ids whose `remote_id` this push stamped: the entries that
+    // reached the cloud this round. A `relates_to` edge becomes pushable in the
+    // round its second endpoint lands, so only edges touching this set are new
+    // and worth posting (see `push_relates_to_edges`).
+    let mut just_synced: HashSet<i64> = HashSet::new();
     // Set once a chunk fails: the loop stops and the tombstone pass is skipped.
     let mut interrupted: Option<String> = None;
 
@@ -267,6 +280,7 @@ async fn push_local_reporting(
                 && let Some(row) = chunk.iter().find(|r| r.uuid == ext)
             {
                 local.set_remote_id(row.local_id, cloud_id)?;
+                just_synced.insert(row.local_id);
             }
             if item.status == "failed" {
                 eprintln!(
@@ -296,6 +310,22 @@ async fn push_local_reporting(
         }
     }
 
+    // Propagate local relates_to edges completed by this round's entry push.
+    // Best-effort and secondary to entries: a failure here warns but does not
+    // fail the push (the entries already landed). Skipped on an interrupted
+    // push, since the connection is already failing.
+    let edges_pushed = if interrupted.is_none() {
+        match push_relates_to_edges(local, client, &just_synced).await {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("warning: failed to push relates_to edges to the cloud: {e:#}");
+                0
+            }
+        }
+    } else {
+        0
+    };
+
     Ok(PushSummary {
         attempted,
         created,
@@ -305,13 +335,58 @@ async fn push_local_reporting(
         interrupted,
         embedded_locally: repair.embedded,
         without_local_vector: repair.without_vector,
+        edges_pushed,
     })
+}
+
+/// Push the local `relates_to` edges completed by this round's entry push.
+///
+/// `just_synced` is the set of local row ids whose `remote_id` this push
+/// stamped (the entries that reached the cloud this round). An edge is
+/// propagated when it touches one of those rows and BOTH its endpoints are
+/// synced, so each edge is posted exactly in the round its second endpoint
+/// lands, never re-posted on a later no-op sync. `relates_to` is the only kind
+/// pushed: a `supersedes` edge rides its entry's lifecycle, and `contradicts`
+/// is server-generated. Server-side the batch route dedupes
+/// (`ON CONFLICT DO NOTHING`), so a redundant re-push is still harmless.
+///
+/// Since `memory add --relates-to` is the only producer of a `relates_to` edge
+/// and always mints a fresh (unsynced) entry as the edge's `from` endpoint,
+/// that endpoint is always in `just_synced` the round the edge first becomes
+/// pushable, so this never silently drops a genuinely new edge.
+///
+/// Returns the number of edges the server confirmed it stored (an `unresolved`
+/// edge is not counted; it is retried when its endpoint later syncs).
+async fn push_relates_to_edges(
+    local: &MemoryStore,
+    client: &CloudSyncClient,
+    just_synced: &HashSet<i64>,
+) -> Result<usize> {
+    if just_synced.is_empty() {
+        return Ok(0);
+    }
+    let edges: Vec<SyncEdgePush> = local
+        .relates_to_edges_for_sync()?
+        .into_iter()
+        .filter(|e| just_synced.contains(&e.from_local_id) || just_synced.contains(&e.to_local_id))
+        .map(|e| SyncEdgePush {
+            from_external_id: e.from_external_id,
+            to_external_id: e.to_external_id,
+            kind: "relates_to",
+        })
+        .collect();
+    if edges.is_empty() {
+        return Ok(0);
+    }
+    Ok(client.push_edges(edges).await?.applied())
 }
 
 #[cfg(test)]
 mod chunking_tests;
 #[cfg(test)]
 mod counting_tests;
+#[cfg(test)]
+mod edge_tests;
 #[cfg(test)]
 mod embed_routing_tests;
 #[cfg(test)]

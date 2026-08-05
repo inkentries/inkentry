@@ -143,6 +143,63 @@ pub struct BatchPushResult {
     pub results: Vec<BatchItemResult>,
 }
 
+/// One relationship edge pushed to `POST /memory/batch` via the request's
+/// `edges[]` array.
+///
+/// Each endpoint is addressed by its `external_id` (the entry's stable uuid,
+/// the only id the batch edge route resolves), never the machine-local row id.
+/// `kind` is a fixed edge kind: sync pushes only `"relates_to"`, since a
+/// `supersedes` edge already travels with its entry's lifecycle and
+/// `contradicts` is server-generated. Mirrors cloud-api's batch `edges[]`
+/// element and `CloudApiMemoryBackend::supersede`'s single-edge post.
+#[derive(Debug, Serialize)]
+pub struct SyncEdgePush {
+    pub from_external_id: String,
+    pub to_external_id: String,
+    pub kind: &'static str,
+}
+
+/// An edge-only batch body: `entries` is required by the route but stays empty,
+/// so this posts edges without touching entries.
+#[derive(Debug, Serialize)]
+struct BatchEdgePushBody {
+    entries: [(); 0],
+    edges: Vec<SyncEdgePush>,
+}
+
+/// Per-edge acknowledgement in the 207 `edges[]` response.
+#[derive(Debug, Deserialize)]
+struct BatchEdgeAck {
+    status: String,
+}
+
+/// Result of an edge batch push: the per-edge acknowledgements the server
+/// returned in the 207 `edges[]` array.
+#[derive(Debug, Deserialize, Default)]
+pub struct EdgePushResult {
+    #[serde(default)]
+    edges: Vec<BatchEdgeAck>,
+}
+
+impl EdgePushResult {
+    /// Count of edges the server actually stored. An `unresolved` edge (an
+    /// endpoint the server does not know yet) is a no-op to retry on a later
+    /// sync, not a success, so it is not counted here: this matches
+    /// `CloudApiMemoryBackend`'s supersede `edge_applied`.
+    pub fn applied(&self) -> usize {
+        self.edges
+            .iter()
+            .filter(|e| matches!(e.status.as_str(), "created" | "applied" | "updated"))
+            .count()
+    }
+
+    /// Total edges the server acknowledged, applied or not (the length of the
+    /// returned `edges[]` array).
+    pub fn acknowledged(&self) -> usize {
+        self.edges.len()
+    }
+}
+
 /// One entry returned by `GET /memory/since`.
 ///
 /// Mirrors cloud-api's `EntryResponse`; the embedding vector is never sent by
@@ -291,6 +348,38 @@ impl CloudSyncClient {
         resp.json::<BatchPushResult>()
             .await
             .context("parsing /memory/batch response")
+    }
+
+    /// Push a batch of relationship edges via the same `POST /memory/batch`
+    /// route, carrying them in the request's `edges[]` array with an empty
+    /// `entries[]`.
+    ///
+    /// Idempotent server-side (the batch edge route dedupes on `ON CONFLICT DO
+    /// NOTHING`), so a re-push is harmless. An edge naming an endpoint the
+    /// server does not know yet comes back `unresolved`, which
+    /// [`EdgePushResult::applied`] reports as not-applied rather than an error:
+    /// the endpoint just is not synced yet, and a later sync retries it. An
+    /// empty input is a no-op with no request.
+    pub async fn push_edges(&self, edges: Vec<SyncEdgePush>) -> Result<EdgePushResult> {
+        if edges.is_empty() {
+            return Ok(EdgePushResult::default());
+        }
+        let body = BatchEdgePushBody { entries: [], edges };
+        let resp = self
+            .authed(self.client.post(self.url("memory/batch")))
+            .json(&body)
+            .send()
+            .await
+            .context("POST /memory/batch (edges)")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("POST /memory/batch edges failed ({status}): {text}");
+        }
+        resp.json::<EdgePushResult>()
+            .await
+            .context("parsing /memory/batch edges response")
     }
 
     /// Tombstone a cloud entry by its cloud-minted id (`DELETE /memory/{id}`).
@@ -539,6 +628,85 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
         let res = client.push_batch(vec![]).await.unwrap();
         assert_eq!((res.created, res.skipped, res.failed), (0, 0, 0));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    fn relates_edge(from: &str, to: &str) -> SyncEdgePush {
+        SyncEdgePush {
+            from_external_id: from.into(),
+            to_external_id: to.into(),
+            kind: "relates_to",
+        }
+    }
+
+    // A relates_to push must hit the same `/memory/batch` route the entry push
+    // uses, but as an edge-only body: `entries` empty, one `edges[]` element
+    // keyed by external_id. A 207 `{"edges":[{"status":"created"}]}` counts as
+    // applied.
+    #[tokio::test]
+    async fn push_edges_posts_an_edge_only_relates_to_batch_body() {
+        use wiremock::matchers::body_json;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .and(body_json(serde_json::json!({
+                "entries": [],
+                "edges": [{
+                    "from_external_id": "ext-from",
+                    "to_external_id": "ext-to",
+                    "kind": "relates_to",
+                }],
+            })))
+            .respond_with(
+                ResponseTemplate::new(207)
+                    .set_body_json(serde_json::json!({"edges": [{"status": "created"}]})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let res = client
+            .push_edges(vec![relates_edge("ext-from", "ext-to")])
+            .await
+            .unwrap();
+        assert_eq!(res.applied(), 1, "a created edge must count as applied");
+    }
+
+    // An edge naming an endpoint the server does not know yet comes back
+    // `unresolved`. That is "not yet, retry later", not a failure: the call
+    // must succeed and simply not count the edge as applied.
+    #[tokio::test]
+    async fn an_unresolved_edge_push_is_graceful_and_not_counted_as_applied() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(
+                ResponseTemplate::new(207)
+                    .set_body_json(serde_json::json!({"edges": [{"status": "unresolved"}]})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let res = client
+            .push_edges(vec![relates_edge("ext-from", "ext-to")])
+            .await
+            .expect("an unresolved edge must not surface as an error");
+        assert_eq!(res.applied(), 0, "unresolved must not read as applied");
+        assert_eq!(
+            res.acknowledged(),
+            1,
+            "the edge was acknowledged, just not resolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_edges_empty_is_a_noop_with_no_request() {
+        let server = MockServer::start().await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let res = client.push_edges(vec![]).await.unwrap();
+        assert_eq!(res.applied(), 0);
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 

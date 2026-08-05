@@ -39,9 +39,32 @@ pub(super) async fn memory_list(
     let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
     let mut notes = if let Some(ref sha_prefix) = args.source_ref {
-        backend
+        // (1) Harvest-provenance matches: entries whose `source_ref` COLUMN
+        // records this commit (harvested entries, ADR-062). On the git-notes
+        // backend this instead returns the note-anchored entries directly, so
+        // that path is already complete here.
+        let mut matches = backend
             .list_by_source_ref(sha_prefix, args.limit, args.archived, as_of)
-            .await?
+            .await?;
+        // (2) Note-anchored matches: a `memory add` entry records which commit
+        // it belongs to only as the git-notes attachment; its `source_ref`
+        // COLUMN stays NULL, so (1) can never surface it (the reported bug).
+        // Resolve the ids anchored to the commit from the notes ref, then read
+        // the authoritative local rows back so the listing keeps this store's
+        // own ids and status. SQLite-primary only: the git-notes backend covers
+        // its own path in (1), and a remote backend has no local notes ref.
+        if backend.backend_kind() == "sqlite" {
+            augment_with_note_anchored(
+                &mut matches,
+                mem_path,
+                sha_prefix,
+                args.limit,
+                args.archived,
+                as_of,
+            )
+            .await;
+        }
+        matches
     } else {
         backend
             .list(args.kind.as_deref(), args.limit, args.archived, as_of)
@@ -92,4 +115,68 @@ pub(super) async fn memory_list(
         }
     }
     Ok(())
+}
+
+/// Append the entries anchored (via git notes) to the `--source-ref` commit to
+/// `matches`, deduped by `entity_id`.
+///
+/// The commit anchor of a `memory add` entry lives only in the enclosing repo's
+/// notes ref (commit → note object); it is never written into the SQLite
+/// `source_ref` column, so the column query in `memory_list` cannot find it.
+/// This reads the ids anchored to the commit off the notes ref, then reads the
+/// authoritative local rows back so the listing keeps this store's own ids and
+/// status.
+///
+/// Best-effort by design: outside a git repo, with no `refs/notes/spelunk`, or
+/// on any git failure there is simply nothing to add and the column matches in
+/// `matches` stand. `mem_path.parent()` is the same root the write-through
+/// carrier anchors against (see `memory add`), so reads and writes agree on
+/// which repo owns the notes.
+async fn augment_with_note_anchored(
+    matches: &mut Vec<crate::storage::memory::Note>,
+    mem_path: &std::path::Path,
+    sha_prefix: &str,
+    limit: usize,
+    include_archived: bool,
+    as_of: Option<i64>,
+) {
+    use crate::storage::{GitNotesBackend, MemoryStore, note_entity_id};
+
+    let Some(project_root) = mem_path.parent() else {
+        return;
+    };
+    let anchored_ids = match GitNotesBackend::with_root(project_root.to_path_buf())
+        .entity_ids_anchored_to(sha_prefix)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(_) => return,
+    };
+    if anchored_ids.is_empty() {
+        return;
+    }
+
+    let Ok(store) = MemoryStore::open(mem_path) else {
+        return;
+    };
+    let anchored = match store.list_by_entity_ids(&anchored_ids, limit, include_archived, as_of) {
+        Ok(notes) => notes,
+        Err(_) => return,
+    };
+    if anchored.is_empty() {
+        return;
+    }
+
+    // Dedup by entity_id: an entry that is both harvested (column match) and
+    // note-anchored must appear once.
+    let mut seen: std::collections::HashSet<String> = matches.iter().map(note_entity_id).collect();
+    for n in anchored {
+        if seen.insert(note_entity_id(&n)) {
+            matches.push(n);
+        }
+    }
+    // Restore the newest-first order and re-cap so the union still honours the
+    // limit the single-source query would have.
+    matches.sort_by_key(|n| std::cmp::Reverse(n.created_at));
+    matches.truncate(limit.min(500));
 }

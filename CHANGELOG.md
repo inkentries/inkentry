@@ -35,6 +35,85 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   run through one shared staleness function anchored at the correct project root,
   so they agree: a freshly indexed linked project reports fresh, while a linked
   project with a file modified since indexing still reports stale.
+- **`spelunk memory list --source-ref <sha>` now finds entries anchored to a
+  commit by git notes, not just harvested entries.** Every entry written by
+  `spelunk memory add` (with the default git-notes write-through) is anchored to
+  a commit — its memory note is attached to that commit in `refs/notes/spelunk`
+  — but that anchor was recorded only as the git-notes attachment, never in the
+  SQLite `source_ref` column (which carries a commit SHA only for *harvested*
+  entries). `--source-ref` filtered on that column alone, so it returned zero
+  results for every commit whose entries came from `memory add`, even with the
+  notes plainly present under `git notes --ref=spelunk show <sha>`. The filter
+  now also resolves, from the notes ref, which entries are anchored to the
+  requested commit (exact SHA or prefix) and reads the authoritative local rows
+  back, so those entries are found while their ids and status stay consistent
+  with a plain `memory list`. Harvested `source_ref`-column matches are
+  unchanged. On the `--backend git-notes` (and pre-init) path the git-notes
+  backend now serves `--source-ref` directly by the same commit anchor instead
+  of returning an unsupported-operation error.
+
+- **`spelunk check --format porcelain` now emits only the stable `key=value`
+  summary on stdout.** It previously also wrote the human diagnostics — the
+  `Server: … ✓` reachability line, the "Active agent sessions" list, and the
+  `⚠ Overlap:` warning (with their Unicode glyphs) — to the same stdout stream,
+  so a script doing `spelunk check --format porcelain | while read -r line`
+  had to filter out prose. Those diagnostics now go to **stderr** in porcelain
+  mode, keeping the signal for a human watching the terminal while leaving
+  stdout machine-parseable. Text (human) mode is unchanged: the diagnostics
+  still print to stdout. Exit codes are unchanged in both modes (0 fresh,
+  1 stale).
+- **`spelunk explore` is now listed in the top-level `spelunk --help` command
+  list.** The agentic-search command was hidden from `--help` whenever no chat
+  model was configured, so a user or agent enumerating capabilities from
+  `--help` never discovered it — even though `spelunk explore --help` and the
+  command itself always worked. It now always lists, like the other commands
+  that need infrastructure the user may not have (`sync`, `login`, `org`).
+  Running `spelunk explore` without an LLM still fails with the same
+  locked-feature message as before; only its visibility in `--help` changed.
+- **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
+  pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
+  the SQLite files and logs but not the lock, so a `git add -A` staged and
+  committed `index.lock.pid` — which holds a machine-local process id that churns
+  and conflicts across machines. New projects ignore both via an `index.lock*`
+  line. Existing projects (whose `.gitignore` init never overwrites) can add it
+  manually:
+
+  ```sh
+  echo "index.lock*" >> .spelunk/.gitignore
+  ```
+- **`spelunk plumbing embed` now finds a running `spelunk-server` the same way
+  every other server-backed command does.** It reported `requires
+  spelunk-server` even while a healthy local server was running and `search
+  --mode semantic` / `memory search` used it, because `embed` gated directly on
+  a configured `server_url` and skipped the capability-tier resolution the other
+  commands run. It now honours the auto-started / auto-discovered loopback
+  server (and `SPELUNK_SERVER_URL`), so `echo "text" | spelunk plumbing embed`
+  emits the vector whenever a ready server is reachable, restoring the
+  `echo … | spelunk plumbing embed --query | spelunk plumbing knn` pipeline. The
+  locked-feature error is unchanged when no server is reachable.
+- **`spelunk memory harvest` no longer crashes on a repo with fewer than 11
+  commits.** The default `HEAD~10..HEAD` range named `HEAD~10`, a commit that
+  does not exist in a shallow history, so `git log` aborted with a raw
+  `fatal: bad revision 'HEAD~10..HEAD'`. The range is now clamped to the commits
+  that actually exist (the most recent `min(10, commit_count)`, root included),
+  so harvest works on any repo with at least one commit. A custom `--git-range`
+  or `--branch` is passed through unchanged. Harvest also runs its
+  LLM-capability precheck before resolving the git range now, matching `spelunk
+  explore`: with no LLM configured the actionable locked-feature message is
+  shown regardless of repo size, rather than a raw git error on a short history.
+- **A partial `[auth]` table in `config.toml` no longer bricks every command.**
+  `[auth]` is login-managed, but `--org` is an optional scoping flag and
+  hand-editing the config is a documented workflow, so a login without an org
+  (no `org_id`) or a trimmed table left the CLI unable to run anything —
+  including commands that need no credentials (`status`, `search`, `context`).
+  Every `[auth]` field is now optional: a missing/empty `access_token` reads as
+  "not logged in" (no bearer sent), a missing `expires_at` as expired, and a
+  missing `org_id` applies no scoping, instead of a hard parse error.
+- **A `config.toml` that fails to parse now names the file, the offending key,
+  and the remedy** instead of a bare, unactionable `Error: parsing config.toml`.
+  An unrecognised `mode` value names the bad value and lists the valid modes
+  (`offline`, `local_first`, `cloud_first`), matching the `SPELUNK_MODE`
+  message.
 - **`spelunk search --mode semantic` (and `--mode hybrid`) now fail with an
   actionable error when no server is reachable, instead of silently reporting
   "No results found." and exiting 0.** These modes need a server to embed the
@@ -78,6 +157,17 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   to the entry's creation time, evaluated independently of archived status
   across list, text, semantic, and hybrid search. `--archived` again controls
   only the current-state view, orthogonal to `--as-of`.
+- **`spelunk memory timeline <topic>` now filters by the topic instead of
+  dumping the whole store.** The topic argument was ignored: every query
+  returned every entry (a nonsense topic returned the same set as a real one),
+  because the local path fetched the nearest-neighbour set sized to `--limit`
+  and, for any store smaller than the limit, that was simply everything. Timeline
+  now routes the topic through the same no-server full-text path as `memory
+  search --mode text`, so a topic returns only its related entries and an
+  unrelated topic returns none — still sorted ascending by `valid_at`, and still
+  including superseded/archived entries so you can see how understanding evolved.
+  As a bonus, `memory timeline` no longer needs a running inference server: it
+  matches on text, not embeddings.
 
 ## [0.9.6] — 2026-07-31
 

@@ -250,6 +250,80 @@ fn add_edge_duplicate_silently_ignored() {
     );
 }
 
+// ── relates_to_edges_for_sync(): only fully-synced relates_to edges ───────────
+
+// The edge push enumerates only `relates_to` edges whose BOTH endpoints carry
+// a `remote_id` (so the cloud knows them by external_id) and a `uuid`. An edge
+// with an unsynced endpoint is withheld until a later sync lands it; the two
+// other edge kinds are never enumerated (supersedes rides its entry, and
+// contradicts is server-derived).
+#[test]
+fn relates_to_edges_for_sync_requires_both_endpoints_synced() {
+    let store = open_store();
+    let (a, _) = store
+        .add_note("note", "A", "", &[], &[], None, None)
+        .unwrap();
+    let (b, _) = store
+        .add_note("note", "B", "", &[], &[], None, None)
+        .unwrap();
+    // Mint uuids the way a push would, then wire a linker -> target edge.
+    store.ensure_uuid(a).unwrap();
+    store.ensure_uuid(b).unwrap();
+    store.add_edge(b, a, "relates_to").unwrap();
+
+    // Neither endpoint synced yet: nothing to push.
+    assert!(store.relates_to_edges_for_sync().unwrap().is_empty());
+
+    // Only one endpoint synced: still withheld.
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-0000000000a1")
+        .unwrap();
+    assert!(
+        store.relates_to_edges_for_sync().unwrap().is_empty(),
+        "an edge with one unsynced endpoint must not be pushable"
+    );
+
+    // Both synced: the edge is now pushable, keyed by each endpoint's uuid.
+    store
+        .set_remote_id(b, "01890000-0000-7000-8000-0000000000b2")
+        .unwrap();
+    let edges = store.relates_to_edges_for_sync().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].from_local_id, b);
+    assert_eq!(edges[0].to_local_id, a);
+    assert_eq!(
+        edges[0].from_external_id,
+        store.uuid_for(b).unwrap().unwrap()
+    );
+    assert_eq!(edges[0].to_external_id, store.uuid_for(a).unwrap().unwrap());
+}
+
+#[test]
+fn relates_to_edges_for_sync_ignores_supersedes_and_contradicts() {
+    let store = open_store();
+    let (a, _) = store
+        .add_note("note", "A", "", &[], &[], None, None)
+        .unwrap();
+    let (b, _) = store
+        .add_note("note", "B", "", &[], &[], None, None)
+        .unwrap();
+    store.ensure_uuid(a).unwrap();
+    store.ensure_uuid(b).unwrap();
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-0000000000a1")
+        .unwrap();
+    store
+        .set_remote_id(b, "01890000-0000-7000-8000-0000000000b2")
+        .unwrap();
+    store.add_edge(b, a, "supersedes").unwrap();
+    store.add_edge(b, a, "contradicts").unwrap();
+
+    assert!(
+        store.relates_to_edges_for_sync().unwrap().is_empty(),
+        "only relates_to edges are enumerated for push"
+    );
+}
+
 // ── UUID identity + cursor + idempotent apply ────────────────────────────────
 
 #[test]
@@ -2171,4 +2245,68 @@ fn legacy_inference_preserves_distinct_multi_row_content_not_just_row_count() {
 // Expected `Note::superseded_by` for a store-minted rowid.
 fn sup(id: i64) -> Option<crate::storage::memory::NoteId> {
     Some(crate::storage::memory::NoteId::from_i64(id))
+}
+
+// ── list_by_entity_ids ───────────────────────────────────────────────────────
+
+// `list_by_entity_ids` returns exactly the rows whose entity_id is requested,
+// and applies the same active-only / include_archived gate as `list_filtered`.
+// This is the SQLite read-back that `memory list --source-ref` uses once the
+// git-notes anchor has resolved which entities belong to the commit.
+#[test]
+fn list_by_entity_ids_selects_and_respects_archived() {
+    use crate::storage::entity_id::entity_id;
+
+    let store = open_store();
+    let (id_a, _) = store
+        .add_note("decision", "A", "body a", &[], &[], None, None)
+        .unwrap();
+    store
+        .add_note("decision", "B", "body b", &[], &[], None, None)
+        .unwrap();
+
+    let ea = entity_id("decision", "A", "body a");
+    let eb = entity_id("decision", "B", "body b");
+
+    // Only the requested entity comes back.
+    let only_a = store
+        .list_by_entity_ids(std::slice::from_ref(&ea), 50, false, None)
+        .unwrap();
+    assert_eq!(only_a.len(), 1);
+    assert_eq!(only_a[0].title, "A");
+
+    // Both when both ids are requested.
+    let both = store
+        .list_by_entity_ids(&[ea.clone(), eb.clone()], 50, false, None)
+        .unwrap();
+    assert_eq!(both.len(), 2);
+
+    // An empty id list is a no-op, not a full-table scan.
+    assert!(
+        store
+            .list_by_entity_ids(&[], 50, false, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    // An unknown id matches nothing.
+    assert!(
+        store
+            .list_by_entity_ids(&["deadbeef".to_string()], 50, false, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Archiving A hides it by default, but include_archived surfaces it again.
+    store.archive(id_a).unwrap();
+    assert!(
+        store
+            .list_by_entity_ids(std::slice::from_ref(&ea), 50, false, None)
+            .unwrap()
+            .is_empty(),
+        "archived entry must be hidden when include_archived is false"
+    );
+    let with_archived = store.list_by_entity_ids(&[ea], 50, true, None).unwrap();
+    assert_eq!(with_archived.len(), 1, "include_archived must surface it");
+    assert_eq!(with_archived[0].status, "archived");
 }
