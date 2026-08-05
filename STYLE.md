@@ -81,6 +81,8 @@ fact is a candidate for a one-clause rewrite, not a trim.
 The codebase currently has zero `TODO`, `FIXME`, `XXX`, or `HACK` comments, and
 we intend to keep it that way. Unfinished work goes in an issue, where it is
 visible, assignable, and closable. A `TODO` in source is an issue nobody filed.
+A `TODO` is solutionizing before you fully understand the problem. It robs the
+next engineer of agency to fix their problem. It also falls flat against YAGNI.
 
 ### Em-dashes
 
