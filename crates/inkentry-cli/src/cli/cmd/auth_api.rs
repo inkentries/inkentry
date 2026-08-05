@@ -682,7 +682,7 @@ mod tests {
     fn is_prod_cloud_url_only_matches_canonical_host() {
         assert!(is_prod_cloud_url("https://api.spelunk.cloud"));
         assert!(is_prod_cloud_url("https://api.spelunk.cloud/"));
-        assert!(is_prod_cloud_url("https://API.INKENTRY.CLOUD"));
+        assert!(is_prod_cloud_url("https://API.SPELUNK.CLOUD"));
         assert!(!is_prod_cloud_url("https://staging.spelunk.cloud"));
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
     }

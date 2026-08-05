@@ -27,7 +27,7 @@ fn url_percent_encodes_github_remote_slug() {
     let b = backend("github.com/spelunk-cloud/spelunk");
     assert_eq!(
         b.url("memory"),
-        "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Finkentry/memory"
+        "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
     );
 }
 

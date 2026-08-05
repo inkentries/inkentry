@@ -247,16 +247,18 @@ fn unbundle(bundle: &Path, into: &Path) {
         .expect("running git clone on the corpus bundle");
     assert!(status.success(), "git clone of {} failed", bundle.display());
     // `git clone` of a bundle brings the branches but leaves notes behind:
-    // refs/notes/* is outside the default refspec.
+    // refs/notes/* is outside the default refspec. The corpus bundle predates
+    // the rename, so its notes live on the old ref; fetch them onto the ref the
+    // current binary reads, which is exactly what the user-data migration does.
     let status = git_command(into)
         .args([
             "fetch",
             "--quiet",
             "origin",
-            "refs/notes/inkentry:refs/notes/inkentry",
+            "refs/notes/spelunk:refs/notes/inkentry",
         ])
         .status()
-        .expect("fetching refs/notes/inkentry from the corpus bundle");
+        .expect("fetching notes ref from the corpus bundle");
     assert!(status.success(), "fetching notes ref failed");
 }
 
