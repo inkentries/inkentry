@@ -95,6 +95,13 @@ plus `jsonl` on `search`, `graph`, `memory list`, and `memory since`, and
 and a different one again from plumbing JSONL: none of it is covered by the
 plumbing golden schema.
 
+In `--format porcelain`, stdout carries **only** the stable `key=value` lines
+(and, with `--files`, the stale paths). Human diagnostics that `check` also
+computes — the server-reachability line, the active-intent list, and the
+file-overlap warning — are written to **stderr** in this mode, so a pipe over
+stdout stays machine-parseable while a human at the terminal still sees them.
+In text mode those diagnostics remain on stdout.
+
 | Surface | Level |
 |---|---|
 | `spelunk status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/spelunk-cli/src/cli/cmd/status.rs`. |

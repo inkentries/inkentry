@@ -912,6 +912,156 @@ async fn test_check_reports_server_unreachable() {
         .stdout(predicate::str::contains("unreachable"));
 }
 
+// Porcelain mode must keep stdout a pure, machine-parseable `key=value` stream:
+// the server-reachability line (and its Unicode ✓/✗ glyphs) is a human
+// diagnostic and belongs on stderr, never mixed into the stdout a script reads
+// with `while read -r line`. The signal itself must not be dropped — it still
+// has to reach a human on stderr.
+#[tokio::test]
+async fn test_check_porcelain_routes_server_line_to_stderr() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "version": "test",
+            "capabilities": ["memory", "search.semantic", "explore"]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
+        .mount(&mock_server)
+        .await;
+
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let db_path = temp.path().join("index.db");
+    let config_path = write_config_with_server(
+        temp.path(),
+        &db_path,
+        &mock_server.uri(),
+        &mock_server.uri(),
+        &project_dir,
+    );
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("check")
+        .arg("--format")
+        .arg("porcelain")
+        .assert()
+        // Fresh index → exit 0, exactly as in text mode.
+        .success()
+        // stdout carries ONLY the stable key=value summary …
+        .stdout(predicate::str::contains("stale="))
+        .stdout(predicate::str::contains("total="))
+        .stdout(predicate::str::contains("last_indexed="))
+        // … and none of the human diagnostics or their glyphs.
+        .stdout(predicate::str::contains("Server:").not())
+        .stdout(predicate::str::contains("Active agent sessions").not())
+        .stdout(predicate::str::contains('·').not())
+        .stdout(predicate::str::contains('⚠').not())
+        .stdout(predicate::str::contains('✓').not())
+        .stdout(predicate::str::contains('✗').not())
+        // The reachability signal is preserved for a human — on stderr.
+        .stderr(predicate::str::contains("Server:"))
+        .stderr(predicate::str::contains("semantic search"));
+}
+
+// Exit code contract holds in BOTH modes: a stale index exits 1. Porcelain
+// stdout stays key=value even when stale, and the server line is still routed
+// to stderr rather than stdout.
+#[tokio::test]
+async fn test_check_exit_1_when_stale_in_both_modes() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "version": "test",
+            "capabilities": ["memory", "search.semantic", "explore"]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(IndexEmbedResponder)
+        .mount(&mock_server)
+        .await;
+
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let db_path = temp.path().join("index.db");
+    let config_path = write_config_with_server(
+        temp.path(),
+        &db_path,
+        &mock_server.uri(),
+        &mock_server.uri(),
+        &project_dir,
+    );
+
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // Mutate the indexed file so its on-disk hash no longer matches the index.
+    fs::write(project_dir.join("main.rs"), "fn main() { /* changed */ }").unwrap();
+
+    // Porcelain mode: exit 1, stdout still pure key=value, server line on stderr.
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("check")
+        .arg("--format")
+        .arg("porcelain")
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("stale=1"))
+        .stdout(predicate::str::contains("Server:").not())
+        .stderr(predicate::str::contains("Server:"));
+
+    // Text (human) mode: same exit code, and the server line stays on stdout.
+    let mut cmd = spelunk_bin();
+    cmd.current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("check")
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("Server:"));
+}
+
 // Investigation found no shared server/port/filesystem state this test could
 // race on (SPELUNK_NO_SERVER short-circuits before any is touched); flakes
 // under the parallel runner are attributed to generic child-process
