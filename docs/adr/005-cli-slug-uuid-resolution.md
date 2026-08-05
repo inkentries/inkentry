@@ -15,7 +15,7 @@ or (b) a resolution mechanism built into the CLI.
 
 ### What cloud-api exposes today
 
-`GET /v1/projects` (cloud-api `src/routes/projects.rs`, `listProjects`) returns the
+`GET /v1/projects` (cloud-api's `listProjects` operation) returns the
 authenticated key's visible projects:
 
 ```json
@@ -37,8 +37,8 @@ The endpoint is authenticated (any valid API key) and already deployed at
 
 **There is no dedicated slug-lookup endpoint.** All downstream routes
 (`/v1/projects/{project_id}/memory`, `/memory/since`, `/memory/batch`,
-`/memory/stream`, `/mcp`, `/llm/complete`, etc.) use `Path<Uuid>` — a raw UUID
-parsed directly out of the path segment.
+`/memory/stream`, `/mcp`, `/llm/complete`, etc.) declared `{project_id}` as a
+UUID: a raw UUID parsed directly out of the path segment.
 
 ### What the CLI does today (spelunk-oss)
 
@@ -49,8 +49,8 @@ as the path segment — the local server stores it in `projects.slug` and treats
 the slug as the persistence key. That pattern works because the OSS
 spelunk-server accepts any string as the project identifier.
 
-**cloud-api does not.** Its `{project_id}` parameter is typed `Path<Uuid>`; a
-non-UUID value (e.g., `"spelunk"`) causes Axum's extractor to return 422. So a
+**cloud-api does not.** Its `{project_id}` parameter accepts a UUID only; a
+non-UUID value (e.g., `"spelunk"`) is rejected 422. So a
 config of `project_id = "spelunk"` with `server_url = "https://api.spelunk.cloud"`
 fails immediately.
 
@@ -72,11 +72,12 @@ No new cloud-api endpoint is needed.
 > **Amendment: the resolution trigger below is retired for the memory-backend
 > path.** The Context above records the situation as it stood on 2026-06-19 and
 > is left as provenance. Its load-bearing premise, that cloud-api's
-> `{project_id}` path parameter is typed `Path<Uuid>` and therefore rejects a
-> slug, no longer holds: cloud-api `66fd265` made `POST /memory`, `GET /memory`,
-> `GET /memory/since`, `POST /memory/batch`, `/edges`, `/graph` and `/stream`
-> take `Path<String>` and accept a slug **or** a UUID. The self-hosted
-> spelunk-server has always accepted either.
+> `{project_id}` path parameter accepted a UUID only and therefore rejected a
+> slug, no longer holds: cloud-api's published contract now documents
+> `{project_id}` as "Project id (UUID) or slug" on `POST /memory`,
+> `GET /memory`, `GET /memory/since`, `POST /memory/batch`, `/edges`, `/graph`
+> and `/stream` alike. The self-hosted spelunk-server has always accepted
+> either.
 >
 > The two per-entry routes are the exception: `GET` and `DELETE
 > /memory/{entry_id}` are still `Path<(Uuid, Uuid)>`, so the project parameter
@@ -235,7 +236,7 @@ no cache write. This path is zero-cost for users who already have a UUID.
 ### D7. No cloud-api changes required
 
 The resolution contract relies entirely on the existing `GET /v1/projects` endpoint
-(`routes/projects.rs`, `listProjects`). No new endpoint, no schema change, no
+(the `listProjects` operation). No new endpoint, no schema change, no
 migration needed on the cloud-api side.
 
 ---

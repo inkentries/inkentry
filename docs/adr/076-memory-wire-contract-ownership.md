@@ -10,14 +10,11 @@ policy), and [ADR-062](062-temporal-as-of-semantic-search.md) (the temporal
 fields whose absence on both server-side peers is documented here for the
 first time). It does not reopen [ADR-056](056-oss-server-tenancy-model.md) or
 [ADR-071](071-per-server-client-bearer-scoping.md); credential handling is
-untouched. It references, but does not amend, cloud-api's own
-`docs/adr/072-cloud-oss-wire-contract-reconciliation.md`
-(`code/cloud-api/docs/adr/072-cloud-oss-wire-contract-reconciliation.md` in
-the workspace root layout this doc's author worked from) and
-`docs/adr/031-contract-testing-oss-cli-webapp.md` in that same repo, both
-cited below as evidence, not as decisions this ADR supersedes: ADR numbering
-is a single sequence shared with cloud-api, which is why this document is
-076, not the next free number in this repo's own listing.
+untouched. Every claim it makes about cloud-api is sourced to that service's
+published OpenAPI contract, cited by operation id, schema name, route, verb
+and field name. ADR numbering is a single sequence shared with cloud-api,
+which is why this document is 076, not the next free number in this repo's
+own listing.
 
 ## Context
 
@@ -27,7 +24,7 @@ The CLI's request/response structures for server memory
 (`crates/spelunk-core/src/storage/remote/wire_types.rs` and
 `crates/spelunk-core/src/storage/remote/sync.rs`) are hand-mirrored against
 the team server's handler structs (`crates/spelunk-server/src/handlers.rs`),
-and separately against cloud-api's implementation in a different repository.
+and separately against cloud-api's published API contract.
 Nothing enforces that the three agree. Johan: "I'm worried we have too
 flexible a shared interface there": the concern being that
 `#[serde(default)]` optionals and default unknown-field tolerance are load
@@ -53,8 +50,8 @@ against each other.
 
 ### This ADR's scope
 
-Per the task that spawned it: inventory the duplicated surface, establish
-cloud-api's stack, evaluate a shared crate vs. schema-first vs.
+Per the task that spawned it: inventory the duplicated surface, evaluate a
+shared crate vs. schema-first vs.
 status-quo-plus-contract-tests, assess which tolerances are deliberate
 compatibility affordances versus accidental looseness, and reach a
 YAGNI-justified recommendation. Wire-visible identity decisions (integer
@@ -73,12 +70,11 @@ to exercise it once this ADR's shared-definition or schema artifacts exist.
 
 ## Divergence inventory
 
-Built by reading all three implementations directly: `spelunk-core`'s
-`storage/remote/wire_types.rs` and `storage/remote/sync.rs`;
-`spelunk-server`'s `handlers.rs`, `db.rs`, and its `migrations/*.sql`; and
-cloud-api's `routes/memory.rs`, `routes/projects.rs`, `db/memory.rs`, and its
-`migrations/*.sql` (read via the sibling checkout at `code/cloud-api`, not
-modified).
+Built by reading this repo's two implementations directly (`spelunk-core`'s
+`storage/remote/wire_types.rs` and `storage/remote/sync.rs`, and
+`spelunk-server`'s `handlers.rs`, `db.rs`, and its `migrations/*.sql`) and,
+for cloud-api, by reading its published OpenAPI contract: the routes,
+operations, schemas and field names that document declares.
 
 ### Table 1: CLI (spelunk-core) vs. team server (spelunk-server)
 
@@ -120,55 +116,34 @@ distinguishing fact, whether this URL's `Project.id` is a UUID or an
 integer, is not something either side declares, only something the client
 guesses and cloud-api or self-hosted-ness happens to correlate with today.
 
-### Table 2: CLI vs. cloud-api (evidence gathered by reading `code/cloud-api` directly)
+### Table 2: CLI vs. cloud-api (evidence from cloud-api's published OpenAPI contract)
 
 | Shape | CLI side | cloud-api side | Divergence |
 |---|---|---|---|
-| Route surface | `RemoteMemoryBackend` issues `POST .../memory/search`, `POST .../memory/{id}/archive`, `POST .../memory/{id}/supersede` unconditionally, for any `server_url` in `cloud_first` mode (`storage/remote/mod.rs:340-483`) | cloud-api has **no** `/memory/search` route (search is `GET /memory?q=...`, unified with list: `routes/mod.rs:126-127`, `routes/memory.rs:142-154`); archive is `DELETE /memory/{entry_id}`, not a `POST .../archive` (`routes/mod.rs:122-123`); there is **no supersede route** at all, supersession is expressed only as a `"supersedes"` edge inside a batch payload (`routes/memory.rs:198-211,684-701`) | Three of `RemoteMemoryBackend`'s six CRUD methods target paths/verbs cloud-api does not serve. `cloud_first` mode against cloud-api is a real, documented configuration (it is the mechanism `resolve_cloud_project_uuid` exists for). This needs its own verification pass beyond what this ADR did (see the follow-up task filed alongside this document), but the route mismatch itself is confirmed directly against cloud-api's router, not inferred. |
-| Temporal fields | `source_ref` / `valid_at` / `invalid_at` (ADR-062) | Zero matches for any of the three across cloud-api's `src/`, `migrations/`, `tests/`, `docs/` | Same gap as the team server: cloud-api has no temporal-as-of concept either. Two independent server implementations, one shared absence, neither documented from the CLI's side. |
-| Tags / linked files | `NoteResponse.tags: Vec<String>` and `.linked_files: Vec<String>` are **required** fields (no `#[serde(default)]`) | `memory_entries` / `CreateEntryBody` / `EntryResponse` have no `tags` or `linked_files` concept at all (the only `tags`/`files` fields in the codebase belong to the unrelated `/graph` endpoint's `GraphNodeResponse`, explicitly commented "deferred post-MVP", `routes/edges.rs:108-112`) | If a cloud-api response genuinely omits these keys (not yet independently confirmed for every response shape in this pass), deserializing it into the CLI's `NoteResponse` fails outright on a missing required field, rather than defaulting. Recorded here as a concrete illustration of why "which fields are Option vs. required" is not a decision either side is making with the other side in view; full enumeration is follow-up work, not this ADR's claim. |
-| Embedding field name | `vector` / `vector_model` / `vector_precision` (`sync.rs`, matches cloud-api, see below) vs. `embedding` (`wire_types.rs`'s `AddNoteRequest`, used for the non-batch add path) | `CreateEntryBody.vector` / `.vector_model` / `.vector_precision` (`routes/memory.rs:61-68`) | `sync.rs`'s naming already matches cloud-api's (evidence the two were designed against each other at least once), while `wire_types.rs`'s plain `AddNoteRequest.embedding` (the single-note add path) does not match either peer's batch naming. Three names for what is conceptually one field across the three surfaces in play. |
-| Identity model | (as above) | **Single** UUID `memory_entries.id` (`migrations/004_memory_entries.sql:5`, `uuidv7()` default since `migrations/020_uuidv7_defaults.sql`) does double duty: it is both the single-entry CRUD key (`routes/memory.rs:1311-1384`) and the `/memory/since` cursor (`db/memory.rs:379-414`, `WHERE me.id > $after_id ORDER BY me.id ASC`). `external_id` (unique per project, `migrations/006_...sql`) is cloud-api's idempotency key, equivalent to the team server's `remote_id` | cloud-api's identity model is simpler than the team server's three-way split (one UUID does what the team server splits across `id`/`sync_id`), but is a **third, different** shape from either: nothing shared between the two server-side implementations' identity models, and the CLI has to already know which shape it is talking to for calls that use an id as a path parameter. |
-| Extra cloud-api-only fields | none of these exist client-side | `entry_type` (`memory`/`code_chunk`/`ci_harvest`), `embedding_dim`, `author` (`AuthorInfo`), `superseded`/`superseded_by` computed from the edges table | Not necessarily a problem (the CLI can ignore fields it doesn't need on responses it already parses tolerantly) but widens the actual shape gap between "the CLI's idea of a note" and "what cloud-api actually stores" well past what `wire_types.rs`'s comments suggest. |
+| Route surface | `RemoteMemoryBackend` issues `POST .../memory/search`, `POST .../memory/{id}/archive`, `POST .../memory/{id}/supersede` unconditionally, for any `server_url` in `cloud_first` mode (`storage/remote/mod.rs:340-483`) | The contract declares **no** `/memory/search` route: search is `listMemoryEntries` (`GET .../memory`) with a `q` query parameter, unified with plain list and returning scored items (`SearchListResponse`). Archive is `deleteMemoryEntry` (`DELETE .../memory/{entry_id}`, 204), not a `POST .../archive`. There is **no supersede operation** at all; supersession is expressible only as a `BatchEdgeItem` with `kind: "supersedes"` inside `batchCreateMemoryEntries` | Three of `RemoteMemoryBackend`'s six CRUD methods target paths/verbs cloud-api does not publish. `cloud_first` mode against cloud-api is a real, documented configuration (it is the mechanism `resolve_cloud_project_uuid` exists for). This needs its own verification pass beyond what this ADR did (see the follow-up task filed alongside this document), but the route mismatch itself is read straight off the published contract, not inferred. |
+| Temporal fields | `source_ref` / `valid_at` / `invalid_at` (ADR-062) | No `source_ref`, `valid_at` or `invalid_at` property on any schema in the contract (`CreateEntryBody`, `BatchEntryItem`, `EntryResponse`, `SearchEntryResponse`), and no operation that accepts one as a parameter | Same gap as the team server: cloud-api publishes no temporal-as-of vocabulary either. Two independent server surfaces, one shared absence, neither documented from the CLI's side. |
+| Tags / linked files | `NoteResponse.tags: Vec<String>` and `.linked_files: Vec<String>` are **required** fields (no `#[serde(default)]`) | `CreateEntryBody` and `EntryResponse` declare no `tags` or `linked_files` property at all. The only `tags`/`files` in the contract are on `GraphNodeResponse`, from the unrelated project-graph operation, and both are documented there as deferred post-MVP and always empty | The omission is contract-declared, not merely unobserved: `EntryResponse` is the full published shape for both the create (201) and fetch (200) responses, and neither key appears in it. Deserializing such a response into the CLI's `NoteResponse` fails outright on a missing required field rather than defaulting. A concrete illustration of why "which fields are Option vs. required" is not a decision either side is making with the other side in view. |
+| Embedding field name | `vector` / `vector_model` / `vector_precision` (`sync.rs`, matches cloud-api, see below) vs. `embedding` (`wire_types.rs`'s `AddNoteRequest`, used for the non-batch add path) | `CreateEntryBody.vector` / `.vector_model` / `.vector_precision`, and the same three on `BatchEntryItem` | `sync.rs`'s naming already matches cloud-api's (evidence the two were designed against each other at least once), while `wire_types.rs`'s plain `AddNoteRequest.embedding` (the single-note add path) does not match either peer's batch naming. Three names for what is conceptually one field across the three surfaces in play. |
+| Identity model | (as above) | **Single** UUID. `EntryResponse.id` (`format: uuid`) is also the `entry_id` path parameter of `getMemoryEntry` and `deleteMemoryEntry`, and `listMemorySince`'s preferred cursor is a UUIDv7 `since_id` over that same id. `external_id` is a separate, client-supplied idempotency key: `batchCreateMemoryEntries` is documented as idempotent on it, and `BatchEdgeItem` addresses entries by `from_external_id` / `to_external_id`. That makes `external_id` the equivalent of the team server's `remote_id` | cloud-api's identity model is simpler than the team server's three-way split (one UUID does what the team server splits across `id`/`sync_id`), but is a **third, different** shape from either: nothing shared between the two server-side implementations' identity models, and the CLI has to already know which shape it is talking to for calls that use an id as a path parameter. |
+| Extra cloud-api-only fields | none of these exist client-side | `entry_type`, `embedding_dim`, `author` (`AuthorInfo`), and `superseded` / `superseded_by`, all declared on `EntryResponse` | Not necessarily a problem (the CLI can ignore fields it doesn't need on responses it already parses tolerantly) but widens the actual shape gap between "the CLI's idea of a note" and what cloud-api's contract declares, well past what `wire_types.rs`'s comments suggest. |
 
 ### The reconciliation pattern already has a track record
 
-cloud-api's own `docs/adr/072-cloud-oss-wire-contract-reconciliation.md`
-(2026-07-16, ten days before this review was requested) already reconciled
-the `GET /v1/health` capability vocabulary, confirmed the batch-push
-capability gap between cloud-api and the OSS server, and fixed the
-`/memory/since` dual-cursor contract and project-slug validation between all
-three surfaces. It is direct evidence that this class of drift is real and
-recurring, not hypothetical, and it is equally direct evidence of the
-status-quo approach's failure mode: that ADR does not mention
-`source_ref`/`valid_at`/`invalid_at` or `tags`/`linked_files` at all. Those
-gaps were not judged acceptable and left out; they were not in view. Ad hoc,
+A prior reconciliation between these same surfaces is legible in the
+published contract itself: `getHealth`'s `HealthResponse` declares an explicit
+capability vocabulary, `listMemorySince` documents a UUIDv7 `since_id` cursor
+as the preferred, drift-free form alongside the timestamp form kept for SSE
+catch-up, and the `project_id` path parameter is documented on every memory
+operation as accepting either a UUID or a slug. None of those points could be
+derived from one surface alone; each had to be agreed across them.
+
+What that same contract still has no vocabulary for is
+`source_ref`/`valid_at`/`invalid_at`, or `tags`/`linked_files`. Those gaps
+were not judged acceptable and left out; they were not in view. Ad hoc,
 find-it-when-someone-notices reconciliation has already happened once and
-already missed a category of drift this review found by reading the
-structs and migrations directly rather than by symptom.
-
-## cloud-api's stack (verified directly, not assumed)
-
-Rust. `code/cloud-api/Cargo.toml`: package `spelunk-cloud`, edition 2024. Web
-framework **axum 0.8**. Database layer **sqlx 0.9** against
-**PostgreSQL + pgvector**, hand-written SQL via `sqlx::query`/`QueryBuilder`,
-no ORM. Schema-doc generation via **utoipa 5** + **utoipa-axum**, with a
-dedicated `src/bin/gen-openapi.rs` binary that emits `docs/openapi.yaml`;
-`src/apidoc.rs` states outright that "code is the source of truth for the
-HTTP contract" and that CI diffs the generated spec against the checked-in
-file, failing the build on drift (`tests/openapi_contract.rs`, plus an
-explicit `EXPECTED_OPERATIONS` table asserting the full route set is
-present). Deploy cadence is **continuous**: `.github/workflows/deploy.yml`
-triggers on every push to `main` and auto-deploys to a dev environment, then
-prod, gated only by the OpenAPI contract test and a live smoke probe. The
-workflow's own header comment attributes this cadence to that repo's
-"ADR-029: GitHub Flow + CD." There is no versioned-release process on cloud-api
-comparable to spelunk-oss's tag-triggered builds.
-
-This settles acceptance criterion 2 with evidence rather than assumption: a
-shared **crate** is mechanically possible for cloud-api (same language), but
-the deploy-cadence mismatch is real and is weighed explicitly below, not
-waved off because the language matches.
+already missed a category of drift this review found by comparing the CLI's
+structs against each peer's declared surface field by field, rather than by
+symptom.
 
 ## Options considered
 
@@ -208,23 +183,22 @@ having no `source_ref` concept to tolerate).
   what the version-skew contract-tests work's n±1 policy is for. That is
   orthogonal to *build-time* source coupling, which this workspace already
   has completely.)
-- **CLI <-> cloud-api:** the opposite. cloud-api deploys on every merge to
-  `main`; spelunk-oss ships on a version tag. Pulling cloud-api into the same
-  compiled crate means either vendoring it as a path dependency (impossible,
-  separate repos) or a git/registry dependency pinned to a spelunk-oss
-  commit or tag. Either way, a wire-contract change cannot reach production
-  on cloud-api's continuous-deploy path until spelunk-oss cuts a release (or
-  cloud-api's pin is bumped to an unreleased commit, which trades the
-  coupling cost for a stability cost). This directly collides with
-  cloud-api's own deploy model (`deploy.yml`, merge-to-main = deploy) and
-  would either slow cloud-api down or push it toward pinning to
-  unreleased commits, both worse than what exists today for that leg.
+- **CLI <-> cloud-api:** the opposite. cloud-api is a separate service,
+  released independently of spelunk-oss's version tags. Pulling it into the
+  same compiled crate means either vendoring it as a path dependency
+  (impossible, separate repos) or a git/registry dependency pinned to a
+  spelunk-oss commit or tag. Either way, a wire-contract change could not
+  reach cloud-api's published contract until spelunk-oss cut a release, or
+  cloud-api's pin would have to track unreleased commits, trading the coupling
+  cost for a stability cost. Today that leg pays neither: cloud-api publishes
+  its contract independently of spelunk-oss's release tags, and the CLI
+  consumes it.
 
 ### b. Schema-first (OpenAPI/JSON Schema as the source of truth, generated per consumer)
 
 **Drift prevention:** strong, and asymmetric with what already exists.
-cloud-api already has this pattern in production for its own contract
-(`gen-openapi` + `docs/openapi.yaml` + CI diff, ADR-031 in that repo). The
+cloud-api already practises it for its own contract: it publishes an OpenAPI
+document and treats that document as authoritative for its HTTP surface. The
 team server already has the *server-side half* of this exact pattern:
 `utoipa`-derived `ApiDoc` (`spelunk-server/src/lib.rs:425-426,505`), served
 live at `/api-docs/openapi.json`, snapshotted to the checked-in
@@ -247,8 +221,8 @@ fixture targets.
 *not* asymmetric between them. Nothing is compiled together across repos; a
 consumer regenerates types from a checked-in spec snapshot at its own pace
 and catches drift at build/CI time (a failing contract test), not at deploy
-time (a blocked release). cloud-api keeps its continuous-deploy cadence
-untouched; the team-server leg keeps the CI-enforced generation it already
+time (a blocked release). cloud-api's own release process is untouched; the
+team-server leg keeps the CI-enforced generation it already
 has; the CLI adds a codegen or contract-test step against whichever spec
 snapshot it vendors, on its own release cadence, independent of either
 server's cadence.
@@ -261,12 +235,12 @@ version-skew contract-tests work is already building.
 **Drift prevention:** partial, and retrospective by construction. Contract
 tests validate *today's* behavior; they cannot invent the assertion "the team
 server should accept `source_ref`" unless someone already knows to write it.
-ADR-072 in cloud-api is direct evidence of exactly this failure mode: a real
-reconciliation pass, done carefully, still missed the temporal-field and
+The prior reconciliation described above is direct evidence of exactly this
+failure mode: a real pass, done carefully, still left the temporal-field and
 tags/linked_files gaps because nobody was looking at the right diff. A
 contract-test suite built without a shared definition or a schema to check
 against would need to independently rediscover every gap this review found
-by reading structs and migrations directly, and would canonize any gap it
+by comparing declared surfaces field by field, and would canonize any gap it
 doesn't happen to think to test as "expected", rather than closing it.
 
 **Skew-window support:** fine: this is what the fixtures are for regardless
@@ -329,15 +303,15 @@ already fits it, and keep contract tests under both:**
 
 2. **CLI <-> cloud-api: schema-first**, building on infrastructure that
    already exists on both ends of this leg rather than inventing a third.
-   cloud-api's `docs/openapi.yaml` (ADR-031, CI-enforced) becomes the
+   cloud-api's published OpenAPI document becomes the
    contract source for this leg; `spelunk-core`'s cloud-facing wire code
    (`sync.rs`'s `CloudSyncClient`, and `RemoteMemoryBackend` when
    `server_url` resolves to cloud-api) is validated against a vendored
    snapshot of that spec via a contract test, in the same harness the
    version-skew contract-tests work is already building. Justified because
-   option (a) applied to this leg costs real coupling against cloud-api's
-   continuous-deploy model (verified above), while schema-first costs
-   comparably little and reuses machinery that already exists on both sides.
+   option (a) applied to this leg costs real cross-repo release coupling
+   (above), while schema-first costs comparably little and reuses machinery
+   that already exists on both sides.
 
 3. **Do not force one wire definition across all three.** cloud-api's route
    surface has already diverged from the team server's by more than
@@ -413,8 +387,7 @@ review found:
 - **Two known-live defects get a fix path, not just a write-up.** The
   temporal-field silent drop and the `vector`/`embedding` mismatch on the
   CLI<->team-server leg are eliminated by construction once the shared crate
-  lands, rather than requiring a discovered-by-hand reconciliation pass like
-  ADR-072's.
+  lands, rather than requiring another discovered-by-hand reconciliation pass.
 - **The `GET /v1/projects` bug and the cloud-api route-surface mismatches
   found in this review are not fixed by this ADR.** They are implementation
   bugs, not architecture questions, and are being filed as a separate,
@@ -426,13 +399,13 @@ review found:
   vendored cloud-api schema snapshot.** Keeping that snapshot current is an
   ongoing maintenance cost, materially cheaper than the status quo's
   find-it-by-reading-both-codebases cost, but not zero: it is a
-  vendored-file update, most naturally landing whenever cloud-api's
-  `docs/openapi.yaml` gains a field the CLI needs to consume.
+  vendored-file update, most naturally landing whenever cloud-api's published
+  contract gains a field the CLI needs to consume.
 - **The status quo's duplication does not disappear entirely.** cloud-api's
-  own request/response types stay generated from its own code (that is
-  option (b) as already practiced on that side); this ADR does not ask
-  cloud-api to consume a spelunk-oss-owned schema, only to keep publishing
-  the one it already treats as authoritative.
+  own request/response types stay cloud-api's concern (that is option (b) as
+  already practised on that side); this ADR does not ask cloud-api to consume
+  a spelunk-oss-owned schema, only to keep publishing the contract it already
+  treats as authoritative.
 
 ## Security implications
 
@@ -453,10 +426,10 @@ finding.
   point the "two separate contracts" split in the Decision should be
   revisited: a single schema-first source might then reasonably cover both
   legs.
-- **cloud-api moves off continuous-deploy-per-merge to a versioned release
-  cadence.** The coupling-cost argument against folding it into the shared
-  compiled crate weakens specifically because it was built on the verified
-  fact of continuous deployment; if that fact changes, option (a) could
+- **cloud-api and spelunk-oss come to share a release cadence**, such that a
+  shared compiled crate could be version-locked across both. The coupling-cost
+  argument against folding cloud-api into that crate rests entirely on the two
+  being released independently; if that stops being true, option (a) could
   reasonably extend to cover cloud-api too.
 - **The shared `spelunk-wire` crate starts accumulating `Option<T>` /
   `#[serde(default)]` fields for reasons other than genuine cross-version

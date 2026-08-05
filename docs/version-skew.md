@@ -10,7 +10,7 @@ The CLI talks to three server-side peers, and they drift independently:
 |---|---|---|
 | **Loopback server** | auto-discovered on `127.0.0.1:7777` | The CLI starts and manages it, so it is normally the same version. It can go stale when a long-running daemon outlives an upgrade. |
 | **Team `spelunk-server`** | explicit `server_url` | Upgraded on someone else's schedule. Skew is guaranteed, in both directions. |
-| **cloud-api** | explicit `server_url` | Deployed continuously, so it is effectively always newer than any released CLI. |
+| **cloud-api** | explicit `server_url` | Released independently of the CLI, so it can be ahead of any released CLI at any time. |
 
 Drift can enter from any of the three independently. A newer CLI meets an older
 server, and an older CLI meets a newer server, in the same week.
