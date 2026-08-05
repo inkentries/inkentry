@@ -29,7 +29,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
   model (~339 MB) is downloaded once on first server start; after that,
   semantic search runs entirely on-machine. Full-text search, the code graph,
   and memory work with no server and no network at all.
-- **Disk** — the index lives in `.spelunk/` inside your project; expect it to
+- **Disk** — the index lives in `.inkentry/` inside your project; expect it to
   be a fraction of the source tree's size, plus the one-time model download in
   the model cache directory.
 

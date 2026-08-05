@@ -13,7 +13,7 @@ use predicates::prelude::*;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-const TRACKING_REF: &str = "refs/notes/origin/spelunk";
+const TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
 fn git(dir: &Path, args: &[&str]) {
     let out = git_out(dir, args);
@@ -42,7 +42,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&git_out(dir, args).stdout).into_owned()
 }
 
-// Fetch `refs/notes/spelunk` from `origin` into this repo's tracking ref.
+// Fetch `refs/notes/inkentry` from `origin` into this repo's tracking ref.
 // Explicit rather than relying on `spelunk init`'s configured refspec, so
 // each test controls exactly when a fetch happens.
 fn fetch_notes(dir: &Path) {
@@ -52,7 +52,7 @@ fn fetch_notes(dir: &Path) {
             "fetch",
             "-q",
             "origin",
-            &format!("refs/notes/spelunk:{TRACKING_REF}"),
+            &format!("refs/notes/inkentry:{TRACKING_REF}"),
         ],
     );
 }
@@ -83,7 +83,7 @@ fn empty_config(dir: &Path) -> PathBuf {
 }
 
 // Run `spelunk init --no-index` in `dir`, using `dir` itself as HOME (so the
-// import writes `dir/.spelunk/memory.db`). Offline, non-TTY.
+// import writes `dir/.inkentry/memory.db`). Offline, non-TTY.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
     let out = spelunk_bin_in(dir)
@@ -102,9 +102,9 @@ fn run_init(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-// The spelunk records currently in HEAD's `refs/notes/spelunk` note.
+// The spelunk records currently in HEAD's `refs/notes/inkentry` note.
 fn spelunk_note_lines(dir: &Path) -> Vec<String> {
-    let blob = git_stdout(dir, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let blob = git_stdout(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     blob.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -147,7 +147,7 @@ fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> i64 {
 }
 
 // A bare origin plus two clones ("a" and "b") that both hold the same
-// single-commit history. Both get a `.spelunk/` dir so a plain `memory add`
+// single-commit history. Both get a `.inkentry/` dir so a plain `memory add`
 // resolves to the SQLite-primary-plus-carrier path (not the pre-init
 // fallback). Returns (origin, a, b).
 fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
@@ -169,7 +169,7 @@ fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
     init_repo_with_commit(&a);
     git(&a, &["remote", "add", "origin", origin.to_str().unwrap()]);
     git(&a, &["push", "-q", "-u", "origin", "main"]);
-    std::fs::create_dir_all(a.join(".spelunk")).unwrap();
+    std::fs::create_dir_all(a.join(".inkentry")).unwrap();
 
     let b = tmp.join("b");
     git(
@@ -178,7 +178,7 @@ fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
     );
     git(&b, &["config", "user.email", "b@example.com"]);
     git(&b, &["config", "user.name", "B"]);
-    std::fs::create_dir_all(b.join(".spelunk")).unwrap();
+    std::fs::create_dir_all(b.join(".inkentry")).unwrap();
 
     (origin, a, b)
 }
@@ -213,7 +213,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     let seeded = spelunk_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
     let x_id = record_field(&seeded[0], "id");
-    git(&a, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B adopts X onto its own working ref before diverging: without a prior
     // local commit of its own, this merge is a plain fast-forward/create.
@@ -244,7 +244,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         .assert()
         .success()
         .stdout(predicate::str::contains("Archived memory entry"));
-    git(&a, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     fetch_notes(&b);
 
@@ -339,11 +339,11 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     let seeded = spelunk_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
     let a_id = record_field(&seeded[0], "id");
-    git(&a, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B needs its own local (SQLite) copy of X to archive it through the
     // normal command, so it imports via a real `spelunk init` rather than the
-    // manual `.spelunk` mkdir the other clones in this file use.
+    // manual `.inkentry` mkdir the other clones in this file use.
     fetch_notes(&b);
     let init_stdout = run_init(&b);
     assert!(
@@ -363,7 +363,7 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
         .args(["memory", "archive", &a_id])
         .assert()
         .success();
-    git(&a, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     fetch_notes(&b);
 
@@ -398,7 +398,7 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
     let dir = tmp.path().join("repo");
     std::fs::create_dir_all(&dir).unwrap();
     init_repo_with_commit(&dir);
-    std::fs::create_dir_all(dir.join(".spelunk")).unwrap();
+    std::fs::create_dir_all(dir.join(".inkentry")).unwrap();
 
     bin(home.path(), &dir)
         .args([
@@ -426,7 +426,7 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
     // to assert against.
     let enforced = !git_out(
         &dir,
-        &["notes", "--ref=spelunk", "add", "-f", "-m", "x", "HEAD"],
+        &["notes", "--ref=inkentry", "add", "-f", "-m", "x", "HEAD"],
     )
     .status
     .success();

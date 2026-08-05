@@ -649,7 +649,7 @@ const GIT_NOTES_IMPORT_LIMIT: usize = 500;
 /// Import git-notes memory entries into the project `memory.db` during `init`.
 ///
 /// Reads every entry from the enclosing repo's git-notes backend
-/// (`refs/notes/spelunk`) and inserts those absent from `memory.db`, without
+/// (`refs/notes/inkentry`) and inserts those absent from `memory.db`, without
 /// embeddings (git-notes entries carry none). Dedup uses the same content hash
 /// as `memory reconcile`, so a re-run imports nothing. Returns how many were
 /// imported. An empty/absent notes ref is a no-op (returns 0).
@@ -756,8 +756,8 @@ pub(crate) async fn import_git_notes_into_memory(
 /// notes refs moved since the last import (ADR-077 D1/D2).
 ///
 /// Two in-process ref reads gate the work: the merge subprocess runs only when
-/// the tracking ref (`refs/notes/origin/spelunk`) moved, and the import walk
-/// runs only when the working ref (`refs/notes/spelunk`) moved. The steady
+/// the tracking ref (`refs/notes/origin/inkentry`) moved, and the import walk
+/// runs only when the working ref (`refs/notes/inkentry`) moved. The steady
 /// state — nothing fetched since the last import — spawns zero git subprocesses
 /// and does no import walk. Does no network: it merges and imports only what the
 /// user's own `git fetch` already wrote.
@@ -985,7 +985,7 @@ mod init_import_tests {
             .await
             .expect("git-notes add");
 
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("import");
@@ -1042,7 +1042,7 @@ mod init_import_tests {
             .expect("append legacy record");
 
         let raw = std::process::Command::new("git")
-            .args(["notes", "--ref=spelunk", "show", "HEAD"])
+            .args(["notes", "--ref=inkentry", "show", "HEAD"])
             .current_dir(git_root)
             .output()
             .expect("git notes show");
@@ -1053,7 +1053,7 @@ mod init_import_tests {
         );
 
         // Seed memory.db with the same content, as a prior import would have.
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
         store
             .add_note_with_created_at(
@@ -1084,7 +1084,7 @@ mod init_import_tests {
         register_sqlite_vec();
         let repo = make_temp_git_repo();
         let git_root = repo.path();
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("import");
@@ -1100,7 +1100,7 @@ mod init_import_tests {
         register_sqlite_vec();
         let repo = make_temp_git_repo_no_commit();
         let git_root = repo.path();
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
@@ -1119,7 +1119,7 @@ mod init_import_tests {
         register_sqlite_vec();
         let repo = make_temp_git_repo();
         let git_root = repo.path();
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
@@ -1159,7 +1159,7 @@ mod init_import_tests {
             "the seeded entry must archive"
         );
 
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("import");
@@ -1241,7 +1241,7 @@ mod init_import_tests {
             .find(|n| n.title == "already present")
             .context("entry A present in git notes")?;
 
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         {
             let store = MemoryStore::open(&mem_path).context("open memory.db")?;
             let tags: Vec<&str> = a.tags.iter().map(String::as_str).collect();
@@ -1433,7 +1433,7 @@ mod init_import_tests {
                 .expect("git-notes add");
         }
 
-        let mem_path = git_root.join(".spelunk").join("memory.db");
+        let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("import");

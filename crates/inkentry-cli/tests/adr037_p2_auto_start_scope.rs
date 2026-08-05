@@ -25,7 +25,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 fn state_dir_under(home: &Path) -> std::path::PathBuf {
-    home.join(".local").join("state").join("spelunk")
+    home.join(".local").join("state").join("inkentry")
 }
 
 /// Seed one local memory entry via a config with the given `mode` (or the
@@ -41,7 +41,7 @@ fn assert_write_never_auto_starts(mode_toml: &str) {
 
     write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
     if !mode_toml.is_empty() {
-        let cfg_path = project.join(".spelunk").join("config.toml");
+        let cfg_path = project.join(".inkentry").join("config.toml");
         let mut existing = std::fs::read_to_string(&cfg_path).unwrap();
         existing.push_str(mode_toml);
         std::fs::write(&cfg_path, existing).unwrap();
@@ -109,7 +109,7 @@ fn cloud_first_mode_write_never_auto_starts() {
     // (and fails there, since nothing listens on port 1) rather than being
     // rejected at config validation.
     write_project_server_config(&project, "http://127.0.0.1:1", "team/proj");
-    let cfg_path = project.join(".spelunk").join("config.toml");
+    let cfg_path = project.join(".inkentry").join("config.toml");
     let mut existing = std::fs::read_to_string(&cfg_path).unwrap();
     existing.push_str("mode = \"cloud_first\"\n");
     std::fs::write(&cfg_path, existing).unwrap();
@@ -237,7 +237,7 @@ async fn write_never_makes_a_sync_call_to_server_url_even_when_it_is_reachable()
 
 // ── nudge must never open a placeholder mem_path ────────────────────────────
 //
-// `memory add --backend git-notes` in a git repo with no local `.spelunk/`
+// `memory add --backend git-notes` in a git repo with no local `.inkentry/`
 // project resolves `mem_path` to a placeholder that `resolve_memory_store`'s
 // own doc comment says "pre-init callers never open"
 // (`crates/inkentry-cli/src/cli/cmd/memory/mod.rs`). The write itself correctly
@@ -305,7 +305,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
         let _ = axum::serve(listener, app).await;
     });
 
-    let state_dir = home.join(".local").join("state").join("spelunk");
+    let state_dir = home.join(".local").join("state").join("inkentry");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("server.port"), format!("{relay_port}\n")).unwrap();
 
@@ -342,9 +342,9 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert!(
-        !repo.join(".spelunk").exists(),
+        !repo.join(".inkentry").exists(),
         "explicit --backend git-notes with no local project must never create \
-         a .spelunk/ project as a side effect of the post-write relay nudge"
+         a .inkentry/ project as a side effect of the post-write relay nudge"
     );
     // The placeholder `mem_path` resolves to `cfg.db_path.with_file_name(...)`
     // (the global, no-project default under `SPELUNK_CONFIG_DIR`), not
@@ -353,7 +353,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
     assert!(
         !home
             .join(".config")
-            .join("spelunk")
+            .join("inkentry")
             .join("memory.db")
             .exists(),
         "must never create a phantom global memory.db as a side effect of an \

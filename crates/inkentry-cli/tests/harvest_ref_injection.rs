@@ -18,7 +18,7 @@ use tempfile::tempdir;
 // configured" gate: the injection guard under test fires before any request
 // reaches that address, so it deliberately never needs to be reachable.
 // `Config::load` only honors those two fields from project-level
-// `.spelunk/config.toml` (or env), never the global `--config` file, so they
+// `.inkentry/config.toml` (or env), never the global `--config` file, so they
 // land in `dir`'s project config instead of `dir/config.toml`. Every caller
 // sets `.current_dir(dir)`.
 //
@@ -45,10 +45,10 @@ fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
 /// Initialize a throwaway git repo with a single commit so a real HEAD exists.
 fn init_repo(dir: &std::path::Path) {
     init_git_repo(dir);
-    // ADR-067: `memory harvest` fails closed without a local `.spelunk/` project,
+    // ADR-067: `memory harvest` fails closed without a local `.inkentry/` project,
     // so make this repo a real project — otherwise the guard fires before the
     // ref-injection check under test is reached.
-    fs::create_dir_all(dir.join(".spelunk")).expect("create .spelunk");
+    fs::create_dir_all(dir.join(".inkentry")).expect("create .inkentry");
 }
 
 #[test]

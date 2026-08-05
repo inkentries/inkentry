@@ -73,12 +73,12 @@ async fn mount_since_empty(server: &MockServer) {
 // Write a config with no `server_key`/`[auth]`, so `ensure_fresh_server_key`
 // takes its no-op path (`auth_api.rs`) and push/sync never needs a real
 // WorkOS login against a keyless plaintext loopback server. `server_url`/
-// `project_id` point at the mock server via `<dir>/.spelunk/config.toml`
+// `project_id` point at the mock server via `<dir>/.inkentry/config.toml`
 // instead of this global file: `Config::load` only honors those two fields
 // from a project-level config (or env). Every caller already sets
 // `.current_dir(dir)`.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
-    let db_path = dir.join(".spelunk").join("index.db");
+    let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
@@ -92,11 +92,11 @@ fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     config_path
 }
 
-/// Create a `.spelunk/` marker dir so ADR-067's fail-closed project gate
+/// Create a `.inkentry/` marker dir so ADR-067's fail-closed project gate
 /// resolves `proj` as a real local project, mirroring
 /// `fail_closed_no_project.rs::memory_add_works_with_local_dot_spelunk`.
 fn init_project(proj: &Path) {
-    std::fs::create_dir_all(proj.join(".spelunk")).expect("create .spelunk");
+    std::fs::create_dir_all(proj.join(".inkentry")).expect("create .inkentry");
 }
 
 /// Seed one local memory entry via a real `spelunk memory add` subprocess run,

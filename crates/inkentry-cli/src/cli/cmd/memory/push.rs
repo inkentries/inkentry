@@ -43,7 +43,7 @@ pub async fn memory_push(
     let base_url = capability::require_explicit_server_url("memory push", cfg)?;
     let project_id = cfg.project_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
-            "`project_id` is not configured. Set it in `.spelunk/config.toml` \
+            "`project_id` is not configured. Set it in `.inkentry/config.toml` \
              or via `SPELUNK_PROJECT_ID`."
         )
     })?;

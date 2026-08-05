@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             // message) by `resolve_sync_project` inside `memory_sync`.
             let project_available = args.project.is_some() || cfg.project_id.is_some();
             cfg.validate_with_project(project_available)?;
-            // ADR-067: fail closed when there is no local `.spelunk/` project.
+            // ADR-067: fail closed when there is no local `.inkentry/` project.
             let mem_path =
                 config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db");
             cli::cmd::memory_sync(args, &mem_path, &cfg).await

@@ -68,7 +68,7 @@ fn plumbing_knn_returns_valid_chunk_ids() {
 
     // Step 1: embed a query string via `spelunk plumbing embed --query`
     // The mock server returns [0.1f32; 768] for every request.
-    // `index_fixture_project` writes `server_url` to `<_tmp>/.spelunk/config.toml`
+    // `index_fixture_project` writes `server_url` to `<_tmp>/.inkentry/config.toml`
     // (project-level, since `Config::load` never honors it from `--config`);
     // `.current_dir` must match for this second, separate invocation to see it.
     //

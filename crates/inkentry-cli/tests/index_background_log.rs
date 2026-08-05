@@ -60,7 +60,7 @@ async fn dead_llm_server() -> MockServer {
 }
 
 /// `spelunk index` exactly as a user in the project runs it: cwd inside the
-/// project, config found by discovery at `.spelunk/config.toml`.
+/// project, config found by discovery at `.inkentry/config.toml`.
 ///
 /// Discovery rather than `--config` is deliberate. The spawn does not pass
 /// `--config` to the child, so a test that used an explicit one would have the
@@ -87,7 +87,7 @@ fn index_command(project: &Path) -> std::process::Command {
         // an isolated one.
         .env(
             "SPELUNK_CONFIG_DIR",
-            project.join(".config").join("spelunk"),
+            project.join(".config").join("inkentry"),
         )
         .env("SPELUNK_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
@@ -157,13 +157,13 @@ struct Fixture {
 }
 
 /// A >100-file project pointed at a dead LLM, laid out as a real one: config
-/// and index under `.spelunk/`, so the detached child discovers the same
+/// and index under `.inkentry/`, so the detached child discovers the same
 /// config the parent used.
 fn fixture(rt: &tokio::runtime::Runtime) -> Fixture {
     let project = TempDir::new().expect("temp project dir");
     write_big_fixture(project.path());
-    let spelunk_dir = project.path().join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = project.path().join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     let db = spelunk_dir.join("index.db");
 
     let server = rt.block_on(dead_llm_server());

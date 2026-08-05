@@ -1,6 +1,6 @@
 //! End-to-end coverage for the `search --mode text` empty-index guidance.
 //!
-//! On an initialized-but-empty project (`.spelunk/index.db` exists but holds
+//! On an initialized-but-empty project (`.inkentry/index.db` exists but holds
 //! zero chunks), an explicit `--mode text` search previously emitted only the
 //! shared `EmptyIndex` message ("index is empty — run `spelunk index` first"),
 //! which demands an index the user may not want. The fix points `--mode text`
@@ -26,7 +26,7 @@ use tempfile::TempDir;
 /// the copy itself, independent of the wording assertions below.
 const EM_DASH: &str = "—";
 
-/// Build an initialized-but-empty project: `<proj>/.spelunk/index.db` exists but
+/// Build an initialized-but-empty project: `<proj>/.inkentry/index.db` exists but
 /// contains zero chunks (`chunk_count == 0`).
 ///
 /// Indexing a directory with no indexable source files still runs migrations and
@@ -43,7 +43,7 @@ fn init_empty_project(home: &Path, proj: &Path) {
         .success();
 
     assert!(
-        proj.join(".spelunk").join("index.db").exists(),
+        proj.join(".inkentry").join("index.db").exists(),
         "indexing an empty dir must still create the project index.db"
     );
 }

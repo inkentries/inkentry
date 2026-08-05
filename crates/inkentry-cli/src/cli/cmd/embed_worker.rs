@@ -245,8 +245,8 @@ mod tests {
 
     #[test]
     fn worker_key_differs_per_project() {
-        let a = worker_key(Path::new("/proj-a/.spelunk/index.db"));
-        let b = worker_key(Path::new("/proj-b/.spelunk/index.db"));
+        let a = worker_key(Path::new("/proj-a/.inkentry/index.db"));
+        let b = worker_key(Path::new("/proj-b/.inkentry/index.db"));
         assert_ne!(a, b, "two projects must never share a liveness file");
         assert_eq!(a.len(), 16);
     }
@@ -255,7 +255,7 @@ mod tests {
     fn worker_key_is_stable_for_the_same_path() {
         // Writer (worker) and reader (status) derive the key independently;
         // any nondeterminism here silently severs status from its worker.
-        let p = Path::new("/proj-a/.spelunk/index.db");
+        let p = Path::new("/proj-a/.inkentry/index.db");
         assert_eq!(worker_key(p), worker_key(p));
     }
 

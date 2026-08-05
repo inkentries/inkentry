@@ -89,7 +89,7 @@ async fn mount_since_empty(server: &MockServer) {
 
 // Global personal config: local memory writes, git-notes carrier off.
 fn write_global_config(dir: &Path) -> std::path::PathBuf {
-    let db_path = dir.join(".spelunk").join("index.db");
+    let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
@@ -104,7 +104,7 @@ fn write_global_config(dir: &Path) -> std::path::PathBuf {
 }
 
 // Run `memory add --kind note --title <title> --body … <extra…>` against a
-// local memory.db, from a neutral CWD (no project `.spelunk`, so `add` stays
+// local memory.db, from a neutral CWD (no project `.inkentry`, so `add` stays
 // local and never sees the team server_url). Returns the printed entry id.
 fn add_note(
     home: &Path,
@@ -199,7 +199,7 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
     );
 
     // Sync from the project dir, so `server_url` + `project_id` are discovered
-    // from its `.spelunk/config.toml`.
+    // from its `.inkentry/config.toml`.
     let assert = spelunk_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")

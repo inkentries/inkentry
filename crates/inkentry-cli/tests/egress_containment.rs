@@ -355,10 +355,10 @@ async fn plumbing_local_reads_zero_egress() {
         .assert()
         .success();
 
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
     let trap = EgressTrap::start().await;
 
-    // `publish-notes` is excluded deliberately: it pushes `refs/notes/spelunk`
+    // `publish-notes` is excluded deliberately: it pushes `refs/notes/inkentry`
     // to a git remote, an explicit, expected-egress operation, not a
     // local-tier read this zero-egress claim covers.
     for args in [
@@ -438,7 +438,7 @@ async fn plumbing_embed_zero_egress() {
     // means an empty `{project_id}` URL segment and a 404, not an egress leak.
     plumbing_helpers::write_project_server_config(project.path(), &inference.uri(), project_id);
 
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);

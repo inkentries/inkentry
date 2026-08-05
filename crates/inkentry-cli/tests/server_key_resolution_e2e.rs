@@ -41,7 +41,7 @@ async fn mount_health_and_since(server: &MockServer) {
 
 // `server_url`/`project_id` are set via `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID`
 // env on each command below, not this file: `Config::load` only honors those
-// two fields from a project-level `.spelunk/config.toml` (discovered by
+// two fields from a project-level `.inkentry/config.toml` (discovered by
 // walking up from CWD) or env, never from the `--config` file this test
 // swaps per origin. Env is the natural fit here since this file's whole
 // point is bearer-per-origin resolution, not config-file precedence.
@@ -169,7 +169,7 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     // there is no CLI surface to plant this pre-migration state: writing
     // the secrets.toml file directly is the only way to simulate an
     // upgrading (not fresh) install.
-    let secrets_path = home.path().join(".config").join("spelunk");
+    let secrets_path = home.path().join(".config").join("inkentry");
     std::fs::create_dir_all(&secrets_path).unwrap();
     std::fs::write(
         secrets_path.join("secrets.toml"),

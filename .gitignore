@@ -5,9 +5,9 @@
 .env
 .DS_Store
 /models
-# .spelunk/config.toml is committed so a bare clone resolves its cloud project;
-# dbs are covered by *.db above, logs by .spelunk/.gitignore.
-.spelunk/*.lock
+# .inkentry/config.toml is committed so a bare clone resolves its cloud project;
+# dbs are covered by *.db above, logs by .inkentry/.gitignore.
+.inkentry/*.lock
 .claude/settings.local.json
 .claude/worktrees/
 .env.local

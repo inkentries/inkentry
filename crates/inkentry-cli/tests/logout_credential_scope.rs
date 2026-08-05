@@ -37,7 +37,7 @@ fn set_key(home: &std::path::Path, server: &str, key: &str) {
 // `spelunk_bin_in`) resolves to `<home>/.config/spelunk`, so this is exactly
 // where the CLI reads and (on bare logout) rewrites it.
 fn seed_cloud_auth(home: &std::path::Path) {
-    let dir = home.join(".config").join("spelunk");
+    let dir = home.join(".config").join("inkentry");
     std::fs::create_dir_all(&dir).expect("create config dir");
     std::fs::write(
         dir.join("config.toml"),
@@ -53,7 +53,7 @@ fn seed_cloud_auth(home: &std::path::Path) {
 // Current text of the seeded `config.toml` (empty string once the file has been
 // rewritten with no `[auth]` table).
 fn config_toml(home: &std::path::Path) -> String {
-    std::fs::read_to_string(home.join(".config").join("spelunk").join("config.toml"))
+    std::fs::read_to_string(home.join(".config").join("inkentry").join("config.toml"))
         .unwrap_or_default()
 }
 

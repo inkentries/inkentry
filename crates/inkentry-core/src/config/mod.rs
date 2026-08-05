@@ -69,7 +69,7 @@ impl Default for IndexConfig {
     }
 }
 
-/// Per-field override of [`IndexConfig`] from a project `.spelunk/config.toml`.
+/// Per-field override of [`IndexConfig`] from a project `.inkentry/config.toml`.
 /// Every field is `Option` so an absent key leaves the layered value untouched.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectIndexConfig {
@@ -78,7 +78,7 @@ struct ProjectIndexConfig {
     detect_generated: Option<bool>,
 }
 
-/// Fields that can be set in `.spelunk/config.toml` (project-level, checked-in).
+/// Fields that can be set in `.inkentry/config.toml` (project-level, checked-in).
 /// Only contains fields safe to share with the team (no secrets).
 ///
 /// `server_key` is deliberately absent (ADR-071 D4): a credential in a
@@ -116,7 +116,7 @@ pub struct Config {
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
     /// Personal config (`~/.config/spelunk/config.toml`) or `SPELUNK_LLM_URL`
-    /// only, never `.spelunk/config.toml`: a checked-in endpoint points the
+    /// only, never `.inkentry/config.toml`: a checked-in endpoint points the
     /// whole team at one developer's machine, and it is the natural sibling of
     /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
     #[serde(default)]
@@ -127,7 +127,7 @@ pub struct Config {
     /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
-    /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_SERVER_URL` only:
+    /// Set in `.inkentry/config.toml` (project-level) or via `SPELUNK_SERVER_URL` only:
     /// [`Config::load_with_store`] discards any value from the global personal
     /// config, since a team server is a project-wide choice, not a
     /// per-developer one.
@@ -141,13 +141,13 @@ pub struct Config {
     /// This is NOT the effective bearer for a self-hosted `server_url`:
     /// that credential is scoped per server origin and resolved lazily via
     /// [`Config::bearer_for`], which also branches to this same field for the
-    /// cloud origin. Do NOT commit any bearer to `.spelunk/config.toml`.
+    /// cloud origin. Do NOT commit any bearer to `.inkentry/config.toml`.
     #[serde(default)]
     pub server_key: Option<String>,
 
     /// Project slug for the inkentry-server (e.g. `acme/my-app`).
     /// Required when `server_url` is set.
-    /// Set in `.spelunk/config.toml` (project-level) or via `SPELUNK_PROJECT_ID`.
+    /// Set in `.inkentry/config.toml` (project-level) or via `SPELUNK_PROJECT_ID`.
     #[serde(default)]
     pub project_id: Option<String>,
 
@@ -189,7 +189,7 @@ pub struct Config {
     pub llm_context_length: usize,
 
     /// When true (the default), `spelunk memory add` also appends the new entry
-    /// as a line of JSON in `refs/notes/spelunk` on HEAD.
+    /// as a line of JSON in `refs/notes/inkentry` on HEAD.
     ///
     /// This keeps memory close to commits and is consistent with the product's
     /// "memory travels with code" messaging.  Set `store_in_git_notes = false`
@@ -214,7 +214,7 @@ pub struct Config {
     pub auth: Option<AuthTokens>,
 
     /// `[index]` table: built-in index-time file filter settings. Project
-    /// `.spelunk/config.toml` overrides the global value per field (see
+    /// `.inkentry/config.toml` overrides the global value per field (see
     /// [`Config::load_with_store`]).
     #[serde(default)]
     pub index: IndexConfig,
@@ -334,7 +334,7 @@ impl Config {
     /// Load config with layered overrides:
     ///   1. Defaults
     ///   2. `~/.config/spelunk/config.toml` (global personal)
-    ///   3. `.spelunk/config.toml` discovered by walking up from CWD (project-level, team-wide)
+    ///   3. `.inkentry/config.toml` discovered by walking up from CWD (project-level, team-wide)
     ///   4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, `SPELUNK_PROJECT_ID`
     ///
     /// `server_url` is the one field step 2 is not allowed to set (see the
@@ -358,9 +358,9 @@ impl Config {
         Self::load_with_store_from(path, store, project_root.as_deref())
     }
 
-    /// Like [`load_with_store`], but the project-level `.spelunk/config.toml` is
+    /// Like [`load_with_store`], but the project-level `.inkentry/config.toml` is
     /// discovered by walking up from `project_root` rather than the process CWD.
-    /// `None` skips project discovery entirely: a `.spelunk/config.toml` checked
+    /// `None` skips project discovery entirely: a `.inkentry/config.toml` checked
     /// in to this repo must not leak into a hermetic unit-test load. Production
     /// always passes the CWD via [`load_with_store`].
     pub(crate) fn load_with_store_from(
@@ -390,10 +390,10 @@ impl Config {
         // A bare `server_key` in the *personal* global config is the legacy
         // plaintext credential we migrate into the secret store.
         // Captured before the project-level merge so we never migrate a shared
-        // team key from a checked-in `.spelunk/config.toml`.
+        // team key from a checked-in `.inkentry/config.toml`.
         let global_bare_server_key = cfg.server_key.clone();
 
-        // ── 2. Merge project-level config (.spelunk/config.toml) ─────────────
+        // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
         // file never carries a credential. A file that still has a
         // `server_key` line keeps working for its other fields: the parse
@@ -640,7 +640,7 @@ impl Config {
         {
             anyhow::bail!(
                 "server_url is set but project_id is missing.\n\
-                 Add `project_id = \"my-project\"` to .spelunk/config.toml \
+                 Add `project_id = \"my-project\"` to .inkentry/config.toml \
                  or set SPELUNK_PROJECT_ID."
             );
         }
@@ -728,7 +728,7 @@ mod tests {
         load_hermetic_with(path, &MemoryStore::default())
     }
 
-    // No project-config discovery, so a .spelunk/config.toml checked in to this
+    // No project-config discovery, so a .inkentry/config.toml checked in to this
     // repo cannot leak into the loaded Config (that is what makes it hermetic).
     fn load_hermetic_with(path: &Path, store: &dyn SecretStore) -> Result<Config> {
         Config::load_with_store_from(Some(path), store, None)
@@ -901,7 +901,7 @@ project_id = "my-proj"
         // Both the live key and its removed alias present: the live server_key
         // resolves and the deprecated alias is silently dropped (no error, no
         // override). `server_key` is the legacy personal bearer (a bare
-        // `server_key` in the *global* config, not a `.spelunk/config.toml`
+        // `server_key` in the *global* config, not a `.inkentry/config.toml`
         // credential; D4 is about the latter): it no longer feeds
         // `cfg.server_key` (cloud-kind only, ADR-071 D2), but the migration
         // into the secret store still runs and the value is still reachable
@@ -1327,7 +1327,7 @@ memory_server_key = "old-token"
         assert_eq!(cfg.server_url, None);
     }
 
-    // ── .spelunk/config.toml project-level merge ─────────────────────────────
+    // ── .inkentry/config.toml project-level merge ─────────────────────────────
 
     #[test]
     #[serial_test::serial]
@@ -1335,7 +1335,7 @@ memory_server_key = "old-token"
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".spelunk");
+        let spelunk_dir = proj_dir.join(".inkentry");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
         std::fs::write(
             spelunk_dir.join("config.toml"),
@@ -1666,7 +1666,7 @@ project_id = "team/proj"
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".spelunk");
+        let spelunk_dir = proj_dir.join(".inkentry");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
         std::fs::write(
             spelunk_dir.join("config.toml"),
@@ -1697,7 +1697,7 @@ project_id = "team/old"
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".spelunk");
+        let spelunk_dir = proj_dir.join(".inkentry");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
         std::fs::write(
             spelunk_dir.join("config.toml"),
@@ -1925,7 +1925,7 @@ project_id = "team/new"
     }
 
     /// ADR-071 D4: a `server_key` line in the project-level, checked-in
-    /// `.spelunk/config.toml` is dropped entirely: no read, no warning, no
+    /// `.inkentry/config.toml` is dropped entirely: no read, no warning, no
     /// effect on the resolved bearer at any tier. Mirrors the
     /// `memory_server_*` silent-drop precedent.
     #[test]
@@ -1934,7 +1934,7 @@ project_id = "team/new"
         clear_spelunk_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".spelunk");
+        let spelunk_dir = proj_dir.join(".inkentry");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
         let proj_cfg = spelunk_dir.join("config.toml");
         std::fs::write(
@@ -2189,9 +2189,9 @@ project_id = "team/new"
         std::fs::write(&global, "").unwrap();
 
         let project = tmp.path().join("proj");
-        std::fs::create_dir_all(project.join(".spelunk")).unwrap();
+        std::fs::create_dir_all(project.join(".inkentry")).unwrap();
         std::fs::write(
-            project.join(".spelunk").join("config.toml"),
+            project.join(".inkentry").join("config.toml"),
             "llm_url = \"http://team-box.example:1234\"\n",
         )
         .unwrap();

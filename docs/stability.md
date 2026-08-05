@@ -170,11 +170,11 @@ guess wrong about, and each restriction is part of the contract:
 
 - `server_url` is **ignored in the global personal config**
   (`~/.config/spelunk/config.toml`, including a file passed to `--config`). It
-  may come only from the checked-in `.spelunk/config.toml` or from
+  may come only from the checked-in `.inkentry/config.toml` or from
   `SPELUNK_SERVER_URL`. Everyone working on a project needs the same team
   server, which a per-developer file cannot guarantee. A global config that
   still sets it loads fine; the value is discarded.
-- `server_key` is **ignored in the project config** (`.spelunk/config.toml`). A
+- `server_key` is **ignored in the project config** (`.inkentry/config.toml`). A
   repository must never be able to hand a secret to whoever clones it. Use
   `spelunk auth set-key --server <url>`, `spelunk login`, or
   `SPELUNK_SERVER_KEY`.
@@ -194,7 +194,7 @@ Beyond those three:
   still loads. A key ignored because it is in the wrong file behaves the same
   way: the rest of the file is unaffected.
 - The **project-level allowlist** is itself stable. A checked-in
-  `.spelunk/config.toml` is honoured for exactly `server_url`, `project_id`,
+  `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
   `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
   allowed; removing one is a breaking change.
 - Environment variable overrides (`SPELUNK_*`) are stable on the same terms as
@@ -259,10 +259,10 @@ recorded memory. The promise is *not* that the SQL schema stays fixed.
 
 | Store | Versioning | Level |
 |---|---|---|
-| `.spelunk/index.db` | `PRAGMA user_version`, migrated forward on open | **Stable**: migrations are forward-only and run automatically. The index is derived data, so a rebuild is always a valid recovery. |
-| `.spelunk/memory.db` | `PRAGMA user_version`, independent of the index | **Stable**, and stricter: memory is not derived data and cannot be rebuilt. A store from a newer spelunk is refused with an upgrade message rather than opened and damaged. |
+| `.inkentry/index.db` | `PRAGMA user_version`, migrated forward on open | **Stable**: migrations are forward-only and run automatically. The index is derived data, so a rebuild is always a valid recovery. |
+| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index | **Stable**, and stricter: memory is not derived data and cannot be rebuilt. A store from a newer spelunk is refused with an upgrade message rather than opened and damaged. |
 | `~/.config/spelunk/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
-| git notes on `refs/notes/spelunk` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not spelunk records are left untouched, so the ref can be shared with other tooling. |
+| git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not spelunk records are left untouched, so the ref can be shared with other tooling. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
 
 Migrations are **forward-only**. Downgrading spelunk after an upgrade has
@@ -301,11 +301,11 @@ binary never leaves the stamp *above* its own version. If it did, a newer build
 would skip migrations it had never actually run, and that is the case where
 data would be damaged. The corpus asserts that bound directly.
 
-### `.spelunk/` layout
+### `.inkentry/` layout
 
-**Stable:** the directory name `.spelunk/` at the project root, and the names
+**Stable:** the directory name `.inkentry/` at the project root, and the names
 `config.toml`, `index.db`, and `memory.db` within it. Tooling may rely on
-`.spelunk/index.db` marking a project root, which is how spelunk itself
+`.inkentry/index.db` marking a project root, which is how spelunk itself
 discovers one.
 
 **Internal:** everything else in that directory, including lock files, pid

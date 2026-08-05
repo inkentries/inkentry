@@ -250,8 +250,8 @@ make_project() {
   echo 'fn main() {}' >"$dir/main.rs"
   git -C "$dir" add -A
   git -C "$dir" -c commit.gpgsign=false commit -qm "initial"
-  mkdir -p "$dir/.spelunk"
-  printf 'project_id = "%s"\n' "$PROJECT_ID" >"$dir/.spelunk/config.toml"
+  mkdir -p "$dir/.inkentry"
+  printf 'project_id = "%s"\n' "$PROJECT_ID" >"$dir/.inkentry/config.toml"
 }
 
 run() {

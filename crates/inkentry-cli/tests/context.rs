@@ -23,11 +23,11 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let tmp = TempDir::new().expect("create temp dir");
-    // ADR-067: `context` fails closed without a local `.spelunk/` project, so
+    // ADR-067: `context` fails closed without a local `.inkentry/` project, so
     // make the temp dir a real project. The memory store then resolves to
-    // `<tmp>/.spelunk/memory.db` (where the entries below are seeded).
-    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
-    let db_path = tmp.path().join(".spelunk").join("index.db");
+    // `<tmp>/.inkentry/memory.db` (where the entries below are seeded).
+    std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
+    let db_path = tmp.path().join(".inkentry").join("index.db");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mock_server = rt.block_on(async {
@@ -148,7 +148,7 @@ fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathB
 fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
     let mut cmd = spelunk_bin();
     // Run from the temp dir so find_project_db doesn't walk up and discover
-    // the real .spelunk/index.db in the project root.
+    // the real .inkentry/index.db in the project root.
     if let Some(dir) = config_path.parent() {
         cmd.current_dir(dir);
     }
@@ -162,8 +162,8 @@ fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
 /// decisions, 2 requirements. Returns `(TempDir, config_path)`.
 fn setup_budget_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
-    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
-    let db_path = tmp.path().join(".spelunk").join("index.db");
+    std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
+    let db_path = tmp.path().join(".inkentry").join("index.db");
     // No embed server needed: memory add stores without a vector when no server
     // is configured, which is irrelevant to budget packing.
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
@@ -491,9 +491,9 @@ fn context_default_limits_respected() {
 fn context_empty_memory_exits_zero_with_no_output() {
     // Fresh project with no memory entries at all.
     let tmp = TempDir::new().expect("create temp dir");
-    // ADR-067: a local `.spelunk/` makes this a real (empty) project.
-    std::fs::create_dir_all(tmp.path().join(".spelunk")).expect("create .spelunk");
-    let db_path = tmp.path().join(".spelunk").join("index.db");
+    // ADR-067: a local `.inkentry/` makes this a real (empty) project.
+    std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
+    let db_path = tmp.path().join(".inkentry").join("index.db");
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
 
     // Write a valid but empty memory.db so the backend can open.

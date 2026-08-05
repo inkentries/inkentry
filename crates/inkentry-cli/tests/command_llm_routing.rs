@@ -88,8 +88,8 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
 }
 
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     std::fs::write(
         spelunk_dir.join("config.toml"),
         format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n"),
@@ -146,7 +146,7 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     cmd
 }
 
-// Build an index so project-scoped commands have a `.spelunk/` project and a
+// Build an index so project-scoped commands have a `.inkentry/` project and a
 // db to work from. Offline, so it contacts nothing.
 fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)

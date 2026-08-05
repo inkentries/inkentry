@@ -57,7 +57,7 @@ fn embed_loopback_cmd(
 }
 
 // Build a config.toml with `embedding_model`, and separately point
-// `server_url`/`project_id` at `<dir>/.spelunk/config.toml`: `Config::load`
+// `server_url`/`project_id` at `<dir>/.inkentry/config.toml`: `Config::load`
 // only honors those two fields from a project-level config (or env), never
 // the global `--config` file. The caller's `Command` must set
 // `.current_dir(dir.path())`.
@@ -274,7 +274,7 @@ async fn embed_finds_auto_discovered_loopback_server() {
 
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    // No `.spelunk/config.toml` at all: no server_url, no project_id — pure
+    // No `.inkentry/config.toml` at all: no server_url, no project_id — pure
     // loopback auto-discovery, the default no-team-server case.
     let state_dir = home.path().join("state");
     write_loopback_state(&state_dir, &mock.uri());

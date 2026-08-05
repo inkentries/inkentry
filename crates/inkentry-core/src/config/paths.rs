@@ -25,10 +25,10 @@ pub(in crate::config) fn spelunk_config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config")
-        .join("spelunk")
+        .join("inkentry")
 }
 
-/// Walk up from `start` looking for `.spelunk/index.db`.
+/// Walk up from `start` looking for `.inkentry/index.db`.
 /// Returns the first match found, or `None` if the filesystem root is reached.
 ///
 /// If `start` is inside a git linked worktree, the walk begins from the main
@@ -37,7 +37,7 @@ pub fn find_project_db(start: &Path) -> Option<PathBuf> {
     let resolved = crate::utils::resolve_main_worktree_root(start);
     let mut dir = resolved;
     loop {
-        let candidate = dir.join(".spelunk").join("index.db");
+        let candidate = dir.join(".inkentry").join("index.db");
         if candidate.exists() {
             return Some(candidate);
         }
@@ -47,17 +47,17 @@ pub fn find_project_db(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Walk up from `start` for a `.spelunk/` **directory** (worktree-aware).
-/// Returns the `.spelunk` dir path, or `None` if none is found before the root.
+/// Walk up from `start` for a `.inkentry/` **directory** (worktree-aware).
+/// Returns the `.inkentry` dir path, or `None` if none is found before the root.
 ///
 /// Keys on the directory, not `index.db`: `spelunk init --no-index` writes a
-/// `.spelunk/config.toml` with no index, and memory needs no index. Linked
-/// worktrees resolve to the main worktree's `.spelunk/` (mirrors
+/// `.inkentry/config.toml` with no index, and memory needs no index. Linked
+/// worktrees resolve to the main worktree's `.inkentry/` (mirrors
 /// [`find_project_db`]).
 pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
     let mut dir = crate::utils::resolve_main_worktree_root(start);
     loop {
-        let candidate = dir.join(".spelunk");
+        let candidate = dir.join(".inkentry");
         if candidate.is_dir() {
             return Some(candidate);
         }
@@ -67,8 +67,8 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// ADR-067: resolve the local project's `.spelunk/index.db` base path anchored at
-/// `start`, failing closed when `start` has no `.spelunk/` project instead of
+/// ADR-067: resolve the local project's `.inkentry/index.db` base path anchored at
+/// `start`, failing closed when `start` has no `.inkentry/` project instead of
 /// silently falling back to the global `~/.config/spelunk/` store.
 ///
 /// Explicit `--db` / index-path callers bypass this (an explicit store is always
@@ -95,12 +95,12 @@ pub fn require_project_db(cfg_default: &Path, allow_global: bool) -> Result<Path
     require_project_db_at(&cwd, cfg_default, allow_global)
 }
 
-/// Walk up from `start` looking for `.spelunk/config.toml` (project-level config).
+/// Walk up from `start` looking for `.inkentry/config.toml` (project-level config).
 /// Stops at the filesystem root. Returns the path if found.
 pub(in crate::config) fn find_project_config(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
-        let candidate = dir.join(".spelunk").join("config.toml");
+        let candidate = dir.join(".inkentry").join("config.toml");
         if candidate.exists() {
             return Some(candidate);
         }
@@ -152,7 +152,7 @@ mod tests {
         unsafe { std::env::remove_var("SPELUNK_CONFIG_DIR") };
         let got = spelunk_config_dir();
         assert!(
-            got.ends_with(Path::new(".config").join("spelunk")),
+            got.ends_with(Path::new(".config").join("inkentry")),
             "got: {}",
             got.display()
         );
@@ -167,20 +167,20 @@ mod tests {
     #[test]
     fn find_project_dir_finds_dot_spelunk_at_start() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".inkentry")).unwrap();
         assert_eq!(
             find_project_dir(tmp.path()),
-            Some(tmp.path().join(".spelunk"))
+            Some(tmp.path().join(".inkentry"))
         );
     }
 
     #[test]
     fn find_project_dir_walks_up_from_subdir() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".inkentry")).unwrap();
         let sub = tmp.path().join("a").join("b");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(find_project_dir(&sub), Some(tmp.path().join(".spelunk")));
+        assert_eq!(find_project_dir(&sub), Some(tmp.path().join(".inkentry")));
     }
 
     #[test]
@@ -191,30 +191,30 @@ mod tests {
 
     #[test]
     fn find_project_dir_ignores_dot_spelunk_file() {
-        // A regular file named `.spelunk` is not a project dir.
+        // A regular file named `.inkentry` is not a project dir.
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(".spelunk"), "not a dir").unwrap();
+        std::fs::write(tmp.path().join(".inkentry"), "not a dir").unwrap();
         assert_eq!(find_project_dir(tmp.path()), None);
     }
 
     #[test]
     fn require_project_db_at_returns_scoped_index_db_with_project() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".inkentry")).unwrap();
         let global = PathBuf::from("/nonexistent/global/index.db");
         let got = require_project_db_at(tmp.path(), &global, false).unwrap();
-        assert_eq!(got, tmp.path().join(".spelunk").join("index.db"));
+        assert_eq!(got, tmp.path().join(".inkentry").join("index.db"));
     }
 
     #[test]
     fn require_project_db_at_walks_up_to_project() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".spelunk")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".inkentry")).unwrap();
         let sub = tmp.path().join("crates").join("x");
         std::fs::create_dir_all(&sub).unwrap();
         let global = PathBuf::from("/nonexistent/global/index.db");
         let got = require_project_db_at(&sub, &global, false).unwrap();
-        assert_eq!(got, tmp.path().join(".spelunk").join("index.db"));
+        assert_eq!(got, tmp.path().join(".inkentry").join("index.db"));
     }
 
     #[test]
@@ -235,8 +235,8 @@ mod tests {
         assert_eq!(got, global);
     }
 
-    /// Build a linked-worktree fixture: `<main>/.spelunk/index.db` exists and
-    /// `<wt>` is a linked worktree with NO local `.spelunk/`. Returns
+    /// Build a linked-worktree fixture: `<main>/.inkentry/index.db` exists and
+    /// `<wt>` is a linked worktree with NO local `.inkentry/`. Returns
     /// `(main_root, wt_root, index_db)`. Mirrors the fixture in `utils::tests`.
     fn linked_worktree_fixture(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
         let main_root = tmp.path().join("main");
@@ -245,8 +245,8 @@ mod tests {
         std::fs::create_dir_all(&wt_root).unwrap();
 
         // Main worktree owns the shared index.
-        std::fs::create_dir_all(main_root.join(".spelunk")).unwrap();
-        let index_db = main_root.join(".spelunk").join("index.db");
+        std::fs::create_dir_all(main_root.join(".inkentry")).unwrap();
+        let index_db = main_root.join(".inkentry").join("index.db");
         std::fs::write(&index_db, b"").unwrap();
 
         // wt_root/.git is a file pointing at <main>/.git/worktrees/<name>.
@@ -263,13 +263,13 @@ mod tests {
 
     #[test]
     fn find_project_db_resolves_worktree_to_main_index() {
-        // A linked worktree with no local `.spelunk/` resolves reads to the
+        // A linked worktree with no local `.inkentry/` resolves reads to the
         // main worktree's shared index, with no setup step.
         let tmp = TempDir::new().unwrap();
         let (_main_root, wt_root, index_db) = linked_worktree_fixture(&tmp);
         assert!(
-            !wt_root.join(".spelunk").exists(),
-            "worktree must have no local .spelunk/"
+            !wt_root.join(".inkentry").exists(),
+            "worktree must have no local .inkentry/"
         );
         assert_eq!(find_project_db(&wt_root), Some(index_db));
     }
@@ -280,6 +280,6 @@ mod tests {
         let (main_root, wt_root, _index_db) = linked_worktree_fixture(&tmp);
         let global = PathBuf::from("/nonexistent/global/index.db");
         let got = require_project_db_at(&wt_root, &global, false).unwrap();
-        assert_eq!(got, main_root.join(".spelunk").join("index.db"));
+        assert_eq!(got, main_root.join(".inkentry").join("index.db"));
     }
 }

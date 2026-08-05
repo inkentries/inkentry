@@ -30,7 +30,7 @@ use tempfile::TempDir;
 // The directory the CLI reads via `SPELUNK_REGISTRY_DIR`, under the isolated
 // test HOME. Mirrors the real `registry_path()` layout.
 fn registry_dir(home: &Path) -> PathBuf {
-    home.join(".config").join("spelunk")
+    home.join(".config").join("inkentry")
 }
 
 // Canonicalize the same way the product does, so registry `root_path` entries
@@ -101,10 +101,10 @@ impl TestRegistry {
 
 // ── project / index helpers ────────────────────────────────────────────────────
 
-// Create `<root>/.spelunk/index.db` and return its path.
+// Create `<root>/.inkentry/index.db` and return its path.
 fn create_index_db(root: &Path) -> PathBuf {
-    let spelunk_dir = root.join(".spelunk");
-    fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = root.join(".inkentry");
+    fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     spelunk_dir.join("index.db")
 }
 

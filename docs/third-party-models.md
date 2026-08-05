@@ -29,7 +29,7 @@ daemon it starts, so you set it once rather than per launch.
 
 `llm_url` and `llm_model` are read from the **personal** config
 (`~/.config/spelunk/config.toml`) only. A value in a checked-in
-`.spelunk/config.toml` is ignored: an endpoint URL is a per-developer choice,
+`.inkentry/config.toml` is ignored: an endpoint URL is a per-developer choice,
 and committing one points the whole team at one machine. See
 [Config reference](config-reference.md#llm_url).
 
@@ -256,7 +256,7 @@ consistent rather than contradictory, because `cloud_first` already routes
 embedding to the same server, so your chunk text reaches it either way. But it
 is a real boundary. If you want the guarantee, stay on `local_first` (or
 `offline`); `mode` is read from your personal config or `SPELUNK_MODE`, never
-from a checked-in `.spelunk/config.toml`.
+from a checked-in `.inkentry/config.toml`.
 
 ### If the server itself has no LLM
 

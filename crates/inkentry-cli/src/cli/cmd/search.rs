@@ -449,7 +449,7 @@ pub(crate) fn resolve_project_and_deps(
     cfg: &Config,
 ) -> Result<(std::path::PathBuf, Vec<Project>)> {
     // ADR-067: without an explicit --db, refuse when there is no local
-    // `.spelunk/` project rather than silently searching the global store. The
+    // `.inkentry/` project rather than silently searching the global store. The
     // scoped path also wins over any stray global `index.db`.
     let project_db = match explicit_db {
         Some(_) => None,

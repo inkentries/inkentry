@@ -168,13 +168,13 @@ struct Fixture {
 }
 
 // A temp project with a global `--config` (no server_url; `store_in_git_notes =
-// false` so seeding never touches git notes) and a `.spelunk/` dir where memory
+// false` so seeding never touches git notes) and a `.inkentry/` dir where memory
 // lives.
 fn fixture() -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let project_dir = tmp.path().to_path_buf();
-    let spelunk_dir = project_dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk");
+    let spelunk_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
     let mem_path = spelunk_dir.join("memory.db");
     let index_db = spelunk_dir.join("index.db");
     let global_config = project_dir.join("global-config.toml");

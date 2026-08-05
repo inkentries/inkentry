@@ -17,7 +17,7 @@ spelunk has two distinct operational modes with different attack surfaces:
 3. Runs KNN search over stored embeddings via sqlite-vec
 4. Optionally sends context + a user question to the same `inkentry-server`'s LLM endpoint
 5. Maintains a `memory.db` of structured notes with semantic search. **`memory.db` is the single authoritative memory store at the CLI tier** (ADR-004). All `spelunk memory` operations (add, list, search, timeline, harvest) read from and write to `memory.db`.
-6. **When `store_in_git_notes = true` (the default):** each `spelunk memory add` also appends the note as a JSON line to `refs/notes/spelunk` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-notespelunk) below.
+6. **When `store_in_git_notes = true` (the default):** each `spelunk memory add` also appends the note as a JSON line to `refs/notes/inkentry` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-notespelunk) below.
 
 **Auto-discovered loopback inkentry-server (v0.8.0+):** spelunk auto-starts a local `inkentry-server` daemon (bound to `127.0.0.1`) to provide a native embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
 
@@ -57,7 +57,7 @@ external egress.
 | Source code chunks in index | Medium | High | Medium |
 | Credentials accidentally present in source | High | — | — |
 | Memory notes (decisions, handoffs) | Medium | High | Medium |
-| **git-notes memory (`refs/notes/spelunk`)** | **Medium–High** | Medium | Low |
+| **git-notes memory (`refs/notes/inkentry`)** | **Medium–High** | Medium | Low |
 | Embedding vectors | Low | Medium | Low |
 | spelunk config (`~/.config/spelunk/config.toml`) | Medium | High | Medium |
 | Server-side memory DB (all projects) | High | High | High |
@@ -88,7 +88,7 @@ User filesystem
   │           └─ context: code chunks + spec files + memory notes
   │
   ├─ spelunk memory add ─► memory.db (SQLite, local)  ← single canonical store (ADR-004)
-  │                     └─► [git notes append] ─► refs/notes/spelunk on HEAD
+  │                     └─► [git notes append] ─► refs/notes/inkentry on HEAD
   │                                                       │
   │                                                       └─► git push ─► remote (any clone)
   │                                                            ┌──────────────────────────────────────┐
@@ -216,7 +216,7 @@ unauthenticated (no bearer required or sent).
 | Detached `inkentry-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/inkentry-server/src/`, so a future reach fails CI rather than shipping. |
 | `spelunk memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed:** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |
 | **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-notespelunk) section. Track: issue to add secret-scan gate on write-through path. |
-| **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/spelunk` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
+| **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/inkentry` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
 
 ### E — Elevation of Privilege
 
@@ -286,10 +286,10 @@ lost by going generic.
 
 ---
 
-## git-notes memory (`refs/notes/spelunk`)
+## git-notes memory (`refs/notes/inkentry`)
 
 PR #339 introduced a write-through that persists every `spelunk memory add` entry
-as a JSON line appended to `refs/notes/spelunk` on HEAD when `store_in_git_notes = true`
+as a JSON line appended to `refs/notes/inkentry` on HEAD when `store_in_git_notes = true`
 (the default). This section models the associated data flows and trust boundaries.
 
 ### What is stored
@@ -308,16 +308,16 @@ foreign line and every untargeted record verbatim.
 ```
 spelunk memory add
   └─► append_to_git_notes() in storage/git_notes.rs
-        ├─► git notes --ref=spelunk show HEAD   (read existing blob)
+        ├─► git notes --ref=inkentry show HEAD   (read existing blob)
         ├─► append the new record as one JSON line, keeping all prior lines
-        └─► git notes --ref=spelunk add -f HEAD (write back)
+        └─► git notes --ref=inkentry add -f HEAD (write back)
 
-git push [with refs/notes/spelunk in refspec or push.followTags / notes config]
+git push [with refs/notes/inkentry in refspec or push.followTags / notes config]
   └─► remote repository — readable by anyone with clone access
 ```
 
 Git does not push notes by default unless the user explicitly configures
-`remote.<name>.push = refs/notes/*` or passes `refs/notes/spelunk` on the
+`remote.<name>.push = refs/notes/*` or passes `refs/notes/inkentry` on the
 command line. However, spelunk's documentation uses `git push --tags` and
 `git push` patterns that do not push notes unless configured — but many CI
 systems and IDE integrations push all refs. Users should be aware of their
@@ -336,10 +336,10 @@ push configuration.
 |-----------|:-:|-------|
 | `spelunk index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
 | `spelunk memory harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
-| `spelunk memory add` → git-notes write-through | **No** | Body is user-supplied text written verbatim to `refs/notes/spelunk`. No call to `contains_secret()` exists in `add.rs` before `append_to_git_notes()`. |
+| `spelunk memory add` → git-notes write-through | **No** | Body is user-supplied text written verbatim to `refs/notes/inkentry`. No call to `contains_secret()` exists in `add.rs` before `append_to_git_notes()`. |
 
 **Risk:** A user who types `spelunk memory add --title "DB creds" --body "password=s3cr3t"` will
-have that credential stored verbatim in `refs/notes/spelunk` and, if the repo is
+have that credential stored verbatim in `refs/notes/inkentry` and, if the repo is
 pushed with notes, the credential is exfiltrated.
 
 ### Controls and recommendations

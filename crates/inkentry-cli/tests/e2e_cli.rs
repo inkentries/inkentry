@@ -215,7 +215,7 @@ async fn test_index_and_status() {
     )
     .unwrap();
     // `server_url`/`project_id` only take effect from project-level
-    // `.spelunk/config.toml` (or env), never from the `--config` global file.
+    // `.inkentry/config.toml` (or env), never from the `--config` global file.
     write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
     // Under the default `local_first` mode a bare `server_url` never routes
@@ -329,7 +329,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         )
         .unwrap();
 
-        // `server_url` only loads from project-level `.spelunk/config.toml` (or
+        // `server_url` only loads from project-level `.inkentry/config.toml` (or
         // env), never the personal global config: see `Config::load_with_store`.
         write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
@@ -340,7 +340,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         // explicit `server_url` to legitimately serve embedding. Under the
         // default `local_first` mode that routing is now correctly refused
         // (see the `get_inference_tier` routing fix), so force `cloud_first`
-        // here: `.spelunk/config.toml` doesn't recognize a `mode` key (see
+        // here: `.inkentry/config.toml` doesn't recognize a `mode` key (see
         // `write_project_server_config`), so this must go through the env
         // var.
         spelunk_bin()
@@ -1088,7 +1088,7 @@ async fn test_index_prints_note_when_no_server_configured() {
 
     let mut cmd = spelunk_bin();
     // Run in the temp project like the sibling tests, else the project-config walk-up
-    // reaches the repo's own .spelunk/config.toml (server_url set) and suppresses the notice.
+    // reaches the repo's own .inkentry/config.toml (server_url set) and suppresses the notice.
     cmd.env("SPELUNK_NO_SERVER", "1") // ensure offline even if a local server is running
         .current_dir(&project_dir)
         .arg("--config")
@@ -1152,7 +1152,7 @@ fn test_status_json_offline_tier() {
 
 // ── Issue #284: search falls back to structural matching when no index / no embedder ───
 
-/// When there is no .spelunk/index.db, `spelunk search` in auto mode must
+/// When there is no .inkentry/index.db, `spelunk search` in auto mode must
 /// succeed (via the in-process structural fallback) rather than printing an
 /// opaque error. Runs on every platform: the fallback is now compiled into the
 /// `spelunk` binary (ast-grep-core), so it no longer requires `ast-grep` on PATH.
@@ -1433,7 +1433,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 
 // ── memory commands against an auto-discovered (loopback) server ─────────────
 //
-// ADR-004 (unified memory storage): `.spelunk/memory.db` is the single
+// ADR-004 (unified memory storage): `.inkentry/memory.db` is the single
 // canonical store for every CLI memory read and write. An auto-discovered
 // loopback server is an INFERENCE backend only (embeddings + LLM); it is never
 // a memory store. So `memory add`, `memory search`, and `memory timeline` all
@@ -1476,7 +1476,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 /// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
 /// enough — `SPELUNK_STATE_DIR` bypasses that entirely.
 fn write_server_port_file(home: &std::path::Path, port: u16) -> std::path::PathBuf {
-    let state_dir = home.join(".local").join("state").join("spelunk");
+    let state_dir = home.join(".local").join("state").join("inkentry");
     fs::create_dir_all(&state_dir).expect("create state dir");
     fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
     state_dir
@@ -1809,13 +1809,13 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
 // ── init imports git-notes memory into memory.db ─────────────────────────────
 //
 // During `spelunk init`, after the project memory.db is created, every entry on
-// the enclosing repo's `refs/notes/spelunk` that is not already present is
+// the enclosing repo's `refs/notes/inkentry` that is not already present is
 // imported into memory.db (no embeddings). The summary line
 // `Memory:  imported N entries from git notes` prints only when N > 0, and a
 // re-run imports nothing (dedup by the same content key as `memory reconcile`).
 
 /// Init a git repo at `dir` with a committer identity AND one commit, so
-/// `refs/notes/spelunk` can be attached - git notes hang off a commit object,
+/// `refs/notes/inkentry` can be attached - git notes hang off a commit object,
 /// so the no-commit `git_init_repo` helper above is not enough here.
 fn git_init_repo_with_commit(dir: &std::path::Path) {
     plumbing_helpers::isolate_git_config();
@@ -1862,12 +1862,12 @@ fn git_note_record_line(id: i64, kind: &str, title: &str, body: &str) -> String 
     .to_string()
 }
 
-/// Attach `jsonl` (one or more record lines) to HEAD's `refs/notes/spelunk`.
+/// Attach `jsonl` (one or more record lines) to HEAD's `refs/notes/inkentry`.
 fn seed_git_notes(dir: &std::path::Path, jsonl: &str) {
     let notes_file = tempfile::NamedTempFile::new().expect("notes tempfile");
     fs::write(notes_file.path(), jsonl).unwrap();
     let status = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "add", "-f", "-F"])
+        .args(["notes", "--ref=inkentry", "add", "-f", "-F"])
         .arg(notes_file.path())
         .args(["--", "HEAD"])
         .current_dir(dir)
@@ -1989,7 +1989,7 @@ fn test_init_without_git_repo_skips_notes_import() {
 
 /// Build an offline-indexed project (chunks stored, zero embeddings, no
 /// recorded worker) under `home`, returning `(project_dir, config_path)`.
-/// The index DB lands at `<project_dir>/.spelunk/index.db` - the same path
+/// The index DB lands at `<project_dir>/.inkentry/index.db` - the same path
 /// `status`/`search` resolve via the project walk, and the one the embed
 /// worker's state files are keyed on.
 fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -2036,7 +2036,7 @@ fn embed_worker_pid_file_in(
 /// Same as [`embed_worker_pid_file_in`], for the default (no
 /// `SPELUNK_STATE_DIR`) state dir derived from `home`.
 fn embed_worker_pid_file(home: &std::path::Path, db_path: &std::path::Path) -> std::path::PathBuf {
-    embed_worker_pid_file_in(&home.join(".local").join("state").join("spelunk"), db_path)
+    embed_worker_pid_file_in(&home.join(".local").join("state").join("inkentry"), db_path)
 }
 
 /// ADR-070 D4: the `status --format json` embed-state extensions are additive
@@ -2136,7 +2136,7 @@ fn test_status_reports_incomplete_when_no_worker_is_recorded() {
 fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
-    let db_path = project_dir.join(".spelunk").join("index.db");
+    let db_path = project_dir.join(".inkentry").join("index.db");
     assert!(db_path.exists(), "offline index must exist");
 
     // A pid that was real and is now certainly dead: spawn and reap a child.
@@ -2175,7 +2175,7 @@ fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
 fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
-    let db_path = project_dir.join(".spelunk").join("index.db");
+    let db_path = project_dir.join(".inkentry").join("index.db");
 
     // This test process is definitely alive, and its `ps` command line (the
     // e2e test binary plus a test-name filter) is not a spelunk index run.
@@ -2217,7 +2217,7 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     let home = tempfile::TempDir::new().unwrap();
     let state_override = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
-    let db_path = project_dir.join(".spelunk").join("index.db");
+    let db_path = project_dir.join(".inkentry").join("index.db");
     assert!(db_path.exists(), "offline index must exist");
 
     // A pid that was real and is now certainly dead.
@@ -2365,7 +2365,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     // mode that routing is now correctly refused (see the `get_inference_tier`
     // routing fix) in favor of the local loopback embedder, which this test
     // does not configure - so force `cloud_first` via env (a project-level
-    // `.spelunk/config.toml`, which `write_config_with_server` writes to,
+    // `.inkentry/config.toml`, which `write_config_with_server` writes to,
     // silently drops a `mode` key; see `write_project_server_config`).
     spelunk_bin_in(home.path())
         .env("SPELUNK_MODE", "cloud_first")

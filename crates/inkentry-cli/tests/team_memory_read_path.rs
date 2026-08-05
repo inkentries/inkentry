@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use tempfile::{TempDir, tempdir};
 
-const NOTES_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
-const TRACKING_REF: &str = "refs/notes/origin/spelunk";
+const NOTES_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
+const TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
 // ── git helpers (hermetic: never read the developer's global git config) ──────
 
@@ -84,7 +84,7 @@ fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
 // into the git-notes carrier (the publish side of the round trip).
 fn write_config(dir: &Path, store_in_git_notes: bool) -> PathBuf {
     let cfg = dir.join("spelunk-config.toml");
-    let index_db = dir.join(".spelunk").join("index.db");
+    let index_db = dir.join(".inkentry").join("index.db");
     let mut body = format!("db_path = {index_db:?}\nllm_model = \"x\"\n");
     if store_in_git_notes {
         body.push_str("store_in_git_notes = true\n");
@@ -94,7 +94,7 @@ fn write_config(dir: &Path, store_in_git_notes: bool) -> PathBuf {
 }
 
 fn mem_db(dir: &Path) -> PathBuf {
-    dir.join(".spelunk").join("memory.db")
+    dir.join(".inkentry").join("memory.db")
 }
 
 // Run `spelunk init --no-index` in `dir` (offline, non-TTY); returns stdout.
@@ -118,7 +118,7 @@ fn run_init(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-// Author records a decision (into `memory.db` and `refs/notes/spelunk`) and
+// Author records a decision (into `memory.db` and `refs/notes/inkentry`) and
 // publishes the notes ref to `origin`. This is the publish side of the round
 // trip; the note lands on the shared HEAD commit the reader also has.
 fn publish_note(author: &Path, title: &str, body: &str) {
@@ -149,7 +149,7 @@ fn publish_note(author: &Path, title: &str, body: &str) {
     );
     // Publish the notes ref (the pre-push hook does this on `git push` in real
     // use; an explicit push is the deterministic equivalent for a test).
-    git(author, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(author, &["push", "-q", "origin", "refs/notes/inkentry"]);
 }
 
 // Run a `spelunk memory <sub>` command on the DEFAULT backend in `dir`,
@@ -472,7 +472,7 @@ fn import_marker_persisted_in_memory_db_and_survives_reopen() {
         "the working-ref OID marker must be persisted, got: {first:?}"
     );
     // The working ref the marker records must be the live one.
-    let working = git_stdout(&team.reader, &["rev-parse", "refs/notes/spelunk"]);
+    let working = git_stdout(&team.reader, &["rev-parse", "refs/notes/inkentry"]);
     assert_eq!(
         first.as_deref(),
         Some(working.as_str()),
@@ -530,14 +530,14 @@ fn init_writes_config_toml_but_makes_no_git_change() {
 
     // 1. The file is on disk.
     assert!(
-        repo.join(".spelunk").join("config.toml").exists(),
-        "init must write .spelunk/config.toml"
+        repo.join(".inkentry").join("config.toml").exists(),
+        "init must write .inkentry/config.toml"
     );
     // 2. Nothing is staged: `git diff --cached` mentions no config.toml.
     let staged = git_stdout(&repo, &["diff", "--cached", "--name-only"]);
     assert!(
         !staged.contains("config.toml"),
-        "init must not stage .spelunk/config.toml, staged:\n{staged}"
+        "init must not stage .inkentry/config.toml, staged:\n{staged}"
     );
     // 3. No init-authored commit: HEAD is unchanged.
     let commits_after = git_stdout(&repo, &["rev-list", "--count", "HEAD"]);
@@ -546,7 +546,7 @@ fn init_writes_config_toml_but_makes_no_git_change() {
         "init must not author a commit"
     );
     // The file shows up as untracked, confirming it exists but is unstaged.
-    let status = git_stdout(&repo, &["status", "--porcelain", ".spelunk/config.toml"]);
+    let status = git_stdout(&repo, &["status", "--porcelain", ".inkentry/config.toml"]);
     assert!(
         status.starts_with("??"),
         "config.toml must be untracked (not staged), status:\n{status}"
@@ -592,7 +592,7 @@ fn no_git_repo_read_makes_no_import_attempt() {
     // A plain directory (no `.git` ancestor), with a seeded memory.db.
     let tmp = tempdir().unwrap();
     let dir = tmp.path();
-    let memdb = dir.join(".spelunk").join("memory.db");
+    let memdb = dir.join(".inkentry").join("memory.db");
 
     // Seed one local note via the write path (no git involved).
     let cfg = write_config(dir, false);

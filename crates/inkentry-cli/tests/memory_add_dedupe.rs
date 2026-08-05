@@ -68,11 +68,11 @@ fn note_tags(mem_db: &Path, id: i64) -> String {
     .unwrap_or_default()
 }
 
-// Parse every `{"id": ..., ...}` JSONL record out of `git notes --ref=spelunk
+// Parse every `{"id": ..., ...}` JSONL record out of `git notes --ref=inkentry
 // show HEAD`, returning each record's `id` field in file order.
 fn git_note_record_ids(dir: &Path) -> Vec<i64> {
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(dir)
         .output()
         .expect("git notes show HEAD");

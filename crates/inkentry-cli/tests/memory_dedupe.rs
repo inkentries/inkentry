@@ -37,8 +37,8 @@ fn ensure_sqlite_vec() {
 // Write a minimal spelunk config and make `dir` a real project, mirroring
 // `memory_reconcile.rs`'s `write_config`. Returns `(config_path, mem_path)`.
 fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
-    let spelunk_dir = dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk");
+    let spelunk_dir = dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
     let index_db = spelunk_dir.join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
@@ -60,7 +60,7 @@ fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
 // UNIQUE by the time we try to insert the second row.
 fn seed_duplicate_group(mem_path: &Path) {
     ensure_sqlite_vec();
-    std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .spelunk dir");
+    std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .inkentry dir");
     let conn = Connection::open(mem_path).expect("open memory.db");
     conn.execute_batch(include_str!("../../inkentry-core/migrations/004_memory.sql"))
         .expect("base memory schema");

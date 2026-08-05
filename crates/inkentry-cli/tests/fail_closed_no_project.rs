@@ -1,4 +1,4 @@
-//! Fail-closed behaviour when there is no local `.spelunk/` project (ADR-067).
+//! Fail-closed behaviour when there is no local `.inkentry/` project (ADR-067).
 //!
 //! In a directory that was never `spelunk init`'d, memory/context/index-backed
 //! search must refuse rather than silently read or write the machine-global
@@ -35,13 +35,13 @@ fn bin(home: &Path, cwd: &Path) -> Command {
 /// The global memory store path under the isolated HOME. Must never be created
 /// by a fail-closed command.
 fn global_memory_db(home: &Path) -> std::path::PathBuf {
-    home.join(".config").join("spelunk").join("memory.db")
+    home.join(".config").join("inkentry").join("memory.db")
 }
 
 /// The global index store path under the isolated HOME. Display commands must
 /// never read or create it from an un-init'd dir (ADR-067).
 fn global_index_db(home: &Path) -> std::path::PathBuf {
-    home.join(".config").join("spelunk").join("index.db")
+    home.join(".config").join("inkentry").join("index.db")
 }
 
 // ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
@@ -159,7 +159,7 @@ fn ast_grep_search_works_without_local_project() {
         !home
             .path()
             .join(".config")
-            .join("spelunk")
+            .join("inkentry")
             .join("index.db")
             .exists(),
         "ast-grep search must not create the global index"
@@ -238,7 +238,7 @@ fn zero_setup_search_matches_identifier_substring() {
 fn memory_add_works_with_local_dot_spelunk() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    std::fs::create_dir_all(proj.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".inkentry")).unwrap();
 
     bin(home.path(), proj.path())
         .args([
@@ -249,8 +249,8 @@ fn memory_add_works_with_local_dot_spelunk() {
         .stdout(predicate::str::contains("Stored [note]"));
 
     assert!(
-        proj.path().join(".spelunk").join("memory.db").exists(),
-        "memory add must write into the local project's .spelunk/memory.db"
+        proj.path().join(".inkentry").join("memory.db").exists(),
+        "memory add must write into the local project's .inkentry/memory.db"
     );
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -274,7 +274,7 @@ fn memory_add_works_with_explicit_db_in_uninit_dir() {
 
     assert!(
         db.exists(),
-        "--db override must be honored even with no .spelunk/"
+        "--db override must be honored even with no .inkentry/"
     );
     assert!(!global_memory_db(home.path()).exists());
 }
@@ -292,8 +292,8 @@ fn index_creates_project_in_uninit_dir() {
         .success();
 
     assert!(
-        proj.path().join(".spelunk").join("index.db").exists(),
-        "index must create the local .spelunk/index.db"
+        proj.path().join(".inkentry").join("index.db").exists(),
+        "index must create the local .inkentry/index.db"
     );
 }
 
@@ -422,7 +422,7 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    let global_index = home.path().join(".config").join("spelunk").join("index.db");
+    let global_index = home.path().join(".config").join("inkentry").join("index.db");
     std::fs::create_dir_all(global_index.parent().unwrap()).unwrap();
     let sentinel = b"pre-existing global index sentinel";
     std::fs::write(&global_index, sentinel).unwrap();
@@ -606,7 +606,7 @@ fn check_refuses_without_local_project() {
 // ── happy path: an init'd project still resolves graph/chunks/check locally ────
 //
 // The fail-closed rework must not break the normal case: with a real local
-// `.spelunk/index.db`, the display commands resolve LOCAL (not global) and work.
+// `.inkentry/index.db`, the display commands resolve LOCAL (not global) and work.
 // A stray global index is left in place to prove they read local, not global.
 
 #[test]
@@ -632,7 +632,7 @@ fn display_commands_resolve_local_index_in_initd_project() {
         .args(["index", "."])
         .assert()
         .success();
-    assert!(proj.path().join(".spelunk").join("index.db").exists());
+    assert!(proj.path().join(".inkentry").join("index.db").exists());
 
     // graph: index-backed symbol query resolves the LOCAL index and shows the edge.
     bin(home.path(), proj.path())
@@ -688,7 +688,7 @@ fn graph_does_not_surface_real_populated_global_index() {
         .args(["index", "."])
         .assert()
         .success();
-    let real_global_index = global_src.join(".spelunk").join("index.db");
+    let real_global_index = global_src.join(".inkentry").join("index.db");
     assert!(
         real_global_index.exists(),
         "precondition: real global index built"
@@ -850,7 +850,7 @@ fn graph_populated_dir_with_call_site_still_prints_edges() {
 //
 // The tests above exercise the un-init'd auto-live path. These cover the
 // index-backed branches of the graph zero-result rework, all inside a real
-// `.spelunk/`-init'd project:
+// `.inkentry/`-init'd project:
 //   * empty graph table         → auto-fall-back to the live scan
 //   * populated graph, no symbol → a distinct, index-specific hint
 //   * file-path query, no edges  → the unchanged "No graph edges found" message
@@ -878,7 +878,7 @@ fn graph_empty_index_auto_falls_back_to_live_scan() {
         .args(["index", "."])
         .assert()
         .success();
-    let index_db = proj.path().join(".spelunk").join("index.db");
+    let index_db = proj.path().join(".inkentry").join("index.db");
     assert!(index_db.exists(), "precondition: local index built");
 
     // Test-only DB surgery: drop every graph edge so the index is a valid project
@@ -984,11 +984,11 @@ fn graph_file_query_no_edges_reports_no_edges_message() {
 fn memory_add_works_from_deep_nested_subdir() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    std::fs::create_dir_all(proj.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".inkentry")).unwrap();
     let deep = proj.path().join("a").join("b").join("c");
     std::fs::create_dir_all(&deep).unwrap();
 
-    // Run several levels below the `.spelunk/` project root; the guard walks up
+    // Run several levels below the `.inkentry/` project root; the guard walks up
     // and resolves the ancestor's store, not the global one.
     bin(home.path(), &deep)
         .args([
@@ -999,8 +999,8 @@ fn memory_add_works_from_deep_nested_subdir() {
         .stdout(predicate::str::contains("Stored [note]"));
 
     assert!(
-        proj.path().join(".spelunk").join("memory.db").exists(),
-        "note must land in the ancestor project's .spelunk/memory.db"
+        proj.path().join(".inkentry").join("memory.db").exists(),
+        "note must land in the ancestor project's .inkentry/memory.db"
     );
     assert!(!global_memory_db(home.path()).exists());
 }
@@ -1036,10 +1036,10 @@ fn memory_resolves_main_worktree_dot_spelunk_from_linked_worktree() {
     git(&main_root, &["add", "."]);
     git(&main_root, &["commit", "-q", "-m", "init"]);
 
-    // Only the main worktree is a real project (has `.spelunk/`).
-    std::fs::create_dir_all(main_root.join(".spelunk")).unwrap();
+    // Only the main worktree is a real project (has `.inkentry/`).
+    std::fs::create_dir_all(main_root.join(".inkentry")).unwrap();
 
-    // Add a linked worktree with no `.spelunk/` of its own.
+    // Add a linked worktree with no `.inkentry/` of its own.
     let linked = tmp.path().join("linked");
     git(
         &main_root,
@@ -1053,12 +1053,12 @@ fn memory_resolves_main_worktree_dot_spelunk_from_linked_worktree() {
         ],
     );
     assert!(
-        !linked.join(".spelunk").exists(),
-        "precondition: linked worktree has no .spelunk/"
+        !linked.join(".inkentry").exists(),
+        "precondition: linked worktree has no .inkentry/"
     );
 
     // ADR-067 worktree-awareness: memory run from the linked worktree must resolve
-    // to the MAIN worktree's `.spelunk/` store, not fail closed and not go global.
+    // to the MAIN worktree's `.inkentry/` store, not fail closed and not go global.
     bin(home.path(), &linked)
         .args([
             "memory", "add", "--kind", "note", "--title", "t", "--body", "b",
@@ -1068,12 +1068,12 @@ fn memory_resolves_main_worktree_dot_spelunk_from_linked_worktree() {
         .stdout(predicate::str::contains("Stored [note]"));
 
     assert!(
-        main_root.join(".spelunk").join("memory.db").exists(),
-        "note must land in the main worktree's .spelunk/memory.db"
+        main_root.join(".inkentry").join("memory.db").exists(),
+        "note must land in the main worktree's .inkentry/memory.db"
     );
     assert!(
-        !linked.join(".spelunk").exists(),
-        "the linked worktree must not get its own .spelunk/"
+        !linked.join(".inkentry").exists(),
+        "the linked worktree must not get its own .inkentry/"
     );
     assert!(!global_memory_db(home.path()).exists());
 }

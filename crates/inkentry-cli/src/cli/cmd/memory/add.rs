@@ -219,7 +219,7 @@ pub(super) async fn memory_add(
     }
 
     // ── Git-notes write-through carrier ──────────────────────────────────────
-    // The single write path to `refs/notes/spelunk` both pre- and post-`init`,
+    // The single write path to `refs/notes/inkentry` both pre- and post-`init`,
     // so every note carries an identical record shape. Suppressed only when git
     // notes is already the primary store (explicit `--backend git-notes`), to
     // avoid a double write. Post-`init` it is best-effort (SQLite already holds
@@ -269,7 +269,7 @@ pub(super) async fn memory_add(
                         notes_rewrite_note = Some(
                             "Warning: could not set git notes.rewriteRef, so memory may not survive \
                              `git commit --amend` or `git rebase`. Set it with: \
-                             git config --add notes.rewriteRef refs/notes/spelunk",
+                             git config --add notes.rewriteRef refs/notes/inkentry",
                         );
                     }
                     RewriteRefStatus::AlreadyCovered => {}
@@ -339,7 +339,7 @@ pub(super) async fn memory_add(
     // command's own success/output; see `outbox.rs`.
     //
     // Gated on `placeholder_path`, not just `pre_init_notes`: when there is no
-    // local `.spelunk/` project yet and this write rode the git-notes carrier
+    // local `.inkentry/` project yet and this write rode the git-notes carrier
     // via an explicit `--backend git-notes` (not the pre-init carrier),
     // `resolve_memory_store` still hands back a placeholder `mem_path` that no
     // caller is meant to open (see its doc comment). Nudging it would call
@@ -452,7 +452,7 @@ fn web_to_md_script_path() -> Option<std::path::PathBuf> {
     }
     dirs::home_dir().map(|h| {
         h.join(".config")
-            .join("spelunk")
+            .join("inkentry")
             .join("scripts")
             .join("web-to-md.ts")
     })
@@ -587,7 +587,7 @@ mod tests {
     #[serial]
     fn new_config_spelunk_scripts_path_is_used_when_present() {
         let tmp = TempDir::new().unwrap();
-        let new_dir = tmp.path().join(".config").join("spelunk").join("scripts");
+        let new_dir = tmp.path().join(".config").join("inkentry").join("scripts");
         std::fs::create_dir_all(&new_dir).unwrap();
         std::fs::write(new_dir.join("web-to-md.ts"), b"// new script").unwrap();
 

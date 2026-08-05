@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{SPELUNK_NOTES_REF, SPELUNK_TRACKING_REF};
+use super::{INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF};
 
 /// The git ref store for a repo, resolved in-process for reading notes-ref OIDs.
 pub struct NotesRefs {
@@ -79,20 +79,20 @@ impl NotesRefs {
         self.workdir.as_deref()
     }
 
-    /// OID of the working ref `refs/notes/spelunk`, or `None` when absent.
+    /// OID of the working ref `refs/notes/inkentry`, or `None` when absent.
     pub fn working_oid(&self) -> Option<String> {
-        self.read_ref(SPELUNK_NOTES_REF)
+        self.read_ref(INKENTRY_NOTES_REF)
     }
 
-    /// OID of the tracking ref `refs/notes/origin/spelunk` a fetch populates,
+    /// OID of the tracking ref `refs/notes/origin/inkentry` a fetch populates,
     /// or `None` when absent.
     pub fn tracking_oid(&self) -> Option<String> {
-        self.read_ref(SPELUNK_TRACKING_REF)
+        self.read_ref(INKENTRY_TRACKING_REF)
     }
 
     /// Read one ref's OID: a loose ref file first, then `packed-refs`.
     fn read_ref(&self, refname: &str) -> Option<String> {
-        // Loose ref: `<common>/refs/notes/spelunk`. Split on '/' and push each
+        // Loose ref: `<common>/refs/notes/inkentry`. Split on '/' and push each
         // component so the path is correct on Windows too.
         let mut loose = self.common_dir.clone();
         for comp in refname.split('/') {
@@ -177,7 +177,7 @@ mod tests {
     fn reads_a_loose_notes_ref_oid_in_process() {
         let repo = repo_with_note();
         std::process::Command::new("git")
-            .args(["notes", "--ref=spelunk", "add", "-m", "hi", "HEAD"])
+            .args(["notes", "--ref=inkentry", "add", "-m", "hi", "HEAD"])
             .current_dir(repo.path())
             .output()
             .expect("git notes add");
@@ -209,7 +209,7 @@ mod tests {
                 .output()
                 .expect("git");
         };
-        run(&["notes", "--ref=spelunk", "add", "-m", "hi", "HEAD"]);
+        run(&["notes", "--ref=inkentry", "add", "-m", "hi", "HEAD"]);
         // Force the loose ref into packed-refs, then confirm we still read it.
         run(&["pack-refs", "--all"]);
 

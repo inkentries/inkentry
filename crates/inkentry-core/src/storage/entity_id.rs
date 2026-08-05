@@ -1,7 +1,7 @@
 //! Content-addressed identity for memory entries.
 //!
 //! `entity_id` is the canonical identity of a memory entry on every surface —
-//! the local store, `refs/notes/spelunk`, and the server. It is a pure function
+//! the local store, `refs/notes/inkentry`, and the server. It is a pure function
 //! of the entry's semantic core, so any reader can recompute it from the entry
 //! itself with no coordination, and two machines that independently record the
 //! same decision land on the same id.

@@ -155,9 +155,9 @@ fn clean_input_writes_sqlite_row_and_git_note() {
         "SQLite row should be written for clean input"
     );
 
-    // Verify a git note was written (refs/notes/spelunk should exist).
+    // Verify a git note was written (refs/notes/inkentry should exist).
     let notes_out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "list"])
+        .args(["notes", "--ref=inkentry", "list"])
         .current_dir(tmp.path())
         .output()
         .expect("git notes list");

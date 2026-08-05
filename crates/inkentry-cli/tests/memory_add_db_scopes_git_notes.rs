@@ -6,7 +6,7 @@
 //! `GitNotesBackend::new()` all resolved the repo from the process CWD
 //! regardless of `--db`, so `cargo test`-style fixture seeding (which points
 //! `--db` at a tmpdir but inherits the developer's repo as CWD) silently
-//! appended fixture entries to the developer's real `refs/notes/spelunk`.
+//! appended fixture entries to the developer's real `refs/notes/inkentry`.
 
 mod plumbing_helpers;
 use plumbing_helpers::{init_git_repo, spelunk_bin_in};
@@ -25,10 +25,10 @@ fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn git")
 }
 
-/// The spelunk records currently on `HEAD`'s `refs/notes/spelunk` note in
+/// The spelunk records currently on `HEAD`'s `refs/notes/inkentry` note in
 /// `dir`, or `None` when that repo holds no such note at all.
 fn spelunk_note_lines(dir: &Path) -> Option<Vec<String>> {
-    let out = git_out(dir, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     if !out.status.success() {
         return None;
     }
@@ -92,7 +92,7 @@ fn db_target_outside_any_repo_never_writes_cwd_repos_notes() {
 
     assert!(
         spelunk_note_lines(&host_repo).is_none(),
-        "the host repo's refs/notes/spelunk must stay untouched when --db \
+        "the host repo's refs/notes/inkentry must stay untouched when --db \
          points outside it"
     );
 }
@@ -214,7 +214,7 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
     );
 }
 
-/// No local `.spelunk` project and no `--db`: `add` rides the git-notes
+/// No local `.inkentry` project and no `--db`: `add` rides the git-notes
 /// carrier straight into CWD's own repo (ADR-068 D3). This path's project
 /// root is legitimately CWD-derived, so this confirms the redirect fix left
 /// it alone rather than guarding a regression.

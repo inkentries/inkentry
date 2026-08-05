@@ -152,7 +152,7 @@ spelunk graph validate_token --kind calls
 spelunk index .
 ```
 
-To exclude files or directories from indexing, add a `.spelunkignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, and files that self-declare `@generated`); tune it with the `[index]` table in config. See [File filtering](commands.md#file-filtering).
+To exclude files or directories from indexing, add a `.inkentryignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, and files that self-declare `@generated`); tune it with the `[index]` table in config. See [File filtering](commands.md#file-filtering).
 
 **Note:** Indexing is optional and only needed if you use semantic search. If you only use `spelunk graph` and full-text search, there's nothing to rebuild after changes.
 
@@ -175,7 +175,7 @@ spelunk memory search "why did we choose sqlite-vec"
 ```
 
 **git-notes write-through:** with `store_in_git_notes` enabled (the default),
-`spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
+`spelunk memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
 so decisions travel with the code through clone/fetch. It is a graceful no-op
 outside a git repository. Set `store_in_git_notes = false` to disable.
 
@@ -184,10 +184,10 @@ Plain `git notes show HEAD` reads git's default `commits` ref and reports "no
 note found", a false negative that makes it look like nothing was written:
 
 ```bash
-git notes --ref=spelunk show HEAD    # notes on the current commit
-git notes --ref=spelunk list         # every commit carrying spelunk notes
+git notes --ref=inkentry show HEAD    # notes on the current commit
+git notes --ref=inkentry list         # every commit carrying spelunk notes
 # equivalently
-GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ```
 
 ## Automatic capture (no authoring tax)

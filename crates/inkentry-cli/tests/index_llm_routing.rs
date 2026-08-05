@@ -37,8 +37,8 @@ fn write_project(dir: &Path) {
 }
 
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     std::fs::write(
         spelunk_dir.join("config.toml"),
         format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n"),
@@ -186,7 +186,7 @@ async fn loopback_llm_with_no_server_url_generates_summaries() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_project(project.path());
-    // Deliberately no `.spelunk/config.toml`: no server_url anywhere.
+    // Deliberately no `.inkentry/config.toml`: no server_url anywhere.
     let state_dir = home.path().join("state");
     write_loopback_state(&state_dir, &loopback.uri());
 

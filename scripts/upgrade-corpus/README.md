@@ -33,7 +33,7 @@ crates/inkentry-cli/tests/
 | `memory-v0.9.3-pre-entity-id` | 0.9.3 | the last release before memory entries grew a content-addressed `entity_id` |
 | `memory-v0.9.5` | 0.9.5 | entity-id era, with a supersede chain and a separately archived entry |
 | `registry-v0.9.5` | 0.9.5 | two registered projects and a dependency link |
-| `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one `refs/notes/spelunk` |
+| `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one `refs/notes/inkentry` |
 
 The note eras were established by running the binaries, not by reading history:
 releases up to and including **0.9.2 replace** a commit's note blob on every
@@ -198,7 +198,7 @@ deliberate. `MemoryStore::open` **refuses** a store whose `user_version` is
 above the build's own `MEMORY_SCHEMA_VERSION`, with an upgrade message, rather
 than opening it and rewinding it. Memory is not derived data and cannot be
 rebuilt, so a refusal is the designed outcome. That is the promise recorded for
-`.spelunk/memory.db` in [the stability contract](../../docs/stability.md#on-disk-formats).
+`.inkentry/memory.db` in [the stability contract](../../docs/stability.md#on-disk-formats).
 
 Every 0.9.x release predates that guard, which is the only reason the clean-read
 result above covers `memory.db` at all. The guard is in the current build and

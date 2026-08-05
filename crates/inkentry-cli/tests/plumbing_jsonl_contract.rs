@@ -443,7 +443,7 @@ fn publish_notes_stdout(repo: &Path, extra: &[&str]) -> Vec<u8> {
         .clone()
 }
 
-// No `refs/notes/spelunk` in a fresh repo, so this takes the skip branch, which
+// No `refs/notes/inkentry` in a fresh repo, so this takes the skip branch, which
 // is the outcome shape reachable without a remote.
 fn skip_shape(tmp: &Path) -> Vec<u8> {
     let repo = tmp.join("skip-repo");

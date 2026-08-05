@@ -33,12 +33,12 @@ spelunk init [options]
 | `--no-index` | false | Skip the initial index run |
 | `--name <slug>` | derived | Explicit project slug. Overrides the git-derived default; use it for projects without a git remote. |
 
-`init` writes the project slug to `.spelunk/config.toml` but takes **no git
+`init` writes the project slug to `.inkentry/config.toml` but takes **no git
 action on it** — commit it yourself so the slug travels with the repo and the
 whole team shares one identity:
 
 ```bash
-git add .spelunk/config.toml && git commit -m "Add spelunk project slug"
+git add .inkentry/config.toml && git commit -m "Add spelunk project slug"
 ```
 
 `init` prints a one-line reminder to do this; committing the file is a step you
@@ -53,8 +53,8 @@ slug.
 
 **Memory notes travel with the repository:** When run inside a git repo with an
 `origin` remote, `init` configures `remote.origin.fetch` so teammates'
-`refs/notes/spelunk` arrives on `git fetch`, landing on the tracking ref
-`refs/notes/origin/spelunk`, and does a one-time best-effort fetch of that ref
+`refs/notes/inkentry` arrives on `git fetch`, landing on the tracking ref
+`refs/notes/origin/inkentry`, and does a one-time best-effort fetch of that ref
 so a **single** `init` after a clone hydrates teammates' memory (the fetch is
 non-fatal, so `init` still succeeds offline). Thereafter every default read path
 — `memory list`, `memory search`, `memory show`, and `context` — folds the
@@ -66,14 +66,14 @@ names the command that does it. See
 [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
 
 **Memory survives history rewrites:** `init` also points `notes.rewriteRef` at
-`refs/notes/spelunk` in the repository's own config, so memory attached to a
+`refs/notes/inkentry` in the repository's own config, so memory attached to a
 commit is carried onto its replacement by `git commit --amend` and `git rebase`
 rather than orphaned on the old sha. This runs even without an `origin`, since
 rewrites are local. Note that `git merge --squash` and cherry-picking onto a
 divergent base still do not carry notes. See [Surviving history
 rewrites](memory.md#surviving-history-rewrites).
 
-If the repo already carries memory on `refs/notes/spelunk` — whether written
+If the repo already carries memory on `refs/notes/inkentry` — whether written
 locally or just fetched by the step above — `init` also hydrates the new
 `memory.db` from those notes: every entry not already present is imported
 (idempotent, no embeddings), and it prints `Memory:  imported N entries from git
@@ -181,12 +181,12 @@ searchable chunks and work percentage until every chunk is embedded. If the
 background pass is interrupted, re-running `spelunk index` resumes it
 (already-embedded chunks are skipped).
 
-Add a `.spelunkignore` file (same syntax as `.gitignore`) to any directory to
+Add a `.inkentryignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
 
 ### File filtering
 
-Beyond `.gitignore` and `.spelunkignore`, spelunk applies a **built-in default
+Beyond `.gitignore` and `.inkentryignore`, spelunk applies a **built-in default
 exclude set** during indexing. These are files that are typically committed to
 the repo (so `.gitignore` never catches them) yet carry near-zero retrieval
 value while costing real embed and parse wall-clock. The defaults cover:
@@ -205,7 +205,7 @@ value while costing real embed and parse wall-clock. The defaults cover:
 #### The `[index]` config table
 
 Tune the filter with an `[index]` table in your config
-(`~/.config/spelunk/config.toml`, or a project-level `.spelunk/config.toml`):
+(`~/.config/spelunk/config.toml`, or a project-level `.inkentry/config.toml`):
 
 ```toml
 [index]
@@ -218,7 +218,7 @@ detect_generated = true
 ```
 
 `exclude` lines are **appended after** the defaults, and matching is
-last-match-wins (gitignore semantics). A project `.spelunk/config.toml`
+last-match-wins (gitignore semantics). A project `.inkentry/config.toml`
 overrides the global value **per field**: an absent key leaves the global (or
 default) value in place, so setting only `exclude` in a project does not reset
 `detect_generated`.
@@ -273,7 +273,7 @@ and prints the `[index]` re-include recipe, instead of a bare "No chunks found".
 At the end of the parse phase, indexing prints a line like:
 
 ```
-Filtered out 7 generated/vendored/data file(s) (built-in index filter; override in [index] of .spelunk/config.toml)
+Filtered out 7 generated/vendored/data file(s) (built-in index filter; override in [index] of .inkentry/config.toml)
 ```
 
 That count includes **file-level** excludes (a lockfile, a `*.min.js`, a
@@ -605,7 +605,7 @@ blocked). Developers without `spelunk` installed are unaffected. `--ci` prints a
 GitHub Actions workflow step instead of writing a hook.
 
 `install --pre-push` writes a pre-push hook that publishes your memory
-(`refs/notes/spelunk`) to the named remote you are pushing to, so decisions travel
+(`refs/notes/inkentry`) to the named remote you are pushing to, so decisions travel
 with the code they describe. It merges the remote's notes into yours before
 pushing (a union, so neither side is dropped) and retries a lost race up to three
 times. It never blocks your push: on failure it warns on stderr and exits 0, and
@@ -749,7 +749,7 @@ keyed by the server's origin, so keys for two different self-hosted servers
 never collide. A flat `server_key` from an install predating this scheme is
 migrated in automatically the first time it's needed for a given server; no
 action required. A `server_key` line in a project's checked-in
-`.spelunk/config.toml` is no longer read at all (it was a plaintext-in-a-committed-file
+`.inkentry/config.toml` is no longer read at all (it was a plaintext-in-a-committed-file
 footgun); if a project config still has that line, remove it and have each
 developer run `spelunk auth set-key --server <url>` instead.
 
@@ -914,10 +914,10 @@ different servers.
 `spelunk memory failures` is a shortcut for `spelunk memory list --kind antipattern`.
 
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
-`spelunk memory add` also appends the entry to `refs/notes/spelunk` on `HEAD`,
+`spelunk memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
 so memory travels with the code. The repo is resolved from the database in
 use, the `--db <path>` directory when given, otherwise the discovered
-`.spelunk` project, not the invocation's working directory: pointing `--db`
+`.inkentry` project, not the invocation's working directory: pointing `--db`
 at another project's database writes notes to that project's repo. Outside a
 git repo this is a graceful no-op. Concurrent writes are serialized by a
 cross-process lock, and a write that
@@ -1034,7 +1034,7 @@ spelunk plumbing read-memory           # memory entries as JSONL
 spelunk plumbing publish-notes [remote]  # publish memory notes to a remote
 ```
 
-`publish-notes` fetches the remote's `refs/notes/spelunk` onto the tracking ref,
+`publish-notes` fetches the remote's `refs/notes/inkentry` onto the tracking ref,
 merges it into yours with `cat_sort_uniq`, and pushes the result (defaulting to
 `origin`). It is the flow behind `spelunk hooks install --pre-push`, which is the
 command to reach for; this one is the plumbing underneath it.

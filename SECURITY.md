@@ -41,7 +41,7 @@ network. The most relevant security concerns are:
   in the vector index, written through to git notes, or sent to an inference
   backend
 - **Memory persistence** — memory entries are written through to
-  `refs/notes/spelunk` by default (`store_in_git_notes`), so they travel with
+  `refs/notes/inkentry` by default (`store_in_git_notes`), so they travel with
   the repository on push/clone
 - **Server exposure** — a `inkentry-server` bound beyond loopback, or run without
   an API key, exposes stored memory to anyone who can reach the port

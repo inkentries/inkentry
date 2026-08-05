@@ -434,7 +434,7 @@ impl Database {
             Some(recorded) => anyhow::bail!(
                 "index was built with embedding model '{recorded}' but this build uses \
                  '{model_id}'. Vectors from two models must not share one search index. \
-                 Re-index from scratch: `spelunk index . --force` (or delete .spelunk/index.db)."
+                 Re-index from scratch: `spelunk index . --force` (or delete .inkentry/index.db)."
             ),
             None => {
                 self.conn

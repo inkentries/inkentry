@@ -100,7 +100,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     let db_path = args
         .db
         .clone()
-        .unwrap_or_else(|| project_root.join(".spelunk").join("index.db"));
+        .unwrap_or_else(|| project_root.join(".inkentry").join("index.db"));
 
     // Serialize whole `spelunk index` runs against this project: two
     // concurrent writers reproducibly corrupt index.db (see run_lock.rs doc
@@ -110,7 +110,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     let spelunk_dir = db_path
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| project_root.join(".spelunk"));
+        .unwrap_or_else(|| project_root.join(".inkentry"));
     let mut run_lock = match run_lock::try_acquire(&spelunk_dir)? {
         run_lock::LockOutcome::Acquired(lock) => Some(lock),
         run_lock::LockOutcome::HeldByOther { holder_pid } => {

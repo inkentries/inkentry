@@ -45,7 +45,7 @@ fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env("SPELUNK_SECRET_STORE", "file")
         .env_remove("XDG_CONFIG_HOME")
         .env("GIT_AUTHOR_NAME", "t")
@@ -226,11 +226,11 @@ fn pre_push_hook_installed_at_core_hooks_path_is_actually_invoked_by_git_push() 
     // location, so the notes ref reached origin. A hook that only exists on
     // disk but is never invoked would leave this ref absent.
     assert!(
-        git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
+        git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
             .success(),
         "the pre-push hook installed at the core.hooksPath location must \
-         actually run on git push: origin should carry refs/notes/spelunk"
+         actually run on git push: origin should carry refs/notes/inkentry"
     );
 }
 

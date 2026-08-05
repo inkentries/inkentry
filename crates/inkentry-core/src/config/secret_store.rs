@@ -48,7 +48,7 @@ use std::sync::{Mutex, OnceLock};
 ///
 /// Shared by every entry so a user can find/audit spelunk credentials in their
 /// OS keychain UI under a single service.
-pub const KEYRING_SERVICE: &str = "spelunk";
+pub const KEYRING_SERVICE: &str = "inkentry";
 
 /// Key name for the CLI bearer credential (today's `server_key`).
 ///
@@ -112,7 +112,7 @@ fn read_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 
 /// OS-keychain-backed [`SecretStore`] using the [`keyring`] crate.
 ///
-/// Each secret is a keyring entry `(service = "spelunk", user = <key>)`.
+/// Each secret is a keyring entry `(service = "inkentry", user = <key>)`.
 pub struct KeyringStore;
 
 impl KeyringStore {
@@ -129,7 +129,7 @@ impl KeyringStore {
     /// Linux with no daemon). We do not read or write a secret here — only
     /// confirm the backend can be addressed.
     pub fn is_available() -> bool {
-        keyring::Entry::new(KEYRING_SERVICE, "__spelunk_probe__").is_ok()
+        keyring::Entry::new(KEYRING_SERVICE, "__inkentry_probe__").is_ok()
     }
 }
 

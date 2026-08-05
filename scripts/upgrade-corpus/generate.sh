@@ -249,8 +249,8 @@ build_index_wing() {
   ( sandbox_env "$home"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
   stop_stub
 
-  [[ -f "$repo/.spelunk/index.db" ]] || die "$tag produced no index.db"
-  stage_db "$repo/.spelunk/index.db" "$out/index.db.gz"
+  [[ -f "$repo/.inkentry/index.db" ]] || die "$tag produced no index.db"
+  stage_db "$repo/.inkentry/index.db" "$out/index.db.gz"
 }
 
 # Add one entry and echo the id the binary assigned it, parsed from the
@@ -327,7 +327,7 @@ build_registry_wing() {
   stage_db "$reg" "$out/registry.db.gz"
 }
 
-# One repository carrying all three note-writing eras on refs/notes/spelunk.
+# One repository carrying all three note-writing eras on refs/notes/inkentry.
 #
 # Each era gets its own commit, which is not a convenience: releases up to and
 # including 0.9.2 replace a commit's note blob instead of appending to it, so
@@ -370,7 +370,7 @@ build_git_notes_wing() {
     )
   done
 
-  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/spelunk
+  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/inkentry
 }
 
 # ── driver ──────────────────────────────────────────────────────────────────

@@ -75,13 +75,13 @@ fn real_git_worktree_resolves_to_main_index() {
         "worktree .git must be a file"
     );
     assert!(
-        !wt_root.join(".spelunk").exists(),
-        "worktree must have no local .spelunk/"
+        !wt_root.join(".inkentry").exists(),
+        "worktree must have no local .inkentry/"
     );
 
     // The shared index lives only in the main worktree.
-    std::fs::create_dir_all(main_root.join(".spelunk")).unwrap();
-    let index_db = main_root.join(".spelunk").join("index.db");
+    std::fs::create_dir_all(main_root.join(".inkentry")).unwrap();
+    let index_db = main_root.join(".inkentry").join("index.db");
     std::fs::write(&index_db, b"").unwrap();
 
     // Primary gix branch: discovery from inside the linked worktree resolves to

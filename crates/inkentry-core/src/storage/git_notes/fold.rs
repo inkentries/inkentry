@@ -1,4 +1,4 @@
-//! Collapse the copies of one entity that `refs/notes/spelunk` accumulates.
+//! Collapse the copies of one entity that `refs/notes/inkentry` accumulates.
 //!
 //! The ref is an append-only, entity-keyed event log: two machines recording
 //! the same decision write lines with the same `entity_id` but their own `id`

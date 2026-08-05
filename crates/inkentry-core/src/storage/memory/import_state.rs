@@ -14,9 +14,9 @@ use super::MemoryStore;
 /// The persisted OID markers gating the read-path git-notes import.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotesImportMarker {
-    /// OID of `refs/notes/origin/spelunk` at the last merge; `None` if never merged.
+    /// OID of `refs/notes/origin/inkentry` at the last merge; `None` if never merged.
     pub last_merged_tracking_oid: Option<String>,
-    /// OID of `refs/notes/spelunk` at the last import; `None` if never imported.
+    /// OID of `refs/notes/inkentry` at the last import; `None` if never imported.
     pub last_imported_working_oid: Option<String>,
 }
 

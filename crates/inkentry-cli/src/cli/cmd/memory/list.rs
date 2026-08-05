@@ -17,7 +17,7 @@ pub(super) async fn memory_list(
     // Read from git notes when it's the explicit backend (`--backend git-notes`)
     // or the ADR-068 D3 pre-init carrier: `mem_path` is a placeholder in both, so
     // skip the SQLite-oriented nudge and cross-project pass (they'd open the
-    // local/global SQLite store) and route the read to `refs/notes/spelunk`.
+    // local/global SQLite store) and route the read to `refs/notes/inkentry`.
     let git_notes = pre_init_notes || backend_override == Some("git-notes");
     let effective_override = if git_notes {
         Some("git-notes")
@@ -127,7 +127,7 @@ pub(super) async fn memory_list(
 /// authoritative local rows back so the listing keeps this store's own ids and
 /// status.
 ///
-/// Best-effort by design: outside a git repo, with no `refs/notes/spelunk`, or
+/// Best-effort by design: outside a git repo, with no `refs/notes/inkentry`, or
 /// on any git failure there is simply nothing to add and the column matches in
 /// `matches` stand. `mem_path.parent()` is the same root the write-through
 /// carrier anchors against (see `memory add`), so reads and writes agree on

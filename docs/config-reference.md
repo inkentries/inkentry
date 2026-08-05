@@ -1,6 +1,6 @@
 # spelunk config reference
 
-Every field in `~/.config/spelunk/config.toml` and `.spelunk/config.toml`,
+Every field in `~/.config/spelunk/config.toml` and `.inkentry/config.toml`,
 with defaults, types, and descriptions. Verified against
 `crates/inkentry-core/src/config/mod.rs`.
 
@@ -12,7 +12,7 @@ variable overrides.
 | File | Scope | Commit to git? |
 |------|-------|-----------------|
 | `~/.config/spelunk/config.toml` | Personal, machine-wide | No |
-| `.spelunk/config.toml` (project root, found by walking up from CWD) | Project-level, team-wide | Yes: contains no secrets by design |
+| `.inkentry/config.toml` (project root, found by walking up from CWD) | Project-level, team-wide | Yes: contains no secrets by design |
 
 The two files are not interchangeable: most fields are only read from the
 personal config, and the project file accepts a deliberately narrow set (see
@@ -24,7 +24,7 @@ Load order (later overrides earlier):
 2. `~/.config/spelunk/config.toml` (global personal). `server_url` is
    discarded even if present here: a team server is a project-wide choice,
    never a single developer's.
-3. `.spelunk/config.toml`, discovered by walking up from the current
+3. `.inkentry/config.toml`, discovered by walking up from the current
    directory (project-level, team-wide). Only `server_url`, `project_id`,
    `server_ca`, and `[index]` are read from this file.
 4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`,
@@ -44,7 +44,7 @@ Override the global config file path with `-c, --config <path>` on any command
 ## Fields (personal config)
 
 These fields are read from `~/.config/spelunk/config.toml`. Unless noted
-otherwise, setting them in `.spelunk/config.toml` has no effect: the project
+otherwise, setting them in `.inkentry/config.toml` has no effect: the project
 file only accepts the fields listed under
 [Project config fields](#spelunkconfigtoml-project-level).
 
@@ -90,7 +90,7 @@ or Ollama, a self-hosted gateway). When set, the auto-spawned local
 `spelunk explore`, `spelunk memory harvest`, and index-time summaries need.
 When unset, the daemon runs without an LLM.
 
-Personal config only. A value in a checked-in `.spelunk/config.toml` is
+Personal config only. A value in a checked-in `.inkentry/config.toml` is
 ignored, like any key outside the project-level allowlist: an endpoint URL is a
 per-developer choice, and committing one points the whole team at one machine.
 
@@ -150,7 +150,7 @@ context length of the model you have loaded.
 - **Default:** `true`
 
 When true, `spelunk memory add` also appends the new entry as a line of JSON to
-`refs/notes/spelunk` on `HEAD`. This keeps memory close to commits, so it travels
+`refs/notes/inkentry` on `HEAD`. This keeps memory close to commits, so it travels
 with the code. Failure to write the git note is non-fatal: a warning is logged
 and the primary SQLite write is unaffected. Set `store_in_git_notes = false` to
 opt out.
@@ -164,7 +164,7 @@ opt out.
 URL of a team `inkentry-server` instance. When set, memory commands read and write
 against that shared server: this is the only configuration that moves memory off
 the local machine. A value in the **personal** config is always discarded on
-load; set it in `.spelunk/config.toml` (project-level) or via
+load; set it in `.inkentry/config.toml` (project-level) or via
 `SPELUNK_SERVER_URL` instead, since a team server is a shared, project-wide
 choice.
 
@@ -195,7 +195,7 @@ configured `server_url`.
 When unset, the effective mode is derived: no `server_url` means `offline`; a
 configured `server_url` means `local_first`. `SPELUNK_NO_SERVER=1` forces
 `offline` regardless of this setting, as a hard kill-switch. `mode` is only
-read from the personal config, not from `.spelunk/config.toml`. See
+read from the personal config, not from `.inkentry/config.toml`. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.
 
@@ -235,7 +235,7 @@ Prefer one of these instead of hand-editing this field:
 - `SPELUNK_SERVER_KEY` works everywhere, including CI, and always takes
   precedence over both the per-origin store and `[auth]`.
 
-Do **not** commit a `server_key` to `.spelunk/config.toml`: the project file
+Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
 does not accept this field at all (see
 [Project config fields](#spelunkconfigtoml-project-level)); a line present
 there anyway is silently dropped and never resolves to a credential. See
@@ -253,7 +253,7 @@ there is no lookup and nothing is cached. Required when `server_url` points at
 a non-loopback address (or provide it once via `spelunk sync --project <slug>`).
 If `server_url` is a loopback address, `project_id` may be omitted: spelunk
 derives a stable id from the project's git remote, or from a hash of the local
-path if there is no remote. Normally set in `.spelunk/config.toml` alongside
+path if there is no remote. Normally set in `.inkentry/config.toml` alongside
 `server_url`.
 
 ### `server_ca`
@@ -291,7 +291,7 @@ Bearer` token every spelunk.cloud request sends; it does not apply to a
 self-hosted `server_url`, which resolves its own credential separately (see
 `server_key` above). `refresh_token` rotates an expired access token and backs
 organization switching. The file is written with `0600` permissions. This
-table is not read from `.spelunk/config.toml`.
+table is not read from `.inkentry/config.toml`.
 
 Every field is optional: a partial table (for example a login without an org,
 which omits `org_id`, or a hand-trimmed file) is tolerated and never blocks
@@ -324,20 +324,20 @@ detect_generated = true
 - **`detect_generated`** - whether to skip files whose header self-declares as
   generated (`@generated`, or `// Code generated ... DO NOT EDIT.`).
 
-Also valid in `.spelunk/config.toml`, where it overrides the personal value
+Also valid in `.inkentry/config.toml`, where it overrides the personal value
 per field: an absent key in the project table leaves the personal (or default)
 value in place.
 
 ---
 
-## `.spelunk/config.toml` (project-level)
+## `.inkentry/config.toml` (project-level)
 
 Safe to commit; contains no secrets by design. Only four keys are read from
 this file - `server_url`, `project_id`, `server_ca`, and `[index]` - anything
 else (including any personal field documented above) is silently ignored.
 
 ```toml
-# .spelunk/config.toml
+# .inkentry/config.toml
 server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 server_ca = "/etc/spelunk/internal-ca.pem"

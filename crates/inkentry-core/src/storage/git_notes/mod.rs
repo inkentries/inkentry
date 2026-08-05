@@ -23,12 +23,12 @@ pub use refs::NotesRefs;
 // ── Carry config: surviving history rewrites ─────────────────────────────────
 
 /// The ref spelunk stores memory notes on.
-const SPELUNK_NOTES_REF: &str = "refs/notes/spelunk";
+const INKENTRY_NOTES_REF: &str = "refs/notes/inkentry";
 
 /// The tracking ref `git fetch` populates, per the refspec `spelunk init`
-/// configures. Fetching straight onto [`SPELUNK_NOTES_REF`] would force-update
+/// configures. Fetching straight onto [`INKENTRY_NOTES_REF`] would force-update
 /// it and silently destroy local unpushed notes (ADR-069 D4).
-const SPELUNK_TRACKING_REF: &str = "refs/notes/origin/spelunk";
+const INKENTRY_TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
 /// The namespace git is willing to rewrite notes in.
 const NOTES_NAMESPACE: &str = "refs/notes/";
@@ -71,7 +71,7 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
     // writes to the repo-local config (never global).
     match run_git(
         git_root,
-        &["config", "--add", "notes.rewriteRef", SPELUNK_NOTES_REF],
+        &["config", "--add", "notes.rewriteRef", INKENTRY_NOTES_REF],
     )
     .await
     {
@@ -94,11 +94,11 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
 /// which stays correct, so matching a trailing `*` is enough.
 fn rewrite_ref_covers_spelunk(value: &str) -> bool {
     let value = value.trim();
-    if value == SPELUNK_NOTES_REF {
+    if value == INKENTRY_NOTES_REF {
         return true;
     }
     value.strip_suffix('*').is_some_and(|prefix| {
-        prefix.starts_with(NOTES_NAMESPACE) && SPELUNK_NOTES_REF.starts_with(prefix)
+        prefix.starts_with(NOTES_NAMESPACE) && INKENTRY_NOTES_REF.starts_with(prefix)
     })
 }
 
@@ -206,7 +206,7 @@ async fn read_note_body(
         cmd.current_dir(d);
     }
     let out = cmd
-        .args(["notes", "--ref=spelunk", "show", "--", object])
+        .args(["notes", "--ref=inkentry", "show", "--", object])
         .output()
         .await?;
 
@@ -235,7 +235,7 @@ pub struct AppendOutcome {
     pub lock_degradation: Option<String>,
 }
 
-/// Append a `NoteRecord` as a JSON line to `refs/notes/spelunk` on HEAD.
+/// Append a `NoteRecord` as a JSON line to `refs/notes/inkentry` on HEAD.
 ///
 /// Read-modify-write with append semantics: the existing blob is read and its
 /// lines (spelunk records and foreign content alike) are preserved verbatim;
@@ -304,7 +304,7 @@ pub async fn append_to_git_notes(
         git_root,
         &[
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "add",
             "-f",
             "-F",
@@ -393,7 +393,7 @@ pub enum NotesMergeOutcome {
     LockUnavailable,
 }
 
-/// Merge fetched teammate notes ([`SPELUNK_TRACKING_REF`]) into the working ref
+/// Merge fetched teammate notes ([`INKENTRY_TRACKING_REF`]) into the working ref
 /// so `memory list` / `context` can see them.
 ///
 /// Does **no** network. It merges only what the user's own `git fetch` already
@@ -427,18 +427,18 @@ pub async fn merge_tracking_notes(git_root: Option<&std::path::Path>) -> NotesMe
         git_root,
         &[
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "merge",
             "-s",
             "cat_sort_uniq",
-            SPELUNK_TRACKING_REF,
+            INKENTRY_TRACKING_REF,
         ],
     )
     .await
     {
         Ok(_) => NotesMergeOutcome::Merged,
         Err(e) => {
-            tracing::debug!("notes merge from {SPELUNK_TRACKING_REF} skipped: {e}");
+            tracing::debug!("notes merge from {INKENTRY_TRACKING_REF} skipped: {e}");
             NotesMergeOutcome::Skipped
         }
     }
@@ -508,7 +508,7 @@ async fn run_git_with_stdin(
 /// Callers needing unbounded listing should use `--backend sqlite`.
 const GIT_NOTES_MAX_LIST: usize = 500;
 
-/// Memory backend backed by `git notes` in the `refs/notes/spelunk` namespace.
+/// Memory backend backed by `git notes` in the `refs/notes/inkentry` namespace.
 ///
 /// The note on a commit is JSON Lines: one `NoteRecord` per line, possibly
 /// interleaved with foreign content (prose, other tools' lines). Reads skip
@@ -588,7 +588,7 @@ impl GitNotesBackend {
         let mut cmd = self.git();
         cmd.args([
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "add",
             "-f",
             "-F",
@@ -630,10 +630,10 @@ impl GitNotesBackend {
     /// code that carries it, so a teammate's note on a fetched-but-unmerged
     /// commit stays invisible until that commit is merged.
     async fn noted_commits(&self) -> Result<Vec<(String, String)>> {
-        // `git notes --ref=spelunk list` → "<note-blob-sha> <commit-sha>"
+        // `git notes --ref=inkentry list` → "<note-blob-sha> <commit-sha>"
         let list_out = self
             .git()
-            .args(["notes", "--ref=spelunk", "list"])
+            .args(["notes", "--ref=inkentry", "list"])
             .output()
             .await?;
 
@@ -1096,10 +1096,10 @@ mod cat_file_batch {
         std::fs::write(dir.path().join("README.md"), "x").expect("write");
         run(&["add", "."]);
         run(&["commit", "--no-gpg-sign", "-m", "first"]);
-        run(&["notes", "--ref=spelunk", "add", "-m", "one\ntwo", "HEAD"]);
+        run(&["notes", "--ref=inkentry", "add", "-m", "one\ntwo", "HEAD"]);
 
         let listing =
-            String::from_utf8(run(&["notes", "--ref=spelunk", "list"]).stdout).expect("utf8");
+            String::from_utf8(run(&["notes", "--ref=inkentry", "list"]).stdout).expect("utf8");
         let blob = listing
             .split_whitespace()
             .next()

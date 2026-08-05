@@ -1,4 +1,4 @@
-//! Cross-process lock serializing the `refs/notes/spelunk` read-modify-write.
+//! Cross-process lock serializing the `refs/notes/inkentry` read-modify-write.
 //!
 //! Git's own ref locking cannot help here: the loss happens at the content
 //! layer, not the ref layer, and racing writers each hold the ref lock
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Lock file name, created inside the git **common** dir.
-const LOCK_FILE_NAME: &str = "spelunk-notes.lock";
+const LOCK_FILE_NAME: &str = "inkentry-notes.lock";
 
 /// Bounded wait before giving up on a contended lock.
 ///
@@ -64,10 +64,10 @@ pub enum LockAttempt {
     Unusable { path: PathBuf, reason: String },
 }
 
-/// Resolve the lock path: `<git-common-dir>/spelunk-notes.lock`.
+/// Resolve the lock path: `<git-common-dir>/inkentry-notes.lock`.
 ///
 /// The **common** dir, not the per-worktree git dir: worktrees share one
-/// `refs/notes/spelunk`, so a per-worktree lock would fail to serialize the
+/// `refs/notes/inkentry`, so a per-worktree lock would fail to serialize the
 /// actual contenders.
 async fn notes_lock_path(git_root: Option<&Path>) -> Result<PathBuf> {
     // `--path-format=absolute` (git >= 2.31) answers absolute from a main and

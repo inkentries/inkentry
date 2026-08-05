@@ -3,7 +3,7 @@ use inkentry_core::storage::{PublishOutcome, SkipReason, publish_notes as core_p
 
 use super::PlumbingPublishNotesArgs;
 
-/// Publish `refs/notes/spelunk` to a remote (ADR-069 D7).
+/// Publish `refs/notes/inkentry` to a remote (ADR-069 D7).
 ///
 /// Runs against the git repo holding the CWD, so it works before `spelunk init`:
 /// git notes are the pre-`init` store of record (ADR-068), and publishing them
@@ -16,7 +16,7 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             emit(&serde_json::json!({
                 "published": true,
                 "remote": remote,
-                "ref": "refs/notes/spelunk",
+                "ref": "refs/notes/inkentry",
                 "attempts": attempts,
             }));
             Ok(())
@@ -45,7 +45,7 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             eprintln!("spelunk: {e:#}");
             eprintln!(
                 "spelunk: your code push is unaffected. Retry with: \
-                 git push {remote} refs/notes/spelunk"
+                 git push {remote} refs/notes/inkentry"
             );
             emit(&serde_json::json!({
                 "published": false,

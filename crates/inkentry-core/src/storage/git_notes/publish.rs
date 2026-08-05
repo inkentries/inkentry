@@ -1,4 +1,4 @@
-//! Publish `refs/notes/spelunk` to a remote: fetch, union-merge, push.
+//! Publish `refs/notes/inkentry` to a remote: fetch, union-merge, push.
 //!
 //! Driven by the opt-in pre-push hook, which is a shim around
 //! `spelunk plumbing publish-notes` (ADR-069 D1/D3/D7).
@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use std::path::Path;
 use tokio::process::Command;
 
-use super::{NotesMergeOutcome, SPELUNK_NOTES_REF, SPELUNK_TRACKING_REF, merge_tracking_notes};
+use super::{NotesMergeOutcome, INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF, merge_tracking_notes};
 
 /// Set on the nested notes push. `--no-verify` is the real recursion guard; a
 /// hook that re-enters despite it stops here.
@@ -30,7 +30,7 @@ pub enum PublishOutcome {
 pub enum SkipReason {
     /// Re-entered from the nested notes push.
     Recursion,
-    /// No `refs/notes/spelunk` in this repo.
+    /// No `refs/notes/inkentry` in this repo.
     NoLocalNotes,
     /// The named remote does not resolve. `git push <url>` reaches here.
     NoSuchRemote,
@@ -66,7 +66,7 @@ pub async fn publish_notes(git_root: Option<&Path>, remote: &str) -> Result<Publ
 
     if git(
         git_root,
-        &["rev-parse", "--verify", "--quiet", SPELUNK_NOTES_REF],
+        &["rev-parse", "--verify", "--quiet", INKENTRY_NOTES_REF],
         &[],
     )
     .await
@@ -84,8 +84,8 @@ pub async fn publish_notes(git_root: Option<&Path>, remote: &str) -> Result<Publ
 
     // Onto the tracking ref, never over the working ref: a `+` there
     // force-updates it and silently drops local unpushed notes (D4).
-    let fetch_refspec = format!("+{SPELUNK_NOTES_REF}:{SPELUNK_TRACKING_REF}");
-    let push_refspec = format!("{SPELUNK_NOTES_REF}:{SPELUNK_NOTES_REF}");
+    let fetch_refspec = format!("+{INKENTRY_NOTES_REF}:{INKENTRY_TRACKING_REF}");
+    let push_refspec = format!("{INKENTRY_NOTES_REF}:{INKENTRY_NOTES_REF}");
 
     let mut last_err = String::new();
     for attempt in 1..=MAX_PUSH_ATTEMPTS {
@@ -171,10 +171,10 @@ mod tests {
     #[test]
     fn a_lost_race_is_retried() {
         assert!(is_lost_race(
-            " ! [rejected]        refs/notes/spelunk -> refs/notes/spelunk (non-fast-forward)"
+            " ! [rejected]        refs/notes/inkentry -> refs/notes/inkentry (non-fast-forward)"
         ));
         assert!(is_lost_race(
-            " ! [rejected]        refs/notes/spelunk -> refs/notes/spelunk (fetch first)"
+            " ! [rejected]        refs/notes/inkentry -> refs/notes/inkentry (fetch first)"
         ));
     }
 
@@ -189,7 +189,7 @@ mod tests {
             "ssh: connect to host example.com port 22: Connection timed out"
         ));
         assert!(!is_lost_race(
-            " ! [remote rejected] refs/notes/spelunk -> refs/notes/spelunk (pre-receive hook declined)"
+            " ! [remote rejected] refs/notes/inkentry -> refs/notes/inkentry (pre-receive hook declined)"
         ));
         assert!(!is_lost_race(
             "fatal: could not read Username for 'https://github.com': terminal prompts disabled"

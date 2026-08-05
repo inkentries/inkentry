@@ -54,11 +54,11 @@ fn index_command(home: &Path, config: &Path, db: &Path, project: &Path) -> Comma
         // `SPELUNK_CONFIG_DIR` wins over `HOME`, so without this every test in
         // the file would share one config and secret store instead of getting
         // an isolated one.
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env("SPELUNK_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
         // Project-level config discovery walks up from CWD; every caller here
-        // writes `server_url` to `<project>/.spelunk/config.toml`.
+        // writes `server_url` to `<project>/.inkentry/config.toml`.
         .current_dir(project)
         .arg("--config")
         .arg(config)

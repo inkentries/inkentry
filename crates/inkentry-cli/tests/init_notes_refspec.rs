@@ -1,9 +1,9 @@
 //! Integration tests for `spelunk init` configuring the `origin` git-notes
-//! fetch refspec so teammates' `refs/notes/spelunk` (spelunk's memory) travels
+//! fetch refspec so teammates' `refs/notes/inkentry` (spelunk's memory) travels
 //! on clone/fetch (ADR-068, corrected by ADR-069 D4/D5).
 //!
-//! The refspec fetches into a **tracking** ref (`refs/notes/origin/spelunk`),
-//! never over the working ref. Fetching straight onto `refs/notes/spelunk`
+//! The refspec fetches into a **tracking** ref (`refs/notes/origin/inkentry`),
+//! never over the working ref. Fetching straight onto `refs/notes/inkentry`
 //! force-updates it and silently destroys local unpushed notes, and the
 //! non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
 //! Travel is therefore fetch + merge: spelunk merges the tracking ref on its
@@ -37,10 +37,10 @@ use std::path::Path;
 use std::process::Output;
 use tempfile::tempdir;
 
-const NOTES_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
+const NOTES_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
 
 /// The ref a fetch lands teammates' notes on, per [`NOTES_REFSPEC`].
-const TRACKING_REF: &str = "refs/notes/origin/spelunk";
+const TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
 /// Run `git args` in `dir`, asserting success. Isolated identity + config so it
 /// works hermetically on a machine with (or without) a global git config.
@@ -250,7 +250,7 @@ fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
             &["config", "--local", "--get-all", "notes.rewriteRef"]
         )
         .trim(),
-        "refs/notes/spelunk",
+        "refs/notes/inkentry",
         "init must configure the notes carry ref even with no origin, got:\n{stdout}"
     );
     assert!(
@@ -343,9 +343,9 @@ fn init_does_not_set_origin_push_refspec() {
 /// merge is what makes it visible.
 ///
 /// A. init in repo (configures the refspec) → add a decision (git note on
-///    refs/notes/spelunk) → push the branch + notes ref to the bare origin.
+///    refs/notes/inkentry) → push the branch + notes ref to the bare origin.
 /// B. clone origin → run init in the clone (adds the same fetch refspec) →
-///    plain `git fetch origin` lands the notes on `refs/notes/origin/spelunk`
+///    plain `git fetch origin` lands the notes on `refs/notes/origin/inkentry`
 ///    and deliberately NOT on the working ref → `spelunk memory list` merges
 ///    the tracking ref and surfaces the decision. This proves the ref is
 ///    publishable, that the init-configured refspec fetches it, and that
@@ -376,10 +376,10 @@ fn notes_round_trip_through_bare_origin() {
     );
 
     // A. Configure the refspec, then add a decision via `spelunk memory add`
-    //    (store_in_git_notes = true → writes refs/notes/spelunk).
+    //    (store_in_git_notes = true → writes refs/notes/inkentry).
     run_init(&repo);
 
-    let mem_db = repo.join(".spelunk").join("memory.db");
+    let mem_db = repo.join(".inkentry").join("memory.db");
     let cfg = repo.join("mem-config.toml");
     std::fs::write(
         &cfg,
@@ -407,20 +407,20 @@ fn notes_round_trip_through_bare_origin() {
         .arg("--title")
         .arg(unique)
         .arg("--body")
-        .arg("Chosen so refs/notes/spelunk clone/fetch behaviour is observable.")
+        .arg("Chosen so refs/notes/inkentry clone/fetch behaviour is observable.")
         .assert()
         .success()
         .stdout(predicate::str::contains("Stored [decision]"));
 
-    // Sanity: the note exists locally on refs/notes/spelunk.
+    // Sanity: the note exists locally on refs/notes/inkentry.
     assert!(
-        !git_stdout(&repo, &["notes", "--ref=spelunk", "list"]).is_empty(),
+        !git_stdout(&repo, &["notes", "--ref=inkentry", "list"]).is_empty(),
         "expected a local spelunk note after memory add"
     );
 
     // Publish branch + notes to the bare origin.
     git(&repo, &["push", "-q", "origin", "main"]);
-    git(&repo, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&repo, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B. Fresh clone gets the branch but NOT notes by default…
     git(
@@ -436,7 +436,7 @@ fn notes_round_trip_through_bare_origin() {
     git(&clone, &["config", "user.email", "clone@example.com"]);
     git(&clone, &["config", "user.name", "Clone"]);
     assert!(
-        git_stdout(&clone, &["notes", "--ref=spelunk", "list"]).is_empty(),
+        git_stdout(&clone, &["notes", "--ref=inkentry", "list"]).is_empty(),
         "a fresh clone should not have spelunk notes before fetch"
     );
 
@@ -499,8 +499,8 @@ fn notes_round_trip_through_bare_origin() {
     );
     // The merge is what moved it onto the working ref.
     assert!(
-        git_stdout(&clone, &["notes", "--ref=spelunk", "show", &annotated]).contains(unique),
-        "the read-path merge should have folded the tracking ref into refs/notes/spelunk"
+        git_stdout(&clone, &["notes", "--ref=inkentry", "show", &annotated]).contains(unique),
+        "the read-path merge should have folded the tracking ref into refs/notes/inkentry"
     );
 }
 
@@ -522,9 +522,9 @@ fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
     );
 }
 
-/// The `refs/notes/spelunk` blob for HEAD, or `""` when there is no note.
+/// The `refs/notes/inkentry` blob for HEAD, or `""` when there is no note.
 fn working_note(dir: &Path) -> String {
-    let out = git_out(dir, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     if out.status.success() {
         String::from_utf8_lossy(&out.stdout).into_owned()
     } else {
@@ -552,7 +552,7 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"their fetched decision","body":"b","tags":[],"linked_files":[],"created_at":100,"status":"active"}"#;
     const MINE: &str = r#"{"schema_version":1,"id":2,"kind":"decision","title":"my local decision","body":"b","tags":[],"linked_files":[],"created_at":200,"status":"active"}"#;
     add_note_on_ref(&repo, TRACKING_REF, THEIRS);
-    add_note_on_ref(&repo, "refs/notes/spelunk", MINE);
+    add_note_on_ref(&repo, "refs/notes/inkentry", MINE);
 
     // Setup control: the fetched entry is not on the working ref yet, so
     // surfacing it below can only be the merge's doing.
@@ -589,7 +589,7 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     );
     assert!(
         working_note(&repo).contains("their fetched decision"),
-        "context's merge should have folded the tracking ref into refs/notes/spelunk"
+        "context's merge should have folded the tracking ref into refs/notes/inkentry"
     );
 }
 
@@ -620,7 +620,7 @@ fn init_merges_the_tracking_ref_before_importing_git_notes() {
 
     assert!(
         working_note(&repo).contains("their fetched decision"),
-        "init must merge the tracking ref onto refs/notes/spelunk"
+        "init must merge the tracking ref onto refs/notes/inkentry"
     );
     // The payoff: the merge fed the import, so the entry is in the project's
     // memory. Without the merge the import sees an empty working ref and
@@ -649,10 +649,10 @@ fn init_non_tty_does_not_prompt_or_hang() {
 
 /// (7) D4 regression: `spelunk init` must not break plain git.
 ///
-/// The shipped non-glob refspec (`+refs/notes/spelunk:refs/notes/spelunk`)
+/// The shipped non-glob refspec (`+refs/notes/inkentry:refs/notes/inkentry`)
 /// requires the remote ref to exist, so with no notes pushed yet — every repo
 /// until someone shares memory — `git fetch origin` exited 128 and `git pull`
-/// exited 1 with `fatal: couldn't find remote ref refs/notes/spelunk`. The glob
+/// exited 1 with `fatal: couldn't find remote ref refs/notes/inkentry`. The glob
 /// tolerates the missing remote ref.
 #[test]
 fn init_leaves_plain_fetch_and_pull_working_with_no_notes_on_the_remote() {
@@ -738,9 +738,9 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
     const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"theirs"}"#;
     git(
         &teammate,
-        &["notes", "--ref=spelunk", "add", "-f", "-m", THEIRS, "HEAD"],
+        &["notes", "--ref=inkentry", "add", "-f", "-m", THEIRS, "HEAD"],
     );
-    git(&teammate, &["push", "-q", "origin", "refs/notes/spelunk"]);
+    git(&teammate, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // I clone and record my own note locally, without pushing it.
     git(
@@ -759,13 +759,13 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
     const MINE: &str = r#"{"schema_version":1,"id":2,"kind":"decision","title":"mine unpushed"}"#;
     git(
         &mine,
-        &["notes", "--ref=spelunk", "add", "-f", "-m", MINE, "HEAD"],
+        &["notes", "--ref=inkentry", "add", "-f", "-m", MINE, "HEAD"],
     );
 
     git(&mine, &["fetch", "-q", "origin"]);
 
     // The fetch must not have touched my working ref.
-    let after = git_stdout(&mine, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let after = git_stdout(&mine, &["notes", "--ref=inkentry", "show", "HEAD"]);
     assert!(
         after.contains("mine unpushed"),
         "a plain fetch must not clobber a local unpushed note, got:\n{after}"

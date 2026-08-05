@@ -45,7 +45,7 @@ pub enum LockOutcome {
 }
 
 /// Try to take the per-project index lock inside `spelunk_dir` (the
-/// project's `.spelunk/` directory), non-blocking.
+/// project's `.inkentry/` directory), non-blocking.
 ///
 /// Non-blocking rather than waited-out (contrast `git_notes::lock`'s bounded
 /// poll): an index run's writing window is unbounded - a large repo can

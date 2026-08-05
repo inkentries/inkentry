@@ -24,7 +24,7 @@ use tempfile::TempDir;
 // regression test proves a real fallback ran rather than an empty error path.
 const PROBE_SYMBOL: &str = "spelunk_gate_probe_marker";
 
-// Build a populated-but-unembedded project offline: `<proj>/.spelunk/index.db`
+// Build a populated-but-unembedded project offline: `<proj>/.inkentry/index.db`
 // exists and holds chunks (chunk_count > 0), but zero embeddings — indexing
 // under `SPELUNK_NO_SERVER=1` parses source into chunks yet has no embedder, so
 // nothing is embedded. This is exactly the state the semantic/hybrid gate must
@@ -48,7 +48,7 @@ fn init_populated_project_offline(home: &Path, proj: &Path) {
         .success();
 
     assert!(
-        proj.join(".spelunk").join("index.db").exists(),
+        proj.join(".inkentry").join("index.db").exists(),
         "indexing must create the project index.db"
     );
 }

@@ -12,7 +12,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub no_index: bool,
 
-    /// Explicit project slug, written to `.spelunk/config.toml`. Overrides the
+    /// Explicit project slug, written to `.inkentry/config.toml`. Overrides the
     /// git-derived default; use it for projects without a git remote. Ignored
     /// when a `project_id` is already set in config.
     #[arg(long)]
@@ -41,7 +41,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    let spelunk_dir = project_root.join(".spelunk");
+    let spelunk_dir = project_root.join(".inkentry");
     let db_path = spelunk_dir.join("index.db");
     let config_path = spelunk_dir.join("config.toml");
 
@@ -196,7 +196,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 6b. Configure the notes fetch refspec, fetch, then import (ADR-077 D3) ─
     // Order is load-bearing. On a fresh clone the tracking ref has never been
     // fetched, so the import has to run AFTER the refspec is configured and a
-    // fetch has populated `refs/notes/origin/spelunk` — otherwise a single
+    // fetch has populated `refs/notes/origin/inkentry` — otherwise a single
     // `init` imports nothing and the user needs a second one. The read-path
     // import (ADR-077 D1) is the durable guarantee for anything fetched later;
     // the one fetch here is what makes ONE `init` after clone self-sufficient.
@@ -209,7 +209,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     };
 
     // 2 + 3. Best-effort fetch of the notes ref, then merge + import into the
-    // project memory.db. Entries on `refs/notes/spelunk` (a teammate's, or a
+    // project memory.db. Entries on `refs/notes/inkentry` (a teammate's, or a
     // pre-init write-through) are invisible to the SQLite-backed reads until
     // imported. Non-fatal throughout: a failure here (offline fetch included)
     // must not sink init.
@@ -256,7 +256,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // `--name` slug cannot be re-derived at all).
     if wrote_slug {
         println!(
-            "           wrote .spelunk/config.toml — commit it so your project slug \
+            "           wrote .inkentry/config.toml — commit it so your project slug \
              travels with the repo"
         );
     }
@@ -278,7 +278,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
-/// Write `.spelunk/.gitignore` covering the machine-specific SQLite, the
+/// Write `.inkentry/.gitignore` covering the machine-specific SQLite, the
 /// per-run index lock (+ its pid sidecar), and log files. The `*` glob covers
 /// the SQLite `-wal`/`-shm` sidecars and the lock's `.pid` sidecar. Created
 /// only when absent so re-init never clobbers user edits; failures are
@@ -315,7 +315,7 @@ fn write_spelunk_gitignore(spelunk_dir: &std::path::Path) {
 /// `kill_on_drop` keeps a black-holed remote from hanging `init`.
 async fn fetch_notes_best_effort(project_root: &std::path::Path) {
     use std::process::Stdio;
-    const NOTES_FETCH_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
+    const NOTES_FETCH_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
     const FETCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
     let has_origin = tokio::process::Command::new("git")
@@ -357,12 +357,12 @@ async fn fetch_notes_best_effort(project_root: &std::path::Path) {
     }
 }
 
-/// Configure the `origin` fetch refspec so teammates' `refs/notes/spelunk`
+/// Configure the `origin` fetch refspec so teammates' `refs/notes/inkentry`
 /// (spelunk's memory) travels on clone/fetch. Returns announce lines for the
 /// init summary.
 ///
-/// The destination is a **tracking** ref (`refs/notes/origin/spelunk`), never
-/// the working ref. Fetching straight onto `refs/notes/spelunk` force-updates
+/// The destination is a **tracking** ref (`refs/notes/origin/inkentry`), never
+/// the working ref. Fetching straight onto `refs/notes/inkentry` force-updates
 /// it, silently replacing a local unpushed note with the remote's; and the
 /// non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
 /// The glob tolerates the missing remote ref; only the tracking destination
@@ -378,7 +378,7 @@ async fn fetch_notes_best_effort(project_root: &std::path::Path) {
 /// rewrites. That half is independent of `origin`: rewrites are purely local,
 /// so it runs even in a remote-less repo.
 async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
-    const FETCH_REFSPEC: &str = "+refs/notes/spelunk*:refs/notes/origin/spelunk*";
+    const FETCH_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
 
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -455,7 +455,7 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
                     .to_string(),
             );
             lines.push(
-                "         run later: git config --add notes.rewriteRef refs/notes/spelunk"
+                "         run later: git config --add notes.rewriteRef refs/notes/inkentry"
                     .to_string(),
             );
         }
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn gitignore_ignores_dbs_but_not_committed_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let spelunk_dir = tmp.path().join(".spelunk");
+        let spelunk_dir = tmp.path().join(".inkentry");
 
         write_spelunk_gitignore(&spelunk_dir);
 
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn gitignore_ignores_index_run_lock_and_pid() {
         let tmp = tempfile::tempdir().unwrap();
-        let spelunk_dir = tmp.path().join(".spelunk");
+        let spelunk_dir = tmp.path().join(".inkentry");
 
         write_spelunk_gitignore(&spelunk_dir);
 
@@ -558,10 +558,10 @@ mod tests {
             "git init failed"
         );
 
-        let spelunk_dir = repo.join(".spelunk");
+        let spelunk_dir = repo.join(".inkentry");
         write_spelunk_gitignore(&spelunk_dir);
 
-        // Files a `spelunk index` run drops into `.spelunk/`: the machine-local
+        // Files a `spelunk index` run drops into `.inkentry/`: the machine-local
         // ones must all be ignored; `.gitignore` itself stays committable.
         for f in [
             "index.lock",
@@ -574,7 +574,7 @@ mod tests {
         }
 
         // `check-ignore -q` exits 0 only when the path is ignored.
-        for rel in [".spelunk/index.lock", ".spelunk/index.lock.pid"] {
+        for rel in [".inkentry/index.lock", ".inkentry/index.lock.pid"] {
             assert!(
                 git(&["check-ignore", "-q", rel]).status.success(),
                 "{rel} must be git-ignored by the generated .gitignore"
@@ -583,7 +583,7 @@ mod tests {
 
         // The confirmed churn source: nothing machine-local shows up to stage.
         // `-uall` lists untracked files individually instead of collapsing the
-        // whole new `.spelunk/` dir into one entry.
+        // whole new `.inkentry/` dir into one entry.
         let out = git(&["status", "--porcelain", "-uall"]).stdout;
         let porcelain = String::from_utf8_lossy(&out);
         for f in [
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn gitignore_is_idempotent_and_preserves_user_edits() {
         let tmp = tempfile::tempdir().unwrap();
-        let spelunk_dir = tmp.path().join(".spelunk");
+        let spelunk_dir = tmp.path().join(".inkentry");
         std::fs::create_dir_all(&spelunk_dir).unwrap();
         let gitignore_path = spelunk_dir.join(".gitignore");
         std::fs::write(&gitignore_path, "custom-user-line\n").unwrap();

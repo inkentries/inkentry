@@ -62,7 +62,7 @@ spelunk index <path> --force   # full re-index (after changing embedding model)
 spelunk check                  # verify the index is fresh before starting work
 ```
 
-Add a `.spelunkignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, self-declared `@generated`); override it with the `[index]` table in config.
+Add a `.inkentryignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, self-declared `@generated`); override it with the `[index]` table in config.
 
 ---
 
@@ -136,7 +136,7 @@ spelunk memory add --kind note --title "Follow-up observation" --body "..." \
 **Kinds:** `decision` · `context` · `requirement` · `note` · `intent` · `answer` · `handoff` · `question` · `antipattern`
 
 By default (`store_in_git_notes = true`) `memory add` also writes the entry to
-`refs/notes/spelunk` on `HEAD`, so memory travels with the code. Graceful no-op
+`refs/notes/inkentry` on `HEAD`, so memory travels with the code. Graceful no-op
 outside a git repo.
 
 To check those notes by hand with stock git, point it at the `spelunk` ref.
@@ -144,10 +144,10 @@ Plain `git notes show` reads git's default `commits` ref and reports "no note
 found", which is a false negative:
 
 ```bash
-git notes --ref=spelunk show HEAD    # notes on the current commit
-git notes --ref=spelunk list         # every commit carrying spelunk notes
+git notes --ref=inkentry show HEAD    # notes on the current commit
+git notes --ref=inkentry list         # every commit carrying spelunk notes
 # equivalently
-GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ```
 
 ### Query
@@ -220,14 +220,14 @@ spelunk context    # resolves to the main worktree's index; no init needed
 
 `memory add` is a write, not a read/query command, but it resolves the same
 way: an entry recorded from a linked worktree lands in the main worktree's
-shared `<main-worktree>/.spelunk/memory.db`, and its git-notes write-through
-appends to the repo's shared `refs/notes/spelunk`. There is no separate
+shared `<main-worktree>/.inkentry/memory.db`, and its git-notes write-through
+appends to the repo's shared `refs/notes/inkentry`. There is no separate
 per-worktree memory store, so recording memory from a worktree needs no setup
 and stays in one place.
 
 `spelunk index .` from a worktree is optional. Run it only to refresh the
 shared index with files you changed in that worktree; it re-indexes into the
-shared `<main-worktree>/.spelunk/index.db`.
+shared `<main-worktree>/.inkentry/index.db`.
 
 `spelunk autoclean` prunes stale registry entries (e.g. after a worktree or
 project directory is removed). It does not write to or clean anything inside

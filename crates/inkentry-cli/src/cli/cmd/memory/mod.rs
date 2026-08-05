@@ -419,12 +419,12 @@ mod watch;
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
     let be = backend_override(&args.backend);
-    // ADR-067 fails closed when there is no local `.spelunk/` project rather than
+    // ADR-067 fails closed when there is no local `.inkentry/` project rather than
     // silently using the machine-global store. ADR-068 D3 narrows that for
     // `add`/`list` only: with no project DB but CWD inside a git repo they ride
     // the git-notes carrier instead of failing. `pre_init_notes` signals that
     // carrier mode downstream (add skips the absent SQLite primary; list reads
-    // from `refs/notes/spelunk`). Store priority is otherwise unchanged (ADR-004).
+    // from `refs/notes/inkentry`). Store priority is otherwise unchanged (ADR-004).
     let (mem_path, pre_init_notes) = resolve_memory_store(&args, &cfg, be).await?;
     maybe_emit_reembed_notice(&mem_path, pre_init_notes, be);
     match args.command {
@@ -487,7 +487,7 @@ fn backend_override(s: &str) -> Option<&'static str> {
 /// Resolve `(mem_path, pre_init_notes)` for the dispatched memory subcommand.
 ///
 /// Store priority is ADR-004's, unchanged: `--db` › a resolvable local
-/// `.spelunk/` DB › (for `add`/`list` without a local project) an explicit
+/// `.inkentry/` DB › (for `add`/`list` without a local project) an explicit
 /// CloudFirst team `server_url` › the git-notes carrier when CWD is inside a git
 /// repo › fail. `open_memory_backend` still makes the final local-vs-remote and
 /// `--backend git-notes` choice from `mem_path`/`cfg`; nothing here reshapes it.
@@ -510,7 +510,7 @@ async fn resolve_memory_store(
     if let Some(p) = args.db.clone() {
         return Ok((p, false));
     }
-    // A resolvable local `.spelunk/` DB is the normal case.
+    // A resolvable local `.inkentry/` DB is the normal case.
     match crate::config::require_project_db(&cfg.db_path, false) {
         Ok(p) => return Ok((p.with_file_name("memory.db"), false)),
         Err(e) => {

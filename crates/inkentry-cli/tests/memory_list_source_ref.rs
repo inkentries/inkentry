@@ -1,5 +1,5 @@
 // Regression coverage for the reported bug: `spelunk memory list --source-ref
-// <sha>` returned ZERO results for a commit that carries `refs/notes/spelunk`
+// <sha>` returned ZERO results for a commit that carries `refs/notes/inkentry`
 // notes, even though `memory add` had written entries anchored to that commit.
 //
 // A `memory add` entry records which commit it belongs to only as the git-notes

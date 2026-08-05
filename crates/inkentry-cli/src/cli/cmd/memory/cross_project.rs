@@ -24,7 +24,7 @@ const CROSS_CUTTING_KINDS: &[&str] = &["decision", "requirement"];
 const CROSS_PROJECT_TAGS: &[&str] = &["locked", "cross-project"];
 
 /// Resolve the dep `Project` list for the current working directory, using
-/// `index_db_path` (the primary `.spelunk/index.db`) to locate the project in
+/// `index_db_path` (the primary `.inkentry/index.db`) to locate the project in
 /// the registry.
 ///
 /// Returns an empty vec (not an error) when:
@@ -38,8 +38,8 @@ fn resolve_dep_projects(index_db_path: &Path) -> Vec<Project> {
     let Ok(reg) = Registry::open() else {
         return vec![];
     };
-    // index_db_path = <root>/.spelunk/index.db
-    // parent        = <root>/.spelunk
+    // index_db_path = <root>/.inkentry/index.db
+    // parent        = <root>/.inkentry
     // parent.parent = <root>
     let project_root = index_db_path
         .parent()

@@ -68,7 +68,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
     // JSON mode: current project stats only
     if fmt == "json" {
-        // ADR-067: fail closed when there is no local `.spelunk/` project rather
+        // ADR-067: fail closed when there is no local `.inkentry/` project rather
         // than reporting the global store as if it were this project's. The
         // scoped path also wins over any stray global `index.db`.
         let db_path = crate::config::require_project_db(&cfg.db_path, false)?;
@@ -302,7 +302,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     // Current project only.
-    // ADR-067: fail closed when there is no local `.spelunk/` project rather than
+    // ADR-067: fail closed when there is no local `.inkentry/` project rather than
     // describing the global store. The scoped path also wins over a stray global
     // `index.db`.
     let db_path = match crate::config::require_project_db(&cfg.db_path, false) {

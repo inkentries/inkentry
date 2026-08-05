@@ -47,15 +47,15 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-// Write `<project_dir>/.spelunk/config.toml` with `server_url` + `project_id`.
+// Write `<project_dir>/.inkentry/config.toml` with `server_url` + `project_id`.
 //
 // `ProjectConfig` (`inkentry-core/src/config/mod.rs`) only deserializes
 // `server_url`/`project_id`/`server_ca`/`index` from this file; any other
 // key (notably `mode`) is silently dropped by serde. `mode` must go through
 // `SPELUNK_MODE` (or the personal global `--config` file) instead.
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     let cfg = format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n");
     std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
 }
@@ -199,7 +199,7 @@ async fn cloud_first_foreground_still_embeds_via_explicit_server_url() {
     let project = TempDir::new().unwrap();
     write_project(project.path());
     write_server_config(project.path(), &mock.uri());
-    // `mode` is not a recognized `.spelunk/config.toml` project-level field
+    // `mode` is not a recognized `.inkentry/config.toml` project-level field
     // (see `write_server_config`); set it via env so `cloud_first` actually
     // takes effect, rather than silently falling back to `local_first`.
     let state_dir = home.path().join("state"); // never written to: no server.port
@@ -245,7 +245,7 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_project(project.path());
-    // No `.spelunk/config.toml` at all: no server_url, no project_id.
+    // No `.inkentry/config.toml` at all: no server_url, no project_id.
     let state_dir = home.path().join("state");
     write_loopback_state(&state_dir, &loopback.uri());
 

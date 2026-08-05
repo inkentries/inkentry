@@ -193,7 +193,7 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 
 // Overwrite `config_path` (the global `--config` file) with `db_path` and
 // `server_ca`, and separately point `server_url` (our TLS test listener) at
-// `<project_dir>/.spelunk/config.toml`: `Config::load` only honors
+// `<project_dir>/.inkentry/config.toml`: `Config::load` only honors
 // `server_url` from a project-level config (or env), never the global file.
 // The loopback address means `project_id` is not required (see
 // `Config::validate_with_project`).

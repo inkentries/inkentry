@@ -132,7 +132,7 @@ pub fn remove_auth_tokens_from(config_path: &Path) -> Result<()> {
     write_config_secure(config_path, &serialised)
 }
 
-/// Write `slug` as `project_id` to a project-level `.spelunk/config.toml`,
+/// Write `slug` as `project_id` to a project-level `.inkentry/config.toml`,
 /// creating the file (and parent dir) if absent. Other keys are preserved.
 ///
 /// Returns `(effective_slug, wrote)`: if the file already sets `project_id`,
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn write_project_slug_creates_file_and_reports_written() {
         let tmp = TempDir::new().unwrap();
-        let cfg = tmp.path().join(".spelunk").join("config.toml");
+        let cfg = tmp.path().join(".inkentry").join("config.toml");
 
         let (slug, wrote) = write_project_slug(&cfg, "github.com/acme/app").unwrap();
         assert_eq!(slug, "github.com/acme/app");

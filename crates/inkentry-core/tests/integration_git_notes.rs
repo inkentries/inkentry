@@ -390,7 +390,7 @@ async fn append_to_git_notes_writes_note_when_enabled() {
 
     // Read back the raw note text.
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
         .output()
         .expect("git notes show");
@@ -430,7 +430,7 @@ async fn append_to_git_notes_appends_not_overwrites() {
 
     // Both entries should be present as separate JSON lines.
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
         .output()
         .expect("git notes show");
@@ -478,7 +478,7 @@ async fn append_to_git_notes_skipped_when_flag_is_false() {
     }
 
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
         .output()
         .expect("git notes show command");
@@ -531,7 +531,7 @@ async fn append_to_git_notes_body_starting_with_dash_is_literal() {
         .expect("append should succeed even with option-like body");
 
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
         .output()
         .expect("git notes show");
@@ -574,7 +574,7 @@ async fn append_to_git_notes_body_with_shell_metacharacters_is_literal() {
         .expect("append should succeed with shell-metacharacter body");
 
     let out = std::process::Command::new("git")
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
         .output()
         .expect("git notes show");
@@ -630,7 +630,7 @@ async fn git_notes_backend_add_with_option_like_body_round_trips() {
 // tools' lines). Reads skip foreign lines without erroring; writes preserve
 // every foreign line and every untargeted spelunk record byte-for-byte.
 
-/// Write a raw note blob verbatim to HEAD's `refs/notes/spelunk` note, via
+/// Write a raw note blob verbatim to HEAD's `refs/notes/inkentry` note, via
 /// stdin (`-F -`) so arbitrary content is delivered literally.
 fn write_raw_note(root: &std::path::Path, blob: &str) {
     use std::io::Write;
@@ -649,7 +649,7 @@ fn write_raw_note(root: &std::path::Path, blob: &str) {
             "-C",
             root.to_str().unwrap(),
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "add",
             "-f",
             "-F",
@@ -669,14 +669,14 @@ fn write_raw_note(root: &std::path::Path, blob: &str) {
     assert!(child.wait().expect("wait").success(), "git notes add");
 }
 
-/// Read HEAD's raw `refs/notes/spelunk` note blob.
+/// Read HEAD's raw `refs/notes/inkentry` note blob.
 fn read_raw_note(root: &std::path::Path) -> String {
     let out = std::process::Command::new("git")
         .args([
             "-C",
             root.to_str().unwrap(),
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "show",
             "HEAD",
         ])
@@ -1006,7 +1006,7 @@ async fn append_to_git_notes_concurrent_writers_land_or_fail_visibly() {
 /// The same D8 invariant across **separate worktrees**: land or fail visibly,
 /// disjoint and complete, at least one landing.
 ///
-/// Worktrees share one `refs/notes/spelunk` (it resolves through the git
+/// Worktrees share one `refs/notes/inkentry` (it resolves through the git
 /// common dir to the main repo's copy), so they are real contenders on one
 /// note body. This pins the lock to the common dir: a lock keyed on the
 /// per-worktree git dir would still pass the single-repo test above while
@@ -1113,7 +1113,7 @@ async fn append_to_git_notes_concurrent_worktrees_land_or_fail_visibly() {
 
 use inkentry_core::storage::{LOCK_WAIT_BUDGET, LockAttempt, lock_notes};
 
-/// The path production locks: `<git-common-dir>/spelunk-notes.lock`. Mirrors
+/// The path production locks: `<git-common-dir>/inkentry-notes.lock`. Mirrors
 /// `notes_lock_path`, including resolving git's relative answer (a plain repo
 /// answers `.git`) against the repo root and canonicalizing the result.
 fn notes_lock_path(root: &std::path::Path) -> std::path::PathBuf {
@@ -1136,7 +1136,7 @@ fn notes_lock_path(root: &std::path::Path) -> std::path::PathBuf {
         root.join(raw)
     };
     let common_dir = std::fs::canonicalize(&common_dir).unwrap_or(common_dir);
-    common_dir.join("spelunk-notes.lock")
+    common_dir.join("inkentry-notes.lock")
 }
 
 /// Open the lock file the way production does. A lock taken through this handle
@@ -1411,7 +1411,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
         .add(note_input("decision", "the sibling entry at stake"))
         .await
         .expect("seed");
-    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]);
+    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]);
 
     let held = open_lock_file(&notes_lock_path(root));
     held.lock().expect("hold the notes lock across both writes");
@@ -1446,7 +1446,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
     drop(held);
 
     assert_eq!(
-        git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]),
+        git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]),
         ref_before,
         "the note ref must be untouched after both contended writes"
     );
@@ -1464,7 +1464,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
 /// `git notes show` dies (exit 128), but `git notes add -f` never opens the
 /// old blob, so an unguarded read-modify-write would "succeed" and wipe it.
 fn corrupt_note_blob(root: &std::path::Path) {
-    let listing = git_stdout_ok(root, &["notes", "--ref=spelunk", "list"]);
+    let listing = git_stdout_ok(root, &["notes", "--ref=inkentry", "list"]);
     let blob_sha = listing
         .split_whitespace()
         .next()
@@ -1491,7 +1491,7 @@ fn corrupt_note_blob(root: &std::path::Path) {
             "-C",
             root.to_str().unwrap(),
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "show",
             "HEAD",
         ])
@@ -1518,7 +1518,7 @@ async fn append_to_git_notes_fails_when_the_existing_note_cannot_be_read() {
     )
     .await
     .expect("seed");
-    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]);
+    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]);
 
     corrupt_note_blob(root);
 
@@ -1530,7 +1530,7 @@ async fn append_to_git_notes_fails_when_the_existing_note_cannot_be_read() {
         "the error must say the note was left alone; got: {err:#}"
     );
     assert_eq!(
-        git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]),
+        git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]),
         ref_before,
         "the note ref must be untouched after a failed read"
     );
@@ -1549,7 +1549,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
         .add(note_input("decision", "the sibling entry at stake"))
         .await
         .expect("seed");
-    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]);
+    let ref_before = git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]);
 
     corrupt_note_blob(root);
 
@@ -1562,7 +1562,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
         .await
         .expect_err("a failed read must fail the archive, not report the entry missing");
     assert_eq!(
-        git_stdout_ok(root, &["rev-parse", "refs/notes/spelunk"]),
+        git_stdout_ok(root, &["rev-parse", "refs/notes/inkentry"]),
         ref_before,
         "the note ref must be untouched after failed writes"
     );
@@ -1680,7 +1680,7 @@ mod git_shim {
         }
     }
 
-    /// Count every `notes --ref=spelunk show` in `repo`, failing the first
+    /// Count every `notes --ref=inkentry show` in `repo`, failing the first
     /// `fail_n` of them with exit 128 (the transient-infrastructure shape the
     /// windows-latest losses had). Everything else passes through.
     pub fn failing_note_reads(repo: &Path, fail_n: u32) -> ShimGuard {
@@ -1691,7 +1691,7 @@ mod git_shim {
         let script = format!(
             "#!/bin/sh\n\
              case \" $* \" in\n\
-               *\" notes --ref=spelunk show \"*)\n\
+               *\" notes --ref=inkentry show \"*)\n\
                  if [ \"$(pwd -P)\" = \"{repo}\" ]; then\n\
                    n=$(cat \"{counter}\" 2>/dev/null || echo 0)\n\
                    n=$((n+1))\n\
@@ -1830,7 +1830,7 @@ async fn old_git_echoing_the_flag_still_locks_the_real_common_dir() {
     };
     let expected = std::fs::canonicalize(root.join(".git"))
         .expect("the common dir exists")
-        .join("spelunk-notes.lock");
+        .join("inkentry-notes.lock");
     assert_eq!(
         guard.path(),
         expected.as_path(),
@@ -2107,7 +2107,7 @@ fn git_rebase_scripted(root: &std::path::Path, args: &[&str], seq_editor: &str, 
 fn note_on_head(root: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .current_dir(root)
-        .args(["notes", "--ref=spelunk", "show", "HEAD"])
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .output()
         .expect("git notes show");
     out.status
@@ -2301,7 +2301,7 @@ async fn ensure_notes_rewrite_ref_is_idempotent() {
     );
     assert_eq!(
         rewrite_ref_values(root),
-        vec!["refs/notes/spelunk"],
+        vec!["refs/notes/inkentry"],
         "re-running must not duplicate the config line"
     );
 }
@@ -2328,7 +2328,7 @@ async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
     );
     assert_eq!(
         rewrite_ref_values(root),
-        vec!["refs/notes/commits", "refs/notes/spelunk"],
+        vec!["refs/notes/commits", "refs/notes/inkentry"],
         "the user's value must be kept alongside ours"
     );
 
@@ -2381,7 +2381,7 @@ async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
 
     let home = tempfile::TempDir::new().expect("tempdir");
     let global = home.path().join("gitconfig");
-    std::fs::write(&global, "[notes]\n\trewriteRef = refs/notes/spelunk\n").expect("write");
+    std::fs::write(&global, "[notes]\n\trewriteRef = refs/notes/inkentry\n").expect("write");
 
     // SAFETY: `#[serial]` keeps this the only running test under `cargo test`,
     // and nextest gives each test its own process.
@@ -2513,7 +2513,7 @@ async fn git_notes_backend_add_configures_carry_and_entry_survives_amend() {
 
     assert_eq!(
         rewrite_ref_values(root),
-        vec!["refs/notes/spelunk"],
+        vec!["refs/notes/inkentry"],
         "the backend write path must configure the carry ref too"
     );
 
@@ -2571,7 +2571,7 @@ async fn append_to_git_notes_ensures_carry_config_even_when_the_lock_is_unusable
 
     assert_eq!(
         rewrite_ref_values(root),
-        vec!["refs/notes/spelunk"],
+        vec!["refs/notes/inkentry"],
         "the carry config must be set even when the lock degrades to unlocked"
     );
 }
@@ -2648,7 +2648,7 @@ async fn append_to_git_notes_proceeds_when_the_carry_config_cannot_be_written() 
 
 use inkentry_core::storage::{NotesMergeOutcome, merge_tracking_notes};
 
-/// Raw stored bytes of HEAD's `refs/notes/spelunk` blob.
+/// Raw stored bytes of HEAD's `refs/notes/inkentry` blob.
 ///
 /// Reads the blob object rather than `git notes show`, so the assertion is
 /// about what git actually stored and not about what the porcelain prints.
@@ -2658,7 +2658,7 @@ fn raw_note_blob_bytes(root: &std::path::Path) -> Vec<u8> {
             "-C",
             root.to_str().unwrap(),
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "list",
         ])
         .output()
@@ -2680,7 +2680,7 @@ fn raw_note_blob_bytes(root: &std::path::Path) -> Vec<u8> {
     out.stdout
 }
 
-/// Point `refs/notes/origin/spelunk` at the current working ref, then reset the
+/// Point `refs/notes/origin/inkentry` at the current working ref, then reset the
 /// working ref to `state` — simulating "a teammate's notes arrived on the
 /// tracking ref via `git fetch`" without any network.
 fn park_working_ref_as_tracking(root: &std::path::Path) {
@@ -2698,10 +2698,10 @@ fn park_working_ref_as_tracking(root: &std::path::Path) {
     };
     run(&[
         "update-ref",
-        "refs/notes/origin/spelunk",
-        "refs/notes/spelunk",
+        "refs/notes/origin/inkentry",
+        "refs/notes/inkentry",
     ]);
-    run(&["update-ref", "-d", "refs/notes/spelunk"]);
+    run(&["update-ref", "-d", "refs/notes/inkentry"]);
 }
 
 /// (D2) The newline invariant that `cat_sort_uniq` rests on.
@@ -2990,7 +2990,7 @@ async fn merge_leaves_no_notes_merge_state_in_the_git_dir() {
 /// `ours` is the dangerous setting: it resolves a conflict by discarding the
 /// other side, so a merge that honoured it would silently drop exactly what the
 /// merge exists to surface. `-s` on the command line outranks both the general
-/// and the per-ref (`notes.spelunk.mergeStrategy`) scopes, which is why the
+/// and the per-ref (`notes.inkentry.mergeStrategy`) scopes, which is why the
 /// strategy is passed per invocation instead of configured.
 #[tokio::test]
 #[serial]
@@ -3000,7 +3000,7 @@ async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() 
 
     // Both scopes git consults for this ref, set to the lossy strategy.
     git_ok(root, &["config", "notes.mergeStrategy", "ours"]);
-    git_ok(root, &["config", "notes.spelunk.mergeStrategy", "ours"]);
+    git_ok(root, &["config", "notes.inkentry.mergeStrategy", "ours"]);
 
     seed_diverged_notes(root);
 
@@ -3021,7 +3021,7 @@ async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() 
         "the user's own merge strategy must be left exactly as they set it"
     );
     assert_eq!(
-        git_stdout_at(root, &["config", "--get", "notes.spelunk.mergeStrategy"]),
+        git_stdout_at(root, &["config", "--get", "notes.inkentry.mergeStrategy"]),
         "ours",
         "the user's own per-ref merge strategy must be left exactly as they set it"
     );
@@ -3052,7 +3052,7 @@ async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
             "config",
             "--add",
             "remote.origin.fetch",
-            "+refs/notes/spelunk*:refs/notes/origin/spelunk*",
+            "+refs/notes/inkentry*:refs/notes/origin/inkentry*",
         ],
     );
 
@@ -3060,7 +3060,7 @@ async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
         .await
         .expect("seed");
     park_working_ref_as_tracking(root);
-    let tracking_before = git_stdout_at(root, &["rev-parse", "refs/notes/origin/spelunk"]);
+    let tracking_before = git_stdout_at(root, &["rev-parse", "refs/notes/origin/inkentry"]);
 
     // Negative control: prove a fetch really would fail from here, so `Merged`
     // below means the merge never reached for the network — not that it tried
@@ -3088,7 +3088,7 @@ async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
 
     // A merge that fetched would have moved the tracking ref.
     assert_eq!(
-        git_stdout_at(root, &["rev-parse", "refs/notes/origin/spelunk"]),
+        git_stdout_at(root, &["rev-parse", "refs/notes/origin/inkentry"]),
         tracking_before,
         "the merge must leave the tracking ref alone: updating it would mean it fetched"
     );
@@ -3138,7 +3138,7 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
             "config",
             "--add",
             "remote.origin.fetch",
-            "+refs/notes/spelunk*:refs/notes/origin/spelunk*",
+            "+refs/notes/inkentry*:refs/notes/origin/inkentry*",
         ],
     );
 
@@ -3150,9 +3150,9 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
         root,
         r#"{"schema_version":1,"id":1,"kind":"decision","title":"never fetched"}"#,
     );
-    git_ok(root, &["push", "-q", "origin", "refs/notes/spelunk"]);
-    git_ok(root, &["update-ref", "-d", "refs/notes/spelunk"]);
-    git_at(root, &["update-ref", "-d", "refs/notes/origin/spelunk"]);
+    git_ok(root, &["push", "-q", "origin", "refs/notes/inkentry"]);
+    git_ok(root, &["update-ref", "-d", "refs/notes/inkentry"]);
+    git_at(root, &["update-ref", "-d", "refs/notes/origin/inkentry"]);
 
     // A local entry of my own, so the read has something to return.
     append_to_git_notes(Some(root), &make_note_record(2, "my decision"))
@@ -3163,7 +3163,7 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
     assert!(
         !git_at(
             root,
-            &["rev-parse", "--verify", "refs/notes/origin/spelunk"]
+            &["rev-parse", "--verify", "refs/notes/origin/inkentry"]
         )
         .status
         .success(),
@@ -3179,7 +3179,7 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
     assert!(
         !git_at(
             root,
-            &["rev-parse", "--verify", "refs/notes/origin/spelunk"]
+            &["rev-parse", "--verify", "refs/notes/origin/inkentry"]
         )
         .status
         .success(),
@@ -3282,7 +3282,7 @@ async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_loc
     append_to_git_notes(Some(root), &make_note_record(2, "my decision"))
         .await
         .expect("seed local");
-    let ref_before = git_stdout_at(root, &["rev-parse", "refs/notes/spelunk"]);
+    let ref_before = git_stdout_at(root, &["rev-parse", "refs/notes/inkentry"]);
 
     let mut child = std::process::Command::new(std::env::current_exe().expect("current_exe"))
         .args(["--exact", "lock_holder_child", "--ignored"])
@@ -3314,7 +3314,7 @@ async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_loc
          gave up after {waited:?}, so it never contended"
     );
     assert_eq!(
-        git_stdout_at(root, &["rev-parse", "refs/notes/spelunk"]),
+        git_stdout_at(root, &["rev-parse", "refs/notes/inkentry"]),
         ref_before,
         "a skipped merge must leave the working ref untouched"
     );
@@ -3529,7 +3529,7 @@ async fn different_head_duplicate_folds_to_one_entry() {
         NotesMergeOutcome::Merged
     );
 
-    let listing = git_stdout_at(root, &["notes", "--ref=spelunk", "list"]);
+    let listing = git_stdout_at(root, &["notes", "--ref=inkentry", "list"]);
     assert_eq!(
         listing.lines().count(),
         2,

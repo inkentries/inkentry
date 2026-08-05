@@ -225,7 +225,7 @@ fn seeded_project() -> (TempDir, PathBuf) {
 }
 
 // Build the `cloud_first` project: `mode` is read only from the global config,
-// `server_url` / `project_id` only from the project-level `.spelunk/config.toml`.
+// `server_url` / `project_id` only from the project-level `.inkentry/config.toml`.
 fn cloud_first_project(ca_pem: &str, port: u16, project_id: &str) -> (TempDir, PathBuf, PathBuf) {
     let (tmp, mem_path) = seeded_project();
     let ca_path = tmp.path().join("ca.pem");

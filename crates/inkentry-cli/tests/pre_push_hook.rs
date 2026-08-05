@@ -1,4 +1,4 @@
-//! ADR-069 D1/D3/D7: publishing `refs/notes/spelunk` on `git push`.
+//! ADR-069 D1/D3/D7: publishing `refs/notes/inkentry` on `git push`.
 //!
 //! Publishing is coupled to `git push` because that is the only moment that
 //! reliably coincides with "this code is being shared". A note on a locally
@@ -68,7 +68,7 @@ fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env("SPELUNK_SECRET_STORE", "file")
         .env_remove("XDG_CONFIG_HOME")
         .env("SPELUNK_NO_SERVER", "1")
@@ -142,7 +142,7 @@ fn bin_at(exe: &Path, home: &Path, cwd: &Path) -> Command {
     cmd.current_dir(cwd)
         .env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env_remove("XDG_CONFIG_HOME")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
@@ -258,7 +258,7 @@ fn teammate_publishes(home: &Path, origin: &Path, dir: &Path, title: &str) -> St
             "push",
             "-q",
             "origin",
-            "refs/notes/spelunk:refs/notes/spelunk",
+            "refs/notes/inkentry:refs/notes/inkentry",
         ],
     );
     git_stdout(home, dir, &["rev-parse", "HEAD"])
@@ -301,9 +301,9 @@ fn clone_dev(home: &Path, origin: &Path, dir: &Path) {
     git(home, dir, &["config", "user.name", "Test2"]);
 }
 
-/// The note blob on `object`'s `refs/notes/spelunk`, or empty when absent.
+/// The note blob on `object`'s `refs/notes/inkentry`, or empty when absent.
 fn note_lines(home: &Path, dir: &Path, object: &str) -> Vec<String> {
-    git_stdout(home, dir, &["notes", "--ref=spelunk", "show", object])
+    git_stdout(home, dir, &["notes", "--ref=inkentry", "show", object])
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -375,8 +375,8 @@ fn hook_publishes_notes_and_fires_exactly_once() {
 
     // And it actually published: a guard that works by doing nothing is no good.
     assert!(
-        !git_stdout(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"]).is_empty(),
-        "origin should carry refs/notes/spelunk after the push"
+        !git_stdout(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"]).is_empty(),
+        "origin should carry refs/notes/inkentry after the push"
     );
     assert!(
         note_lines(home.path(), &origin, &annotated)
@@ -421,7 +421,7 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 
     // The notes push failed, and the user was told rather than left guessing.
     assert!(
-        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
             .success(),
         "the rejected notes ref must not exist on origin"
@@ -468,7 +468,7 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
     commit(home.path(), &dev, "payload");
 
     // Broken only now: `memory add` above needs a config that loads.
-    let cfg_dir = home.path().join(".config").join("spelunk");
+    let cfg_dir = home.path().join(".config").join("inkentry");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(cfg_dir.join("config.toml"), "not = valid toml [[[\n").unwrap();
 
@@ -1036,7 +1036,7 @@ fn two_dev_divergence_converges_with_no_loss() {
             "fetch",
             "-q",
             "origin",
-            "+refs/notes/spelunk:refs/notes/origin/spelunk",
+            "+refs/notes/inkentry:refs/notes/origin/inkentry",
         ],
     );
     git(
@@ -1044,11 +1044,11 @@ fn two_dev_divergence_converges_with_no_loss() {
         &dev1,
         &[
             "notes",
-            "--ref=spelunk",
+            "--ref=inkentry",
             "merge",
             "-s",
             "cat_sort_uniq",
-            "refs/notes/origin/spelunk",
+            "refs/notes/origin/inkentry",
         ],
     );
     let round_tripped = note_lines(home1.path(), &dev1, &shared);
@@ -1162,7 +1162,7 @@ fn skips_gracefully_with_no_local_notes_ref() {
         !git_out(
             home.path(),
             &dev,
-            &["rev-parse", "--verify", "refs/notes/spelunk"]
+            &["rev-parse", "--verify", "refs/notes/inkentry"]
         )
         .status
         .success(),
@@ -1177,7 +1177,7 @@ fn skips_gracefully_with_no_local_notes_ref() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
             .success(),
         "an empty notes ref must not be invented on origin"
@@ -1220,7 +1220,7 @@ fn skips_gracefully_when_pushing_without_a_named_remote() {
     // Nothing was published: there was memory to publish and a reachable URL to
     // publish it to, so an unguarded flow would have landed it here.
     assert!(
-        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
             .success(),
         "a push by URL must publish nothing: the flow skips rather than resolving \
@@ -1270,7 +1270,7 @@ fn a_re_entered_publish_stops_at_the_sentinel() {
         "a re-entered publish must report the recursion skip: {reported}"
     );
     assert!(
-        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/spelunk"])
+        !git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
             .success(),
         "a re-entered publish must push nothing"

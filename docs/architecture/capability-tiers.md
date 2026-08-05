@@ -46,7 +46,7 @@ features.
 server_url = "https://spelunk.internal.example.com"
 server_key = "sk-..."
 
-# .spelunk/config.toml  (project-level — safe to commit if key is in env)
+# .inkentry/config.toml  (project-level — safe to commit if key is in env)
 project_id = "acme/my-app"
 server_url = "https://spelunk.internal.example.com"   # key via SPELUNK_SERVER_KEY env var
 ```
@@ -178,7 +178,7 @@ Capability tier:  Offline
 ```
 
 The `memory` line reflects the resolved backend (`sqlite` / `git-notes` /
-`remote`), not the capability tier. In a directory with no local `.spelunk/`
+`remote`), not the capability tier. In a directory with no local `.inkentry/`
 project, `spelunk status` reports `No spelunk project here` instead (see
 [fail-closed, ADR-067](../adr/067-fail-closed-no-local-project.md)).
 

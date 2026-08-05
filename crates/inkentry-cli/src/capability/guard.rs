@@ -70,7 +70,7 @@ pub fn require_explicit_server_url(
     cfg.server_url.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "'spelunk {feature}' requires a server. Set `server_url` in your spelunk config \
-             (e.g. ~/.config/spelunk/config.toml or .spelunk/config.toml)."
+             (e.g. ~/.config/spelunk/config.toml or .inkentry/config.toml)."
         )
     })
 }

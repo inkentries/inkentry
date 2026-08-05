@@ -80,7 +80,7 @@ pub(super) struct ParseResult {
 fn filtered_notice(filtered: u64) -> String {
     format!(
         "Filtered out {filtered} generated/vendored/data file(s) \
-         (built-in index filter; override in [index] of .spelunk/config.toml)"
+         (built-in index filter; override in [index] of .inkentry/config.toml)"
     )
 }
 
@@ -327,7 +327,7 @@ fn collect_files(
     ];
     let mut walk = WalkBuilder::new(root);
     walk.standard_filters(true);
-    walk.add_custom_ignore_filename(".spelunkignore");
+    walk.add_custom_ignore_filename(".inkentryignore");
     let mut ob = ignore::overrides::OverrideBuilder::new(root);
     ob.case_insensitive(true).ok();
     for pat in &sensitive_patterns {
@@ -1779,6 +1779,6 @@ mod tests {
         let s = filtered_notice(7);
         assert!(s.contains("Filtered out 7"));
         assert!(s.contains("[index]"));
-        assert!(s.contains(".spelunk/config.toml"));
+        assert!(s.contains(".inkentry/config.toml"));
     }
 }

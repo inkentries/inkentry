@@ -188,7 +188,7 @@ pub fn load_from_model_dir(dir: &Path) -> Result<NativeEmbedder> {
 
 fn model_cache_dir() -> Result<PathBuf> {
     dirs::data_local_dir()
-        .map(|d| d.join("spelunk").join("models"))
+        .map(|d| d.join("inkentry").join("models"))
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))
 }
 
@@ -302,7 +302,7 @@ mod tests {
 
         assert_eq!(
             model_cache_dir().expect("resolve cache dir"),
-            tmp.join("spelunk").join("models")
+            tmp.join("inkentry").join("models")
         );
 
         match prev {

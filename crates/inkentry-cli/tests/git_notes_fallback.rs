@@ -3,9 +3,9 @@
 //! Store priority for `memory add`/`list` (ADR-004, unchanged) resolves in order:
 //!   1. `--backend git-notes` → git notes as the *primary* store
 //!   2. explicit team `server_url` (CloudFirst → remote)
-//!   3. a resolvable local `.spelunk/` DB (sqlite)
+//!   3. a resolvable local `.inkentry/` DB (sqlite)
 //!   4. no DB but inside a git repo → the universal git-notes write-through is
-//!      the sole writer (ref `refs/notes/spelunk`); there is no SQLite primary
+//!      the sole writer (ref `refs/notes/inkentry`); there is no SQLite primary
 //!   5. neither → fail with the dual-escape-hatch message.
 //!
 //! Pre-`init` (case 4) rides the same `append_to_git_notes` write-through that
@@ -29,7 +29,7 @@ use tempfile::TempDir;
 const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
      or run inside a git repository.";
 
-/// ADR-067 single-hatch error: no local `.spelunk/` project. This is what every
+/// ADR-067 single-hatch error: no local `.inkentry/` project. This is what every
 /// memory subcommand *except* the ADR-068 D3 add/list carrier still raises,
 /// even inside a git repo (the carrier never widens to them). Distinct from
 /// `NO_PROJECT_NO_REPO_ERR`: the dual-hatch text splices ", and not inside a git
@@ -50,7 +50,7 @@ fn bin(home: &Path, cwd: &Path) -> Command {
 /// The global memory store path under the isolated HOME. The git-notes fallback
 /// must never create it.
 fn global_memory_db(home: &Path) -> std::path::PathBuf {
-    home.join(".config").join("spelunk").join("memory.db")
+    home.join(".config").join("inkentry").join("memory.db")
 }
 
 /// Run `git args` in `dir`, asserting success. Isolated identity so it works on a
@@ -87,7 +87,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// A git repo with one commit and no `.spelunk/`. `user.*` is set in the LOCAL
+/// A git repo with one commit and no `.inkentry/`. `user.*` is set in the LOCAL
 /// repo config so the `git notes add` that the spawned `spelunk` runs (which
 /// does NOT inherit the test's `GIT_*` identity env) has a committer identity.
 fn init_git_repo_with_commit(dir: &Path) {
@@ -100,10 +100,10 @@ fn init_git_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// The spelunk records currently in HEAD's `refs/notes/spelunk` note (one JSON
+/// The spelunk records currently in HEAD's `refs/notes/inkentry` note (one JSON
 /// object per line). Empty when the ref/note does not exist.
 fn spelunk_note_lines(dir: &Path) -> Vec<String> {
-    let blob = git_stdout(dir, &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let blob = git_stdout(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     blob.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -121,7 +121,7 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
 
     let title = "fallback-roundtrip-abc123";
 
-    // add: no `.spelunk/`, but inside a git repo → falls back to git-notes.
+    // add: no `.inkentry/`, but inside a git repo → falls back to git-notes.
     bin(home.path(), repo.path())
         .args([
             "memory", "add", "--kind", "note", "--title", title, "--body", "b",
@@ -130,14 +130,14 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
         .success()
         .stdout(predicate::str::contains("Stored [note]"));
 
-    // The entry landed in `refs/notes/spelunk` on HEAD.
-    let note_blob = git_stdout(repo.path(), &["notes", "--ref=spelunk", "show", "HEAD"]);
+    // The entry landed in `refs/notes/inkentry` on HEAD.
+    let note_blob = git_stdout(repo.path(), &["notes", "--ref=inkentry", "show", "HEAD"]);
     assert!(
         note_blob.contains(title),
         "the note on HEAD must contain the added entry's title; got: {note_blob:?}"
     );
     // `git notes list` shows exactly one noted commit (HEAD).
-    let list = git_stdout(repo.path(), &["notes", "--ref=spelunk", "list"]);
+    let list = git_stdout(repo.path(), &["notes", "--ref=inkentry", "list"]);
     assert_eq!(
         list.lines().filter(|l| !l.trim().is_empty()).count(),
         1,
@@ -151,10 +151,10 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
         .success()
         .stdout(predicate::str::contains(title));
 
-    // The fallback must not create a local `.spelunk/` nor touch the global store.
+    // The fallback must not create a local `.inkentry/` nor touch the global store.
     assert!(
-        !repo.path().join(".spelunk").exists(),
-        "git-notes fallback must not create a local .spelunk/ project"
+        !repo.path().join(".inkentry").exists(),
+        "git-notes fallback must not create a local .inkentry/ project"
     );
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -261,7 +261,7 @@ fn json_top_level_keys(line: &str) -> Vec<String> {
 fn pre_init_and_post_init_records_have_identical_shape() {
     let home = TempDir::new().unwrap();
 
-    // Pre-init: no `.spelunk/`, inside a git repo → carrier writes the record.
+    // Pre-init: no `.inkentry/`, inside a git repo → carrier writes the record.
     let pre = TempDir::new().unwrap();
     init_git_repo_with_commit(pre.path());
     bin(home.path(), pre.path())
@@ -280,12 +280,12 @@ fn pre_init_and_post_init_records_have_identical_shape() {
     let pre_lines = spelunk_note_lines(pre.path());
     assert_eq!(pre_lines.len(), 1, "pre-init add writes one record");
 
-    // Post-init: a local `.spelunk/` makes SQLite the primary; the same
+    // Post-init: a local `.inkentry/` makes SQLite the primary; the same
     // write-through then appends the note. Creating the dir is enough for
     // `require_project_db` to resolve the project (matches the precedence test).
     let post = TempDir::new().unwrap();
     init_git_repo_with_commit(post.path());
-    std::fs::create_dir_all(post.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(post.path().join(".inkentry")).unwrap();
     bin(home.path(), post.path())
         .args([
             "memory",
@@ -375,14 +375,14 @@ fn reinit_between_adds_yields_distinct_entity_ids() {
             .success();
     };
 
-    // A local `.spelunk/` makes SQLite the primary, so the rowid is a real
+    // A local `.inkentry/` makes SQLite the primary, so the rowid is a real
     // autoincrement rather than the pre-init timestamp id.
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
     add("first decision", "body one");
 
     // Re-init: the store is recreated, so the rowid counter restarts.
-    std::fs::remove_dir_all(repo.path().join(".spelunk")).unwrap();
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::remove_dir_all(repo.path().join(".inkentry")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
     add("second decision", "body two");
 
     let lines = spelunk_note_lines(repo.path());
@@ -414,7 +414,7 @@ fn entity_id_is_stable_across_stores() {
     let entity_id_for = |title: &str, seed_extra: bool| -> String {
         let repo = TempDir::new().unwrap();
         init_git_repo_with_commit(repo.path());
-        std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
         // Push the second store's rowid counter along so the two entries under
         // test cannot share a rowid.
         if seed_extra {
@@ -499,7 +499,7 @@ fn memory_list_refuses_in_git_repo_without_any_commit() {
     assert!(!global_memory_db(home.path()).exists());
 }
 
-// ── precedence #3 > #4: a local `.spelunk/` wins over the git-notes fallback ────
+// ── precedence #3 > #4: a local `.inkentry/` wins over the git-notes fallback ────
 
 #[test]
 fn local_dot_spelunk_takes_precedence_over_git_notes_fallback() {
@@ -507,7 +507,7 @@ fn local_dot_spelunk_takes_precedence_over_git_notes_fallback() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
     // Both a git repo AND a local project: sqlite must win (fallback NOT taken).
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     bin(home.path(), repo.path())
         .args([
@@ -526,8 +526,8 @@ fn local_dot_spelunk_takes_precedence_over_git_notes_fallback() {
 
     // The entry went to the local sqlite store, proving branch 3 beat branch 4.
     assert!(
-        repo.path().join(".spelunk").join("memory.db").exists(),
-        "with a local .spelunk/, add must write sqlite, not fall back to git-notes"
+        repo.path().join(".inkentry").join("memory.db").exists(),
+        "with a local .inkentry/, add must write sqlite, not fall back to git-notes"
     );
 
     // list resolves the same sqlite store and reads the entry back.
@@ -566,7 +566,7 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
         .success()
         .stdout(predicate::str::contains("Stored [note]"));
 
-    let note_blob = git_stdout(repo.path(), &["notes", "--ref=spelunk", "show", "HEAD"]);
+    let note_blob = git_stdout(repo.path(), &["notes", "--ref=inkentry", "show", "HEAD"]);
     assert!(
         note_blob.contains(title),
         "explicit git-notes add must write the note; got: {note_blob:?}"
@@ -596,7 +596,7 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
         .stdout(predicate::str::contains(title));
 
     // Explicit git-notes must not create a project or touch the global store.
-    assert!(!repo.path().join(".spelunk").exists());
+    assert!(!repo.path().join(".inkentry").exists());
     assert!(!global_memory_db(home.path()).exists());
 }
 
@@ -628,7 +628,7 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
 
     assert!(
         spelunk_note_lines(repo.path()).is_empty(),
-        "a secret-blocked add must leave refs/notes/spelunk absent/unmodified"
+        "a secret-blocked add must leave refs/notes/inkentry absent/unmodified"
     );
     // And a body-borne secret is likewise blocked before any note is written
     // (GitHub PAT pattern, same fixture the secrets unit test uses).
@@ -697,7 +697,7 @@ fn non_add_list_subcommands_stay_fail_closed_inside_git_repo() {
 
 // ── case 6: post-init add writes BOTH the SQLite primary and the write-through ─
 
-/// With a local `.spelunk/` project inside a git repo, a single `add` writes the
+/// With a local `.inkentry/` project inside a git repo, a single `add` writes the
 /// SQLite primary AND rides the universal git-notes write-through (exactly one
 /// record, no double write), and `list` reads back from SQLite. This is the
 /// unchanged post-`init` behaviour, asserted end-to-end in one flow.
@@ -707,7 +707,7 @@ fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
     // A local project makes SQLite the primary (not the pre-init carrier).
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     bin(home.path(), repo.path())
         .args([
@@ -726,11 +726,11 @@ fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
 
     // Primary: the local SQLite store exists (proving branch 3, not the carrier).
     assert!(
-        repo.path().join(".spelunk").join("memory.db").exists(),
+        repo.path().join(".inkentry").join("memory.db").exists(),
         "post-init add must write the local SQLite primary"
     );
 
-    // Write-through: exactly one record landed in refs/notes/spelunk (the SQLite
+    // Write-through: exactly one record landed in refs/notes/inkentry (the SQLite
     // primary write plus the write-through must not double up).
     let lines = spelunk_note_lines(repo.path());
     assert_eq!(
@@ -822,7 +822,7 @@ fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
 /// lock. Mirrors `LOCK_WAIT_BUDGET` in `storage/git_notes/lock.rs`.
 const LOCK_WAIT_BUDGET: Duration = Duration::from_secs(5);
 
-/// `<git-common-dir>/spelunk-notes.lock` — the file the carrier locks, resolved
+/// `<git-common-dir>/inkentry-notes.lock` — the file the carrier locks, resolved
 /// the way the production code resolves it, canonicalization included.
 fn notes_lock_path(repo: &Path) -> std::path::PathBuf {
     let raw = git_stdout(repo, &["rev-parse", "--git-common-dir"]);
@@ -834,7 +834,7 @@ fn notes_lock_path(repo: &Path) -> std::path::PathBuf {
         repo.join(raw)
     };
     let common_dir = std::fs::canonicalize(&common_dir).unwrap_or(common_dir);
-    common_dir.join("spelunk-notes.lock")
+    common_dir.join("inkentry-notes.lock")
 }
 
 /// A pre-`init` `memory add` that cannot take a contended notes lock fails,
@@ -974,7 +974,7 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     bin(home.path(), repo.path())
         .args([
@@ -1066,7 +1066,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     let add = |title: &str, body: &str| {
         bin(home.path(), repo.path())
@@ -1120,7 +1120,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
     );
 }
 
-/// `memory add --supersedes OLD` run entirely **pre-`init`** (no `.spelunk/`,
+/// `memory add --supersedes OLD` run entirely **pre-`init`** (no `.inkentry/`,
 /// carrier-only, as in `memory_add_list_round_trips_via_git_notes_fallback`
 /// above): both OLD and NEW exist only via the git-notes carrier, since there
 /// is no SQLite primary yet. The edge-carry block in `add.rs` ("Carry the OLD
@@ -1208,7 +1208,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
-    std::fs::create_dir_all(repo.path().join(".spelunk")).unwrap();
+    std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     bin(home.path(), repo.path())
         .args([

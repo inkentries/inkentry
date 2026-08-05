@@ -113,7 +113,7 @@ Two details in this recipe are load-bearing, not stylistic:
   extension (as above), before you distribute the cert.
 
 Distribute `tls-cert.pem` to `--tls-cert` (or the systemd/Docker steps below)
-and to clients as `SPELUNK_SERVER_CA` (or `server_ca` in `.spelunk/config.toml`);
+and to clients as `SPELUNK_SERVER_CA` (or `server_ca` in `.inkentry/config.toml`);
 see [Trusting the server's certificate on the client](#trusting-the-servers-certificate-on-the-client).
 Keep `tls-key.pem` private (`0600`, root-owned); it never leaves the server.
 
@@ -367,13 +367,13 @@ resolve and the server to answer.
 
 ## Client configuration
 
-Add a `.spelunk/config.toml` at the project root and commit it (it contains no
+Add a `.inkentry/config.toml` at the project root and commit it (it contains no
 secrets): one person on the team does this once per repo, and every other
 developer picks it up on their next `git pull`, no per-developer setup step for
 this file.
 
 ```toml
-# .spelunk/config.toml: commit this, it's not a secret
+# .inkentry/config.toml: commit this, it's not a secret
 server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 ```
@@ -429,10 +429,10 @@ replaced.)
 
 > **Rotating a key you committed under the old model.** Earlier versions of
 > this doc suggested a plaintext `server_key = "..."` line in the personal
-> `~/.config/spelunk/config.toml`, and a committed project `.spelunk/config.toml`
+> `~/.config/spelunk/config.toml`, and a committed project `.inkentry/config.toml`
 > used to accept the same field as a "shared team key". Neither path exists
 > any more: the personal file never stores the key in plaintext, and
-> `.spelunk/config.toml` silently ignores a `server_key` line if one is still
+> `.inkentry/config.toml` silently ignores a `server_key` line if one is still
 > present. If a key was ever written to either file, especially if it reached
 > git history, treat it as compromised: issue a new key on the server (e.g.
 > `openssl rand -hex 32` for a self-managed instance) and run `spelunk auth
@@ -461,7 +461,7 @@ export SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle, or the
                                                           # self-signed leaf itself
 ```
 
-or set it per project in `.spelunk/config.toml`:
+or set it per project in `.inkentry/config.toml`:
 
 ```toml
 server_ca = "/etc/spelunk/internal-ca.pem"
@@ -484,7 +484,7 @@ its own end-entity certificate, even when you trust it here.
 If team members have existing local `memory.db` entries, push them to the server:
 
 ```bash
-# Make sure .spelunk/config.toml is set up first, then:
+# Make sure .inkentry/config.toml is set up first, then:
 spelunk memory push
 ```
 

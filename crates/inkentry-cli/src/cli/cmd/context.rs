@@ -168,7 +168,7 @@ fn apply_budget(
 
 pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     cfg.validate()?;
-    // ADR-067: fail closed when there is no local `.spelunk/` project instead of
+    // ADR-067: fail closed when there is no local `.inkentry/` project instead of
     // silently using the global store. `--db` is an explicit override, exempt.
     let mem_path = match args.db.clone() {
         Some(p) => p,

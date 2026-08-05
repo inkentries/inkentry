@@ -167,27 +167,27 @@ work immediately, and semantic search becomes available as embeddings land.
 spelunk search "where do we validate auth tokens"
 ```
 
-`init` also writes `.spelunk/.gitignore` so the machine-specific SQLite
+`init` also writes `.inkentry/.gitignore` so the machine-specific SQLite
 (`index.db*`, `memory.db*`) and the per-run index lock (`index.lock*`, whose
 `.pid` sidecar holds a local process id) stay out of version control, and records the
-project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
+project slug as `project_id` in `.inkentry/config.toml`. The slug defaults to the
 git-derived identity (`host/owner/repo` when an `origin` remote exists, else
 `local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an
 explicit one for a repo without a remote.
 
-`init` writes `.spelunk/config.toml` but takes no git action on it — **commit it
+`init` writes `.inkentry/config.toml` but takes no git action on it — **commit it
 yourself** so your project slug travels with the repo and the whole team
 resolves to one project identity:
 
 ```bash
-git add .spelunk/config.toml && git commit -m "Add spelunk project slug"
+git add .inkentry/config.toml && git commit -m "Add spelunk project slug"
 ```
 
 This is a step you own, not something `init` does for you. Without a committed
 slug, a fresh clone of a remote-less repo derives a different per-clone identity,
 and an explicit `--name` slug cannot be re-derived at all — either way the team
 would resolve to more than one project until the file is committed. An existing
-`project_id` or `.spelunk/.gitignore` is never overwritten, so re-running `init`
+`project_id` or `.inkentry/.gitignore` is never overwritten, so re-running `init`
 is safe.
 
 No config file, no Docker, no external embedder. The server bundles a native
@@ -235,7 +235,7 @@ spelunk memory add --kind decision \
 spelunk memory list --kind decision
 ```
 
-Memory is stored locally in the project's `.spelunk/memory.db` (and mirrored to
+Memory is stored locally in the project's `.inkentry/memory.db` (and mirrored to
 git notes by default), so it travels with the repo. No server or database
 service to run.
 
@@ -413,7 +413,7 @@ spelunk initialised for github.com/acme/my-project
 
   Index:   142 files, 1 840 chunks
   DB:      ~/.local/share/spelunk/my-project.db
-  Project: github.com/acme/my-project  (written to .spelunk/config.toml)
+  Project: github.com/acme/my-project  (written to .inkentry/config.toml)
   Embeddings: 1 840 vectors
 ```
 
@@ -479,10 +479,10 @@ Each team member's code stays local — only memory travels to the server.
 
 ### Quick setup
 
-Add `.spelunk/config.toml` at your repo root (commit it):
+Add `.inkentry/config.toml` at your repo root (commit it):
 
 ```toml
-# .spelunk/config.toml — commit this, no secrets
+# .inkentry/config.toml — commit this, no secrets
 server_url = "https://spelunk.internal.example.com"
 project_id = "my-awesome-app"
 ```
@@ -513,7 +513,7 @@ export SPELUNK_SERVER_KEY="your-shared-api-key"
 If you have an old personal `~/.config/spelunk/config.toml` with a bare
 `server_key = "..."`, it is picked up and migrated into the per-server store
 automatically the first time it's needed; no action required. A `server_key`
-line in a project's checked-in `.spelunk/config.toml` is no longer read at all,
+line in a project's checked-in `.inkentry/config.toml` is no longer read at all,
 so remove it if one is still there. On a host with no keychain, spelunk falls
 back to an owner-only `~/.config/spelunk/secrets.toml`. For the full
 credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the

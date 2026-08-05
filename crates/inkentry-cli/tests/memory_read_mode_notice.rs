@@ -106,7 +106,7 @@ fn local_first_read_serves_data_without_sync_nag() {
         "",
     );
     // `server_url`/`project_id` only take effect from project-level
-    // `.spelunk/config.toml` (`memory_list` sets `.current_dir(tmp.path())`).
+    // `.inkentry/config.toml` (`memory_list` sets `.current_dir(tmp.path())`).
     plumbing_helpers::write_project_server_config(
         tmp.path(),
         "https://team.invalid:7777",
@@ -217,7 +217,7 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
     // the read must fail. A raw-UUID project_id skips slug resolution, proving
     // the failure is the memory read itself. `mode` isn't a `ProjectConfig`
     // field, so it stays in the global file; `server_url`/`project_id` only
-    // take effect from project-level `.spelunk/config.toml`.
+    // take effect from project-level `.inkentry/config.toml`.
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
@@ -290,7 +290,7 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
         "",
     );
     // `server_url`/`project_id` only take effect from project-level
-    // `.spelunk/config.toml`; the `status` command below runs with
+    // `.inkentry/config.toml`; the `status` command below runs with
     // `.current_dir(&project)`, so it must land there, not under `tmp.path()`.
     plumbing_helpers::write_project_server_config(&project, "https://127.0.0.1:1", "team/proj");
 

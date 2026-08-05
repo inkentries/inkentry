@@ -58,7 +58,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // The memory DB lives next to the main DB (db_path.with_file_name("memory.db")).
     // We must pass it explicitly to `memory add --db` so both commands use the
     // same file (otherwise `memory add` would resolve from CWD and find the
-    // workspace's .spelunk/memory.db instead).
+    // workspace's .inkentry/memory.db instead).
     let mem_path = db_path.with_file_name("memory.db");
 
     spelunk_bin()

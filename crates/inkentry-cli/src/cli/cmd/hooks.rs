@@ -57,7 +57,7 @@ spelunk memory harvest --git-range HEAD~1..HEAD --detach
 /// already has on disk, so anything encoded in it cannot be changed by a release.
 const PRE_PUSH_HOOK_TEMPLATE: &str = r#"#!/bin/sh
 # spelunk pre-push hook (installed by `spelunk hooks install --pre-push`)
-# Publishes spelunk memory (refs/notes/spelunk) to the remote you are pushing to,
+# Publishes spelunk memory (refs/notes/inkentry) to the remote you are pushing to,
 # so decisions travel with the code they describe.
 #
 # The path below is absolute rather than a PATH lookup: GUI git clients on macOS
@@ -318,7 +318,7 @@ fn install_pre_push() -> Result<()> {
     }
     println!("On each `git push`, spelunk will publish your memory to that remote:");
     println!("  - Fetch and merge teammates' memory notes (union, nothing dropped)");
-    println!("  - Push refs/notes/spelunk alongside the code you are pushing");
+    println!("  - Push refs/notes/inkentry alongside the code you are pushing");
     println!("Your push is never blocked: on failure the hook warns and exits 0.");
     println!("Teammates never receive this hook: git does not clone .git/hooks.");
     Ok(())

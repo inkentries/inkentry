@@ -39,7 +39,7 @@ use tempfile::TempDir;
 /// (`%APPDATA%` via the Known Folder API), so an explicit override is the only
 /// way to isolate the registry across all platforms.
 fn registry_dir(home: &Path) -> PathBuf {
-    home.join(".config").join("spelunk")
+    home.join(".config").join("inkentry")
 }
 
 /// Canonicalize a path for storage in the test registry the same way the product
@@ -217,13 +217,13 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     config_path
 }
 
-/// Create `.spelunk/index.db` inside `project_root` and return the path.
+/// Create `.inkentry/index.db` inside `project_root` and return the path.
 ///
 /// The registry `db_path` column must point at this file.  An empty SQLite
 /// database is sufficient — the dep pass never opens the index DB itself.
 fn create_spelunk_dir(project_root: &Path) -> PathBuf {
-    let spelunk_dir = project_root.join(".spelunk");
-    fs::create_dir_all(&spelunk_dir).expect("create .spelunk dir");
+    let spelunk_dir = project_root.join(".inkentry");
+    fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
     let index_db = spelunk_dir.join("index.db");
     let _ = Connection::open(&index_db).expect("create stub index.db");
     index_db

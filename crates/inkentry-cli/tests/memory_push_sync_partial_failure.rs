@@ -85,10 +85,10 @@ async fn mount_since_empty(server: &MockServer) {
 }
 
 // See `memory_push_sync_total_failure.rs::write_config` for why `server_url` /
-// `project_id` live in the project-level `.spelunk/config.toml` rather than the
+// `project_id` live in the project-level `.inkentry/config.toml` rather than the
 // `--config` file.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
-    let db_path = dir.join(".spelunk").join("index.db");
+    let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
@@ -103,7 +103,7 @@ fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
 }
 
 fn init_project(proj: &Path) {
-    std::fs::create_dir_all(proj.join(".spelunk")).expect("create .spelunk");
+    std::fs::create_dir_all(proj.join(".inkentry")).expect("create .inkentry");
 }
 
 // Seed a standalone memory.db with `SEED_COUNT` distinct live notes, directly

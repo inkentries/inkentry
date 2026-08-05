@@ -48,7 +48,7 @@ pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
         return Ok(std::path::PathBuf::from(p));
     }
     dirs::home_dir()
-        .map(|home| home.join(".local").join("state").join("spelunk"))
+        .map(|home| home.join(".local").join("state").join("inkentry"))
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 

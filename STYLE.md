@@ -52,7 +52,7 @@ if batch.len() > MAX_BATCH { return Err(AppError::PayloadTooLarge); }
 More examples of comments that earn their place, all from this codebase:
 
 ```rust
-// Refuse to recursively delete through a symlink: a symlinked `.spelunk`
+// Refuse to recursively delete through a symlink: a symlinked `.inkentry`
 // (attacker-controlled or a poisoned registry row) could otherwise point
 // `remove_dir_all` at an arbitrary directory outside the project root.
 

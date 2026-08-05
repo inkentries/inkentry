@@ -4,7 +4,7 @@
 
 Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
-`refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
+`refs/notes/inkentry` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
 `--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
@@ -16,14 +16,14 @@ hand with stock git. They live on the `spelunk` ref, so you must name it: plain
 found" even when spelunk has written entries.
 
 ```bash
-git notes --ref=spelunk show HEAD    # notes on the current commit
-git notes --ref=spelunk list         # every commit carrying spelunk notes
+git notes --ref=inkentry show HEAD    # notes on the current commit
+git notes --ref=inkentry list         # every commit carrying spelunk notes
 # equivalently
-GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ```
 
-**Carrier and index.** Think of `refs/notes/spelunk` as the durable *carrier*
-for memory and `.spelunk/memory.db` as the queryable *index* built over it. Every
+**Carrier and index.** Think of `refs/notes/inkentry` as the durable *carrier*
+for memory and `.inkentry/memory.db` as the queryable *index* built over it. Every
 `memory add` appends its entry to the carrier through one write-through path;
 `spelunk init` hydrates the index by importing those notes: `memory list` and
 text search see them immediately, and `spelunk memory reindex` adds the
@@ -81,11 +81,11 @@ prevents two different, conflicting supersede records from being written for
 the same old entry.
 
 **Before `spelunk init`**, `memory add` and `memory list` still work when you are
-inside a git repository: with no `.spelunk/` project, `add` rides the same
+inside a git repository: with no `.inkentry/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
-back from `refs/notes/spelunk`. Because it is the same write path pre- and
+back from `refs/notes/inkentry`. Because it is the same write path pre- and
 post-`init`, every note carries an identical record shape. `memory search` and
-`context` remain gated to projects with `.spelunk/` (they need the index to
+`context` remain gated to projects with `.inkentry/` (they need the index to
 search and embed).
 
 **Store priority** (unchanged from [ADR-004](adr/004-unified-memory-storage.md)):
@@ -96,7 +96,7 @@ search and embed).
    server; under the default `local_first` mode a configured `server_url` does
    *not* redirect reads or writes, see [Team server and sync
    modes](#team-server-and-sync-modes))
-4. A local `.spelunk/memory.db` (after `spelunk init`)
+4. A local `.inkentry/memory.db` (after `spelunk init`)
 5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
 6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
 
@@ -109,7 +109,7 @@ where git notes is the sole store, `memory add` fails with an error telling you
 to retry; post-`init` the entry is already in `memory.db`, and `memory add`
 warns on stderr that the carry to git notes failed. On the rare filesystem
 where the lock file cannot be created at all, the write proceeds unserialized
-and warns on stderr. Note also that notes under `refs/notes/spelunk` are
+and warns on stderr. Note also that notes under `refs/notes/inkentry` are
 **not** pushed or fetched by default, so pre-`init` entries stay on the machine
 that wrote them until the notes ref is pushed (see [Sharing memory across
 clones via git-notes](#sharing-memory-across-clones-via-git-notes) below, and
@@ -167,7 +167,7 @@ sync](#repair-during-push-and-sync)).
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
 (for certificate trust, see `server_ca` / `SPELUNK_SERVER_CA`). The CLI never
-falls back to local data in this mode. Configure it in `.spelunk/config.toml`:
+falls back to local data in this mode. Configure it in `.inkentry/config.toml`:
 
 ```toml
 server_url = "https://spelunk.internal.example.com"
@@ -208,7 +208,7 @@ which is automatic:
 
 When you run `spelunk init` inside a git repository with an `origin` remote,
 spelunk automatically configures the fetch refspec for `origin` so that
-teammates' `refs/notes/spelunk` travels on `git fetch`. The init command prints
+teammates' `refs/notes/inkentry` travels on `git fetch`. The init command prints
 the status:
 
 ```
@@ -231,7 +231,7 @@ spelunk hooks install --pre-push
 
 From then on, every `git push` to a named remote publishes your memory there:
 spelunk fetches the remote's notes, merges them into yours (a union, so nothing
-is dropped), and pushes `refs/notes/spelunk`. Once it is installed, `init`
+is dropped), and pushes `refs/notes/inkentry`. Once it is installed, `init`
 reports that in place of the opt-in line:
 
 ```
@@ -297,7 +297,7 @@ installing it affects only your own clone.
 If you would rather not install a hook, push the notes ref yourself:
 
 ```bash
-git push origin refs/notes/spelunk
+git push origin refs/notes/inkentry
 ```
 
 Re-run this whenever you record memory: each `spelunk memory add` (or remove)
@@ -309,15 +309,15 @@ The fetch refspec, by contrast, is configured once, so teammates' (and later
 clones') `git fetch` then pulls whatever notes you have already pushed.
 
 **How fetched notes become visible.** The refspec fetches into a *tracking* ref,
-`refs/notes/origin/spelunk`, rather than over your own `refs/notes/spelunk`.
+`refs/notes/origin/inkentry`, rather than over your own `refs/notes/inkentry`.
 Fetching straight onto your working ref would force-update it and silently
 replace a local note you had not pushed yet. So arrival is **fetch + merge**:
 `git fetch` populates the tracking ref, and `spelunk memory list`, `spelunk
-context`, and `spelunk init` merge it into `refs/notes/spelunk` (union, no
+context`, and `spelunk init` merge it into `refs/notes/inkentry` (union, no
 conflicts, duplicates dropped). That merge is local-only and does no network: it
 folds in what your own `git fetch` already brought down, so it works with the
 remote unreachable, and it never picks up remote state on its own. Right after a
-fetch, `git notes --ref=spelunk` alone will not show a teammate's entry until one
+fetch, `git notes --ref=inkentry` alone will not show a teammate's entry until one
 of those spelunk commands has run.
 
 The merge never delays or fails a read. If another spelunk command is writing
@@ -327,7 +327,7 @@ is idempotent, so the next read folds the entries in.
 **For teammates to receive the notes:**
 
 1. Clone the repository normally: `git clone <repo>`
-2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'`)
+2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/inkentry*:refs/notes/origin/inkentry*'`)
 3. Fetch: `git fetch`
 4. Read: `spelunk memory list` (this is the step that merges the fetched notes in)
 
@@ -340,7 +340,7 @@ repository), `spelunk init` prints the commands to run later:
 
 ```
 Memory:  no 'origin' remote, so the notes refspec is not configured
-         run later: git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'
+         run later: git config --add remote.origin.fetch '+refs/notes/inkentry*:refs/notes/origin/inkentry*'
          your memory stays local until you install the pre-push hook: spelunk hooks install --pre-push
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
@@ -349,7 +349,7 @@ Add the refspec when an `origin` is created, then publish as above. The
 `notes.rewriteRef` line appears here too: rewrites are purely local, so that
 setting is configured even in a repository with no remote.
 
-If the repository already carries memory on `refs/notes/spelunk` (for example a
+If the repository already carries memory on `refs/notes/inkentry` (for example a
 fresh clone of a project whose team records memory through git notes), `spelunk
 init` **hydrates** the new `memory.db` from those notes: every entry not already
 present is imported, and `spelunk memory list` then shows the repo's recorded
@@ -374,7 +374,7 @@ that carries memory orphans every entry on the dead sha. `memory list` never
 shows those entries again, because it lists notes that are reachable from `git
 log`, and the dead sha no longer is.
 
-spelunk therefore points `notes.rewriteRef` at `refs/notes/spelunk` for you. It
+spelunk therefore points `notes.rewriteRef` at `refs/notes/inkentry` for you. It
 is written to the repository's own config, never your global config, at whichever
 of these comes first:
 
@@ -397,7 +397,7 @@ that already covers the ref (exactly, or via a glob that stays inside
 continues rather than failing the write, and names the command to run:
 
 ```
-Warning: could not set git notes.rewriteRef, so memory may not survive `git commit --amend` or `git rebase`. Set it with: git config --add notes.rewriteRef refs/notes/spelunk
+Warning: could not set git notes.rewriteRef, so memory may not survive `git commit --amend` or `git rebase`. Set it with: git config --add notes.rewriteRef refs/notes/inkentry
 ```
 
 `notes.rewriteMode` is deliberately left at its `concatenate` default, which
@@ -565,7 +565,7 @@ spelunk memory list --source-ref abc1234
 two ways: harvested entries carry the commit SHA they were harvested from in
 their `source_ref` provenance field, and entries added with `spelunk memory add`
 are anchored to a commit by the git note that carries them (the same note you
-see under `git notes --ref=spelunk show <sha>`). Both are found; the SHA may be
+see under `git notes --ref=inkentry show <sha>`). Both are found; the SHA may be
 given in full or as a prefix.
 
 `question` and `answer` entries show titles only in list view to avoid context saturation. Use `spelunk memory show <id>` to read the full body.

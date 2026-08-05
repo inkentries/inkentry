@@ -45,8 +45,8 @@ fn ensure_sqlite_vec() {
 /// Write a minimal spelunk config file and make `dir` a real project.
 ///
 /// ADR-067: `memory reconcile` (a memory subcommand) fails closed without a
-/// local `.spelunk/` project, so we create `<dir>/.spelunk/`. Memory is now
-/// project-scoped: the CLI resolves it to `<dir>/.spelunk/memory.db` regardless
+/// local `.inkentry/` project, so we create `<dir>/.inkentry/`. Memory is now
+/// project-scoped: the CLI resolves it to `<dir>/.inkentry/memory.db` regardless
 /// of the config `db_path`. The incoming `db_path` argument is ignored (kept for
 /// call-site compatibility).
 ///
@@ -58,8 +58,8 @@ fn ensure_sqlite_vec() {
 /// Returns `(config_path, mem_path)` where `mem_path` is where the CLI will
 /// write `memory.db`.
 fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
-    let spelunk_dir = dir.join(".spelunk");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .spelunk");
+    let spelunk_dir = dir.join(".inkentry");
+    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
     let index_db = spelunk_dir.join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
@@ -70,7 +70,7 @@ fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
         ),
     )
     .expect("write config");
-    // Project-scoped memory store lives next to the index inside `.spelunk/`.
+    // Project-scoped memory store lives next to the index inside `.inkentry/`.
     let mem_path = index_db.with_file_name("memory.db");
     (config_path, mem_path)
 }
@@ -199,7 +199,7 @@ fn read_memory_notes(mem_path: &Path) -> Vec<(String, String, String)> {
 ///
 /// IMPORTANT: the process's `current_dir` is set to the temp dir so that
 /// `find_project_db()` does not walk up into the repo root and discover the
-/// project's real `.spelunk/index.db`, which would cause the CLI to write to
+/// project's real `.inkentry/index.db`, which would cause the CLI to write to
 /// the repo's own memory.db instead of the test's isolated one.
 fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
     // config_path is in the temp dir (e.g. /tmp/tmpXXX/config.toml).
@@ -1819,7 +1819,7 @@ fn default_source_db_honors_state_dir_override() {
         .path()
         .join(".local")
         .join("state")
-        .join("spelunk")
+        .join("inkentry")
         .join("server.db");
     assert!(
         !home_default.exists(),

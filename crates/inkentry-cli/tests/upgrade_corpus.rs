@@ -253,10 +253,10 @@ fn unbundle(bundle: &Path, into: &Path) {
             "fetch",
             "--quiet",
             "origin",
-            "refs/notes/spelunk:refs/notes/spelunk",
+            "refs/notes/inkentry:refs/notes/inkentry",
         ])
         .status()
-        .expect("fetching refs/notes/spelunk from the corpus bundle");
+        .expect("fetching refs/notes/inkentry from the corpus bundle");
     assert!(status.success(), "fetching notes ref failed");
 }
 
@@ -909,7 +909,7 @@ fn old_binary() -> PathBuf {
 fn upgraded_project(tmp: &Path) -> PathBuf {
     let m = manifest();
     let project = tmp.join("project");
-    let dot = project.join(".spelunk");
+    let dot = project.join(".inkentry");
     std::fs::create_dir_all(&dot).unwrap();
 
     let index_wing = wings_of_kind(&m, "index")
@@ -978,10 +978,10 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
     let bin = old_binary();
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
-    std::fs::create_dir_all(home.join(".config").join("spelunk")).unwrap();
-    std::fs::write(home.join(".config").join("spelunk").join("config.toml"), "").unwrap();
+    std::fs::create_dir_all(home.join(".config").join("inkentry")).unwrap();
+    std::fs::write(home.join(".config").join("inkentry").join("config.toml"), "").unwrap();
     let project = upgraded_project(tmp.path());
-    let dot = project.join(".spelunk");
+    let dot = project.join(".inkentry");
 
     let before = table_counts(&dot);
 
@@ -993,8 +993,8 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
             // otherwise reach the OS keychain and block on a prompt.
             .env("SPELUNK_SECRET_STORE", "file")
             .env("HOME", &home)
-            .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
-            .env("SPELUNK_REGISTRY_DIR", home.join(".config").join("spelunk"))
+            .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
+            .env("SPELUNK_REGISTRY_DIR", home.join(".config").join("inkentry"))
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap_or_else(|e| panic!("running the old binary with {args:?}: {e}"))

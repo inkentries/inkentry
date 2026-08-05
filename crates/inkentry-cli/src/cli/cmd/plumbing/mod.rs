@@ -29,7 +29,7 @@ pub enum PlumbingCommand {
     GraphEdges(PlumbingGraphEdgesArgs),
     /// Emit memory entries as JSONL
     ReadMemory(PlumbingReadMemoryArgs),
-    /// Publish memory notes (refs/notes/spelunk) to a remote
+    /// Publish memory notes (refs/notes/inkentry) to a remote
     PublishNotes(PlumbingPublishNotesArgs),
 }
 

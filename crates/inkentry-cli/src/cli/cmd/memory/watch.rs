@@ -35,7 +35,7 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. \
-             Set it in `.spelunk/config.toml` or via `SPELUNK_PROJECT_ID`."
+             Set it in `.inkentry/config.toml` or via `SPELUNK_PROJECT_ID`."
         )
     })?;
 

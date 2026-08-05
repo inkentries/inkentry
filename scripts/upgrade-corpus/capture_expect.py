@@ -186,13 +186,13 @@ def git_notes_expect(path):
                 "fetch",
                 "--quiet",
                 "origin",
-                "refs/notes/spelunk:refs/notes/spelunk",
+                "refs/notes/inkentry:refs/notes/inkentry",
             ],
             check=True,
             capture_output=True,
         )
         listing = subprocess.run(
-            ["git", "-C", repo, "notes", "--ref=spelunk", "list"],
+            ["git", "-C", repo, "notes", "--ref=inkentry", "list"],
             check=True,
             capture_output=True,
             text=True,

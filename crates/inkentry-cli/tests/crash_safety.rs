@@ -39,7 +39,7 @@ fn spelunk_command(home: &Path) -> Command {
     cmd.env("SPELUNK_SECRET_STORE", "file")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("spelunk"))
+        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
     cmd
@@ -249,7 +249,7 @@ fn crash_mid_target_file() -> InterruptedFixture {
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
     write_three_file_project(project.path());
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
 
     let mut cmd = spelunk_command(home.path());
     cmd.current_dir(project.path())
@@ -357,7 +357,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
     )
     .unwrap();
     std::fs::write(project.path().join("empty.py"), "").unwrap();
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
 
     let mut first = spelunk_command(home.path());
     let first_out = first
@@ -461,7 +461,7 @@ fn embed_fixture(rt: &tokio::runtime::Runtime) -> EmbedFixture {
     let project = TempDir::new().expect("project");
     std::fs::write(project.path().join("one.py"), "def one():\n    return 1\n").unwrap();
     std::fs::write(project.path().join("two.py"), "def two():\n    return 2\n").unwrap();
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
 
     let server = rt.block_on(async {
         let server = wiremock::MockServer::start().await;
@@ -564,7 +564,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
         "def seed():\n    return 0\n",
     )
     .unwrap();
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
 
     // Uncapped baseline: establishes the schema and a small amount of data,
     // so the capped run below is growing an existing file, not failing
@@ -633,7 +633,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
 fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_stored() {
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
-    let mem_db = project.path().join(".spelunk").join("memory.db");
+    let mem_db = project.path().join(".inkentry").join("memory.db");
     let config_path = project.path().join("config.toml");
     std::fs::write(
         &config_path,
@@ -763,7 +763,7 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
             )
             .unwrap();
         }
-        let db_path = project.path().join(".spelunk").join("index.db");
+        let db_path = project.path().join(".inkentry").join("index.db");
 
         let run = |home_dir: PathBuf, project_dir: PathBuf| {
             std::thread::spawn(move || {
@@ -997,7 +997,7 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
     write_three_file_project(project.path());
-    let db_path = project.path().join(".spelunk").join("index.db");
+    let db_path = project.path().join(".inkentry").join("index.db");
 
     let mut cmd = spelunk_command(home.path());
     cmd.current_dir(project.path())

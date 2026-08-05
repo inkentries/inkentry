@@ -20,9 +20,9 @@ const SERVER_REQUIRED: &str = "'spelunk memory harvest' requires inkentry-server
 
 /// Write a minimal config file under `dir`.  `extra` is appended verbatim.
 fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBuf {
-    // ADR-067: harvest fails closed without a local `.spelunk/` project, which
+    // ADR-067: harvest fails closed without a local `.inkentry/` project, which
     // would pre-empt the server-gate check under test. Make `dir` a real project.
-    fs::create_dir_all(dir.join(".spelunk")).expect("create .spelunk");
+    fs::create_dir_all(dir.join(".inkentry")).expect("create .inkentry");
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");
     let content = format!(
@@ -75,7 +75,7 @@ fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
 fn harvest_check_passes_when_server_url_is_set() {
     let temp = tempdir().unwrap();
     // `Config::load` only honors `server_url`/`project_id` from project-level
-    // `.spelunk/config.toml` (or env), never the global `--config` file, so
+    // `.inkentry/config.toml` (or env), never the global `--config` file, so
     // they're written separately from `write_harvest_config`'s `extra`.
     //
     // `mode = "cloud_first"` is required since the 2026-07-23 ADR-004

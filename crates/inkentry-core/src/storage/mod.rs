@@ -207,7 +207,7 @@ async fn open_remote_memory_backend_with_bearer(
         anyhow::anyhow!(
             "server_url is set ({url}) but project_id is missing.\n\
              Set `project_id` in your spelunk config (e.g. ~/.config/spelunk/config.toml \
-             or .spelunk/config.toml), or set the SPELUNK_PROJECT_ID environment variable, \
+             or .inkentry/config.toml), or set the SPELUNK_PROJECT_ID environment variable, \
              so memory operations can be keyed to a project on the server."
         )
     })?;

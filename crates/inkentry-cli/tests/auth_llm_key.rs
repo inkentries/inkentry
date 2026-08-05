@@ -15,7 +15,7 @@ use tempfile::TempDir;
 // command that prints key material back out.
 fn stored_secret(home: &std::path::Path, key: &str) -> Option<String> {
     use inkentry_core::config::secret_store::{FileStore, SecretStore};
-    let path = home.join(".config").join("spelunk").join("secrets.toml");
+    let path = home.join(".config").join("inkentry").join("secrets.toml");
     FileStore::new(path).get(key).unwrap()
 }
 
@@ -153,7 +153,7 @@ fn set_key_llm_writes_nothing_into_the_config_file() {
     let config = home
         .path()
         .join(".config")
-        .join("spelunk")
+        .join("inkentry")
         .join("config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();

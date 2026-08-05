@@ -104,7 +104,7 @@ fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
     Some(format!(
         "No chunks found for '{path}': the built-in index filter skipped it because {reason}, \
          so it was never indexed.\n\
-         To index it anyway, add a re-include to [index] in .spelunk/config.toml:\n\
+         To index it anyway, add a re-include to [index] in .inkentry/config.toml:\n\
          \n  [index]\n  exclude = {recipe}\n"
     ))
 }
