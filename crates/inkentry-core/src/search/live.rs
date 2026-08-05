@@ -1,9 +1,9 @@
 //! In-process structural ("ast-grep") fallback search.
 //!
-//! This is the zero-infrastructure fallback used by `spelunk search` /
-//! `spelunk graph` when no index (or embedder) is available. It replaces the
+//! This is the zero-infrastructure fallback used by `inkentry search` /
+//! `inkentry graph` when no index (or embedder) is available. It replaces the
 //! previous `Command::new("ast-grep")` subprocess — structural matching now
-//! runs inside the `spelunk` binary via `ast-grep-core`, so it works with no
+//! runs inside the `inkentry` binary via `ast-grep-core`, so it works with no
 //! external tool installed.
 //!
 //! Grammars are sourced from `ast-grep-language` (the same crate the indexer
@@ -24,7 +24,7 @@ use std::str::FromStr;
 pub struct LiveMatch {
     /// Path to the file containing the match (as walked, relative to `root`'s cwd).
     pub file_path: String,
-    /// spelunk language name (e.g. "rust", "python").
+    /// inkentry language name (e.g. "rust", "python").
     pub language: String,
     /// 1-indexed start line of the matched node.
     pub start_line: usize,
@@ -34,13 +34,13 @@ pub struct LiveMatch {
     pub text: String,
 }
 
-/// Map a spelunk language name to an `ast-grep-language` `SupportLang`.
+/// Map a inkentry language name to an `ast-grep-language` `SupportLang`.
 ///
 /// Returns `None` for languages ast-grep-language does not ship (`proto`, `sql`)
 /// or non-tree-sitter formats (`markdown`, `text`, …) — those are simply not
 /// scanned by the structural fallback.
-fn support_lang(spelunk_lang: &str) -> Option<SupportLang> {
-    let name = match spelunk_lang {
+fn support_lang(inkentry_lang: &str) -> Option<SupportLang> {
+    let name = match inkentry_lang {
         "javascript" | "jsx" => "javascript",
         "typescript" => "typescript",
         "tsx" => "tsx",
@@ -51,12 +51,12 @@ fn support_lang(spelunk_lang: &str) -> Option<SupportLang> {
 }
 
 /// Detect an ast-grep `SupportLang` for a file by extension, limited to the
-/// languages spelunk's indexer recognises (so fallback coverage matches the
+/// languages inkentry's indexer recognises (so fallback coverage matches the
 /// indexer's language set plus the extra ast-grep-only grammars are reachable
 /// through the same extension map).
 fn detect_support_lang(path: &Path) -> Option<SupportLang> {
-    let spelunk_lang = crate::indexer::parser::detect_language(path)?;
-    support_lang(spelunk_lang)
+    let inkentry_lang = crate::indexer::parser::detect_language(path)?;
+    support_lang(inkentry_lang)
 }
 
 /// A query is a structural ast-grep pattern when it contains a metavariable
@@ -111,7 +111,7 @@ fn search_live_substring(query: &str, root: &Path, limit: usize) -> Vec<LiveMatc
 
         // Pass 1 — substring of identifier/text nodes (named leaves) via ast-grep.
         if let Some(lang) = detect_support_lang(path) {
-            let spelunk_lang = crate::indexer::parser::detect_language(path).unwrap_or("unknown");
+            let inkentry_lang = crate::indexer::parser::detect_language(path).unwrap_or("unknown");
             let ast: AstGrep<_> = lang.ast_grep(&src);
             for node in ast.root().dfs() {
                 if out.len() >= limit {
@@ -128,7 +128,7 @@ fn search_live_substring(query: &str, root: &Path, limit: usize) -> Vec<LiveMatc
                 }
                 out.push(LiveMatch {
                     file_path: file_path.clone(),
-                    language: spelunk_lang.to_string(),
+                    language: inkentry_lang.to_string(),
                     start_line: node.start_pos().line() + 1,
                     end_line: node.end_pos().line() + 1,
                     text: text.into_owned(),
@@ -140,7 +140,7 @@ fn search_live_substring(query: &str, root: &Path, limit: usize) -> Vec<LiveMatc
         // node pass matched nothing here. A literal line scan guarantees the
         // substring is never silently dropped.
         if out.len() == before {
-            let spelunk_lang = crate::indexer::parser::detect_language(path).unwrap_or("text");
+            let inkentry_lang = crate::indexer::parser::detect_language(path).unwrap_or("text");
             for (i, line) in src.lines().enumerate() {
                 if out.len() >= limit {
                     break;
@@ -148,7 +148,7 @@ fn search_live_substring(query: &str, root: &Path, limit: usize) -> Vec<LiveMatc
                 if line.to_lowercase().contains(&needle) {
                     out.push(LiveMatch {
                         file_path: file_path.clone(),
-                        language: spelunk_lang.to_string(),
+                        language: inkentry_lang.to_string(),
                         start_line: i + 1,
                         end_line: i + 1,
                         text: line.to_string(),
@@ -202,7 +202,7 @@ pub fn search_live_matches(pattern: &str, root: &Path, limit: usize) -> Vec<Live
         let Ok(src) = std::fs::read_to_string(path) else {
             continue;
         };
-        let spelunk_lang = crate::indexer::parser::detect_language(path).unwrap_or("unknown");
+        let inkentry_lang = crate::indexer::parser::detect_language(path).unwrap_or("unknown");
         let file_path = path.to_string_lossy().into_owned();
 
         let ast: AstGrep<_> = lang.ast_grep(&src);
@@ -215,7 +215,7 @@ pub fn search_live_matches(pattern: &str, root: &Path, limit: usize) -> Vec<Live
             let end = node.end_pos().line() + 1;
             out.push(LiveMatch {
                 file_path: file_path.clone(),
-                language: spelunk_lang.to_string(),
+                language: inkentry_lang.to_string(),
                 start_line: start,
                 end_line: end,
                 text: node.text().into_owned(),

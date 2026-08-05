@@ -26,17 +26,17 @@ pub use cmd::search::SearchArgs;
 pub use cmd::server::ServerArgs;
 pub use cmd::status::StatusArgs;
 
-/// spelunk — local code intelligence
+/// inkentry — local code intelligence
 #[derive(Parser, Debug)]
 #[command(
     author,
     version,
     about,
     long_about = None,
-    before_help = concat!("spelunk v", env!("CARGO_PKG_VERSION"))
+    before_help = concat!("inkentry v", env!("CARGO_PKG_VERSION"))
 )]
 pub struct Cli {
-    /// Path to config file (default: ~/.config/spelunk/config.toml)
+    /// Path to config file (default: ~/.config/inkentry/config.toml)
     #[arg(short, long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
@@ -51,7 +51,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Initialise spelunk for the current project
+    /// Initialise inkentry for the current project
     Init(InitArgs),
     /// Index a codebase directory
     Index(IndexArgs),
@@ -93,7 +93,7 @@ pub enum Command {
     Login(LoginArgs),
     /// Remove stored spelunk.cloud credentials (see `--servers`/`--server` for self-hosted keys)
     Logout(LogoutArgs),
-    /// Manage the active organization (e.g. `spelunk org switch <org>`)
+    /// Manage the active organization (e.g. `inkentry org switch <org>`)
     Org(OrgArgs),
     /// Manage per-server bearer credentials (`set-key`, `list-servers`)
     Auth(AuthArgs),

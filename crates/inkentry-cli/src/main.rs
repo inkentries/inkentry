@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
         )));
     }
 
-    // Logging: RUST_LOG=debug spelunk ...
+    // Logging: RUST_LOG=debug inkentry ...
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let cfg = match config::Config::load(cli.config.as_deref()) {
         Ok(c) => c,
         Err(e) if best_effort_publish => {
-            eprintln!("spelunk: {e:#}");
+            eprintln!("inkentry: {e:#}");
             config::Config::default()
         }
         Err(e) => return Err(e),

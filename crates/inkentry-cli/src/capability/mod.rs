@@ -1,15 +1,15 @@
-//! Capability tier detection for the spelunk CLI.
+//! Capability tier detection for the inkentry CLI.
 //!
 //! Tier 0 (Offline): no server_url configured, or server unreachable.
 //! Tier 1 (Server):  server_url set and GET /v1/health succeeds.
 //!
-//! ## Loopback auto-discovery (spelunk#316 / 0.8.0)
+//! ## Loopback auto-discovery (inkentry#316 / 0.8.0)
 //!
 //! When `cfg.server_url` is `None` **and** `INKENTRY_NO_SERVER` is not set, the probe
 //! attempts to reach a locally-running inkentry-server before falling through to
 //! `Tier::Offline`:
 //!
-//! 1. Read `~/.local/state/spelunk/server.port` (written by `spelunk server start`);
+//! 1. Read `~/.local/state/inkentry/server.port` (written by `inkentry server start`);
 //!    use `http://127.0.0.1:<port>` if the file exists.
 //! 2. Otherwise probe `http://127.0.0.1:7777` with a **250 ms** timeout (distinct from
 //!    the 2 s timeout used for explicitly-configured remote URLs).
@@ -47,7 +47,7 @@ pub use llm_message::{LlmFeature, NoLlmReason, no_llm_message};
 // through the methods on the value `resolve_llm_route` hands back.
 #[allow(unused_imports)]
 pub use llm_route::{LlmRoute, resolve_llm_route};
-pub(crate) use probe::spelunk_state_dir;
+pub(crate) use probe::inkentry_state_dir;
 pub use probe::{get_inference_tier, get_inference_tier_fresh, get_tier};
 // `Capabilities` is only reached from outside this module by other crates'
 // `#[cfg(test)]` code (`Capabilities::all()`), so a non-test build sees this

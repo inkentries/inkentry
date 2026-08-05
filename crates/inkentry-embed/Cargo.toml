@@ -2,7 +2,7 @@
 name = "inkentry-embed"
 version = "0.9.7"
 edition = "2024"
-description = "Native F2LLM-v2-330M embedder (candle) for spelunk"
+description = "Native F2LLM-v2-330M embedder (candle) for inkentry"
 license = "MIT"
 repository = "https://github.com/spelunk-cloud/spelunk"
 

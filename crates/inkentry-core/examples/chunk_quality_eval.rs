@@ -4,7 +4,7 @@
 //
 // Lives in inkentry-core, not inkentry-embed (where embed_bench lives): needs
 // the real chunker, and inkentry-core depends on inkentry-embed, not the
-// reverse. No spelunk CLI or inkentry-server/HTTP in the path; calls
+// reverse. No inkentry CLI or inkentry-server/HTTP in the path; calls
 // SourceParser and NativeEmbedder directly.
 //
 // Relevance is keyed on file + line-range overlap, not chunk id, since the

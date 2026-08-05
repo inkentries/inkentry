@@ -1,30 +1,30 @@
-//! `spelunk server` subcommand — manage a local inkentry-server daemon.
+//! `inkentry server` subcommand — manage a local inkentry-server daemon.
 //!
 //! ## Subcommands
 //!
-//! - `spelunk server start`  — daemonise inkentry-server; write PID/port/log files.
-//! - `spelunk server stop`   — terminate the running daemon (SIGTERM, then
+//! - `inkentry server start`  — daemonise inkentry-server; write PID/port/log files.
+//! - `inkentry server stop`   — terminate the running daemon (SIGTERM, then
 //!   SIGKILL if it won't exit) and verify it is gone.
-//! - `spelunk server status` — print PID, port, instance_id, and uptime.
-//! - `spelunk server logs`   — print the last N lines from the server log.
+//! - `inkentry server status` — print PID, port, instance_id, and uptime.
+//! - `inkentry server logs`   — print the last N lines from the server log.
 //!
 //! ## State directory
 //!
-//! All runtime state lives under `~/.local/state/spelunk/` (or
-//! `INKENTRY_STATE_DIR` when set; see `capability::spelunk_state_dir`, the
+//! All runtime state lives under `~/.local/state/inkentry/` (or
+//! `INKENTRY_STATE_DIR` when set; see `capability::inkentry_state_dir`, the
 //! single resolver every reader and writer of this directory shares):
 //! - `server.pid`  — PID of the running daemon process
 //! - `server.port`: TCP port the daemon is listening on (read by `capability/probe.rs`)
 //! - `server.log`  — stdout + stderr of the daemon process
 //!
 //! The port file is read by `capability/probe.rs` for loopback auto-discovery
-//! (spelunk#316).  The writer here **must** use the same path, enforced by
+//! (inkentry#316).  The writer here **must** use the same path, enforced by
 //! both going through the shared resolver rather than each defining their own.
 //!
 //! ## Spawned-binary resolution (PATH vs. sibling/absolute)
 //!
 //! `inkentry-server` is resolved preferring a path next to the running
-//! `spelunk` executable, falling back to a `$PATH` walk only if no sibling
+//! `inkentry` executable, falling back to a `$PATH` walk only if no sibling
 //! binary is found (see [`which_inkentry_server`]) — this avoids a
 //! PATH/CWD-hijack where a malicious `inkentry-server` earlier on `$PATH`
 //! (or in an untrusted repo's local tooling dir) gets executed instead of
@@ -38,7 +38,7 @@
 //! `git`, shell, and editor integrations normally work), and the user is
 //! trusted to control their own `$PATH`. This is a deliberate scope
 //! decision, not an oversight — `inkentry-server` is different because it is
-//! a first-party binary spelunk itself ships and auto-spawns without the
+//! a first-party binary inkentry itself ships and auto-spawns without the
 //! user typing a command, so a bundled/co-located binary is both available
 //! and the more trustworthy choice by default.
 
@@ -51,7 +51,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use inkentry_core::config::Config;
 
-use crate::capability::spelunk_state_dir;
+use crate::capability::inkentry_state_dir;
 
 // ── State dir helpers ─────────────────────────────────────────────────────────
 
@@ -322,7 +322,7 @@ async fn terminate_and_wait(pid: u32) -> Result<bool> {
 }
 
 /// Held for the duration of a `start` sequence so two concurrent
-/// `spelunk server start` invocations can't both spawn a daemon against the
+/// `inkentry server start` invocations can't both spawn a daemon against the
 /// same state dir / DB. The lock is advisory (`flock`, Unix) and releases when
 /// the guard drops (the CLI process exits or `start` returns).
 #[cfg(unix)]
@@ -354,8 +354,8 @@ fn acquire_start_lock(state_dir: &Path) -> Result<StartLock> {
     let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
     if rc != 0 {
         anyhow::bail!(
-            "another `spelunk server start` is already in progress for this machine. \
-             Wait for it to finish, or check `spelunk server status`."
+            "another `inkentry server start` is already in progress for this machine. \
+             Wait for it to finish, or check `inkentry server status`."
         );
     }
     Ok(StartLock { _file: file })
@@ -400,7 +400,7 @@ pub struct ServerStartArgs {
     #[arg(long)]
     pub bin: Option<PathBuf>,
 
-    /// Path to the server SQLite database (default: ~/.local/state/spelunk/server.db)
+    /// Path to the server SQLite database (default: ~/.local/state/inkentry/server.db)
     #[arg(long)]
     pub db: Option<PathBuf>,
 
@@ -436,7 +436,7 @@ pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
 // ── Public bootstrap API ──────────────────────────────────────────────────────
 
 /// Probe for an already-running local inkentry-server daemon (the one
-/// `spelunk server start`/[`ensure_server_running`] manages), without
+/// `inkentry server start`/[`ensure_server_running`] manages), without
 /// starting one. Returns its port if `/v1/health` responds.
 ///
 /// This is the non-starting half of ADR-037 P2's D6 auto-start gate: a
@@ -444,7 +444,7 @@ pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
 /// (when interactive) after first calling [`ensure_server_running`] itself —
 /// this function never spawns anything on its own.
 pub(crate) async fn probe_local_relay_port() -> Option<u16> {
-    let state_dir = spelunk_state_dir().ok()?;
+    let state_dir = inkentry_state_dir().ok()?;
     let port = read_port(&state_dir)?;
     probe_health(port).await?;
     Some(port)
@@ -455,9 +455,9 @@ pub(crate) async fn probe_local_relay_port() -> Option<u16> {
 /// Returns `(port, freshly_started)`. Idempotent: if the server is already
 /// healthy, returns immediately with `freshly_started = false`.
 ///
-/// Called by `spelunk init` to auto-spawn the server when running interactively.
+/// Called by `inkentry init` to auto-spawn the server when running interactively.
 pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16, bool)> {
-    let state_dir = spelunk_state_dir()?;
+    let state_dir = inkentry_state_dir()?;
     create_state_dir(&state_dir)?;
 
     // Serialise against a concurrent `server start` so we don't race two
@@ -515,7 +515,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
             tracing::warn!(
                 "inkentry-server (pid={pid}) exited immediately ({status}) instead of serving \
                  port {port}. It rejected its own startup configuration; the reason is the \
-                 last line of `spelunk server logs`."
+                 last line of `inkentry server logs`."
             );
         }
         StartOutcome::TimedOut => {
@@ -525,7 +525,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
             tracing::warn!(
                 "inkentry-server started (pid={pid}) but /v1/health did not respond within 30 s. \
                  A firewall may be blocking the local server (allow it, e.g. accept the Windows \
-                 Defender Firewall prompt). Check `spelunk server logs`."
+                 Defender Firewall prompt). Check `inkentry server logs`."
             );
         }
     }
@@ -536,7 +536,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
 // ── start ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
-    let state_dir = spelunk_state_dir()?;
+    let state_dir = inkentry_state_dir()?;
     create_state_dir(&state_dir)?;
 
     // Single-instance guard: block a concurrent `server start` from racing us
@@ -566,7 +566,7 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
                     {
                         anyhow::bail!(
                             "a inkentry-server is already running (pid={pid}, port={port}) against \
-                             {}. Stop it first with `spelunk server stop` before starting one \
+                             {}. Stop it first with `inkentry server stop` before starting one \
                              against {}.",
                             running_db.display(),
                             db.display()
@@ -675,7 +675,7 @@ fn which_inkentry_server() -> Result<PathBuf> {
     #[cfg(not(windows))]
     let bin_name = "inkentry-server";
 
-    // 1. Same directory as the running `spelunk` binary.
+    // 1. Same directory as the running `inkentry` binary.
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe
             .parent()
@@ -693,7 +693,7 @@ fn which_inkentry_server() -> Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "inkentry-server binary not found. \
-                 Install it alongside `spelunk` or pass --bin <path>."
+                 Install it alongside `inkentry` or pass --bin <path>."
             )
         })
 }
@@ -900,7 +900,7 @@ async fn probe_health(port: u16) -> Option<String> {
 // ── stop ──────────────────────────────────────────────────────────────────────
 
 async fn cmd_stop() -> Result<()> {
-    let state_dir = spelunk_state_dir()?;
+    let state_dir = inkentry_state_dir()?;
     let pid = read_pid(&state_dir)
         .ok_or_else(|| anyhow::anyhow!("no server.pid found — is inkentry-server running?"))?;
 
@@ -940,7 +940,7 @@ async fn cmd_stop() -> Result<()> {
     } else {
         anyhow::bail!(
             "inkentry-server (pid={pid}) is still running after SIGTERM and SIGKILL. State files \
-             left in place; retry `spelunk server stop` or kill the process manually."
+             left in place; retry `inkentry server stop` or kill the process manually."
         );
     }
 }
@@ -981,7 +981,7 @@ fn cleanup_state_files(state_dir: &Path) {
 // ── status ────────────────────────────────────────────────────────────────────
 
 async fn cmd_status() -> Result<()> {
-    let state_dir = spelunk_state_dir()?;
+    let state_dir = inkentry_state_dir()?;
     let pid = read_pid(&state_dir);
     let port = read_port(&state_dir);
 
@@ -1014,11 +1014,11 @@ async fn cmd_status() -> Result<()> {
         }
         (Some(pid), _) => {
             cprintln!("inkentry-server  \x1b[31mstopped\x1b[0m (stale pid={pid})");
-            println!("  Run `spelunk server start` to start.");
+            println!("  Run `inkentry server start` to start.");
         }
         (None, _) => {
             cprintln!("inkentry-server  \x1b[31mnot started\x1b[0m");
-            println!("  Run `spelunk server start` to start.");
+            println!("  Run `inkentry server start` to start.");
         }
     }
     Ok(())
@@ -1054,12 +1054,12 @@ async fn probe_health_verbose(port: u16) -> Option<HealthInfo> {
 // ── logs ──────────────────────────────────────────────────────────────────────
 
 fn cmd_logs(args: ServerLogsArgs) -> Result<()> {
-    let state_dir = spelunk_state_dir()?;
+    let state_dir = inkentry_state_dir()?;
     let log = log_path(&state_dir);
 
     if !log.exists() {
         anyhow::bail!(
-            "No log file at {}. Start the server first with `spelunk server start`.",
+            "No log file at {}. Start the server first with `inkentry server start`.",
             log.display()
         );
     }
@@ -1084,15 +1084,15 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    // ── spelunk_state_dir ────────────────────────────────────────────────────
+    // ── inkentry_state_dir ────────────────────────────────────────────────────
 
     #[test]
     #[serial(server_state_dir_env)]
-    fn state_dir_contains_spelunk() {
-        let dir = spelunk_state_dir().expect("state dir");
+    fn state_dir_contains_inkentry() {
+        let dir = inkentry_state_dir().expect("state dir");
         assert!(
-            dir.to_string_lossy().contains("spelunk"),
-            "state dir should contain 'spelunk', got {dir:?}"
+            dir.to_string_lossy().contains("inkentry"),
+            "state dir should contain 'inkentry', got {dir:?}"
         );
     }
 

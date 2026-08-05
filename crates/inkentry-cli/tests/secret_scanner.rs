@@ -10,7 +10,7 @@
 //!   case-preserving filesystem (macOS/Windows).
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_project_dir, spelunk_cmd};
+use plumbing_helpers::{index_project_dir, inkentry_cmd};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -43,7 +43,7 @@ fn docstring_secret_drops_whole_chunk() {
     let (_tmp_idx, db_path, config_path) = index_project_dir(tmp.path());
 
     // The chunk store must not contain the dropped chunk at all.
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
         .assert()
@@ -116,7 +116,7 @@ fn sse_token_response(content: &str) -> String {
     )
 }
 
-/// Exercise the *real* `generate_summaries` wiring end-to-end: run `spelunk
+/// Exercise the *real* `generate_summaries` wiring end-to-end: run `inkentry
 /// index` against a fixture project with `server_url` configured (so
 /// summaries are generated, matching `index_fixture_project`'s mock-server
 /// convention from `plumbing_helpers.rs`/`e2e_cli.rs`/`embed.rs`), but with the
@@ -143,7 +143,7 @@ fn summary_secret_is_not_persisted() {
     .unwrap();
 
     let db_tmp = TempDir::new().expect("create temp db dir");
-    let db_path = db_tmp.path().join("spelunk.db");
+    let db_path = db_tmp.path().join("inkentry.db");
 
     let secret_summary = format!("Uses aws_secret_access_key = \"{FAKE_AWS_SECRET}\" internally");
 
@@ -203,7 +203,7 @@ fn summary_secret_is_not_persisted() {
         tmp.path(),
     );
 
-    // Run the real `spelunk index` (no `--no-summaries`), same as production:
+    // Run the real `inkentry index` (no `--no-summaries`), same as production:
     // parse → embed → summary generation, all through `generate_summaries`.
     //
     // `INKENTRY_MODE=cloud_first`: `generate_summaries` calls
@@ -211,7 +211,7 @@ fn summary_secret_is_not_persisted() {
     // with no loopback auto-discovery bridging (2026-07-23 ADR-004 revision),
     // so under the default `local_first` mode a bare
     // `server_url` no longer resolves to any inference target.
-    plumbing_helpers::spelunk_bin_in(tmp.path())
+    plumbing_helpers::inkentry_bin_in(tmp.path())
         .current_dir(tmp.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
@@ -285,7 +285,7 @@ fn case_variant_sensitive_filenames_are_excluded() {
 
     let (_tmp_idx, db_path, config_path) = index_project_dir(tmp.path());
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
         .success()
@@ -327,7 +327,7 @@ fn lowercase_sensitive_filenames_still_excluded() {
 
     let (_tmp_idx, db_path, config_path) = index_project_dir(tmp.path());
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
         .success()

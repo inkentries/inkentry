@@ -1,6 +1,6 @@
 /// Cross-project memory dep pass — ADR-003.
 ///
-/// For `spelunk memory search/list` and `spelunk context`, after querying the
+/// For `inkentry memory search/list` and `inkentry context`, after querying the
 /// local backend, this module walks the registry dependency graph and surfaces
 /// `locked` or `cross-project`-tagged decisions and requirements from each
 /// linked project's `memory.db`.

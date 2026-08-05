@@ -1,4 +1,4 @@
-// End-to-end routing for `spelunk index`'s LLM summary pass.
+// End-to-end routing for `inkentry index`'s LLM summary pass.
 //
 // The reported symptom: an index with `server_url` set skipped every summary.
 // Two separate gates caused it, and a loopback-only project (no `server_url`
@@ -11,7 +11,7 @@
 // so a routing regression shows up as a request landing on the wrong mock.
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_index_embed, spelunk_bin_in, sse_token_response};
+use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_index_embed, inkentry_bin_in, sse_token_response};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -37,10 +37,10 @@ fn write_project(dir: &Path) {
 }
 
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
+    let inkentry_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     std::fs::write(
-        spelunk_dir.join("config.toml"),
+        inkentry_dir.join("config.toml"),
         format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n"),
     )
     .expect("write project config");
@@ -104,11 +104,11 @@ async fn full_server(llm: bool, summary: &str) -> MockServer {
     server
 }
 
-// `spelunk index .`, scrubbed of every ambient `INKENTRY_*` these tests
+// `inkentry index .`, scrubbed of every ambient `INKENTRY_*` these tests
 // isolate: a value in the developer's shell must never change which server
 // gets probed.
 fn index_cmd(home: &Path, project: &Path, db: &Path) -> assert_cmd::Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_MODE")
@@ -337,7 +337,7 @@ async fn configured_local_llm_not_served_skips_and_never_reaches_the_remote() {
         "no summary can exist when no LLM ran:\n{combined}"
     );
     assert!(
-        combined.contains("spelunk server stop") && combined.contains("spelunk server start"),
+        combined.contains("inkentry server stop") && combined.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{combined}"
     );
     assert!(

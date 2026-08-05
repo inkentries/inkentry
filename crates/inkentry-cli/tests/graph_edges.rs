@@ -1,4 +1,4 @@
-// Component tests for `spelunk plumbing graph-edges`.
+// Component tests for `inkentry plumbing graph-edges`.
 //
 // Paths here are the paths the index stores, which are relative to the indexed
 // project root (`src/main.rs`), not to the fixture directory
@@ -7,7 +7,7 @@
 // its assertions at all.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use predicates::prelude::*;
 use serde_json::Value;
@@ -34,7 +34,7 @@ fn assert_edge_fields(rows: &[Value]) {
 fn graph_edges_file_filter_emits_the_files_call_edges() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let result = spelunk_cmd(&db_path, &config_path)
+    let result = inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--file")
         .arg("src/utils.rs")
@@ -63,7 +63,7 @@ fn graph_edges_file_filter_emits_the_files_call_edges() {
 fn graph_edges_main_file_emits_both_call_and_import_edges() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let result = spelunk_cmd(&db_path, &config_path)
+    let result = inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--file")
         .arg("src/main.rs")
@@ -100,7 +100,7 @@ fn graph_edges_main_file_emits_both_call_and_import_edges() {
 fn graph_edges_symbol_filter_finds_edges_across_files() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let result = spelunk_cmd(&db_path, &config_path)
+    let result = inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--symbol")
         .arg("greet")
@@ -135,7 +135,7 @@ fn graph_edges_exits_1_for_a_path_the_index_does_not_store() {
     // Stored paths are relative to the indexed root, so a fixture-relative path
     // matches nothing. Pinned because tolerating this exit silently is what
     // made the earlier file-filter tests unfalsifiable.
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--file")
         .arg("simple-project/src/main.rs")
@@ -150,7 +150,7 @@ fn graph_edges_exits_1_for_a_path_the_index_does_not_store() {
 fn graph_edges_exits_1_for_nonexistent_symbol() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--symbol")
         .arg("symbol_that_does_not_exist_xyz")
@@ -164,7 +164,7 @@ fn graph_edges_exits_1_for_nonexistent_symbol() {
 fn graph_edges_exits_nonzero_when_no_flags_given() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .assert()
         .failure()
@@ -187,7 +187,7 @@ fn graph_edges_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

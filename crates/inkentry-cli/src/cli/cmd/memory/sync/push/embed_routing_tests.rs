@@ -135,7 +135,7 @@ async fn a_push_speaks_only_to_loopback_and_the_configured_team_server() {
 // `mode = "offline"` is the deterministic form of "no local embedder is
 // reachable": `get_inference_tier` short-circuits before any probe, so the
 // repair resolves no client at all, exactly as it would on a machine with no
-// `spelunk server` running.
+// `inkentry server` running.
 fn no_embedder_cfg(server_url: String) -> Config {
     Config {
         server_url: Some(server_url),
@@ -479,7 +479,7 @@ fn the_unembedded_warning_names_the_count_and_the_remedy() {
     let msg = unembedded_warning(3);
     assert!(msg.contains('3'), "must name the count: {msg}");
     assert!(
-        msg.contains("spelunk memory reindex"),
+        msg.contains("inkentry memory reindex"),
         "must name the remedy: {msg}"
     );
     assert!(

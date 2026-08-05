@@ -1,6 +1,6 @@
 //! Convention extraction: heuristic AST pass over indexed chunks.
 //!
-//! Reads stored chunks from spelunk.db, dispatches to per-language rule sets,
+//! Reads stored chunks from inkentry.db, dispatches to per-language rule sets,
 //! and writes `ConventionRecord`s to the `conventions` table.
 //!
 //! No LLM, no network calls — pure heuristics.

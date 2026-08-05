@@ -426,9 +426,9 @@ pub fn default_conflict_threshold() -> f32 {
     info(
         title = "inkentry-server",
         version = "0.1.0",
-        description = "Shared memory server for spelunk. Stores decisions, requirements, \
+        description = "Shared memory server for inkentry. Stores decisions, requirements, \
                         and context for a team and serves them over HTTP.",
-        contact(name = "spelunk", url = "https://github.com/spelunk-cloud/spelunk"),
+        contact(name = "inkentry", url = "https://github.com/spelunk-cloud/spelunk"),
         license(name = "MIT"),
     ),
     paths(
@@ -768,10 +768,10 @@ mod app_error_tests {
     /// message (baseline, no leak).
     #[tokio::test]
     async fn plain_internal_error_returns_generic_message() {
-        let err = anyhow::anyhow!("disk I/O error at /var/lib/spelunk/server.db");
+        let err = anyhow::anyhow!("disk I/O error at /var/lib/inkentry/server.db");
         let (status, body) = body_string(AppError::Internal(err).into_response()).await;
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(!body.contains("/var/lib/spelunk"));
+        assert!(!body.contains("/var/lib/inkentry"));
     }
 }
 

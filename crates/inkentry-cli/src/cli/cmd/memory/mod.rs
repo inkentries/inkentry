@@ -236,7 +236,7 @@ pub struct MemoryHarvestArgs {
     #[arg(long)]
     pub confirm: bool,
 
-    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Detach immediately: re-exec inkentry in the background and return.
     /// Useful in git hooks so the hook does not block the git process.
     #[arg(long, default_value_t = false)]
     pub detach: bool,
@@ -278,7 +278,7 @@ pub struct MemorySyncArgs {
 
 #[derive(Args, Debug)]
 pub struct MemoryArchiveArgs {
-    /// ID of the entry to archive (from `spelunk memory list`)
+    /// ID of the entry to archive (from `inkentry memory list`)
     pub id: NoteId,
 }
 
@@ -345,7 +345,7 @@ pub struct MemoryFailuresArgs {
 
 #[derive(Args, Debug)]
 pub struct MemoryReconcileArgs {
-    /// Path to the source server.db (default: ~/.local/state/spelunk/server.db).
+    /// Path to the source server.db (default: ~/.local/state/inkentry/server.db).
     /// Named --source-db to avoid conflicting with the global --db (memory.db path).
     #[arg(long = "source-db")]
     pub source_db: Option<std::path::PathBuf>,
@@ -469,8 +469,8 @@ fn maybe_emit_reembed_notice(
         && let Some(n) = store.reembed_needed
     {
         eprintln!(
-            "[spelunk] {n} note(s) need re-embedding for semantic search; \
-             run 'spelunk memory reindex'."
+            "[inkentry] {n} note(s) need re-embedding for semantic search; \
+             run 'inkentry memory reindex'."
         );
     }
 }
@@ -535,8 +535,8 @@ async fn resolve_memory_store(
         ));
     }
     anyhow::bail!(
-        "no spelunk project here, and not inside a git repo. \
-         Run 'spelunk init' first, or run inside a git repository."
+        "no inkentry project here, and not inside a git repo. \
+         Run 'inkentry init' first, or run inside a git repository."
     )
 }
 
@@ -612,7 +612,7 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         }
     } else {
         cprintln!(
-            "     \x1b[2m(use `spelunk memory show {}` to read body)\x1b[0m",
+            "     \x1b[2m(use `inkentry memory show {}` to read body)\x1b[0m",
             n.id
         );
     }
@@ -625,7 +625,7 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
 /// spawning an editor.
 fn create_draft_file(title: &str) -> Result<tempfile::NamedTempFile> {
     let mut builder = tempfile::Builder::new();
-    builder.prefix("spelunk_memory_").suffix(".md");
+    builder.prefix("inkentry_memory_").suffix(".md");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -706,8 +706,8 @@ pub(super) use crate::utils::dates::parse_as_of;
 /// Pass as `.map_err(backend_err)?` at each call site that invokes an
 /// unsupported method on a limited backend.
 pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
-    if e.downcast_ref::<crate::error::SpelunkError>()
-        .is_some_and(|s| matches!(s, crate::error::SpelunkError::BackendUnsupported(_)))
+    if e.downcast_ref::<crate::error::InkentryError>()
+        .is_some_and(|s| matches!(s, crate::error::InkentryError::BackendUnsupported(_)))
     {
         anyhow::anyhow!(
             "This operation requires the sqlite backend. \

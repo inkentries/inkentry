@@ -124,7 +124,7 @@ pub(super) fn escape_like(s: &str) -> String {
 ///    [`SyncMode::Offline`] (provable no-cloud, even when `server_url` is set;
 ///    the `INKENTRY_NO_SERVER=1` kill-switch resolves here) and the default
 ///    [`SyncMode::LocalFirst`], where reads and writes stay local and the cloud
-///    replica is converged explicitly by `spelunk sync`.
+///    replica is converged explicitly by `inkentry sync`.
 ///
 /// This function keys on the resolved mode plus `cfg.server_url`. An
 /// auto-discovered loopback server is inference-only and routes through
@@ -206,7 +206,7 @@ async fn open_remote_memory_backend_with_bearer(
     let project_id = cfg.project_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "server_url is set ({url}) but project_id is missing.\n\
-             Set `project_id` in your spelunk config (e.g. ~/.config/spelunk/config.toml \
+             Set `project_id` in your inkentry config (e.g. ~/.config/inkentry/config.toml \
              or .inkentry/config.toml), or set the INKENTRY_PROJECT_ID environment variable, \
              so memory operations can be keyed to a project on the server."
         )

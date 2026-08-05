@@ -141,7 +141,7 @@ impl IndexFilter {
     /// This is the hot-loop entry: during the walk, excluded ancestor
     /// directories are already pruned by [`IndexFilter::prune_dir`], so a plain
     /// per-path match is both correct and cheap. Use [`IndexFilter::classify`]
-    /// when the caller has no walk hierarchy (e.g. `spelunk chunks <path>`).
+    /// when the caller has no walk hierarchy (e.g. `inkentry chunks <path>`).
     pub fn decide(&self, rel_path: &Path, is_dir: bool) -> Decision {
         Self::from_match(self.gi.matched(rel_path, is_dir))
     }
@@ -149,7 +149,7 @@ impl IndexFilter {
     /// Classify a project-relative path, also matching against any excluded
     /// parent directory (e.g. a file under `node_modules/`). More expensive than
     /// [`IndexFilter::decide`]; use it when there is no walk to prune ancestors,
-    /// such as explaining why `spelunk chunks <path>` found nothing.
+    /// such as explaining why `inkentry chunks <path>` found nothing.
     pub fn classify(&self, rel_path: &Path, is_dir: bool) -> Decision {
         Self::from_match(self.gi.matched_path_or_any_parents(rel_path, is_dir))
     }

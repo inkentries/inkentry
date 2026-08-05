@@ -1,9 +1,9 @@
-// Regression tests for `spelunk index`'s primary embed phase local-vs-remote
+// Regression tests for `inkentry index`'s primary embed phase local-vs-remote
 // tier routing: the foreground embed phase (`index/mod.rs`'s phase 2) and
 // the `--detach-embed` worker it can hand off to.
 //
 // Mirrors the loopback-vs-explicit-`server_url` routing bug already fixed
-// for `spelunk explore` / `memory add` / `memory reindex` et al: under the
+// for `inkentry explore` / `memory add` / `memory reindex` et al: under the
 // default `local_first` mode, inference must always prefer the local
 // loopback embedder, even when an explicit (here, deliberately unroutable)
 // `server_url` is configured. `cloud_first` is the one mode where an
@@ -16,7 +16,7 @@
 // `server_url` rather than a silently-passing test.
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_health, mount_index_embed, spelunk_bin_in};
+use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_health, mount_index_embed, inkentry_bin_in};
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -54,10 +54,10 @@ fn write_project(dir: &Path) {
 // key (notably `mode`) is silently dropped by serde. `mode` must go through
 // `INKENTRY_MODE` (or the personal global `--config` file) instead.
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
+    let inkentry_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     let cfg = format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n");
-    std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
+    std::fs::write(inkentry_dir.join("config.toml"), cfg).expect("write project config");
 }
 
 // Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, step 3a
@@ -89,13 +89,13 @@ async fn mount_health_loading(server: &MockServer) {
         .await;
 }
 
-// Build a `spelunk index --db <db> .` command against `project`, defensively
+// Build a `inkentry index --db <db> .` command against `project`, defensively
 // scrubbed of every `INKENTRY_*` env var these tests care about isolating
 // (an ambient value in the developer/CI shell must never leak into the
 // child and quietly change which tier gets probed). Callers add back
 // exactly the env each scenario needs.
 fn index_cmd(home: &Path, project: &Path, db: &Path) -> assert_cmd::Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_MODE")
@@ -279,7 +279,7 @@ async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
 
     assert!(
-        stderr.contains("spelunk server start"),
+        stderr.contains("inkentry server start"),
         "explicit offline must still print the no-server skip notice: {stderr}"
     );
     assert_eq!(

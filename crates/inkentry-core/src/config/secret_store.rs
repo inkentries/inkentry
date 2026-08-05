@@ -1,7 +1,7 @@
 //! Credential-format-agnostic secret storage for the CLI.
 //!
 //! The CLI's bearer credential used to live as plaintext in
-//! `~/.config/spelunk/config.toml` (`server_key = "sk-sp-…"`). Any process
+//! `~/.config/inkentry/config.toml` (`server_key = "sk-sp-…"`). Any process
 //! running as the user could read it, and the common real-world leak is users
 //! syncing `~/.config` into a dotfiles git repo or a backup. This module moves
 //! the secret into the OS secret store:
@@ -44,9 +44,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// The keyring "service" name under which all spelunk secrets are grouped.
+/// The keyring "service" name under which all inkentry secrets are grouped.
 ///
-/// Shared by every entry so a user can find/audit spelunk credentials in their
+/// Shared by every entry so a user can find/audit inkentry credentials in their
 /// OS keychain UI under a single service.
 pub const KEYRING_SERVICE: &str = "inkentry";
 
@@ -116,7 +116,7 @@ fn read_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 pub struct KeyringStore;
 
 impl KeyringStore {
-    /// Build a keyring entry for `key` under the shared spelunk service.
+    /// Build a keyring entry for `key` under the shared inkentry service.
     fn entry(key: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(KEYRING_SERVICE, key)
             .with_context(|| format!("opening keychain entry for {KEYRING_SERVICE}/{key}"))
@@ -321,7 +321,7 @@ impl SecretStore for MemoryStore {
 ///   file store when no keychain backend is present (logging at `info`).
 ///
 /// `config_dir` is where the file-store fallback writes `secrets.toml`
-/// (typically `~/.config/spelunk`).
+/// (typically `~/.config/inkentry`).
 pub fn default_store(config_dir: &Path) -> Result<Box<dyn SecretStore>> {
     let file_path = config_dir.join("secrets.toml");
     match std::env::var(ENV_SECRET_STORE).ok().as_deref() {
@@ -462,7 +462,7 @@ mod tests {
     // ── default_store backend selection ──────────────────────────────────────
 
     #[test]
-    #[serial_test::serial(spelunk_secret_store_env)]
+    #[serial_test::serial(inkentry_secret_store_env)]
     fn default_store_file_forced_via_env() {
         let tmp = TempDir::new().unwrap();
         unsafe { std::env::set_var(ENV_SECRET_STORE, "file") };
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(spelunk_secret_store_env)]
+    #[serial_test::serial(inkentry_secret_store_env)]
     fn default_store_keychain_forced_errors_when_unavailable() {
         // We can't guarantee a keychain in CI, so this only asserts the error
         // path when the keychain is genuinely unavailable. When a keychain IS
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(spelunk_secret_store_env)]
+    #[serial_test::serial(inkentry_secret_store_env)]
     fn default_store_auto_resolves_to_a_backend() {
         // Auto mode must always yield *some* backend (never hard-fail), whether
         // a keychain is present (→ keychain) or not (→ file fallback).
@@ -520,7 +520,7 @@ mod tests {
     // invariant the fix relies on to bound keychain reads to at most one per
     // process per key.
     #[test]
-    #[serial_test::serial(spelunk_keyring_read_cache)]
+    #[serial_test::serial(inkentry_keyring_read_cache)]
     fn read_cache_serves_a_cached_key_without_a_second_fetch() {
         let key = "test_only_read_cache_probe_key";
         // Isolate from any other run's leftovers (the map is process-global).
@@ -568,7 +568,7 @@ mod tests {
     /// repeated lookup for a key that does not exist also avoids a second
     /// fetch — not just the `Some` case.
     #[test]
-    #[serial_test::serial(spelunk_keyring_read_cache)]
+    #[serial_test::serial(inkentry_keyring_read_cache)]
     fn read_cache_caches_a_negative_result_too() {
         let key = "test_only_read_cache_probe_key_absent";
         read_cache().lock().unwrap().remove(key);

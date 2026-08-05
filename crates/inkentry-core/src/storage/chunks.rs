@@ -79,7 +79,7 @@ impl Database {
             usize,
         )>,
     > {
-        // Ordering is data-driven, no cold/warm branching (see spelunk-oss
+        // Ordering is data-driven, no cold/warm branching (see inkentry-oss
         // onboarding embed-queue work):
         //   - graph_rank DESC leads. On a cold first index every chunk's rank is
         //     the 0.0 default (rank is written in phase 3, after embed), so this

@@ -1,10 +1,10 @@
-// `spelunk logout` credential-store scoping: each of the three forms must
+// `inkentry logout` credential-store scoping: each of the three forms must
 // touch exactly one credential store and leave the other intact.
 //
 // The cloud token pair lives in the `[auth]` table of
-// `~/.config/spelunk/config.toml`; per-origin self-hosted server keys live in
+// `~/.config/inkentry/config.toml`; per-origin self-hosted server keys live in
 // the secret store (here the file store, pinned via `INKENTRY_SECRET_STORE=file`
-// by `spelunk_bin_in`). These tests seed BOTH stores, run one `logout` form,
+// by `inkentry_bin_in`). These tests seed BOTH stores, run one `logout` form,
 // and assert which store changed and which survived — the assertion the older
 // server-key-only logout tests never made, which let `--server`/`--servers`
 // silently wipe the cloud pair.
@@ -14,15 +14,15 @@
 // the OS keychain.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// Pipe `key` to `spelunk auth set-key --server <server>` over stdin (the only
+// Pipe `key` to `inkentry auth set-key --server <server>` over stdin (the only
 // supported way to set a per-origin key). Writes the secret store, not config.toml.
 fn set_key(home: &std::path::Path, server: &str, key: &str) {
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .arg("auth")
         .arg("set-key")
         .arg("--server")
@@ -33,8 +33,8 @@ fn set_key(home: &std::path::Path, server: &str, key: &str) {
 }
 
 // Seed a complete cloud `[auth]` token pair into `config.toml` directly — the
-// same on-disk shape `spelunk login` writes. `INKENTRY_CONFIG_DIR` (set by
-// `spelunk_bin_in`) resolves to `<home>/.config/spelunk`, so this is exactly
+// same on-disk shape `inkentry login` writes. `INKENTRY_CONFIG_DIR` (set by
+// `inkentry_bin_in`) resolves to `<home>/.config/inkentry`, so this is exactly
 // where the CLI reads and (on bare logout) rewrites it.
 fn seed_cloud_auth(home: &std::path::Path) {
     let dir = home.join(".config").join("inkentry");
@@ -66,7 +66,7 @@ fn logout_server_flag_clears_that_origin_only_and_keeps_cloud_pair() {
     set_key(home.path(), "https://a.example:7777", "sk-a");
     set_key(home.path(), "https://b.example:7777", "sk-b");
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--server")
         .arg("https://a.example:7777")
@@ -81,7 +81,7 @@ fn logout_server_flag_clears_that_origin_only_and_keeps_cloud_pair() {
     );
 
     // Only the named origin cleared; the other survives.
-    let out = spelunk_bin_in(home.path())
+    let out = inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()
@@ -109,7 +109,7 @@ fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
     set_key(home.path(), "https://a.example:7777", "sk-a");
     set_key(home.path(), "https://b.example:7777", "sk-b");
 
-    spelunk_bin_in(home.path()).arg("logout").assert().success();
+    inkentry_bin_in(home.path()).arg("logout").assert().success();
 
     // Cloud pair removed.
     let cfg = config_toml(home.path());
@@ -119,7 +119,7 @@ fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
     );
 
     // Both server keys survive.
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()
@@ -137,7 +137,7 @@ fn logout_servers_flag_clears_all_server_keys_and_keeps_cloud_pair() {
     set_key(home.path(), "https://a.example:7777", "sk-a");
     set_key(home.path(), "https://b.example:7777", "sk-b");
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--servers")
         .assert()
@@ -151,7 +151,7 @@ fn logout_servers_flag_clears_all_server_keys_and_keeps_cloud_pair() {
     );
 
     // No server keys remain.
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()

@@ -21,7 +21,7 @@ pub(super) async fn embed_cmd(
     query_mode: bool,
 ) -> Result<()> {
     if std::io::stdin().is_terminal() {
-        eprintln!("spelunk plumbing embed: reads lines from stdin, emits JSONL embedding per line");
+        eprintln!("inkentry plumbing embed: reads lines from stdin, emits JSONL embedding per line");
         std::process::exit(2);
     }
 

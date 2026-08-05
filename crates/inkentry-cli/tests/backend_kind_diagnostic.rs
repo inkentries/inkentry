@@ -1,8 +1,8 @@
 //! Integration tests for issue #308: `memory_backend` field in
-//! `spelunk status --format json` and `spelunk check --format json`.
+//! `inkentry status --format json` and `inkentry check --format json`.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use predicates::prelude::*;
 use std::fs;
@@ -38,7 +38,7 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     // auto-discovery can pick up a `inkentry-server` running on 127.0.0.1:7777
     // and route the embed call there, which fails the build with a dimension
     // mismatch. We only care about the SQLite memory-backend path here.
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -50,15 +50,15 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     (temp, project_dir, config_path)
 }
 
-// ── `spelunk status --format json` ───────────────────────────────────────────
+// ── `inkentry status --format json` ───────────────────────────────────────────
 
-/// `spelunk status --format json` must include a top-level `memory_backend`
+/// `inkentry status --format json` must include a top-level `memory_backend`
 /// field whose value is one of the known backend identifiers (issue #308).
 #[test]
 fn status_json_includes_memory_backend_field() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_SERVER_URL")
         .env("INKENTRY_NO_SERVER", "1")
@@ -72,7 +72,7 @@ fn status_json_includes_memory_backend_field() {
 
     assert!(
         output.status.success(),
-        "spelunk status --format json exited non-zero: {}",
+        "inkentry status --format json exited non-zero: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -100,15 +100,15 @@ fn status_json_includes_memory_backend_field() {
     );
 }
 
-// ── `spelunk check --format json` ────────────────────────────────────────────
+// ── `inkentry check --format json` ────────────────────────────────────────────
 
-/// `spelunk check --format json` must include a top-level `memory_backend`
-/// field with the same semantics as in `spelunk status` (issue #308).
+/// `inkentry check --format json` must include a top-level `memory_backend`
+/// field with the same semantics as in `inkentry status` (issue #308).
 #[test]
 fn check_json_includes_memory_backend_field() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_SERVER_URL")
         .env("INKENTRY_NO_SERVER", "1")
@@ -120,7 +120,7 @@ fn check_json_includes_memory_backend_field() {
         .output()
         .unwrap();
 
-    // `spelunk check` exits 1 when stale files exist; that is fine here because
+    // `inkentry check` exits 1 when stale files exist; that is fine here because
     // we only care about the JSON shape on stdout.
     let body: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("output must be valid JSON");
@@ -145,9 +145,9 @@ fn check_json_includes_memory_backend_field() {
     );
 }
 
-// ── `spelunk status` text output ─────────────────────────────────────────────
+// ── `inkentry status` text output ─────────────────────────────────────────────
 
-/// `spelunk status` text output (no --format json) must mention the active
+/// `inkentry status` text output (no --format json) must mention the active
 /// memory backend so humans can see which store is in use (issue #308). Since
 /// ADR-067 D3 the line reflects the resolved backend (sqlite by default), sourced
 /// from `backend_kind()` rather than the capability tier.
@@ -155,7 +155,7 @@ fn check_json_includes_memory_backend_field() {
 fn status_text_mentions_memory_backend() {
     let (_temp, project_dir, config_path) = setup_offline_project();
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_SERVER_URL")
         .env("INKENTRY_NO_SERVER", "1")

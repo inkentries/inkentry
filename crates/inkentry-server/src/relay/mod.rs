@@ -65,7 +65,7 @@ impl RelayKey {
 
 /// One entry offered by the CLI for relay to the team server. Mirrors
 /// [`BatchPushItem`] minus the pushed-vector fast path: the P2 relay push is
-/// text-only (the vector fast path stays manual-`spelunk sync`-only, which
+/// text-only (the vector fast path stays manual-`inkentry sync`-only, which
 /// already reuses [`BatchPushItem`] directly).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RelayPushEntry {

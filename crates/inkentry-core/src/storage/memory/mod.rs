@@ -126,7 +126,7 @@ impl MemoryStore {
         // see `entity_id_migration.rs`. Both run on every open rather than
         // being gated to a single schema-version step: a later insert path
         // can still leave `entity_id` NULL (Step A heals it), and Step B's
-        // duplicate scan can only turn clean after a `spelunk memory dedupe`
+        // duplicate scan can only turn clean after a `inkentry memory dedupe`
         // run on some later open.
         store.backfill_entity_ids()?;
         store.promote_entity_id_unique_index()?;
@@ -161,8 +161,8 @@ impl MemoryStore {
 
         if version > MEMORY_SCHEMA_VERSION {
             anyhow::bail!(
-                "memory.db schema version {version} is newer than this build of spelunk \
-                 supports (max {MEMORY_SCHEMA_VERSION}); upgrade spelunk to open this store."
+                "memory.db schema version {version} is newer than this build of inkentry \
+                 supports (max {MEMORY_SCHEMA_VERSION}); upgrade inkentry to open this store."
             );
         }
 
@@ -462,7 +462,7 @@ impl MemoryStore {
                 .context("upgrading note_embeddings to 896-dim")?;
             tracing::info!(
                 "memory note_embeddings dim upgraded 768→896; \
-                 re-run `spelunk memory reindex` to rebuild embeddings"
+                 re-run `inkentry memory reindex` to rebuild embeddings"
             );
             self.dropped_768.set(true);
         }

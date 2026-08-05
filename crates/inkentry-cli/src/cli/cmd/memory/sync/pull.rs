@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    // Item 6: `sync_round`'s reported `pulled` count (what `spelunk sync`'s
+    // Item 6: `sync_round`'s reported `pulled` count (what `inkentry sync`'s
     // completion message prints) is the TRUE total across every page, not
     // just the first. `memory_sync` itself can't be driven directly in this
     // binary (see `sync_round`'s own doc comment on the per-process tier
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(store.count().unwrap(), 160);
     }
 
-    // Item 7: the one-way `spelunk memory pull` entry point (`pull_and_apply`,
+    // Item 7: the one-way `inkentry memory pull` entry point (`pull_and_apply`,
     // which derives its own cursor from the store rather than being handed
     // one) also paginates fully, proven through `pull_and_apply` directly,
     // not just through `sync_round`, since both merely wrap the same shared

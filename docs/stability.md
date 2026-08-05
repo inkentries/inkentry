@@ -1,9 +1,9 @@
 # Stability contract
 
-This document says which parts of spelunk you may build on, and what a version
+This document says which parts of inkentry you may build on, and what a version
 bump is allowed to do to them.
 
-spelunk follows [Semantic Versioning](https://semver.org/). Before 1.0 that
+inkentry follows [Semantic Versioning](https://semver.org/). Before 1.0 that
 promise is not yet in force: the surfaces below are already treated as stable in
 practice, and this document is what they are frozen against when 1.0 ships.
 
@@ -38,7 +38,7 @@ Stating this first, because it is the part most often assumed:
 - **The `/local/` HTTP routes.** `inkentry-server` registers `/local/relay/push`,
   `/local/relay/poll`, and `/local/relay/ack` outside the documented API. They
   are deliberately absent from `docs/openapi.json` and are internal transport
-  between a spelunk client and its own server.
+  between a inkentry client and its own server.
 - **Wire-format details of the index.** Embedding vectors, the exact SQL schema
   of any table, and sqlite-vec internals. The *file* is a compatibility surface
   (see On-disk formats below); the SQL inside it is not.
@@ -46,7 +46,7 @@ Stating this first, because it is the part most often assumed:
 ## CLI
 
 **Stable:** command names, subcommand names, flag names (long form), positional
-argument order, and exit codes, for every command listed in `spelunk --help`.
+argument order, and exit codes, for every command listed in `inkentry --help`.
 
 - New commands and new flags may be added in a minor release.
 - A flag's default value may change only in a major release.
@@ -104,7 +104,7 @@ In text mode those diagnostics remain on stdout.
 
 | Surface | Level |
 |---|---|
-| `spelunk status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/inkentry-cli/src/cli/cmd/status.rs`. |
+| `inkentry status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/inkentry-cli/src/cli/cmd/status.rs`. |
 | Every other `--format json`, `--format jsonl`, or `--format porcelain` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
 
 `status --format json` also emits a set of richer fields for tooling (`tier`,
@@ -117,7 +117,7 @@ If you need a surface with a test-enforced schema, use the plumbing commands.
 
 ## Plumbing JSONL
 
-**Stable:** for every `spelunk plumbing <command>`, the *name and type* of each
+**Stable:** for every `inkentry plumbing <command>`, the *name and type* of each
 field in the emitted JSON objects, and the guarantee that stdout is newline
 delimited JSON with exactly one object per line.
 
@@ -169,14 +169,14 @@ called out by name, because each is one a reader would otherwise reasonably
 guess wrong about, and each restriction is part of the contract:
 
 - `server_url` is **ignored in the global personal config**
-  (`~/.config/spelunk/config.toml`, including a file passed to `--config`). It
+  (`~/.config/inkentry/config.toml`, including a file passed to `--config`). It
   may come only from the checked-in `.inkentry/config.toml` or from
   `INKENTRY_SERVER_URL`. Everyone working on a project needs the same team
   server, which a per-developer file cannot guarantee. A global config that
   still sets it loads fine; the value is discarded.
 - `server_key` is **ignored in the project config** (`.inkentry/config.toml`). A
   repository must never be able to hand a secret to whoever clones it. Use
-  `spelunk auth set-key --server <url>`, `spelunk login`, or
+  `inkentry auth set-key --server <url>`, `inkentry login`, or
   `INKENTRY_SERVER_KEY`.
 - `llm_url` is **ignored in the project config**, which follows from the
   allowlist below rather than being an exception to it, and is named here
@@ -184,13 +184,13 @@ guess wrong about, and each restriction is part of the contract:
   per-developer choice: a committed value points every teammate's local daemon
   at whichever machine the author was running a model on. Set it in the
   personal config or via `INKENTRY_LLM_URL`. Its credential is not a config key
-  in either file (`spelunk auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
+  in either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
 
 Beyond those three:
 
 - Unrecognised keys are ignored rather than rejected. A config written for a
-  newer spelunk still loads on an older one, and a config carrying a removed key
+  newer inkentry still loads on an older one, and a config carrying a removed key
   still loads. A key ignored because it is in the wrong file behaves the same
   way: the rest of the file is unaffected.
 - The **project-level allowlist** is itself stable. A checked-in
@@ -260,12 +260,12 @@ recorded memory. The promise is *not* that the SQL schema stays fixed.
 | Store | Versioning | Level |
 |---|---|---|
 | `.inkentry/index.db` | `PRAGMA user_version`, migrated forward on open | **Stable**: migrations are forward-only and run automatically. The index is derived data, so a rebuild is always a valid recovery. |
-| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index | **Stable**, and stricter: memory is not derived data and cannot be rebuilt. A store from a newer spelunk is refused with an upgrade message rather than opened and damaged. |
-| `~/.config/spelunk/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
-| git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not spelunk records are left untouched, so the ref can be shared with other tooling. |
+| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index | **Stable**, and stricter: memory is not derived data and cannot be rebuilt. A store from a newer inkentry is refused with an upgrade message rather than opened and damaged. |
+| `~/.config/inkentry/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
+| git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
 
-Migrations are **forward-only**. Downgrading spelunk after an upgrade has
+Migrations are **forward-only**. Downgrading inkentry after an upgrade has
 migrated a store is not supported.
 
 ### Downgrading, and why `user_version` can go backwards
@@ -283,7 +283,7 @@ outcome.
 **`index.db` does not refuse.** It reads cleanly and re-stamps its
 `PRAGMA user_version` down to its own. If you are debugging an `index.db` whose
 `user_version` appears to have gone *backwards*, this is what happened: an
-older spelunk opened it. It is not corruption, and nothing was lost.
+older inkentry opened it. It is not corruption, and nothing was lost.
 
 The rewind is not a quirk of one release. It falls out of how the migration
 runner works in every build: it returns early only when the stamp already
@@ -305,14 +305,14 @@ data would be damaged. The corpus asserts that bound directly.
 
 **Stable:** the directory name `.inkentry/` at the project root, and the names
 `config.toml`, `index.db`, and `memory.db` within it. Tooling may rely on
-`.inkentry/index.db` marking a project root, which is how spelunk itself
+`.inkentry/index.db` marking a project root, which is how inkentry itself
 discovers one.
 
 **Internal:** everything else in that directory, including lock files, pid
 sidecars, and background logs. Names, formats, and existence may change, and an
 internal file may be removed outright.
 
-`~/.config/spelunk/` (config and registry) and `~/.local/state/spelunk/`
+`~/.config/inkentry/` (config and registry) and `~/.local/state/inkentry/`
 (runtime state for the local server) follow the same split: the config file is
 stable, the state files are internal.
 

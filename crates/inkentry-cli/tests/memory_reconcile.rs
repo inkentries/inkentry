@@ -1,4 +1,4 @@
-//! Integration tests for `spelunk memory reconcile`.
+//! Integration tests for `inkentry memory reconcile`.
 //!
 //! Covers all 8 acceptance criteria:
 //!
@@ -14,7 +14,7 @@
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
 
 mod plumbing_helpers;
-use plumbing_helpers::{mount_health, mount_index_embed, spelunk_bin, spelunk_bin_in};
+use plumbing_helpers::{mount_health, mount_index_embed, inkentry_bin, inkentry_bin_in};
 
 use assert_cmd::Command;
 use rusqlite::Connection;
@@ -29,7 +29,7 @@ use wiremock::MockServer;
 /// connections in the test binary can open memory.db files that contain the
 /// `note_embeddings` vec0 virtual table created by the CLI.
 ///
-/// Must be called before any `Connection::open` on a spelunk memory.db.
+/// Must be called before any `Connection::open` on a inkentry memory.db.
 fn ensure_sqlite_vec() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
@@ -42,7 +42,7 @@ fn ensure_sqlite_vec() {
     });
 }
 
-/// Write a minimal spelunk config file and make `dir` a real project.
+/// Write a minimal inkentry config file and make `dir` a real project.
 ///
 /// ADR-067: `memory reconcile` (a memory subcommand) fails closed without a
 /// local `.inkentry/` project, so we create `<dir>/.inkentry/`. Memory is now
@@ -58,9 +58,9 @@ fn ensure_sqlite_vec() {
 /// Returns `(config_path, mem_path)` where `mem_path` is where the CLI will
 /// write `memory.db`.
 fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
-    let spelunk_dir = dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
-    let index_db = spelunk_dir.join("index.db");
+    let inkentry_dir = dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
+    let index_db = inkentry_dir.join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
@@ -185,7 +185,7 @@ fn read_memory_notes(mem_path: &Path) -> Vec<(String, String, String)> {
     .expect("collect")
 }
 
-/// Build a `spelunk memory reconcile` command with the common flags pre-set.
+/// Build a `inkentry memory reconcile` command with the common flags pre-set.
 ///
 /// `config_path`  - the `--config` arg (controls where memory.db is resolved via config db_path)
 /// `server_db`    - the `reconcile --source-db` arg (source server.db)
@@ -208,7 +208,7 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
     let tmp_dir = config_path
         .parent()
         .expect("config_path must have a parent");
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(tmp_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .env("INKENTRY_NO_RECONCILE_NUDGE", "1")
@@ -227,7 +227,7 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
 fn noop_when_server_db_absent() {
     // Criteria #2: exit 0, no error output, when server.db does not exist.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
     let missing_server_db = tmp.path().join("nonexistent_server.db");
 
@@ -241,7 +241,7 @@ fn noop_when_server_db_absent_json_output_is_valid() {
     // Criteria #2 + #5: when server.db is absent and --format json is passed,
     // the summary is emitted on stdout as valid JSON with candidates=0.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
     let missing_server_db = tmp.path().join("nonexistent_server.db");
 
@@ -272,11 +272,11 @@ fn noop_when_server_db_absent_json_output_is_valid() {
 // ── AC-6: INKENTRY_NO_SERVER=1 path ───────────────────────────────────────────
 
 #[test]
-fn spelunk_no_server_exits_cleanly_with_import() {
+fn inkentry_no_server_exits_cleanly_with_import() {
     // Criteria #6: even with INKENTRY_NO_SERVER=1 (no embedding server),
     // reconcile should complete successfully and import rows (without embeddings).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "test-project";
@@ -336,7 +336,7 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
     // via `get_inference_tier`/`effective_config` like `add`/`reindex`/
     // `search` do, and reach the local loopback embedder instead.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "loopback-embed-test";
@@ -407,7 +407,7 @@ fn dedup_by_content_hash_not_rowid() {
     // Criteria #1: running reconcile twice imports rows once, not twice,
     // even if rowids differ between runs (we delete and reinsert in server.db).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "dedup-project";
@@ -469,7 +469,7 @@ fn dedup_ignores_rowid_changes() {
     // Criteria #1: a note with a different server-side rowid but identical
     // content should NOT be re-imported.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "rowid-test";
@@ -561,7 +561,7 @@ fn supersede_edge_resolves_across_a_rowid_renumber() {
     //     *candidates* differs from its position in the *import set*.
     // Resolved by entity_id, the edge is immune to both.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "supersede-renumber";
@@ -657,7 +657,7 @@ fn dedup_key_excludes_created_at() {
     // same decision cannot reproduce the first one's timestamp. Two rows with
     // identical text therefore collapse to one entry, whatever their timestamps.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "hash-ts-test";
@@ -715,7 +715,7 @@ fn dedup_key_excludes_tags_which_union_on_collapse() {
     // Two rows with identical text but disjoint tags/linked_files are one
     // entity; the survivor carries the union rather than dropping either set.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "tag-union-test";
@@ -776,7 +776,7 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
     // are outside the key, so without the merge the losing copy's metadata is
     // discarded silently — the row is "already present" and simply skipped.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "stored-union-test";
@@ -860,7 +860,7 @@ fn dry_run_does_not_union_tags_into_a_stored_row() {
     // The tag merge is a write. `--dry-run` must stop before it, not just
     // before the insert.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "dryrun-union-test";
@@ -927,7 +927,7 @@ fn json_counts_partition_the_source_rows() {
     // The summary must account for every source row exactly once:
     // candidates == already_present + collapsed_duplicates + imported.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "partition-test";
@@ -1021,7 +1021,7 @@ fn tag_reorder_does_not_reimport() {
     // Tags are excluded from the key outright (they were formerly sorted and
     // hashed), so reordering them cannot produce a second copy.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "normalize-tags";
@@ -1078,7 +1078,7 @@ fn server_db_not_modified_after_reconcile() {
     // Criteria #3: after reconcile, server.db must contain exactly the same
     // notes as before (no writes occurred).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "readonly-test";
@@ -1130,7 +1130,7 @@ fn server_db_opened_read_only_flag() {
     // by making server.db read-only at the filesystem level and confirming the
     // import still succeeds (the write target is memory.db, not server.db).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "readonly-flag-test";
@@ -1189,7 +1189,7 @@ fn archived_rows_import_as_archived() {
     // Criteria #4: a note with status='archived' in server.db must land in
     // memory.db with status='archived'.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "archived-test";
@@ -1257,7 +1257,7 @@ fn dry_run_does_not_write_to_memory_db() {
     // Criteria #5: --dry-run must report would_import > 0 but write nothing
     // to memory.db.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "dryrun-test";
@@ -1301,7 +1301,7 @@ fn dry_run_json_reports_would_import() {
     // Criteria #5: --dry-run --format json must emit a summary with
     // would_import > 0 and imported == 0.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "dryrun-json-test";
@@ -1352,7 +1352,7 @@ fn dry_run_json_reports_would_import() {
 fn dry_run_on_empty_server_db_exits_zero() {
     // Criteria #5 + #8: --dry-run with nothing to import exits 0.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     // server.db exists but has no notes.
@@ -1379,7 +1379,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
     //  3. Run reconcile - the 3rd insert fails, the BEGIN IMMEDIATE transaction
     //     is rolled back, and the table stays empty.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "rollback-test";
@@ -1412,7 +1412,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
         let boot_dir = tmp.path().join("boot");
         std::fs::create_dir_all(&boot_dir).unwrap();
         let boot_config_path = boot_dir.join("config.toml");
-        let boot_db_path = boot_dir.join("spelunk.db");
+        let boot_db_path = boot_dir.join("inkentry.db");
         std::fs::write(
             &boot_config_path,
             format!(
@@ -1426,7 +1426,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
         // main config, so memory.db resolves to tmp.path()/memory.db.
         let boot_config_content = format!(
             "db_path = {:?}\nllm_model = \"test-model\"\n",
-            tmp.path().join("spelunk.db").display().to_string()
+            tmp.path().join("inkentry.db").display().to_string()
         );
         std::fs::write(&boot_config_path, boot_config_content).unwrap();
 
@@ -1448,7 +1448,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
 
         // Bootstrap reconcile: run from boot_dir so config resolves correctly.
         // Use --all-projects (only boot-for-rollback slug exists in bootstrap_db).
-        let mut boot_cmd = spelunk_bin();
+        let mut boot_cmd = inkentry_bin();
         boot_cmd
             .current_dir(&boot_dir)
             .env("INKENTRY_NO_SERVER", "1")
@@ -1510,7 +1510,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
 fn exit_0_on_success_import() {
     // Criteria #8: exit 0 when rows are successfully imported.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "exit-0-import";
@@ -1540,7 +1540,7 @@ fn exit_0_on_success_import() {
 fn exit_0_on_noop_already_imported() {
     // Criteria #8: exit 0 when all rows are already present (nothing to import).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "exit-0-noop";
@@ -1577,7 +1577,7 @@ fn exit_0_on_noop_already_imported() {
 fn exit_0_on_no_rows_to_import() {
     // Criteria #8: exit 0 when server.db exists but has no notes (empty project).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     // server.db with a project but no notes.
@@ -1594,7 +1594,7 @@ fn exit_nonzero_on_corrupt_server_db() {
     // Criteria #8: exit non-zero when server.db is present but corrupt / not a
     // valid SQLite file (real fault).
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let corrupt_db = tmp.path().join("corrupt_server.db");
@@ -1613,7 +1613,7 @@ fn exit_nonzero_on_corrupt_server_db() {
 fn json_summary_contains_expected_fields() {
     // Verify the NDJSON summary object has all documented fields.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "json-fields-test";
@@ -1669,7 +1669,7 @@ fn json_summary_contains_expected_fields() {
 fn import_increments_count_correctly() {
     // Verify the JSON summary reports accurate candidate / imported / already_present counts.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "count-test";
@@ -1733,7 +1733,7 @@ fn sql_injection_payload_in_body_does_not_break_import() {
     // Security: a note body containing SQL injection payload characters must
     // be stored verbatim, not alter query structure.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
 
     let slug = "sqli-test";
@@ -1781,11 +1781,11 @@ fn sql_injection_payload_in_body_does_not_break_import() {
 
 // ── Regression: default source path must honor INKENTRY_STATE_DIR ────────────
 
-/// `spelunk server start` writes `server.db` through the shared
-/// `capability::spelunk_state_dir` resolver, which honors `INKENTRY_STATE_DIR`.
+/// `inkentry server start` writes `server.db` through the shared
+/// `capability::inkentry_state_dir` resolver, which honors `INKENTRY_STATE_DIR`.
 /// Reconcile's default source path (used whenever `--source-db` is omitted)
 /// must resolve through that same function rather than reconstructing
-/// `~/.local/state/spelunk/` from `dirs::home_dir()` on its own. Otherwise a
+/// `~/.local/state/inkentry/` from `dirs::home_dir()` on its own. Otherwise a
 /// daemon run under a `INKENTRY_STATE_DIR` override is invisible to reconcile:
 /// it hits the "server.db absent" no-op branch instead of importing.
 #[test]
@@ -1793,11 +1793,11 @@ fn default_source_db_honors_state_dir_override() {
     let home = TempDir::new().unwrap();
     let state_override = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    let db_path = project.path().join("spelunk.db");
+    let db_path = project.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(project.path(), &db_path);
 
     // Write server.db directly into the override dir, NOT under
-    // `<home>/.local/state/spelunk/`.
+    // `<home>/.local/state/inkentry/`.
     let (server_db, project_id) = create_server_db(state_override.path(), "override-project");
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
@@ -1827,7 +1827,7 @@ fn default_source_db_honors_state_dir_override() {
     );
 
     // No --source-db: exercises default_server_db_path().
-    let mut cmd = spelunk_bin_in(home.path());
+    let mut cmd = inkentry_bin_in(home.path());
     cmd.current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
         .env("INKENTRY_NO_RECONCILE_NUDGE", "1")

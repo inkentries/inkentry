@@ -73,8 +73,8 @@ pub struct BatchPushResponse {
 /// already carrying the given `external_id` is skipped, not duplicated.
 ///
 /// Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`
-/// (the same client cloud-api's `/memory/batch` serves); `spelunk memory push`
-/// and `spelunk sync` target this route on an OSS team server exactly as they
+/// (the same client cloud-api's `/memory/batch` serves); `inkentry memory push`
+/// and `inkentry sync` target this route on an OSS team server exactly as they
 /// do against cloud-api. Always returns **207** with a per-entry result list;
 /// a request-level validation failure (oversized batch, a title/body over the
 /// configured caps, or an injection match) rejects the whole batch (4xx/422)

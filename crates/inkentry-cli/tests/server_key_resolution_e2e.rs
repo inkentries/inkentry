@@ -13,7 +13,7 @@
 //! wiremock received rather than trusting the CLI's own stdout/exit code.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -52,7 +52,7 @@ fn write_server_config(dir: &Path, name: &str) -> std::path::PathBuf {
 }
 
 fn set_key(home: &Path, server: &str, key: &str) {
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .arg("auth")
         .arg("set-key")
         .arg("--server")
@@ -65,7 +65,7 @@ fn set_key(home: &Path, server: &str, key: &str) {
 /// The multi-server acceptance case, driven for real: two `server_url`s
 /// under the *same* HOME (so they share one secret-store map, D1's whole
 /// point), each with its own key set via the real `auth set-key` command,
-/// then two separate `spelunk memory since` invocations, one per origin,
+/// then two separate `inkentry memory since` invocations, one per origin,
 /// each inspected for the literal `Authorization` header wiremock received.
 /// Each origin must get exactly its own key, never the other's, and never
 /// an env var (none is set at any point in this test).
@@ -87,7 +87,7 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
 
     let mem_db = cfg_dir.path().join("memory.db");
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
         .env("INKENTRY_SERVER_URL", server_a.uri())
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
@@ -101,7 +101,7 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
         .assert()
         .success();
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
         .env("INKENTRY_SERVER_URL", server_b.uri())
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
@@ -161,10 +161,10 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     let home = TempDir::new().unwrap();
     let cfg_dir = TempDir::new().unwrap();
 
-    // Plant a legacy flat key exactly where a pre-ADR-071 `spelunk login`/
+    // Plant a legacy flat key exactly where a pre-ADR-071 `inkentry login`/
     // plaintext-config migration would have left it: the file-backed
     // secret-store entry named by `KEY_SERVER_KEY` ("server_key"), under the
-    // same isolated HOME `spelunk_bin_in` points every child process at.
+    // same isolated HOME `inkentry_bin_in` points every child process at.
     // `auth set-key` itself only ever writes the new per-origin map, so
     // there is no CLI surface to plant this pre-migration state: writing
     // the secrets.toml file directly is the only way to simulate an
@@ -180,7 +180,7 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     let config_path = write_server_config(cfg_dir.path(), "legacy");
     let mem_db = cfg_dir.path().join("memory.db");
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
         .env("INKENTRY_SERVER_URL", server.uri())
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
@@ -210,7 +210,7 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
 
     // And it must now be visible as a migrated per-origin entry, with the
     // legacy tier gone (D3/D1's "migrate, don't dual-read forever").
-    let out = spelunk_bin_in(home.path())
+    let out = inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()

@@ -5,7 +5,7 @@
 // every drill here targets a window this codebase controls, not one SQLite
 // already guarantees.
 //
-// Every SIGKILL below is real: the target process is a real `spelunk` child
+// Every SIGKILL below is real: the target process is a real `inkentry` child
 // spawned via `Command`, parked at a specific write-window by
 // `crash_test_hook::pause_at`/`storage::pause_for_crash_test` (env-gated,
 // inert for every real invocation), and killed with `Child::kill()`, which
@@ -29,13 +29,13 @@ const MARKER_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Process plumbing ─────────────────────────────────────────────────────────
 
-/// Build a `spelunk` `Command` isolated from the developer's real keychain,
-/// config dir, and git identity, mirroring `plumbing_helpers::spelunk_bin_in`
+/// Build a `inkentry` `Command` isolated from the developer's real keychain,
+/// config dir, and git identity, mirroring `plumbing_helpers::inkentry_bin_in`
 /// but returning a raw `std::process::Command` so callers get full control
 /// over stdio (needed to pipe stdin/stdout for the marker-then-kill protocol
 /// below; `assert_cmd::Command` does not expose that).
-fn spelunk_command(home: &Path) -> Command {
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
+fn inkentry_command(home: &Path) -> Command {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("inkentry"));
     cmd.env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -66,7 +66,7 @@ fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn spelunk");
+    let mut child = cmd.spawn().expect("spawn inkentry");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     // Drain stderr too so a chatty child can't deadlock on a full pipe while
@@ -243,7 +243,7 @@ fn write_three_file_project(dir: &Path) {
     std::fs::write(dir.join("gamma.py"), "def gamma():\n    return 3\n").unwrap();
 }
 
-/// Run `spelunk index`, killing it exactly after `target.py`'s hash commits
+/// Run `inkentry index`, killing it exactly after `target.py`'s hash commits
 /// and before any of its chunks do.
 fn crash_mid_target_file() -> InterruptedFixture {
     let home = TempDir::new().expect("home");
@@ -251,7 +251,7 @@ fn crash_mid_target_file() -> InterruptedFixture {
     write_three_file_project(project.path());
     let db_path = project.path().join(".inkentry").join("index.db");
 
-    let mut cmd = spelunk_command(home.path());
+    let mut cmd = inkentry_command(home.path());
     cmd.current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
@@ -309,7 +309,7 @@ fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
     // `--force` to recover from this crash window.
     let f = crash_mid_target_file();
 
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -359,7 +359,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
     std::fs::write(project.path().join("empty.py"), "").unwrap();
     let db_path = project.path().join(".inkentry").join("index.db");
 
-    let mut first = spelunk_command(home.path());
+    let mut first = inkentry_command(home.path());
     let first_out = first
         .current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -390,7 +390,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
     // empty.py's per-file processing (the pause point fires) rather than
     // skip it. If `file_has_chunks` somehow distinguished this case,
     // `spawn_paused_at` would time out waiting for the marker and panic.
-    let mut second = spelunk_command(home.path());
+    let mut second = inkentry_command(home.path());
     second
         .current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -408,7 +408,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
 fn force_reindex_heals_the_interrupted_file() {
     let f = crash_mid_target_file();
 
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -487,7 +487,7 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     // 2 chunks total: calibration batch 1 takes exactly 1 (CALIBRATION_BATCH_1),
     // so pausing after "after_embed_batch:1" commits leaves exactly 1 embedded
     // and 1 missing - a small, deterministic split, not an approximation.
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     cmd.current_dir(f.project.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
@@ -510,7 +510,7 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     // Plain re-run: both files' hashes are already current, so parse_phase
     // skips reparsing them, but the missing-embeddings backfill union must
     // still queue the one chunk that never got embedded.
-    let mut cmd2 = spelunk_command(f._home.path());
+    let mut cmd2 = inkentry_command(f._home.path());
     let out = cmd2
         .current_dir(f.project.path())
         .env("INKENTRY_MODE", "cloud_first")
@@ -570,7 +570,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     // so the capped run below is growing an existing file, not failing
     // during first-open migrations (which would test migration behaviour,
     // not the index write path this drill targets).
-    let mut baseline = spelunk_command(home.path());
+    let mut baseline = inkentry_command(home.path());
     let out = baseline
         .current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -595,7 +595,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
         .unwrap();
     }
 
-    let mut capped = spelunk_command(home.path());
+    let mut capped = inkentry_command(home.path());
     let out = capped
         .current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -643,7 +643,7 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
 
     let memory_add =
         |home: &Path, extra_env: Option<(&str, &str)>, body: &str| -> std::process::Output {
-            let mut cmd = spelunk_command(home);
+            let mut cmd = inkentry_command(home);
             cmd.current_dir(project.path())
                 .env("INKENTRY_NO_SERVER", "1")
                 .env_remove("INKENTRY_SERVER_URL")
@@ -722,7 +722,7 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
     );
 }
 
-// ── Drill 7: two concurrent `spelunk index` runs on one project ─────────────
+// ── Drill 7: two concurrent `inkentry index` runs on one project ─────────────
 //
 // Neither index.db, memory.db, nor registry.db ever sets `PRAGMA
 // busy_timeout` anywhere in this codebase (confirmed by reading `Database::
@@ -734,7 +734,7 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
 // hit real SQLite-level corruption ("database disk image is malformed",
 // SQLITE_CORRUPT), not merely a busy/locked error from the losing process.
 // The fix is `run_lock.rs`: a per-project cross-process advisory lock (same
-// shape as `storage::git_notes::lock`) taken as the first thing `spelunk
+// shape as `storage::git_notes::lock`) taken as the first thing `inkentry
 // index` does, non-blocking. A second process that finds it held exits
 // immediately with a clean "index already running" error instead of racing
 // the first process's writes - it never touches the DB at all, so there is
@@ -767,7 +767,7 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
 
         let run = |home_dir: PathBuf, project_dir: PathBuf| {
             std::thread::spawn(move || {
-                let mut cmd = spelunk_command(&home_dir);
+                let mut cmd = inkentry_command(&home_dir);
                 cmd.current_dir(&project_dir)
                     .env("INKENTRY_NO_SERVER", "1")
                     .arg("index")
@@ -847,8 +847,8 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
 //
 // WAL mode's whole purpose is that a reader never contends with a writer -
 // only writer-vs-writer does. This pins that guarantee for the real CLI
-// paths: `spelunk search --mode text` (a pure FTS read against index.db)
-// must complete cleanly while a `spelunk index` embed batch's transaction is
+// paths: `inkentry search --mode text` (a pure FTS read against index.db)
+// must complete cleanly while a `inkentry index` embed batch's transaction is
 // genuinely open (held via `storage::pause_for_crash_test("embed_tx_open")`,
 // not merely "probably in progress").
 
@@ -857,7 +857,7 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let f = embed_fixture(&rt);
 
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     cmd.current_dir(f.project.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
@@ -865,7 +865,7 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
         .arg("--no-summaries");
     let paused = spawn_paused_at(cmd, "embed_tx_open");
 
-    let mut search_cmd = spelunk_command(f._home.path());
+    let mut search_cmd = inkentry_command(f._home.path());
     let search_out = search_cmd
         .current_dir(f.project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -912,7 +912,7 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
 
 #[test]
 fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
-    // `crash_mid_target_file` SIGKILLs a `spelunk index` process while it is
+    // `crash_mid_target_file` SIGKILLs a `inkentry index` process while it is
     // parked at "after_index_hash_write", which is well before either
     // continuation-spawn site that releases the run lock explicitly - so the
     // kill lands with the lock still held, and its file descriptor closes
@@ -920,7 +920,7 @@ fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
     // cleanup ran.
     let f = crash_mid_target_file();
 
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -954,7 +954,7 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
 
     let project_a = TempDir::new().expect("project a");
     write_three_file_project(project_a.path());
-    let mut cmd_a = spelunk_command(home.path());
+    let mut cmd_a = inkentry_command(home.path());
     cmd_a
         .current_dir(project_a.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -964,7 +964,7 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
 
     let project_b = TempDir::new().expect("project b");
     write_three_file_project(project_b.path());
-    let mut cmd_b = spelunk_command(home.path());
+    let mut cmd_b = inkentry_command(home.path());
     let out_b = cmd_b
         .current_dir(project_b.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -986,7 +986,7 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
 fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
     // Models the detach-embed / phases-3-5 handoff's continuation child
     // losing its lock re-acquisition to *some* other holder (whether that is
-    // a genuinely unrelated third `spelunk index` process racing into the
+    // a genuinely unrelated third `inkentry index` process racing into the
     // gap between the parent's release and the child's own acquire, or - as
     // set up deterministically here - anything else holding the lock at that
     // moment). `index()` re-acquires the same per-project lock
@@ -999,7 +999,7 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
     write_three_file_project(project.path());
     let db_path = project.path().join(".inkentry").join("index.db");
 
-    let mut cmd = spelunk_command(home.path());
+    let mut cmd = inkentry_command(home.path());
     cmd.current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
@@ -1009,7 +1009,7 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
     let page_count_while_held = page_count(&db_path);
 
     for mode_flag in ["--_background-phases", "--_embed-phases"] {
-        let mut child_cmd = spelunk_command(home.path());
+        let mut child_cmd = inkentry_command(home.path());
         let child_out = child_cmd
             .current_dir(project.path())
             .env("INKENTRY_NO_SERVER", "1")
@@ -1054,12 +1054,12 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
     // Reproduced deterministically (rather than by racing wall-clock timing)
     // the same way the test above does: pause the parent right after it
     // releases the lock and before it spawns its continuation child, let an
-    // entirely separate `spelunk index` process win and hold the lock in
+    // entirely separate `inkentry index` process win and hold the lock in
     // that window, then resume the parent and inspect what it told the user.
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let f = embed_fixture(&rt);
 
-    let mut cmd = spelunk_command(f._home.path());
+    let mut cmd = inkentry_command(f._home.path());
     cmd.current_dir(f.project.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
@@ -1070,7 +1070,7 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
     let parent_stdout = paused_parent.stdout_so_far.clone();
 
     // The parent's own parse phase (upstream of the pause point above) has
-    // already hashed `one.py`/`two.py`, so a third `spelunk index` run over
+    // already hashed `one.py`/`two.py`, so a third `inkentry index` run over
     // them now would see unchanged hashes and skip straight past the
     // hash-write pause point without ever hitting it. A brand new file the
     // parent never saw gives the third process something to actually hash.
@@ -1083,7 +1083,7 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
     // The parent has released the lock but not yet spawned its continuation
     // child. A genuinely separate process wins it here and holds it well
     // past the child's own (bounded) confirmation window below.
-    let mut third_cmd = spelunk_command(f._home.path());
+    let mut third_cmd = inkentry_command(f._home.path());
     third_cmd
         .current_dir(f.project.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1108,7 +1108,7 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
         "must tell the user why the background handoff could not be confirmed: {stdout}"
     );
     assert!(
-        stdout.contains("Run `spelunk index` again"),
+        stdout.contains("Run `inkentry index` again"),
         "must give the user a concrete recovery step rather than leaving the chunks silently \
          unembedded forever: {stdout}"
     );

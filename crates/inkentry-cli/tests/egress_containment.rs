@@ -1,7 +1,7 @@
 // Egress containment for local-tier flows: the only outbound connections a
 // local-tier command may make are to the auto-discovered loopback inference
 // server. Every test here wires `egress_trap::EgressTrap` around a real
-// `spelunk` subprocess and fails loudly, naming the destination, if any
+// `inkentry` subprocess and fails loudly, naming the destination, if any
 // call escapes it.
 //
 // ## Update-check (ADR-050) coverage: not yet implementable
@@ -28,7 +28,7 @@
 // dependency graph, not just a runtime observation:
 // `embed_hub_unreachable_from_cli_binary` below asserts that graph shape
 // directly so a future Cargo.toml change that pulls `hf-hub` into the
-// `spelunk` binary fails CI immediately. The first-run download itself
+// `inkentry` binary fails CI immediately. The first-run download itself
 // (only reaches `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` on the default HF
 // endpoint) already has pinning coverage in
 // `crates/inkentry-server/src/embed_hub.rs`'s `prequantized_gguf_repo_*`
@@ -40,7 +40,7 @@ mod egress_trap;
 mod plumbing_helpers;
 
 use egress_trap::{EgressTrap, write_loopback_state};
-use plumbing_helpers::{init_git_repo, mount_health, mount_index_embed, spelunk_bin_in};
+use plumbing_helpers::{init_git_repo, mount_health, mount_index_embed, inkentry_bin_in};
 use predicates::prelude::*;
 use std::path::Path;
 use std::time::Duration;
@@ -74,7 +74,7 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-// `POST /v1/projects/{id}/search`: the endpoint `spelunk search --mode
+// `POST /v1/projects/{id}/search`: the endpoint `inkentry search --mode
 // semantic|hybrid` uses to embed the query server-side (`search_query` in
 // `server_client.rs`); distinct from `/index/embed` (`embed_text`), which
 // `memory search`/`memory add`/`plumbing embed` use instead.
@@ -89,10 +89,10 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-// Build a `spelunk` command isolated from ambient `INKENTRY_*` env, wired
+// Build a `inkentry` command isolated from ambient `INKENTRY_*` env, wired
 // against `project` as CWD and `state_dir` for loopback auto-discovery.
 fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .timeout(CHILD_TIMEOUT)
         .env_remove("INKENTRY_SERVER_URL")
@@ -513,7 +513,7 @@ fn walk_rs_files(dir: &Path, f: &mut impl FnMut(&Path, &str)) -> bool {
 fn embed_hub_unreachable_from_cli_binary() {
     // `cargo tree --edges normal` walks the *production* dependency graph
     // (dev-dependencies excluded), which is exactly the graph the shipped
-    // `spelunk` binary links. `hf-hub` lives only behind inkentry-server's
+    // `inkentry` binary links. `hf-hub` lives only behind inkentry-server's
     // optional `embed-native` feature; asserting it is absent here is a
     // structural guarantee, not a runtime sample.
     let out = std::process::Command::new("cargo")

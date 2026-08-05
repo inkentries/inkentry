@@ -1,10 +1,10 @@
-//! Component tests for `spelunk memory list --format` output shapes.
+//! Component tests for `inkentry memory list --format` output shapes.
 //!
 //! Regression coverage for the bug where `--format jsonl` fell through to the
 //! colored text summary instead of emitting one JSON object per line.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, spelunk_bin, write_config};
+use plumbing_helpers::{parse_jsonl, inkentry_bin, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -14,13 +14,13 @@ use tempfile::TempDir;
 /// the duration of the test.
 fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
 
     // No server needed for `memory add`/`memory list` on the local backend.
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
-    spelunk_bin()
+    inkentry_bin()
         // The git-notes carrier follows the process CWD and ignores `--db`, so
         // seeding from the repo under test would write the fixture into its
         // real notes ref.
@@ -43,9 +43,9 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
     (tmp, mem_path, config_path)
 }
 
-/// Build a `spelunk --config <cfg> memory --db <mem> list` Command.
+/// Build a `inkentry --config <cfg> memory --db <mem> list` Command.
 fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("memory")

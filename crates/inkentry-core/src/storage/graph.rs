@@ -91,7 +91,7 @@ impl Database {
     }
 
     /// Return chunk IDs of symbols that are called-by or call the given chunk names.
-    /// Used by `spelunk ask` to enrich context with graph neighbours.
+    /// Used by `inkentry ask` to enrich context with graph neighbours.
     pub fn graph_neighbor_chunks(&self, names: &[&str]) -> Result<Vec<i64>> {
         if names.is_empty() {
             return Ok(vec![]);

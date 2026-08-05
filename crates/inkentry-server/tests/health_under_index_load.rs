@@ -18,9 +18,9 @@
 //   INKENTRY_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
 //
 // This drives the HTTP surface directly rather than shelling out to the CLI.
-// `/v1/health` is the sole endpoint `spelunk server status` reads (it renders
+// `/v1/health` is the sole endpoint `inkentry server status` reads (it renders
 // "reachable" from `instance_id` + `version`), and `POST
-// /v1/projects/{id}/memory/search` is the request `spelunk memory search`
+// /v1/projects/{id}/memory/search` is the request `inkentry memory search`
 // issues, so the assertions below are the same contract those commands see.
 
 #![cfg(feature = "embed-native")]
@@ -152,7 +152,7 @@ async fn spawn_server(embedder: inkentry_server::EmbedderSlot) -> String {
 }
 
 // A single liveness sample: the latency, and the two fields
-// `spelunk server status` needs to print a server as reachable.
+// `inkentry server status` needs to print a server as reachable.
 struct HealthSample {
     latency: Duration,
     instance_id: String,
@@ -212,7 +212,7 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
     );
     println!("embedding {} chunks from {:?}", chunks.len(), repo_root());
 
-    // The index phase: sequential full-size batches, exactly as `spelunk index`
+    // The index phase: sequential full-size batches, exactly as `inkentry index`
     // issues them.
     let index_client = client.clone();
     let index_base = base.clone();

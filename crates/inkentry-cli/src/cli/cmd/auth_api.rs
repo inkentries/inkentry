@@ -413,7 +413,7 @@ pub async fn refresh_token(
 ///
 /// When the token is still valid, `auth` is returned unchanged (no network
 /// call). A refresh failure (revoked/expired refresh token) surfaces a clear
-/// "run `spelunk login`" error rather than a raw 401 from the downstream call.
+/// "run `inkentry login`" error rather than a raw 401 from the downstream call.
 ///
 /// `persist` is invoked with the rotated tokens so the caller controls *where*
 /// they are written (the global config in production, a temp path in tests).
@@ -436,7 +436,7 @@ pub async fn ensure_fresh_token(
         org_id_for_refresh(&auth.org_id),
     )
     .await
-    .map_err(|e| e.context("session expired and token refresh failed — run `spelunk login`"))?
+    .map_err(|e| e.context("session expired and token refresh failed — run `inkentry login`"))?
     .into_auth_tokens();
     persist(&rotated)?;
     Ok(rotated)
@@ -457,7 +457,7 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
 /// cloud-origin `server_url` can ever resolve to the `[auth]` access token,
 /// so a self-hosted `server_url` never mistakes an unrelated cloud login for
 /// its own credential. Because access tokens are short-lived, commands that
-/// hit cloud-api directly (e.g. `spelunk sync`, `spelunk memory pull`) must
+/// hit cloud-api directly (e.g. `inkentry sync`, `inkentry memory pull`) must
 /// guard against using an already-expired token, which would 401.
 ///
 /// Behaviour:
@@ -469,7 +469,7 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
 ///     server-key or an env override is not refreshable here, and a
 ///     still-valid token needs no network round-trip.
 ///
-/// A refresh failure surfaces a clear "run `spelunk login`" error.
+/// A refresh failure surfaces a clear "run `inkentry login`" error.
 pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
     let resolved = cfg.bearer_for(server_url)?;
 
@@ -682,7 +682,7 @@ mod tests {
     fn is_prod_cloud_url_only_matches_canonical_host() {
         assert!(is_prod_cloud_url("https://api.spelunk.cloud"));
         assert!(is_prod_cloud_url("https://api.spelunk.cloud/"));
-        assert!(is_prod_cloud_url("https://API.SPELUNK.CLOUD"));
+        assert!(is_prod_cloud_url("https://API.INKENTRY.CLOUD"));
         assert!(!is_prod_cloud_url("https://staging.spelunk.cloud"));
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
     }
@@ -862,7 +862,7 @@ mod tests {
     }
 
     /// When the refresh grant is rejected (revoked/expired refresh token), the
-    /// error carries a clear "run `spelunk login`" hint instead of a raw 401.
+    /// error carries a clear "run `inkentry login`" hint instead of a raw 401.
     #[tokio::test]
     async fn ensure_fresh_token_refresh_failure_says_run_login() {
         use wiremock::matchers::{method, path};
@@ -889,7 +889,7 @@ mod tests {
             .await
             .expect_err("a revoked refresh token must error");
         assert!(
-            err.to_string().contains("spelunk login"),
+            err.to_string().contains("inkentry login"),
             "error should tell the user to re-login, got: {err}"
         );
     }

@@ -6,11 +6,11 @@
 // the default `memory.db` path (no `--backend git-notes`). Reading the git ref
 // directly proves the merge, not the read path a real user hits.
 //
-// Every spawned `spelunk` pins `INKENTRY_SECRET_STORE=file` (via `spelunk_bin`),
+// Every spawned `inkentry` pins `INKENTRY_SECRET_STORE=file` (via `inkentry_bin`),
 // `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, spelunk_bin};
+use plumbing_helpers::{register_sqlite_vec, inkentry_bin};
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -77,13 +77,13 @@ fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
     );
 }
 
-// ── spelunk helpers ───────────────────────────────────────────────────────────
+// ── inkentry helpers ───────────────────────────────────────────────────────────
 
 // A personal config that satisfies `Config::validate` and points the index-db
 // resolution somewhere harmless. `store_in_git_notes` opts the memory writes
 // into the git-notes carrier (the publish side of the round trip).
 fn write_config(dir: &Path, store_in_git_notes: bool) -> PathBuf {
-    let cfg = dir.join("spelunk-config.toml");
+    let cfg = dir.join("inkentry-config.toml");
     let index_db = dir.join(".inkentry").join("index.db");
     let mut body = format!("db_path = {index_db:?}\nllm_model = \"x\"\n");
     if store_in_git_notes {
@@ -97,10 +97,10 @@ fn mem_db(dir: &Path) -> PathBuf {
     dir.join(".inkentry").join("memory.db")
 }
 
-// Run `spelunk init --no-index` in `dir` (offline, non-TTY); returns stdout.
+// Run `inkentry init --no-index` in `dir` (offline, non-TTY); returns stdout.
 fn run_init(dir: &Path) -> String {
     let cfg = write_config(dir, false);
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(dir)
         .env("HOME", dir)
         .env("INKENTRY_NO_SERVER", "1")
@@ -109,10 +109,10 @@ fn run_init(dir: &Path) -> String {
         .arg(&cfg)
         .args(["init", "--no-index"])
         .output()
-        .expect("spawn spelunk init");
+        .expect("spawn inkentry init");
     assert!(
         out.status.success(),
-        "spelunk init failed: {}",
+        "inkentry init failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).to_string()
@@ -123,7 +123,7 @@ fn run_init(dir: &Path) -> String {
 // trip; the note lands on the shared HEAD commit the reader also has.
 fn publish_note(author: &Path, title: &str, body: &str) {
     let cfg = write_config(author, true);
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(author)
         .env("HOME", author)
         .env("INKENTRY_NO_SERVER", "1")
@@ -141,7 +141,7 @@ fn publish_note(author: &Path, title: &str, body: &str) {
         .arg("--body")
         .arg(body)
         .output()
-        .expect("spawn spelunk memory add");
+        .expect("spawn inkentry memory add");
     assert!(
         out.status.success(),
         "memory add failed: {}",
@@ -152,12 +152,12 @@ fn publish_note(author: &Path, title: &str, body: &str) {
     git(author, &["push", "-q", "origin", "refs/notes/inkentry"]);
 }
 
-// Run a `spelunk memory <sub>` command on the DEFAULT backend in `dir`,
+// Run a `inkentry memory <sub>` command on the DEFAULT backend in `dir`,
 // against `dir`'s project `memory.db`. Deliberately never passes
 // `--backend git-notes`: the whole point is the SQLite read path.
 fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
     let cfg = write_config(dir, false);
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         .env("HOME", dir)
         .env("INKENTRY_NO_SERVER", "1")
@@ -170,14 +170,14 @@ fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
     for a in sub_args {
         cmd.arg(a);
     }
-    cmd.output().expect("spawn spelunk memory")
+    cmd.output().expect("spawn inkentry memory")
 }
 
-// Run `spelunk context` on the DEFAULT backend in `dir`.
+// Run `inkentry context` on the DEFAULT backend in `dir`.
 fn read_context(dir: &Path) -> Output {
     let cfg = write_config(dir, false);
     let memdb = mem_db(dir);
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(dir)
         .env("HOME", dir)
         .env("INKENTRY_NO_SERVER", "1")
@@ -189,7 +189,7 @@ fn read_context(dir: &Path) -> Output {
         .arg(&memdb)
         .arg("--local-only")
         .output()
-        .expect("spawn spelunk context")
+        .expect("spawn inkentry context")
 }
 
 fn stdout_of(out: &Output) -> String {
@@ -510,7 +510,7 @@ fn init_offline_succeeds_and_configures_refspec() {
         "offline init must still configure the notes fetch refspec, got:\n{fetch}"
     );
     assert!(
-        stdout.contains("spelunk initialised for"),
+        stdout.contains("inkentry initialised for"),
         "offline init must complete its success summary, got:\n{stdout}"
     );
 }
@@ -596,7 +596,7 @@ fn no_git_repo_read_makes_no_import_attempt() {
 
     // Seed one local note via the write path (no git involved).
     let cfg = write_config(dir, false);
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(dir)
         .env("HOME", dir)
         .env("INKENTRY_NO_SERVER", "1")

@@ -1,7 +1,7 @@
 //! ADR-037 P2 D6: auto-start scope for the local relay nudge
 //! (`crate::cli::cmd::memory::outbox::nudge_after_write`).
 //!
-//! `spelunk memory add`/`archive`/`supersede` may opportunistically
+//! `inkentry memory add`/`archive`/`supersede` may opportunistically
 //! auto-start the local `inkentry-server` daemon so the outbox drains
 //! promptly, but ONLY for an interactive (TTY) `local_first` write (item 24).
 //! Every invocation here runs through `assert_cmd`, whose child process gets
@@ -11,7 +11,7 @@
 //! directly and truthfully, not simulated.
 //!
 //! Detection signal: `ensure_server_running` calls `create_state_dir` (which
-//! creates `~/.local/state/spelunk/`, `0700`) before it does anything else,
+//! creates `~/.local/state/inkentry/`, `0700`) before it does anything else,
 //! including before it even looks for the `inkentry-server` binary. So "the
 //! state dir was never created" is a direct, positive proxy for "auto-start
 //! was never attempted" — stronger than merely checking for a `server.pid`
@@ -19,7 +19,7 @@
 //! lookup happened to fail first.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin_in, write_project_server_config};
+use plumbing_helpers::{init_git_repo, inkentry_bin_in, write_project_server_config};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -52,7 +52,7 @@ fn assert_write_never_auto_starts(mode_toml: &str) {
         "precondition: state dir must not exist before the write"
     );
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -117,7 +117,7 @@ fn cloud_first_mode_write_never_auto_starts() {
     // The write itself is expected to fail (unreachable server, cloud_first
     // has no local fallback) — irrelevant to this test, which only checks
     // that no auto-start was attempted either way.
-    let _ = spelunk_bin_in(&home)
+    let _ = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -136,7 +136,7 @@ fn cloud_first_mode_write_never_auto_starts() {
 // ── item 27: INKENTRY_NO_SERVER=1 is a hard kill-switch regardless of TTY ────
 
 #[test]
-fn spelunk_no_server_env_write_never_auto_starts() {
+fn inkentry_no_server_env_write_never_auto_starts() {
     let home = TempDir::new().unwrap().keep();
     let project = home.join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -145,7 +145,7 @@ fn spelunk_no_server_env_write_never_auto_starts() {
     std::fs::write(&config_path, "").unwrap();
     write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project)
         .arg("--config")
@@ -204,7 +204,7 @@ async fn write_never_makes_a_sync_call_to_server_url_even_when_it_is_reachable()
     std::fs::write(&config_path, "").unwrap();
     write_project_server_config(&project, &team_server.uri(), "team/proj");
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -309,7 +309,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("server.port"), format!("{relay_port}\n")).unwrap();
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&repo)
         .env("INKENTRY_SERVER_URL", "https://team.invalid:7777")
         .env("INKENTRY_PROJECT_ID", "team/proj")
@@ -373,7 +373,7 @@ fn write_still_commits_and_stays_outbox_pending_when_no_auto_start_happens() {
     std::fs::write(&config_path, "").unwrap();
     write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -388,7 +388,7 @@ fn write_still_commits_and_stays_outbox_pending_when_no_auto_start_happens() {
         "the write must commit locally regardless of relay reachability"
     );
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -406,10 +406,10 @@ fn write_still_commits_and_stays_outbox_pending_when_no_auto_start_happens() {
 // ── item 43: read-command convergence (`memory list`) never auto-starts ────
 //
 // items 42-47 extend the ADR-037 P2 relay poll to `memory list`/`search`/
-// `show`/`timeline`/`spelunk context` so live-pulled entries converge on
-// reads, not just `spelunk status`. Item 43 requires this to be strictly
+// `show`/`timeline`/`inkentry context` so live-pulled entries converge on
+// reads, not just `inkentry status`. Item 43 requires this to be strictly
 // poll-if-already-running: it must reuse `probe_local_relay_port` (a passive
-// check) exactly like `spelunk status` already does, never
+// check) exactly like `inkentry status` already does, never
 // `ensure_server_running`. `memory list` stands in for all five call sites
 // here since they all route through the same `outbox::poll_and_apply`.
 
@@ -428,7 +428,7 @@ fn memory_list_never_auto_starts_the_local_server() {
         "precondition: state dir must not exist before the read"
     );
 
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)

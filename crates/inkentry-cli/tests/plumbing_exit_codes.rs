@@ -16,8 +16,8 @@
 mod plumbing_helpers;
 
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, init_git_repo, spelunk_bin,
-    spelunk_cmd, write_config, write_project_server_config,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, init_git_repo, inkentry_bin,
+    inkentry_cmd, write_config, write_project_server_config,
 };
 
 use std::path::{Path, PathBuf};
@@ -83,16 +83,16 @@ fn assert_empty(label: &str, output: &std::process::Output) {
 fn the_three_exit_codes_are_distinct_for_a_single_command() {
     let (_tmp, db, cfg) = index_fixture_project();
 
-    let results = spelunk_cmd(&db, &cfg)
+    let results = inkentry_cmd(&db, &cfg)
         .args(["cat-chunks", "src/lib.rs"])
         .output()
         .unwrap();
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["cat-chunks", "src/never_indexed.rs"])
         .output()
         .unwrap();
     let (_t2, missing_db, cfg2) = unindexed_project();
-    let error = spelunk_cmd(&missing_db, &cfg2)
+    let error = inkentry_cmd(&missing_db, &cfg2)
         .args(["cat-chunks", "src/lib.rs"])
         .output()
         .unwrap();
@@ -123,7 +123,7 @@ fn an_unknown_flag_is_a_hard_error_not_an_empty_result() {
         vec!["ls-files", "--no-such-flag"],
         vec!["knn", "--limit", "not-a-number"],
     ] {
-        let out = spelunk_cmd(&db, &cfg).args(&args).output().unwrap();
+        let out = inkentry_cmd(&db, &cfg).args(&args).output().unwrap();
         assert_hard_error(&format!("plumbing {}", args.join(" ")), &out);
     }
 }
@@ -134,21 +134,21 @@ fn an_unknown_flag_is_a_hard_error_not_an_empty_result() {
 fn cat_chunks_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
 
-    let ok = spelunk_cmd(&db, &cfg)
+    let ok = inkentry_cmd(&db, &cfg)
         .args(["cat-chunks", "src/lib.rs"])
         .output()
         .unwrap();
     assert_exit("cat-chunks results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["cat-chunks", "src/never_indexed.rs"])
         .output()
         .unwrap();
     assert_empty("cat-chunks unknown file", &empty);
 
     let (_t2, missing_db, cfg2) = unindexed_project();
-    let err = spelunk_cmd(&missing_db, &cfg2)
+    let err = inkentry_cmd(&missing_db, &cfg2)
         .args(["cat-chunks", "src/lib.rs"])
         .output()
         .unwrap();
@@ -161,19 +161,19 @@ fn cat_chunks_exit_codes() {
 fn ls_files_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
 
-    let ok = spelunk_cmd(&db, &cfg).arg("ls-files").output().unwrap();
+    let ok = inkentry_cmd(&db, &cfg).arg("ls-files").output().unwrap();
     assert_exit("ls-files results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
     // A prefix nothing matches is an empty set, not a failure.
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["ls-files", "--prefix", "no/such/directory/"])
         .output()
         .unwrap();
     assert_empty("ls-files unmatched prefix", &empty);
 
     let (_t2, missing_db, cfg2) = unindexed_project();
-    let err = spelunk_cmd(&missing_db, &cfg2)
+    let err = inkentry_cmd(&missing_db, &cfg2)
         .arg("ls-files")
         .output()
         .unwrap();
@@ -187,7 +187,7 @@ fn parse_file_exit_codes() {
     let (_tmp, db, cfg) = unindexed_project();
     let source = plumbing_helpers::fixture_path().join("src/lib.rs");
 
-    let ok = spelunk_cmd(&db, &cfg)
+    let ok = inkentry_cmd(&db, &cfg)
         .arg("parse-file")
         .arg(&source)
         .output()
@@ -198,14 +198,14 @@ fn parse_file_exit_codes() {
     // An unrecognised extension yields no chunks; that is an empty set.
     let unsupported = _tmp.path().join("payload.bin");
     std::fs::write(&unsupported, [0u8, 1, 2, 3]).unwrap();
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .arg("parse-file")
         .arg(&unsupported)
         .output()
         .unwrap();
     assert_empty("parse-file unsupported type", &empty);
 
-    let err = spelunk_cmd(&db, &cfg)
+    let err = inkentry_cmd(&db, &cfg)
         .arg("parse-file")
         .arg(_tmp.path().join("absent.rs"))
         .output()
@@ -220,7 +220,7 @@ fn hash_file_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
     let source = plumbing_helpers::fixture_path().join("src/lib.rs");
 
-    let ok = spelunk_cmd(&db, &cfg)
+    let ok = inkentry_cmd(&db, &cfg)
         .arg("hash-file")
         .arg(&source)
         .output()
@@ -228,7 +228,7 @@ fn hash_file_exit_codes() {
     assert_exit("hash-file results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    let err = spelunk_cmd(&db, &cfg)
+    let err = inkentry_cmd(&db, &cfg)
         .arg("hash-file")
         .arg(_tmp.path().join("absent.rs"))
         .output()
@@ -245,7 +245,7 @@ fn hash_file_never_reports_an_empty_result() {
     let never_indexed = tmp.path().join("scratch.rs");
     std::fs::write(&never_indexed, "fn scratch() {}\n").unwrap();
 
-    let out = spelunk_cmd(&db, &cfg)
+    let out = inkentry_cmd(&db, &cfg)
         .arg("hash-file")
         .arg(&never_indexed)
         .output()
@@ -272,7 +272,7 @@ fn knn_query() -> String {
 fn knn_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
 
-    let ok = spelunk_cmd(&db, &cfg)
+    let ok = inkentry_cmd(&db, &cfg)
         .arg("knn")
         .write_stdin(knn_query())
         .output()
@@ -282,14 +282,14 @@ fn knn_exit_codes() {
 
     // A similarity threshold above 1.0 is unreachable, so every result is
     // filtered out and the empty set is the honest answer.
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["knn", "--min-score", "1.5"])
         .write_stdin(knn_query())
         .output()
         .unwrap();
     assert_empty("knn min-score filters everything", &empty);
 
-    let err = spelunk_cmd(&db, &cfg)
+    let err = inkentry_cmd(&db, &cfg)
         .arg("knn")
         .write_stdin("not json at all")
         .output()
@@ -303,21 +303,21 @@ fn knn_exit_codes() {
 fn graph_edges_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
 
-    let ok = spelunk_cmd(&db, &cfg)
+    let ok = inkentry_cmd(&db, &cfg)
         .args(["graph-edges", "--file", "src/main.rs"])
         .output()
         .unwrap();
     assert_exit("graph-edges results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["graph-edges", "--symbol", "no_such_symbol_anywhere"])
         .output()
         .unwrap();
     assert_empty("graph-edges unknown symbol", &empty);
 
     // Neither filter given is a usage error, not an empty set.
-    let err = spelunk_cmd(&db, &cfg).arg("graph-edges").output().unwrap();
+    let err = inkentry_cmd(&db, &cfg).arg("graph-edges").output().unwrap();
     assert_hard_error("graph-edges no filter", &err);
 }
 
@@ -328,7 +328,7 @@ fn read_memory_exit_codes() {
     let (tmp, db, cfg) = index_fixture_project();
     let mem_path = db.with_file_name("memory.db");
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -348,18 +348,18 @@ fn read_memory_exit_codes() {
         .assert()
         .success();
 
-    let ok = spelunk_cmd(&db, &cfg).arg("read-memory").output().unwrap();
+    let ok = inkentry_cmd(&db, &cfg).arg("read-memory").output().unwrap();
     assert_exit("read-memory results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    let empty = spelunk_cmd(&db, &cfg)
+    let empty = inkentry_cmd(&db, &cfg)
         .args(["read-memory", "--kind", "no-such-kind"])
         .output()
         .unwrap();
     assert_empty("read-memory unmatched kind", &empty);
 
     let (_t2, missing_db, cfg2) = unindexed_project();
-    let err = spelunk_cmd(&missing_db, &cfg2)
+    let err = inkentry_cmd(&missing_db, &cfg2)
         .arg("read-memory")
         .output()
         .unwrap();
@@ -393,7 +393,7 @@ async fn embed_exit_codes() {
     std::fs::write(&cfg, "mode = \"cloud_first\"\n").unwrap();
     write_project_server_config(tmp.path(), &mock.uri(), FIXTURE_PROJECT_ID);
 
-    let ok = spelunk_bin()
+    let ok = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -406,7 +406,7 @@ async fn embed_exit_codes() {
 
     // Documented exception: no reachable input is an empty *input*, not an
     // empty result set, so embed answers 0 with no rows rather than 1.
-    let no_input = spelunk_bin()
+    let no_input = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -421,7 +421,7 @@ async fn embed_exit_codes() {
     let unreachable = TempDir::new().unwrap();
     let bare_cfg = unreachable.path().join("config.toml");
     std::fs::write(&bare_cfg, "llm_model = \"x\"\n").unwrap();
-    let err = spelunk_bin()
+    let err = inkentry_bin()
         .current_dir(unreachable.path())
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")
@@ -456,7 +456,7 @@ fn publish_notes_exit_codes() {
     // Nothing to publish is reported in the JSON payload, not the exit status:
     // this runs from a pre-push hook, where a non-zero exit aborts the user's
     // branch push. That coupling is why the skip path is exit 0 and not 1.
-    let skipped = spelunk_bin()
+    let skipped = inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin"])
@@ -470,7 +470,7 @@ fn publish_notes_exit_codes() {
 
     // A remote that resolves but cannot be pushed to is a real failure, and
     // without --best-effort it must surface as one.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
         .args([
@@ -492,7 +492,7 @@ fn publish_notes_exit_codes() {
         &["remote", "add", "origin", broken.to_str().unwrap()],
     );
 
-    let err = spelunk_bin()
+    let err = inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin"])
@@ -502,7 +502,7 @@ fn publish_notes_exit_codes() {
 
     // The same failure under --best-effort is exit 0 with the error in the
     // payload, so an installed pre-push hook never blocks a code push.
-    let tolerated = spelunk_bin()
+    let tolerated = inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin", "--best-effort"])

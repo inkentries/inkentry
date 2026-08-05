@@ -109,8 +109,8 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         // none (auto default, ast-grep) rather than only demanding an index.
         if mode == "text" {
             return Err(anyhow::anyhow!(
-                "no FTS index yet for --mode text. Run `spelunk index <path>` first,\n\
-                 or try `spelunk search \"...\" --mode ast-grep` (or omit --mode) for a\n\
+                "no FTS index yet for --mode text. Run `inkentry index <path>` first,\n\
+                 or try `inkentry search \"...\" --mode ast-grep` (or omit --mode) for a\n\
                  zero-setup search."
             ));
         }
@@ -120,7 +120,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // Honor the capability tier: when the server was auto-discovered via the
     // loopback probe, `cfg.server_url` is unset; fill it in from the tier so
     // the inference client can be built (mirrors explore.rs / memory/search.rs,
-    // see spelunk#316).
+    // see inkentry#316).
     let project_root = db_path.parent().unwrap_or(&db_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder, even with an explicit server_url set
@@ -256,7 +256,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         let query_vec = query_vec_result.map_err(|e| {
             anyhow::anyhow!(
                 "{e}\n\
-                 No embedder configured. Run `spelunk index` with a server_url to enable \
+                 No embedder configured. Run `inkentry index` with a server_url to enable \
                  semantic search, or use `--mode text` or `--mode ast-grep`."
             )
         })?;
@@ -423,7 +423,7 @@ pub(crate) fn maybe_warn_stale(db_path: &std::path::Path) {
     {
         eprintln!(
             "warning: index may be stale ({}/{} sampled files changed). \
-             Run `spelunk index .` to refresh.",
+             Run `inkentry index .` to refresh.",
             report.stale, report.sampled
         );
     }
@@ -462,13 +462,13 @@ pub(crate) fn resolve_project_and_deps(
     if !db_path.exists() {
         if explicit_db.is_some() {
             anyhow::bail!(
-                "Database not found at '{}'. Run `spelunk index <path>` first.",
+                "Database not found at '{}'. Run `inkentry index <path>` first.",
                 db_path.display()
             );
         }
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
-             Run `spelunk index <path>` inside your project first."
+             Run `inkentry index <path>` inside your project first."
         );
     }
 
@@ -628,7 +628,7 @@ pub(crate) fn search_live(
 }
 
 /// What the embedding coverage of the index means for this search
-/// (`spelunk search` warmup contract). Three coverage states by two mode
+/// (`inkentry search` warmup contract). Three coverage states by two mode
 /// classes, exhaustively; there is deliberately no coverage threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoverageDisposition {
@@ -681,7 +681,7 @@ fn warmup_notice_partial(embedded: i64, total: i64) -> String {
     format!(
         "[warmup: searchable {embedded}/{total} chunks ({pct}%), front-loaded by importance \
          and recency; a missing result may mean \"not embedded yet\", not \"not in the \
-         codebase\" (check `spelunk status`)]"
+         codebase\" (check `inkentry status`)]"
     )
 }
 
@@ -690,7 +690,7 @@ fn warmup_notice_partial(embedded: i64, total: i64) -> String {
 fn warmup_notice_zero_auto(total: i64) -> String {
     format!(
         "[semantic search is warming up: 0/{total} chunks embedded; using ast-grep. \
-         Embeddings build in the background (check `spelunk status`)]"
+         Embeddings build in the background (check `inkentry status`)]"
     )
 }
 
@@ -700,8 +700,8 @@ fn warmup_error_zero_explicit(mode: &str, total: i64) -> String {
     format!(
         "semantic search is still warming up: 0/{total} chunks are embedded, so a {mode} \
          search would search nothing.\n\
-         Embeddings build in the background; check `spelunk status`. If no embed worker is \
-         running, resume with `spelunk index .`.\n\
+         Embeddings build in the background; check `inkentry status`. If no embed worker is \
+         running, resume with `inkentry index .`.\n\
          Use `--mode text` or `--mode ast-grep` in the meantime."
     )
 }
@@ -715,7 +715,7 @@ fn warmup_error_zero_explicit(mode: &str, total: i64) -> String {
 ///
 /// `remote_url` is `Some` when the probed server came from an explicit
 /// `server_url` (not loopback auto-discovery). The unavailable-embedder
-/// notice must then name that server instead of pointing at `spelunk server
+/// notice must then name that server instead of pointing at `inkentry server
 /// logs`, which only reads the local auto-daemon's log and would show clean
 /// logs for a failure that lives on the remote server.
 ///
@@ -734,7 +734,7 @@ fn semantic_unavailable_message(
     use capability::EmbedderState;
     match embedder_state {
         Some(EmbedderState::Loading) => "[semantic search unavailable: model still warming up — \
-             retry shortly (`spelunk server status`); using ast-grep]"
+             retry shortly (`inkentry server status`); using ast-grep]"
             .to_string(),
         Some(EmbedderState::Unavailable) => match remote_url {
             Some(url) => format!(
@@ -742,7 +742,7 @@ fn semantic_unavailable_message(
                  check that server's own logs; using ast-grep]"
             ),
             None => "[semantic search unavailable: embedder failed to load; \
-                 see `spelunk server logs`; using ast-grep]"
+                 see `inkentry server logs`; using ast-grep]"
                 .to_string(),
         },
         Some(_) => "[semantic search unavailable on this server; using ast-grep]".to_string(),
@@ -758,7 +758,7 @@ fn semantic_unavailable_message(
                      auto-discovered local daemon);{windows_hint} using ast-grep]"
                 )
             } else {
-                "[no server running — start one with `spelunk server start` to enable \
+                "[no server running — start one with `inkentry server start` to enable \
                  semantic search; using ast-grep]"
                     .to_string()
             }
@@ -874,10 +874,10 @@ mod tests {
             n.contains("front-loaded by importance and recency"),
             "names the shape so a subsystem miss reads as a blind spot, not a thin sample: {n}"
         );
-        assert!(n.contains("spelunk status"), "actionable: {n}");
+        assert!(n.contains("inkentry status"), "actionable: {n}");
     }
 
-    /// Regression guard (spelunk-oss embed-queue reorder): the embed queue's
+    /// Regression guard (inkentry-oss embed-queue reorder): the embed queue's
     /// `ORDER BY` changed from raw parse/insertion order (`c.id`) to
     /// `graph_rank DESC, mtime DESC, c.id` — the queue is no longer "the first
     /// N files walked" in any sense. The warmup notice's copy was corrected to
@@ -913,7 +913,7 @@ mod tests {
     fn zero_explicit_error_names_warmup_and_the_resume_command() {
         let e = warmup_error_zero_explicit("semantic", 27_734);
         assert!(e.contains("warming up"));
-        assert!(e.contains("spelunk index ."), "resume command: {e}");
+        assert!(e.contains("inkentry index ."), "resume command: {e}");
         assert!(e.contains("--mode text"), "usable alternative: {e}");
         assert!(
             !e.contains("No results found"),
@@ -938,7 +938,7 @@ mod tests {
     #[test]
     fn notice_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
-        // so `spelunk server logs` is the right place to look.
+        // so `inkentry server logs` is the right place to look.
         let msg = semantic_unavailable_message(
             Some(EmbedderState::Unavailable),
             Some("http://x:1"),
@@ -946,12 +946,12 @@ mod tests {
             false,
         );
         assert!(msg.contains("failed to load"));
-        assert!(msg.contains("spelunk server logs"));
+        assert!(msg.contains("inkentry server logs"));
     }
 
     #[test]
     fn notice_unavailable_remote_names_that_server_never_local_logs() {
-        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
         // log, which is clean when the failure lives on the team server. The
         // notice must name the probed server instead.
         let msg = semantic_unavailable_message(
@@ -963,7 +963,7 @@ mod tests {
         assert!(msg.contains("failed to load"));
         assert!(msg.contains("https://team.example:7777"), "got: {msg}");
         assert!(
-            !msg.contains("spelunk server logs"),
+            !msg.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {msg}"
         );
     }
@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn notice_no_server_no_url_suggests_starting_one() {
         let msg = semantic_unavailable_message(None, None, None, false);
-        assert!(msg.contains("spelunk server start"));
+        assert!(msg.contains("inkentry server start"));
     }
 
     #[test]

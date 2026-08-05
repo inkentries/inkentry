@@ -5,7 +5,7 @@
 //! unpushed commit reaches origin while its target object does not, and a fresh
 //! clone then cannot resolve it, so the memory is orphaned.
 //!
-//! The flow lives in `spelunk plumbing publish-notes` (D7); the installed hook
+//! The flow lives in `inkentry plumbing publish-notes` (D7); the installed hook
 //! is a shim that `exec`s it with the binary's absolute path embedded. These
 //! tests drive it end to end through real `git push` invocations.
 //!
@@ -15,10 +15,10 @@
 //!   table was exhausted, while every outer push still reported success).
 //! - the three-case exit split: a publish failure exits 0 and the branch push
 //!   lands; a removed binary exits non-zero and stops the push; a PATH without
-//!   spelunk is irrelevant because the shim embeds an absolute path.
+//!   inkentry is irrelevant because the shim embeds an absolute path.
 //! - two developers annotating the same commit converge, losing neither entry.
 //! - the union keeps every record on its own parseable line: git's newline
-//!   normalization is load-bearing here and is owned outside spelunk (D2).
+//!   normalization is load-bearing here and is owned outside inkentry (D2).
 //! - a lost race is retried and converges; a rejection is attempted exactly once.
 //! - a fetch failure never destroys the notes already on the remote.
 //! - the publish path takes the notes lock, so a concurrent writer cannot eat
@@ -27,41 +27,41 @@
 //! - repeated pushes are idempotent: no duplicates, no empty re-push.
 //! - graceful skip with no local notes ref and when pushing by URL.
 //! - the hook publishes to the remote being pushed to, not a hardcoded `origin`.
-//! - a non-spelunk pre-push hook is never clobbered; a moved binary re-resolves.
+//! - a non-inkentry pre-push hook is never clobbered; a moved binary re-resolves.
 //!
 //! The ambient PATH deliberately does **not** carry the binary under test: the
 //! shim embeds an absolute path, so every test here also proves no PATH lookup
 //! is involved.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use tempfile::TempDir;
 
-/// Absolute path of the `spelunk` binary under test.
-fn spelunk_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_spelunk"))
+/// Absolute path of the `inkentry` binary under test.
+fn inkentry_exe() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_inkentry"))
 }
 
 // A `git` invocation in `dir` with an isolated identity and config.
 //
-// `git push` runs the pre-push hook, which execs a spelunk child. That child
+// `git push` runs the pre-push hook, which execs a inkentry child. That child
 // runs `Config::load`, which reads a config dir and resolves a secret store,
 // defaulting to the OS keychain when `INKENTRY_SECRET_STORE` is unset. git is
 // the only thing standing between a test and that child, so all of it has to be
-// pinned here: pinning it on the spelunk commands a test runs directly leaves
+// pinned here: pinning it on the inkentry commands a test runs directly leaves
 // the hook's child ambient.
 //
-// `HOME` alone does not pin the config dir, because `spelunk_config_dir()`
+// `HOME` alone does not pin the config dir, because `inkentry_config_dir()`
 // returns `INKENTRY_CONFIG_DIR` before it consults `dirs::home_dir()`. Anything
 // this helper does not set is inherited from the test process, so a runner that
 // exports `INKENTRY_CONFIG_DIR` (the documented way to isolate the suite from a
 // developer's own config) silently wins over `HOME` and points the hook's child
 // at a directory no test seeded. `INKENTRY_CONFIG_DIR` is therefore derived from
-// `home` and set explicitly, the same way `spelunk_bin_in` does it for the
+// `home` and set explicitly, the same way `inkentry_bin_in` does it for the
 // direct-spawn path. That also makes the pin work on Windows, where
 // `dirs::home_dir()` reads no environment variable at all.
 fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
@@ -121,9 +121,9 @@ fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
         .to_string()
 }
 
-/// A `spelunk` command with an isolated HOME and no server contact.
+/// A `inkentry` command with an isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
@@ -133,7 +133,7 @@ fn bin(home: &Path, cwd: &Path) -> Command {
 // Like `bin`, but runs an arbitrary copy of the binary rather than the one
 // cargo built. Used to control the path the shim embeds.
 //
-// This cannot go through `spelunk_bin_in`, which always resolves the
+// This cannot go through `inkentry_bin_in`, which always resolves the
 // cargo-built binary, so it repeats that helper's isolation by hand and has to
 // keep `INKENTRY_CONFIG_DIR` among it: without the pin this spawn inherits the
 // runner's ambient value, which wins over `HOME`.
@@ -182,12 +182,12 @@ fn memory_add(home: &Path, repo: &Path, title: &str) {
         .success();
 }
 
-/// `spelunk hooks install --pre-push` in `repo`; returns the hook path.
+/// `inkentry hooks install --pre-push` in `repo`; returns the hook path.
 fn install_pre_push(home: &Path, repo: &Path) -> PathBuf {
-    install_pre_push_from(&spelunk_exe(), home, repo)
+    install_pre_push_from(&inkentry_exe(), home, repo)
 }
 
-/// Install the pre-push hook using the copy of spelunk at `exe`, so the shim
+/// Install the pre-push hook using the copy of inkentry at `exe`, so the shim
 /// embeds `exe`'s path rather than the built binary's.
 fn install_pre_push_from(exe: &Path, home: &Path, repo: &Path) -> PathBuf {
     bin_at(exe, home, repo)
@@ -451,7 +451,7 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 //
 // The seeded config has to be the *ambient* one, which is the case the hook's
 // child hits: it takes no `--config`. `git_cmd` pins `INKENTRY_CONFIG_DIR` at the
-// seeded directory and `spelunk_config_dir()` returns that before it consults
+// seeded directory and `inkentry_config_dir()` returns that before it consults
 // `dirs::home_dir()`, so the premise holds on every platform. That pin is what
 // makes this reachable on Windows, where `dirs::home_dir()` calls
 // `SHGetKnownFolderPath(FOLDERID_Profile)` and reads no environment variable, so
@@ -550,11 +550,11 @@ fn a_broken_config_is_tolerated_for_a_best_effort_publish() {
     );
 }
 
-/// A spelunk that is genuinely gone stops the push, loudly.
+/// A inkentry that is genuinely gone stops the push, loudly.
 ///
 /// This is the one case allowed to fail: a user is better served by being told a
 /// tool it expected is gone than by cruft sitting untidied forever. The embedded
-/// path is what separates it from a GUI client's PATH simply lacking spelunk,
+/// path is what separates it from a GUI client's PATH simply lacking inkentry,
 /// which a `command -v` guard could not distinguish.
 ///
 /// The exact status is the shell's (126 on bash, 127 on dash); only non-zero is
@@ -568,8 +568,8 @@ fn a_removed_binary_stops_the_push() {
     // Install from a copy, so the shim embeds a path we control and can remove.
     let copy = tmp
         .path()
-        .join(format!("spelunk-copy{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(spelunk_exe(), &copy).unwrap();
+        .join(format!("inkentry-copy{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(inkentry_exe(), &copy).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -584,7 +584,7 @@ fn a_removed_binary_stops_the_push() {
     let out = git_out(home.path(), &dev, &["push", "origin", "main"]);
     assert!(
         !out.status.success(),
-        "a removed spelunk must stop the push rather than fail silently"
+        "a removed inkentry must stop the push rather than fail silently"
     );
     assert_ne!(
         git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
@@ -593,17 +593,17 @@ fn a_removed_binary_stops_the_push() {
     );
 }
 
-/// spelunk missing from the pushing client's PATH must be a non-event.
+/// inkentry missing from the pushing client's PATH must be a non-event.
 ///
 /// `install.sh` falls back to `~/.local/bin` and tells the user to add it to
 /// their **shell profile**; macOS GUI apps take their environment from launchd
 /// instead, so Tower, GitHub Desktop and VS Code run hooks without it. A
-/// `command -v spelunk` guard would silently publish nothing for those users,
+/// `command -v inkentry` guard would silently publish nothing for those users,
 /// and dropping the guard without embedding the path would break their push
 /// outright. The shim does no PATH lookup, so this publishes normally.
 #[cfg(unix)]
 #[test]
-fn publishes_with_spelunk_absent_from_path() {
+fn publishes_with_inkentry_absent_from_path() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
     let (origin, dev) = origin_and_dev(home.path(), tmp.path());
@@ -613,7 +613,7 @@ fn publishes_with_spelunk_absent_from_path() {
     let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
     commit(home.path(), &dev, "no-path");
 
-    // A PATH holding nothing but git itself: spelunk is definitively not on it.
+    // A PATH holding nothing but git itself: inkentry is definitively not on it.
     let bin_dir = tmp.path().join("git-only-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let git_path = String::from_utf8(
@@ -636,7 +636,7 @@ fn publishes_with_spelunk_absent_from_path() {
     );
     assert!(
         out.status.success(),
-        "the push must succeed with spelunk off PATH: {}",
+        "the push must succeed with inkentry off PATH: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -1073,7 +1073,7 @@ fn two_dev_divergence_converges_with_no_loss() {
 /// `append_to_git_notes` builds the body with no trailing newline; git adds one
 /// when storing via `notes add -F`. That normalization is the only thing keeping
 /// `cat_sort_uniq` from welding one side's last line onto the other's first and
-/// corrupting both records. It is owned by git rather than by spelunk, so it is
+/// corrupting both records. It is owned by git rather than by inkentry, so it is
 /// pinned here instead of assumed. A substring assertion cannot stand in for
 /// this: a welded line still contains both titles.
 #[test]
@@ -1183,7 +1183,7 @@ fn skips_gracefully_with_no_local_notes_ref() {
         "an empty notes ref must not be invented on origin"
     );
     assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("spelunk:"),
+        !String::from_utf8_lossy(&out.stderr).contains("inkentry:"),
         "a no-op must be silent, got: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -1333,7 +1333,7 @@ fn publishes_to_the_remote_being_pushed_to() {
 
 // ── D3: install / uninstall ───────────────────────────────────────────────────
 
-/// A pre-push hook spelunk did not write is left exactly as it was.
+/// A pre-push hook inkentry did not write is left exactly as it was.
 #[test]
 fn install_bails_on_a_foreign_pre_push_hook() {
     let home = TempDir::new().unwrap();
@@ -1406,8 +1406,8 @@ fn install_re_resolves_a_moved_binary() {
 
     let old = tmp
         .path()
-        .join(format!("old-spelunk{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(spelunk_exe(), &old).unwrap();
+        .join(format!("old-inkentry{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(inkentry_exe(), &old).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1427,7 +1427,7 @@ fn install_re_resolves_a_moved_binary() {
     install_pre_push(home.path(), &dev);
     let body = std::fs::read_to_string(&hook).unwrap();
     assert!(
-        body.contains(&sh_path(&spelunk_exe())),
+        body.contains(&sh_path(&inkentry_exe())),
         "re-installing must re-resolve the binary path: {body}"
     );
     assert!(
@@ -1453,7 +1453,7 @@ fn uninstall_removes_the_pre_push_hook() {
     assert!(!hook.exists(), "uninstall must remove the pre-push hook");
 }
 
-/// `uninstall` removes spelunk's own hooks and leaves a foreign one alone,
+/// `uninstall` removes inkentry's own hooks and leaves a foreign one alone,
 /// rather than refusing to do anything because one file is not ours.
 #[test]
 fn uninstall_leaves_a_foreign_hook_alone() {

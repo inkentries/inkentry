@@ -892,7 +892,7 @@ fn open_for_kind(kind: &str, db_path: &Path, dir: &Path) {
 
 fn old_binary() -> PathBuf {
     let raw = std::env::var("INKENTRY_OLD_BINARY").expect(
-        "INKENTRY_OLD_BINARY must point at a pinned released spelunk binary; \
+        "INKENTRY_OLD_BINARY must point at a pinned released inkentry binary; \
          scripts/upgrade-corpus/generate.sh downloads one into its cache",
     );
     let path = PathBuf::from(raw);
@@ -929,7 +929,7 @@ fn upgraded_project(tmp: &Path) -> PathBuf {
     // A git repo, because the CLI resolves a project from one.
     for args in [
         vec!["init", "--quiet"],
-        vec!["config", "user.email", "corpus@spelunk.invalid"],
+        vec!["config", "user.email", "corpus@inkentry.invalid"],
         vec!["config", "user.name", "corpus"],
     ] {
         let ok = git_command(&project)

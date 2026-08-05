@@ -1,5 +1,5 @@
-//! Push local memory entries to the cloud (`spelunk sync` and the one-way
-//! `spelunk memory push`).
+//! Push local memory entries to the cloud (`inkentry sync` and the one-way
+//! `inkentry memory push`).
 
 use std::collections::HashSet;
 
@@ -71,7 +71,7 @@ pub(in crate::cli::cmd::memory) struct PushSummary {
     pub edges_pushed: usize,
 }
 
-/// One-way push entry point reused by `spelunk memory push`.
+/// One-way push entry point reused by `inkentry memory push`.
 ///
 /// `accepts_pushed_vectors` mirrors the destination server's `/v1/health`
 /// capability: when true, each entry that has a local embedding

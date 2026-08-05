@@ -1,7 +1,7 @@
-//! Component tests for `spelunk plumbing read-memory`.
+//! Component tests for `inkentry plumbing read-memory`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, spelunk_bin, spelunk_cmd, write_config};
+use plumbing_helpers::{parse_jsonl, inkentry_bin, inkentry_cmd, write_config};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -17,7 +17,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _server = rt.block_on(async {
@@ -44,7 +44,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // phase is skipped — these plumbing tests only need parsed chunks + a memory
     // note, not embeddings, and without it the index would auto-discover a
     // loopback inkentry-server on 127.0.0.1:7777 and fail on a dim mismatch.
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -61,7 +61,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // workspace's .inkentry/memory.db instead).
     let mem_path = db_path.with_file_name("memory.db");
 
-    spelunk_bin()
+    inkentry_bin()
         // The git-notes carrier follows the process CWD and ignores `--db`, so
         // seeding from the repo under test would write the fixture into its
         // real notes ref.
@@ -90,7 +90,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
 fn read_memory_emits_jsonl_when_notes_exist() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .assert()
         .success()
@@ -115,7 +115,7 @@ fn read_memory_emits_jsonl_when_notes_exist() {
 fn read_memory_kind_filter_returns_matching_notes() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--kind")
         .arg("note")
@@ -143,7 +143,7 @@ fn read_memory_by_id_returns_single_note() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
     // List all to find an id.
-    let list_output = spelunk_cmd(&db_path, &config_path)
+    let list_output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .assert()
         .success()
@@ -154,7 +154,7 @@ fn read_memory_by_id_returns_single_note() {
     let rows = parse_jsonl(&list_output);
     let first_id = rows[0]["id"].as_i64().expect("id should be integer");
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--id")
         .arg(first_id.to_string())
@@ -176,7 +176,7 @@ fn read_memory_exits_1_when_no_notes_of_kind() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
     // 'handoff' kind was not added in the setup above.
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--kind")
         .arg("handoff")
@@ -188,7 +188,7 @@ fn read_memory_exits_1_when_no_notes_of_kind() {
 fn read_memory_exits_1_for_nonexistent_id() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--id")
         .arg("999999")
@@ -210,7 +210,7 @@ fn read_memory_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

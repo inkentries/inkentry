@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// rather than silently degrading.
 ///
 /// Serialized lowercase to match the server's health body and to feed
-/// `spelunk status --format json`.
+/// `inkentry status --format json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbedderState {
@@ -40,7 +40,7 @@ pub enum EmbedderState {
 
 impl EmbedderState {
     /// Lowercase wire string (matches the server's `embedder.state` field and
-    /// feeds `spelunk status --format json`).
+    /// feeds `inkentry status --format json`).
     pub fn as_str(&self) -> &'static str {
         match self {
             EmbedderState::Loading => "loading",
@@ -95,12 +95,12 @@ pub struct Capabilities {
     /// `/llm/complete` route, so a server old enough to advertise `explore`
     /// alone has no LLM route at all.
     ///
-    /// Kept out of `spelunk status --format json` (which serializes this
+    /// Kept out of `inkentry status --format json` (which serializes this
     /// struct wholesale) so that payload's shape is unchanged.
     #[serde(skip_serializing)]
     pub llm_complete: bool,
     /// Reserved (ADR-002 `/plan`): parsed from server caps but hidden from all
-    /// user-facing output until a `spelunk plan` command ships.
+    /// user-facing output until a `inkentry plan` command ships.
     #[serde(skip_serializing)]
     #[allow(dead_code)]
     pub plan: bool,
@@ -270,7 +270,7 @@ mod tests {
         assert!(Capabilities::all().llm_complete);
     }
 
-    // `spelunk status --format json` serializes `Capabilities` wholesale
+    // `inkentry status --format json` serializes `Capabilities` wholesale
     // (`status.rs`), so a newly-parsed field must stay out of that object or
     // the documented status payload changes shape.
     #[test]
@@ -281,7 +281,7 @@ mod tests {
             .expect("capabilities serialize as an object");
         assert!(
             !object.contains_key("llm_complete"),
-            "llm_complete must not reach `spelunk status --format json`: {object:?}"
+            "llm_complete must not reach `inkentry status --format json`: {object:?}"
         );
     }
 

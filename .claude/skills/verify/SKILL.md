@@ -1,9 +1,9 @@
 ---
 name: verify
-description: Verification gates for the spelunk repo: run before opening or updating any pull request. Covers the mandatory secret-store env var for cargo, formatting, clippy, tests, doctests, and the source-hygiene checks CI and review will otherwise catch. Use after making any change to this repository.
+description: Verification gates for the inkentry repo: run before opening or updating any pull request. Covers the mandatory secret-store env var for cargo, formatting, clippy, tests, doctests, and the source-hygiene checks CI and review will otherwise catch. Use after making any change to this repository.
 ---
 
-# Verify: spelunk
+# Verify: inkentry
 
 Run every gate below and fix until green. A gate you did not watch pass has not passed.
 
@@ -65,21 +65,21 @@ INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo test --doc
 Scope to the crate you touched while iterating (`-p inkentry-cli`), but run the full suite before
 the PR.
 
-### Isolate the suite from your own spelunk config
+### Isolate the suite from your own inkentry config
 
 `INKENTRY_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
 default configuration instead of yours.
 
-A spawned `spelunk` escapes your own config by one of two routes: the helper that spawns it pins
-`INKENTRY_CONFIG_DIR` itself (`plumbing_helpers::spelunk_bin_in`, and the handful of files that build
+A spawned `inkentry` escapes your own config by one of two routes: the helper that spawns it pins
+`INKENTRY_CONFIG_DIR` itself (`plumbing_helpers::inkentry_bin_in`, and the handful of files that build
 their own `Command`), or you export `INKENTRY_CONFIG_DIR` for the whole run as above and the child
-inherits that. With neither, the child reads `~/.config/spelunk/config.toml`.
-So if you have configured spelunk for your own use, particularly a `server_url` with
+inherits that. With neither, the child reads `~/.config/inkentry/config.toml`.
+So if you have configured inkentry for your own use, particularly a `server_url` with
 `mode = "cloud_first"`, a run without the export picks that up and starts talking to a real server.
 That has already interfered with real runs: tests that should be hermetic fail, hang, or pass for
 the wrong reason depending on whether that server happens to be healthy.
 
-Your own `spelunk` usage and the repo's test runs are different concerns and must not share
+Your own `inkentry` usage and the repo's test runs are different concerns and must not share
 configuration. Pointing the suite at a throwaway directory is the cheapest way to keep them apart,
 and it matches what CI already gets by having no user config at all.
 

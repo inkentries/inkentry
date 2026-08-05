@@ -16,7 +16,7 @@
 //! (case 5 from a bare temp dir) live in `fail_closed_no_project.rs`.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -26,7 +26,7 @@ use tempfile::TempDir;
 
 /// ADR-068 D3 dual-escape-hatch error (case 5): neither a project DB nor a
 /// usable git repo. Kept in sync with `fail_closed_no_project.rs`.
-const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
+const NO_PROJECT_NO_REPO_ERR: &str = "no inkentry project here, and not inside a git repo. Run 'inkentry init' first, \
      or run inside a git repository.";
 
 /// ADR-067 single-hatch error: no local `.inkentry/` project. This is what every
@@ -35,12 +35,12 @@ const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a 
 /// `NO_PROJECT_NO_REPO_ERR`: the dual-hatch text splices ", and not inside a git
 /// repo" between "here" and ". Run", so this substring matches only the
 /// single-hatch message.
-const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
+const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
-/// A `spelunk` command with an isolated HOME (so the "global" store lives under
-/// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
+/// A `inkentry` command with an isolated HOME (so the "global" store lives under
+/// `<home>/.config/inkentry`) and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
@@ -88,11 +88,11 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A git repo with one commit and no `.inkentry/`. `user.*` is set in the LOCAL
-/// repo config so the `git notes add` that the spawned `spelunk` runs (which
+/// repo config so the `git notes add` that the spawned `inkentry` runs (which
 /// does NOT inherit the test's `GIT_*` identity env) has a committer identity.
 fn init_git_repo_with_commit(dir: &Path) {
     git(dir, &["init", "-q", "-b", "main"]);
-    // Local (not env) identity: the spelunk child reads this from `.git/config`.
+    // Local (not env) identity: the inkentry child reads this from `.git/config`.
     git(dir, &["config", "user.name", "t"]);
     git(dir, &["config", "user.email", "t@example.com"]);
     std::fs::write(dir.join("f.txt"), "x\n").unwrap();
@@ -100,9 +100,9 @@ fn init_git_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// The spelunk records currently in HEAD's `refs/notes/inkentry` note (one JSON
+/// The inkentry records currently in HEAD's `refs/notes/inkentry` note (one JSON
 /// object per line). Empty when the ref/note does not exist.
-fn spelunk_note_lines(dir: &Path) -> Vec<String> {
+fn inkentry_note_lines(dir: &Path) -> Vec<String> {
     let blob = git_stdout(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     blob.lines()
         .map(str::trim)
@@ -141,7 +141,7 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
     assert_eq!(
         list.lines().filter(|l| !l.trim().is_empty()).count(),
         1,
-        "exactly one commit (HEAD) should carry a spelunk note; got: {list:?}"
+        "exactly one commit (HEAD) should carry a inkentry note; got: {list:?}"
     );
 
     // list: reads the entry back through the same git-notes fallback.
@@ -187,7 +187,7 @@ fn single_add_writes_exactly_one_note_record() {
         .assert()
         .success();
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         1,
@@ -277,7 +277,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
         ])
         .assert()
         .success();
-    let pre_lines = spelunk_note_lines(pre.path());
+    let pre_lines = inkentry_note_lines(pre.path());
     assert_eq!(pre_lines.len(), 1, "pre-init add writes one record");
 
     // Post-init: a local `.inkentry/` makes SQLite the primary; the same
@@ -299,7 +299,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
         ])
         .assert()
         .success();
-    let post_lines = spelunk_note_lines(post.path());
+    let post_lines = inkentry_note_lines(post.path());
     assert_eq!(
         post_lines.len(),
         1,
@@ -385,7 +385,7 @@ fn reinit_between_adds_yields_distinct_entity_ids() {
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
     add("second decision", "body two");
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(lines.len(), 2, "both adds carried into the notes ref");
 
     // The collision is real, not hypothetical: assert it before asserting the fix.
@@ -447,7 +447,7 @@ fn entity_id_is_stable_across_stores() {
             ])
             .assert()
             .success();
-        let lines = spelunk_note_lines(repo.path());
+        let lines = inkentry_note_lines(repo.path());
         let last = lines.last().expect("at least one record");
         record_field(last, "entity_id")
     };
@@ -479,8 +479,8 @@ fn memory_add_refuses_in_git_repo_without_any_commit() {
 
     assert!(!global_memory_db(home.path()).exists());
     assert!(
-        spelunk_note_lines(repo.path()).is_empty(),
-        "a refused add in an empty repo must not write any spelunk note"
+        inkentry_note_lines(repo.path()).is_empty(),
+        "a refused add in an empty repo must not write any inkentry note"
     );
 }
 
@@ -502,7 +502,7 @@ fn memory_list_refuses_in_git_repo_without_any_commit() {
 // ── precedence #3 > #4: a local `.inkentry/` wins over the git-notes fallback ────
 
 #[test]
-fn local_dot_spelunk_takes_precedence_over_git_notes_fallback() {
+fn local_dot_inkentry_takes_precedence_over_git_notes_fallback() {
     let home = TempDir::new().unwrap();
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
@@ -576,7 +576,7 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
     // store, so the universal write-through is suppressed. A single `add` must
     // therefore leave exactly one record (not a primary write plus a redundant
     // write-through): the other single-write path alongside the pre-init carrier.
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         1,
@@ -627,7 +627,7 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
         .stderr(predicate::str::contains("secret pattern"));
 
     assert!(
-        spelunk_note_lines(repo.path()).is_empty(),
+        inkentry_note_lines(repo.path()).is_empty(),
         "a secret-blocked add must leave refs/notes/inkentry absent/unmodified"
     );
     // And a body-borne secret is likewise blocked before any note is written
@@ -648,7 +648,7 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
         .stderr(predicate::str::contains("secret pattern"));
 
     assert!(
-        spelunk_note_lines(repo.path()).is_empty(),
+        inkentry_note_lines(repo.path()).is_empty(),
         "a body-secret-blocked add must also leave the note ref untouched"
     );
 }
@@ -686,8 +686,8 @@ fn non_add_list_subcommands_stay_fail_closed_inside_git_repo() {
     }
 
     assert!(
-        spelunk_note_lines(repo.path()).is_empty(),
-        "a fail-closed non-add/list subcommand must not write any spelunk note"
+        inkentry_note_lines(repo.path()).is_empty(),
+        "a fail-closed non-add/list subcommand must not write any inkentry note"
     );
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -732,7 +732,7 @@ fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
 
     // Write-through: exactly one record landed in refs/notes/inkentry (the SQLite
     // primary write plus the write-through must not double up).
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         1,
@@ -777,11 +777,11 @@ fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
     git(repo.path(), &["add", "."]);
     git(repo.path(), &["commit", "-q", "-m", "init"]);
 
-    let mut cmd = spelunk_bin_in(home.path());
+    let mut cmd = inkentry_bin_in(home.path());
     cmd.current_dir(repo.path())
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")
-        // Neutralize every identity source for the git subprocess spelunk spawns.
+        // Neutralize every identity source for the git subprocess inkentry spawns.
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_COUNT", "1")
@@ -807,8 +807,8 @@ fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
         ));
 
     assert!(
-        spelunk_note_lines(repo.path()).is_empty(),
-        "a fatal failed carry must not leave a partial spelunk note"
+        inkentry_note_lines(repo.path()).is_empty(),
+        "a fatal failed carry must not leave a partial inkentry note"
     );
     assert!(
         !global_memory_db(home.path()).exists(),
@@ -895,7 +895,7 @@ fn contended_notes_lock_fails_the_pre_init_carry_and_writes_nothing() {
     );
 
     // The whole point: nothing may be written without the lock.
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert!(
         lines.is_empty(),
         "a contended carry must write nothing; got: {lines:?}"
@@ -932,13 +932,13 @@ fn unusable_notes_lock_degradation_is_visible_without_rust_log() {
         ])
         .assert()
         // The write itself proceeds: failing every write on a lock-hostile
-        // filesystem would make spelunk unusable there (ADR-069 D8).
+        // filesystem would make inkentry unusable there (ADR-069 D8).
         .success()
         .stdout(predicate::str::contains("Stored [note]"))
         // And the degradation is surfaced, not swallowed.
         .stderr(predicate::str::contains("without the cross-process lock"));
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert!(
         lines.len() == 1 && lines[0].contains("unusable-lock-still-stores"),
         "the degraded write must still land exactly one record; got: {lines:?}"
@@ -989,7 +989,7 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
         ])
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(repo.path());
+    let old_lines = inkentry_note_lines(repo.path());
     assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
     let old_id = record_field(&old_lines[0], "id");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
@@ -1010,7 +1010,7 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
         .assert()
         .success();
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         3,
@@ -1079,7 +1079,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
     add("old-via-supersede", "b1");
     add("new-via-supersede", "b2");
 
-    let seeded = spelunk_note_lines(repo.path());
+    let seeded = inkentry_note_lines(repo.path());
     assert_eq!(seeded.len(), 2, "setup: two independent adds");
     let old_id = record_field(&seeded[0], "id");
     let new_id = record_field(&seeded[1], "id");
@@ -1093,7 +1093,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
             predicate::str::contains("Archived #").and(predicate::str::contains("superseded by #")),
         );
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         3,
@@ -1130,7 +1130,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
 /// appended, and no warning is printed, even though the command prints a
 /// plain "Stored" success line as if the `--supersedes` request succeeded.
 ///
-/// This currently fails, pinning the gap: `spelunk memory add --supersedes`
+/// This currently fails, pinning the gap: `inkentry memory add --supersedes`
 /// pre-init drops the edge exactly the way the pre-fix post-init path used
 /// to (the case this whole task exists to close), just on the other half of
 /// the carrier's supported command surface (ADR-068 D3).
@@ -1153,7 +1153,7 @@ fn pre_init_add_supersedes_carries_edge_for_old_entry() {
         ])
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(repo.path());
+    let old_lines = inkentry_note_lines(repo.path());
     assert_eq!(old_lines.len(), 1, "setup: OLD's own pre-init add");
     let old_id = record_field(&old_lines[0], "id");
 
@@ -1173,7 +1173,7 @@ fn pre_init_add_supersedes_carries_edge_for_old_entry() {
         .assert()
         .success();
 
-    let lines = spelunk_note_lines(repo.path());
+    let lines = inkentry_note_lines(repo.path());
     assert_eq!(
         lines.len(),
         3,
@@ -1223,7 +1223,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
         ])
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(repo.path());
+    let old_lines = inkentry_note_lines(repo.path());
     let old_id = record_field(&old_lines[0], "id");
 
     bin(home.path(), repo.path())
@@ -1242,7 +1242,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
         .assert()
         .success();
 
-    let lines_after_first_supersede = spelunk_note_lines(repo.path());
+    let lines_after_first_supersede = inkentry_note_lines(repo.path());
     assert_eq!(
         lines_after_first_supersede.len(),
         3,
@@ -1293,7 +1293,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
 
     // No new git-notes carrier record either: still exactly the 3 lines the
     // first, successful supersede produced.
-    let lines_after_rejected_supersede = spelunk_note_lines(repo.path());
+    let lines_after_rejected_supersede = inkentry_note_lines(repo.path());
     assert_eq!(
         lines_after_rejected_supersede.len(),
         3,
@@ -1325,7 +1325,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
         ])
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(repo.path());
+    let old_lines = inkentry_note_lines(repo.path());
     let old_id = record_field(&old_lines[0], "id");
 
     bin(home.path(), repo.path())
@@ -1344,7 +1344,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
         .assert()
         .success();
 
-    let lines_after_first_supersede = spelunk_note_lines(repo.path());
+    let lines_after_first_supersede = inkentry_note_lines(repo.path());
     assert_eq!(
         lines_after_first_supersede.len(),
         3,
@@ -1370,7 +1370,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
             "No active memory entry with id {old_id} (old)"
         )));
 
-    let lines_after_rejected_supersede = spelunk_note_lines(repo.path());
+    let lines_after_rejected_supersede = inkentry_note_lines(repo.path());
     assert_eq!(
         lines_after_rejected_supersede.len(),
         3,

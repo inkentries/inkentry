@@ -8,13 +8,13 @@
 // exited non-zero with a bare `Error: parsing config.toml`.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-// `spelunk status` runs (exit 0) with an `[auth]` table missing `org_id` and
+// `inkentry status` runs (exit 0) with an `[auth]` table missing `org_id` and
 // `expires_at`, instead of failing with a config parse error.
 #[test]
 fn status_runs_with_partial_auth_block() {
@@ -33,7 +33,7 @@ fn status_runs_with_partial_auth_block() {
         format!("db_path = {:?}\n", db_path.display().to_string()),
     )
     .unwrap();
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -58,7 +58,7 @@ fn status_runs_with_partial_auth_block() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")

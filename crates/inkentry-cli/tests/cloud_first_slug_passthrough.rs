@@ -11,7 +11,7 @@
 // `0.0.0.0` alias of the same socket.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -37,7 +37,7 @@ fn new_ca() -> TestCa {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(DnType::CommonName, "spelunk-slug-passthrough-test CA");
+        .push(DnType::CommonName, "inkentry-slug-passthrough-test CA");
     params.key_usages.push(KeyUsagePurpose::DigitalSignature);
     params.key_usages.push(KeyUsagePurpose::KeyCertSign);
     params.key_usages.push(KeyUsagePurpose::CrlSign);
@@ -200,10 +200,10 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
 // visible on stdout rather than indistinguishable from an empty result.
 fn seeded_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
     let cfg = write_cfg(tmp.path(), "config-seed.toml", &db_path, "");
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -234,7 +234,7 @@ fn cloud_first_project(ca_pem: &str, port: u16, project_id: &str) -> (TempDir, P
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
-        &tmp.path().join("spelunk.db"),
+        &tmp.path().join("inkentry.db"),
         &format!(
             "mode = \"cloud_first\"\nserver_ca = {:?}\n",
             ca_path.display().to_string()
@@ -253,7 +253,7 @@ fn cloud_first_project(ca_pem: &str, port: u16, project_id: &str) -> (TempDir, P
 }
 
 fn memory_list(tmp: &TempDir, cfg: &Path, mem_path: &Path) -> std::process::Output {
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(cfg)

@@ -1,4 +1,4 @@
-//! `spelunk login` — WorkOS device-authorization grant, direct.
+//! `inkentry login` — WorkOS device-authorization grant, direct.
 //!
 //! Flow
 //! ----
@@ -26,9 +26,9 @@
 //! No-org token, no `--org` (first-run UX)
 //! ---------------------------------------
 //! WorkOS does not auto-select an org even for single-org users, so a plain
-//! `spelunk login` yields a token with an empty `org_id`. Rather than leave the
+//! `inkentry login` yields a token with an empty `org_id`. Rather than leave the
 //! operator with a session that can't do anything until they run
-//! `spelunk org switch`, the `None` arm resolves an org itself:
+//! `inkentry org switch`, the `None` arm resolves an org itself:
 //!   - one org   → auto-select it silently;
 //!   - many orgs → an interactive selector on a TTY (require `--org` otherwise);
 //!   - zero orgs → a clear onboarding message, and no dangling session written.
@@ -48,7 +48,7 @@ use super::org::{persist_tokens, switch_org};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Override the spelunk cloud API URL (default: https://api.spelunk.cloud).
+    /// Override the inkentry cloud API URL (default: https://api.spelunk.cloud).
     /// Also selects the WorkOS environment (prod host → prod client_id; any
     /// other host → dev client_id) unless `INKENTRY_WORKOS_CLIENT_ID` is set.
     #[arg(long, env = "INKENTRY_CLOUD_URL")]
@@ -147,7 +147,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
                 consecutive_errors = 0;
             }
             PollOutcome::Expired => {
-                eprintln!("\nLogin timed out. Run `spelunk login` again.");
+                eprintln!("\nLogin timed out. Run `inkentry login` again.");
                 std::process::exit(1);
             }
             PollOutcome::Denied => {
@@ -250,7 +250,7 @@ fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
     match orgs.len() {
         0 => anyhow::bail!(
             "Your account is not a member of any organization yet.\n\
-             Create one at https://spelunk.cloud/onboarding, then run `spelunk login` again."
+             Create one at https://spelunk.cloud/onboarding, then run `inkentry login` again."
         ),
         1 => Ok(OrgChoice::Switch(orgs[0].clone())),
         _ if interactive => {
@@ -266,7 +266,7 @@ fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
             anyhow::bail!(
                 "You are a member of multiple organizations; a non-interactive shell \
                  cannot prompt.\n\
-                 Re-run with `spelunk login --org <slug>` (one of: {slugs})."
+                 Re-run with `inkentry login --org <slug>` (one of: {slugs})."
             )
         }
     }
@@ -333,7 +333,7 @@ async fn finish_login(
 
 /// Print the "logged in to <org>" confirmation with a switch hint.
 fn print_logged_in(org: &str) {
-    println!("Logged in to {org}. Use `spelunk org switch` to change.");
+    println!("Logged in to {org}. Use `inkentry org switch` to change.");
 }
 
 #[cfg(test)]

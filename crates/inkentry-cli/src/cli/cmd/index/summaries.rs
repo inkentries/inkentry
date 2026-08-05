@@ -117,7 +117,7 @@ pub(super) async fn generate_summaries(
         // them; --force reparses and clears the summary back to NULL.
         eprintln!(
             "Warning: {failed_batches} of {batch_num} summary batch(es) produced no summary; \
-             those chunks are indexed without one. Re-run with `spelunk index --force` to retry \
+             those chunks are indexed without one. Re-run with `inkentry index --force` to retry \
              (`RUST_LOG=warn` shows the cause)."
         );
     }

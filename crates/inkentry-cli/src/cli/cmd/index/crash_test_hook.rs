@@ -9,7 +9,7 @@
 // rather than a kill).
 //
 // Gated on `debug_assertions` rather than `cfg(test)`: the harness spawns the
-// real `spelunk` binary as a subprocess (see `assert_cmd::cargo_bin` in
+// real `inkentry` binary as a subprocess (see `assert_cmd::cargo_bin` in
 // crash_safety.rs), which never gets `cfg(test)` even under `cargo test`.
 // `debug_assertions` is the one signal both builds agree on: on for the dev
 // profile the test harness spawns, off for `--release`, so this body carries

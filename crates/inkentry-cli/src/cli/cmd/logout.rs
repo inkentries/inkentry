@@ -1,7 +1,7 @@
-//! `spelunk logout`: clear stored spelunk.cloud credentials.
+//! `inkentry logout`: clear stored spelunk.cloud credentials.
 //!
-//! Bare `spelunk logout` clears **only** the `[auth]` WorkOS token pair
-//! written by `spelunk login`: the credential logout exists to undo. It no
+//! Bare `inkentry logout` clears **only** the `[auth]` WorkOS token pair
+//! written by `inkentry login`: the credential logout exists to undo. It no
 //! longer touches self-hosted server keys as a side effect (ADR-071 D3,
 //! founder-review correction): a developer recovering from a broken cloud
 //! login should not silently lose the server key(s) they use on other
@@ -44,15 +44,15 @@ pub async fn logout(args: LogoutArgs) -> Result<()> {
         println!("Cleared the stored server key for {origin}.");
     } else {
         config::remove_auth_tokens()
-            .context("removing [auth] tokens from ~/.config/spelunk/config.toml")?;
+            .context("removing [auth] tokens from ~/.config/inkentry/config.toml")?;
         println!("Logged out. Stored spelunk.cloud credentials have been removed.");
 
         let n = server_keys::count(store.as_ref())?;
         if n > 0 {
             println!(
                 "{n} server key(s) are still stored (unaffected by this logout). \
-                 Run `spelunk logout --servers` to remove them all, or \
-                 `spelunk logout --server <url>` for just one."
+                 Run `inkentry logout --servers` to remove them all, or \
+                 `inkentry logout --server <url>` for just one."
             );
         }
     }

@@ -8,7 +8,7 @@
 //! non-deterministic; tests assert structure and non-emptiness only.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use std::path::Path;
 
@@ -22,8 +22,8 @@ use std::path::Path;
 fn porcelain_search_jsonl_returns_valid_chunk_ids() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `spelunk search "test" --db <db> --format jsonl --no-stale-check`
-    let output = spelunk_bin()
+    // `inkentry search "test" --db <db> --format jsonl --no-stale-check`
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("search")
@@ -44,7 +44,7 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
     let rows = parse_jsonl(&output);
     assert!(
         !rows.is_empty(),
-        "spelunk search --format jsonl should return at least one result"
+        "inkentry search --format jsonl should return at least one result"
     );
     for row in &rows {
         assert!(
@@ -66,7 +66,7 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
 fn plumbing_knn_returns_valid_chunk_ids() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Step 1: embed a query string via `spelunk plumbing embed --query`
+    // Step 1: embed a query string via `inkentry plumbing embed --query`
     // The mock server returns [0.1f32; 768] for every request.
     // `index_fixture_project` writes `server_url` to `<_tmp>/.inkentry/config.toml`
     // (project-level, since `Config::load` never honors it from `--config`);
@@ -76,7 +76,7 @@ fn plumbing_knn_returns_valid_chunk_ids() {
     // auto-discovery bridging (2026-07-23 ADR-004 revision), so with the
     // default `local_first` mode a bare `server_url` no longer resolves to
     // any inference target.
-    let embed_output = spelunk_bin()
+    let embed_output = inkentry_bin()
         .current_dir(_tmp.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
@@ -91,8 +91,8 @@ fn plumbing_knn_returns_valid_chunk_ids() {
         .stdout
         .clone();
 
-    // Step 2: feed the embedding JSON into `spelunk plumbing knn`
-    let knn_output = spelunk_cmd(&db_path, &config_path)
+    // Step 2: feed the embedding JSON into `inkentry plumbing knn`
+    let knn_output = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(embed_output.as_slice())
         .assert()
@@ -132,11 +132,11 @@ fn plumbing_knn_returns_valid_chunk_ids() {
 fn status_json_file_count_matches_ls_files_count() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `spelunk status --format json` — uses db_path from config.
+    // `inkentry status --format json` — uses db_path from config.
     //
     // Run from the temp dir so the registry won't match any registered project
     // via CWD, forcing resolve_project_and_deps to fall back to cfg.db_path.
-    let status_output = spelunk_bin()
+    let status_output = inkentry_bin()
         .current_dir(_tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -157,8 +157,8 @@ fn status_json_file_count_matches_ls_files_count() {
         .as_u64()
         .expect("status JSON must have 'file_count'");
 
-    // `spelunk plumbing ls-files` — counts JSONL lines.
-    let ls_output = spelunk_cmd(&db_path, &config_path)
+    // `inkentry plumbing ls-files` — counts JSONL lines.
+    let ls_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
         .success()
@@ -190,7 +190,7 @@ fn parse_file_content_appears_in_cat_chunks() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/lib.rs");
 
     // parse-file: parse lib.rs without DB.
-    let parse_output = spelunk_bin()
+    let parse_output = inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -209,7 +209,7 @@ fn parse_file_content_appears_in_cat_chunks() {
     );
 
     // cat-chunks: fetch indexed chunks for lib.rs (suffix matching).
-    let cat_output = spelunk_cmd(&db_path, &config_path)
+    let cat_output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
         .assert()

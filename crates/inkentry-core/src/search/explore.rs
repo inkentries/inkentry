@@ -26,7 +26,7 @@ pub struct ExploreResult {
     pub steps: Vec<ExploreStep>,
 }
 
-/// Drives the tool-use loop for `spelunk explore`.
+/// Drives the tool-use loop for `inkentry explore`.
 ///
 /// Stores `db_path` and re-opens the database per tool call so that no
 /// `&Database` borrow crosses an `.await` point (keeping futures `Send`).

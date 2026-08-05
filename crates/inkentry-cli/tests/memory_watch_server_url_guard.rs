@@ -1,4 +1,4 @@
-//! Regression coverage for `spelunk memory watch` with an auto-discovered
+//! Regression coverage for `inkentry memory watch` with an auto-discovered
 //! loopback server but no explicit `server_url`.
 //!
 //! `require_tier1` passes as soon as ANY server answers `/v1/health` —
@@ -11,12 +11,12 @@
 //! guard's return type.
 //!
 //! A mock server backs the loopback probe. It is pointed at via
-//! `INKENTRY_STATE_DIR`'s `server.port` file (the same file `spelunk server
+//! `INKENTRY_STATE_DIR`'s `server.port` file (the same file `inkentry server
 //! start` writes), so `capability::get_tier` classifies it as `Tier::Server`
 //! with `server_url` still unset in config.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use predicates::prelude::*;
 use std::fs;
@@ -56,7 +56,7 @@ async fn watch_with_loopback_server_and_no_server_url_errors_instead_of_panickin
     fs::create_dir_all(&state_dir).unwrap();
     write_server_port_file(&state_dir, &server);
 
-    let assert = spelunk_bin()
+    let assert = inkentry_bin()
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(temp.path())
@@ -79,7 +79,7 @@ async fn watch_with_loopback_server_and_no_server_url_errors_instead_of_panickin
         "must not panic once the loopback server makes require_tier1 pass; got: {stderr}"
     );
     assert!(
-        stderr.contains("spelunk memory watch") && stderr.contains("server_url"),
+        stderr.contains("inkentry memory watch") && stderr.contains("server_url"),
         "must return the actionable server_url guidance; got: {stderr}"
     );
 }
@@ -102,7 +102,7 @@ async fn watch_with_loopback_server_and_no_server_url_message_is_nonempty() {
     fs::create_dir_all(&state_dir).unwrap();
     write_server_port_file(&state_dir, &server);
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(temp.path())

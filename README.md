@@ -1,4 +1,4 @@
-# spelunk
+# inkentry
 
 [![CI](https://github.com/spelunk-cloud/spelunk/actions/workflows/ci.yml/badge.svg)](https://github.com/spelunk-cloud/spelunk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -7,12 +7,12 @@
 **Code intelligence for AI agents — zero infrastructure required.** Persistent memory, code graph, and search that work straight from the CLI.
 
 ```bash
-spelunk graph validate_token                       # trace callers, callees, imports
-spelunk search "error handling" --mode text        # full-text search, no server needed
-spelunk memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
+inkentry graph validate_token                       # trace callers, callees, imports
+inkentry search "error handling" --mode text        # full-text search, no server needed
+inkentry memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
 ```
 
-Semantic search works out of the box: `spelunk` autostarts a local `inkentry-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `inkentry-server` to share memory across a team.
+Semantic search works out of the box: `inkentry` autostarts a local `inkentry-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `inkentry-server` to share memory across a team.
 
 ## Quick start
 
@@ -32,46 +32,46 @@ curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/ma
 From inside any git repository:
 
 ```bash
-spelunk graph validate_token                       # trace callers and callees
-spelunk search "error handling" --mode text        # full-text search
-spelunk memory add --kind decision \
+inkentry graph validate_token                       # trace callers and callees
+inkentry search "error handling" --mode text        # full-text search
+inkentry memory add --kind decision \
   --title "Chose token bucket for rate limiting" \
   --body "Simpler than sliding window; sufficient for <1k RPS"
-spelunk memory list --kind decision
-spelunk context                                    # agent session entry point
+inkentry memory list --kind decision
+inkentry context                                    # agent session entry point
 ```
 
 **3. Add semantic search**
 
-`spelunk init` indexes your project and starts the bundled server, so semantic
+`inkentry init` indexes your project and starts the bundled server, so semantic
 search works with no extra setup:
 
 ```bash
-spelunk init                                       # index + autostart server in one step
-spelunk search "error handling in the HTTP layer"  # semantic search
-spelunk search "database migrations" --graph       # with callers/callees
+inkentry init                                       # index + autostart server in one step
+inkentry search "error handling in the HTTP layer"  # semantic search
+inkentry search "database migrations" --graph       # with callers/callees
 ```
 
-## Why spelunk?
+## Why inkentry?
 
-AI coding agents lose context between sessions and can't trace how code connects across files. spelunk solves both with zero infrastructure.
+AI coding agents lose context between sessions and can't trace how code connects across files. inkentry solves both with zero infrastructure.
 
 - **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
 - **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
 - **Works without any server** — memory, code graph, and full-text/structural (ast-grep) search work with just the binary. No API keys, no configuration.
-- **Semantic search built in** — a local `inkentry-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point spelunk at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
+- **Semantic search built in** — a local `inkentry-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
 - **100% local** — your code never leaves your machine. The server is self-hosted (local by default). This claim is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
 
-### When to use spelunk vs grep
+### When to use inkentry vs grep
 
 | You want to... | Use |
 |---|---|
 | Find an exact function name | `rg "fn validate_token"` |
-| Find code related to a concept | `spelunk search "request authentication"` |
-| See what calls a function | `spelunk graph validate_token` |
-| Remember why a decision was made | `spelunk memory search "why sqlite-vec"` |
-| Store a design decision for future sessions | `spelunk memory add --kind decision ...` |
+| Find code related to a concept | `inkentry search "request authentication"` |
+| See what calls a function | `inkentry graph validate_token` |
+| Remember why a decision was made | `inkentry memory search "why sqlite-vec"` |
+| Store a design decision for future sessions | `inkentry memory add --kind decision ...` |
 | Share context across a team | `inkentry-server` + `server_url` |
 
 ## Core features
@@ -81,12 +81,12 @@ AI coding agents lose context between sessions and can't trace how code connects
 Store decisions, requirements, and context that persist across sessions — in git notes, no server needed:
 
 ```bash
-spelunk memory add --kind decision --title "Chose sqlite-vec over pgvector" \
+inkentry memory add --kind decision --title "Chose sqlite-vec over pgvector" \
   --body "Must run without a Postgres server. Revisit if we need filtering + ANN."
-spelunk memory list --kind decision --limit 10
-spelunk memory search "why did we choose this database"
-spelunk memory harvest   # auto-extract decisions from recent commits (server with LLM backend)
-spelunk sync             # two-way sync of local memory with the configured server (push + pull)
+inkentry memory list --kind decision --limit 10
+inkentry memory search "why did we choose this database"
+inkentry memory harvest   # auto-extract decisions from recent commits (server with LLM backend)
+inkentry sync             # two-way sync of local memory with the configured server (push + pull)
 ```
 
 Memory is stored in local SQLite and written through to git notes by default
@@ -96,26 +96,26 @@ across a team.
 ### Code graph
 
 ```bash
-spelunk graph RagPipeline                        # all edges for a symbol
-spelunk graph src/storage/db.rs --kind imports   # imports in a file
+inkentry graph RagPipeline                        # all edges for a symbol
+inkentry graph src/storage/db.rs --kind imports   # imports in a file
 ```
 
-spelunk extracts import, call, extends, and implements edges from the AST. No index or server needed.
+inkentry extracts import, call, extends, and implements edges from the AST. No index or server needed.
 
 ### Search
 
 ```bash
-spelunk search "handleRequest" --mode text       # full-text, no server needed
-spelunk search "how are errors propagated"       # semantic (requires server + index)
-spelunk search "auth middleware" --graph         # expand with 1-hop callers/callees
-spelunk search "request handling" --budget 4000  # fit results within a token budget
+inkentry search "handleRequest" --mode text       # full-text, no server needed
+inkentry search "how are errors propagated"       # semantic (requires server + index)
+inkentry search "auth middleware" --graph         # expand with 1-hop callers/callees
+inkentry search "request handling" --budget 4000  # fit results within a token budget
 ```
 
 ### Agentic exploration
 
 ```bash
-spelunk explore "how does incremental indexing work?"   # LLM iterates search + graph to answer
-spelunk explore "what guards the context window?" --verbose
+inkentry explore "how does incremental indexing work?"   # LLM iterates search + graph to answer
+inkentry explore "what guards the context window?" --verbose
 ```
 
 `explore` requires a server with an LLM backend configured.
@@ -123,8 +123,8 @@ spelunk explore "what guards the context window?" --verbose
 ### Multi-project search
 
 ```bash
-spelunk link ../shared-utils
-spelunk search "connection pooling"   # searches both projects, merges by relevance
+inkentry link ../shared-utils
+inkentry search "connection pooling"   # searches both projects, merges by relevance
 ```
 
 ### Agent integration
@@ -132,18 +132,18 @@ spelunk search "connection pooling"   # searches both projects, merges by releva
 Set `AGENT=true` for JSON output on every command:
 
 ```bash
-AGENT=true spelunk memory list --kind decision
-AGENT=true spelunk graph validate_token
-AGENT=true spelunk search "auth flow" | jq '.[0].file_path'
+AGENT=true inkentry memory list --kind decision
+AGENT=true inkentry graph validate_token
+AGENT=true inkentry search "auth flow" | jq '.[0].file_path'
 ```
 
 Install git hooks to auto-harvest memory on every commit:
 
 ```bash
-spelunk hooks install
+inkentry hooks install
 ```
 
-spelunk ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent-guide.md) for integration with AI coding agents.
+inkentry ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent-guide.md) for integration with AI coding agents.
 
 ## Supported languages
 
@@ -158,7 +158,7 @@ the first five minutes to running a shared memory server for a team.
 
 - [Getting Started](docs/getting-started.md): install, index your first project, run your first retrieval
 - [Memory](docs/memory.md): decisions, context, and requirements across sessions
-- [Agent Guide](docs/agent-guide.md): wiring spelunk into AI coding agents
+- [Agent Guide](docs/agent-guide.md): wiring inkentry into AI coding agents
 - [Commands](docs/commands.md): full reference for every subcommand
 - [Stability contract](docs/stability.md): which surfaces semver freezes, and which are free to change
 - [Architecture](docs/architecture.md): system design for contributors
@@ -171,7 +171,7 @@ This is a Cargo workspace with three crates:
 | Crate | Path | Purpose |
 |---|---|---|
 | `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
-| `inkentry-cli` | `crates/inkentry-cli` | `spelunk` binary — CLI commands; depends on `inkentry-core` |
+| `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` |
 | `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` |
 
 ```bash

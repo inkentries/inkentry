@@ -1,11 +1,11 @@
 //! Liveness and progress-baseline state for the background embed worker, so
-//! `spelunk status` reports what it knows about its own subprocess instead of
+//! `inkentry status` reports what it knows about its own subprocess instead of
 //! guessing from chunk counts (which cannot distinguish a running job from an
 //! abandoned one).
 //!
 //! Mirrors the server's own pid-file shape: one small state file per datum,
 //! written 0600 into the same state directory as the server's pid/port files
-//! (`capability::spelunk_state_dir`, the single resolver both share, so an
+//! (`capability::inkentry_state_dir`, the single resolver both share, so an
 //! `INKENTRY_STATE_DIR` override applies to worker and server files alike), a
 //! `pid_is_alive` liveness check, and a foreign-pid classification so a
 //! recycled pid is never misreported as a live worker. Files are keyed by a
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::server::{create_state_dir, pid_is_alive, write_state_file};
-use crate::capability::spelunk_state_dir;
+use crate::capability::inkentry_state_dir;
 use crate::storage::Database;
 
 /// Per-project key for the worker state files: hash of the canonicalised
@@ -44,7 +44,7 @@ fn baseline_file(state_dir: &Path, key: &str) -> PathBuf {
 }
 
 /// RAII liveness marker held by whichever process runs the embed phase (the
-/// detached worker, or a foreground `spelunk index` resume). Best-effort:
+/// detached worker, or a foreground `inkentry index` resume). Best-effort:
 /// state-file failures must never fail the embed itself.
 ///
 /// Dropped on clean exit; a killed worker leaves the files behind, which the
@@ -58,7 +58,7 @@ impl EmbedWorkerGuard {
     /// Record this process as the live embed worker for `db_path`. `None`
     /// when the state dir is unusable (embedding proceeds unrecorded).
     pub(super) fn acquire(db: &Database, db_path: &Path) -> Option<Self> {
-        let state_dir = spelunk_state_dir().ok()?;
+        let state_dir = inkentry_state_dir().ok()?;
         create_state_dir(&state_dir).ok()?;
         let key = worker_key(db_path);
         let pid_path = pid_file(&state_dir, &key);
@@ -92,7 +92,7 @@ impl Drop for EmbedWorkerGuard {
 /// What `status` knows about the worker for a project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkerLiveness {
-    /// The recorded pid is alive and its command line looks like a spelunk
+    /// The recorded pid is alive and its command line looks like a inkentry
     /// index run.
     Alive,
     /// No recorded worker, a dead pid, or a pid recycled by an unrelated
@@ -112,7 +112,7 @@ fn classify_worker_pid(alive: bool, looks_like_worker: bool) -> WorkerLiveness {
     }
 }
 
-/// Return `true` when `pid`'s command line looks like a spelunk index run
+/// Return `true` when `pid`'s command line looks like a inkentry index run
 /// (the detached `--_embed-phases` worker or a foreground resume).
 fn process_looks_like_index_run(pid: u32) -> bool {
     #[cfg(unix)]
@@ -123,7 +123,7 @@ fn process_looks_like_index_run(pid: u32) -> bool {
         {
             Ok(out) if out.status.success() => {
                 let args = String::from_utf8_lossy(&out.stdout);
-                args.contains("spelunk") && args.contains("index")
+                args.contains("inkentry") && args.contains("index")
             }
             _ => false,
         }
@@ -131,7 +131,7 @@ fn process_looks_like_index_run(pid: u32) -> bool {
     #[cfg(windows)]
     {
         // tasklist exposes only the image name, so match on the binary; the
-        // worst case of the coarser match is reporting another spelunk
+        // worst case of the coarser match is reporting another inkentry
         // process's pid as a live worker, never a foreign process's.
         match std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
@@ -139,7 +139,7 @@ fn process_looks_like_index_run(pid: u32) -> bool {
         {
             Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
                 .to_lowercase()
-                .contains("spelunk"),
+                .contains("inkentry"),
             _ => false,
         }
     }
@@ -153,7 +153,7 @@ fn process_looks_like_index_run(pid: u32) -> bool {
 /// Read and classify the recorded worker for `db_path`. Stale state (dead or
 /// foreign pid) is cleaned up so it cannot be re-read as live later.
 pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
-    let Ok(state_dir) = spelunk_state_dir() else {
+    let Ok(state_dir) = inkentry_state_dir() else {
         return WorkerLiveness::NotRunning;
     };
     let key = worker_key(db_path);
@@ -179,7 +179,7 @@ pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
 /// baseline over elapsed wall time, applied to the tokens still pending.
 /// `None` before any measurable progress (calibrating) or without a baseline.
 pub(super) fn worker_eta(db_path: &Path, pending_tokens_now: i64) -> Option<Duration> {
-    let state_dir = spelunk_state_dir().ok()?;
+    let state_dir = inkentry_state_dir().ok()?;
     let key = worker_key(db_path);
     let contents = std::fs::read_to_string(baseline_file(&state_dir, &key)).ok()?;
     let mut parts = contents.split_whitespace();
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn foreign_pid_is_never_reported_as_a_live_worker() {
         // A pid recycled by an unrelated process after a crash: alive, but the
-        // command line is not a spelunk index run. Reporting it as "Embedding
+        // command line is not a inkentry index run. Reporting it as "Embedding
         // in progress" is exactly the guess D4 removes.
         assert_eq!(classify_worker_pid(true, false), WorkerLiveness::NotRunning);
     }

@@ -1,4 +1,4 @@
-//! In-process reads of spelunk's notes-ref OIDs — no git subprocess.
+//! In-process reads of inkentry's notes-ref OIDs — no git subprocess.
 //!
 //! ADR-077 D2 gates the read-path merge and import on whether the notes refs
 //! moved since the last import, and that gate must be cheap: the steady-state
@@ -148,7 +148,7 @@ fn read_commondir(git_dir: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // A real repo with one commit and a spelunk note, returned with its dir.
+    // A real repo with one commit and a inkentry note, returned with its dir.
     fn repo_with_note() -> tempfile::TempDir {
         crate::test_support::isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");

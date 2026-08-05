@@ -64,7 +64,7 @@ impl LlmRoute {
     /// The `Remote` arm cannot use plain `from_config`: that re-derives
     /// "reached via an explicit remote" from the inference target being unset,
     /// which this route has just set. Losing the flag would make a failure on
-    /// the remote tell the user to read `spelunk server logs`, which only ever
+    /// the remote tell the user to read `inkentry server logs`, which only ever
     /// reads the local daemon's log.
     pub fn client(&self) -> Option<ServerInferenceClient> {
         match self {
@@ -141,7 +141,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const ROOT: &str = "/tmp/spelunk-llm-route-fixture";
+    const ROOT: &str = "/tmp/inkentry-llm-route-fixture";
 
     fn root() -> &'static Path {
         Path::new(ROOT)
@@ -258,7 +258,7 @@ mod tests {
     // the loopback both point at mock servers with `expect(0)` health mocks, so
     // a probe that does happen fails the test rather than passing quietly.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn offline_mode_routes_nowhere_and_probes_nothing() {
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn no_server_env_kill_switch_routes_nowhere_and_probes_nothing() {
         let loopback = MockServer::start().await;
         Mock::given(method("GET"))
@@ -315,7 +315,7 @@ mod tests {
     // The founder's own setup with no team server: a loopback daemon serving an
     // LLM must be used, with no `server_url` involved anywhere.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn loopback_with_an_llm_and_no_server_url_routes_local() {
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_with_llm()).await;
@@ -330,7 +330,7 @@ mod tests {
     // LLM. Local must win, and the remote must never be probed. The remote is
     // deliberately unroutable, so any attempt surfaces as a real failure.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn loopback_with_an_llm_wins_over_an_llm_capable_server_url() {
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_with_llm()).await;
@@ -363,7 +363,7 @@ mod tests {
     // LLM-capable remote would ship their code somewhere they did not choose,
     // so this must stop, and the remote must receive nothing.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn configured_local_llm_not_served_stops_and_never_reaches_the_remote() {
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_without_llm()).await;
@@ -393,7 +393,7 @@ mod tests {
     // No loopback, no `server_url`: nothing to route to, and the reason must be
     // the actionable one rather than the offline one.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn nothing_configured_anywhere_reports_no_llm_not_offline() {
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let _state = StateDirGuard::empty();
@@ -412,7 +412,7 @@ mod tests {
     // the remote arm cannot be driven end to end from a unit test without
     // making the result depend on test ordering. These cover the decision
     // directly; `tests/index_llm_routing.rs` drives the same arms through a
-    // real `spelunk` process.
+    // real `inkentry` process.
 
     #[test]
     fn local_route_takes_the_local_llm_when_the_tier_advertises_one() {

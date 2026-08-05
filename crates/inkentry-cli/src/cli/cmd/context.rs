@@ -27,7 +27,7 @@ pub struct ContextArgs {
     #[arg(long)]
     pub db: Option<PathBuf>,
 
-    /// Path to the spelunk index database (overrides auto-detect).
+    /// Path to the inkentry index database (overrides auto-detect).
     /// Used to load the conventions section.
     #[arg(long, value_name = "INDEX_DB")]
     pub index_db: Option<PathBuf>,
@@ -515,25 +515,25 @@ mod tests {
         // Declared `conflicts_with` must actually reject both together, not just
         // be present in the attribute.
         assert!(
-            TestCli::try_parse_from(["spelunk", "--limit", "5", "--budget", "100"]).is_err(),
+            TestCli::try_parse_from(["inkentry", "--limit", "5", "--budget", "100"]).is_err(),
             "--limit + --budget must be rejected"
         );
         // Each alone parses and lands in the right field.
-        let l = TestCli::try_parse_from(["spelunk", "--limit", "5"]).expect("limit alone parses");
+        let l = TestCli::try_parse_from(["inkentry", "--limit", "5"]).expect("limit alone parses");
         assert_eq!(l.ctx.limit, Some(5));
         assert_eq!(l.ctx.budget, None);
         let b =
-            TestCli::try_parse_from(["spelunk", "--budget", "100"]).expect("budget alone parses");
+            TestCli::try_parse_from(["inkentry", "--budget", "100"]).expect("budget alone parses");
         assert_eq!(b.ctx.budget, Some(100));
         assert_eq!(b.ctx.limit, None);
     }
 
     #[test]
     fn max_tokens_alias_maps_to_budget_and_still_conflicts_with_limit() {
-        let a = TestCli::try_parse_from(["spelunk", "--max-tokens", "100"]).expect("alias parses");
+        let a = TestCli::try_parse_from(["inkentry", "--max-tokens", "100"]).expect("alias parses");
         assert_eq!(a.ctx.budget, Some(100));
         assert!(
-            TestCli::try_parse_from(["spelunk", "--limit", "5", "--max-tokens", "100"]).is_err(),
+            TestCli::try_parse_from(["inkentry", "--limit", "5", "--max-tokens", "100"]).is_err(),
             "alias must inherit the conflict with --limit"
         );
     }

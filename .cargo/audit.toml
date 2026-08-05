@@ -10,7 +10,7 @@
 # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 (quick-xml DoS: quadratic run time on duplicate
 #   attribute names, and unbounded namespace-declaration allocation in `NsReader`) are both
 #   fixed only in quick-xml >= 0.41.0. We pull quick-xml transitively through two document
-#   parsers used by `spelunk index`:
+#   parsers used by `inkentry index`:
 #     - calamine 0.35.0 (latest) -> quick-xml ^0.39  (XLSX/ODS spreadsheet reader)
 #     - docx-rs   0.4.20 (latest) -> quick-xml ^0.36  (DOCX reader)
 #   Both are on their newest release and neither has moved to quick-xml 0.41, so there is no

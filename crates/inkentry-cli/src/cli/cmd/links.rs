@@ -4,7 +4,7 @@ use serde::Serialize;
 
 #[derive(Args, Debug)]
 /// Manage and inspect cross-project links.
-/// Use `spelunk link <path>` / `spelunk unlink <path>` to add or remove links.
+/// Use `inkentry link <path>` / `inkentry unlink <path>` to add or remove links.
 pub struct LinksArgs {
     #[command(subcommand)]
     pub command: LinksCommand,
@@ -53,7 +53,7 @@ async fn links_list(format: String) -> Result<()> {
 
     let project = reg.find_project_for_path(&cwd)?.with_context(|| {
         "No indexed project found for the current directory.\n\
-             Run `spelunk index .` first."
+             Run `inkentry index .` first."
             .to_string()
     })?;
 
@@ -103,7 +103,7 @@ async fn links_list(format: String) -> Result<()> {
         _ => {
             if infos.is_empty() {
                 println!("No linked projects.");
-                println!("Use `spelunk link <path>` to add a cross-project dependency.");
+                println!("Use `inkentry link <path>` to add a cross-project dependency.");
                 return Ok(());
             }
 
@@ -148,7 +148,7 @@ async fn links_check() -> Result<()> {
 
     let project = reg.find_project_for_path(&cwd)?.with_context(|| {
         "No indexed project found for the current directory.\n\
-             Run `spelunk index .` first."
+             Run `inkentry index .` first."
             .to_string()
     })?;
 
@@ -205,7 +205,7 @@ async fn links_check() -> Result<()> {
         for p in &problems {
             eprintln!("{p}");
         }
-        eprintln!("\nRun `spelunk index <path>` in each stale project to refresh.");
+        eprintln!("\nRun `inkentry index <path>` in each stale project to refresh.");
         std::process::exit(1);
     }
 }

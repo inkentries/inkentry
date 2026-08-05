@@ -2,7 +2,7 @@
 name = "inkentry-cli"
 version = "0.9.7"
 edition = "2024"
-description = "spelunk — AI agent context retrieval CLI"
+description = "inkentry — AI agent context retrieval CLI"
 license = "MIT"
 repository = "https://github.com/spelunk-cloud/spelunk"
 homepage = "https://github.com/spelunk-cloud/spelunk"

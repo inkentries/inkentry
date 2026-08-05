@@ -342,7 +342,7 @@ impl MemoryStore {
     }
 
     /// Count of active (non-archived) rows still in the push outbox
-    /// (`remote_id IS NULL`), for the quiet `spelunk status` "N pending" line.
+    /// (`remote_id IS NULL`), for the quiet `inkentry status` "N pending" line.
     ///
     /// A read, not a mutation: unlike [`Self::rows_for_sync`] this never calls
     /// [`Self::ensure_uuid`] and never materializes full rows, so calling it

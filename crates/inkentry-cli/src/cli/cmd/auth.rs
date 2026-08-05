@@ -1,4 +1,4 @@
-//! `spelunk auth set-key` / `spelunk auth list-servers`: manage the
+//! `inkentry auth set-key` / `inkentry auth list-servers`: manage the
 //! per-server bearer credentials a self-hosted `server_url` resolves through
 //! (ADR-071 D1/D3), plus the credential for a configured LLM endpoint.
 //!

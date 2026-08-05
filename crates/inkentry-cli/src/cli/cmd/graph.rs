@@ -86,7 +86,7 @@ pub fn graph(args: GraphArgs, cfg: Config) -> Result<()> {
     if edges.is_empty() && !is_file_query {
         if db.has_any_graph_edges()? {
             println!(
-                "No calls to '{symbol}' found in the indexed graph. Try 'spelunk graph {symbol} --live' for a structural scan."
+                "No calls to '{symbol}' found in the indexed graph. Try 'inkentry graph {symbol} --live' for a structural scan."
             );
             return Ok(());
         }
@@ -155,7 +155,7 @@ fn graph_live(symbol: &str, format: &str, kind_filter: &Option<String>, root: &P
                 "No call-site invocations of '{symbol}' found (live structural scan matches '{symbol}(...)' calls only)."
             );
             println!(
-                "Class, constant, association, and receiver-method references never take that form. Run 'spelunk init' to build an index with imports/extends/implements plus call edges that surface them."
+                "Class, constant, association, and receiver-method references never take that form. Run 'inkentry init' to build an index with imports/extends/implements plus call edges that surface them."
             );
         } else {
             println!(

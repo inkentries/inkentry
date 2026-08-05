@@ -13,7 +13,7 @@ pub mod llm_key;
 pub mod secret_store;
 pub mod server_keys;
 
-use paths::{find_project_config, spelunk_config_dir};
+use paths::{find_project_config, inkentry_config_dir};
 use secret_store::{KEY_SERVER_KEY, SecretStore};
 
 pub use paths::{
@@ -86,7 +86,7 @@ struct ProjectIndexConfig {
 /// with repo access. A file that still has a `server_key` line keeps working
 /// for its other fields: serde silently drops the unrecognized key, the
 /// same way the removed `memory_server_*` aliases are dropped. Use
-/// `spelunk auth set-key --server <url>` instead.
+/// `inkentry auth set-key --server <url>` instead.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
     /// Canonical server URL (preferred).
@@ -115,7 +115,7 @@ pub struct Config {
     /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
-    /// Personal config (`~/.config/spelunk/config.toml`) or `INKENTRY_LLM_URL`
+    /// Personal config (`~/.config/inkentry/config.toml`) or `INKENTRY_LLM_URL`
     /// only, never `.inkentry/config.toml`: a checked-in endpoint points the
     /// whole team at one developer's machine, and it is the natural sibling of
     /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
@@ -123,7 +123,7 @@ pub struct Config {
     pub llm_url: Option<String>,
 
     // ── inkentry-server (optional) ─────────────────────────────────────────────
-    /// URL of the inkentry-server instance, e.g. `https://spelunk.internal.example.com`
+    /// URL of the inkentry-server instance, e.g. `https://inkentry.internal.example.com`
     /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
@@ -135,7 +135,7 @@ pub struct Config {
     pub server_url: Option<String>,
 
     /// The **cloud-kind** bearer only (ADR-071 D2): `INKENTRY_SERVER_KEY` env
-    /// override, else the `[auth].access_token` written by `spelunk login`.
+    /// override, else the `[auth].access_token` written by `inkentry login`.
     /// Resolved once at load time because both tiers are origin-independent.
     ///
     /// This is NOT the effective bearer for a self-hosted `server_url`:
@@ -182,13 +182,13 @@ pub struct Config {
     pub inference_url: Option<String>,
 
     /// Context-window size (tokens) of the LLM used for `memory harvest` and `ask`.
-    /// spelunk uses this to split harvest batches that would overflow the model's window.
+    /// inkentry uses this to split harvest batches that would overflow the model's window.
     /// Set to match the `n_ctx` / context-length of the model you have loaded.
     /// Default: 8192
     #[serde(default = "Config::default_llm_context_length")]
     pub llm_context_length: usize,
 
-    /// When true (the default), `spelunk memory add` also appends the new entry
+    /// When true (the default), `inkentry memory add` also appends the new entry
     /// as a line of JSON in `refs/notes/inkentry` on HEAD.
     ///
     /// This keeps memory close to commits and is consistent with the product's
@@ -200,7 +200,7 @@ pub struct Config {
     #[serde(default = "Config::default_store_in_git_notes")]
     pub store_in_git_notes: bool,
 
-    /// WorkOS device-flow tokens persisted by `spelunk login`, stored under the
+    /// WorkOS device-flow tokens persisted by `inkentry login`, stored under the
     /// `[auth]` table in the global config.
     ///
     /// When present and the access token is unexpired, it is the source of the
@@ -222,7 +222,7 @@ pub struct Config {
 
 /// WorkOS tokens persisted under the `[auth]` table of the global config.
 ///
-/// Written by `spelunk login` / `spelunk org switch`; rotated by the token
+/// Written by `inkentry login` / `inkentry org switch`; rotated by the token
 /// refresh path. The file is written `0600` (see [`save_auth_tokens_to`]).
 ///
 /// Every field is `#[serde(default)]`, so a partial `[auth]` table never fails
@@ -280,7 +280,7 @@ impl AuthTokens {
 
 impl Config {
     fn default_db_path() -> PathBuf {
-        spelunk_config_dir().join("index.db")
+        inkentry_config_dir().join("index.db")
     }
     fn default_llm_context_length() -> usize {
         8192
@@ -321,7 +321,7 @@ impl Config {
     pub fn llm_model_configured(path: Option<&Path>) -> bool {
         let global_path = match path {
             Some(p) => p.to_path_buf(),
-            None => spelunk_config_dir().join("config.toml"),
+            None => inkentry_config_dir().join("config.toml"),
         };
         let Ok(raw) = std::fs::read_to_string(&global_path) else {
             return false;
@@ -333,7 +333,7 @@ impl Config {
 
     /// Load config with layered overrides:
     ///   1. Defaults
-    ///   2. `~/.config/spelunk/config.toml` (global personal)
+    ///   2. `~/.config/inkentry/config.toml` (global personal)
     ///   3. `.inkentry/config.toml` discovered by walking up from CWD (project-level, team-wide)
     ///   4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, `INKENTRY_PROJECT_ID`
     ///
@@ -344,7 +344,7 @@ impl Config {
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let store = secret_store::default_store(&spelunk_config_dir())?;
+        let store = secret_store::default_store(&inkentry_config_dir())?;
         Self::load_with_store(path, store.as_ref())
     }
 
@@ -371,7 +371,7 @@ impl Config {
         // ── 1. Load global personal config ───────────────────────────────────
         let global_path = match path {
             Some(p) => p.to_path_buf(),
-            None => spelunk_config_dir().join("config.toml"),
+            None => inkentry_config_dir().join("config.toml"),
         };
         let mut cfg: Config = if global_path.exists() {
             let raw = std::fs::read_to_string(&global_path)
@@ -488,7 +488,7 @@ impl Config {
         // ── 4. Resolve the cloud-kind bearer (ADR-071 D2) ────────────────────
         // `cfg.server_key` is now the **cloud-kind** bearer only:
         //   1. `INKENTRY_SERVER_KEY` env var (CI / headless escape hatch) — wins.
-        //   2. `[auth].access_token` from `spelunk login` (WorkOS device flow).
+        //   2. `[auth].access_token` from `inkentry login` (WorkOS device flow).
         // Both tiers are origin-independent, so resolving them once here (with
         // no secret-store read at all) is correct and cheap. A self-hosted
         // `server_url`'s bearer is a *different* credential, scoped to that
@@ -514,7 +514,7 @@ impl Config {
     /// [`Config::bearer_for_with_store`] for the resolution rules and the
     /// testable, store-injected form.
     pub fn bearer_for(&self, server_url: &str) -> Result<Option<String>> {
-        let store = secret_store::default_store(&spelunk_config_dir())?;
+        let store = secret_store::default_store(&inkentry_config_dir())?;
         self.bearer_for_with_store(server_url, store.as_ref())
     }
 
@@ -537,11 +537,11 @@ impl Config {
 /// Resolve the host's default [`SecretStore`], honouring [`secret_store::ENV_SECRET_STORE`].
 ///
 /// The public entry point for CLI commands that need to read or write the
-/// per-origin key map directly (`spelunk auth set-key` / `list-servers` /
+/// per-origin key map directly (`inkentry auth set-key` / `list-servers` /
 /// `logout --servers`), the same resolution [`Config::load`] and
 /// [`Config::bearer_for`] use internally.
 pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
-    secret_store::default_store(&spelunk_config_dir())
+    secret_store::default_store(&inkentry_config_dir())
 }
 
 /// Build the warning line for a loopback `server_url` with no port, or
@@ -576,7 +576,7 @@ fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
 /// and states the **remedy**.
 fn config_parse_error(path: &Path, source: toml::de::Error) -> anyhow::Error {
     anyhow::anyhow!(
-        "could not parse the spelunk config file {path}:\n{source}\n\
+        "could not parse the inkentry config file {path}:\n{source}\n\
          Fix the offending key shown above, or remove it to fall back to the default.",
         path = path.display(),
     )
@@ -593,7 +593,7 @@ fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
     toml::from_str::<Config>(raw).map_err(|source| {
         if let Some(bad) = bad_mode_value(raw) {
             return anyhow::anyhow!(
-                "invalid `mode` value {bad:?} in the spelunk config file {path} \
+                "invalid `mode` value {bad:?} in the inkentry config file {path} \
                  (expected one of: {valid})",
                 path = path.display(),
                 valid = SyncMode::valid_values(),
@@ -617,16 +617,16 @@ impl Config {
     ///
     /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
     /// `project_id` is allowed to be absent — it will be derived at runtime by
-    /// `Config::resolve_project_id()` (see spelunk#307 / section D of #303).
+    /// `Config::resolve_project_id()` (see inkentry#307 / section D of #303).
     pub fn validate(&self) -> Result<()> {
         self.validate_with_project(self.project_id.is_some())
     }
 
     /// Like [`validate`](Self::validate) but lets the caller assert that a
     /// project identity is available from a source outside the config — e.g. an
-    /// explicit `spelunk sync --project <slug>` flag.
+    /// explicit `inkentry sync --project <slug>` flag.
     ///
-    /// `spelunk sync` supplies its slug lazily (the project is created on first
+    /// `inkentry sync` supplies its slug lazily (the project is created on first
     /// sync; ADR / founder decision 2026-07-01), so at config-validation time
     /// `project_id` may legitimately be `None` while `--project` carries the
     /// slug. Pass `project_available = true` in that case so the non-loopback
@@ -723,7 +723,7 @@ mod tests {
     use secret_store::MemoryStore;
 
     /// `Config::load` with a fresh in-memory secret store, so credential tests
-    /// never touch the host keychain or `~/.config/spelunk/secrets.toml`.
+    /// never touch the host keychain or `~/.config/inkentry/secrets.toml`.
     fn load_hermetic(path: &Path) -> Result<Config> {
         load_hermetic_with(path, &MemoryStore::default())
     }
@@ -734,8 +734,8 @@ mod tests {
         Config::load_with_store_from(Some(path), store, None)
     }
 
-    /// Unset all spelunk-related env vars to prevent cross-test contamination.
-    fn clear_spelunk_env() {
+    /// Unset all inkentry-related env vars to prevent cross-test contamination.
+    fn clear_inkentry_env() {
         unsafe {
             std::env::remove_var("INKENTRY_SERVER_URL");
             std::env::remove_var("INKENTRY_SERVER_KEY");
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn resolve_mode_defaults_offline_without_server_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config::default();
         assert_eq!(cfg.resolve_mode(), SyncMode::Offline);
     }
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn resolve_mode_defaults_local_first_with_server_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
             project_id: Some("team/proj".to_string()),
@@ -772,7 +772,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn resolve_mode_explicit_mode_wins_over_default() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
             project_id: Some("team/proj".to_string()),
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn resolve_mode_no_server_env_forces_offline() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         // Even an explicit cloud_first mode is overridden by the kill-switch.
         let cfg = Config {
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -800,8 +800,8 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn env_spelunk_mode_overrides_config() {
-        clear_spelunk_env();
+    fn env_inkentry_mode_overrides_config() {
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "mode = \"offline\"\n").unwrap();
@@ -814,8 +814,8 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn env_spelunk_mode_invalid_is_hard_error() {
-        clear_spelunk_env();
+    fn env_inkentry_mode_invalid_is_hard_error() {
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn config_toml_mode_parses() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "mode = \"local_first\"\n").unwrap();
@@ -846,7 +846,7 @@ mod tests {
         // specs_dir, embedding_model) are ignored rather than rejected. Adding
         // `deny_unknown_fields` would break every existing user config, so
         // this must stay green.
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -876,7 +876,7 @@ embedding_model = "some-other-model"
     fn deprecated_memory_server_keys_are_ignored() {
         // The old aliases were removed pre-1.0: these keys no longer populate
         // server_url/server_key and are silently dropped as unknown.
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -910,7 +910,7 @@ project_id = "my-proj"
         // `server_url` is deliberately absent here: it cannot be set from the
         // global config at all (see `project_level_config_live_key_wins_over_deprecated`
         // for that guarantee's project-level equivalent).
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -937,7 +937,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn loads_without_any_server_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
@@ -988,7 +988,7 @@ memory_server_key = "old-token"
         assert!(cfg.validate().is_ok());
     }
 
-    // ── validate() loopback exemption (spelunk#316) ──────────────────────────
+    // ── validate() loopback exemption (inkentry#316) ──────────────────────────
 
     #[test]
     fn validate_passes_for_loopback_url_without_project_id() {
@@ -1012,7 +1012,7 @@ memory_server_key = "old-token"
     #[test]
     fn validate_fails_for_non_loopback_url_without_project_id() {
         let cfg = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1074,11 +1074,11 @@ memory_server_key = "old-token"
 
     #[test]
     fn validate_with_project_true_passes_non_loopback_without_project_id() {
-        // First-run `spelunk sync --project <slug>`: a non-loopback server_url is
+        // First-run `inkentry sync --project <slug>`: a non-loopback server_url is
         // set, no project_id is persisted, but the caller asserts a project slug
         // is available from --project. This must pass (previously blocked sync).
         let cfg = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1089,7 +1089,7 @@ memory_server_key = "old-token"
     fn validate_with_project_false_still_fails_non_loopback_without_project_id() {
         // No --project and no configured project_id → the requirement still bites.
         let cfg = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1100,13 +1100,13 @@ memory_server_key = "old-token"
     fn validate_delegates_to_validate_with_project() {
         // validate() == validate_with_project(project_id.is_some()).
         let with_id = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: Some("p".to_string()),
             ..Default::default()
         };
         assert!(with_id.validate().is_ok());
         let without_id = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1153,7 +1153,7 @@ memory_server_key = "old-token"
         // Explicit team/cloud server in `cloud_first` mode: only server_url
         // set; it serves inference too (founder decision 2026-07-23 — the
         // ONLY mode where a configured server_url owns inference).
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -1175,7 +1175,7 @@ memory_server_key = "old-token"
         // routing that sent embed requests to a cloud `server_url`'s
         // nonexistent `/index/embed` route and produced the 404s. An
         // explicit `server_url` here is a sync replica only.
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
             server_url: Some("https://api.spelunk.cloud".to_string()),
@@ -1189,7 +1189,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn resolve_inference_url_offline_never_falls_back_to_server_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
             server_url: Some("https://api.spelunk.cloud".to_string()),
@@ -1212,7 +1212,7 @@ memory_server_key = "old-token"
         // inference_url (memory backend selection still uses server_url).
         // Holds in every mode; exercised here in cloud_first, the one mode
         // where server_url would otherwise be a candidate too.
-        clear_spelunk_env();
+        clear_inkentry_env();
         let cfg = Config {
             inference_url: Some("http://127.0.0.1:7777".to_string()),
             server_url: Some("http://team.example.com:7777".to_string()),
@@ -1229,7 +1229,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn global_personal_config_cannot_set_server_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1246,7 +1246,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn env_inkentry_server_url_overrides_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1269,7 +1269,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn env_inkentry_server_key_overrides_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1288,8 +1288,8 @@ memory_server_key = "old-token"
 
     #[test]
     #[serial_test::serial]
-    fn env_spelunk_project_id_overrides_config() {
-        clear_spelunk_env();
+    fn env_inkentry_project_id_overrides_config() {
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1308,11 +1308,11 @@ memory_server_key = "old-token"
 
     #[test]
     #[serial_test::serial]
-    fn env_spelunk_memory_server_url_is_ignored() {
+    fn env_inkentry_memory_server_url_is_ignored() {
         // Breaking change: the deprecated INKENTRY_MEMORY_SERVER_URL env fallback
         // was removed. Setting it alone must NOT populate server_url. (Not in
-        // clear_spelunk_env's unset list since nothing reads it — clean up here.)
-        clear_spelunk_env();
+        // clear_inkentry_env's unset list since nothing reads it — clean up here.)
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
@@ -1332,13 +1332,13 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn project_level_config_merges_server_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".inkentry");
-        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        let inkentry_dir = proj_dir.join(".inkentry");
+        std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
-            spelunk_dir.join("config.toml"),
+            inkentry_dir.join("config.toml"),
             r#"server_url = "http://proj.example.com:7777"
 project_id = "team/proj"
 "#,
@@ -1377,7 +1377,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn auth_tokens_resolve_to_server_key_bearer() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
@@ -1401,7 +1401,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn auth_block_missing_org_id_still_loads() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1424,7 +1424,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn auth_block_missing_expires_at_is_treated_as_expired() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1449,7 +1449,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn auth_block_missing_access_token_means_not_logged_in() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1472,7 +1472,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn bare_auth_header_does_not_brick_load() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "llm_model = \"gpt-oss\"\n[auth]\n").unwrap();
@@ -1489,7 +1489,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn invalid_mode_value_error_names_value_modes_and_file() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "mode = \"bogus_mode\"\n").unwrap();
@@ -1510,7 +1510,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn malformed_config_error_names_file_and_remedy() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         // `llm_context_length` is a usize; a string is a hard type error.
@@ -1531,7 +1531,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_auth_tokens() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
@@ -1551,7 +1551,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn legacy_server_key_migrates_but_no_longer_feeds_server_key_field() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
@@ -1574,7 +1574,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn auth_token_and_legacy_server_key_resolve_by_kind_not_precedence() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
@@ -1600,7 +1600,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn save_auth_tokens_preserves_other_keys() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "llm_model = \"gpt-oss\"\n").unwrap();
@@ -1616,7 +1616,7 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn remove_auth_tokens_clears_only_auth_table() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
@@ -1642,7 +1642,7 @@ project_id = "team/proj"
     #[serial_test::serial]
     fn save_auth_tokens_sets_0600() {
         use std::os::unix::fs::PermissionsExt;
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
@@ -1663,13 +1663,13 @@ project_id = "team/proj"
     #[serial_test::serial]
     fn project_level_config_ignores_deprecated_memory_server_url() {
         // Breaking change: the removed alias no longer resolves in project config.
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".inkentry");
-        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        let inkentry_dir = proj_dir.join(".inkentry");
+        std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
-            spelunk_dir.join("config.toml"),
+            inkentry_dir.join("config.toml"),
             r#"memory_server_url = "http://old.example.com:7777"
 project_id = "team/old"
 "#,
@@ -1694,13 +1694,13 @@ project_id = "team/old"
     fn project_level_config_live_key_wins_over_deprecated() {
         // Mixed project config: the live server_url resolves and the removed
         // alias is dropped (no error, no override).
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".inkentry");
-        std::fs::create_dir_all(&spelunk_dir).unwrap();
+        let inkentry_dir = proj_dir.join(".inkentry");
+        std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
-            spelunk_dir.join("config.toml"),
+            inkentry_dir.join("config.toml"),
             r#"server_url = "http://new.example.com:7777"
 memory_server_url = "http://old.example.com:7777"
 project_id = "team/new"
@@ -1736,7 +1736,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn migration_moves_bare_server_key_into_store_and_strips_file() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1776,7 +1776,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn migration_is_idempotent_across_two_loads() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-sp-legacy\"\n").unwrap();
@@ -1806,7 +1806,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn migration_does_not_clobber_existing_store_credential() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-stale-file\"\n").unwrap();
@@ -1835,7 +1835,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn saved_credential_is_in_store_not_in_config_file() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -1868,7 +1868,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn logout_clears_store_and_legacy_file_key() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
@@ -1894,7 +1894,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_store() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
@@ -1912,7 +1912,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn auth_token_wins_over_store() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
@@ -1931,12 +1931,12 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn project_config_server_key_field_is_silently_dropped() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
-        let spelunk_dir = proj_dir.join(".inkentry");
-        std::fs::create_dir_all(&spelunk_dir).unwrap();
-        let proj_cfg = spelunk_dir.join("config.toml");
+        let inkentry_dir = proj_dir.join(".inkentry");
+        std::fs::create_dir_all(&inkentry_dir).unwrap();
+        let proj_cfg = inkentry_dir.join("config.toml");
         std::fs::write(
             &proj_cfg,
             "server_url = \"https://team.example:7777\"\nserver_key = \"team-shared-key\"\nproject_id = \"team/proj\"\n",
@@ -1984,7 +1984,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn file_store_fallback_resolves_credential_like_keychain() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
@@ -2006,7 +2006,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn no_credential_anywhere_yields_none_without_error() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
@@ -2052,7 +2052,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn env_server_key_skips_store_read_entirely() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
@@ -2077,7 +2077,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn auth_token_skips_store_read_entirely() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
@@ -2157,7 +2157,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_loads_from_personal_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
@@ -2170,7 +2170,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_absent_from_personal_config_stays_none() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();
@@ -2183,7 +2183,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_in_project_config_is_ignored() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "").unwrap();
@@ -2208,7 +2208,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_env_overrides_personal_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
@@ -2226,7 +2226,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_env_applies_when_personal_config_sets_nothing() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "").unwrap();
@@ -2244,7 +2244,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_model_env_overrides_personal_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_model = \"from-config\"\n").unwrap();
@@ -2259,7 +2259,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_model_env_applies_when_personal_config_sets_nothing() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "").unwrap();
@@ -2274,7 +2274,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn save_auth_tokens_preserves_llm_url() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(
@@ -2295,7 +2295,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn config_load_never_reads_the_llm_key_from_the_store() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
@@ -2327,7 +2327,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn config_load_reads_nothing_at_all_from_an_injected_store() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(
@@ -2360,7 +2360,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn the_public_load_entry_point_reads_no_secret_either() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
@@ -2390,7 +2390,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_url_env_set_to_empty_still_overrides_the_personal_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
@@ -2405,7 +2405,7 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn llm_model_env_set_to_empty_still_overrides_the_personal_config() {
-        clear_spelunk_env();
+        clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();

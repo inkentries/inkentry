@@ -1,6 +1,6 @@
 # Upgrade corpus (the "DB museum")
 
-Artifacts written by real, released spelunk binaries, kept so every future build
+Artifacts written by real, released inkentry binaries, kept so every future build
 can be tested against what users actually have on disk.
 
 Every other migration test in this repo builds an old shape by hand. That tests
@@ -61,15 +61,15 @@ up on disk are two different lists, so both are spelled out:
 
 | wing | stub runs during capture | synthetic vector values in the artifact |
 | --- | --- | --- |
-| `index-v0.8.3-float768` | yes, for `spelunk index` | yes, the chunk embeddings |
-| `index-v0.9.2-pre-user-version` | yes, for `spelunk index` | yes, the chunk embeddings |
-| `memory-v0.9.3-pre-entity-id` | yes, for `spelunk memory add` | yes, the note embeddings |
-| `memory-v0.9.5` | yes, for `spelunk memory add` | yes, the note embeddings |
+| `index-v0.8.3-float768` | yes, for `inkentry index` | yes, the chunk embeddings |
+| `index-v0.9.2-pre-user-version` | yes, for `inkentry index` | yes, the chunk embeddings |
+| `memory-v0.9.3-pre-entity-id` | yes, for `inkentry memory add` | yes, the note embeddings |
+| `memory-v0.9.5` | yes, for `inkentry memory add` | yes, the note embeddings |
 | `registry-v0.9.5` | yes: the capture indexes two repos in order to register and link them | none, `registry.db` stores no vectors |
 | `git-notes-eras` | no, notes are written without embedding | none |
 
 Note that the memory wings reach the stub through `memory add`, not through
-`spelunk index`, so "every wing that runs `spelunk index`" is not the right
+`inkentry index`, so "every wing that runs `inkentry index`" is not the right
 rule for which wings are affected. The list above is.
 
 Vector values are irrelevant to a migration test: what is asserted is that the

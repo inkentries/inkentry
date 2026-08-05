@@ -3,7 +3,7 @@
 //! These routes are **local-only**: the CLI on the same machine is the only
 //! intended caller. They sit behind the same [`crate::auth_middleware`] as
 //! every other route (item 39) — on the common auto-spawned, unauthenticated,
-//! loopback-bound daemon (`spelunk server`'s doc comment: "the auto-spawned
+//! loopback-bound daemon (`inkentry server`'s doc comment: "the auto-spawned
 //! daemon is unauthenticated, so it MUST only ever bind loopback"), that
 //! gives these routes the exact same trust posture the existing `/memory`
 //! routes already have on that same daemon: loopback-bind is the boundary,

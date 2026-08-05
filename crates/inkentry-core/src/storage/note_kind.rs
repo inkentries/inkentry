@@ -1,7 +1,7 @@
 //! Canonical set of memory-entry kinds and the strict parser that guards
-//! `spelunk memory add --kind`.
+//! `inkentry memory add --kind`.
 //!
-//! A memory entry's `kind` steers every retrieval path: `spelunk context`
+//! A memory entry's `kind` steers every retrieval path: `inkentry context`
 //! selects handoffs/questions/decisions/requirements by kind, `memory failures`
 //! selects `antipattern`, and `memory list --kind` filters on an exact match.
 //! An entry stored under a kind outside this set (a typo like `decisions`, or a
@@ -12,7 +12,7 @@
 
 /// The nine canonical kinds a memory entry may have.
 ///
-/// Retrieval paths (`spelunk context`, `memory failures`) deliberately select
+/// Retrieval paths (`inkentry context`, `memory failures`) deliberately select
 /// on a *subset* of these — not every valid kind appears in the default context
 /// view — but every kind they select on must be a member here, so validation
 /// and retrieval cannot drift (guarded by tests).

@@ -1,4 +1,4 @@
-// Sequence-length perf sweep for the native embedder: no `spelunk` CLI or
+// Sequence-length perf sweep for the native embedder: no `inkentry` CLI or
 // `inkentry-server`/HTTP in the path, calls `NativeEmbedder` directly.
 //
 // Device is chosen at compile time via the crate's `metal` feature (see

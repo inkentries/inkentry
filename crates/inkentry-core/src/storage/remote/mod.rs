@@ -27,7 +27,7 @@ use wire_types::*;
 /// the slashes split the segment and break axum routing (→ 404). We percent-encode
 /// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
 /// axum percent-decodes it back to the original slug server-side, so the
-/// persistence key (`projects.slug`, UNIQUE) is unchanged. See spelunk decision #106.
+/// persistence key (`projects.slug`, UNIQUE) is unchanged. See inkentry decision #106.
 ///
 /// Mirrors `PROJECT_ID_SEGMENT` / `encode_project_id` in
 /// `inkentry-cli/src/server_client.rs` — duplicated here because inkentry-core
@@ -75,7 +75,7 @@ impl RemoteMemoryBackend {
     fn url(&self, path: &str) -> String {
         // Percent-encode the project_id path segment: slugs contain `/`
         // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split
-        // the segment and break axum routing → 404. See spelunk decision #106.
+        // the segment and break axum routing → 404. See inkentry decision #106.
         format!(
             "{}/v1/projects/{}/{}",
             self.base_url.trim_end_matches('/'),
@@ -167,7 +167,7 @@ impl MemoryBackend for RemoteMemoryBackend {
     /// pre-computed `query_blob` is what local backends use for KNN; the
     /// remote backend ignores it and sends the raw query text instead, or the
     /// server's required `query: String` field is missing and axum rejects
-    /// the request with 422 before the handler ever runs (spelunk#359).
+    /// the request with 422 before the handler ever runs (inkentry#359).
     async fn search(
         &self,
         _query_blob: &[u8],

@@ -47,7 +47,7 @@ async fn batch_mixed_outcomes_counts_and_order_match() {
 // stamp then fails (e.g. `SQLITE_BUSY`), a later re-push of the same row
 // durably lands as "skipped": and with no id to recover from that
 // response, the row was stuck outbox-pending forever, not even fixable
-// by a manual `spelunk sync` (same code path). The id on a skip must be
+// by a manual `inkentry sync` (same code path). The id on a skip must be
 // the SAME id the original create was assigned.
 
 #[tokio::test]

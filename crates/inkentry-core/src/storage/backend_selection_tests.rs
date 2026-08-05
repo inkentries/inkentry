@@ -155,7 +155,7 @@ async fn cloud_first_mode_routes_remote() {
     // This goes through the PUBLIC `open_memory_backend`, which resolves
     // the bearer via `Config::bearer_for`: the host's *default* secret
     // store. Isolate `HOME` + force the file backend so this never reads
-    // or writes the developer's real `~/.config/spelunk`.
+    // or writes the developer's real `~/.config/inkentry`.
     let home = tempfile::TempDir::new().unwrap();
     let original_home = std::env::var("HOME").ok();
     unsafe {
@@ -330,9 +330,9 @@ async fn a_leftover_project_id_cache_on_disk_changes_nothing() {
     let server = MockServer::start().await;
     mount_stats(&server, "team%2Fproj", 4).await;
 
-    let spelunk_dir = tempfile::TempDir::new().unwrap();
-    let mem_path = spelunk_dir.path().join("memory.db");
-    let stale = spelunk_dir.path().join("cloud-project-id.lock");
+    let inkentry_dir = tempfile::TempDir::new().unwrap();
+    let mem_path = inkentry_dir.path().join("memory.db");
+    let stale = inkentry_dir.path().join("cloud-project-id.lock");
     const STALE_BODY: &str =
         "slug = \"team/proj\"\nuuid = \"018f4e2a-1234-7abc-8def-00000000beef\"\n";
     std::fs::write(&stale, STALE_BODY).unwrap();
@@ -377,8 +377,8 @@ async fn cloud_first_loopback_slug_needs_no_lookup() {
     let server = MockServer::start().await;
     mount_stats(&server, "team%2Fproj", 2).await;
 
-    let spelunk_dir = tempfile::TempDir::new().unwrap();
-    let mem_path = spelunk_dir.path().join("memory.db");
+    let inkentry_dir = tempfile::TempDir::new().unwrap();
+    let mem_path = inkentry_dir.path().join("memory.db");
     let cfg = cloud_first_cfg(&server.uri(), "team/proj");
     let be = open_memory_backend(&cfg, &mem_path, None).await.unwrap();
 
@@ -397,7 +397,7 @@ async fn cloud_first_loopback_slug_needs_no_lookup() {
         "the memory call must be the only memory request the open path makes"
     );
     assert!(
-        !spelunk_dir.path().join("cloud-project-id.lock").exists(),
+        !inkentry_dir.path().join("cloud-project-id.lock").exists(),
         "nothing may cache a resolved project id beside memory.db any more"
     );
 }

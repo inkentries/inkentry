@@ -2,25 +2,25 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::AuthTokens;
-use super::paths::spelunk_config_dir;
+use super::paths::inkentry_config_dir;
 use super::secret_store::{self, KEY_SERVER_KEY, SecretStore};
 
 /// Persist a bearer into the **legacy flat** secret-store entry
 /// (`KEY_SERVER_KEY`, superseded by the per-origin map in
 /// [`super::server_keys`], ADR-071 D1).
 ///
-/// `spelunk login` does NOT call this: it writes the `[auth]` table via
+/// `inkentry login` does NOT call this: it writes the `[auth]` table via
 /// [`save_auth_tokens`], and `cfg.server_key` derives from that at load time.
 /// The only production caller left is [`super::Config::load_with_store`]'s
 /// plaintext-file migration (moving a bare `server_key` out of
-/// `config.toml`); `spelunk auth set-key` writes the per-origin map instead
+/// `config.toml`); `inkentry auth set-key` writes the per-origin map instead
 /// (see [`super::server_keys::set_key_for_origin`]), never this flat entry. It
 /// is stored in the OS keychain (macOS Keychain / Linux Secret Service /
 /// Windows Credential Manager) by default, falling back to an owner-only file
 /// when no keychain backend is available (CI / headless). The credential is
 /// **never** written to `config.toml`.
 pub fn save_server_key(key: &str) -> Result<()> {
-    let store = secret_store::default_store(&spelunk_config_dir())?;
+    let store = secret_store::default_store(&inkentry_config_dir())?;
     save_server_key_with(key, store.as_ref())
 }
 
@@ -33,15 +33,15 @@ pub fn save_server_key_with(key: &str, store: &dyn SecretStore) -> Result<()> {
 
 /// Remove the CLI bearer credential everywhere it might live.
 ///
-/// What `spelunk logout --servers` clears (ADR-071 D3): the secret-store
+/// What `inkentry logout --servers` clears (ADR-071 D3): the secret-store
 /// entry **and** any legacy plaintext `server_key` left in
-/// `~/.config/spelunk/config.toml`. Bare `spelunk logout` no longer calls
+/// `~/.config/inkentry/config.toml`. Bare `inkentry logout` no longer calls
 /// this; it only clears the `[auth]` cloud token pair (see
 /// [`remove_auth_tokens`]). No-op for any location where the credential is
 /// absent.
 pub fn remove_server_key() -> Result<()> {
-    let store = secret_store::default_store(&spelunk_config_dir())?;
-    remove_server_key_with(store.as_ref(), &spelunk_config_dir().join("config.toml"))
+    let store = secret_store::default_store(&inkentry_config_dir())?;
+    remove_server_key_with(store.as_ref(), &inkentry_config_dir().join("config.toml"))
 }
 
 /// Same as [`remove_server_key`] but with an injected [`SecretStore`] and an
@@ -84,13 +84,13 @@ pub fn remove_server_key_from(config_path: &Path) -> Result<()> {
 // `[auth]` table persistence (WorkOS device-flow tokens)
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Persist WorkOS tokens to the `[auth]` table of `~/.config/spelunk/config.toml`.
+/// Persist WorkOS tokens to the `[auth]` table of `~/.config/inkentry/config.toml`.
 ///
 /// Replaces any existing `[auth]` table; all other top-level keys and tables
 /// are preserved. The file is written with `0600` permissions so the refresh
 /// token is not world-readable.
 pub fn save_auth_tokens(tokens: &AuthTokens) -> Result<()> {
-    save_auth_tokens_to(tokens, &spelunk_config_dir().join("config.toml"))
+    save_auth_tokens_to(tokens, &inkentry_config_dir().join("config.toml"))
 }
 
 /// Same as [`save_auth_tokens`] but writes to an explicit path (useful in tests).
@@ -108,15 +108,15 @@ pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()
     write_config_secure(config_path, &serialised)
 }
 
-/// Remove the `[auth]` table from `~/.config/spelunk/config.toml`.
+/// Remove the `[auth]` table from `~/.config/inkentry/config.toml`.
 ///
-/// What bare `spelunk logout` clears (ADR-071 D3): only the `[auth]` cloud
+/// What bare `inkentry logout` clears (ADR-071 D3): only the `[auth]` cloud
 /// token pair. It no longer touches self-hosted server keys as a side
 /// effect; clearing those requires the explicit `--servers` or
 /// `--server <url>` flag (see [`remove_server_key`]). No-op if the file or
 /// the table is absent. Other keys are preserved.
 pub fn remove_auth_tokens() -> Result<()> {
-    remove_auth_tokens_from(&spelunk_config_dir().join("config.toml"))
+    remove_auth_tokens_from(&inkentry_config_dir().join("config.toml"))
 }
 
 /// Same as [`remove_auth_tokens`] but operates on an explicit path (tests).

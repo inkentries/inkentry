@@ -22,7 +22,7 @@ fn start_with(llm_url: &str, key: Option<&str>) -> Output {
         "--port",
         "7777",
         "--db",
-        "/nonexistent-spelunk-test-dir/server.db",
+        "/nonexistent-inkentry-test-dir/server.db",
         "--llm-url",
         llm_url,
     ]);
@@ -41,7 +41,7 @@ fn start_with_inline_key(llm_url: &str, key: &str) -> Output {
         "--port",
         "7777",
         "--db",
-        "/nonexistent-spelunk-test-dir/server.db",
+        "/nonexistent-inkentry-test-dir/server.db",
         "--llm-url",
         llm_url,
         "--llm-key",

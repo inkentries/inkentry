@@ -12,10 +12,10 @@ use super::state::{Capabilities, EmbedderState, ServerLimits};
 use super::tier::Tier;
 
 /// The single state file directory resolver for the whole CLI:
-/// `~/.local/state/spelunk/`, or `INKENTRY_STATE_DIR` when set.
+/// `~/.local/state/inkentry/`, or `INKENTRY_STATE_DIR` when set.
 ///
 /// Every reader and writer of runtime state goes through this one function:
-/// `spelunk server start/stop/status/logs` (server pid/port/log/db-path
+/// `inkentry server start/stop/status/logs` (server pid/port/log/db-path
 /// files, `cli/cmd/server.rs`), the embed worker's liveness files
 /// (`cli/cmd/embed_worker.rs`), and this module's own loopback
 /// auto-discovery probe below. A second, independent resolution here was a
@@ -25,14 +25,14 @@ use super::tier::Tier;
 ///
 /// On all platforms we use `~/.local/state` rather than the OS-native state dir.
 /// This mirrors the deliberate choice made for the config dir
-/// (`spelunk_config_dir` in inkentry-core's `config.rs`, which uses `~/.config`
+/// (`inkentry_config_dir` in inkentry-core's `config.rs`, which uses `~/.config`
 /// on every platform): it keeps the path identical across Linux and macOS, and
 /// matches what the CLI documentation and error messages say.
 ///
 /// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
 /// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
 /// silently disabled loopback auto-discovery on the primary dev platform
-/// (spelunk#316).
+/// (inkentry#316).
 ///
 /// `INKENTRY_STATE_DIR` is a supported override of the entire path, not
 /// dev-only cruft: it is load-bearing on Windows CI, where `dirs::home_dir()`
@@ -43,7 +43,7 @@ use super::tier::Tier;
 ///
 /// Errors only when the home directory can't be resolved and no override is
 /// set.
-pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
+pub(crate) fn inkentry_state_dir() -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("INKENTRY_STATE_DIR") {
         return Ok(std::path::PathBuf::from(p));
     }
@@ -52,10 +52,10 @@ pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
-/// Read the port written by `spelunk server start` into
-/// `~/.local/state/spelunk/server.port`. Returns `None` if absent or unreadable.
+/// Read the port written by `inkentry server start` into
+/// `~/.local/state/inkentry/server.port`. Returns `None` if absent or unreadable.
 fn read_server_port_file() -> Option<u16> {
-    let path = spelunk_state_dir().ok()?.join("server.port");
+    let path = inkentry_state_dir().ok()?.join("server.port");
     let content = std::fs::read_to_string(&path).ok()?;
     content.trim().parse::<u16>().ok()
 }
@@ -70,7 +70,7 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 /// 2. If `cfg.server_url` is set → probe that URL with a **2 s** timeout
 ///    (`auto_discovered = false`).
 /// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
-///    a. Read `~/.local/state/spelunk/server.port`; probe `127.0.0.1:<port>`.
+///    a. Read `~/.local/state/inkentry/server.port`; probe `127.0.0.1:<port>`.
 ///    b. Fallback: probe `127.0.0.1:7777`.
 ///    Both loopback probes use a **250 ms** timeout.
 ///    On success: `auto_discovered = true`. On failure: `Tier::Offline`.
@@ -164,7 +164,7 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
 
 /// Loopback auto-discovery only: never consults `cfg.server_url`.
 ///
-/// Step 3a: port file written by `spelunk server start`. Step 3b: fall back to
+/// Step 3a: port file written by `inkentry server start`. Step 3b: fall back to
 /// the default port 7777. Both steps use the 250 ms loopback timeout and treat
 /// any probe failure as `Tier::Offline` (never a hard error: loopback
 /// auto-discovery finding nothing is the normal "no local server" case, not a
@@ -174,7 +174,7 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
 /// discovery independent of an explicit `server_url`: `local_first` always
 /// prefers the local embedder, even when `server_url` targets a remote.
 async fn probe_loopback() -> Tier {
-    // Step 3a: port file written by `spelunk server start`
+    // Step 3a: port file written by `inkentry server start`
     if let Some(port) = read_server_port_file() {
         let loopback_url = format!("http://127.0.0.1:{port}");
         tracing::debug!(
@@ -319,7 +319,7 @@ async fn probe_url(
                         tracing::warn!(
                             "inkentry-server at {url} serves {server_dim}-dim embeddings; \
                              this CLI expects {expected}-dim. Ignoring loopback server. \
-                             Restart the server (`spelunk server start`) or set \
+                             Restart the server (`inkentry server start`) or set \
                              INKENTRY_NO_SERVER=1 to suppress this probe."
                         );
                         return Ok(Tier::Offline);
@@ -330,7 +330,7 @@ async fn probe_url(
                             "inkentry-server at {url} serves {server_dim}-dim embeddings; \
                              this CLI expects {expected}-dim.\n\
                              Upgrade or replace the server, or remove server_url from \
-                             ~/.config/spelunk/config.toml."
+                             ~/.config/inkentry/config.toml."
                         ));
                     }
                 }
@@ -768,8 +768,8 @@ mod tests {
     // are serialised against each other to avoid cross-test interference.
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
-    async fn spelunk_no_server_forces_offline() {
+    #[serial_test::serial(inkentry_no_server_env)]
+    async fn inkentry_no_server_forces_offline() {
         // SAFETY: serialised via #[serial] so no other test reads/writes this
         // env var concurrently; restored before the guard scope ends.
         for val in ["1", "true", "yes"] {
@@ -1367,9 +1367,9 @@ mod tests {
     // ── get_inference_tier (2026-07-23 founder decision) ───
     //
     // These tests set `INKENTRY_STATE_DIR` / `INKENTRY_NO_SERVER`, both
-    // process-global. Reusing the `spelunk_no_server_env` serial group (rather
+    // process-global. Reusing the `inkentry_no_server_env` serial group (rather
     // than a new name) keeps them mutually exclusive with
-    // `spelunk_no_server_forces_offline` above too: `get_inference_tier` reads
+    // `inkentry_no_server_forces_offline` above too: `get_inference_tier` reads
     // `INKENTRY_NO_SERVER` internally, so it must never run concurrently with a
     // test that transiently sets it.
 
@@ -1380,7 +1380,7 @@ mod tests {
     // address nothing mounts anything on, so the test would fail loudly
     // (connection error, not a silent pass) if the code ever tried it.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn get_inference_tier_local_first_prefers_loopback_over_explicit_server_url() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1485,7 +1485,7 @@ mod tests {
     // this binary with no reset hook, so asserting on it directly here
     // would make this test's pass/fail depend on unrelated test ordering.
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn get_inference_tier_fresh_cloud_first_reprobes_every_call() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2139,7 +2139,7 @@ mod tests {
     // is not an object reaches the struct error instead, and that one quotes
     // the whole body back. Same 100 kB, different arm, and only this one was
     // unbounded. The 200-char snippet stays deliberate: at this point the peer
-    // is not a spelunk server at all, and without a sample of what it did send
+    // is not a inkentry server at all, and without a sample of what it did send
     // the failure is undiagnosable.
     #[tokio::test]
     async fn a_valid_json_body_that_is_not_an_object_is_bounded_too() {
@@ -2274,7 +2274,7 @@ mod tests {
     }
 
     // The head of a non-object body is rendered on purpose: at that point the
-    // peer is not a spelunk server and the sample is the only diagnostic. What
+    // peer is not a inkentry server and the sample is the only diagnostic. What
     // must hold is that the deliberate exposure stops at its stated bound
     // rather than running to the end of whatever the peer sent.
     #[tokio::test]

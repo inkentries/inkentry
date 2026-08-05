@@ -1,4 +1,4 @@
-//! `spelunk org switch <org>` — silently re-scope the session to another
+//! `inkentry org switch <org>` — silently re-scope the session to another
 //! organisation without a new device login.
 //!
 //! Resolves the org argument to its **WorkOS org id** (`org_…`) — that is what
@@ -12,7 +12,7 @@
 //! The resolved WorkOS org id is then sent to WorkOS `/authenticate` (refresh
 //! grant) using the stored refresh token, and the rotated tokens are persisted.
 //! Shared org-resolution and token-persistence helpers also back
-//! `spelunk login --org`.
+//! `inkentry login --org`.
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -23,7 +23,7 @@ use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg};
 
 #[derive(Args, Debug)]
 pub struct OrgArgs {
-    /// Override the spelunk cloud API URL (default: https://api.spelunk.cloud)
+    /// Override the inkentry cloud API URL (default: https://api.spelunk.cloud)
     #[arg(long, env = "INKENTRY_CLOUD_URL", global = true)]
     pub cloud_url: Option<String>,
 
@@ -65,7 +65,7 @@ pub async fn org(args: OrgArgs) -> Result<()> {
 async fn org_switch(workos_url: &str, cloud_url: &str, client_id: &str, org: &str) -> Result<()> {
     let cfg = config::Config::load(None).context("loading config")?;
     let auth = cfg.auth.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Not logged in. Run `spelunk login` before switching organizations.")
+        anyhow::anyhow!("Not logged in. Run `inkentry login` before switching organizations.")
     })?;
 
     let client = auth_api::build_client()?;
@@ -155,14 +155,14 @@ fn resolve_arg_to_workos_org_id(orgs: &[MeOrg], arg: &str) -> Result<String> {
     entry.workos_org_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "org '{arg}' has no WorkOS org id on record; cannot switch \
-             (re-run `spelunk login` or contact support)"
+             (re-run `inkentry login` or contact support)"
         )
     })
 }
 
 /// Persist rotated/issued tokens to the `[auth]` table (written `0600`).
 pub fn persist_tokens(tokens: &AuthTokens) -> Result<()> {
-    config::save_auth_tokens(tokens).context("saving auth tokens to ~/.config/spelunk/config.toml")
+    config::save_auth_tokens(tokens).context("saving auth tokens to ~/.config/inkentry/config.toml")
 }
 
 #[cfg(test)]

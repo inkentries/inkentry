@@ -1,4 +1,4 @@
-# spelunk style guide
+# inkentry style guide
 
 How we write code and prose in this repository.
 
@@ -159,7 +159,7 @@ other.
 
 | Location               | Audience                       | Contains                                                                                                  |
 | ---------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `docs/*.md`            | **End users** of spelunk       | Install, commands, config, memory model, server setup. Task-oriented. Assumes no knowledge of the source. |
+| `docs/*.md`            | **End users** of inkentry       | Install, commands, config, memory model, server setup. Task-oriented. Assumes no knowledge of the source. |
 | `docs/adr/`            | **Maintainers and architects** | Why the architecture is what it is. Immutable once merged.                                                |
 | `docs/architecture/`   | **Contributors**               | Living notes on how subsystems work. Mutable; keep current or delete.                                     |
 | `CONTRIBUTING.md`      | **Contributors**               | Process: setup, PRs, commits, tests, ADRs.                                                                |
@@ -247,7 +247,7 @@ it happens to land last.
 // Good
 .context("initialising registry schema")?
 .with_context(|| format!("creating registry directory {}", parent.display()))?
-anyhow::bail!("no spelunk project here; run `spelunk init` first")
+anyhow::bail!("no inkentry project here; run `inkentry init` first")
 
 // Bad
 anyhow::bail!("A project cannot depend on itself.")
@@ -275,7 +275,7 @@ The CLI has three deliberate failure tiers. They are not interchangeable:
 | Command shape                          | Exit | Output                                                 |
 | -------------------------------------- | ---- | ------------------------------------------------------ |
 | Normal user command                    | 1    | `Error: {:?}` (full anyhow chain)                      |
-| `spelunk plumbing <sub>`               | 2    | `error: {:#}` on stderr (single line, script-friendly) |
+| `inkentry plumbing <sub>`               | 2    | `error: {:#}` on stderr (single line, script-friendly) |
 | `plumbing publish-notes --best-effort` | 0    | warning on stderr only                                 |
 
 The third exists because it runs from a git pre-push hook and must never block a

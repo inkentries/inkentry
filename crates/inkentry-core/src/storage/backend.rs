@@ -102,7 +102,7 @@ pub trait MemoryBackend: Send {
     async fn get_edges(&self, id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)>;
 
     /// Stable identifier for the concrete backend implementation, used for
-    /// diagnostics (`spelunk status`/`check --format json`). One of:
+    /// diagnostics (`inkentry status`/`check --format json`). One of:
     /// `"sqlite"`, `"git-notes"`, `"remote"`.
     fn backend_kind(&self) -> &'static str;
 }
@@ -121,7 +121,7 @@ pub(crate) fn numeric_note_id(id: &NoteId) -> Result<i64> {
         anyhow::anyhow!(
             "'{id}' is not an id this project's memory store can resolve: it numbers \
              entries with integers, and this id was minted by a cloud-hosted project. \
-             Run `spelunk memory list` to see the ids this project actually uses."
+             Run `inkentry memory list` to see the ids this project actually uses."
         )
     })
 }

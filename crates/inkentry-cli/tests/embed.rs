@@ -1,4 +1,4 @@
-//! Component tests for `spelunk plumbing embed`.
+//! Component tests for `inkentry plumbing embed`.
 //!
 //! Tests use a `wiremock::MockServer` that responds to
 //! `POST /v1/projects/{id}/index/embed` (the inkentry-server endpoint) with
@@ -6,8 +6,8 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, mount_health, mount_index_embed, spelunk_bin,
-    spelunk_bin_in,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, mount_health, mount_index_embed, inkentry_bin,
+    inkentry_bin_in,
 };
 
 use predicates::prelude::*;
@@ -32,7 +32,7 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
 }
 
-// Build a `spelunk plumbing embed` command that auto-discovers the loopback
+// Build a `inkentry plumbing embed` command that auto-discovers the loopback
 // server via `INKENTRY_STATE_DIR`, with every ambient `INKENTRY_*` var these
 // tests isolate scrubbed so a developer/CI shell value can't change which tier
 // is probed.
@@ -42,7 +42,7 @@ fn embed_loopback_cmd(
     state_dir: &Path,
     config: &Path,
 ) -> assert_cmd::Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_MODE")
@@ -101,7 +101,7 @@ async fn embed_exits_0_with_empty_piped_stdin() {
     let config = write_server_config(&tmp, &mock.uri());
 
     // Pipe empty stdin — command should succeed (no lines to embed).
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -139,7 +139,7 @@ async fn embed_document_mode_produces_jsonl_vector() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -199,7 +199,7 @@ async fn embed_query_mode_produces_jsonl_vector() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -240,7 +240,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -342,7 +342,7 @@ fn embed_exits_nonzero_when_no_server_configured() {
     let config = tmp.path().join("config.toml");
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config)

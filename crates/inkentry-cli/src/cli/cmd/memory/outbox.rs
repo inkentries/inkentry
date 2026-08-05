@@ -8,8 +8,8 @@
 //!   and hand the local server's relay any newly-unpushed rows. Best-effort
 //!   only: any failure here must never surface as a write error, a
 //!   meaningfully added write latency, or a non-zero exit (items 7/9/10/11).
-//! - [`poll_and_apply`] — called from `spelunk status` and from `memory
-//!   list`/`search`/`show`/`timeline`/`spelunk context` (items 42-47) to
+//! - [`poll_and_apply`] — called from `inkentry status` and from `memory
+//!   list`/`search`/`show`/`timeline`/`inkentry context` (items 42-47) to
 //!   apply whatever the relay has buffered (push acks, pulled rows) locally,
 //!   so both status and reads stay converged without ever printing a
 //!   manual-sync call to action. Never triggers `ensure_server_running`
@@ -114,7 +114,7 @@ struct RelayAckRequestWire {
 
 /// Resolve `(server_url, project_id)` for the relay, or `None` when this
 /// project has nothing to relay: not `local_first`, no `server_url`, or no
-/// `project_id` (mirrors `spelunk sync`'s own requirement — there is no
+/// `project_id` (mirrors `inkentry sync`'s own requirement — there is no
 /// `--project` override on a write command to fall back to, so a missing
 /// `project_id` here just means the background nudge quietly does nothing,
 /// same as it always has).
@@ -206,7 +206,7 @@ async fn register_and_push(
         .await;
 }
 
-/// What [`poll_and_apply`] applied, for `spelunk status`'s pending/last-synced
+/// What [`poll_and_apply`] applied, for `inkentry status`'s pending/last-synced
 /// line.
 pub(crate) struct PollOutcome {
     pub applied_pushes: usize,
@@ -218,7 +218,7 @@ pub(crate) struct PollOutcome {
 /// Poll the local relay (if reachable) for a project's buffered push-acks and
 /// pulled rows, apply them via the CLI-side storage layer, and return what
 /// happened. Returns `None` when there is nothing to poll (not `local_first`,
-/// no server configured, or no local relay reachable) — `spelunk status`
+/// no server configured, or no local relay reachable) — `inkentry status`
 /// falls back to a purely local pending-count in that case.
 ///
 /// Also registers the relay session (via [`register_and_push`]) before
@@ -359,7 +359,7 @@ mod tests {
     /// return its address. Serves BOTH roles the same binary can play: the
     /// team-hosting `/v1/projects/*/memory*` routes (a stand-in for a real
     /// team server) and the local-only `/local/relay/*` routes (a stand-in
-    /// for a real `spelunk server start`-ed daemon) — callers pick which
+    /// for a real `inkentry server start`-ed daemon) — callers pick which
     /// role they're using it for by whether they write a state-dir port file
     /// (see [`spawn_local_relay`]) or pass the address as `server_url`.
     async fn spawn_inkentry_server() -> SocketAddr {
@@ -399,7 +399,7 @@ mod tests {
     /// Like [`spawn_inkentry_server`], but also writes the port into
     /// `state_dir/server.port` so `server::probe_local_relay_port`
     /// discovers it exactly the way it would discover a real
-    /// `spelunk server start`-ed daemon — the *local relay* role.
+    /// `inkentry server start`-ed daemon — the *local relay* role.
     async fn spawn_local_relay(state_dir: &std::path::Path) -> SocketAddr {
         let addr = spawn_inkentry_server().await;
         std::fs::create_dir_all(state_dir).unwrap();
@@ -766,12 +766,12 @@ mod tests {
         drop(store_a);
         nudge_after_write(&cfg, &mem_a).await;
 
-        // Instance B: drive a REAL `spelunk memory list` invocation (item 45)
+        // Instance B: drive a REAL `inkentry memory list` invocation (item 45)
         // until the entry arrives via live pull — not `poll_and_apply`
         // directly. This is the actual gap the founder review found: the
         // item-20 e2e test previously passed by calling `poll_and_apply`
         // itself, so it never exercised the read path item 20's own text
-        // names ("visible via `spelunk memory list`/`search`"). Calling the
+        // names ("visible via `inkentry memory list`/`search`"). Calling the
         // production `memory_list` function here means this test can no
         // longer pass without `memory list` itself draining the buffer.
         point_state_dir_at(state_b.path());
@@ -809,8 +809,8 @@ mod tests {
         }
         assert!(
             seen,
-            "instance A's write must become visible via a real `spelunk memory list` \
-             invocation on instance B, without any explicit `spelunk sync`/`memory pull`"
+            "instance A's write must become visible via a real `inkentry memory list` \
+             invocation on instance B, without any explicit `inkentry sync`/`memory pull`"
         );
     }
 

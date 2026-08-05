@@ -1,4 +1,4 @@
-//! Integration tests for the `spelunk memory harvest` Tier-0 server gate
+//! Integration tests for the `inkentry memory harvest` Tier-0 server gate
 //! (ADR-002 / issue #260).
 //!
 //! Harvest now requires `server_url` in config — there is no local-model path.
@@ -6,7 +6,7 @@
 //! exercise the early server-gate check.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -14,7 +14,7 @@ use std::fs;
 use tempfile::tempdir;
 
 // Substring that appears in the Tier-0 error from `harvest_requires_server()`.
-const SERVER_REQUIRED: &str = "'spelunk memory harvest' requires inkentry-server";
+const SERVER_REQUIRED: &str = "'inkentry memory harvest' requires inkentry-server";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -33,9 +33,9 @@ fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBu
     config_path
 }
 
-/// Build a `spelunk --config <cfg> memory harvest --git-range HEAD~1..HEAD` command.
+/// Build a `inkentry --config <cfg> memory harvest --git-range HEAD~1..HEAD` command.
 fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")
@@ -65,7 +65,7 @@ fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
         .stderr(predicate::str::contains(SERVER_REQUIRED))
         // With no `server_url` the guidance must point at the local server and
         // must NOT tell a solo user to configure a team `server_url`.
-        .stderr(predicate::str::contains("spelunk server start"))
+        .stderr(predicate::str::contains("inkentry server start"))
         .stderr(predicate::str::contains("server_url").not());
 }
 

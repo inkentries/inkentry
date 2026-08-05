@@ -325,11 +325,11 @@ fn report_embed_failure(
     err: anyhow::Error,
 ) {
     bar.abandon_with_message(format!(
-        "batch failed after {embedded}/{total} embedded; re-run `spelunk index` to finish the rest",
+        "batch failed after {embedded}/{total} embedded; re-run `inkentry index` to finish the rest",
     ));
     eprintln!("Embedding stopped after {embedded}/{total} chunks embedded and saved: {err:#}");
     eprintln!(
-        "Re-run `spelunk index` to embed the remaining {} chunk(s); already-embedded chunks \
+        "Re-run `inkentry index` to embed the remaining {} chunk(s); already-embedded chunks \
          are skipped.",
         total - embedded,
     );
@@ -404,7 +404,7 @@ async fn run_embed_phase_with_backoff(
             "Warning: this index was built with chunker config '{recorded}', but the \
              running build uses '{current_chunker_config}'. Unchanged files keep their old \
              chunk boundaries until re-parsed, so the index now mixes chunk granularities. \
-             Run `spelunk index --force` to re-chunk everything under the current config.\n"
+             Run `inkentry index --force` to re-chunk everything under the current config.\n"
         );
     }
     let server_limits = tier.server_limits();

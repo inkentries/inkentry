@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Returns `~/.config/spelunk/`, or `INKENTRY_CONFIG_DIR` when set.
+/// Returns `~/.config/inkentry/`, or `INKENTRY_CONFIG_DIR` when set.
 ///
 /// On all platforms we use `~/.config` rather than the OS-native config dir
 /// (e.g. `~/Library/Application Support` on macOS) so that the path matches
@@ -13,12 +13,12 @@ use std::path::{Path, PathBuf};
 /// calls `SHGetKnownFolderPath` (a Registry lookup) rather than reading
 /// `HOME`/`USERPROFILE`, making a per-process environment override of `HOME`
 /// ineffective (the identical portability gap documented on
-/// `spelunk_state_dir` in the CLI's `capability/probe.rs` and on
+/// `inkentry_state_dir` in the CLI's `capability/probe.rs` and on
 /// `web_to_md_script_path` in `memory/add.rs`). Tests that need an isolated
 /// config/secret-store location (this crate's own `config::mod::tests`, and
-/// the CLI integration tests via `spelunk_bin_in`) set this instead of relying
+/// the CLI integration tests via `inkentry_bin_in`) set this instead of relying
 /// on `HOME` alone.
-pub(in crate::config) fn spelunk_config_dir() -> PathBuf {
+pub(in crate::config) fn inkentry_config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("INKENTRY_CONFIG_DIR") {
         return PathBuf::from(dir);
     }
@@ -50,7 +50,7 @@ pub fn find_project_db(start: &Path) -> Option<PathBuf> {
 /// Walk up from `start` for a `.inkentry/` **directory** (worktree-aware).
 /// Returns the `.inkentry` dir path, or `None` if none is found before the root.
 ///
-/// Keys on the directory, not `index.db`: `spelunk init --no-index` writes a
+/// Keys on the directory, not `index.db`: `inkentry init --no-index` writes a
 /// `.inkentry/config.toml` with no index, and memory needs no index. Linked
 /// worktrees resolve to the main worktree's `.inkentry/` (mirrors
 /// [`find_project_db`]).
@@ -69,7 +69,7 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
 
 /// ADR-067: resolve the local project's `.inkentry/index.db` base path anchored at
 /// `start`, failing closed when `start` has no `.inkentry/` project instead of
-/// silently falling back to the global `~/.config/spelunk/` store.
+/// silently falling back to the global `~/.config/inkentry/` store.
 ///
 /// Explicit `--db` / index-path callers bypass this (an explicit store is always
 /// honored). Memory callers apply `.with_file_name("memory.db")` to the result.
@@ -80,13 +80,13 @@ pub fn require_project_db_at(
     cfg_default: &Path,
     allow_global: bool,
 ) -> Result<PathBuf> {
-    if let Some(spelunk_dir) = find_project_dir(start) {
-        return Ok(spelunk_dir.join("index.db"));
+    if let Some(inkentry_dir) = find_project_dir(start) {
+        return Ok(inkentry_dir.join("index.db"));
     }
     if allow_global {
         return Ok(cfg_default.to_path_buf());
     }
-    anyhow::bail!("no spelunk project here. Run 'spelunk init' first")
+    anyhow::bail!("no inkentry project here. Run 'inkentry init' first")
 }
 
 /// [`require_project_db_at`] anchored at the current working directory.
@@ -130,27 +130,27 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── spelunk_config_dir / INKENTRY_CONFIG_DIR override ─────────────────────
+    // ── inkentry_config_dir / INKENTRY_CONFIG_DIR override ─────────────────────
 
     /// `INKENTRY_CONFIG_DIR` wins over `dirs::home_dir()`-derived resolution.
     /// This is the override that makes per-test isolation possible on
     /// Windows, where `dirs::home_dir()` does not read `HOME`.
     #[test]
-    #[serial_test::serial(spelunk_config_dir_env)]
-    fn spelunk_config_dir_honors_env_override() {
+    #[serial_test::serial(inkentry_config_dir_env)]
+    fn inkentry_config_dir_honors_env_override() {
         let tmp = TempDir::new().unwrap();
         let override_dir = tmp.path().join("custom-config-dir");
         unsafe { std::env::set_var("INKENTRY_CONFIG_DIR", &override_dir) };
-        let got = spelunk_config_dir();
+        let got = inkentry_config_dir();
         unsafe { std::env::remove_var("INKENTRY_CONFIG_DIR") };
         assert_eq!(got, override_dir);
     }
 
     #[test]
-    #[serial_test::serial(spelunk_config_dir_env)]
-    fn spelunk_config_dir_falls_back_to_home_when_unset() {
+    #[serial_test::serial(inkentry_config_dir_env)]
+    fn inkentry_config_dir_falls_back_to_home_when_unset() {
         unsafe { std::env::remove_var("INKENTRY_CONFIG_DIR") };
-        let got = spelunk_config_dir();
+        let got = inkentry_config_dir();
         assert!(
             got.ends_with(Path::new(".config").join("inkentry")),
             "got: {}",
@@ -162,10 +162,10 @@ mod tests {
 
     /// Exact fail-closed error text (ADR-067; em dash restructured out per the
     /// no-em-dash house rule for user-facing copy).
-    const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
+    const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
     #[test]
-    fn find_project_dir_finds_dot_spelunk_at_start() {
+    fn find_project_dir_finds_dot_inkentry_at_start() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".inkentry")).unwrap();
         assert_eq!(
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn find_project_dir_ignores_dot_spelunk_file() {
+    fn find_project_dir_ignores_dot_inkentry_file() {
         // A regular file named `.inkentry` is not a project dir.
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".inkentry"), "not a dir").unwrap();

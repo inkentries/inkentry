@@ -306,7 +306,7 @@ impl Database {
     /// Idempotent — guarded by the `schema_v896_embeddings` marker table. On
     /// fresh databases the table is already created at 896-dim by
     /// `apply_vector_migration`, so this is a fast no-op. On existing 768-dim
-    /// databases the table is dropped and recreated; a full `spelunk index`
+    /// databases the table is dropped and recreated; a full `inkentry index`
     /// re-run is required afterwards.
     pub fn apply_dim_upgrade_migration(&self) -> Result<()> {
         let already: bool = self
@@ -352,7 +352,7 @@ impl Database {
                 .context("upgrading embeddings table to int8[896]")?;
             tracing::info!(
                 "embedding storage upgraded to int8[896] (F2LLM-v2-330M); \
-                 re-run `spelunk index` to rebuild"
+                 re-run `inkentry index` to rebuild"
             );
         }
         self.conn
@@ -378,7 +378,7 @@ impl Database {
     ///
     /// `snapshots`/`snapshot_files`/`snapshot_chunks` were created by
     /// `016_snapshots.sql` and `snapshot_embeddings` by
-    /// `017_snapshot_vectors.sql`, but nothing ever populated them (`spelunk
+    /// `017_snapshot_vectors.sql`, but nothing ever populated them (`inkentry
     /// search --as-of` always errored with "no snapshot found"). Removed for
     /// v1.0 rather than gated behind a flag. `IF EXISTS` makes this a no-op on
     /// fresh databases, which never create these tables in the first place.
@@ -434,7 +434,7 @@ impl Database {
             Some(recorded) => anyhow::bail!(
                 "index was built with embedding model '{recorded}' but this build uses \
                  '{model_id}'. Vectors from two models must not share one search index. \
-                 Re-index from scratch: `spelunk index . --force` (or delete .inkentry/index.db)."
+                 Re-index from scratch: `inkentry index . --force` (or delete .inkentry/index.db)."
             ),
             None => {
                 self.conn
@@ -657,7 +657,7 @@ mod tests {
     // `run_migrations` used to stamp `PRAGMA user_version` unconditionally on
     // every open, even when nothing needed migrating - and setting that
     // pragma always opens a write transaction, so a concurrent reader
-    // (`spelunk search` while `spelunk index` runs) could fail with
+    // (`inkentry search` while `inkentry index` runs) could fail with
     // "database is locked" on this alone, never touching a genuine
     // migration. Reopening an already-current DB while another connection
     // holds an open writer transaction must now succeed.
@@ -975,7 +975,7 @@ mod tests {
             .expect("stamp old config");
 
         // Simulates a build upgraded to the new default: the check reports
-        // the drift but returns `Ok`, so a normal `spelunk index` run keeps
+        // the drift but returns `Ok`, so a normal `inkentry index` run keeps
         // going (incremental skip-by-hash still applies to unchanged files).
         let warned = db
             .ensure_chunker_config("max_chunk_tokens=512")
@@ -1207,7 +1207,7 @@ mod tests {
     /// The batch change makes the write transaction live for the whole batch
     /// instead of a single row, so it holds the writer lock longer than the
     /// old per-row autocommit ever did. WAL mode should still let a concurrent
-    /// reader (e.g. `spelunk search` running mid-embed) proceed rather than
+    /// reader (e.g. `inkentry search` running mid-embed) proceed rather than
     /// blocking or erroring — verify this empirically instead of assuming it.
     #[test]
     fn open_batch_transaction_does_not_block_a_concurrent_reader() {
@@ -1226,7 +1226,7 @@ mod tests {
         )
         .expect("staged write inside the open transaction");
 
-        // A second connection, mimicking a concurrent `spelunk search` reader.
+        // A second connection, mimicking a concurrent `inkentry search` reader.
         let reader = Connection::open(tmp.path()).expect("second connection");
         let count: i64 = reader
             .query_row("SELECT count(*) FROM embeddings", [], |r| r.get(0))
@@ -1240,7 +1240,7 @@ mod tests {
              (WAL snapshot isolation)"
         );
 
-        // The real code path a concurrent `spelunk search` takes — a sqlite-vec
+        // The real code path a concurrent `inkentry search` takes — a sqlite-vec
         // KNN `MATCH` query, not a plain `SELECT count(*)` — against the same
         // virtual table the open transaction is writing into. `Database` opens
         // its own connection, so build a second `Database` over the reader's

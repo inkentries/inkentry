@@ -1,4 +1,4 @@
-//! Detached-child spawn and run-lock handoff machinery for `spelunk index`.
+//! Detached-child spawn and run-lock handoff machinery for `inkentry index`.
 //!
 //! Two sites in `index()` release the run lock and hand the rest of the work
 //! to a re-exec'd child process (`--_embed-phases`, `--_background-phases`) so
@@ -135,7 +135,7 @@ pub(super) fn detach_embed_eligible(tier: &capability::Tier) -> bool {
 /// How long the parent waits, after releasing the run lock and spawning a
 /// continuation child, to see it recorded as the lock's new holder before
 /// reporting the handoff as a background success. The release-then-spawn gap
-/// a racing `spelunk index` can win is normally low-single-digit
+/// a racing `inkentry index` can win is normally low-single-digit
 /// milliseconds, so this bounds well above that without delaying the common
 /// case where the child wins on its first poll.
 pub(super) const HANDOFF_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -156,7 +156,7 @@ mod tests {
     }
 
     fn sample_index_args() -> IndexArgs {
-        TestCli::try_parse_from(["spelunk", "some/path"])
+        TestCli::try_parse_from(["inkentry", "some/path"])
             .expect("parse")
             .index
     }
@@ -169,7 +169,7 @@ mod tests {
         // if a future edit adds `.current_dir(...)` or `.env_clear()`/`.env(...)`
         // to the shared builder.
         let cmd = build_detached_child_command(
-            std::path::Path::new("/usr/bin/spelunk"),
+            std::path::Path::new("/usr/bin/inkentry"),
             "--_background-phases",
             &sample_index_args(),
         );
@@ -191,7 +191,7 @@ mod tests {
         let mut args = sample_index_args();
         args.config_path = Some(std::path::PathBuf::from("/tmp/custom-config.toml"));
         let cmd = build_detached_child_command(
-            std::path::Path::new("/usr/bin/spelunk"),
+            std::path::Path::new("/usr/bin/inkentry"),
             "--_background-phases",
             &args,
         );
@@ -212,7 +212,7 @@ mod tests {
         let args = sample_index_args();
         assert!(args.config_path.is_none());
         let cmd = build_detached_child_command(
-            std::path::Path::new("/usr/bin/spelunk"),
+            std::path::Path::new("/usr/bin/inkentry"),
             "--_background-phases",
             &args,
         );
@@ -233,7 +233,7 @@ mod tests {
         args.no_summaries = true;
         for mode_flag in ["--_background-phases", "--_embed-phases"] {
             let cmd = build_detached_child_command(
-                std::path::Path::new("/usr/bin/spelunk"),
+                std::path::Path::new("/usr/bin/inkentry"),
                 mode_flag,
                 &args,
             );
@@ -250,13 +250,13 @@ mod tests {
         // Before the fix neither spawn forwarded `--summary-batch-size`, so a
         // custom value silently reset to the default (10) in whichever child
         // ran phase 4.
-        let args = TestCli::try_parse_from(["spelunk", "some/path", "--summary-batch-size", "42"])
+        let args = TestCli::try_parse_from(["inkentry", "some/path", "--summary-batch-size", "42"])
             .expect("parse")
             .index;
         assert_eq!(args.summary_batch_size, 42);
         for mode_flag in ["--_background-phases", "--_embed-phases"] {
             let cmd = build_detached_child_command(
-                std::path::Path::new("/usr/bin/spelunk"),
+                std::path::Path::new("/usr/bin/inkentry"),
                 mode_flag,
                 &args,
             );

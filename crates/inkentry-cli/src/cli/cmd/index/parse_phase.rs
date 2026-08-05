@@ -188,7 +188,7 @@ pub(super) fn run_parse_phase(
     // embedding row yet (e.g. a prior `init`/`index` parsed & chunked while
     // the embedder was still loading, so the embed phase was skipped). These
     // belong to unchanged files that the hash-based skip above never re-emits,
-    // so without this union a plain `spelunk index` would report "nothing to
+    // so without this union a plain `inkentry index` would report "nothing to
     // do" and leave them permanently unembedded.
     //
     // Freshly-parsed chunks from this run also lack an embedding row, so they

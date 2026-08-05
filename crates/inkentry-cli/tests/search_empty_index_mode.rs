@@ -2,7 +2,7 @@
 //!
 //! On an initialized-but-empty project (`.inkentry/index.db` exists but holds
 //! zero chunks), an explicit `--mode text` search previously emitted only the
-//! shared `EmptyIndex` message ("index is empty — run `spelunk index` first"),
+//! shared `EmptyIndex` message ("index is empty — run `inkentry index` first"),
 //! which demands an index the user may not want. The fix points `--mode text`
 //! at the zero-setup modes that need no index (ast-grep, or omitting `--mode`).
 //!
@@ -16,13 +16,13 @@
 //! or the `mode == "text"` guard drifting — is caught end to end.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use std::path::Path;
 use tempfile::TempDir;
 
 /// The em-dash that must never appear in the new `--mode text` copy: user-facing
-/// spelunk output follows the no-em-dash house rule. Its absence is a guard on
+/// inkentry output follows the no-em-dash house rule. Its absence is a guard on
 /// the copy itself, independent of the wording assertions below.
 const EM_DASH: &str = "—";
 
@@ -35,7 +35,7 @@ const EM_DASH: &str = "—";
 /// branch keys off. Offline (`INKENTRY_NO_SERVER=1`): with no chunks there is
 /// nothing to embed, so no server is needed.
 fn init_empty_project(home: &Path, proj: &Path) {
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj)
         .args(["index", "."])
@@ -56,7 +56,7 @@ fn search_mode_text_empty_index_points_at_zero_setup_modes() {
     let proj = TempDir::new().unwrap();
     init_empty_project(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "text"])
@@ -91,7 +91,7 @@ fn search_mode_semantic_empty_index_keeps_shared_message() {
     let proj = TempDir::new().unwrap();
     init_empty_project(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "semantic"])
@@ -119,7 +119,7 @@ fn search_mode_hybrid_empty_index_keeps_shared_message() {
     let proj = TempDir::new().unwrap();
     init_empty_project(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "hybrid"])

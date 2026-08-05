@@ -58,7 +58,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
-             Run `spelunk index <path>` first."
+             Run `inkentry index <path>` first."
         );
     }
 
@@ -130,13 +130,13 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
         for p in &stale {
             println!("  {p}");
         }
-        println!("\nRun `spelunk index .` to update.");
+        println!("\nRun `inkentry index .` to update.");
     }
 
     // Show server status line (text mode only).
     //
     // We probe the tier and key off `tier.is_server()` rather than
-    // `cfg.server_url.is_some()`: with loopback auto-discovery (spelunk#316) a
+    // `cfg.server_url.is_some()`: with loopback auto-discovery (inkentry#316) a
     // server can be reachable even when no `server_url` is configured, and the
     // old guard silently omitted that auto-discovered server from the output.
     // When offline we still want a status line iff a URL was explicitly set

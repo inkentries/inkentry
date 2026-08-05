@@ -1,5 +1,5 @@
 //! Integration tests for ADR-003: cross-project memory visibility in
-//! `spelunk memory search`, `spelunk memory list`, and `spelunk context`.
+//! `inkentry memory search`, `inkentry memory list`, and `inkentry context`.
 //!
 //! Coverage:
 //!   1. Multi-project search aggregation: `memory list` returns results from
@@ -21,7 +21,7 @@
 //!      archived notes are excluded from list().
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, spelunk_bin_in};
+use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in};
 
 use assert_cmd::Command;
 use rusqlite::Connection;
@@ -221,10 +221,10 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
 ///
 /// The registry `db_path` column must point at this file.  An empty SQLite
 /// database is sufficient — the dep pass never opens the index DB itself.
-fn create_spelunk_dir(project_root: &Path) -> PathBuf {
-    let spelunk_dir = project_root.join(".inkentry");
-    fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
-    let index_db = spelunk_dir.join("index.db");
+fn create_inkentry_dir(project_root: &Path) -> PathBuf {
+    let inkentry_dir = project_root.join(".inkentry");
+    fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
+    let index_db = inkentry_dir.join("index.db");
     let _ = Connection::open(&index_db).expect("create stub index.db");
     index_db
 }
@@ -259,11 +259,11 @@ fn setup_linked_projects() -> (
 
     let primary_root_raw = tmp.path().join("primary");
     fs::create_dir_all(&primary_root_raw).expect("create primary dir");
-    let primary_index_raw = create_spelunk_dir(&primary_root_raw);
+    let primary_index_raw = create_inkentry_dir(&primary_root_raw);
 
     let dep_root_raw = tmp.path().join("dep");
     fs::create_dir_all(&dep_root_raw).expect("create dep dir");
-    let dep_index_raw = create_spelunk_dir(&dep_root_raw);
+    let dep_index_raw = create_inkentry_dir(&dep_root_raw);
 
     // Canonicalize after the directories exist so symlink resolution succeeds.
     let primary_root = canon(&primary_root_raw);
@@ -291,7 +291,7 @@ fn setup_linked_projects() -> (
     )
 }
 
-/// Build a base `spelunk memory` command for the primary project.
+/// Build a base `inkentry memory` command for the primary project.
 ///
 /// - `HOME` is set to the isolated home dir (registry isolation).
 /// - `INKENTRY_NO_SERVER=1` disables the loopback-server capability probe.
@@ -299,7 +299,7 @@ fn setup_linked_projects() -> (
 /// - `--config` points to the primary config.toml (which has `db_path = <index.db>`).
 /// - `memory --db <primary_mem>` routes memory reads to the primary's memory.db.
 fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.env("HOME", home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(home))
         // Unset XDG_CONFIG_HOME so dirs::config_dir() uses $HOME/.config on Linux,
@@ -315,7 +315,7 @@ fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Pat
     cmd
 }
 
-/// Build a base `spelunk context` command for the primary project.
+/// Build a base `inkentry context` command for the primary project.
 fn context_cmd(
     home: &Path,
     primary_root: &Path,
@@ -323,7 +323,7 @@ fn context_cmd(
     primary_mem: &Path,
     primary_index: &Path,
 ) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.env("HOME", home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(home))
         .env_remove("XDG_CONFIG_HOME")
@@ -530,7 +530,7 @@ fn untagged_dep_decision_is_not_surfaced() {
         "active",
     );
 
-    let raw = spelunk_bin_in(&home)
+    let raw = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -543,7 +543,7 @@ fn untagged_dep_decision_is_not_surfaced() {
         .arg(&primary_mem)
         .args(["list", "--format", "json"])
         .output()
-        .expect("run spelunk");
+        .expect("run inkentry");
 
     let text = String::from_utf8_lossy(&raw.stdout);
     if text.trim().starts_with('[') {
@@ -575,7 +575,7 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
         "active",
     );
 
-    let raw = spelunk_bin_in(&home)
+    let raw = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -588,7 +588,7 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
         .arg(&primary_mem)
         .args(["list", "--format", "json"])
         .output()
-        .expect("run spelunk");
+        .expect("run inkentry");
 
     let text = String::from_utf8_lossy(&raw.stdout);
     if text.trim().starts_with('[') {
@@ -645,7 +645,7 @@ fn single_project_no_deps_works_unchanged() {
 
     let project_root_raw = tmp.path().join("proj");
     fs::create_dir_all(&project_root_raw).expect("create project dir");
-    let index_db_raw = create_spelunk_dir(&project_root_raw);
+    let index_db_raw = create_inkentry_dir(&project_root_raw);
     let project_root = canon(&project_root_raw);
     let index_db = canon(&index_db_raw);
     let config = write_config(&project_root, &index_db);
@@ -665,7 +665,7 @@ fn single_project_no_deps_works_unchanged() {
         "active",
     );
 
-    let output = spelunk_bin_in(&home)
+    let output = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -694,7 +694,7 @@ fn single_project_no_deps_works_unchanged() {
 
 // ── 6. Context command cross-project merge ────────────────────────────────────
 
-/// `spelunk context` (text mode) includes a locked dep decision and renders
+/// `inkentry context` (text mode) includes a locked dep decision and renders
 /// the `[from: dep]` badge.
 #[test]
 fn context_includes_locked_dep_decision_with_source_badge() {
@@ -736,7 +736,7 @@ fn context_includes_locked_dep_decision_with_source_badge() {
     );
 }
 
-/// `spelunk context --format json` includes dep decision with `source_project` field.
+/// `inkentry context --format json` includes dep decision with `source_project` field.
 #[test]
 fn context_json_includes_dep_decision_with_source_project() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -787,7 +787,7 @@ fn context_json_includes_dep_decision_with_source_project() {
     );
 }
 
-/// `spelunk context` does NOT include dep `requirement` notes in the `decision`
+/// `inkentry context` does NOT include dep `requirement` notes in the `decision`
 /// section, but DOES include them in the `requirement` section.
 #[test]
 fn context_dep_requirement_appears_in_requirement_section() {
@@ -974,7 +974,7 @@ fn archived_dep_decision_is_not_surfaced() {
         "archived", // <-- archived
     );
 
-    let raw = spelunk_bin_in(&home)
+    let raw = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -987,7 +987,7 @@ fn archived_dep_decision_is_not_surfaced() {
         .arg(&primary_mem)
         .args(["list", "--format", "json"])
         .output()
-        .expect("run spelunk");
+        .expect("run inkentry");
 
     let text = String::from_utf8_lossy(&raw.stdout);
     if text.trim().starts_with('[') {
@@ -1057,7 +1057,7 @@ fn dep_question_is_never_surfaced_cross_project() {
         "active",
     );
 
-    let raw = spelunk_bin_in(&home)
+    let raw = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -1070,7 +1070,7 @@ fn dep_question_is_never_surfaced_cross_project() {
         .arg(&primary_mem)
         .args(["list", "--format", "json"])
         .output()
-        .expect("run spelunk");
+        .expect("run inkentry");
 
     let text = String::from_utf8_lossy(&raw.stdout);
     if text.trim().starts_with('[') {
@@ -1100,7 +1100,7 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
 
     let primary_root_raw = tmp.path().join("primary");
     fs::create_dir_all(&primary_root_raw).expect("primary dir");
-    let primary_index_raw = create_spelunk_dir(&primary_root_raw);
+    let primary_index_raw = create_inkentry_dir(&primary_root_raw);
     let primary_root = canon(&primary_root_raw);
     let primary_index = canon(&primary_index_raw);
     let primary_config = write_config(&primary_root, &primary_index);
@@ -1108,14 +1108,14 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
 
     let dep_a_root_raw = tmp.path().join("dep-a");
     fs::create_dir_all(&dep_a_root_raw).expect("dep-a dir");
-    let dep_a_index_raw = create_spelunk_dir(&dep_a_root_raw);
+    let dep_a_index_raw = create_inkentry_dir(&dep_a_root_raw);
     let dep_a_root = canon(&dep_a_root_raw);
     let dep_a_index = canon(&dep_a_index_raw);
     let dep_a_mem = dep_a_index.with_file_name("memory.db");
 
     let dep_b_root_raw = tmp.path().join("dep-b");
     fs::create_dir_all(&dep_b_root_raw).expect("dep-b dir");
-    let dep_b_index_raw = create_spelunk_dir(&dep_b_root_raw);
+    let dep_b_index_raw = create_inkentry_dir(&dep_b_root_raw);
     let dep_b_root = canon(&dep_b_root_raw);
     let dep_b_index = canon(&dep_b_index_raw);
     let dep_b_mem = dep_b_index.with_file_name("memory.db");
@@ -1147,7 +1147,7 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     reg.add_dep(primary_id, dep_a_id);
     reg.add_dep(primary_id, dep_b_id);
 
-    let output = spelunk_bin_in(&home)
+    let output = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
@@ -1193,7 +1193,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
 
     let primary_root_raw = tmp.path().join("primary");
     fs::create_dir_all(&primary_root_raw).expect("primary dir");
-    let primary_index_raw = create_spelunk_dir(&primary_root_raw);
+    let primary_index_raw = create_inkentry_dir(&primary_root_raw);
     let primary_root = canon(&primary_root_raw);
     let primary_index = canon(&primary_index_raw);
     let primary_config = write_config(&primary_root, &primary_index);
@@ -1202,7 +1202,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
     // dep-a: has a memory.db with a locked decision.
     let dep_a_root_raw = tmp.path().join("dep-a");
     fs::create_dir_all(&dep_a_root_raw).expect("dep-a dir");
-    let dep_a_index_raw = create_spelunk_dir(&dep_a_root_raw);
+    let dep_a_index_raw = create_inkentry_dir(&dep_a_root_raw);
     let dep_a_root = canon(&dep_a_root_raw);
     let dep_a_index = canon(&dep_a_index_raw);
     let dep_a_mem = dep_a_index.with_file_name("memory.db");
@@ -1219,7 +1219,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
     // dep-b: exists in registry but has NO memory.db.
     let dep_b_root_raw = tmp.path().join("dep-b");
     fs::create_dir_all(&dep_b_root_raw).expect("dep-b dir");
-    let dep_b_index_raw = create_spelunk_dir(&dep_b_root_raw);
+    let dep_b_index_raw = create_inkentry_dir(&dep_b_root_raw);
     let dep_b_root = canon(&dep_b_root_raw);
     let dep_b_index = canon(&dep_b_index_raw);
     // Deliberately do NOT create dep_b_index.with_file_name("memory.db").
@@ -1231,7 +1231,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
     reg.add_dep(primary_id, dep_a_id);
     reg.add_dep(primary_id, dep_b_id);
 
-    let output = spelunk_bin_in(&home)
+    let output = inkentry_bin_in(&home)
         .env("HOME", &home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")

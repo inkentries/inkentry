@@ -3,7 +3,7 @@
 //! framework, or a team's own shared-hooks convention) instead of assuming
 //! the default `.git/hooks`.
 //!
-//! Before this, `spelunk hooks install` wrote to a hardcoded `$GIT_DIR/hooks`
+//! Before this, `inkentry hooks install` wrote to a hardcoded `$GIT_DIR/hooks`
 //! and the `init` install-state detector read that same hardcoded path. On a
 //! `core.hooksPath` machine the hook silently never ran while `init` kept
 //! reporting it as installed, because installer and detector agreed with
@@ -21,7 +21,7 @@
 //! - a linked worktree resolves hooks to the main worktree's shared hooks dir.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
@@ -30,13 +30,13 @@ use tempfile::TempDir;
 
 // A `git` invocation in `dir` with an isolated identity and config.
 //
-// `git push` and `git commit` here can run an installed spelunk hook, which
-// execs a spelunk child. Anything this helper leaves unset is inherited from
+// `git push` and `git commit` here can run an installed inkentry hook, which
+// execs a inkentry child. Anything this helper leaves unset is inherited from
 // the test process, so the child's config dir and secret store have to be
-// pinned on the git command itself: pinning them on the spelunk commands a test
+// pinned on the git command itself: pinning them on the inkentry commands a test
 // runs directly leaves the hook's child ambient.
 //
-// `HOME` alone is not enough, because `spelunk_config_dir()` returns
+// `HOME` alone is not enough, because `inkentry_config_dir()` returns
 // `INKENTRY_CONFIG_DIR` before it consults `dirs::home_dir()`. A runner that
 // exports `INKENTRY_CONFIG_DIR` to isolate the suite from a developer's own
 // config would otherwise win over `HOME` and point the hook's child at a
@@ -79,7 +79,7 @@ fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
 
 // The hooks directory git itself resolves for `dir` (honors `core.hooksPath`
 // and worktrees). The independent reference the tests check installs
-// against, rather than re-deriving spelunk's own resolution logic.
+// against, rather than re-deriving inkentry's own resolution logic.
 fn git_hooks_dir(home: &Path, dir: &Path) -> PathBuf {
     let raw = git_stdout(home, dir, &["rev-parse", "--git-path", "hooks"]);
     let path = PathBuf::from(raw);
@@ -100,9 +100,9 @@ fn init_repo(home: &Path, dir: &Path) {
     git(home, dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// A `spelunk` command with an isolated HOME and no server contact.
+/// A `inkentry` command with an isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
@@ -119,7 +119,7 @@ fn memory_add(home: &Path, repo: &Path, title: &str) {
         .success();
 }
 
-/// Write an empty spelunk config (`init` needs `--config` but no values here).
+/// Write an empty inkentry config (`init` needs `--config` but no values here).
 fn empty_config(dir: &Path) -> PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
@@ -271,7 +271,7 @@ fn init_summary_agrees_with_pre_push_installer_when_core_hooks_path_is_set() {
         .arg(&cfg)
         .args(["init", "--no-index"])
         .output()
-        .expect("spawn spelunk init");
+        .expect("spawn inkentry init");
     assert!(
         out.status.success(),
         "init failed: {}",
@@ -295,7 +295,7 @@ fn init_summary_agrees_with_pre_push_installer_when_core_hooks_path_is_set() {
 
 /// `core.hooksPath` pointing inside the repo's own tracked working tree (the
 /// husky/lefthook pattern) is a different act from writing into local
-/// `.git/`: it commits spelunk's hook to every clone. Install must refuse with
+/// `.git/`: it commits inkentry's hook to every clone. Install must refuse with
 /// an explanation rather than write silently.
 #[test]
 fn install_refuses_when_core_hooks_path_is_inside_the_tracked_working_tree() {
@@ -309,7 +309,7 @@ fn install_refuses_when_core_hooks_path_is_inside_the_tracked_working_tree() {
     let out = bin(home.path(), &repo)
         .args(["hooks", "install"])
         .output()
-        .expect("run spelunk hooks install");
+        .expect("run inkentry hooks install");
 
     assert!(
         !out.status.success(),

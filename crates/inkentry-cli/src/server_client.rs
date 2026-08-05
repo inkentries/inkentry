@@ -29,7 +29,7 @@ use inkentry_core::config::AuthTokens;
 /// the slashes split the segment and break axum routing (→ 404). We percent-encode
 /// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
 /// axum percent-decodes it back to the original slug server-side, so the
-/// persistence key (`projects.slug`, UNIQUE) is unchanged. See spelunk decision #106.
+/// persistence key (`projects.slug`, UNIQUE) is unchanged. See inkentry decision #106.
 ///
 /// Set mirrors the WHATWG URL "path" percent-encode set plus the sub-delimiters
 /// that would otherwise be interpreted by a router; crucially it includes `/`.
@@ -116,7 +116,7 @@ pub struct ServerInferenceClient {
     /// `server_url` rather than loopback auto-discovery (which populates
     /// `inference_url` while leaving `server_url` unset, ADR-004). An
     /// inference error against an explicit remote must name `base_url`
-    /// instead of pointing at `spelunk server logs`, which only reads the
+    /// instead of pointing at `inkentry server logs`, which only reads the
     /// local auto-daemon's log.
     is_explicit_remote: bool,
     /// Current bearer token + refresh state. `RwLock`-free `Mutex` is fine:
@@ -129,7 +129,7 @@ pub struct ServerInferenceClient {
 struct BearerState {
     /// The token sent as `Authorization: Bearer`. `None` in Tier-0 / unauthed.
     bearer: Option<String>,
-    /// WorkOS refresh state, present only when `spelunk login` wrote `[auth]`
+    /// WorkOS refresh state, present only when `inkentry login` wrote `[auth]`
     /// tokens. Enables the refresh-on-expiry / refresh-on-401 path; absent for
     /// a bare `server_key` (which cannot be refreshed — the user must re-login).
     refresh: Option<RefreshState>,
@@ -146,7 +146,7 @@ struct RefreshState {
     /// Embedded WorkOS public `client_id` for the active environment.
     client_id: String,
     /// Where rotated tokens are persisted. `None` ⇒ the global config path
-    /// (`~/.config/spelunk/config.toml`); tests inject a temp path.
+    /// (`~/.config/inkentry/config.toml`); tests inject a temp path.
     config_path: Option<std::path::PathBuf>,
 }
 
@@ -178,7 +178,7 @@ impl ServerInferenceClient {
     /// [`from_config`](Self::from_config) infers "explicit remote" from the
     /// inference target being unset, which cannot hold once LLM routing has
     /// pointed that target at `server_url`. Without this, an error on the
-    /// remote would tell the user to read `spelunk server logs`, which only
+    /// remote would tell the user to read `inkentry server logs`, which only
     /// ever reads the local daemon's log.
     pub fn from_config_explicit_remote(cfg: &Config) -> Option<Self> {
         let mut client = Self::from_config(cfg)?;
@@ -260,7 +260,7 @@ impl ServerInferenceClient {
 
     /// Test-only constructor wiring an explicit base URL, bearer, and refresh
     /// state (with a temp config path so persistence does not touch the real
-    /// `~/.config/spelunk/config.toml`).
+    /// `~/.config/inkentry/config.toml`).
     #[cfg(test)]
     fn for_test(
         base_url: &str,
@@ -341,7 +341,7 @@ impl ServerInferenceClient {
     ///
     /// Returns `Ok(true)` when a refresh was performed, `Ok(false)` when there
     /// is no refresh state (a bare `server_key` — nothing to refresh). Errors
-    /// carry a clear "re-run `spelunk login`" message.
+    /// carry a clear "re-run `inkentry login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
         let (refresh_token, org_id, workos_url, client_id, config_path) = {
             let guard = self.auth.lock().expect("auth mutex poisoned");
@@ -369,7 +369,7 @@ impl ServerInferenceClient {
         )
         .await
         .map_err(|e| {
-            e.context("session expired and token refresh failed — re-run `spelunk login`")
+            e.context("session expired and token refresh failed — re-run `inkentry login`")
         })?;
         let new_tokens = rotated.into_auth_tokens();
 
@@ -689,7 +689,7 @@ impl inkentry_core::llm::LlmBackend for ServerLlmAdapter {
 ///
 /// `remote_url` is `Some` when this client reached the server via an explicit
 /// `server_url` (not loopback auto-discovery). The `unavailable` hint must
-/// then name that server instead of pointing at `spelunk server logs`, which
+/// then name that server instead of pointing at `inkentry server logs`, which
 /// only reads the local auto-daemon's log and would show clean logs for a
 /// failure that lives on the remote server.
 fn server_inference_error(
@@ -715,10 +715,10 @@ fn server_inference_error(
         None => "inkentry-server".to_string(),
     };
     let hint = match field("state") {
-        Some("loading") => " Retry shortly (`spelunk server status`).",
+        Some("loading") => " Retry shortly (`inkentry server status`).",
         Some("unavailable") => match remote_url {
             Some(_) => " Check that server's logs.",
-            None => " See `spelunk server logs`.",
+            None => " See `inkentry server logs`.",
         },
         _ => "",
     };
@@ -732,7 +732,7 @@ fn server_inference_error(
 
 /// Return the locked-feature error when harvest is attempted without a server.
 ///
-/// Harvest needs inference only, so a local `spelunk server start` suffices.
+/// Harvest needs inference only, so a local `inkentry server start` suffices.
 /// See `capability::inference_server_required_message`.
 pub fn harvest_requires_server() -> anyhow::Error {
     anyhow::anyhow!(crate::capability::inference_server_required_message(
@@ -987,7 +987,7 @@ mod tests {
     }
 
     /// `from_config` carries refresh state ONLY when the bearer was resolved from
-    /// the `[auth]` access token, so a `spelunk login` session can refresh. That
+    /// the `[auth]` access token, so a `inkentry login` session can refresh. That
     /// only happens for a cloud-origin target (ADR-071 D2); a self-hosted origin
     /// never resolves to the cloud token, whatever `[auth]` holds.
     #[test]
@@ -1052,7 +1052,7 @@ mod tests {
     // `is_explicit_remote` keys off whether `base_url` resolved from
     // `server_url` (never off what host it resolves to): an explicitly
     // configured `server_url = http://127.0.0.1:PORT` is still "explicit"
-    // even though the host is loopback. `spelunk server logs` only ever
+    // even though the host is loopback. `inkentry server logs` only ever
     // reads the fixed auto-daemon log path and cannot tell this loopback
     // address was hand-configured, so the inference-error hint must still
     // name it. Mirrors
@@ -1182,7 +1182,7 @@ mod tests {
 
     /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`
     /// must become `%2F` so the whole slug occupies one URL path segment
-    /// (IMP-1 / spelunk decision #106).
+    /// (IMP-1 / inkentry decision #106).
     #[test]
     fn encode_project_id_escapes_local_fallback_slug() {
         let slug = "local/9f2a8b3c4d5e6f70";
@@ -1353,7 +1353,7 @@ mod tests {
     // LLM routing points the inference target at `server_url`, which is
     // exactly the shape `from_config` reads as "not an explicit remote". If
     // the flag were re-derived rather than carried, a failure on the team
-    // server would tell the reader to run `spelunk server logs`, which only
+    // server would tell the reader to run `inkentry server logs`, which only
     // ever reads their own local daemon's log.
     #[test]
     #[serial_test::serial]
@@ -1415,7 +1415,7 @@ mod tests {
             "the server's own reason must survive: {msg}"
         );
         assert!(
-            !msg.contains("spelunk server logs"),
+            !msg.contains("inkentry server logs"),
             "a remote failure must not point at the local daemon's log: {msg}"
         );
     }
@@ -1441,7 +1441,7 @@ mod tests {
             .await
             .expect_err("a 503 must be an error");
         let msg = format!("{err:#}");
-        assert!(msg.contains("spelunk server logs"), "got: {msg}");
+        assert!(msg.contains("inkentry server logs"), "got: {msg}");
     }
 
     // ── server_inference_error ───────────────────────────────────────────────
@@ -1461,7 +1461,7 @@ mod tests {
             None,
         );
         assert!(msg.contains("downloading model (42%)"), "got: {msg}");
-        assert!(msg.contains("spelunk server status"), "got: {msg}");
+        assert!(msg.contains("inkentry server status"), "got: {msg}");
         // The bare status is no longer the whole story.
         assert!(msg.contains("503"), "got: {msg}");
     }
@@ -1469,7 +1469,7 @@ mod tests {
     #[test]
     fn inference_error_surfaces_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
-        // so `spelunk server logs` is the right place to look.
+        // so `inkentry server logs` is the right place to look.
         let body = serde_json::json!({
             "error": "embedder unavailable",
             "state": "unavailable",
@@ -1483,12 +1483,12 @@ mod tests {
             None,
         );
         assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
-        assert!(msg.contains("spelunk server logs"), "got: {msg}");
+        assert!(msg.contains("inkentry server logs"), "got: {msg}");
     }
 
     #[test]
     fn inference_error_surfaces_unavailable_remote_names_that_server_never_local_logs() {
-        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
         // log, which is clean when the failure lives on the team server. The
         // error must name the probed server instead.
         let body = serde_json::json!({
@@ -1506,7 +1506,7 @@ mod tests {
         assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
         assert!(msg.contains("https://team.example:7777"), "got: {msg}");
         assert!(
-            !msg.contains("spelunk server logs"),
+            !msg.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {msg}"
         );
     }
@@ -1547,11 +1547,11 @@ mod tests {
             .expect_err("503 must surface as an error");
         let msg = err.to_string();
         assert!(msg.contains("loading F2LLM weights"), "got: {msg}");
-        assert!(msg.contains("spelunk server status"), "got: {msg}");
+        assert!(msg.contains("inkentry server status"), "got: {msg}");
     }
 
     /// End-to-end: a 503 `unavailable` from `/index/embed` against an
-    /// explicit team `server_url` must name that server, never `spelunk
+    /// explicit team `server_url` must name that server, never `inkentry
     /// server logs` (which would read a healthy local daemon's log instead).
     #[tokio::test]
     async fn embed_text_remote_names_that_server_never_local_logs() {
@@ -1577,7 +1577,7 @@ mod tests {
         assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
         assert!(msg.contains(&inference.uri()), "got: {msg}");
         assert!(
-            !msg.contains("spelunk server logs"),
+            !msg.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {msg}"
         );
     }

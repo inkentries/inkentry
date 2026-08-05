@@ -1,4 +1,4 @@
-// Integration tests for `spelunk memory add --relates-to <id>`.
+// Integration tests for `inkentry memory add --relates-to <id>`.
 //
 // Regression: `--relates-to` was accepted and the entry stored (`Stored
 // [...]` printed), but the flag was never wired to the edge API, so NO
@@ -12,7 +12,7 @@
 // use `store_in_git_notes = false` and need no git repo.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -33,9 +33,9 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
     cfg
 }
 
-// `spelunk --config <cfg> memory --db <mem_db> …`
+// `inkentry --config <cfg> memory --db <mem_db> …`
 fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")

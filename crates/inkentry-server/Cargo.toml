@@ -2,7 +2,7 @@
 name = "inkentry-server"
 version = "0.9.7"
 edition = "2024"
-description = "spelunk shared memory server"
+description = "inkentry shared memory server"
 license = "MIT"
 repository = "https://github.com/spelunk-cloud/spelunk"
 

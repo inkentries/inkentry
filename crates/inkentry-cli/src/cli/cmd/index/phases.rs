@@ -1,4 +1,4 @@
-//! Phase-runner entry points for `spelunk index`, plus the embedder-readiness
+//! Phase-runner entry points for `inkentry index`, plus the embedder-readiness
 //! wait and the notices printed when embedding is skipped.
 //!
 //! `run_phases_3_to_5` (graph rank, summaries, convention extraction) is
@@ -94,7 +94,7 @@ pub(super) async fn run_embed_phases(
     root_canonical: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<()> {
-    // Liveness marker for `spelunk status` (dropped on exit; a killed worker
+    // Liveness marker for `inkentry status` (dropped on exit; a killed worker
     // leaves it behind for status to classify as a dead pid). Held through the
     // readiness wait too: a worker waiting on a loading embedder is running,
     // and status must not advise a resume that would double it up.
@@ -132,7 +132,7 @@ pub(super) async fn run_embed_phases(
 ///
 /// `remote_url` is `Some` when the probed server came from an explicit
 /// `server_url` (not loopback auto-discovery). The unavailable-embedder
-/// notice must then name that server instead of pointing at `spelunk server
+/// notice must then name that server instead of pointing at `inkentry server
 /// logs`, which only reads the local auto-daemon's log and would show clean
 /// logs for a failure that lives on the remote server.
 ///
@@ -153,7 +153,7 @@ fn embed_skipped_lines(
         Some(EmbedderState::Loading) => vec![
             "Note: the embedder is still warming up — chunks indexed for text/ast-grep search."
                 .to_string(),
-            "Re-run `spelunk index` in a moment to add embeddings (check `spelunk server status`)."
+            "Re-run `inkentry index` in a moment to add embeddings (check `inkentry server status`)."
                 .to_string(),
         ],
         Some(EmbedderState::Unavailable) => match remote_url {
@@ -162,14 +162,14 @@ fn embed_skipped_lines(
                     "Warning: the embedder failed to load on team server {url}; chunks indexed \
                      for text/ast-grep search only."
                 ),
-                "Check that server's own logs for the load error, then re-run `spelunk index`."
+                "Check that server's own logs for the load error, then re-run `inkentry index`."
                     .to_string(),
             ],
             None => vec![
                 "Warning: the embedder failed to load; chunks indexed for text/ast-grep search \
                  only."
                     .to_string(),
-                "See `spelunk server logs` for the load error, then re-run `spelunk index`."
+                "See `inkentry server logs` for the load error, then re-run `inkentry index`."
                     .to_string(),
             ],
         },
@@ -189,25 +189,25 @@ fn embed_skipped_lines(
                 let mut lines = vec![format!(
                     "Warning: server_url is explicitly configured to {url}, which is \
                      unreachable, so the embedding phase is skipped. This overrides the \
-                     auto-discovered local server, so a healthy `spelunk server start` \
+                     auto-discovered local server, so a healthy `inkentry server start` \
                      daemon elsewhere will not be used while server_url is set."
                 )];
                 if is_windows {
                     lines.push(
                         "On Windows, allow the loopback listener through Defender Firewall \
-                         (accept the prompt on `spelunk server start`)."
+                         (accept the prompt on `inkentry server start`)."
                             .to_string(),
                     );
                 }
                 lines.push(
-                    "Chunks are indexed for text/ast-grep search. Re-run `spelunk index` once \
+                    "Chunks are indexed for text/ast-grep search. Re-run `inkentry index` once \
                      the server is reachable to add embeddings."
                         .to_string(),
                 );
                 lines
             } else {
                 vec![
-                    "Note: start a local server (`spelunk server start`) to enable semantic search."
+                    "Note: start a local server (`inkentry server start`) to enable semantic search."
                         .to_string(),
                 ]
             }
@@ -310,13 +310,13 @@ mod tests {
         assert!(!lines.is_empty(), "notice must not be silent");
         let joined = lines.join("\n");
         assert!(joined.contains("warming up"));
-        assert!(joined.contains("Re-run `spelunk index`"));
+        assert!(joined.contains("Re-run `inkentry index`"));
     }
 
     #[test]
     fn embed_skipped_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
-        // so `spelunk server logs` is the right place to look.
+        // so `inkentry server logs` is the right place to look.
         let lines = embed_skipped_lines(
             Some(capability::EmbedderState::Unavailable),
             None,
@@ -325,12 +325,12 @@ mod tests {
         );
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
-        assert!(joined.contains("spelunk server logs"));
+        assert!(joined.contains("inkentry server logs"));
     }
 
     #[test]
     fn embed_skipped_unavailable_remote_names_that_server_never_local_logs() {
-        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
         // log, which is clean when the failure lives on the team server. The
         // notice must name the probed server instead.
         let lines = embed_skipped_lines(
@@ -346,7 +346,7 @@ mod tests {
             "got: {joined}"
         );
         assert!(
-            !joined.contains("spelunk server logs"),
+            !joined.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {joined}"
         );
     }
@@ -401,7 +401,7 @@ mod tests {
     fn embed_skipped_no_server_suggests_starting_one() {
         let lines = embed_skipped_lines(None, None, None, false);
         let joined = lines.join("\n");
-        assert!(joined.contains("spelunk server start"));
+        assert!(joined.contains("inkentry server start"));
     }
 
     // ── wait_for_embedder: the worker owns the readiness wait (ADR-070 D2) ────
@@ -639,7 +639,7 @@ mod tests {
     // reached its local embedder from the detached worker either.
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn wait_for_embedder_local_first_routes_loopback_transition_not_server_url() {
         // Under `local_first` (the default once `server_url` is set, with no
         // explicit `mode`), the wait loop must poll the LOCAL loopback

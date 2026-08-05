@@ -1,5 +1,5 @@
-// Regression tests for cross-project freshness reporting (`spelunk links check`
-// / `spelunk links list`).
+// Regression tests for cross-project freshness reporting (`inkentry links check`
+// / `inkentry links list`).
 //
 // Bug: a freshly-indexed *linked* project was reported STALE by `links check`
 // / `links list`. The cross-project staleness probe read each indexed file's
@@ -9,14 +9,14 @@
 // stale or missing") false-failed on a clean checkout.
 //
 // Expected: `links check` / `links list` agree with the linked project's own
-// `spelunk check`. A freshly-indexed dep is FRESH; a dep with a file modified
+// `inkentry check`. A freshly-indexed dep is FRESH; a dep with a file modified
 // since indexing is STALE.
 //
 // These tests seed a linked project's index.db directly (relative path + the
 // real blake3 hash of an on-disk file), so no embed server is needed.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, spelunk_bin_in};
+use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -103,9 +103,9 @@ impl TestRegistry {
 
 // Create `<root>/.inkentry/index.db` and return its path.
 fn create_index_db(root: &Path) -> PathBuf {
-    let spelunk_dir = root.join(".inkentry");
-    fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
-    spelunk_dir.join("index.db")
+    let inkentry_dir = root.join(".inkentry");
+    fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
+    inkentry_dir.join("index.db")
 }
 
 // Write a minimal global config pointing `db_path` at `index_db`.
@@ -119,7 +119,7 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     config_path
 }
 
-// Index `rel` into `index_db` exactly as a fresh `spelunk index` would: write
+// Index `rel` into `index_db` exactly as a fresh `inkentry index` would: write
 // the file on disk under `root`, then store the root-*relative* path plus the
 // real blake3 hash of its content. `Database::open` migrates the schema.
 fn seed_indexed_file(index_db: &Path, root: &Path, rel: &str, content: &[u8]) {
@@ -184,9 +184,9 @@ fn setup() -> Linked {
     }
 }
 
-// `spelunk <args>` in `cwd` with the isolated registry/home wired up.
+// `inkentry <args>` in `cwd` with the isolated registry/home wired up.
 fn cmd(env: &Linked, cwd: &Path, config: &Path) -> Command {
-    let mut c = spelunk_bin_in(&env.home);
+    let mut c = inkentry_bin_in(&env.home);
     c.env("HOME", &env.home)
         .env("INKENTRY_REGISTRY_DIR", registry_dir(&env.home))
         .env_remove("XDG_CONFIG_HOME")
@@ -258,7 +258,7 @@ fn links_check_reports_modified_dep_as_stale() {
 }
 
 // The cross-project probe (`links check`, from the linking project) and the
-// linked project's own in-project probe (`spelunk check`, from its own root)
+// linked project's own in-project probe (`inkentry check`, from its own root)
 // must agree: both FRESH for the same freshly-indexed state.
 #[test]
 fn links_check_and_in_project_check_agree_on_fresh_dep() {

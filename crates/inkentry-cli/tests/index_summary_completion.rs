@@ -1,4 +1,4 @@
-//! `spelunk index` must run its LLM summary pass to completion before it returns.
+//! `inkentry index` must run its LLM summary pass to completion before it returns.
 //! A summary still in flight at process exit is silently lost; the run exits 0.
 //!
 //! Nothing here is timing-based: the mock `/llm/complete` cannot answer until the
@@ -36,9 +36,9 @@ fn write_fixture(dir: &Path, name: &str) {
     .expect("write Cargo.toml");
 }
 
-// `spelunk index` as a raw `std::process::Command` so the test can hold a live
+// `inkentry index` as a raw `std::process::Command` so the test can hold a live
 // `Child` across the gate; `assert_cmd`'s runner blocks until exit.
-// Mirrors `plumbing_helpers::spelunk_bin_in`'s keychain/home pinning.
+// Mirrors `plumbing_helpers::inkentry_bin_in`'s keychain/home pinning.
 //
 // `INKENTRY_MODE=cloud_first`: every test in this file drives its fixture's
 // explicit `server_url` for LLM summaries (2026-07-23 ADR-004 revision), and
@@ -47,7 +47,7 @@ fn write_fixture(dir: &Path, name: &str) {
 // pinning the mode keeps the mock the single possible target regardless of
 // what happens to be listening on the machine's loopback ports.
 fn index_command(home: &Path, config: &Path, db: &Path, project: &Path) -> Command {
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("inkentry"));
     cmd.env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", home)
         // Derived from this test's own `HOME` rather than inherited: an ambient
@@ -119,7 +119,7 @@ fn summary_pass_completes_before_index_returns() {
     let project = TempDir::new().expect("temp project dir");
     write_fixture(project.path(), "summary-order-fixture");
     let db_tmp = TempDir::new().expect("temp db dir");
-    let db_path = db_tmp.path().join("spelunk.db");
+    let db_path = db_tmp.path().join("inkentry.db");
 
     let (arrived_tx, arrived_rx) = mpsc::channel::<()>();
     let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -159,7 +159,7 @@ fn summary_pass_completes_before_index_returns() {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn spelunk index");
+        .expect("spawn inkentry index");
     let stderr_reader = drain(child.stderr.take());
 
     // Wait for the summary request to reach the mock. Exiting first is itself
@@ -229,7 +229,7 @@ fn summary_failure_is_reported_but_index_still_succeeds() {
     let project = TempDir::new().expect("temp project dir");
     write_fixture(project.path(), "summary-failure-fixture");
     let db_tmp = TempDir::new().expect("temp db dir");
-    let db_path = db_tmp.path().join("spelunk.db");
+    let db_path = db_tmp.path().join("inkentry.db");
 
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let mock_server = rt.block_on(async {
@@ -255,7 +255,7 @@ fn summary_failure_is_reported_but_index_still_succeeds() {
 
     let output = index_command(project.path(), &config_path, &db_path, project.path())
         .output()
-        .expect("run spelunk index");
+        .expect("run inkentry index");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     assert!(
@@ -296,7 +296,7 @@ fn background_phases_mode_completes_summaries() {
     let project = TempDir::new().expect("temp project dir");
     write_fixture(project.path(), "summary-bgphases-fixture");
     let db_tmp = TempDir::new().expect("temp db dir");
-    let db_path = db_tmp.path().join("spelunk.db");
+    let db_path = db_tmp.path().join("inkentry.db");
 
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let mock_server = rt.block_on(async {

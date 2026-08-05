@@ -163,7 +163,7 @@ running index, with a `Retry-After` (seconds) header:
 
 ### `POST /v1/projects/{project_id}/index/embed`
 
-Generate embeddings for code chunks. Called by the CLI during `spelunk index`'s
+Generate embeddings for code chunks. Called by the CLI during `inkentry index`'s
 embed phase. The server encodes each chunk and returns vectors. **The server
 does not store the vectors** (the CLI is the only persistent store for index
 data).
@@ -219,9 +219,9 @@ parking until the caller's own request timeout fires:
 { "error": "embedder busy, retry shortly", "state": "busy" }
 ```
 
-The CLI's `spelunk index` embed phase retries the same batch after the given
+The CLI's `inkentry index` embed phase retries the same batch after the given
 delay rather than shrinking it (queue depth says nothing about batch sizing);
-see [`spelunk index`](../commands.md#spelunk-index).
+see [`inkentry index`](../commands.md#inkentry-index).
 
 ### `POST /v1/projects/{project_id}/explore`
 
@@ -270,7 +270,7 @@ Event `kind` values: `thought`, `answer`, `done`, `error`.
 Run a single LLM completion over caller-supplied messages. This is the generic
 inference primitive (ADR-002): it is a 1:1 lift of the `LlmBackend::generate`
 trait. The server performs **no** orchestration, adds **no** system prompt, and
-stores **nothing**. The CLI owns all prompt assembly (this is how `spelunk
+stores **nothing**. The CLI owns all prompt assembly (this is how `inkentry
 memory harvest` runs after #260: ~2300 LoC of CLI-side orchestration calling
 this primitive for raw inference).
 
@@ -349,14 +349,14 @@ surface the warning. Configure the threshold with `--conflict-threshold`
 
 `GET /v1/projects/{project_id}/memory/since?t=<epoch>&limit=N` returns up to
 `N` entries (default 50) created after the given Unix timestamp, sorted
-ascending by creation time. The CLI calls this via `spelunk memory since`.
+ascending by creation time. The CLI calls this via `inkentry memory since`.
 
 ### Streaming entries
 
 `GET /v1/projects/{project_id}/memory/stream` (Server-Sent Events) subscribes
 to new entries as they arrive; each line is a JSON object for one newly-added
 entry, and the stream persists until the client disconnects. The CLI calls
-this via `spelunk memory watch`.
+this via `inkentry memory watch`.
 
 ---
 

@@ -1,12 +1,12 @@
-// `spelunk auth set-key --llm`: storing the credential for the configured LLM
+// `inkentry auth set-key --llm`: storing the credential for the configured LLM
 // endpoint.
 //
-// Drives the real binary against an isolated HOME (`spelunk_bin_in` forces
+// Drives the real binary against an isolated HOME (`inkentry_bin_in` forces
 // `INKENTRY_SECRET_STORE=file`), so nothing here reaches the developer's real
 // config dir or the OS keychain.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -20,7 +20,7 @@ fn stored_secret(home: &std::path::Path, key: &str) -> Option<String> {
 }
 
 fn set_llm_key(home: &std::path::Path, key: &str) -> assert_cmd::assert::Assert {
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .arg("auth")
         .arg("set-key")
         .arg("--llm")
@@ -42,7 +42,7 @@ fn set_key_llm_stores_the_key_verbatim() {
 #[test]
 fn set_key_llm_rejects_blank_stdin_and_stores_nothing() {
     let home = TempDir::new().unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("set-key")
         .arg("--llm")
@@ -65,7 +65,7 @@ fn set_key_llm_never_echoes_the_key() {
 #[test]
 fn set_key_llm_leaves_the_server_key_map_untouched() {
     let home = TempDir::new().unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("set-key")
         .arg("--server")
@@ -88,7 +88,7 @@ fn set_key_llm_leaves_the_server_key_map_untouched() {
 #[test]
 fn set_key_server_does_not_write_an_llm_key() {
     let home = TempDir::new().unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("set-key")
         .arg("--server")
@@ -103,7 +103,7 @@ fn set_key_server_does_not_write_an_llm_key() {
 #[test]
 fn set_key_rejects_both_llm_and_server() {
     let home = TempDir::new().unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("set-key")
         .arg("--llm")
@@ -117,7 +117,7 @@ fn set_key_rejects_both_llm_and_server() {
 #[test]
 fn set_key_rejects_neither_llm_nor_server() {
     let home = TempDir::new().unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("set-key")
         .write_stdin("sk-team\n")
@@ -132,7 +132,7 @@ fn set_key_rejects_neither_llm_nor_server() {
 fn set_key_llm_refuses_a_key_passed_as_an_argument() {
     let home = TempDir::new().unwrap();
     for form in ["sk-llm-secret", "--llm=sk-llm-secret"] {
-        spelunk_bin_in(home.path())
+        inkentry_bin_in(home.path())
             .arg("auth")
             .arg("set-key")
             .arg("--llm")
@@ -176,7 +176,7 @@ fn list_servers_ignores_a_stored_llm_key() {
     let home = TempDir::new().unwrap();
     set_llm_key(home.path(), "sk-llm-secret").success();
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()

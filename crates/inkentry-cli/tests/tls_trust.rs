@@ -8,7 +8,7 @@
 //! further detail.
 //!
 //! This spins up a real axum-server rustls listener signed by an in-test CA
-//! (rcgen) and drives the actual `spelunk` binary against it over
+//! (rcgen) and drives the actual `inkentry` binary against it over
 //! `https://127.0.0.1:<port>`:
 //!
 //! - a proper CA -> leaf chain: the CLI must reach `Tier::Server`.
@@ -17,7 +17,7 @@
 //!   the certificate cause, not just report "unreachable".
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -43,7 +43,7 @@ fn new_ca() -> TestCa {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params
         .distinguished_name
-        .push(DnType::CommonName, "spelunk-tls-trust-test CA");
+        .push(DnType::CommonName, "inkentry-tls-trust-test CA");
     params.key_usages.push(KeyUsagePurpose::DigitalSignature);
     params.key_usages.push(KeyUsagePurpose::KeyCertSign);
     params.key_usages.push(KeyUsagePurpose::CrlSign);
@@ -179,7 +179,7 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     )
     .expect("write initial config");
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -250,7 +250,7 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
         &project_dir,
     );
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_NO_SERVER")
         .arg("--config")
@@ -259,11 +259,11 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
         .arg("--format")
         .arg("json")
         .output()
-        .expect("run spelunk status");
+        .expect("run inkentry status");
 
     assert!(
         output.status.success(),
-        "spelunk status --format json exited non-zero: {}",
+        "inkentry status --format json exited non-zero: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let body: serde_json::Value =
@@ -295,15 +295,15 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
         &project_dir,
     );
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_NO_SERVER")
-        .env("RUST_LOG", "spelunk=warn")
+        .env("RUST_LOG", "inkentry=warn")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
         .output()
-        .expect("run spelunk status");
+        .expect("run inkentry status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -368,14 +368,14 @@ fn tls_server_with_expired_leaf_names_expired_cause() {
         &project_dir,
     );
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_NO_SERVER")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
         .output()
-        .expect("run spelunk status");
+        .expect("run inkentry status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -413,15 +413,15 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
         &project_dir,
     );
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .env_remove("INKENTRY_NO_SERVER")
-        .env("RUST_LOG", "spelunk=warn")
+        .env("RUST_LOG", "inkentry=warn")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
         .output()
-        .expect("run spelunk status");
+        .expect("run inkentry status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

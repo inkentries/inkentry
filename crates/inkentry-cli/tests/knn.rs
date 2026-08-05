@@ -1,4 +1,4 @@
-//! Component tests for `spelunk plumbing knn`.
+//! Component tests for `inkentry plumbing knn`.
 //!
 //! `knn` reads an embedding vector from stdin (in the JSON format produced
 //! by `plumbing embed`) and returns the K nearest neighbours from the index.
@@ -8,7 +8,7 @@
 //! Error-path tests (bad JSON on stdin, missing DB) run without a server.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -19,7 +19,7 @@ use tempfile::TempDir;
 fn knn_exits_nonzero_for_bad_json_stdin() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin("not json at all")
         .assert()
@@ -31,7 +31,7 @@ fn knn_exits_nonzero_for_bad_json_stdin() {
 fn knn_exits_nonzero_for_json_missing_vector_field() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(r#"{"model":"test","dimensions":3}"#)
         .assert()
@@ -53,7 +53,7 @@ fn knn_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -74,7 +74,7 @@ fn knn_exits_1_or_error_for_wrong_dimension_vector() {
 
     // The index uses 768-dim vectors. A 3-dim vector should produce an error
     // or no results (sqlite-vec may reject the dimension mismatch).
-    let result = spelunk_cmd(&db_path, &config_path)
+    let result = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(r#"{"model":"test","dimensions":3,"vector":[0.1,0.2,0.3]}"#)
         .output()
@@ -94,11 +94,11 @@ fn knn_exits_1_or_error_for_wrong_dimension_vector() {
 #[ignore] // requires embedding server at 127.0.0.1:1234 AND an indexed project with real embeddings
 fn knn_returns_jsonl_results_for_valid_vector() {
     // Run manually: cargo test knn_returns_jsonl -- --ignored
-    // Expected: a spelunk.db in the current directory with 768-dim embeddings.
+    // Expected: a inkentry.db in the current directory with 768-dim embeddings.
 
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.toml");
-    let db_path = std::path::PathBuf::from("spelunk.db");
+    let db_path = std::path::PathBuf::from("inkentry.db");
 
     std::fs::write(
         &config,
@@ -118,7 +118,7 @@ fn knn_returns_jsonl_results_for_valid_vector() {
         "vector": vec,
     });
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -147,7 +147,7 @@ fn knn_returns_jsonl_results_for_valid_vector() {
 fn knn_lang_filter_restricts_to_language() {
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.toml");
-    let db_path = std::path::PathBuf::from("spelunk.db");
+    let db_path = std::path::PathBuf::from("inkentry.db");
 
     std::fs::write(
         &config,
@@ -166,7 +166,7 @@ fn knn_lang_filter_restricts_to_language() {
         "vector": vec,
     });
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -197,7 +197,7 @@ fn knn_lang_filter_restricts_to_language() {
 fn knn_min_score_filter_respects_threshold() {
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.toml");
-    let db_path = std::path::PathBuf::from("spelunk.db");
+    let db_path = std::path::PathBuf::from("inkentry.db");
 
     std::fs::write(
         &config,
@@ -216,7 +216,7 @@ fn knn_min_score_filter_respects_threshold() {
         "vector": vec,
     });
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

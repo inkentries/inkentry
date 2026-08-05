@@ -1,12 +1,12 @@
-//! Integration tests for `spelunk init` configuring the `origin` git-notes
-//! fetch refspec so teammates' `refs/notes/inkentry` (spelunk's memory) travels
+//! Integration tests for `inkentry init` configuring the `origin` git-notes
+//! fetch refspec so teammates' `refs/notes/inkentry` (inkentry's memory) travels
 //! on clone/fetch (ADR-068, corrected by ADR-069 D4/D5).
 //!
 //! The refspec fetches into a **tracking** ref (`refs/notes/origin/inkentry`),
 //! never over the working ref. Fetching straight onto `refs/notes/inkentry`
 //! force-updates it and silently destroys local unpushed notes, and the
 //! non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
-//! Travel is therefore fetch + merge: spelunk merges the tracking ref on its
+//! Travel is therefore fetch + merge: inkentry merges the tracking ref on its
 //! own read paths (D5).
 //!
 //! Covered:
@@ -26,11 +26,11 @@
 //!   `memory list` (D5).
 //! - non-TTY: piped-stdin init completes without prompting/hanging.
 //!
-//! Every spawned `spelunk` uses `spelunk_bin` (pins `INKENTRY_SECRET_STORE=file`),
+//! Every spawned `inkentry` uses `inkentry_bin` (pins `INKENTRY_SECRET_STORE=file`),
 //! `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use predicates::prelude::*;
 use std::path::Path;
@@ -76,7 +76,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A git repo with a real identity + one commit. Returns nothing; caller owns
-/// the dir. Local identity is set so spawned `git` (and spelunk's inner git)
+/// the dir. Local identity is set so spawned `git` (and inkentry's inner git)
 /// can commit without inheriting the test-runner's global config.
 fn init_repo_with_commit(dir: &Path) {
     git(dir, &["init", "-q", "-b", "main"]);
@@ -87,17 +87,17 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// Write an empty spelunk config (init needs `--config` but no values here).
+/// Write an empty inkentry config (init needs `--config` but no values here).
 fn empty_config(dir: &Path) -> std::path::PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
     cfg
 }
 
-/// Run `spelunk init --no-index` in `dir` (offline, non-TTY) and return stdout.
+/// Run `inkentry init --no-index` in `dir` (offline, non-TTY) and return stdout.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(dir)
         .env("HOME", dir)
         .env("INKENTRY_NO_SERVER", "1")
@@ -105,10 +105,10 @@ fn run_init(dir: &Path) -> String {
         .arg(&cfg)
         .args(["init", "--no-index"])
         .output()
-        .expect("spawn spelunk init");
+        .expect("spawn inkentry init");
     assert!(
         out.status.success(),
-        "spelunk init failed: {}",
+        "inkentry init failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).to_string()
@@ -170,7 +170,7 @@ fn init_no_origin_prints_hint_and_succeeds() {
     // never reads the docs must still learn their memory stays local.
     assert!(
         stdout.contains("your memory stays local until you install the pre-push hook")
-            && stdout.contains("spelunk hooks install --pre-push"),
+            && stdout.contains("inkentry hooks install --pre-push"),
         "no-origin init should name the pre-push hook as the publishing step, got:\n{stdout}"
     );
     // The retired hint told users to push notes after each memory change, which
@@ -204,7 +204,7 @@ fn init_announce_reflects_the_installed_pre_push_hook() {
     );
 
     let cfg = empty_config(tmp.path());
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .arg("--config")
@@ -339,14 +339,14 @@ fn init_does_not_set_origin_push_refspec() {
 }
 
 /// (5) Round-trip (the promise): a note pushed to the bare origin reaches a
-/// fresh clone's tracking ref on a plain `git fetch`, and spelunk's read-path
+/// fresh clone's tracking ref on a plain `git fetch`, and inkentry's read-path
 /// merge is what makes it visible.
 ///
 /// A. init in repo (configures the refspec) → add a decision (git note on
 ///    refs/notes/inkentry) → push the branch + notes ref to the bare origin.
 /// B. clone origin → run init in the clone (adds the same fetch refspec) →
 ///    plain `git fetch origin` lands the notes on `refs/notes/origin/inkentry`
-///    and deliberately NOT on the working ref → `spelunk memory list` merges
+///    and deliberately NOT on the working ref → `inkentry memory list` merges
 ///    the tracking ref and surfaces the decision. This proves the ref is
 ///    publishable, that the init-configured refspec fetches it, and that
 ///    travel is fetch + merge rather than fetch alone.
@@ -375,7 +375,7 @@ fn notes_round_trip_through_bare_origin() {
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
 
-    // A. Configure the refspec, then add a decision via `spelunk memory add`
+    // A. Configure the refspec, then add a decision via `inkentry memory add`
     //    (store_in_git_notes = true → writes refs/notes/inkentry).
     run_init(&repo);
 
@@ -391,7 +391,7 @@ fn notes_round_trip_through_bare_origin() {
     .unwrap();
 
     let unique = "notes travel via the origin refspec";
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&repo)
         .env("HOME", &repo)
         .env("INKENTRY_NO_SERVER", "1")
@@ -415,7 +415,7 @@ fn notes_round_trip_through_bare_origin() {
     // Sanity: the note exists locally on refs/notes/inkentry.
     assert!(
         !git_stdout(&repo, &["notes", "--ref=inkentry", "list"]).is_empty(),
-        "expected a local spelunk note after memory add"
+        "expected a local inkentry note after memory add"
     );
 
     // Publish branch + notes to the bare origin.
@@ -437,7 +437,7 @@ fn notes_round_trip_through_bare_origin() {
     git(&clone, &["config", "user.name", "Clone"]);
     assert!(
         git_stdout(&clone, &["notes", "--ref=inkentry", "list"]).is_empty(),
-        "a fresh clone should not have spelunk notes before fetch"
+        "a fresh clone should not have inkentry notes before fetch"
     );
 
     // …init in the clone configures the notes fetch refspec, and a plain fetch
@@ -479,14 +479,14 @@ fn notes_round_trip_through_bare_origin() {
     );
 
     // And the read path surfaces it: `memory list` merges the tracking ref.
-    let listed = spelunk_bin()
+    let listed = inkentry_bin()
         .current_dir(&clone)
         .env("HOME", &clone)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")
         .args(["memory", "--backend", "git-notes", "list"])
         .output()
-        .expect("spawn spelunk memory list");
+        .expect("spawn inkentry memory list");
     assert!(
         listed.status.success(),
         "memory list should succeed in the clone: {}",
@@ -532,7 +532,7 @@ fn working_note(dir: &Path) -> String {
     }
 }
 
-/// (5b) Call site: `spelunk context` merges the tracking ref (ADR-069 D5).
+/// (5b) Call site: `inkentry context` merges the tracking ref (ADR-069 D5).
 ///
 /// `memory list` is covered by the round-trip above; `context` is a separate
 /// call site with its own read path, and a fetched entry is invisible on it
@@ -562,7 +562,7 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     );
 
     let cfg = empty_config(&repo);
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(&repo)
         .env("HOME", &repo)
         .env("INKENTRY_NO_SERVER", "1")
@@ -571,10 +571,10 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
         .arg(&cfg)
         .args(["context", "--backend", "git-notes"])
         .output()
-        .expect("spawn spelunk context");
+        .expect("spawn inkentry context");
     assert!(
         out.status.success(),
-        "spelunk context should succeed: {}",
+        "inkentry context should succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -593,7 +593,7 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     );
 }
 
-/// (5c) Call site: `spelunk init` merges the tracking ref before importing
+/// (5c) Call site: `inkentry init` merges the tracking ref before importing
 /// (ADR-069 D5).
 ///
 /// init hydrates `memory.db` from git notes, so an entry still parked on the
@@ -642,12 +642,12 @@ fn init_non_tty_does_not_prompt_or_hang() {
     // this line at all means init completed without blocking on input.
     let stdout = run_init(tmp.path());
     assert!(
-        stdout.contains("spelunk initialised for"),
+        stdout.contains("inkentry initialised for"),
         "init should print its success summary in non-TTY mode, got:\n{stdout}"
     );
 }
 
-/// (7) D4 regression: `spelunk init` must not break plain git.
+/// (7) D4 regression: `inkentry init` must not break plain git.
 ///
 /// The shipped non-glob refspec (`+refs/notes/inkentry:refs/notes/inkentry`)
 /// requires the remote ref to exist, so with no notes pushed yet — every repo
@@ -770,7 +770,7 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
         after.contains("mine unpushed"),
         "a plain fetch must not clobber a local unpushed note, got:\n{after}"
     );
-    // Their note is fetched, but parked on the tracking ref until spelunk merges.
+    // Their note is fetched, but parked on the tracking ref until inkentry merges.
     assert!(
         git_out(&mine, &["rev-parse", "--verify", TRACKING_REF])
             .status

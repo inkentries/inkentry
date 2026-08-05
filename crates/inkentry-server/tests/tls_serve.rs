@@ -174,7 +174,7 @@ fn make_ca_and_leaf(
             "-days",
             "1",
             "-subj",
-            "/CN=spelunk-test-ca",
+            "/CN=inkentry-test-ca",
             "-keyout",
         ])
         .arg(&ca_key)

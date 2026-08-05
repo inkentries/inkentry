@@ -31,7 +31,7 @@ pub fn link(args: LinkArgs, _cfg: Config) -> Result<()> {
     // Resolve current project
     let primary = reg.find_project_for_path(&cwd)?.with_context(|| {
         "No indexed project found for the current directory.\n\
-             Run `spelunk index .` first."
+             Run `inkentry index .` first."
             .to_string()
     })?;
 
@@ -52,7 +52,7 @@ pub fn link(args: LinkArgs, _cfg: Config) -> Result<()> {
         .with_context(|| {
             format!(
                 "No index found for '{}'.\n\
-             Run `spelunk index {}` first.",
+             Run `inkentry index {}` first.",
                 target_canonical.display(),
                 target_canonical.display()
             )

@@ -1,6 +1,6 @@
 // End-to-end coverage for the `search --mode semantic|hybrid` no-server gate.
 //
-// The bug: with no reachable server, an explicit `spelunk search --mode
+// The bug: with no reachable server, an explicit `inkentry search --mode
 // semantic` (and `--mode hybrid`) silently fell back to FTS text search and, on
 // an empty match, printed "No results found." + exit 0. To an agent or a script
 // that reads as "no such code exists" rather than "the feature is unavailable" —
@@ -15,14 +15,14 @@
 // not regress.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use std::path::Path;
 use tempfile::TempDir;
 
 // A distinctive symbol the auto-mode ast-grep fallback can match, so the auto
 // regression test proves a real fallback ran rather than an empty error path.
-const PROBE_SYMBOL: &str = "spelunk_gate_probe_marker";
+const PROBE_SYMBOL: &str = "inkentry_gate_probe_marker";
 
 // Build a populated-but-unembedded project offline: `<proj>/.inkentry/index.db`
 // exists and holds chunks (chunk_count > 0), but zero embeddings — indexing
@@ -40,7 +40,7 @@ fn init_populated_project_offline(home: &Path, proj: &Path) {
     )
     .expect("write source file");
 
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj)
         .args(["index", "."])
@@ -61,7 +61,7 @@ fn assert_locked_feature_gate(stderr: &str, stdout: &str) {
         "must emit the shared locked-feature error; got stderr: {stderr}"
     );
     assert!(
-        stderr.contains("spelunk server start"),
+        stderr.contains("inkentry server start"),
         "must point at the actionable resume command; got stderr: {stderr}"
     );
     assert!(
@@ -78,7 +78,7 @@ fn search_mode_semantic_no_server_gates_with_locked_feature_error() {
     let proj = TempDir::new().unwrap();
     init_populated_project_offline(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "semantic"])
@@ -100,7 +100,7 @@ fn search_mode_hybrid_no_server_gates_with_locked_feature_error() {
     let proj = TempDir::new().unwrap();
     init_populated_project_offline(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "hybrid"])
@@ -122,7 +122,7 @@ fn search_mode_auto_no_server_still_degrades_and_exits_zero() {
     let proj = TempDir::new().unwrap();
     init_populated_project_offline(home.path(), proj.path());
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", PROBE_SYMBOL, "--mode", "auto"])

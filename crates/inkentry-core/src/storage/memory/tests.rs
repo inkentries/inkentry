@@ -836,7 +836,7 @@ fn max_remote_id_is_the_pull_cursor() {
 }
 
 /// Direct, fast unit test on the cursor's lexical-sort assumption using
-/// genuinely generated `Uuid::now_v7()` values (spelunk-oss story 272/269
+/// genuinely generated `Uuid::now_v7()` values (inkentry-oss story 272/269
 /// hardening), not hand-typed strings: the server mints `sync_id` the same
 /// way, so this proves `MAX(remote_id)` picks the truly newest entry for
 /// real UUIDv7 output, independent of the row insertion order used to
@@ -1060,7 +1060,7 @@ fn union_tags_keeps_fts_in_sync() {
 // Runs against a store that predates the entity_id column and already holds
 // rows colliding under the new key. Must add the column without aborting,
 // backfill every legacy row (Step A), and leave the rows themselves alone:
-// collapsing is `spelunk memory dedupe`'s job, so Step B must also leave the
+// collapsing is `inkentry memory dedupe`'s job, so Step B must also leave the
 // index non-unique while a duplicate group remains.
 #[test]
 fn entity_id_migration_backfills_but_does_not_collapse_duplicates() {
@@ -1154,7 +1154,7 @@ fn entity_id_migration_backfills_but_does_not_collapse_duplicates() {
 
     // Step B must not have promoted the index: the two rows above are a
     // duplicate group, so the store stays on the non-unique index until an
-    // explicit `spelunk memory dedupe` collapses it.
+    // explicit `inkentry memory dedupe` collapses it.
     let idx_sql: String = store
         .conn
         .query_row(
@@ -1968,7 +1968,7 @@ fn future_memory_schema_version_refuses_to_open() {
     };
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("newer") || msg.contains("upgrade spelunk"),
+        msg.contains("newer") || msg.contains("upgrade inkentry"),
         "the error must explain the version mismatch clearly, got: {msg}"
     );
 }

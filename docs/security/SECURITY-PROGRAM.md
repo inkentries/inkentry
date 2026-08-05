@@ -1,4 +1,4 @@
-# spelunk Security Program
+# inkentry Security Program
 
 **Framework:** OWASP SAMM v2  
 **Target maturity:** Level 1 across all 15 practices (pre-launch baseline)  
@@ -9,7 +9,7 @@
 
 ## Architecture in scope
 
-spelunk ships in two operational modes, and the security program covers both:
+inkentry ships in two operational modes, and the security program covers both:
 
 - **Local CLI (default).** A single-user developer CLI that indexes source
   trees, stores chunks and memory notes in local SQLite, and reaches an

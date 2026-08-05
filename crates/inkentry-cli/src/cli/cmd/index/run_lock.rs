@@ -1,7 +1,7 @@
-//! Cross-process advisory lock serializing whole `spelunk index` runs against
+//! Cross-process advisory lock serializing whole `inkentry index` runs against
 //! one project's DB.
 //!
-//! Two `spelunk index` processes racing on the same project reproducibly
+//! Two `inkentry index` processes racing on the same project reproducibly
 //! corrupt `index.db` (`SQLITE_CORRUPT`, not merely `SQLITE_BUSY`) - neither
 //! `index.db` nor `memory.db` nor `registry.db` sets `PRAGMA busy_timeout`
 //! anywhere in this codebase, and SQLite's own per-connection locking does
@@ -25,7 +25,7 @@ const LOCK_FILE_NAME: &str = "index.lock";
 /// so the read-back works identically on every platform.
 const LOCK_PID_FILE_NAME: &str = "index.lock.pid";
 
-/// Held for the lifetime of one `spelunk index` process's DB-writing work.
+/// Held for the lifetime of one `inkentry index` process's DB-writing work.
 /// Dropping releases the OS advisory lock (the fd closes), so a killed
 /// holder never wedges a future run - there is no stale-lock case to detect
 /// or clean up.
@@ -44,16 +44,16 @@ pub enum LockOutcome {
     },
 }
 
-/// Try to take the per-project index lock inside `spelunk_dir` (the
+/// Try to take the per-project index lock inside `inkentry_dir` (the
 /// project's `.inkentry/` directory), non-blocking.
 ///
 /// Non-blocking rather than waited-out (contrast `git_notes::lock`'s bounded
 /// poll): an index run's writing window is unbounded - a large repo can
 /// embed for minutes - so waiting on it would make a second invocation hang
 /// unpredictably instead of failing fast with an actionable message.
-pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
-    std::fs::create_dir_all(spelunk_dir)?;
-    let path = spelunk_dir.join(LOCK_FILE_NAME);
+pub fn try_acquire(inkentry_dir: &Path) -> Result<LockOutcome> {
+    std::fs::create_dir_all(inkentry_dir)?;
+    let path = inkentry_dir.join(LOCK_FILE_NAME);
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -63,12 +63,12 @@ pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
 
     match file.try_lock() {
         Ok(()) => {
-            let pid_path = spelunk_dir.join(LOCK_PID_FILE_NAME);
+            let pid_path = inkentry_dir.join(LOCK_PID_FILE_NAME);
             std::fs::write(&pid_path, std::process::id().to_string()).ok();
             Ok(LockOutcome::Acquired(IndexRunLock { _file: file }))
         }
         Err(TryLockError::WouldBlock) => {
-            let pid_path = spelunk_dir.join(LOCK_PID_FILE_NAME);
+            let pid_path = inkentry_dir.join(LOCK_PID_FILE_NAME);
             let holder_pid = std::fs::read_to_string(&pid_path)
                 .ok()
                 .and_then(|s| s.trim().parse().ok());
@@ -82,8 +82,8 @@ pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
 /// whether the lock is currently held: `try_acquire` (re)writes this on
 /// every successful acquire, so it reflects the most recent holder even
 /// after that holder has since released.
-fn read_recorded_pid(spelunk_dir: &Path) -> Option<u32> {
-    std::fs::read_to_string(spelunk_dir.join(LOCK_PID_FILE_NAME))
+fn read_recorded_pid(inkentry_dir: &Path) -> Option<u32> {
+    std::fs::read_to_string(inkentry_dir.join(LOCK_PID_FILE_NAME))
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
@@ -95,14 +95,14 @@ fn read_recorded_pid(spelunk_dir: &Path) -> Option<u32> {
 /// process that raced into the gap between the drop and the continuation's
 /// own acquire attempt, before reporting the handoff as a success.
 pub fn wait_for_holder_pid(
-    spelunk_dir: &Path,
+    inkentry_dir: &Path,
     expected_pid: u32,
     timeout: Duration,
     poll_interval: Duration,
 ) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if read_recorded_pid(spelunk_dir) == Some(expected_pid) {
+        if read_recorded_pid(inkentry_dir) == Some(expected_pid) {
             return true;
         }
         if Instant::now() >= deadline {

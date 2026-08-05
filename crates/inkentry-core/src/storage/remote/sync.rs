@@ -900,7 +900,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_batch_threads_explicit_slug_into_request_path() {
-        // An explicit project slug (e.g. from `spelunk sync
+        // An explicit project slug (e.g. from `inkentry sync
         // --project acme/new-app`) must reach the server verbatim in the request
         // path, so the server can lazily create/reuse that project on first sync.
         // The mock only matches the slug-scoped path, so a match proves it.

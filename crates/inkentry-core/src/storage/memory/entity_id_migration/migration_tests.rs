@@ -229,7 +229,7 @@ fn promote_after_manual_collapse_to_zero_duplicates_succeeds() {
     store.promote_entity_id_unique_index().unwrap();
     assert!(!index_is_unique(&store));
 
-    // Collapse manually (mirrors what `spelunk memory dedupe` would do).
+    // Collapse manually (mirrors what `inkentry memory dedupe` would do).
     store
         .conn
         .execute(

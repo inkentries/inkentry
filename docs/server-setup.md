@@ -3,7 +3,7 @@
 `inkentry-server` does two jobs. Most users only ever meet the first one:
 
 1. **Local inference server (automatic).** It provides embeddings and LLM
-   inference for `spelunk` on your own machine. The CLI starts a local instance
+   inference for `inkentry` on your own machine. The CLI starts a local instance
    for you in the background; there is nothing to set up. See
    [Getting started](getting-started.md) for that path; it needs nothing on
    this page.
@@ -13,7 +13,7 @@
    only memory entries travel to the server. **This page is about that second
    job.**
 
-If you just installed spelunk and want it to work, you don't need this page:
+If you just installed inkentry and want it to work, you don't need this page:
 see [Getting started](getting-started.md) instead.
 
 ---
@@ -51,7 +51,7 @@ network adds is that TLS becomes mandatory, and the server provides it.
 > than one mutually-trusting group. If you need isolation between teams, run
 > separate server instances (separate keys), not one shared instance.
 
-> Spelunk does not run your agents. This page is about exposing the *memory +
+> Inkentry does not run your agents. This page is about exposing the *memory +
 > retrieval* server so remote agents can use it as a peer. It is not an agent
 > runtime.
 
@@ -85,11 +85,11 @@ generate a self-signed leaf certificate:
 ```bash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -keyout tls-key.pem -out tls-cert.pem -days 365 \
-  -subj "/CN=spelunk-team" \
+  -subj "/CN=inkentry-team" \
   -addext "basicConstraints=critical,CA:FALSE" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "extendedKeyUsage=serverAuth" \
-  -addext "subjectAltName=DNS:spelunk.internal.example,DNS:localhost,IP:127.0.0.1"
+  -addext "subjectAltName=DNS:inkentry.internal.example,DNS:localhost,IP:127.0.0.1"
 ```
 
 Two details in this recipe are load-bearing, not stylistic:
@@ -126,8 +126,8 @@ terminates HTTPS itself:
 INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
 inkentry-server \
   --host 0.0.0.0 --port 7777 \
-  --tls-cert /etc/spelunk/tls-cert \
-  --tls-key  /etc/spelunk/tls-key
+  --tls-cert /etc/inkentry/tls-cert \
+  --tls-key  /etc/inkentry/tls-key
 ```
 
 - `--host 0.0.0.0` (or a specific routable IP) makes the server reachable
@@ -147,9 +147,9 @@ two different secrets.
 
 ## 3. Run it under systemd
 
-Spelunk ships a first-party unit for the team server:
+Inkentry ships a first-party unit for the team server:
 [`packaging/inkentry-server-team.service`](../packaging/inkentry-server-team.service).
-It runs the server as a dedicated unprivileged `spelunk` user, binds a routable
+It runs the server as a dedicated unprivileged `inkentry` user, binds a routable
 interface with TLS, supplies **both** the API key and the TLS private key as
 **systemd credentials** rather than environment lines, and applies standard
 sandboxing. (This is the deployed team-server unit, distinct from the
@@ -172,18 +172,18 @@ The **certificate chain** is public, so it stays a plain readable path (add it t
 
 ```bash
 # Dedicated user + data dir
-sudo useradd --system --home-dir /var/lib/spelunk --shell /usr/sbin/nologin spelunk
-sudo install -d -o spelunk -g spelunk -m 0750 /var/lib/spelunk
+sudo useradd --system --home-dir /var/lib/inkentry --shell /usr/sbin/nologin inkentry
+sudo install -d -o inkentry -g inkentry -m 0750 /var/lib/inkentry
 
 # The bearer key, as a root-only 0600 file
-sudo install -d -m 0755 /etc/spelunk
-openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
-sudo chmod 0600 /etc/spelunk/server-key
+sudo install -d -m 0755 /etc/inkentry
+openssl rand -hex 32 | sudo tee /etc/inkentry/server-key >/dev/null
+sudo chmod 0600 /etc/inkentry/server-key
 
 # Bring your own TLS cert chain + private key (fullchain/privkey from a real
 # CA, or tls-cert.pem/tls-key.pem from the self-signed recipe above)
-sudo install -m 0644 fullchain.pem /etc/spelunk/tls-cert   # public chain
-sudo install -m 0600 privkey.pem   /etc/spelunk/tls-key    # root:root, private
+sudo install -m 0644 fullchain.pem /etc/inkentry/tls-cert   # public chain
+sudo install -m 0600 privkey.pem   /etc/inkentry/tls-key    # root:root, private
 
 # Install and start the unit
 sudo install -m 0644 packaging/inkentry-server-team.service \
@@ -198,16 +198,16 @@ The shipped unit's `ExecStart` is:
 ```ini
 ExecStart=/usr/local/bin/inkentry-server \
   --host 0.0.0.0 --port 7777 \
-  --db /var/lib/spelunk/spelunk.db \
-  --tls-cert /etc/spelunk/tls-cert \
+  --db /var/lib/inkentry/inkentry.db \
+  --tls-cert /etc/inkentry/tls-cert \
   --tls-key %d/tls-key
 ```
 
 with both secrets loaded as credentials:
 
 ```ini
-LoadCredential=server-key:/etc/spelunk/server-key
-LoadCredential=tls-key:/etc/spelunk/tls-key
+LoadCredential=server-key:/etc/inkentry/server-key
+LoadCredential=tls-key:/etc/inkentry/tls-key
 ```
 
 The full unit (dedicated user, hardening directives, and all) is in the repo at
@@ -224,26 +224,26 @@ the only supported source: `INKENTRY_SERVER_KEY` remains a fully-supported equal
 alternative (e.g. an `EnvironmentFile=` pointing at a `0600` root-owned file, or
 set by tooling that runs the binary outside systemd). Resolution precedence is
 `--key` → `--key-file` → `INKENTRY_SERVER_KEY` → `$CREDENTIALS_DIRECTORY/server-key`.
-To rotate the bearer key, replace `/etc/spelunk/server-key`, `sudo systemctl
+To rotate the bearer key, replace `/etc/inkentry/server-key`, `sudo systemctl
 restart inkentry-server`, and redistribute it to clients. To renew the
-certificate, replace `/etc/spelunk/tls-cert` (and `/etc/spelunk/tls-key` if the
+certificate, replace `/etc/inkentry/tls-cert` (and `/etc/inkentry/tls-key` if the
 key changed) and restart the service.
 
 ### Alternative: `DynamicUser=`
 
 If you'd rather not manage a static user and data dir, use the
 [`DynamicUser=` variant](../packaging/inkentry-server-team-dynamicuser.service):
-systemd allocates a per-boot UID and creates `/var/lib/spelunk` via
+systemd allocates a per-boot UID and creates `/var/lib/inkentry` via
 `StateDirectory=`, chowned to that UID, so there is no `useradd` and no manual
 `install -d`. Install it in place of the static-user unit; the key, certificate,
-and `/etc/spelunk` provisioning above still applies:
+and `/etc/inkentry` provisioning above still applies:
 
 ```bash
-sudo install -d -m 0755 /etc/spelunk
-openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
-sudo chmod 0600 /etc/spelunk/server-key
-sudo install -m 0644 fullchain.pem /etc/spelunk/tls-cert
-sudo install -m 0600 privkey.pem   /etc/spelunk/tls-key
+sudo install -d -m 0755 /etc/inkentry
+openssl rand -hex 32 | sudo tee /etc/inkentry/server-key >/dev/null
+sudo chmod 0600 /etc/inkentry/server-key
+sudo install -m 0644 fullchain.pem /etc/inkentry/tls-cert
+sudo install -m 0600 privkey.pem   /etc/inkentry/tls-key
 sudo install -m 0644 packaging/inkentry-server-team-dynamicuser.service \
      /etc/systemd/system/inkentry-server.service
 sudo systemctl daemon-reload
@@ -268,10 +268,10 @@ readers not using Compose.
 
 ```bash
 git clone https://github.com/spelunk-cloud/spelunk
-cd spelunk
+cd inkentry
 
 INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
-INKENTRY_TLS_CERT=/etc/spelunk/tls-cert INKENTRY_TLS_KEY=/etc/spelunk/tls-key \
+INKENTRY_TLS_CERT=/etc/inkentry/tls-cert INKENTRY_TLS_KEY=/etc/inkentry/tls-key \
 docker compose --profile team-server up -d
 ```
 
@@ -290,7 +290,7 @@ bind/TLS refusal.
 
 ```bash
 git clone https://github.com/spelunk-cloud/spelunk
-cd spelunk
+cd inkentry
 
 # Build the image first: there is no published registry tag to pull from,
 # so a bare `docker run inkentry-server` with no prior build fails with
@@ -305,9 +305,9 @@ export INKENTRY_SERVER_KEY=$(openssl rand -hex 32)
 # ADR-066 fail-fast bind/TLS refusal.
 docker run -d --name inkentry-server \
   -p 443:7777 \
-  -v spelunk-data:/data \
-  -v /etc/spelunk/tls-cert:/tls/cert:ro \
-  -v /etc/spelunk/tls-key:/tls/key:ro \
+  -v inkentry-data:/data \
+  -v /etc/inkentry/tls-cert:/tls/cert:ro \
+  -v /etc/inkentry/tls-key:/tls/key:ro \
   -e INKENTRY_SERVER_KEY \
   -e INKENTRY_SERVER_TLS_CERT=/tls/cert \
   -e INKENTRY_SERVER_TLS_KEY=/tls/key \
@@ -340,8 +340,8 @@ the loopback scaffold will **not** be reachable, because `-p` forwards host
 traffic to the container's routable interface, not into its private loopback, so
 nothing published reaches a loopback-only bind.
 
-**What's on the `/data` volume.** Both the SQLite database (`/data/spelunk.db`)
-and the native embedder's downloaded model cache (`/data/spelunk/models/`, a
+**What's on the `/data` volume.** Both the SQLite database (`/data/inkentry.db`)
+and the native embedder's downloaded model cache (`/data/inkentry/models/`, a
 one-time ~339 MB pull) live on the same named volume. Size it accordingly, and
 when backing it up, only the database needs your normal database backup
 process (per [Production deployment](#production-deployment) below); the model
@@ -353,16 +353,16 @@ On the remote host (or in its container), the configuration is identical to
 [R1](remote-agents.md); only the URL and the mandatory key change:
 
 ```bash
-export INKENTRY_SERVER_URL=https://spelunk.example.com
+export INKENTRY_SERVER_URL=https://inkentry.example.com
 export INKENTRY_SERVER_KEY=your-shared-api-key
 
-spelunk check                 # should report the server reachable over TLS
-spelunk search "auth tokens"
+inkentry check                 # should report the server reachable over TLS
+inkentry search "auth tokens"
 ```
 
 The `https://` URL points straight at the server's own TLS listener. The agent's
-network path to `spelunk.example.com` is yours to provide: a VPN, Tailscale, or a
-public DNS record. Spelunk does not tunnel traffic; it just needs the URL to
+network path to `inkentry.example.com` is yours to provide: a VPN, Tailscale, or a
+public DNS record. Inkentry does not tunnel traffic; it just needs the URL to
 resolve and the server to answer.
 
 ## Client configuration
@@ -374,7 +374,7 @@ this file.
 
 ```toml
 # .inkentry/config.toml: commit this, it's not a secret
-server_url = "https://spelunk.internal.example.com"
+server_url = "https://inkentry.internal.example.com"
 project_id = "my-awesome-app"
 ```
 
@@ -389,10 +389,10 @@ keychain).
 > so this is satisfied by pointing at its TLS endpoint. Loopback `http://`
 > (e.g. while developing against a server on your own machine) is fine.
 
-Personal credential: set it with `spelunk auth set-key`, not a config file:
+Personal credential: set it with `inkentry auth set-key`, not a config file:
 
 ```bash
-spelunk auth set-key --server https://spelunk.internal.example.com
+inkentry auth set-key --server https://inkentry.internal.example.com
 ```
 
 The key is read from stdin (piped, or an interactive prompt if you're on a
@@ -405,12 +405,12 @@ server (the topology [ADR-056](adr/056-oss-server-tenancy-model.md)
 recommends over multi-tenancy), holds both keys at once with no collision and
 no env-var juggling between them.
 
-Check what's stored with `spelunk auth list-servers` (origins only, never key
+Check what's stored with `inkentry auth list-servers` (origins only, never key
 material):
 
 ```
-$ spelunk auth list-servers
-https://spelunk.internal.example.com
+$ inkentry auth list-servers
+https://inkentry.internal.example.com
 ```
 
 For CI / headless use, the environment variable still works and takes
@@ -429,13 +429,13 @@ replaced.)
 
 > **Rotating a key you committed under the old model.** Earlier versions of
 > this doc suggested a plaintext `server_key = "..."` line in the personal
-> `~/.config/spelunk/config.toml`, and a committed project `.inkentry/config.toml`
+> `~/.config/inkentry/config.toml`, and a committed project `.inkentry/config.toml`
 > used to accept the same field as a "shared team key". Neither path exists
 > any more: the personal file never stores the key in plaintext, and
 > `.inkentry/config.toml` silently ignores a `server_key` line if one is still
 > present. If a key was ever written to either file, especially if it reached
 > git history, treat it as compromised: issue a new key on the server (e.g.
-> `openssl rand -hex 32` for a self-managed instance) and run `spelunk auth
+> `openssl rand -hex 32` for a self-managed instance) and run `inkentry auth
 > set-key --server <url>` with the new value on every machine that had the old
 > one. A flat key from an even older install is picked up and migrated into
 > the per-server store automatically the first time it's needed; `auth
@@ -443,8 +443,8 @@ replaced.)
 
 By default a configured `server_url` runs in `local_first` mode: reads and
 writes stay in each developer's local `memory.db` and the server is a
-converging replica kept in step by a background reconciler (`spelunk status`
-shows the active mode; run `spelunk sync` only when you want to force a
+converging replica kept in step by a background reconciler (`inkentry status`
+shows the active mode; run `inkentry sync` only when you want to force a
 synchronous reconcile). Add `mode = "cloud_first"` to the same config to
 make the server authoritative for reads and writes; an unreachable server is
 then a hard error rather than a silent local read. See [Team server and sync
@@ -457,14 +457,14 @@ configuration. When it is signed by a self-signed or internal CA, point the CLI
 at the CA bundle explicitly with the `INKENTRY_SERVER_CA` environment variable:
 
 ```bash
-export INKENTRY_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle, or the
+export INKENTRY_SERVER_CA=/etc/inkentry/internal-ca.pem   # PEM CA bundle, or the
                                                           # self-signed leaf itself
 ```
 
 or set it per project in `.inkentry/config.toml`:
 
 ```toml
-server_ca = "/etc/spelunk/internal-ca.pem"
+server_ca = "/etc/inkentry/internal-ca.pem"
 ```
 
 `INKENTRY_SERVER_CA` overrides the config value. The bundle is added as a trust
@@ -485,7 +485,7 @@ If team members have existing local `memory.db` entries, push them to the server
 
 ```bash
 # Make sure .inkentry/config.toml is set up first, then:
-spelunk memory push
+inkentry memory push
 ```
 
 This reads your local `memory.db` and sends all active entries to the server.
@@ -574,7 +574,7 @@ cargo build --release --bin inkentry-server
 
 # Run
 ./target/release/inkentry-server \
-  --db /var/lib/spelunk/spelunk.db \
+  --db /var/lib/inkentry/inkentry.db \
   --port 7777 \
   --key your-api-key
 ```
@@ -665,9 +665,9 @@ points the bundled native embedder at a directory you provisioned out of
 band instead, with zero network access at startup or at runtime:
 
 ```bash
-inkentry-server --model-dir /srv/spelunk/models
+inkentry-server --model-dir /srv/inkentry/models
 # or
-export INKENTRY_MODEL_DIR=/srv/spelunk/models
+export INKENTRY_MODEL_DIR=/srv/inkentry/models
 inkentry-server
 ```
 
@@ -693,8 +693,8 @@ Produce that directory on a machine that does have network access, then
 carry it to the air-gapped host:
 
 1. On the connected machine, run `inkentry-server` once with no `--model-dir`.
-   This populates the normal online cache at `~/.local/share/spelunk/models/`
-   (Linux: `$XDG_DATA_HOME/spelunk/models/`), which ends up holding:
+   This populates the normal online cache at `~/.local/share/inkentry/models/`
+   (Linux: `$XDG_DATA_HOME/inkentry/models/`), which ends up holding:
    - `f2llm-v2-330m-q8_0.gguf`
    - `config.json`
    - a nested `tokenizer.json`, under
@@ -705,8 +705,8 @@ carry it to the air-gapped host:
    the air-gapped host.
    ```bash
    mkdir -p offline-model
-   cp ~/.local/share/spelunk/models/f2llm-v2-330m-q8_0.gguf offline-model/
-   cp ~/.local/share/spelunk/models/models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/*/tokenizer.json \
+   cp ~/.local/share/inkentry/models/f2llm-v2-330m-q8_0.gguf offline-model/
+   cp ~/.local/share/inkentry/models/models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/*/tokenizer.json \
       offline-model/
    ```
 3. Transfer `offline-model/` to the air-gapped host by whatever out-of-band

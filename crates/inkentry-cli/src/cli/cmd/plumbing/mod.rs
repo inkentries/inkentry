@@ -162,7 +162,7 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
     if !db_path.exists() {
         anyhow::bail!(
             "No index found (checked current directory and parents).\n\
-             Run `spelunk index <path>` inside your project first."
+             Run `inkentry index <path>` inside your project first."
         );
     }
     let db = crate::storage::Database::open(&db_path)?;

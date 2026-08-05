@@ -1,4 +1,4 @@
-//! `spelunk memory dedupe`: collapse duplicate-`entity_id` groups already
+//! `inkentry memory dedupe`: collapse duplicate-`entity_id` groups already
 //! resident in the local `memory.db`.
 //!
 //! Existing duplicate rows under the ADR-068 canonical `entity_id` (rows with
@@ -40,13 +40,13 @@ fn emit_summary(summary: &DedupeSummary, json: bool, dry_run: bool) {
     }
     if dry_run {
         eprintln!(
-            "[spelunk] dedupe (dry-run): total_notes={} duplicate_groups={} rows_would_collapse={}",
+            "[inkentry] dedupe (dry-run): total_notes={} duplicate_groups={} rows_would_collapse={}",
             summary.total_notes, summary.duplicate_groups, summary.rows_collapsed
         );
         return;
     }
     eprintln!(
-        "[spelunk] dedupe: total_notes={} duplicate_groups={} rows_collapsed={} \
+        "[inkentry] dedupe: total_notes={} duplicate_groups={} rows_collapsed={} \
          tags_merged={} linked_files_merged={} supersede_edges_repointed={} \
          supersede_self_edges_dropped={}",
         summary.total_notes,

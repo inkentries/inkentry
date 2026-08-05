@@ -22,10 +22,10 @@ pub use refs::NotesRefs;
 
 // ── Carry config: surviving history rewrites ─────────────────────────────────
 
-/// The ref spelunk stores memory notes on.
+/// The ref inkentry stores memory notes on.
 const INKENTRY_NOTES_REF: &str = "refs/notes/inkentry";
 
-/// The tracking ref `git fetch` populates, per the refspec `spelunk init`
+/// The tracking ref `git fetch` populates, per the refspec `inkentry init`
 /// configures. Fetching straight onto [`INKENTRY_NOTES_REF`] would force-update
 /// it and silently destroy local unpushed notes (ADR-069 D4).
 const INKENTRY_TRACKING_REF: &str = "refs/notes/origin/inkentry";
@@ -44,7 +44,7 @@ pub enum RewriteRefStatus {
     Failed,
 }
 
-/// Point `notes.rewriteRef` at spelunk's notes ref in this repo.
+/// Point `notes.rewriteRef` at inkentry's notes ref in this repo.
 ///
 /// Gotcha: git carries a note onto a rewritten commit (`commit --amend`,
 /// `rebase`) only if `notes.rewriteRef` names the ref, and it has **no**
@@ -63,7 +63,7 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
     let existing = run_git(git_root, &["config", "--get-all", "notes.rewriteRef"])
         .await
         .unwrap_or_default();
-    if existing.lines().any(rewrite_ref_covers_spelunk) {
+    if existing.lines().any(rewrite_ref_covers_inkentry) {
         return RewriteRefStatus::AlreadyCovered;
     }
 
@@ -86,13 +86,13 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
     }
 }
 
-/// Whether an existing `notes.rewriteRef` value already names spelunk's ref.
+/// Whether an existing `notes.rewriteRef` value already names inkentry's ref.
 ///
 /// Values may be globs. git refuses to rewrite notes outside `refs/notes/`, so
 /// a glob only counts while it stays inside that namespace: `refs/notes/*`
 /// covers us, `refs/*` does not. A false negative only re-adds the exact ref,
 /// which stays correct, so matching a trailing `*` is enough.
-fn rewrite_ref_covers_spelunk(value: &str) -> bool {
+fn rewrite_ref_covers_inkentry(value: &str) -> bool {
     let value = value.trim();
     if value == INKENTRY_NOTES_REF {
         return true;
@@ -133,7 +133,7 @@ async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<WriterLock> {
              not writing without it, because an unserialized write can silently \
              erase a concurrent writer's entry. Retry the command (many \
              concurrent writers can exceed the wait legitimately); if it \
-             persists with nothing else running, a spelunk or git process is \
+             persists with nothing else running, a inkentry or git process is \
              stuck holding the lock (it frees itself when that process exits)",
             path.display(),
             lock::LOCK_WAIT_BUDGET,
@@ -187,7 +187,7 @@ async fn read_note_body_with_retry(
     Err(last_err.expect("at least one attempt ran"))
 }
 
-/// Read the spelunk note body on `object`, distinguishing "no note" (`None`)
+/// Read the inkentry note body on `object`, distinguishing "no note" (`None`)
 /// from a failed read (`Err`).
 ///
 /// The distinction is load-bearing: a writer that mistakes a failed read for
@@ -238,7 +238,7 @@ pub struct AppendOutcome {
 /// Append a `NoteRecord` as a JSON line to `refs/notes/inkentry` on HEAD.
 ///
 /// Read-modify-write with append semantics: the existing blob is read and its
-/// lines (spelunk records and foreign content alike) are preserved verbatim;
+/// lines (inkentry records and foreign content alike) are preserved verbatim;
 /// the new record is appended as one JSON line; the combined text is written
 /// back with `git notes add -f`.
 ///
@@ -580,7 +580,7 @@ impl GitNotesBackend {
         }
     }
 
-    /// Write a spelunk note body to `object` via `git notes add -f -F - --
+    /// Write a inkentry note body to `object` via `git notes add -f -F - --
     /// <object>`, passing `body` over stdin. Keeps note content (which may
     /// contain arbitrary user/LLM text) off argv, and the `--` separator
     /// stops `object` from being parsed as an option.
@@ -624,7 +624,7 @@ impl GitNotesBackend {
     }
 
     /// `(commit_sha, note_blob_sha)` for every commit reachable from HEAD that
-    /// carries a spelunk note, in reverse-chronological (newest first) order.
+    /// carries a inkentry note, in reverse-chronological (newest first) order.
     ///
     /// Only commits reachable from HEAD are listed: memory travels with the
     /// code that carries it, so a teammate's note on a fetched-but-unmerged
@@ -747,7 +747,7 @@ impl GitNotesBackend {
     }
 
     /// Append `record` as a new JSON line to `object`'s note, preserving every
-    /// existing line (spelunk records and foreign content) byte-for-byte.
+    /// existing line (inkentry records and foreign content) byte-for-byte.
     async fn append_record(&self, object: &str, record: &NoteRecord) -> Result<()> {
         // git notes is the primary store on this path (`--backend git-notes`),
         // so an unconfigured carry ref orphans the only copy. Status is dropped:
@@ -789,7 +789,7 @@ impl GitNotesBackend {
         Ok(fold_records(records))
     }
 
-    /// Every spelunk record on the ref, each paired with the commit its note is
+    /// Every inkentry record on the ref, each paired with the commit its note is
     /// anchored to (newest commit first). Unlike [`folded_records`] this keeps
     /// the per-commit provenance the `--source-ref` anchor lookup needs, so it
     /// does not fold; callers fold (or anchor) as they need.
@@ -918,7 +918,7 @@ fn record_in_window(record: &NoteRecord, include_archived: bool, as_of: Option<i
     true
 }
 
-/// Permissively parse the spelunk records from one note blob.
+/// Permissively parse the inkentry records from one note blob.
 ///
 /// The blob is JSON Lines interleaved with foreign content (prose, other
 /// tools' lines). Foreign lines are skipped without error; only a record from
@@ -926,11 +926,11 @@ fn record_in_window(record: &NoteRecord, include_archived: bool, as_of: Option<i
 fn parse_records(blob: &str) -> Result<Vec<NoteRecord>> {
     let mut records = Vec::new();
     for line in blob.lines() {
-        match parse_spelunk_line(line) {
+        match parse_inkentry_line(line) {
             Some(record) => {
                 if record.schema_version > 1 {
                     return Err(anyhow::Error::new(
-                        crate::error::SpelunkError::SchemaMismatch {
+                        crate::error::InkentryError::SchemaMismatch {
                             found: record.schema_version,
                             max_known: 1,
                         },
@@ -989,7 +989,7 @@ fn parse_cat_file_batch(out: &[u8]) -> Result<Vec<String>> {
 /// Classify one line of a note blob: `Some(record)` if it parses as a JSON
 /// *object* deserializing into `NoteRecord`. Non-JSON, non-object JSON, blank,
 /// and prose lines are foreign (`None`).
-fn parse_spelunk_line(line: &str) -> Option<NoteRecord> {
+fn parse_inkentry_line(line: &str) -> Option<NoteRecord> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;

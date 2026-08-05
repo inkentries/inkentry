@@ -1,4 +1,4 @@
-//! Integration tests for the secret-scan gate on `spelunk memory add` (issue #344).
+//! Integration tests for the secret-scan gate on `inkentry memory add` (issue #344).
 //!
 //! Acceptance criteria tested:
 //! (a) Secret in body  → exits non-zero, no SQLite row, no git note
@@ -13,7 +13,7 @@
 //! check the error/SQLite side can use a plain temp dir.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin};
+use plumbing_helpers::{init_git_repo, inkentry_bin};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -22,7 +22,7 @@ use tempfile::TempDir;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Write a minimal spelunk config that points at a fresh memory DB.
+/// Write a minimal inkentry config that points at a fresh memory DB.
 /// Set `store_in_git_notes = true` or `false` via the `git_notes` arg.
 fn write_config(dir: &Path, mem_db: &Path, git_notes: bool) -> PathBuf {
     let content = format!(
@@ -38,9 +38,9 @@ fn write_config(dir: &Path, mem_db: &Path, git_notes: bool) -> PathBuf {
     cfg
 }
 
-/// Build `spelunk --config <cfg> memory --db <mem_db> add --kind note …` command.
+/// Build `inkentry --config <cfg> memory --db <mem_db> add --kind note …` command.
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         // Avoid picking up any server config from the real user environment.
         .env_remove("INKENTRY_SERVER_URL")
@@ -62,7 +62,7 @@ fn row_count(mem_db: &Path) -> i64 {
     }
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
     // The memory table may or may not be "notes"; query the sqlite master to
-    // find the right table name.  We use the notes table name spelunk uses.
+    // find the right table name.  We use the notes table name inkentry uses.
     conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0)
 }
@@ -164,7 +164,7 @@ fn clean_input_writes_sqlite_row_and_git_note() {
     let notes_list = String::from_utf8_lossy(&notes_out.stdout);
     assert!(
         !notes_list.trim().is_empty(),
-        "expected at least one spelunk git note after clean memory add"
+        "expected at least one inkentry git note after clean memory add"
     );
 }
 

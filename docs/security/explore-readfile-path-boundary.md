@@ -39,7 +39,7 @@ exfiltration flaw driven by untrusted content.
 - The **user's question** and **indexed file content** are untrusted input. The
   LLM's tool calls derived from them are therefore untrusted.
 - The **index itself** (the `files` table in the project DB) is trusted: it was
-  produced by `spelunk index`, which already applies `.gitignore` rules and the
+  produced by `inkentry index`, which already applies `.gitignore` rules and the
   unconditional sensitive-file overrides (`.env*`, `*.pem`, etc.) and the secret
   scanner. Anything in the `files` table is content the user already chose to
   index and is willing to expose to retrieval.

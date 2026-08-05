@@ -1,12 +1,12 @@
 //! Global project registry.
 //!
 //! Stores all known project roots and their dependency relationships in a
-//! single SQLite database at `~/.config/spelunk/registry.db`.
+//! single SQLite database at `~/.config/inkentry/registry.db`.
 //!
 //! The registry is separate from per-project index DBs.  It is used to:
 //!   - Auto-detect which project the user is working in from their CWD
 //!   - Track cross-project dependencies for multi-repo search
-//!   - Power `spelunk status --all` and `spelunk autoclean`
+//!   - Power `inkentry status --all` and `inkentry autoclean`
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
@@ -295,29 +295,29 @@ impl Registry {
         let mut removed = Vec::new();
         for p in projects {
             let is_gone = !p.root_path.exists();
-            let is_remnant = !is_gone && spelunk_only_remnant(&p.root_path);
+            let is_remnant = !is_gone && inkentry_only_remnant(&p.root_path);
 
             if is_gone || is_remnant {
                 if is_remnant {
                     // Remove the leftover .inkentry dir (worktree was cleaned but
                     // .inkentry was skipped because it is in .gitignore).
-                    let spelunk_dir = p.root_path.join(".inkentry");
+                    let inkentry_dir = p.root_path.join(".inkentry");
                     // Refuse to recursively delete through a symlink: a symlinked
                     // `.inkentry` (attacker-controlled or a poisoned registry row)
                     // could otherwise point `remove_dir_all` at an arbitrary
                     // directory outside the project root.
-                    match std::fs::symlink_metadata(&spelunk_dir) {
+                    match std::fs::symlink_metadata(&inkentry_dir) {
                         Ok(meta) if meta.file_type().is_symlink() => {
                             tracing::warn!(
                                 "registry autoclean: refusing to remove {} — it is a symlink, \
                                  not a directory",
-                                spelunk_dir.display()
+                                inkentry_dir.display()
                             );
                             continue;
                         }
                         Ok(_) => {
-                            std::fs::remove_dir_all(&spelunk_dir)
-                                .with_context(|| format!("removing {}", spelunk_dir.display()))?;
+                            std::fs::remove_dir_all(&inkentry_dir)
+                                .with_context(|| format!("removing {}", inkentry_dir.display()))?;
                             // Root dir is now empty — remove it too.
                             let _ = std::fs::remove_dir(&p.root_path);
                         }
@@ -407,7 +407,7 @@ pub fn resolve_project_context(
 /// Returns true if `path` exists but contains only a `.inkentry` subdirectory —
 /// i.e. it is a git worktree remnant where everything tracked was removed but
 /// the gitignored `.inkentry` folder was left behind.
-fn spelunk_only_remnant(path: &std::path::Path) -> bool {
+fn inkentry_only_remnant(path: &std::path::Path) -> bool {
     let Ok(mut entries) = std::fs::read_dir(path) else {
         return false;
     };
@@ -485,7 +485,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial]
-    fn autoclean_skips_symlinked_spelunk_dir() {
+    fn autoclean_skips_symlinked_inkentry_dir() {
         with_test_registry(|reg, _registry_dir| {
             let workdir = TempDir::new().unwrap();
             let project_root = workdir.path().join("project");
@@ -498,9 +498,9 @@ mod tests {
 
             // project_root/.inkentry is a symlink pointing at `victim`, and
             // project_root otherwise contains nothing else — satisfying the
-            // "only-remnant" check in `spelunk_only_remnant`.
-            let spelunk_link = project_root.join(".inkentry");
-            std::os::unix::fs::symlink(&victim, &spelunk_link).unwrap();
+            // "only-remnant" check in `inkentry_only_remnant`.
+            let inkentry_link = project_root.join(".inkentry");
+            std::os::unix::fs::symlink(&victim, &inkentry_link).unwrap();
 
             let db_path = project_root.join("index.db"); // never created; irrelevant to autoclean
             reg.register(&project_root, &db_path).unwrap();
@@ -516,7 +516,7 @@ mod tests {
                 "autoclean must not have deleted through the symlink"
             );
             assert!(
-                spelunk_link.exists() || spelunk_link.symlink_metadata().is_ok(),
+                inkentry_link.exists() || inkentry_link.symlink_metadata().is_ok(),
                 "the symlink itself should be left in place"
             );
             // The registry row must still be present since we refused to clean it up.
@@ -536,18 +536,18 @@ mod tests {
         with_test_registry(|reg, _registry_dir| {
             let workdir = TempDir::new().unwrap();
             let project_root = workdir.path().join("project");
-            let spelunk_dir = project_root.join(".inkentry");
-            std::fs::create_dir_all(&spelunk_dir).unwrap();
-            std::fs::write(spelunk_dir.join("index.db"), b"fake").unwrap();
+            let inkentry_dir = project_root.join(".inkentry");
+            std::fs::create_dir_all(&inkentry_dir).unwrap();
+            std::fs::write(inkentry_dir.join("index.db"), b"fake").unwrap();
 
-            let db_path = spelunk_dir.join("index.db");
+            let db_path = inkentry_dir.join("index.db");
             reg.register(&project_root, &db_path).unwrap();
 
             let removed = reg.autoclean().expect("autoclean should not error");
 
             assert_eq!(removed.len(), 1, "expected the remnant to be cleaned up");
             assert!(
-                !spelunk_dir.exists(),
+                !inkentry_dir.exists(),
                 "real (non-symlinked) remnant .inkentry dir should be removed"
             );
         });

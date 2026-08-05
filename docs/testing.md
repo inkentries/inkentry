@@ -65,7 +65,7 @@ added or renamed):
   test over a real `git worktree`; language-parsing coverage; property-based
   tests (`prop_*.rs`, using `proptest`).
 - **`crates/inkentry-cli/tests/`**: CLI end-to-end tests that invoke the
-  compiled `spelunk` binary via `assert_cmd`; plumbing-subcommand tests
+  compiled `inkentry` binary via `assert_cmd`; plumbing-subcommand tests
   (`cat_chunks`, `graph_edges`, `knn`, `ls_files`, `parse_file`, `hash_file`)
   and porcelain/plumbing consistency checks; memory workflow tests (add,
   dedupe, reconcile, reindex, push/sync, cross-project visibility); auth,
@@ -79,7 +79,7 @@ added or renamed):
   (in-process request/response, no socket bound); a real-TLS serve test
   (`tls_serve.rs`) that binds an actual loopback socket; and a real-socket
   plaintext CLI-to-server sync end-to-end test (`cli_sync_e2e.rs`) that
-  drives the actual `spelunk memory push`/`spelunk sync` client code against
+  drives the actual `inkentry memory push`/`inkentry sync` client code against
   a bound server instance.
 - **`#[cfg(test)]` blocks in `src/`**: pure-logic unit tests colocated with
   the function they cover, across all crates (e.g. ANSI stripping, secret
@@ -95,7 +95,7 @@ network dependency.
 
 Every other migration test in this repo builds an old database shape by hand.
 That tests what we *believe* the old format was. The upgrade corpus tests what
-it **is**: artifacts written by real, downloaded, released spelunk binaries,
+it **is**: artifacts written by real, downloaded, released inkentry binaries,
 checked in and opened with the current build on every relevant change.
 
 ```
@@ -175,7 +175,7 @@ annotation actually buys under the test runner CI uses.
 `inkentry-cli` integration tests reach the same guard through
 `tests/plumbing_helpers.rs::register_sqlite_vec`, alongside the other shared
 fixtures in that module. They need it whenever they open a `rusqlite`
-connection of their own against a DB a spawned `spelunk` binary wrote:
+connection of their own against a DB a spawned `inkentry` binary wrote:
 registration is per-process, so the child's does not carry over.
 
 ### `#[serial]` does not mean what it used to under nextest
@@ -315,18 +315,18 @@ file itself stays accurate.
   succeeds, but it adds several minutes.
 
 - **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
-  spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
+  inkentry's runtime state directory (`~/.local/state/inkentry/`) do not achieve
   full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
   API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable.
   Tests that need deterministic isolation should set `INKENTRY_STATE_DIR`
   directly instead of relying on `HOME`: it is a supported override of the
   entire state directory, read by the single resolver
-  (`capability::spelunk_state_dir`) every reader and writer of runtime state
+  (`capability::inkentry_state_dir`) every reader and writer of runtime state
   goes through, so it bypasses the Windows `HOME` gap entirely.
 
 - **`pid_is_alive` on Windows.** The Windows implementation uses
   `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
-  PID is still running. This backs the `spelunk server status/stop` live-PID
+  PID is still running. This backs the `inkentry server status/stop` live-PID
   check on Windows.
 
 - **Model download.** The `embed-native` feature bundles the candle F2LLM

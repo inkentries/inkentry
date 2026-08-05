@@ -14,8 +14,8 @@ use super::tier::Tier;
 /// advice stays `require_tier1`'s job for the genuinely team-only features.
 pub fn inference_server_required_message(feature: &str) -> String {
     format!(
-        "'spelunk {feature}' requires inkentry-server.\n\
-         Run `spelunk server start` to enable this feature."
+        "'inkentry {feature}' requires inkentry-server.\n\
+         Run `inkentry server start` to enable this feature."
     )
 }
 
@@ -36,21 +36,21 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
     }
     match server_url {
         Some(url) => anyhow::bail!(
-            "'spelunk {feature}' requires inkentry-server.\n\
+            "'inkentry {feature}' requires inkentry-server.\n\
              The configured server_url ({url}) did not respond to the health probe.\n\
              Check that server and your network; for TLS trust failures see \
              server_ca / INKENTRY_SERVER_CA."
         ),
         None => anyhow::bail!(
-            "'spelunk {feature}' requires inkentry-server.\n\
-             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
+            "'inkentry {feature}' requires inkentry-server.\n\
+             Set server_url in ~/.config/inkentry/config.toml to enable this feature."
         ),
     }
 }
 
 /// Guard for a feature that moves memory to or from an explicitly-configured
 /// server (`memory push`, `sync`, `memory pull`): a self-hosted team server or
-/// Spelunk Cloud both work identically here. Distinct from features that
+/// Inkentry Cloud both work identically here. Distinct from features that
 /// merely need *an* inference-capable server ([`require_tier1`]).
 ///
 /// `require_tier1` alone can't distinguish an auto-discovered loopback
@@ -69,8 +69,8 @@ pub fn require_explicit_server_url(
 ) -> anyhow::Result<String> {
     cfg.server_url.clone().ok_or_else(|| {
         anyhow::anyhow!(
-            "'spelunk {feature}' requires a server. Set `server_url` in your spelunk config \
-             (e.g. ~/.config/spelunk/config.toml or .inkentry/config.toml)."
+            "'inkentry {feature}' requires a server. Set `server_url` in your inkentry config \
+             (e.g. ~/.config/inkentry/config.toml or .inkentry/config.toml)."
         )
     })
 }
@@ -89,9 +89,9 @@ mod tests {
     #[test]
     fn inference_msg_no_server_url_points_at_local_start_only() {
         let msg = inference_server_required_message("memory search");
-        assert!(msg.contains("'spelunk memory search' requires inkentry-server"));
+        assert!(msg.contains("'inkentry memory search' requires inkentry-server"));
         assert!(
-            msg.contains("spelunk server start"),
+            msg.contains("inkentry server start"),
             "must point at the local auto-server: {msg}"
         );
         assert!(
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn inference_msg_interpolates_feature_and_keeps_harvest_substring() {
         let msg = inference_server_required_message("memory harvest");
-        assert!(msg.contains("'spelunk memory harvest' requires inkentry-server"));
+        assert!(msg.contains("'inkentry memory harvest' requires inkentry-server"));
     }
 
     // ── require_tier1 ────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ mod tests {
         let tier = Tier::Offline;
         let err = require_tier1("explore", &tier, None).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'spelunk explore'"));
+        assert!(msg.contains("'inkentry explore'"));
         assert!(msg.contains("requires inkentry-server"));
         assert!(msg.contains("Set server_url"));
     }
@@ -139,7 +139,7 @@ mod tests {
         let tier = Tier::Offline;
         let err = require_tier1("plan", &tier, Some("https://bad:7777")).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'spelunk plan'"));
+        assert!(msg.contains("'inkentry plan'"));
         assert!(msg.contains("requires inkentry-server"));
         assert!(msg.contains("https://bad:7777"));
         assert!(
@@ -157,7 +157,7 @@ mod tests {
         let tier = Tier::Offline;
         let err = require_tier1("memory push", &tier, None).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'spelunk memory push'"));
+        assert!(msg.contains("'inkentry memory push'"));
     }
 
     // ── require_explicit_server_url ──────────────────────────────────────────

@@ -29,8 +29,8 @@ impl LlmFeature {
     fn subject(self) -> &'static str {
         match self {
             LlmFeature::Summaries => "Skipping chunk summaries",
-            LlmFeature::Explore => "'spelunk explore' cannot run",
-            LlmFeature::MemoryHarvest => "'spelunk memory harvest' cannot run",
+            LlmFeature::Explore => "'inkentry explore' cannot run",
+            LlmFeature::MemoryHarvest => "'inkentry memory harvest' cannot run",
         }
     }
 }
@@ -45,28 +45,28 @@ pub fn no_llm_message(reason: NoLlmReason, feature: LlmFeature) -> String {
     let body = match reason {
         NoLlmReason::Offline => "offline mode is on, so no inference will run.\n\
              Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove \
-             `mode = \"offline\"` from your spelunk config."
+             `mode = \"offline\"` from your inkentry config."
             .to_string(),
         NoLlmReason::LocalConfiguredButNotServed => {
-            "your local spelunk server is running without the LLM endpoint you set in \
+            "your local inkentry server is running without the LLM endpoint you set in \
              `llm_url`, so it cannot answer LLM requests.\n\
              A running server keeps the settings it started with, so restart it to pick \
              yours up:\n  \
-             spelunk server stop\n  \
-             spelunk server start"
+             inkentry server stop\n  \
+             inkentry server start"
                 .to_string()
         }
         NoLlmReason::NoLlmAnywhere => {
             let mut msg = "no LLM is available.\n\
                  There are two ways to get one:\n  \
-                 set `llm_url` in ~/.config/spelunk/config.toml to your own \
-                 chat-completions endpoint, then run `spelunk server stop` and \
-                 `spelunk server start`;\n  \
-                 or set `server_url` to a spelunk server that already provides one."
+                 set `llm_url` in ~/.config/inkentry/config.toml to your own \
+                 chat-completions endpoint, then run `inkentry server stop` and \
+                 `inkentry server start`;\n  \
+                 or set `server_url` to a inkentry server that already provides one."
                 .to_string();
             if feature == LlmFeature::Summaries {
                 msg.push_str(
-                    "\nPass `--no-summaries` to `spelunk index` to skip this step without \
+                    "\nPass `--no-summaries` to `inkentry index` to skip this step without \
                      the notice.",
                 );
             }
@@ -128,7 +128,7 @@ mod tests {
                     "{reason:?}/{feature:?} must lead with the command it concerns: {msg}"
                 );
                 assert!(
-                    msg.contains("spelunk ") || msg.contains("INKENTRY_"),
+                    msg.contains("inkentry ") || msg.contains("INKENTRY_"),
                     "{reason:?}/{feature:?} must give a command or setting to act on: {msg}"
                 );
             }
@@ -152,8 +152,8 @@ mod tests {
             LlmFeature::Explore,
         );
         assert!(msg.contains("llm_url"), "{msg}");
-        assert!(msg.contains("spelunk server stop"), "{msg}");
-        assert!(msg.contains("spelunk server start"), "{msg}");
+        assert!(msg.contains("inkentry server stop"), "{msg}");
+        assert!(msg.contains("inkentry server start"), "{msg}");
         assert!(
             !msg.contains("server_url"),
             "must not send the user to a remote LLM they deliberately did not choose: {msg}"

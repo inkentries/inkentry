@@ -1,4 +1,4 @@
-// End-to-end tests for `spelunk memory reindex` against the built CLI binary.
+// End-to-end tests for `inkentry memory reindex` against the built CLI binary.
 //
 // The command re-embeds memory notes left without a local vector (the 768→896
 // store upgrade dropped them, or no embedder was reachable at add time). These
@@ -20,7 +20,7 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, mount_health, spelunk_bin, write_project_server_config,
+    FIXTURE_PROJECT_ID, mount_health, inkentry_bin, write_project_server_config,
 };
 
 use assert_cmd::Command;
@@ -173,10 +173,10 @@ struct Fixture {
 fn fixture() -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let project_dir = tmp.path().to_path_buf();
-    let spelunk_dir = project_dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
-    let mem_path = spelunk_dir.join("memory.db");
-    let index_db = spelunk_dir.join("index.db");
+    let inkentry_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
+    let mem_path = inkentry_dir.join("memory.db");
+    let index_db = inkentry_dir.join("index.db");
     let global_config = project_dir.join("global-config.toml");
     std::fs::write(
         &global_config,
@@ -200,7 +200,7 @@ fn fixture() -> Fixture {
 // Seed one unembedded note via the real `memory add`. `INKENTRY_NO_SERVER=1` plus
 // the absence of a project server config means the add path stores no vector.
 fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")
@@ -221,7 +221,7 @@ fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
 }
 
 // Write `<state_dir>/server.port` so loopback auto-discovery (step 3a) finds
-// the mock embedder at `url`, mirroring the file `spelunk server start`
+// the mock embedder at `url`, mirroring the file `inkentry server start`
 // writes. `local_first` (the mode every test in this file runs under) never
 // routes inference through `server_url`, only the local loopback embedder.
 fn set_server(f: &Fixture, url: &str) {
@@ -248,9 +248,9 @@ fn clear_server(f: &Fixture) {
     }
 }
 
-// Build a `spelunk memory reindex` command against the fixture.
+// Build a `inkentry memory reindex` command against the fixture.
 fn reindex_cmd(f: &Fixture) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&f.project_dir)
         .env("INKENTRY_STATE_DIR", &f.state_dir)
         .arg("--config")
@@ -266,7 +266,7 @@ fn reindex_cmd(f: &Fixture) -> Command {
 // it stays a purely local status change (no git-notes carry: global config
 // pins store_in_git_notes = false).
 fn archive_note(f: &Fixture, id: i64) {
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")
@@ -455,7 +455,7 @@ fn reindex_resumes_after_midrun_failure() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("2 of 4 done and durably stored"))
-        .stderr(predicates::str::contains("re-run 'spelunk memory reindex'"));
+        .stderr(predicates::str::contains("re-run 'inkentry memory reindex'"));
     assert_eq!(
         embedded_note_ids(&f.mem_path).len(),
         2,
@@ -629,7 +629,7 @@ fn migration_notice_fires_once_after_768_upgrade() {
     make_pre_v896_store(&f.mem_path, 3);
 
     // First memory command after the upgrade: the notice fires on stderr.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -649,7 +649,7 @@ fn migration_notice_fires_once_after_768_upgrade() {
     assert!(embedded_note_ids(&f.mem_path).is_empty());
 
     // The sentinel is now set: a second command must NOT repeat the notice.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -739,7 +739,7 @@ fn no_reembed_notice_on_fresh_store() {
     let f = fixture();
     seed(&f, "note", "one", "body one");
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")

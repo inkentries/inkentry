@@ -379,15 +379,15 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
     // Optional user hook: `memory add --from-url` can shell out to a local
     // Markdown-conversion script under `bun` for higher-fidelity extraction
     // than the naive HTML strip below. This is opt-in and guarded: the script
-    // must live at a fixed, spelunk-owned path
-    // (`~/.config/spelunk/scripts/web-to-md.ts`), *not* anywhere under the
+    // must live at a fixed, inkentry-owned path
+    // (`~/.config/inkentry/scripts/web-to-md.ts`), *not* anywhere under the
     // home directory. Prior to this guard the CLI ran `~/scripts/web-to-md.ts`
     // whenever it happened to exist — a surprising, undocumented dependency
     // that made any attacker-writable home-dir script (e.g. via a prior
     // unrelated compromise, or a shared/managed machine) an implicit
     // code-execution path every time `memory add --from-url` ran. Scoping the
-    // path to `~/.config/spelunk/` narrows this to a location the user
-    // explicitly manages for spelunk and documents the mechanism in one place.
+    // path to `~/.config/inkentry/` narrows this to a location the user
+    // explicitly manages for inkentry and documents the mechanism in one place.
     // See docs/memory.md#web-to-md-hook.
     let script = web_to_md_script_path().filter(|p| p.exists());
 
@@ -409,7 +409,7 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
     // ServerInferenceClient's underlying connection (we build a fresh one here
     // since we have no server config at this call site).
     let http = reqwest::Client::builder()
-        .user_agent(concat!("spelunk/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("inkentry/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let html = http.get(url).send().await?.text().await?;
 
@@ -436,16 +436,16 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
     Ok((title, body))
 }
 
-/// The fixed, spelunk-owned path the web-to-md hook script must live at to be
-/// picked up (`~/.config/spelunk/scripts/web-to-md.ts`). Deliberately does
+/// The fixed, inkentry-owned path the web-to-md hook script must live at to be
+/// picked up (`~/.config/inkentry/scripts/web-to-md.ts`). Deliberately does
 /// *not* consider the old `~/scripts/web-to-md.ts` location — see the
 /// opt-in-guard comment above this function's call site.
 ///
-/// `INKENTRY_SCRIPTS_DIR` overrides the `~/.config/spelunk/scripts` directory
+/// `INKENTRY_SCRIPTS_DIR` overrides the `~/.config/inkentry/scripts` directory
 /// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
 /// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
 /// making per-process environment overrides of `HOME` ineffective — see the
-/// identical note on `spelunk_state_dir` in `capability/probe.rs`.
+/// identical note on `inkentry_state_dir` in `capability/probe.rs`.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("INKENTRY_SCRIPTS_DIR") {
         return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));
@@ -539,11 +539,11 @@ mod tests {
         }
     }
 
-    /// `web_to_md_script_path` must resolve to the new, spelunk-owned path
-    /// (`~/.config/spelunk/scripts/web-to-md.ts`, or `INKENTRY_SCRIPTS_DIR` if set).
+    /// `web_to_md_script_path` must resolve to the new, inkentry-owned path
+    /// (`~/.config/inkentry/scripts/web-to-md.ts`, or `INKENTRY_SCRIPTS_DIR` if set).
     #[test]
     #[serial]
-    fn web_to_md_script_path_is_config_spelunk_scripts() {
+    fn web_to_md_script_path_is_config_inkentry_scripts() {
         let tmp = TempDir::new().unwrap();
         with_scripts_dir(tmp.path(), || {
             let path = web_to_md_script_path().expect("INKENTRY_SCRIPTS_DIR is set");
@@ -553,7 +553,7 @@ mod tests {
 
     /// Regression guard for the opt-in fix: a script left
     /// at the *old*, unguarded location (`~/scripts/web-to-md.ts`) must NOT be
-    /// picked up any more — only the fixed `~/.config/spelunk/scripts/` path
+    /// picked up any more — only the fixed `~/.config/inkentry/scripts/` path
     /// counts. Prior to the fix, any attacker-writable home-dir script at the
     /// old path was an implicit code-execution path on every `memory add
     /// --from-url` call; this test ensures that door stays shut.
@@ -585,7 +585,7 @@ mod tests {
     /// Positive case: a script placed at the new, guarded location IS found.
     #[test]
     #[serial]
-    fn new_config_spelunk_scripts_path_is_used_when_present() {
+    fn new_config_inkentry_scripts_path_is_used_when_present() {
         let tmp = TempDir::new().unwrap();
         let new_dir = tmp.path().join(".config").join("inkentry").join("scripts");
         std::fs::create_dir_all(&new_dir).unwrap();

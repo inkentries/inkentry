@@ -15,7 +15,7 @@ pub enum Tier {
         caps: Capabilities,
         /// `true` when the URL was discovered automatically (loopback probe),
         /// `false` when it was set explicitly via config / env var.
-        /// Used to annotate UX output (e.g. `(local, auto)` in `spelunk status`).
+        /// Used to annotate UX output (e.g. `(local, auto)` in `inkentry status`).
         /// Consumed by `is_auto_discovered()` and sub-issue #324 UX wiring.
         auto_discovered: bool,
         /// Server-side embedder readiness, mirrored from the `/v1/health`
@@ -58,7 +58,7 @@ impl Tier {
     /// Server-side embedder readiness for a `Server` tier, or `None` when
     /// offline. `EmbedderState::Unknown` is returned for a reachable server that
     /// pre-dates the `embedder.state` health field. Used by the offline notice
-    /// (`search`/`index`) and by `spelunk status` to explain why semantic search
+    /// (`search`/`index`) and by `inkentry status` to explain why semantic search
     /// is unavailable.
     pub fn embedder_state(&self) -> Option<EmbedderState> {
         match self {
@@ -80,7 +80,7 @@ impl Tier {
 
     /// Returns `true` when the server URL was discovered automatically via
     /// the loopback probe rather than set explicitly in config or environment.
-    /// Used by `spelunk status` (sub-issue #324) to annotate the URL with `(local, auto)`.
+    /// Used by `inkentry status` (sub-issue #324) to annotate the URL with `(local, auto)`.
     #[cfg(test)]
     pub fn is_auto_discovered(&self) -> bool {
         matches!(
@@ -96,10 +96,10 @@ impl Tier {
     /// `server_url` (not loopback auto-discovery); `None` for `Offline` and
     /// for the auto-discovered loopback case.
     ///
-    /// `spelunk server logs` only ever reads the local auto-daemon's log
+    /// `inkentry server logs` only ever reads the local auto-daemon's log
     /// file. A command-output hint that names a server to check must use
     /// this instead of unconditionally pointing at that command: with an
-    /// explicit remote `server_url`, `spelunk server logs` reads a healthy
+    /// explicit remote `server_url`, `inkentry server logs` reads a healthy
     /// local daemon's log while the real failure lives on the named server
     /// (the pattern `embedder_status_line` in `status.rs` established).
     pub fn explicit_remote_url(&self) -> Option<&str> {
@@ -121,7 +121,7 @@ impl Tier {
     /// Loopback auto-discovery sets the capability `Tier` WITHOUT populating
     /// `cfg.server_url`. Commands that route inference through `from_config`
     /// gate on a server URL, so without this bridge they wrongly report
-    /// "requires inkentry-server" even though `spelunk status` shows `Server`.
+    /// "requires inkentry-server" even though `inkentry status` shows `Server`.
     ///
     /// ## ADR-004: inference vs memory storage are routed separately
     ///
@@ -153,7 +153,7 @@ impl Tier {
     /// assumption is exactly what routed `local_first` embed requests to a
     /// cloud `server_url`'s nonexistent `/index/embed` route.
     ///
-    /// `project_id` is derived (mirroring `embed_phase`, see spelunk#307) so the
+    /// `project_id` is derived (mirroring `embed_phase`, see inkentry#307) so the
     /// inference client can address the project on the server.
     pub fn effective_config(&self, cfg: &Config, project_root: &std::path::Path) -> Config {
         let mut out = cfg.clone();
@@ -198,13 +198,13 @@ mod tests {
     #[test]
     fn tier_server_returns_url() {
         let tier = Tier::Server {
-            url: "http://spelunk.internal:7777".to_string(),
+            url: "http://inkentry.internal:7777".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
-        assert_eq!(tier.server_url(), Some("http://spelunk.internal:7777"));
+        assert_eq!(tier.server_url(), Some("http://inkentry.internal:7777"));
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
         // can hand-configure `server_url = http://127.0.0.1:PORT`; it is
         // still `auto_discovered: false` because it went through the
         // `Some(url)` probe branch, not loopback auto-discovery (see
-        // `probe()`). `spelunk server logs` only ever reads the fixed
+        // `probe()`). `inkentry server logs` only ever reads the fixed
         // auto-daemon log path and has no idea this loopback address was
         // hand-configured, so the hint must still name it rather than assume
         // "loopback implies safe to point at the local log".

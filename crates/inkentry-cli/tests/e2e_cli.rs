@@ -4,20 +4,20 @@ use tempfile::tempdir;
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, spelunk_bin, spelunk_bin_in, write_config_with_server,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in, write_config_with_server,
     write_project_server_config,
 };
 
 #[test]
 fn test_help_output() {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            // On Windows clap includes the `.exe` extension: "spelunk.exe [OPTIONS]…"
+            // On Windows clap includes the `.exe` extension: "inkentry.exe [OPTIONS]…"
             // Match only the stable prefix so the assertion holds on all platforms.
-            "Usage: spelunk",
+            "Usage: inkentry",
         ))
         .stdout(predicate::str::contains("Commands:"));
 }
@@ -36,14 +36,14 @@ fn test_help_output() {
 #[test]
 fn test_help_text_accuracy_guards() {
     // `memory add --help` must list `antipattern` as a valid kind.
-    spelunk_bin()
+    inkentry_bin()
         .args(["memory", "add", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("antipattern"));
 
     // `memory harvest --help` must list `failures` as a valid --source value.
-    spelunk_bin()
+    inkentry_bin()
         .args(["memory", "harvest", "--help"])
         .assert()
         .success()
@@ -53,7 +53,7 @@ fn test_help_text_accuracy_guards() {
 
     // Top-level `sync --help` must say "shorthand", not "alias"
     // (sync dispatches directly, it is not a clap alias).
-    spelunk_bin()
+    inkentry_bin()
         .args(["sync", "--help"])
         .assert()
         .success()
@@ -61,7 +61,7 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
-// `spelunk --help` must list the first-class `explore` subcommand in its
+// `inkentry --help` must list the first-class `explore` subcommand in its
 // top-level command list. `explore` is a documented feature ("Agentic search
 // loop"), so an agent or user enumerating capabilities from `--help` must be
 // able to discover it. It was previously hidden from `--help` whenever no chat
@@ -75,16 +75,16 @@ fn test_help_text_accuracy_guards() {
 // that substring), so asserting its presence is a faithful proxy.
 #[test]
 fn test_help_lists_explore() {
-    spelunk_bin()
+    inkentry_bin()
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("explore"));
 }
 
-/// regression: `spelunk search --as-of <sha>` (snapshot search) was removed
+/// regression: `inkentry search --as-of <sha>` (snapshot search) was removed
 /// outright — the flag no longer exists on the top-level `search` command.
-/// `spelunk search --help` must not mention `--as-of`.
+/// `inkentry search --help` must not mention `--as-of`.
 ///
 /// This is deliberately scoped to top-level `search --help` only. It must NOT
 /// be confused with the unrelated, still-live `--as-of <date>` flag on
@@ -93,7 +93,7 @@ fn test_help_lists_explore() {
 /// would be wrong.
 #[test]
 fn test_search_help_does_not_list_as_of() {
-    spelunk_bin()
+    inkentry_bin()
         .args(["search", "--help"])
         .assert()
         .success()
@@ -102,7 +102,7 @@ fn test_search_help_does_not_list_as_of() {
     // Sanity check the disambiguation itself: the sibling `memory search
     // --as-of` flag is untouched and must still be listed, so this test can't
     // pass by accident (e.g. if `--help` output were empty/broken).
-    spelunk_bin()
+    inkentry_bin()
         .args(["memory", "search", "--help"])
         .assert()
         .success()
@@ -111,7 +111,7 @@ fn test_search_help_does_not_list_as_of() {
 
 #[test]
 fn test_invalid_command() {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("nonexistent-command")
         .assert()
         .failure()
@@ -122,7 +122,7 @@ fn test_invalid_command() {
 
 #[test]
 fn test_languages_output() {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("languages")
         .assert()
         .success()
@@ -147,7 +147,7 @@ fn test_status_empty_project() {
     )
     .unwrap();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -156,7 +156,7 @@ fn test_status_empty_project() {
         .success()
         // ADR-067: an un-init'd dir fails closed and reports no project rather
         // than describing the global store.
-        .stdout(predicate::str::contains("No spelunk project here"));
+        .stdout(predicate::str::contains("No inkentry project here"));
 }
 
 use wiremock::matchers::{method, path, path_regex};
@@ -226,7 +226,7 @@ async fn test_index_and_status() {
     const CLOUD_FIRST: (&str, &str) = ("INKENTRY_MODE", "cloud_first");
 
     // 1. Index the project
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
@@ -237,7 +237,7 @@ async fn test_index_and_status() {
         .success();
 
     // 2. Check status
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
@@ -251,7 +251,7 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("Chunks:     1"));
 
     // 3. Search for the function (semantic search via server embedding)
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
         .arg("--config")
@@ -343,7 +343,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         // here: `.inkentry/config.toml` doesn't recognize a `mode` key (see
         // `write_project_server_config`), so this must go through the env
         // var.
-        spelunk_bin()
+        inkentry_bin()
             .current_dir(&project_dir)
             .env("INKENTRY_MODE", "cloud_first")
             .arg("--config")
@@ -431,7 +431,7 @@ async fn test_status_shows_offline_tier() {
     )
     .unwrap();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -440,7 +440,7 @@ async fn test_status_shows_offline_tier() {
         .assert()
         .success();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -491,7 +491,7 @@ async fn test_status_shows_server_tier() {
         &project_dir,
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -500,7 +500,7 @@ async fn test_status_shows_server_tier() {
         .assert()
         .success();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -512,7 +512,7 @@ async fn test_status_shows_server_tier() {
         .stdout(predicate::str::contains("semantic"))
         // ADR-067 D3: memory line reflects the resolved backend. With an explicit
         // team server_url the mode is local_first, so the store is local sqlite
-        // (converged by `spelunk sync`), not a tier-inferred "server sync" label.
+        // (converged by `inkentry sync`), not a tier-inferred "server sync" label.
         .stdout(predicate::str::contains("sqlite (local)"));
 }
 
@@ -554,7 +554,7 @@ async fn test_status_json_includes_tier_fields() {
         &project_dir,
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -563,7 +563,7 @@ async fn test_status_json_includes_tier_fields() {
         .assert()
         .success();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -581,7 +581,7 @@ async fn test_status_json_includes_tier_fields() {
     assert!(body["capabilities"].is_object());
     assert!(body["capabilities"]["search_semantic"].as_bool().unwrap());
     assert!(body["capabilities"]["index_embed"].as_bool().unwrap());
-    // `plan` is a reserved protocol field (ADR-002) with no `spelunk plan`
+    // `plan` is a reserved protocol field (ADR-002) with no `inkentry plan`
     // command yet: even though this mock server advertises "plan", it must
     // never surface in user-facing status JSON.
     assert!(body["capabilities"]["plan"].is_null());
@@ -634,7 +634,7 @@ async fn test_status_json_stable_schema() {
     .unwrap();
 
     // Index the project so there is data to query.
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -643,7 +643,7 @@ async fn test_status_json_stable_schema() {
         .assert()
         .success();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -664,7 +664,7 @@ async fn test_status_json_stable_schema() {
         "version must be a string, got: {}",
         body["version"]
     );
-    // `project` may be null if the project was not registered via `spelunk init`.
+    // `project` may be null if the project was not registered via `inkentry init`.
     assert!(
         body["project"].is_string() || body["project"].is_null(),
         "project must be string or null"
@@ -750,7 +750,7 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -759,7 +759,7 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         .assert()
         .success();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -851,7 +851,7 @@ async fn test_check_reports_server_reachable() {
         &project_dir,
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -860,7 +860,7 @@ async fn test_check_reports_server_reachable() {
         .assert()
         .success();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -892,7 +892,7 @@ async fn test_check_reports_server_unreachable() {
     .unwrap();
     write_project_server_config(&project_dir, bad_url, FIXTURE_PROJECT_ID);
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -901,7 +901,7 @@ async fn test_check_reports_server_unreachable() {
         .assert()
         .success();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -951,7 +951,7 @@ async fn test_check_porcelain_routes_server_line_to_stderr() {
         &project_dir,
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -960,7 +960,7 @@ async fn test_check_porcelain_routes_server_line_to_stderr() {
         .assert()
         .success();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -1023,7 +1023,7 @@ async fn test_check_exit_1_when_stale_in_both_modes() {
         &project_dir,
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -1036,7 +1036,7 @@ async fn test_check_exit_1_when_stale_in_both_modes() {
     fs::write(project_dir.join("main.rs"), "fn main() { /* changed */ }").unwrap();
 
     // Porcelain mode: exit 1, stdout still pure key=value, server line on stderr.
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -1051,7 +1051,7 @@ async fn test_check_exit_1_when_stale_in_both_modes() {
         .stderr(predicate::str::contains("Server:"));
 
     // Text (human) mode: same exit code, and the server line stays on stdout.
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -1086,7 +1086,7 @@ async fn test_index_prints_note_when_no_server_configured() {
     )
     .unwrap();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     // Run in the temp project like the sibling tests, else the project-config walk-up
     // reaches the repo's own .inkentry/config.toml (server_url set) and suppresses the notice.
     cmd.env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
@@ -1122,7 +1122,7 @@ fn test_status_json_offline_tier() {
     )
     .unwrap();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
         .arg(&config_path)
@@ -1131,7 +1131,7 @@ fn test_status_json_offline_tier() {
         .assert()
         .success();
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1152,10 +1152,10 @@ fn test_status_json_offline_tier() {
 
 // ── Issue #284: search falls back to structural matching when no index / no embedder ───
 
-/// When there is no .inkentry/index.db, `spelunk search` in auto mode must
+/// When there is no .inkentry/index.db, `inkentry search` in auto mode must
 /// succeed (via the in-process structural fallback) rather than printing an
 /// opaque error. Runs on every platform: the fallback is now compiled into the
-/// `spelunk` binary (ast-grep-core), so it no longer requires `ast-grep` on PATH.
+/// `inkentry` binary (ast-grep-core), so it no longer requires `ast-grep` on PATH.
 #[test]
 fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
     let temp = tempdir().unwrap();
@@ -1181,7 +1181,7 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
 
     // With no index, auto mode must not fail with a hard error.
     // It either returns ast-grep results or a clean "No results found." message.
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     let assert = cmd
         .current_dir(&project_dir)
         .arg("--config")
@@ -1196,10 +1196,10 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
 }
 
 /// When the index exists but there is no embedder (api_base_url points
-/// nowhere), `spelunk search` in auto mode must fall back to structural search
+/// nowhere), `inkentry search` in auto mode must fall back to structural search
 /// and succeed, not bail out with a hard error.
 /// Runs on every platform: the in-process fallback (ast-grep-core) is compiled
-/// into the `spelunk` binary and no longer requires `ast-grep` on PATH.
+/// into the `inkentry` binary and no longer requires `ast-grep` on PATH.
 #[test]
 fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     let temp = tempdir().unwrap();
@@ -1226,7 +1226,7 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     // Build the index (offline — no embedder needed for parse phase).
     // INKENTRY_NO_SERVER=1 keeps the embed phase from auto-discovering a
     // loopback inkentry-server on 127.0.0.1:7777.
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -1236,7 +1236,7 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
         .success();
 
     // Now search in auto mode: embedder is unavailable, so fallback kicks in.
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     let assert = cmd
         .current_dir(&project_dir)
         .arg("--config")
@@ -1250,14 +1250,14 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
     assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
 }
 
-// ── spelunk server error-path tests ──────────────────────────────────────────
+// ── inkentry server error-path tests ──────────────────────────────────────────
 
-/// `spelunk server status` prints "not started" when no pid file exists.
+/// `inkentry server status` prints "not started" when no pid file exists.
 #[test]
 fn test_server_status_not_running() {
     let tmp = tempdir().unwrap();
     // Point HOME to an empty tmpdir so no real state files interfere.
-    spelunk_bin_in(tmp.path())
+    inkentry_bin_in(tmp.path())
         .arg("server")
         .arg("status")
         .assert()
@@ -1265,11 +1265,11 @@ fn test_server_status_not_running() {
         .stdout(predicate::str::contains("not started"));
 }
 
-/// `spelunk server logs` exits with an error when no log file exists.
+/// `inkentry server logs` exits with an error when no log file exists.
 #[test]
 fn test_server_logs_missing_file() {
     let tmp = tempdir().unwrap();
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("logs")
@@ -1278,11 +1278,11 @@ fn test_server_logs_missing_file() {
         .stderr(predicate::str::contains("No log file"));
 }
 
-/// `spelunk server stop` exits with an error when there is no pid file.
+/// `inkentry server stop` exits with an error when there is no pid file.
 #[test]
 fn test_server_stop_not_running() {
     let tmp = tempdir().unwrap();
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("stop")
@@ -1291,10 +1291,10 @@ fn test_server_stop_not_running() {
         .stderr(predicate::str::contains("server.pid"));
 }
 
-/// `spelunk server start --bin <missing-path>` exits with a clear error.
+/// `inkentry server start --bin <missing-path>` exits with a clear error.
 ///
 /// We use `--bin` with a nonexistent path rather than `PATH=""` because in CI
-/// both `spelunk` and `inkentry-server` are built to the same `target/debug/`
+/// both `inkentry` and `inkentry-server` are built to the same `target/debug/`
 /// directory, so the sibling-binary lookup would find the real binary even with
 /// an empty PATH.
 #[test]
@@ -1304,7 +1304,7 @@ fn test_server_start_binary_not_found() {
     // Unix-style path like /tmp/... is interpreted as a relative path and will
     // also not exist, so any clearly non-existent path works here.
     let nonexistent = tmp.path().join("inkentry-server-does-not-exist-xyzzy");
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", tmp.path())
         .arg("server")
         .arg("start")
@@ -1315,12 +1315,12 @@ fn test_server_start_binary_not_found() {
         .stderr(predicate::str::contains("inkentry-server binary not found"));
 }
 
-/// `spelunk init` in non-TTY mode (piped stdin) prints the server skip notice
+/// `inkentry init` in non-TTY mode (piped stdin) prints the server skip notice
 /// when no server is reachable. This covers the CI/hook path from issue #318.
 #[test]
 fn test_init_non_tty_prints_skip_notice() {
     let tmp = tempdir().unwrap();
-    // Initialise a git repo so spelunk init finds a project root.
+    // Initialise a git repo so inkentry init finds a project root.
     std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(tmp.path())
@@ -1342,7 +1342,7 @@ fn test_init_non_tty_prints_skip_notice() {
 
     // stdin is piped (not a TTY) when launched via assert_cmd, so
     // is_terminal() returns false — the non-interactive branch runs.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1356,8 +1356,8 @@ fn test_init_non_tty_prints_skip_notice() {
         ));
 }
 
-/// Init a git repo at `dir` with a committer identity so `spelunk init` finds a
-/// project root. (spelunk#141 init tests only need the repo, not any commits.)
+/// Init a git repo at `dir` with a committer identity so `inkentry init` finds a
+/// project root. (inkentry#141 init tests only need the repo, not any commits.)
 fn git_init_repo(dir: &std::path::Path) {
     for args in [
         &["init", "-q"][..],
@@ -1372,7 +1372,7 @@ fn git_init_repo(dir: &std::path::Path) {
     }
 }
 
-/// `spelunk init` must NOT create an uninvited `CLAUDE.md` in the user's repo,
+/// `inkentry init` must NOT create an uninvited `CLAUDE.md` in the user's repo,
 /// and must not claim to have written one.
 #[test]
 fn test_init_does_not_write_claude_md() {
@@ -1382,7 +1382,7 @@ fn test_init_does_not_write_claude_md() {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1414,7 +1414,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1440,7 +1440,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // resolve to the same local `memory.db`, and the server is consulted only to
 // embed the query — never to fetch memory rows.
 //
-// Historical context: IMP-3 / spelunk#316 / PR #349 first taught these commands
+// Historical context: IMP-3 / inkentry#316 / PR #349 first taught these commands
 // to honour an auto-discovered server (so they no longer errored "requires
 // inkentry-server"), but routed BOTH inference and memory storage to the server
 // via a synthesised `server_url`. That produced the split-brain Johan flagged
@@ -1451,8 +1451,8 @@ fn test_init_leaves_existing_claude_md_untouched() {
 //
 // These tests reproduce the auto-discovery path end-to-end: NO `server_url` in
 // config, `INKENTRY_NO_SERVER` unset, and a mock server reachable on loopback —
-// discovered via `~/.local/state/spelunk/server.port` (the same file
-// `spelunk server start` writes; see `capability/probe.rs` step 3a). We redirect
+// discovered via `~/.local/state/inkentry/server.port` (the same file
+// `inkentry server start` writes; see `capability/probe.rs` step 3a). We redirect
 // `HOME` to an isolated temp dir and pre-write that port file so the probe
 // finds our `wiremock` instance deterministically, without depending on the
 // real default port 7777 (which may be occupied — or unoccupied — on the test
@@ -1466,9 +1466,9 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // test (the auto-discovery → inference-vs-storage split). Left uncovered here;
 // flagged honestly rather than thrashing on heavyweight SSE mocks.
 
-/// Write `<home>/.local/state/spelunk/server.port` so `capability::get_tier`'s
+/// Write `<home>/.local/state/inkentry/server.port` so `capability::get_tier`'s
 /// loopback auto-discovery (step 3a) finds our mock server deterministically.
-/// Mirrors the file `spelunk server start` writes (see `cli/cmd/server.rs`).
+/// Mirrors the file `inkentry server start` writes (see `cli/cmd/server.rs`).
 ///
 /// Returns the state dir path so callers can pass it as `INKENTRY_STATE_DIR`
 /// to child processes. `dirs::home_dir()` 6.x on Windows calls the Win32
@@ -1574,7 +1574,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
 
     // Build a local index so memory commands have a DB to resolve `mem_path`
     // from (offline embedding — INKENTRY_NO_SERVER keeps `index` from probing).
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -1587,7 +1587,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     // Add a note via the auto-discovery path. No INKENTRY_NO_SERVER, so the
     // loopback server embeds the note (via /index/embed) while the note text +
     // metadata are written to the LOCAL memory.db.
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1612,7 +1612,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     // locally-stored note — proving add and search share one store. The server
     // only embedded the query; the `/memory/search` guard ensures no memory rows
     // were fetched from the server.
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1629,7 +1629,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
 
     // Cross-check: `memory list` (which has always read memory.db) sees the same
     // note. Before ADR-004 `search` and `list` could disagree; now they cannot.
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1682,7 +1682,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -1692,7 +1692,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
         .assert()
         .success();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1713,7 +1713,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
         .success()
         .stdout(predicate::str::contains("Stored [decision]"));
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1758,7 +1758,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -1768,7 +1768,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
         .assert()
         .success();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1788,7 +1788,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
         .assert()
         .success();
 
-    spelunk_bin()
+    inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env_remove("INKENTRY_NO_SERVER")
@@ -1808,7 +1808,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
 
 // ── init imports git-notes memory into memory.db ─────────────────────────────
 //
-// During `spelunk init`, after the project memory.db is created, every entry on
+// During `inkentry init`, after the project memory.db is created, every entry on
 // the enclosing repo's `refs/notes/inkentry` that is not already present is
 // imported into memory.db (no embeddings). The summary line
 // `Memory:  imported N entries from git notes` prints only when N > 0, and a
@@ -1876,7 +1876,7 @@ fn seed_git_notes(dir: &std::path::Path, jsonl: &str) {
     assert!(status.success(), "seeding git notes must succeed");
 }
 
-/// End-to-end: `spelunk init` over a real repo that already has git-notes
+/// End-to-end: `inkentry init` over a real repo that already has git-notes
 /// memory imports those entries, `memory list` surfaces them, the summary line
 /// reports the right count, and a second init is a no-op (no re-import, no
 /// duplicate rows). Covers the import-on-init and idempotency guarantees.
@@ -1904,7 +1904,7 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
 
     // First init: both pre-existing git-notes entries import, and the summary
     // line reports the exact count.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1918,7 +1918,7 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
         ));
 
     // `memory list` (default sqlite backend, reads memory.db) surfaces both.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1932,7 +1932,7 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
 
     // Second init: everything dedups, so nothing imports and the Memory summary
     // line is suppressed (printed only when N > 0).
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1944,7 +1944,7 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
         .stdout(predicate::str::contains("from git notes").not());
 
     // The key idempotency guarantee: row count is stable — no duplicate rows.
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -1963,7 +1963,7 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
     );
 }
 
-/// `spelunk init` outside any git repo skips the git-notes import entirely:
+/// `inkentry init` outside any git repo skips the git-notes import entirely:
 /// there is no enclosing repo to read notes from, so no import runs, the Memory
 /// summary line is absent, and init still succeeds.
 #[test]
@@ -1973,7 +1973,7 @@ fn test_init_without_git_repo_skips_notes_import() {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -2006,7 +2006,7 @@ fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::
         "api_base_url = \"http://127.0.0.1:19999\"\nllm_model = \"test\"\n",
     )
     .unwrap();
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
@@ -2048,7 +2048,7 @@ fn test_status_json_embed_state_extensions_when_pending() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
-    let output = spelunk_bin_in(home.path())
+    let output = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2114,7 +2114,7 @@ fn test_status_reports_incomplete_when_no_worker_is_recorded() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2123,7 +2123,7 @@ fn test_status_reports_incomplete_when_no_worker_is_recorded() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Embedding incomplete"))
-        .stdout(predicate::str::contains("resume with `spelunk index .`"))
+        .stdout(predicate::str::contains("resume with `inkentry index .`"))
         .stdout(predicate::str::contains("Embedding in progress").not())
         .stdout(predicate::str::contains("may be running").not());
 }
@@ -2149,7 +2149,7 @@ fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
     fs::write(&pid_file, format!("{dead_pid}\n")).unwrap();
     fs::write(pid_file.with_extension("baseline"), "0 1000\n").unwrap();
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2167,7 +2167,7 @@ fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
 }
 
 /// ADR-070 D4: a pid recycled by an unrelated live process (here: this test
-/// process itself - alive, but its command line is not a spelunk index run)
+/// process itself - alive, but its command line is not a inkentry index run)
 /// must never be reported as a live embed worker, and the foreign record is
 /// cleaned up like a dead one.
 #[cfg(unix)]
@@ -2178,14 +2178,14 @@ fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
     let db_path = project_dir.join(".inkentry").join("index.db");
 
     // This test process is definitely alive, and its `ps` command line (the
-    // e2e test binary plus a test-name filter) is not a spelunk index run.
+    // e2e test binary plus a test-name filter) is not a inkentry index run.
     let foreign_pid = std::process::id();
 
     let pid_file = embed_worker_pid_file(home.path(), &db_path);
     fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
     fs::write(&pid_file, format!("{foreign_pid}\n")).unwrap();
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2208,7 +2208,7 @@ fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
 /// the override directory (as the writer does once it honours the override),
 /// never under `HOME`. `status` - the reader - must resolve the same
 /// override to find and clean it up. Before the fix, `status`'s read path
-/// (`cli/cmd/embed_worker.rs` -> `cli/cmd/server.rs::spelunk_state_dir()`)
+/// (`cli/cmd/embed_worker.rs` -> `cli/cmd/server.rs::inkentry_state_dir()`)
 /// ignored `INKENTRY_STATE_DIR` and only ever looked under `HOME`, so a file
 /// written to the override would never be found.
 #[cfg(unix)]
@@ -2225,7 +2225,7 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     let dead_pid = child.id();
     child.wait().unwrap();
 
-    // Write directly into the override dir - NOT `<home>/.local/state/spelunk`.
+    // Write directly into the override dir - NOT `<home>/.local/state/inkentry`.
     let pid_file = embed_worker_pid_file_in(state_override.path(), &db_path);
     fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
     fs::write(&pid_file, format!("{dead_pid}\n")).unwrap();
@@ -2238,7 +2238,7 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
         "fixture bug: pid file must only exist under the override"
     );
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .env("INKENTRY_STATE_DIR", state_override.path())
         .current_dir(&project_dir)
@@ -2265,7 +2265,7 @@ fn test_search_auto_zero_coverage_falls_back_with_warmup_notice() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2305,7 +2305,7 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
         &project_dir,
     );
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(&project_dir)
         .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
@@ -2321,7 +2321,7 @@ async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
         "error must name warmup, got stderr: {stderr}"
     );
     assert!(
-        stderr.contains("spelunk index ."),
+        stderr.contains("inkentry index ."),
         "error must name the resume command, got stderr: {stderr}"
     );
     assert!(
@@ -2367,7 +2367,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     // does not configure - so force `cloud_first` via env (a project-level
     // `.inkentry/config.toml`, which `write_config_with_server` writes to,
     // silently drops a `mode` key; see `write_project_server_config`).
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_MODE", "cloud_first")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2384,7 +2384,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         "pub fn extra_helper() -> i32 { 41 }\npub fn another_helper() -> i32 { 42 }\n",
     )
     .unwrap();
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2397,7 +2397,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     // Auto search with no reachable embedder: the partial-coverage warmup
     // notice must land on stderr (percentage + shape + pointer at status),
     // and the JSON on stdout must stay parseable.
-    let output = spelunk_bin_in(home.path())
+    let output = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
@@ -2416,7 +2416,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         "the notice must name the prefix shape, got stderr: {stderr}"
     );
     assert!(
-        stderr.contains("spelunk status"),
+        stderr.contains("inkentry status"),
         "the notice must be actionable, got stderr: {stderr}"
     );
     let _: serde_json::Value = serde_json::from_slice(&output.stdout)

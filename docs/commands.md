@@ -1,10 +1,10 @@
 # Commands Reference
 
 Every command accepts `-c, --config <path>` to override the default config file
-(`~/.config/spelunk/config.toml`), and `--color <auto|always|never>` to control
+(`~/.config/inkentry/config.toml`), and `--color <auto|always|never>` to control
 colored output (default `auto`: on when stdout is a terminal and `NO_COLOR` is
 unset). The flags and defaults below match the installed binary; run
-`spelunk <command> --help` to confirm against your version.
+`inkentry <command> --help` to confirm against your version.
 
 A local `inkentry-server` is autostarted on demand and provides embeddings
 (native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
@@ -15,16 +15,16 @@ always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 
 ---
 
-## spelunk init
+## inkentry init
 
-Initialise spelunk for the current project: register it, start the local server
+Initialise inkentry for the current project: register it, start the local server
 if needed, parse and chunk the source tree, hand the embedding pass to a
 detached background worker, and (when inside a git repo with an `origin` remote)
 configure the fetch refspec — then fetch the notes ref once — so a single `init`
 after a clone pulls in the team's project memory.
 
 ```
-spelunk init [options]
+inkentry init [options]
 ```
 
 | Flag | Default | Description |
@@ -38,7 +38,7 @@ action on it** — commit it yourself so the slug travels with the repo and the
 whole team shares one identity:
 
 ```bash
-git add .inkentry/config.toml && git commit -m "Add spelunk project slug"
+git add .inkentry/config.toml && git commit -m "Add inkentry project slug"
 ```
 
 `init` prints a one-line reminder to do this; committing the file is a step you
@@ -86,19 +86,19 @@ memory](memory.md) for details.
 
 ```bash
 cd /path/to/project
-spelunk init
-spelunk init --hook            # also wire up auto-index/harvest on commit
-spelunk init --name acme/tools # explicit slug (e.g. no git remote)
+inkentry init
+inkentry init --hook            # also wire up auto-index/harvest on commit
+inkentry init --name acme/tools # explicit slug (e.g. no git remote)
 ```
 
 ---
 
-## spelunk index
+## inkentry index
 
 Index a codebase directory.
 
 ```
-spelunk index <path> [options]
+inkentry index <path> [options]
 ```
 
 | Flag | Default | Description |
@@ -110,9 +110,9 @@ spelunk index <path> [options]
 | `--no-summaries` | false | Skip LLM summary generation, and the notice explaining why it was skipped, even when an LLM is available |
 | `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
-| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`spelunk init` does this automatically) |
+| `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`inkentry init` does this automatically) |
 
-A plain `spelunk index` (no `--force`) re-indexes changed files (blake3 hash)
+A plain `inkentry index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
@@ -123,31 +123,31 @@ unreachable) is recorded as attempted rather than missing, so a plain re-run
 skips it. Use `--force` to retry those.
 
 **Summaries need an LLM, and never fail the index.** If no LLM can be reached,
-`spelunk index` prints a notice naming the reason and what to do, then exits 0
+`inkentry index` prints a notice naming the reason and what to do, then exits 0
 with everything else (files, chunks, embeddings) indexed as usual. The three
 reasons are: no LLM anywhere, an `llm_url` your running local server was not
 started with, and offline mode. See
-[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm)
+[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm)
 for the routing rule and the exact messages. LLM routing is resolved separately
 from embedding: which server embeds your code is unaffected by any of this.
 
 If a previous run was interrupted after recording a file's new content hash
 but before writing its chunks (a process kill mid-parse, for example), that
-file looks up to date by hash alone but has no chunks. A plain `spelunk index`
+file looks up to date by hash alone but has no chunks. A plain `inkentry index`
 detects this and reprocesses the file automatically; you don't need `--force`
 to recover from it.
 
-Only one `spelunk index` run is allowed per project at a time. If a run is
+Only one `inkentry index` run is allowed per project at a time. If a run is
 already in progress, starting a second one fails immediately with `index
 already running (pid N), try again once it finishes` instead of writing to
 the database alongside the first run.
 
 The index also remembers the chunker configuration (currently just the
-`MAX_CHUNK_TOKENS` cap) it was built under. If a plain `spelunk index` detects
+`MAX_CHUNK_TOKENS` cap) it was built under. If a plain `inkentry index` detects
 that the running build's chunker config differs from what's recorded, it
 prints a warning and proceeds anyway rather than failing: unchanged files keep
 their old chunk boundaries until re-parsed, so the index temporarily mixes
-chunk granularities. Run `spelunk index --force` to re-chunk every file under
+chunk granularities. Run `inkentry index --force` to re-chunk every file under
 the current config and clear the warning.
 
 The embed phase calibrates its own batch size instead of guessing: it times a
@@ -159,7 +159,7 @@ honest when the queue crosses from small chunks into large ones. It keeps re-mea
 drifts partway through is picked up rather than locked to the first sample.
 Each batch is written to the database as soon as it completes, so an
 interrupted run (timeout, machine sleep, process kill) never loses
-already-embedded chunks — re-run `spelunk index` to pick up where it left off.
+already-embedded chunks — re-run `inkentry index` to pick up where it left off.
 A batch that can't even reach the server (the local server is momentarily
 unresponsive, not just slow) is retried automatically at the same batch size
 with backoff, rather than being treated as a request that was too big; only
@@ -170,15 +170,15 @@ mid-embed) is retried the same way, at the same batch size, but sleeping for
 the server's own `Retry-After` instead of the fixed backoff schedule; see
 `POST /index/embed` in `docs/architecture/server-api.md`.
 
-`spelunk init` always hands the embedding pass to a detached background worker,
-and `--detach-embed` opts a manual `spelunk index` run into the same behaviour:
+`inkentry init` always hands the embedding pass to a detached background worker,
+and `--detach-embed` opts a manual `inkentry index` run into the same behaviour:
 parsing finishes in the foreground (the index is immediately usable for text and
 ast-grep search) and the long embedding pass continues in the background, with
 the worker waiting out a still-loading embedder rather than skipping. A plain
-`spelunk index` without the flag embeds in the foreground. Run `spelunk status`
+`inkentry index` without the flag embeds in the foreground. Run `inkentry status`
 to check a background pass; it shows an "Embedding in progress" line with
 searchable chunks and work percentage until every chunk is embedded. If the
-background pass is interrupted, re-running `spelunk index` resumes it
+background pass is interrupted, re-running `inkentry index` resumes it
 (already-embedded chunks are skipped).
 
 Add a `.inkentryignore` file (same syntax as `.gitignore`) to any directory to
@@ -186,7 +186,7 @@ exclude files from indexing. It takes higher precedence than `.gitignore`.
 
 ### File filtering
 
-Beyond `.gitignore` and `.inkentryignore`, spelunk applies a **built-in default
+Beyond `.gitignore` and `.inkentryignore`, inkentry applies a **built-in default
 exclude set** during indexing. These are files that are typically committed to
 the repo (so `.gitignore` never catches them) yet carry near-zero retrieval
 value while costing real embed and parse wall-clock. The defaults cover:
@@ -205,7 +205,7 @@ value while costing real embed and parse wall-clock. The defaults cover:
 #### The `[index]` config table
 
 Tune the filter with an `[index]` table in your config
-(`~/.config/spelunk/config.toml`, or a project-level `.inkentry/config.toml`):
+(`~/.config/inkentry/config.toml`, or a project-level `.inkentry/config.toml`):
 
 ```toml
 [index]
@@ -249,7 +249,7 @@ bring them back.
 
 #### Self-declared generated markers
 
-When `detect_generated` is on (the default), spelunk also skips files whose head
+When `detect_generated` is on (the default), inkentry also skips files whose head
 self-declares as generated, even when the filename looks ordinary. It reads the
 first 5 lines (up to 4 KiB) and looks for either:
 
@@ -264,7 +264,7 @@ completeness; add an explicit `exclude` glob if you hit it.
 
 #### Why a file was skipped
 
-Run `spelunk chunks <path>` on a file that produced no chunks: if the built-in
+Run `inkentry chunks <path>` on a file that produced no chunks: if the built-in
 filter excluded it, the output names the matched pattern (or generated marker)
 and prints the `[index]` re-include recipe, instead of a bare "No chunks found".
 
@@ -286,15 +286,15 @@ and dropped, not what it skipped by never entering.
 **Example:**
 
 ```bash
-spelunk index ./myproject
-spelunk index ./myproject --force --batch-size 16
+inkentry index ./myproject
+inkentry index ./myproject --force --batch-size 16
 ```
 
 ---
 
-## spelunk search
+## inkentry search
 
-Search the index. In `auto` mode (the default) spelunk uses semantic/hybrid
+Search the index. In `auto` mode (the default) inkentry uses semantic/hybrid
 search when an index and server are available. During embeddings warmup, a
 coverage notice is printed to stderr naming the percentage and shape of
 embedded chunks; on zero coverage `auto` falls back to ast-grep. Explicit
@@ -302,7 +302,7 @@ embedded chunks; on zero coverage `auto` falls back to ast-grep. Explicit
 resume command instead of an absence claim.
 
 ```
-spelunk search <query> [options]
+inkentry search <query> [options]
 ```
 
 | Flag | Default | Description |
@@ -320,7 +320,7 @@ spelunk search <query> [options]
 `semantic`/`hybrid` uses LinearRAG: a two-stage entity-activation + personalised
 PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
 `ast-grep` need no embedding model or server. `text` does run over the FTS
-index, so it needs `spelunk index` first; `ast-grep` and the `auto` default
+index, so it needs `inkentry index` first; `ast-grep` and the `auto` default
 work with no index at all.
 
 `text` mode scores the query's words as **independent terms** (BM25): a
@@ -340,28 +340,28 @@ not semantic search (that needs the server).
 **Example:**
 
 ```bash
-spelunk search "where is the JWT token validated"
-spelunk search "database schema migration" --limit 5 --format json
-spelunk search "authentication middleware" --graph
-spelunk search "TODO fix me" --mode text         # FTS only, no server needed
-spelunk search "Billing" --mode ast-grep         # case-insensitive substring, no index
-spelunk search "$X.unwrap()" --mode ast-grep     # structural pattern (metavariable)
+inkentry search "where is the JWT token validated"
+inkentry search "database schema migration" --limit 5 --format json
+inkentry search "authentication middleware" --graph
+inkentry search "TODO fix me" --mode text         # FTS only, no server needed
+inkentry search "Billing" --mode ast-grep         # case-insensitive substring, no index
+inkentry search "$X.unwrap()" --mode ast-grep     # structural pattern (metavariable)
 ```
 
 ---
 
-## spelunk explore
+## inkentry explore
 
-Agentic search: the server's LLM iteratively calls spelunk's own tools (search,
+Agentic search: the server's LLM iteratively calls inkentry's own tools (search,
 graph, read) to answer an open-ended question. Requires a server with an LLM
 backend configured; without one the command fails with a message naming the
 reason and what to do (see
-[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm)).
+[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm)).
 Its embedding and its LLM calls resolve independently and can land on different
 servers.
 
 ```
-spelunk explore "<question>" [options]
+inkentry explore "<question>" [options]
 ```
 
 | Flag | Default | Description |
@@ -374,9 +374,9 @@ spelunk explore "<question>" [options]
 **Example:**
 
 ```bash
-spelunk explore "how does incremental indexing work?"
-spelunk explore "what guards the context window in the LLM pipeline?" --verbose
-AGENT=true spelunk explore "where is authentication enforced?" --format json
+inkentry explore "how does incremental indexing work?"
+inkentry explore "what guards the context window in the LLM pipeline?" --verbose
+AGENT=true inkentry explore "where is authentication enforced?" --format json
 ```
 
 **Security note:** the loop's `read_file` tool can only return content from
@@ -388,12 +388,12 @@ to the loop without exposing a resolved path or file contents.
 
 ---
 
-## spelunk status
+## inkentry status
 
 Show indexing statistics for the current project (or all projects).
 
 ```
-spelunk status [options]
+inkentry status [options]
 ```
 
 | Flag | Default | Description |
@@ -402,11 +402,11 @@ spelunk status [options]
 | `-l, --list` | false | One-line-per-project format (implies `--all`) |
 | `--format text\|json` | text | Output format |
 
-When embeddings are incomplete, `spelunk status` prints an "Embedding in progress"
+When embeddings are incomplete, `inkentry status` prints an "Embedding in progress"
 line (when a live background worker is detected) or "Embedding incomplete" (when
 no worker is running but chunks remain unembedded). Coverage is shown as searchable
 chunks and percentage; progress is shown as percentage of work done, measured by
-token weight. An incomplete status includes the `spelunk index .` resume command
+token weight. An incomplete status includes the `inkentry index .` resume command
 (or, when the embedder is unavailable, a pointer at the server logs instead).
 
 For a project in `local_first` mode (a team `server_url` configured, the
@@ -414,7 +414,7 @@ default sync mode), the `mode` line also carries a quiet pending-entry count
 and last-synced freshness once there's something to report, for example
 `mode  local_first  ·  2 pending, last synced 4m ago`. A project with nothing
 pending and nothing synced yet shows no extra clause, and this line never
-suggests running `spelunk sync`: the background reconciler drains the queue
+suggests running `inkentry sync`: the background reconciler drains the queue
 on its own during interactive sessions (see [Team server and sync
 modes](memory.md#team-server-and-sync-modes)). `--format json` carries the
 same information as `sync_pending` / `sync_last_synced_at`, both `null`
@@ -423,19 +423,19 @@ outside `local_first`.
 **Example:**
 
 ```bash
-spelunk status
-spelunk status --all --format json
+inkentry status
+inkentry status --all --format json
 ```
 
 ---
 
-## spelunk check
+## inkentry check
 
 Check whether the index is in sync with the source tree. Exits with code 1 if
 the index is stale.
 
 ```
-spelunk check [options]
+inkentry check [options]
 ```
 
 | Flag | Default | Description |
@@ -445,20 +445,20 @@ spelunk check [options]
 | `-d, --db <path>` | auto | Override database path |
 
 ```bash
-spelunk check || echo "Index is stale — run spelunk index"
-spelunk check --format porcelain --files
+inkentry check || echo "Index is stale — run inkentry index"
+inkentry check --format porcelain --files
 ```
 
 ---
 
-## spelunk context
+## inkentry context
 
 Print agent session context: handoffs, open questions, decisions, requirements,
 and (when an index is available) extracted conventions. This is the recommended
 entry point for an agent starting a session.
 
 ```
-spelunk context [options]
+inkentry context [options]
 ```
 
 | Flag | Default | Description |
@@ -478,7 +478,7 @@ Under a tight `--budget`, durable memory (decisions and requirements) is kept
 ahead of ephemeral open questions when trimming to fit; the section display
 order is unchanged.
 
-When projects are linked with `spelunk link`, `context` also surfaces `locked`
+When projects are linked with `inkentry link`, `context` also surfaces `locked`
 or `cross-project`-tagged `decision` and `requirement` entries from linked
 projects' memory stores, each labelled with its source project. Pass
 `--local-only` to suppress this behaviour. See [Memory](memory.md#cross-project-visibility).
@@ -486,21 +486,21 @@ projects' memory stores, each labelled with its source project. Pass
 **Example:**
 
 ```bash
-spelunk context
-spelunk context --kind decision
-spelunk context --local-only      # primary project only, no dep pass
-spelunk context --budget 4000     # cap total output at ~4000 tokens
-AGENT=true spelunk context        # JSON for machine processing
+inkentry context
+inkentry context --kind decision
+inkentry context --local-only      # primary project only, no dep pass
+inkentry context --budget 4000     # cap total output at ~4000 tokens
+AGENT=true inkentry context        # JSON for machine processing
 ```
 
 ---
 
-## spelunk graph
+## inkentry graph
 
 Query the code graph: imports, function calls, class inheritance.
 
 ```
-spelunk graph <symbol> [options]
+inkentry graph <symbol> [options]
 ```
 
 | Flag | Default | Description |
@@ -514,26 +514,26 @@ spelunk graph <symbol> [options]
 The live scan is structural and matches only call-site `symbol(...)`
 invocations, so a zero result means "no bare calls", not "unused". Class,
 constant, association, and receiver-method references never take that form. Run
-`spelunk init` to build the full graph, which adds imports/extends/implements
+`inkentry init` to build the full graph, which adds imports/extends/implements
 edges alongside call edges.
 
 **Example:**
 
 ```bash
-spelunk graph RagPipeline
-spelunk graph src/storage/db.rs --kind imports
-spelunk graph validate_token --live
+inkentry graph RagPipeline
+inkentry graph src/storage/db.rs --kind imports
+inkentry graph validate_token --live
 ```
 
 ---
 
-## spelunk chunks
+## inkentry chunks
 
 Show the raw indexed chunks for a file. Useful for debugging or providing
 precise context to an agent.
 
 ```
-spelunk chunks <path> [options]
+inkentry chunks <path> [options]
 ```
 
 | Flag | Default | Description |
@@ -542,66 +542,66 @@ spelunk chunks <path> [options]
 | `-d, --db <path>` | auto | Override database path |
 
 ```bash
-spelunk chunks src/indexer/parser.rs
-spelunk chunks src/indexer/parser.rs --format json
+inkentry chunks src/indexer/parser.rs
+inkentry chunks src/indexer/parser.rs --format json
 ```
 
 ---
 
-## spelunk languages
+## inkentry languages
 
 List all supported languages and their tree-sitter parsers.
 
 ```
-spelunk languages
+inkentry languages
 ```
 
 ---
 
-## spelunk link / spelunk unlink / spelunk links
+## inkentry link / inkentry unlink / inkentry links
 
-Add or remove a project dependency. When linked, `spelunk search` also queries
-the linked project's index, and `spelunk memory search|list|context` surfaces
+Add or remove a project dependency. When linked, `inkentry search` also queries
+the linked project's index, and `inkentry memory search|list|context` surfaces
 `locked`/`cross-project`-tagged decisions and requirements from the linked
-project's memory store. `spelunk links` inspects existing links.
+project's memory store. `inkentry links` inspects existing links.
 
 ```
-spelunk link <path>
-spelunk unlink <path>
-spelunk links list      # list all linked projects with status
-spelunk links check     # exit 1 if any linked index is stale or missing
+inkentry link <path>
+inkentry unlink <path>
+inkentry links list      # list all linked projects with status
+inkentry links check     # exit 1 if any linked index is stale or missing
 ```
 
 ```bash
-spelunk link ../shared-utils       # search this project and shared-utils together
-spelunk links list
+inkentry link ../shared-utils       # search this project and shared-utils together
+inkentry links list
 ```
 
 ---
 
-## spelunk autoclean
+## inkentry autoclean
 
 Remove registry entries for projects whose root path no longer exists on disk.
 
 ```
-spelunk autoclean
+inkentry autoclean
 ```
 
 ---
 
-## spelunk hooks
+## inkentry hooks
 
-Manage spelunk's git hooks.
+Manage inkentry's git hooks.
 
 ```
-spelunk hooks install [--ci]
-spelunk hooks install --pre-push
-spelunk hooks uninstall
+inkentry hooks install [--ci]
+inkentry hooks install --pre-push
+inkentry hooks uninstall
 ```
 
-`install` writes a post-commit hook that runs `spelunk index` and
-`spelunk memory harvest` after each commit (both `--detach` so git is not
-blocked). Developers without `spelunk` installed are unaffected. `--ci` prints a
+`install` writes a post-commit hook that runs `inkentry index` and
+`inkentry memory harvest` after each commit (both `--detach` so git is not
+blocked). Developers without `inkentry` installed are unaffected. `--ci` prints a
 GitHub Actions workflow step instead of writing a hook.
 
 `install --pre-push` writes a pre-push hook that publishes your memory
@@ -615,11 +615,11 @@ URL instead (`git push https://… main`) pushes your code without publishing yo
 memory; a later `git push origin` publishes it. See
 [memory.md](memory.md#sharing-memory-across-clones-via-git-notes).
 
-The hook is a shim around [`spelunk plumbing
-publish-notes`](#spelunk-plumbing), with the absolute path of the installing
+The hook is a shim around [`inkentry plumbing
+publish-notes`](#inkentry-plumbing), with the absolute path of the installing
 binary embedded rather than a `PATH` lookup, so it keeps working under GUI git
-clients. If you move or reinstall spelunk the hook fails loudly; re-run
-`spelunk hooks install --pre-push` to re-resolve the path.
+clients. If you move or reinstall inkentry the hook fails loudly; re-run
+`inkentry hooks install --pre-push` to re-resolve the path.
 
 `install` resolves the hooks directory the way git itself does
 (`git rev-parse --git-path hooks`), so it honors `core.hooksPath` if you have
@@ -631,27 +631,27 @@ exists, `install` reports it and leaves the file alone. If the resolved hooks
 directory sits inside the repository's tracked working tree (the husky/lefthook
 pattern, where `core.hooksPath` points at a committed directory such as
 `.husky/`), `install` refuses instead of writing there: that directory is
-shared with every clone, so a silent write would commit spelunk's hook to the
+shared with every clone, so a silent write would commit inkentry's hook to the
 whole team rather than just this machine. Add the hook to that directory
 yourself, or point `core.hooksPath` at an untracked location and re-run.
 Otherwise, git never clones `.git/hooks`, so installing either hook affects
 only your own clone.
 
-`uninstall` removes every hook spelunk installed, leaving any other hooks alone.
+`uninstall` removes every hook inkentry installed, leaving any other hooks alone.
 
 ---
 
-## spelunk server
+## inkentry server
 
 Manage the local `inkentry-server` daemon. Runtime state lives under
-`~/.local/state/spelunk/` (`server.pid`, `server.port`, `server.log`).
+`~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.log`).
 
 ```
-spelunk server start [--port <n>] [--bin <path>] [--db <path>]
+inkentry server start [--port <n>] [--bin <path>] [--db <path>]
                      [--llm-url <url>] [--llm-model <name>]
-spelunk server stop
-spelunk server status
-spelunk server logs [-n <lines>]
+inkentry server stop
+inkentry server status
+inkentry server logs [-n <lines>]
 ```
 
 | Subcommand | Notes |
@@ -662,10 +662,10 @@ spelunk server logs [-n <lines>]
 | `logs` | Print the last N lines of the server log (`-n`, default 50) |
 
 ```bash
-spelunk server start
-spelunk server status
-spelunk server logs -n 100
-spelunk server stop
+inkentry server start
+inkentry server status
+inkentry server logs -n 100
+inkentry server stop
 ```
 
 ### LLM configuration for the daemon
@@ -683,27 +683,27 @@ applies.
 **There is no `--llm-key` flag here, deliberately.** Arguments are readable by
 any user on the machine through the process table, so the endpoint's credential
 is never accepted or emitted as one. Store it with
-[`spelunk auth set-key --llm`](#spelunk-auth) or set `INKENTRY_LLM_KEY`; the CLI
+[`inkentry auth set-key --llm`](#inkentry-auth) or set `INKENTRY_LLM_KEY`; the CLI
 resolves it at spawn time and passes it to the daemon in its environment. The
 daemon never reads the OS secret store itself.
 
-A running daemon keeps the configuration it was started with. `spelunk server
-stop && spelunk server start` after any change. See
+A running daemon keeps the configuration it was started with. `inkentry server
+stop && inkentry server start` after any change. See
 [Third-party models](third-party-models.md#configuring-an-external-llm-endpoint)
 for the full precedence table.
 
 ---
 
-## spelunk login
+## inkentry login
 
-Authenticate with spelunk.cloud using a browser-based device login. `spelunk
+Authenticate with spelunk.cloud using a browser-based device login. `inkentry
 login` prints a verification URL and a short user code; open the URL, enter the
 code, and approve the sign-in in your browser. On success, short-lived tokens
 are stored in your config and refreshed automatically in the background, so you
 do not need to log in again until the refresh token expires.
 
 ```
-spelunk login [--org <slug>] [--cloud-url <url>]
+inkentry login [--org <slug>] [--cloud-url <url>]
 ```
 
 | Flag | Notes |
@@ -712,14 +712,14 @@ spelunk login [--org <slug>] [--cloud-url <url>]
 | `--cloud-url <url>` | Override the cloud API URL (default `https://api.spelunk.cloud`; also settable via `INKENTRY_CLOUD_URL`). |
 
 ```bash
-spelunk login
-spelunk login --org acme
+inkentry login
+inkentry login --org acme
 ```
 
 **No `--org`, and the device login itself didn't scope you to an org** (WorkOS
-doesn't auto-select an org even for single-org accounts): `spelunk login`
+doesn't auto-select an org even for single-org accounts): `inkentry login`
 resolves one for you instead of leaving a session that needs a follow-up
-`spelunk org switch`.
+`inkentry org switch`.
 
 - Exactly one org on your account → selected silently.
 - Multiple orgs, on a TTY → an interactive `name (slug)` selector.
@@ -728,16 +728,16 @@ resolves one for you instead of leaving a session that needs a follow-up
 - Zero orgs → a clear onboarding message and a non-zero exit; no dangling
   no-org session is persisted.
 
-Tokens are written to the `[auth]` table of `~/.config/spelunk/config.toml`
+Tokens are written to the `[auth]` table of `~/.config/inkentry/config.toml`
 (file mode `0600`). Existing setups that use a self-hosted server key (stored via
-`spelunk auth set-key`, or the `INKENTRY_SERVER_KEY` environment variable) keep
+`inkentry auth set-key`, or the `INKENTRY_SERVER_KEY` environment variable) keep
 working unchanged; `INKENTRY_SERVER_KEY` continues to take precedence, which is
-handy for CI. See `spelunk auth` below for the self-hosted credential itself;
-`spelunk login` only ever manages the `[auth]` cloud token pair.
+handy for CI. See `inkentry auth` below for the self-hosted credential itself;
+`inkentry login` only ever manages the `[auth]` cloud token pair.
 
 ### Where the self-hosted server key is stored
 
-See [`spelunk auth`](#spelunk-auth) below for the full per-server credential
+See [`inkentry auth`](#inkentry-auth) below for the full per-server credential
 story (ADR-071). In short: a self-hosted server's bearer key is **not** kept in
 plaintext anywhere. It lives in your operating system's secret store:
 
@@ -751,15 +751,15 @@ migrated in automatically the first time it's needed for a given server; no
 action required. A `server_key` line in a project's checked-in
 `.inkentry/config.toml` is no longer read at all (it was a plaintext-in-a-committed-file
 footgun); if a project config still has that line, remove it and have each
-developer run `spelunk auth set-key --server <url>` instead.
+developer run `inkentry auth set-key --server <url>` instead.
 
 **Headless / CI / containers.** When no OS keychain backend is available, the
 credential never causes a hard failure:
 
 - `INKENTRY_SERVER_KEY` remains the non-interactive escape hatch and always takes
   precedence: set it in CI and you never touch the keychain.
-- Otherwise spelunk falls back to an owner-only (`0600`) file at
-  `~/.config/spelunk/secrets.toml`.
+- Otherwise inkentry falls back to an owner-only (`0600`) file at
+  `~/.config/inkentry/secrets.toml`.
 
 `INKENTRY_SECRET_STORE` pins the backend explicitly:
 
@@ -773,16 +773,16 @@ The credential is never logged.
 
 ---
 
-## spelunk auth
+## inkentry auth
 
 Store credentials in the OS secret store: the per-server bearers a self-hosted
 `server_url` resolves through (ADR-071), and the credential for a configured
-`llm_url` endpoint. Distinct from `spelunk login`, which manages the
+`llm_url` endpoint. Distinct from `inkentry login`, which manages the
 spelunk.cloud `[auth]` token pair.
 
 ```
-spelunk auth set-key (--server <url> | --llm)
-spelunk auth list-servers
+inkentry auth set-key (--server <url> | --llm)
+inkentry auth list-servers
 ```
 
 | Subcommand | Notes |
@@ -799,17 +799,17 @@ the process table. Nothing about either command prints key material, and
 neither writes a credential into `config.toml`.
 
 ```bash
-echo "$SERVER_KEY" | spelunk auth set-key --server https://spelunk.internal.example.com
-spelunk auth list-servers
+echo "$SERVER_KEY" | inkentry auth set-key --server https://inkentry.internal.example.com
+inkentry auth list-servers
 
-spelunk auth set-key --llm                 # prompts
-echo "$LLM_KEY" | spelunk auth set-key --llm
+inkentry auth set-key --llm                 # prompts
+echo "$LLM_KEY" | inkentry auth set-key --llm
 ```
 
 Resolution precedence for a given request's `server_url`: the `INKENTRY_SERVER_KEY`
 environment variable (if set, always wins, regardless of origin) takes priority
 over the per-origin store; a spelunk.cloud origin instead resolves through the
-`[auth]` token pair from `spelunk login`. This lets CI pin a single key for the
+`[auth]` token pair from `inkentry login`. This lets CI pin a single key for the
 one server it talks to without touching the keychain, while a developer's
 machine holds separate keys per self-hosted server.
 
@@ -821,34 +821,34 @@ it in its environment and never opens the secret store itself. See
 
 ---
 
-## spelunk org
+## inkentry org
 
 Manage the active organization for an authenticated session.
 
 ```
-spelunk org switch <slug|uuid>
+inkentry org switch <slug|uuid>
 ```
 
-`spelunk org switch` re-scopes your session to another organization you belong
+`inkentry org switch` re-scopes your session to another organization you belong
 to, reusing the stored credentials — no new device login is required. Accepts an
 org slug or its UUID.
 
 ```bash
-spelunk org switch acme
+inkentry org switch acme
 ```
 
 ---
 
-## spelunk logout
+## inkentry logout
 
-Remove stored spelunk.cloud credentials. Bare `spelunk logout` clears **only**
-the `[auth]` token pair written by `spelunk login`; it does not touch any
+Remove stored spelunk.cloud credentials. Bare `inkentry logout` clears **only**
+the `[auth]` token pair written by `inkentry login`; it does not touch any
 self-hosted server key, so recovering from a broken cloud login never costs
 you the keys you use on other projects (ADR-071 D3). Clearing server keys is a
 separate, explicit action:
 
 ```
-spelunk logout [--servers | --server <url>]
+inkentry logout [--servers | --server <url>]
 ```
 
 | Flag | Notes |
@@ -858,38 +858,38 @@ spelunk logout [--servers | --server <url>]
 | `--server <url>` | Also clears just the stored key for that one server's origin. Mutually exclusive with `--servers`. |
 
 ```bash
-spelunk logout
-spelunk logout --server https://spelunk.internal.example.com
-spelunk logout --servers
+inkentry logout
+inkentry logout --server https://inkentry.internal.example.com
+inkentry logout --servers
 ```
 
 ---
 
-## spelunk memory
+## inkentry memory
 
 Store and query project context, decisions, and requirements. See
 [Memory](memory.md) for full documentation.
 
 ```
-spelunk memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs]
-spelunk memory add --from-url <url> [--title "override"] [--kind requirement]
-spelunk memory search <query> [--limit 10] [--format text|json] [--local-only]
-spelunk memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
-spelunk memory show <id> [--format text|json]
-spelunk memory harvest [--git-range HEAD~10..HEAD] [--source git|claude-code|failures]
-spelunk memory failures                    # list all antipatterns
-spelunk memory archive <id>
-spelunk memory supersede <id> --title "..." # archive old, add replacement
-spelunk memory timeline <topic>
-spelunk memory graph <id>
-spelunk memory since <unix-ts>
-spelunk memory push                         # one-way: push local entries to the configured server
-spelunk memory pull                         # one-way: pull new server entries into local memory.db
-spelunk memory sync                         # two-way: push local + pull remote (see `spelunk sync`)
-spelunk memory watch                        # stream new entries from the server (SSE)
-spelunk memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
-spelunk memory dedupe [--dry-run] [--format text|json]
-spelunk memory reindex [--force] [--include-archived] [--dry-run] [--format text|json]
+inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs]
+inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
+inkentry memory search <query> [--limit 10] [--format text|json] [--local-only]
+inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
+inkentry memory show <id> [--format text|json]
+inkentry memory harvest [--git-range HEAD~10..HEAD] [--source git|claude-code|failures]
+inkentry memory failures                    # list all antipatterns
+inkentry memory archive <id>
+inkentry memory supersede <id> --title "..." # archive old, add replacement
+inkentry memory timeline <topic>
+inkentry memory graph <id>
+inkentry memory since <unix-ts>
+inkentry memory push                         # one-way: push local entries to the configured server
+inkentry memory pull                         # one-way: pull new server entries into local memory.db
+inkentry memory sync                         # two-way: push local + pull remote (see `inkentry sync`)
+inkentry memory watch                        # stream new entries from the server (SSE)
+inkentry memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
+inkentry memory dedupe [--dry-run] [--format text|json]
+inkentry memory reindex [--force] [--include-archived] [--dry-run] [--format text|json]
 ```
 
 All `memory` subcommands accept `--backend sqlite|git-notes` (default `sqlite`)
@@ -904,17 +904,17 @@ and `source_project` / `source_project_path` fields in JSON.
 `--source claude-code`, `--source failures`) use it for extraction, and the
 command fails with a message naming the reason and what to do when none is
 reachable. See
-[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm).
+[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
 Extraction and the dedup embedding resolve independently and can land on
 different servers.
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`
 
-`spelunk memory failures` is a shortcut for `spelunk memory list --kind antipattern`.
+`inkentry memory failures` is a shortcut for `inkentry memory list --kind antipattern`.
 
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
-`spelunk memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
+`inkentry memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
 so memory travels with the code. The repo is resolved from the database in
 use, the `--db <path>` directory when given, otherwise the discovered
 `.inkentry` project, not the invocation's working directory: pointing `--db`
@@ -928,18 +928,18 @@ store, it fails instead), and retrying the command is the remedy.
 
 **Entry identity:** entries are identified by a SHA-256 over exactly their
 `kind`, `title`, and `body`, so the same decision recorded on two machines
-converges on one identity. `memory reconcile` and the `spelunk init` git-notes
+converges on one identity. `memory reconcile` and the `inkentry init` git-notes
 import dedup on it: entries with identical text collapse into one even when
 their creation time, tags, or linked files differ, and the survivor carries the
 union of the tags and linked files. The `id` shown by `memory list` is a local
 row number, not this identity. See [Entry identity](memory.md#project-memory).
 Existing duplicate rows already resident in `memory.db` are never collapsed
-automatically; use `spelunk memory dedupe` to do that explicitly (see
+automatically; use `inkentry memory dedupe` to do that explicitly (see
 [Collapsing duplicate entries already in memory.db](memory.md#collapsing-duplicate-entries-already-in-memorydb)).
 Once a store's duplicates are cleared and its `entity_id` index is promoted to
 UNIQUE, a plain `memory add` for byte-identical content no longer errors: it
 reuses the existing entry and prints `Already recorded as ...` instead of
-`Stored ...`. The same reuse applies to `spelunk sync` / `spelunk memory pull`:
+`Stored ...`. The same reuse applies to `inkentry sync` / `inkentry memory pull`:
 a pulled entry matching an existing local row's identity merges into that row
 (adopting the remote id, archiving it if the pulled entry is archived) instead
 of adding a duplicate, so the printed pull count reflects only genuinely new
@@ -952,35 +952,35 @@ they are about to push that still lacks one. A note that misses both, added
 while the embedder was down and never pushed, or carried
 through the 768→896 embedding-dimension upgrade (which drops the old vectors),
 stays present-but-unembedded: still found by text search, `list`, `timeline`,
-and `context`, but absent from semantic `memory search`. `spelunk memory
+and `context`, but absent from semantic `memory search`. `inkentry memory
 reindex` re-embeds those notes against the local embedder (the same path
 `memory add` uses), so it needs a reachable embedder and exits non-zero if none
 is; it commits each vector as it goes, so an interrupted run resumes on re-run.
 `--force` re-embeds every active note (replacing existing vectors), `--include-archived`
 also covers archived notes, and `--dry-run` reports counts without writing or
-contacting the embedder. This is separate from `spelunk index`, which re-embeds
+contacting the embedder. This is separate from `inkentry index`, which re-embeds
 the code index. See
 [Backfilling missing embeddings](memory.md#backfilling-missing-embeddings).
 
 ---
 
-## spelunk sync
+## inkentry sync
 
-Two-way sync (shorthand for `spelunk memory sync`): push your local memory
+Two-way sync (shorthand for `inkentry memory sync`): push your local memory
 entries to the configured server **and** pull remote entries into the local
 `memory.db`, so a team converges on one shared memory. Code never leaves the
 machine; only memory does. Requires a configured `server_url`.
 
 Under the default `local_first` mode, a background reconciler already drains
 unpushed entries and pulls new ones during interactive sessions, so this
-command is no longer required in the normal day-to-day path: `spelunk
-status` shows what's still pending. Reach for `spelunk sync` when you want an
+command is no longer required in the normal day-to-day path: `inkentry
+status` shows what's still pending. Reach for `inkentry sync` when you want an
 immediate, synchronous reconcile instead of waiting on the background drain,
 or in a non-interactive context (CI, a script, a git hook) where the
 background reconciler never auto-starts.
 
 ```
-spelunk sync [--project <slug>] [--source <path>] [--include-archived]
+inkentry sync [--project <slug>] [--source <path>] [--include-archived]
 ```
 
 | Flag | Notes |
@@ -989,13 +989,13 @@ spelunk sync [--project <slug>] [--source <path>] [--include-archived]
 | `--source <path>` | Local `memory.db` to sync (default: the auto-detected project `memory.db`). |
 | `--include-archived` | Include archived entries in the push, propagating tombstones. |
 
-For a one-directional transfer, use `spelunk memory push` (local → server) or
-`spelunk memory pull` (server → local).
+For a one-directional transfer, use `inkentry memory push` (local → server) or
+`inkentry memory pull` (server → local).
 
-**The push embeds what it pushes.** Before the batch is built, both `spelunk
-sync` and `spelunk memory push` embed every entry in the push set that has no
+**The push embeds what it pushes.** Before the batch is built, both `inkentry
+sync` and `inkentry memory push` embed every entry in the push set that has no
 usable local vector, through the local loopback embedder and using the same
-document text `spelunk memory reindex` uses, and commit each vector to
+document text `inkentry memory reindex` uses, and commit each vector to
 `memory.db`. A pushed entry is then findable by semantic `memory search` locally
 without a separate `reindex`. This changes what is stored locally, not what is
 sent: `kind`, `title`, and `body` are serialised on every push and always were,
@@ -1003,7 +1003,7 @@ and the vector fields are additive. The step is skipped in `cloud_first` mode
 with a `server_url` set, the same condition `memory reindex` declines under. With
 no local embedder reachable the push still completes, text-only, with the exit
 code it always had, and prints one warning naming how many entries went out
-without a local embedding and that `spelunk memory reindex` is the cure. The
+without a local embedding and that `inkentry memory reindex` is the cure. The
 summary line reports the local embed count separately from `created` /
 `skipped` / `failed`, for example `Sync complete. Pushed 4 entries (created 4,
 skipped 0), applied 1 new remote entries. Embedded 2 locally.` Entries already
@@ -1013,7 +1013,7 @@ embeddings](memory.md#backfilling-missing-embeddings).
 
 ---
 
-## spelunk plumbing
+## inkentry plumbing
 
 Low-level commands for agents and scripts. All emit JSONL and exit non-zero on
 error (exit 1 for "no results", exit 2 for errors). See
@@ -1023,20 +1023,20 @@ types, and exit codes are semver-bound and test-enforced; the
 not.
 
 ```
-spelunk plumbing cat-chunks <file>     # indexed chunks for a file
-spelunk plumbing ls-files              # all indexed files
-spelunk plumbing parse-file <file>     # parse + chunk without storing
-spelunk plumbing hash-file <file>      # blake3 hash + index currency
-spelunk plumbing knn <query>           # KNN vector search
-spelunk plumbing embed                 # read stdin lines, emit vectors
-spelunk plumbing graph-edges           # code graph edges
-spelunk plumbing read-memory           # memory entries as JSONL
-spelunk plumbing publish-notes [remote]  # publish memory notes to a remote
+inkentry plumbing cat-chunks <file>     # indexed chunks for a file
+inkentry plumbing ls-files              # all indexed files
+inkentry plumbing parse-file <file>     # parse + chunk without storing
+inkentry plumbing hash-file <file>      # blake3 hash + index currency
+inkentry plumbing knn <query>           # KNN vector search
+inkentry plumbing embed                 # read stdin lines, emit vectors
+inkentry plumbing graph-edges           # code graph edges
+inkentry plumbing read-memory           # memory entries as JSONL
+inkentry plumbing publish-notes [remote]  # publish memory notes to a remote
 ```
 
 `publish-notes` fetches the remote's `refs/notes/inkentry` onto the tracking ref,
 merges it into yours with `cat_sort_uniq`, and pushes the result (defaulting to
-`origin`). It is the flow behind `spelunk hooks install --pre-push`, which is the
+`origin`). It is the flow behind `inkentry hooks install --pre-push`, which is the
 command to reach for; this one is the plumbing underneath it.
 
 Unlike the rest of the namespace it **writes** and performs **network I/O**, so
@@ -1066,9 +1066,9 @@ and publish on your next push.
 | `INKENTRY_SERVER_CA` | Path to a PEM CA bundle to trust for a `INKENTRY_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
 | `INKENTRY_LLM_URL` | Chat-completions endpoint a locally started daemon serves LLM features from; overrides `llm_url` in the personal config. Set but empty blanks the configured value rather than falling through to it. |
 | `INKENTRY_LLM_MODEL` | Model name sent to that endpoint; overrides `llm_model`. Same empty-value rule. |
-| `INKENTRY_LLM_KEY` | Credential for that endpoint; takes precedence over the entry stored by `spelunk auth set-key --llm`. Not a `config.toml` field. Blank reads as unset. |
-| `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
-| `INKENTRY_CONFIG_DIR` | Override the whole `~/.config/spelunk/` directory (not just the config file), same as `-c, --config` but for the entire directory |
-| `INKENTRY_STATE_DIR` | Override the runtime state directory (default `~/.local/state/spelunk/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
+| `INKENTRY_LLM_KEY` | Credential for that endpoint; takes precedence over the entry stored by `inkentry auth set-key --llm`. Not a `config.toml` field. Blank reads as unset. |
+| `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/inkentry/secrets.toml`) |
+| `INKENTRY_CONFIG_DIR` | Override the whole `~/.config/inkentry/` directory (not just the config file), same as `-c, --config` but for the entire directory |
+| `INKENTRY_STATE_DIR` | Override the runtime state directory (default `~/.local/state/inkentry/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
 | `RUST_LOG=debug` | Enable verbose logging |
-| `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |
+| `EDITOR` / `VISUAL` | Editor opened by `inkentry memory add` when `--body` is omitted |

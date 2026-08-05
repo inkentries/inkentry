@@ -64,7 +64,7 @@ const QUANT_GGUF: &str = "f2llm-v2-330m-q8_0.gguf";
 /// tokenizer (`tokenizer.json`) straight from
 /// `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` through the hf-hub cache
 /// (checksum/resume reused) — first-run download is ~339 MB, cached in
-/// `~/.local/share/spelunk/models/`. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a
+/// `~/.local/share/inkentry/models/`. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a
 /// different `org/repo` to fetch both from there instead. `config.json` is
 /// embedded in the binary (see [`CONFIG_JSON`]) and written to the same cache
 /// directory so it lands next to the other artifacts as a real file.
@@ -297,7 +297,7 @@ mod tests {
         // concurrently; we restore it before returning.
         let prev = std::env::var("XDG_DATA_HOME").ok();
 
-        let tmp = std::env::temp_dir().join("spelunk-model-cache-dir-test");
+        let tmp = std::env::temp_dir().join("inkentry-model-cache-dir-test");
         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
 
         assert_eq!(
@@ -343,12 +343,12 @@ mod tests {
         assert!(
             related > unrelated + 0.2,
             "GQA-fixed embeddings must discriminate related from unrelated: \
-             related={related:.3} vs unrelated={unrelated:.3} (spelunk-oss#19)"
+             related={related:.3} vs unrelated={unrelated:.3} (inkentry-oss#19)"
         );
     }
 
     /// End-to-end proof that an oversized single chunk no longer OOMs/aborts
-    /// (spelunk-oss#17), exercised via the Hub acquisition path. Ignored by
+    /// (inkentry-oss#17), exercised via the Hub acquisition path. Ignored by
     /// default: downloads the model and runs inference.
     ///
     /// Run with:

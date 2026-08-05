@@ -1,4 +1,4 @@
-//! Native F2LLM-v2-330M embedder for spelunk.
+//! Native F2LLM-v2-330M embedder for inkentry.
 //!
 //! This crate owns the candle-based embedding engine (Qwen3 decoder,
 //! 896-dim, Q8_0-quantized GGUF, Metal/GPU on macOS). It is a library so both
@@ -35,7 +35,7 @@ pub use backend::EmbeddingBackend;
 /// first: unstamped `note_embeddings` vectors are assumed to be this model
 /// (backfill rule "unstamped ⇒ F2LLM-v2-330M@896"), an invariant that only
 /// holds while this is the sole model ever shipped. See the 2026-07-26
-/// `requirement` entry in spelunk memory and task spelunk-oss^286 for the
+/// `requirement` entry in inkentry memory and task inkentry-oss^286 for the
 /// acceptance criteria that work must meet.
 pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
 

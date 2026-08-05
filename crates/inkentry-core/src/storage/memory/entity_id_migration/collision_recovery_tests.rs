@@ -535,7 +535,7 @@ fn backfill_still_populates_non_colliding_rows_alongside_a_colliding_one() {
 // collision-recovery path was only ever exercised with the colliding
 // "existing" row being a THIRD row, distinct from both OLD and the new
 // content. Nothing stops a caller from superseding `old_id` with content
-// byte-identical to `old_id`'s OWN `{kind,title,body}` (e.g. `spelunk
+// byte-identical to `old_id`'s OWN `{kind,title,body}` (e.g. `inkentry
 // memory add --supersedes <id>` with the same title/body as the entry it
 // names). Post-promotion, the INSERT then collides with `old_id` itself:
 // `recover_from_entity_id_collision` finds `old_id`, so `existing_id ==

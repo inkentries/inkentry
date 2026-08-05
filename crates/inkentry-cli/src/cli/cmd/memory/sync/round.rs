@@ -1,4 +1,4 @@
-//! `sync_round`: `spelunk sync`'s two-phase pull/push/pull sequence.
+//! `sync_round`: `inkentry sync`'s two-phase pull/push/pull sequence.
 
 use anyhow::{Context, Result};
 
@@ -19,7 +19,7 @@ pub(super) struct SyncRoundOutcome {
 /// same pre-round cursor, except on a genuinely first sync, which pushes
 /// first (see [`sync_round_first`]).
 ///
-/// This is `spelunk sync`'s actual push+pull sequence, extracted into its own
+/// This is `inkentry sync`'s actual push+pull sequence, extracted into its own
 /// function so it can be exercised directly in tests against a real server:
 /// the command entry point (`memory_sync`) can't be unit-tested cheaply
 /// because of its config/tier-probe plumbing (`get_tier`'s per-process cache

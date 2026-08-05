@@ -1,6 +1,6 @@
 # Supported platforms & requirements
 
-What spelunk v1 runs on, what it needs from the host system, and which
+What inkentry v1 runs on, what it needs from the host system, and which
 versions receive fixes.
 
 ## Prebuilt binaries
@@ -20,7 +20,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 
 ## Host requirements
 
-- **git** — spelunk shells out to `git` for memory (git-notes), worktree
+- **git** — inkentry shells out to `git` for memory (git-notes), worktree
   handling, and hooks. Any maintained git 2.x works; there is no exotic
   feature floor. Memory features require the project to be a git repository.
 - **SQLite** — none required. SQLite and the `sqlite-vec` extension are

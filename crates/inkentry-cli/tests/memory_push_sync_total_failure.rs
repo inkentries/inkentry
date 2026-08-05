@@ -1,5 +1,5 @@
-//! Subprocess-level regression coverage: a total-failure `spelunk memory push`
-//! / `spelunk sync` batch must exit non-zero and never print success framing.
+//! Subprocess-level regression coverage: a total-failure `inkentry memory push`
+//! / `inkentry sync` batch must exit non-zero and never print success framing.
 //!
 //! `memory_push`/`memory_sync` (`crates/inkentry-cli/src/cli/cmd/memory/{push,sync}.rs`)
 //! treat `attempted > 0 && created == 0 && skipped == 0` as a hard failure:
@@ -8,13 +8,13 @@
 //! exit. A prior version of this coverage exercised that predicate as a
 //! tautology, or called `push_local` (a function this behaviour doesn't live
 //! in) directly: neither would fail if the `bail!` blocks driving the actual
-//! exit code were reverted. These tests spawn the real compiled `spelunk`
+//! exit code were reverted. These tests spawn the real compiled `inkentry`
 //! binary (`assert_cmd`, following `fail_closed_no_project.rs`'s pattern)
 //! against a mock team server that returns an all-failed batch result, so a
 //! regression in the command-layer `bail!` itself is what fails here.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use predicates::prelude::*;
 use std::path::Path;
@@ -57,7 +57,7 @@ async fn mount_batch_total_failure(server: &MockServer, failed: u32) {
 }
 
 /// Mount `GET /v1/projects/{slug}/memory/since` returning no entries, for the
-/// pull half of `spelunk sync` (which runs independently of the push outcome).
+/// pull half of `inkentry sync` (which runs independently of the push outcome).
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -94,15 +94,15 @@ fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
 
 /// Create a `.inkentry/` marker dir so ADR-067's fail-closed project gate
 /// resolves `proj` as a real local project, mirroring
-/// `fail_closed_no_project.rs::memory_add_works_with_local_dot_spelunk`.
+/// `fail_closed_no_project.rs::memory_add_works_with_local_dot_inkentry`.
 fn init_project(proj: &Path) {
     std::fs::create_dir_all(proj.join(".inkentry")).expect("create .inkentry");
 }
 
-/// Seed one local memory entry via a real `spelunk memory add` subprocess run,
+/// Seed one local memory entry via a real `inkentry memory add` subprocess run,
 /// so the subsequent push/sync has something `attempted > 0` to push.
 fn seed_one_note(home: &Path, proj: &Path, config_path: &Path) {
-    spelunk_bin_in(home)
+    inkentry_bin_in(home)
         .current_dir(proj)
         .arg("--config")
         .arg(config_path)
@@ -125,7 +125,7 @@ async fn memory_push_total_failure_exits_nonzero_and_does_not_print_done() {
     let config_path = write_config(proj.path(), &server.uri());
     seed_one_note(home.path(), proj.path(), &config_path);
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)
@@ -159,7 +159,7 @@ async fn memory_sync_total_failure_exits_nonzero_and_does_not_print_sync_complet
     let config_path = write_config(proj.path(), &server.uri());
     seed_one_note(home.path(), proj.path(), &config_path);
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)
@@ -217,7 +217,7 @@ async fn memory_sync_total_failure_reports_the_full_two_pass_pull_count() {
     let config_path = write_config(proj.path(), &server.uri());
     seed_one_note(home.path(), proj.path(), &config_path);
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)
@@ -261,7 +261,7 @@ async fn memory_push_success_still_exits_zero_and_prints_done() {
     let config_path = write_config(proj.path(), &server.uri());
     seed_one_note(home.path(), proj.path(), &config_path);
 
-    spelunk_bin_in(home.path())
+    inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)

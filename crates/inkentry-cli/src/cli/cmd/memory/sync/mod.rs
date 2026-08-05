@@ -1,4 +1,4 @@
-//! `spelunk sync` and `spelunk memory pull` — two-way local↔cloud memory sync.
+//! `inkentry sync` and `inkentry memory pull` — two-way local↔cloud memory sync.
 //!
 //! - `pull`: delta-pull from `GET /memory/since?since_id=<cursor>` and apply
 //!   locally. The cursor is the max cloud `remote_id` already synced
@@ -30,7 +30,7 @@
 //!
 //! Split across submodules by concern: [`push`] (local → cloud), [`pull`]
 //! (cloud → local, including pagination), and [`round`] (the two-phase
-//! push+pull sequence `spelunk sync` runs). This file keeps only the command
+//! push+pull sequence `inkentry sync` runs). This file keeps only the command
 //! entry points and the project/target resolution they share.
 
 use anyhow::{Context, Result};
@@ -71,7 +71,7 @@ fn resolve_sync_project(cli_project: Option<&str>, cfg: &Config) -> Result<Strin
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "No project specified. Re-run as `spelunk sync --project <slug>` \
+                "No project specified. Re-run as `inkentry sync --project <slug>` \
                  to choose the cloud project to sync into.\n\
                  (The project is created on first sync from the slug you pass; \
                  the slug is never guessed from the folder or git remote.)"
@@ -91,7 +91,7 @@ fn resolve_sync_project(cli_project: Option<&str>, cfg: &Config) -> Result<Strin
 /// when `None` the configured `project_id` is used.
 ///
 /// The bearer key is resolved through [`auth_api::ensure_fresh_server_key`] so a
-/// WorkOS access token that has expired since `spelunk login` is refreshed (and
+/// WorkOS access token that has expired since `inkentry login` is refreshed (and
 /// the rotated tokens persisted) before the cloud-api call, rather than 401-ing.
 async fn sync_target(
     feature: &str,
@@ -104,7 +104,7 @@ async fn sync_target(
     Ok((base_url, project_id, key))
 }
 
-/// `spelunk memory pull` — one-way delta pull + apply.
+/// `inkentry memory pull` — one-way delta pull + apply.
 pub async fn memory_pull(
     _args: MemoryPullArgs,
     mem_path: &std::path::Path,
@@ -128,7 +128,7 @@ pub async fn memory_pull(
     Ok(())
 }
 
-/// `spelunk sync` (and `spelunk memory push`'s successor) — two-way sync.
+/// `inkentry sync` (and `inkentry memory push`'s successor) — two-way sync.
 pub async fn memory_sync(
     args: MemorySyncArgs,
     mem_path: &std::path::Path,
@@ -306,7 +306,7 @@ mod tests {
         let server = MockServer::start().await;
         // A non-loopback team server_url with NO project_id — a genuine first run.
         let cfg = Config {
-            server_url: Some("http://spelunk.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:7777".to_string()),
             project_id: None,
             ..Default::default()
         };

@@ -1,4 +1,4 @@
-//! `spelunk memory push` — one-way push of local memory to the cloud.
+//! `inkentry memory push` — one-way push of local memory to the cloud.
 //!
 //! Changes vs. the MVP placeholder:
 //! - **Text-only by default; optional pushed vector.** The client ships no
@@ -17,7 +17,7 @@
 //! - **Lifecycle.** `supersedes` and archive/tombstone state are propagated
 //!   (the batch payload carries them via the shared sync path), not dropped.
 //!
-//! For two-way convergence (push + pull) use `spelunk sync`. This command is the
+//! For two-way convergence (push + pull) use `inkentry sync`. This command is the
 //! one-way "seed the cloud" operation.
 
 use anyhow::{Context, Result};

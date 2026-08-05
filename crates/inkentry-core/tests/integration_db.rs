@@ -133,7 +133,7 @@ fn knn_returns_closest_vector_first() {
     );
 }
 
-/// int8 quantisation regression (PR #441 / spelunk-oss#9): `insert_embedding`
+/// int8 quantisation regression (PR #441 / inkentry-oss#9): `insert_embedding`
 /// stores vectors in the `int8[896]` column and `search_similar` must (a) preserve
 /// ranking through quantisation and (b) rescale the raw int8 L2 distance back to
 /// the f32 scale via `INT8_SCALE`. A forgotten rescale leaves distances ~127×

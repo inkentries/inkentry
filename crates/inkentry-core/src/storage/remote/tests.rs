@@ -11,7 +11,7 @@ fn backend(project_id: &str) -> RemoteMemoryBackend {
 
 /// `derive_local_fallback` / `normalise_git_url` slugs contain `/`; the
 /// segment must be percent-encoded so axum routes the whole slug into
-/// `{project_id}` instead of splitting on `/` (→ 404). See spelunk
+/// `{project_id}` instead of splitting on `/` (→ 404). See inkentry
 /// decision #106 (mirrors IMP-1's fix in inkentry-cli/server_client.rs).
 #[test]
 fn url_percent_encodes_local_fallback_slug() {
@@ -27,7 +27,7 @@ fn url_percent_encodes_github_remote_slug() {
     let b = backend("github.com/spelunk-cloud/spelunk");
     assert_eq!(
         b.url("memory"),
-        "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
+        "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Finkentry/memory"
     );
 }
 
@@ -117,7 +117,7 @@ async fn search_sends_query_text_not_precomputed_embedding() {
     // `MemoryBackend::search` takes both a pre-computed query embedding
     // blob (used by local backends for KNN) *and* the raw query text
     // (used by the remote backend, which has no local embedder and must
-    // let the server embed server-side — see spelunk#359). The remote
+    // let the server embed server-side — see inkentry#359). The remote
     // backend ignores `query_blob` and sends `query` on the wire.
     let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
     let result = backend.search(&query_blob, "timezone", 3, None).await;

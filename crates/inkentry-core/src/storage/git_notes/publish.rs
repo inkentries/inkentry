@@ -1,7 +1,7 @@
 //! Publish `refs/notes/inkentry` to a remote: fetch, union-merge, push.
 //!
 //! Driven by the opt-in pre-push hook, which is a shim around
-//! `spelunk plumbing publish-notes` (ADR-069 D1/D3/D7).
+//! `inkentry plumbing publish-notes` (ADR-069 D1/D3/D7).
 
 use anyhow::{Result, anyhow};
 use std::path::Path;

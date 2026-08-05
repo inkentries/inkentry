@@ -21,14 +21,14 @@ which server you mean.
 Configure it on the client. The CLI resolves the endpoint and hands it to every
 daemon it starts, so you set it once rather than per launch.
 
-| Setting | Personal `config.toml` | Environment | `spelunk server start` flag |
+| Setting | Personal `config.toml` | Environment | `inkentry server start` flag |
 |---|---|---|---|
 | Endpoint | `llm_url` | `INKENTRY_LLM_URL` | `--llm-url` |
 | Model | `llm_model` | `INKENTRY_LLM_MODEL` | `--llm-model` |
 | Credential | not a config key, by design | `INKENTRY_LLM_KEY` | no flag, by design |
 
 `llm_url` and `llm_model` are read from the **personal** config
-(`~/.config/spelunk/config.toml`) only. A value in a checked-in
+(`~/.config/inkentry/config.toml`) only. A value in a checked-in
 `.inkentry/config.toml` is ignored: an endpoint URL is a per-developer choice,
 and committing one points the whole team at one machine. See
 [Config reference](config-reference.md#llm_url).
@@ -36,7 +36,7 @@ and committing one points the whole team at one machine. See
 The credential is not a config key at all. Store it once with:
 
 ```bash
-spelunk auth set-key --llm
+inkentry auth set-key --llm
 ```
 
 It is read from stdin if piped, otherwise from an interactive prompt, and kept
@@ -49,9 +49,9 @@ available). It is never accepted as a flag value or a positional argument. Set
 
 | Value | Order |
 |---|---|
-| Endpoint | `spelunk server start --llm-url` (that daemon only) > `INKENTRY_LLM_URL` > `llm_url` in the personal config > unset |
-| Model | `spelunk server start --llm-model` > `INKENTRY_LLM_MODEL` > `llm_model` in the personal config > unset |
-| Credential | `INKENTRY_LLM_KEY` > the secret-store entry written by `spelunk auth set-key --llm` > unset |
+| Endpoint | `inkentry server start --llm-url` (that daemon only) > `INKENTRY_LLM_URL` > `llm_url` in the personal config > unset |
+| Model | `inkentry server start --llm-model` > `INKENTRY_LLM_MODEL` > `llm_model` in the personal config > unset |
+| Credential | `INKENTRY_LLM_KEY` > the secret-store entry written by `inkentry auth set-key --llm` > unset |
 
 A model with no endpoint is not a configuration: if nothing resolves an
 endpoint, the daemon starts without an LLM whatever the model is set to.
@@ -114,7 +114,7 @@ These are design constraints, not incidental behaviour, so they are stated
 rather than left to be inferred:
 
 - **The credential never travels in an argument from the CLI.** No input to
-  `spelunk` causes `--llm-key` or `--llm-key-file` to be emitted into the
+  `inkentry` causes `--llm-key` or `--llm-key-file` to be emitted into the
   spawned daemon's argv, because argv is world-readable through the process
   table. The endpoint URL and model do travel as arguments: neither is secret,
   and `ps` showing which endpoint a daemon serves is a diagnostic feature.
@@ -126,7 +126,7 @@ rather than left to be inferred:
   a secret store.
 - **Resolving the credential costs nothing on other commands.** It is not a
   config field and is not read when configuration loads; only the code path
-  that spawns a daemon reads it. An ordinary `spelunk search` does not
+  that spawns a daemon reads it. An ordinary `inkentry search` does not
   authorize against your keychain for it.
 - **A credential is not sent over plaintext to another host.** If a credential
   resolves and the endpoint is a plaintext `http://` URL to anything other than
@@ -144,7 +144,7 @@ rather than left to be inferred:
   working exactly as before. If you hit this refusal, the endpoint is one you
   are authenticating to over an unencrypted network hop: switch it to `https://`
   or drop the credential.
-- **The credential is never printed.** Not by `spelunk auth set-key --llm`, not
+- **The credential is never printed.** Not by `inkentry auth set-key --llm`, not
   in the server's logs at any level, and not in the refusal message above.
 - **A keyless endpoint stays keyless.** With no credential resolved the
   upstream request carries no `Authorization` header at all, byte-identical to
@@ -153,14 +153,14 @@ rather than left to be inferred:
 
 ### What this unlocks
 
-- **`spelunk explore`**: the interactive LLM reasoning loop (`/explore`).
-- **`spelunk memory harvest`**: LLM-based decision extraction. All three sources
+- **`inkentry explore`**: the interactive LLM reasoning loop (`/explore`).
+- **`inkentry memory harvest`**: LLM-based decision extraction. All three sources
   need an LLM: `--source git` (commits), `--source claude-code` (agent session
   history), and `--source failures`.
-- **`spelunk index` chunk summaries**: LLM-written summaries of each indexed
+- **`inkentry index` chunk summaries**: LLM-written summaries of each indexed
   chunk.
 
-### How spelunk finds an LLM
+### How inkentry finds an LLM
 
 LLM inference and embedding are routed **separately**, and the two can end up on
 different servers in the same command. Nothing on this page changes where your
@@ -173,7 +173,7 @@ In order:
 1. **Offline mode** (`INKENTRY_NO_SERVER=1`, or `mode = "offline"`): there is no
    LLM, and nothing is probed.
 2. **Your local server serves an LLM**: it is used.
-3. **`llm_url` is set but your local server does not serve an LLM**: spelunk
+3. **`llm_url` is set but your local server does not serve an LLM**: inkentry
    stops and asks you to restart the server. It does **not** fall through to
    `server_url`. See [The local-LLM guarantee](#the-local-llm-guarantee-and-where-it-stops).
 4. **A configured `server_url` serves an LLM**: it is used.
@@ -190,7 +190,7 @@ so an older team server does not turn into a broken route.
 
 ### Why your summaries were skipped
 
-`spelunk index` prints one of three notices to stderr and **exits 0**: summaries
+`inkentry index` prints one of three notices to stderr and **exits 0**: summaries
 are optional, and a missing LLM never fails an index run. The notice is ordinary
 output, not a log line, so you do not need `RUST_LOG` to see it.
 
@@ -199,9 +199,9 @@ output, not a log line, so you do not need `RUST_LOG` to see it.
 ```
 Skipping chunk summaries: no LLM is available.
 There are two ways to get one:
-  set `llm_url` in ~/.config/spelunk/config.toml to your own chat-completions endpoint, then run `spelunk server stop` and `spelunk server start`;
-  or set `server_url` to a spelunk server that already provides one.
-Pass `--no-summaries` to `spelunk index` to skip this step without the notice.
+  set `llm_url` in ~/.config/inkentry/config.toml to your own chat-completions endpoint, then run `inkentry server stop` and `inkentry server start`;
+  or set `server_url` to a inkentry server that already provides one.
+Pass `--no-summaries` to `inkentry index` to skip this step without the notice.
 ```
 
 **A local LLM is configured, but the running server does not serve it** (rule 3).
@@ -209,26 +209,26 @@ This is the stale-daemon case: you set `llm_url` after the daemon was already
 running.
 
 ```
-Skipping chunk summaries: your local spelunk server is running without the LLM endpoint you set in `llm_url`, so it cannot answer LLM requests.
+Skipping chunk summaries: your local inkentry server is running without the LLM endpoint you set in `llm_url`, so it cannot answer LLM requests.
 A running server keeps the settings it started with, so restart it to pick yours up:
-  spelunk server stop
-  spelunk server start
+  inkentry server stop
+  inkentry server start
 ```
 
 **Offline mode** (rule 1):
 
 ```
 Skipping chunk summaries: offline mode is on, so no inference will run.
-Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your spelunk config.
+Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your inkentry config.
 ```
 
-`spelunk explore` and `spelunk memory harvest` use the same three messages with
-their own opening line (`'spelunk explore' cannot run: ...`), and they **fail**
+`inkentry explore` and `inkentry memory harvest` use the same three messages with
+their own opening line (`'inkentry explore' cannot run: ...`), and they **fail**
 rather than skipping, because neither can do its job without an LLM. One
 difference is worth knowing: in offline mode those two commands never reach the
 LLM rule at all. They stop earlier, on the embedding requirement, with the
 pre-existing `requires inkentry-server` error. The offline notice above is
-something only `spelunk index` prints.
+something only `inkentry index` prints.
 
 If summaries do run but a batch fails (the endpoint is up but returns an error,
 say), the run reports how many batches produced nothing and points you at
@@ -236,14 +236,14 @@ say), the run reports how many batches produced nothing and points you at
 ordinary output:
 
 ```
-Warning: 1 of 1 summary batch(es) produced no summary; those chunks are indexed without one. Re-run with `spelunk index --force` to retry (`RUST_LOG=warn` shows the cause).
+Warning: 1 of 1 summary batch(es) produced no summary; those chunks are indexed without one. Re-run with `inkentry index --force` to retry (`RUST_LOG=warn` shows the cause).
 ```
 
 ### The local-LLM guarantee, and where it stops
 
 **In `local_first` (the default) and in `offline`: if you have set `llm_url`,
 your code is never sent to a remote LLM.** If the local server is not serving
-that endpoint, spelunk stops and tells you to restart it rather than quietly
+that endpoint, inkentry stops and tells you to restart it rather than quietly
 using `server_url` instead. That is deliberate, not an accident of ordering: you
 asked for a local LLM, and substituting a remote one would be a privacy
 surprise, not a graceful fallback. The message for that case never mentions
@@ -268,7 +268,7 @@ The server's own `/explore` and `/llm/complete` routes return `503` with
 Set the endpoint once in your personal config:
 
 ```toml
-# ~/.config/spelunk/config.toml
+# ~/.config/inkentry/config.toml
 llm_url = "http://127.0.0.1:1234"   # your LM Studio / Ollama / vLLM endpoint
 llm_model = "your-chat-model-id"
 ```
@@ -276,15 +276,15 @@ llm_model = "your-chat-model-id"
 If the endpoint needs a credential, store it now:
 
 ```bash
-spelunk auth set-key --llm     # reads from stdin or a prompt, never argv
+inkentry auth set-key --llm     # reads from stdin or a prompt, never argv
 ```
 
 Then restart the auto-managed daemon, because **a daemon already running keeps
 the configuration it was started with**:
 
 ```bash
-spelunk server stop      # if one is already running
-spelunk server start     # picks up the configuration above
+inkentry server stop      # if one is already running
+inkentry server start     # picks up the configuration above
 ```
 
 A change to `llm_url`, `llm_model`, or the stored credential does not reach a
@@ -299,17 +299,17 @@ export INKENTRY_LLM_URL="http://127.0.0.1:1234"
 export INKENTRY_LLM_MODEL="your-chat-model-id"
 export INKENTRY_LLM_KEY="<your-endpoint-credential>"   # only if the endpoint is keyed
 
-spelunk server stop
-spelunk server start
+inkentry server stop
+inkentry server start
 ```
 
 Or override them for a single daemon without changing either:
 
 ```bash
-spelunk server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
+inkentry server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-`spelunk explore`, `spelunk memory harvest` and index-time summaries now all
+`inkentry explore`, `inkentry memory harvest` and index-time summaries now all
 work against the auto-discovered loopback server, no `config.toml` change
 needed: they fill in the loopback URL for you when no explicit `server_url` is
 set.
@@ -321,9 +321,9 @@ Pass the same two flags when you start the deployed `inkentry-server` (see
 
 ```bash
 inkentry-server --host 0.0.0.0 --port 7777 \
-  --tls-cert /etc/spelunk/tls-cert --tls-key /etc/spelunk/tls-key \
+  --tls-cert /etc/inkentry/tls-cert --tls-key /etc/inkentry/tls-key \
   --llm-url https://llm-host:1234 --llm-model your-chat-model-id \
-  --llm-key-file /etc/spelunk/llm-key
+  --llm-key-file /etc/inkentry/llm-key
 ```
 
 Drop `--llm-key-file` if the endpoint takes no credential, in which case

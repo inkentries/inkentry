@@ -13,7 +13,7 @@ pub enum HooksCommand {
     /// Install a post-commit hook that auto-indexes and harvests memory, or a
     /// pre-push hook that publishes memory to the remote (`--pre-push`)
     Install(HooksInstallArgs),
-    /// Remove every git hook spelunk installed
+    /// Remove every git hook inkentry installed
     Uninstall,
 }
 
@@ -36,53 +36,53 @@ pub fn hooks(args: HooksArgs) -> Result<()> {
 }
 
 const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-# spelunk post-commit hook — installed by `spelunk hooks install`
-# Keeps the spelunk index in sync and harvests memory from new commits.
-# Silently skips if `spelunk` is not in PATH, so teammates without spelunk are unaffected.
+# inkentry post-commit hook — installed by `inkentry hooks install`
+# Keeps the inkentry index in sync and harvests memory from new commits.
+# Silently skips if `inkentry` is not in PATH, so teammates without inkentry are unaffected.
 
-if ! command -v spelunk >/dev/null 2>&1; then
+if ! command -v inkentry >/dev/null 2>&1; then
   exit 0
 fi
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
-spelunk index "$PROJECT_ROOT" --detach
-spelunk memory harvest --git-range HEAD~1..HEAD --detach
+inkentry index "$PROJECT_ROOT" --detach
+inkentry memory harvest --git-range HEAD~1..HEAD --detach
 "#;
 
-/// The pre-push shim. `{spelunk}` is substituted with the shell-quoted absolute
+/// The pre-push shim. `{inkentry}` is substituted with the shell-quoted absolute
 /// path of this binary by [`pre_push_hook_body`].
 ///
 /// Every decision lives in the command, not here: a hook body is a string a user
 /// already has on disk, so anything encoded in it cannot be changed by a release.
 const PRE_PUSH_HOOK_TEMPLATE: &str = r#"#!/bin/sh
-# spelunk pre-push hook (installed by `spelunk hooks install --pre-push`)
-# Publishes spelunk memory (refs/notes/inkentry) to the remote you are pushing to,
+# inkentry pre-push hook (installed by `inkentry hooks install --pre-push`)
+# Publishes inkentry memory (refs/notes/inkentry) to the remote you are pushing to,
 # so decisions travel with the code they describe.
 #
 # The path below is absolute rather than a PATH lookup: GUI git clients on macOS
-# inherit their environment from launchd, not from your shell profile. If spelunk
+# inherit their environment from launchd, not from your shell profile. If inkentry
 # is no longer there this exits 127 and stops the push, which is the intended
-# loud failure; re-run `spelunk hooks install --pre-push` to re-resolve it.
+# loud failure; re-run `inkentry hooks install --pre-push` to re-resolve it.
 #
 # `exec` makes this hook's status the command's, and --best-effort makes a failed
 # publish exit 0, so publishing can never cost you your push.
 # stdout is dropped: the command emits JSONL, which a `git push` should not print.
 
-exec {spelunk} plumbing publish-notes --best-effort "$@" >/dev/null
+exec {inkentry} plumbing publish-notes --best-effort "$@" >/dev/null
 "#;
 
 const CI_STEP: &str = r#"# Add to your .github/workflows/ file:
-- name: Update spelunk index
+- name: Update inkentry index
   run: |
-    if command -v spelunk >/dev/null 2>&1; then
-      spelunk index . --detach
-      spelunk memory harvest --git-range HEAD~1..HEAD --detach
+    if command -v inkentry >/dev/null 2>&1; then
+      inkentry index . --detach
+      inkentry memory harvest --git-range HEAD~1..HEAD --detach
     fi
 "#;
 
 /// An installable hook: git's filename for it, and the marker line identifying a
-/// spelunk-written copy.
+/// inkentry-written copy.
 struct HookSpec {
     name: &'static str,
     marker: &'static str,
@@ -90,12 +90,12 @@ struct HookSpec {
 
 const POST_COMMIT: HookSpec = HookSpec {
     name: "post-commit",
-    marker: "spelunk post-commit hook",
+    marker: "inkentry post-commit hook",
 };
 
 const PRE_PUSH: HookSpec = HookSpec {
     name: "pre-push",
-    marker: "spelunk pre-push hook",
+    marker: "inkentry pre-push hook",
 };
 
 /// Every hook `uninstall` considers.
@@ -103,7 +103,7 @@ const ALL_HOOKS: [&HookSpec; 2] = [&POST_COMMIT, &PRE_PUSH];
 
 /// The command that installs the pre-push hook. `init` names it when it tells
 /// the user their memory stays local until they opt in (ADR-069 D3).
-pub const PRE_PUSH_INSTALL_CMD: &str = "spelunk hooks install --pre-push";
+pub const PRE_PUSH_INSTALL_CMD: &str = "inkentry hooks install --pre-push";
 
 /// Quote `path` for a POSIX shell. The shim runs under Git for Windows' `sh`,
 /// where single quotes keep backslashes intact, so a Windows path has to arrive
@@ -115,11 +115,11 @@ fn sh_quoted(path: &Path) -> String {
 
 /// The pre-push shim, with this binary's resolved absolute path embedded.
 fn pre_push_hook_body() -> Result<String> {
-    let exe = std::env::current_exe().context("resolving the path of the spelunk binary")?;
-    Ok(PRE_PUSH_HOOK_TEMPLATE.replace("{spelunk}", &sh_quoted(&exe)))
+    let exe = std::env::current_exe().context("resolving the path of the inkentry binary")?;
+    Ok(PRE_PUSH_HOOK_TEMPLATE.replace("{inkentry}", &sh_quoted(&exe)))
 }
 
-/// Whether spelunk's own pre-push hook is installed in the repo holding `dir`.
+/// Whether inkentry's own pre-push hook is installed in the repo holding `dir`.
 /// False for a foreign pre-push hook: that one publishes nothing.
 pub fn pre_push_installed(dir: &Path) -> bool {
     let Ok(hooks_dir) = resolve_hooks_dir(dir) else {
@@ -214,17 +214,17 @@ pub(crate) enum Installed {
 }
 
 /// Write `body` to the git-resolved hooks directory for the repo at `dir`,
-/// refusing to clobber a hook spelunk did not write.
+/// refusing to clobber a hook inkentry did not write.
 fn write_hook(dir: &Path, spec: &HookSpec, body: &str) -> Result<Installed> {
     let hooks_dir = resolve_hooks_dir(dir)?;
 
     // A tracked hooks directory is shared with every teammate on clone: writing
-    // into it is committing spelunk's hook to the team, not to this machine, so
+    // into it is committing inkentry's hook to the team, not to this machine, so
     // it needs the user's own commit rather than a silent write on their behalf.
     if hooks_dir_is_tracked(dir, &hooks_dir)? {
         anyhow::bail!(
             "core.hooksPath resolves to {}, which is inside this repository's tracked \
-             working tree, so it is shared with every clone. spelunk will not write a hook \
+             working tree, so it is shared with every clone. inkentry will not write a hook \
              there on your behalf; add it to that directory yourself, or point \
              core.hooksPath at an untracked location and re-run this command.",
             hooks_dir.display()
@@ -280,7 +280,7 @@ fn hooks_install(args: HooksInstallArgs) -> Result<()> {
     install_post_commit()
 }
 
-/// Install the post-commit hook in the repo at `dir`. Exposed so `spelunk
+/// Install the post-commit hook in the repo at `dir`. Exposed so `inkentry
 /// init --hook` shares this resolution logic rather than re-implementing it
 /// against a hardcoded `$GIT_DIR/hooks`.
 pub(crate) fn install_post_commit_hook(dir: &Path) -> Result<Installed> {
@@ -300,10 +300,10 @@ fn install_post_commit() -> Result<()> {
         Installed::Updated(p) => println!("Updated post-commit hook at {}", p.display()),
         Installed::Wrote(p) => println!("Installed post-commit hook at {}", p.display()),
     }
-    println!("After each commit, spelunk will:");
+    println!("After each commit, inkentry will:");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
-    println!("Teammates without spelunk installed are unaffected.");
+    println!("Teammates without inkentry installed are unaffected.");
     Ok(())
 }
 
@@ -316,7 +316,7 @@ fn install_pre_push() -> Result<()> {
         Installed::Updated(p) => println!("Updated pre-push hook at {}", p.display()),
         Installed::Wrote(p) => println!("Installed pre-push hook at {}", p.display()),
     }
-    println!("On each `git push`, spelunk will publish your memory to that remote:");
+    println!("On each `git push`, inkentry will publish your memory to that remote:");
     println!("  - Fetch and merge teammates' memory notes (union, nothing dropped)");
     println!("  - Push refs/notes/inkentry alongside the code you are pushing");
     println!("Your push is never blocked: on failure the hook warns and exits 0.");
@@ -343,22 +343,22 @@ fn hooks_uninstall() -> Result<()> {
         removed += 1;
     }
 
-    // Only a wholly ineffective uninstall is an error: with a spelunk hook
+    // Only a wholly ineffective uninstall is an error: with a inkentry hook
     // removed, leaving someone else's hook alone is the correct outcome.
     if removed == 0 {
         if let Some(p) = foreign.first() {
             anyhow::bail!(
-                "The hook at {} was not installed by spelunk. Remove it manually.",
+                "The hook at {} was not installed by inkentry. Remove it manually.",
                 p.display()
             );
         }
-        println!("No spelunk hooks found.");
+        println!("No inkentry hooks found.");
         return Ok(());
     }
 
     for p in &foreign {
         println!(
-            "Left {} alone: it was not installed by spelunk.",
+            "Left {} alone: it was not installed by inkentry.",
             p.display()
         );
     }
@@ -374,8 +374,8 @@ mod tests {
     #[test]
     fn a_windows_path_is_forward_slashed() {
         assert_eq!(
-            sh_quoted(Path::new(r"C:\Program Files\spelunk\spelunk.exe")),
-            "'C:/Program Files/spelunk/spelunk.exe'"
+            sh_quoted(Path::new(r"C:\Program Files\inkentry\inkentry.exe")),
+            "'C:/Program Files/inkentry/inkentry.exe'"
         );
     }
 
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn a_path_with_spaces_stays_one_word() {
         assert_eq!(
-            sh_quoted(Path::new("/Users/a b/.local/bin/spelunk")),
-            "'/Users/a b/.local/bin/spelunk'"
+            sh_quoted(Path::new("/Users/a b/.local/bin/inkentry")),
+            "'/Users/a b/.local/bin/inkentry'"
         );
     }
 
@@ -393,13 +393,13 @@ mod tests {
     #[test]
     fn a_quote_in_the_path_cannot_escape_the_string() {
         assert_eq!(
-            sh_quoted(Path::new("/home/o'brien/bin/spelunk")),
-            r"'/home/o'\''brien/bin/spelunk'"
+            sh_quoted(Path::new("/home/o'brien/bin/inkentry")),
+            r"'/home/o'\''brien/bin/inkentry'"
         );
     }
 
     /// The shim must carry a real path, never the literal placeholder: a hook
-    /// reading `exec '{spelunk}'` would fail on every push.
+    /// reading `exec '{inkentry}'` would fail on every push.
     #[test]
     fn the_shim_embeds_a_resolved_absolute_path() {
         let body = pre_push_hook_body().expect("resolve current_exe");
@@ -409,7 +409,7 @@ mod tests {
             .expect("the shim execs the command");
 
         assert!(
-            !body.contains("{spelunk}"),
+            !body.contains("{inkentry}"),
             "placeholder left unsubstituted"
         );
         assert!(
@@ -420,7 +420,7 @@ mod tests {
         // and it broke GUI clients, whose PATH comes from launchd.
         assert!(
             !body.contains("command -v"),
-            "the shim must not look spelunk up on PATH: {body}"
+            "the shim must not look inkentry up on PATH: {body}"
         );
 
         let quoted = sh_quoted(&std::env::current_exe().unwrap());

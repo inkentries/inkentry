@@ -7,7 +7,7 @@
 
 ## Overview
 
-The spelunk CLI operates in one of two capability tiers determined at runtime
+The inkentry CLI operates in one of two capability tiers determined at runtime
 by whether a `inkentry-server` is reachable. No compile-time feature flags are
 used; the binary is the same in both tiers.
 
@@ -26,7 +26,7 @@ used; the binary is the same in both tiers.
 configuration.** All inference routes through `inkentry-server`.
 
 > **Reserved: Plan.** `/plan` is reserved as a server-owned route per ADR-002,
-> but nothing ships today: there is no `spelunk plan` subcommand and no `/plan`
+> but nothing ships today: there is no `inkentry plan` subcommand and no `/plan`
 > server route. The CLI parses a `plan` capability from the server health
 > response but deliberately keeps it out of all output, so it never surfaces.
 
@@ -42,13 +42,13 @@ Add `server_url` to `Config` as the single entry point for all server-mediated
 features.
 
 ```toml
-# ~/.config/spelunk/config.toml  (personal — never commit)
-server_url = "https://spelunk.internal.example.com"
+# ~/.config/inkentry/config.toml  (personal — never commit)
+server_url = "https://inkentry.internal.example.com"
 server_key = "sk-..."
 
 # .inkentry/config.toml  (project-level — safe to commit if key is in env)
 project_id = "acme/my-app"
-server_url = "https://spelunk.internal.example.com"   # key via INKENTRY_SERVER_KEY env var
+server_url = "https://inkentry.internal.example.com"   # key via INKENTRY_SERVER_KEY env var
 ```
 
 > `server_url` must be `https://` unless it resolves to loopback
@@ -164,9 +164,9 @@ User-facing behaviour for these tiers is documented in
 
 ---
 
-## spelunk status — capability section
+## inkentry status — capability section
 
-`spelunk status` gains a capability section above the index stats.
+`inkentry status` gains a capability section above the index stats.
 
 **Text output (Tier 0 — offline):**
 
@@ -179,13 +179,13 @@ Capability tier:  Offline
 
 The `memory` line reflects the resolved backend (`sqlite` / `git-notes` /
 `remote`), not the capability tier. In a directory with no local `.inkentry/`
-project, `spelunk status` reports `No spelunk project here` instead (see
+project, `inkentry status` reports `No inkentry project here` instead (see
 [fail-closed, ADR-067](../adr/067-fail-closed-no-local-project.md)).
 
 **Text output (Tier 1 — server connected):**
 
 ```
-Capability tier:  Server  (https://spelunk.internal.example.com)
+Capability tier:  Server  (https://inkentry.internal.example.com)
   search          ast-grep + text + semantic
   embedder        ready
   memory          sqlite (local)
@@ -195,13 +195,13 @@ Capability tier:  Server  (https://spelunk.internal.example.com)
 The `embedder` line reports the server's `embedder.state` from `/v1/health`; it
 is omitted when the server does not report that field.
 
-**JSON output** (`spelunk status --format json`) adds a `capabilities` object
+**JSON output** (`inkentry status --format json`) adds a `capabilities` object
 (other fields omitted):
 
 ```json
 {
   "tier": "server",
-  "server_url": "https://spelunk.internal.example.com",
+  "server_url": "https://inkentry.internal.example.com",
   "capabilities": {
     "explore": true,
     "index_embed": true,
@@ -216,21 +216,21 @@ is omitted when the server does not report that field.
 
 ---
 
-## spelunk check — server probe addition
+## inkentry check — server probe addition
 
-`spelunk check` (text mode only) appends a server status line when
+`inkentry check` (text mode only) appends a server status line when
 `server_url` is configured:
 
 ```
 Index is up to date. (412 files indexed)
-Server:  https://spelunk.internal.example.com  ✓  (semantic search, explore available)
+Server:  https://inkentry.internal.example.com  ✓  (semantic search, explore available)
 ```
 
 Or on failure:
 
 ```
 Index is up to date. (412 files indexed)
-Server:  https://spelunk.internal.example.com  ✗  unreachable — offline mode
+Server:  https://inkentry.internal.example.com  ✗  unreachable — offline mode
 ```
 
 ---
@@ -245,30 +245,30 @@ The `require_tier1` commands (`explore`, `memory push`, `memory pull`, `sync`,
 `memory watch`) point the user at `server_url`:
 
 ```
-Error: 'spelunk explore' requires inkentry-server.
-Set server_url in ~/.config/spelunk/config.toml to enable this feature.
-       (Tried: https://spelunk.internal.example.com — connection refused)
+Error: 'inkentry explore' requires inkentry-server.
+Set server_url in ~/.config/inkentry/config.toml to enable this feature.
+       (Tried: https://inkentry.internal.example.com — connection refused)
 ```
 
 The `(Tried: ...)` line is appended only when a `server_url` is configured but
 unreachable. If `server_url` is not set at all it is omitted:
 
 ```
-Error: 'spelunk explore' requires inkentry-server.
-Set server_url in ~/.config/spelunk/config.toml to enable this feature.
+Error: 'inkentry explore' requires inkentry-server.
+Set server_url in ~/.config/inkentry/config.toml to enable this feature.
 ```
 
 The inference-only commands (`memory search`, `memory harvest`) point the user
 at the local server instead, and also exit 1:
 
 ```
-Error: 'spelunk memory search' requires inkentry-server.
-Run `spelunk server start` to enable this feature.
+Error: 'inkentry memory search' requires inkentry-server.
+Run `inkentry server start` to enable this feature.
 ```
 
 ---
 
-## spelunk index — two-phase behaviour
+## inkentry index — two-phase behaviour
 
 ### Phase 1 (always, Tier 0 and Tier 1)
 
@@ -288,7 +288,7 @@ After Phase 1 completes, if a server is reachable:
 
 The two phases are independent. A partial Phase 2 (network failure mid-batch)
 is safe: chunks without embeddings remain in the DB and will be embedded on
-the next `spelunk index` run. Phase 1 is never re-run for unchanged files
+the next `inkentry index` run. Phase 1 is never re-run for unchanged files
 (blake3 hash check is unaffected).
 
 Phase 1 itself is also crash-safe. The content-hash write and the chunk
@@ -298,7 +298,7 @@ file recorded as hash-current with zero chunks. `Database::file_has_chunks`
 just a matching hash, so the next plain run detects that half-indexed state
 and reprocesses the file instead of skipping it forever.
 
-The whole `spelunk index` process, both phases, is serialized per project by
+The whole `inkentry index` process, both phases, is serialized per project by
 a cross-process advisory lock (`cli/cmd/index/run_lock.rs`), taken as the
 first thing a run does and released on process exit. Two concurrent runs
 against the same project previously could interleave writes and corrupt
@@ -315,7 +315,7 @@ Embedding chunks via server... 1 024 / 3 812  [====>     ] 27%
 
 ## Memory search (Tier 1 only)
 
-`spelunk memory search "<query>"` sends the query text to the server. The
+`inkentry memory search "<query>"` sends the query text to the server. The
 server encodes the text and runs KNN over its memory DB. The raw-vector
 interface (`SearchRequest.embedding`) is deprecated; see server-api.md for the
 updated `SearchRequest` schema.
@@ -324,7 +324,7 @@ updated `SearchRequest` schema.
 
 ## Explore — context assembly
 
-For `spelunk explore`, the CLI is responsible for context
+For `inkentry explore`, the CLI is responsible for context
 retrieval from the local index before calling the server. This preserves data
 ownership: chunk content is never pushed to the server for storage.
 

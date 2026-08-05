@@ -544,7 +544,7 @@ fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
 /// collapsed by keeping the *higher* confidence, so a small all-async .tsx group
 /// made "async/await is widely used" read 100% when only 9 of 16 functions were
 /// async. Pooling the evidence before the rate is computed is what keeps the
-/// number honest, and it is what `spelunk context` reports to an agent.
+/// number honest, and it is what `inkentry context` reports to an agent.
 #[test]
 fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() {
     // 10 .ts functions, 3 async.

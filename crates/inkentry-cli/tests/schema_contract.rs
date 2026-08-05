@@ -352,7 +352,7 @@ pub fn assert_conforms(command: &str, schema: &CommandSchema, rows: &[serde_json
     let violations = check_rows(schema, rows);
     assert!(
         violations.is_empty(),
-        "`spelunk plumbing {command}` output violates the JSONL stability contract \
+        "`inkentry plumbing {command}` output violates the JSONL stability contract \
          ({}):\n{}\n\nIf this change is intentional and additive, the contract file needs no \
          edit. If a field was removed, renamed, or retyped, that is a breaking change to a \
          stable surface.",

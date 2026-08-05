@@ -5,7 +5,7 @@ use super::PlumbingPublishNotesArgs;
 
 /// Publish `refs/notes/inkentry` to a remote (ADR-069 D7).
 ///
-/// Runs against the git repo holding the CWD, so it works before `spelunk init`:
+/// Runs against the git repo holding the CWD, so it works before `inkentry init`:
 /// git notes are the pre-`init` store of record (ADR-068), and publishing them
 /// must not require an index.
 pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
@@ -27,10 +27,10 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             // other skips had nothing to publish in the first place.
             if reason == SkipReason::LockUnavailable {
                 eprintln!(
-                    "spelunk: memory not published: another spelunk process holds the \
+                    "inkentry: memory not published: another inkentry process holds the \
                      notes lock."
                 );
-                eprintln!("spelunk: your code push is unaffected; your next push publishes it.");
+                eprintln!("inkentry: your code push is unaffected; your next push publishes it.");
             }
             emit(&serde_json::json!({
                 "published": false,
@@ -42,9 +42,9 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
         // A hook exiting non-zero aborts the user's branch push outright, so a
         // publish failure must not reach the exit status through it (D3).
         Err(e) if args.best_effort => {
-            eprintln!("spelunk: {e:#}");
+            eprintln!("inkentry: {e:#}");
             eprintln!(
-                "spelunk: your code push is unaffected. Retry with: \
+                "inkentry: your code push is unaffected. Retry with: \
                  git push {remote} refs/notes/inkentry"
             );
             emit(&serde_json::json!({

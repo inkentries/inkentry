@@ -1,4 +1,4 @@
-// Integration tests for `spelunk memory dedupe`.
+// Integration tests for `inkentry memory dedupe`.
 //
 // Covers the CLI-facing acceptance criteria (see ADR-068's third amendment):
 // - `--dry-run` reports counts and makes no writes (AC9).
@@ -14,7 +14,7 @@
 // surface end to end instead of re-proving that mechanics.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use assert_cmd::Command;
 use rusqlite::Connection;
@@ -34,12 +34,12 @@ fn ensure_sqlite_vec() {
     });
 }
 
-// Write a minimal spelunk config and make `dir` a real project, mirroring
+// Write a minimal inkentry config and make `dir` a real project, mirroring
 // `memory_reconcile.rs`'s `write_config`. Returns `(config_path, mem_path)`.
 fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
-    let spelunk_dir = dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry");
-    let index_db = spelunk_dir.join("index.db");
+    let inkentry_dir = dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
+    let index_db = inkentry_dir.join("index.db");
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
@@ -97,7 +97,7 @@ fn dedupe_cmd(config_path: &Path) -> Command {
     let tmp_dir = config_path
         .parent()
         .expect("config_path must have a parent");
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(tmp_dir)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -176,7 +176,7 @@ fn zero_duplicates_reports_all_zero_and_writes_nothing() {
 
     // A single `memory add` seeds one unique row and, on its own `open()`,
     // the empty-store Step B promotes the index: no duplicates ever exist.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")

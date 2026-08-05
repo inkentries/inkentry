@@ -11,7 +11,7 @@ pub(super) async fn memory_timeline(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // Honor the auto-discovered server tier (IMP-3 / spelunk#316): see
+    // Honor the auto-discovered server tier (IMP-3 / inkentry#316): see
     // `memory_search` for rationale — loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`.
     let project_root = mem_path.parent().unwrap_or(mem_path);

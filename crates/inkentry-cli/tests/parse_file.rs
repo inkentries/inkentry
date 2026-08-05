@@ -1,10 +1,10 @@
-//! Component tests for `spelunk plumbing parse-file`.
+//! Component tests for `inkentry plumbing parse-file`.
 //!
 //! `parse-file` does not require an indexed DB — it just parses a file
 //! on disk and emits JSONL chunks.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, spelunk_bin};
+use plumbing_helpers::{parse_jsonl, inkentry_bin};
 
 use predicates::prelude::*;
 use std::path::Path;
@@ -36,7 +36,7 @@ fn parse_file_emits_jsonl_for_rust_file() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -74,7 +74,7 @@ fn parse_file_finds_function_and_struct_chunks() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    let output = spelunk_bin()
+    let output = inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -107,11 +107,11 @@ fn parse_file_exits_1_for_unsupported_file_type() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    // Write a file with an extension spelunk doesn't recognise.
+    // Write a file with an extension inkentry doesn't recognise.
     let unknown = tmp.path().join("file.xyz123");
     std::fs::write(&unknown, "some content").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -128,7 +128,7 @@ fn parse_file_exits_nonzero_for_missing_file() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")
@@ -145,7 +145,7 @@ fn parse_file_exits_nonzero_missing_argument() {
     let config = dummy_config(&tmp);
 
     // Missing required positional argument → clap error.
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

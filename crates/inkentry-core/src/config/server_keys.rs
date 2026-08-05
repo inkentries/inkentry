@@ -88,8 +88,8 @@ fn server_key_for_origin(origin: &str, store: &dyn SecretStore) -> Result<Option
     write_map(store, &map)?;
     store.delete(KEY_SERVER_KEY)?;
     eprintln!(
-        "spelunk: migrated a legacy server key into the per-server key map for {origin}. \
-         Run `spelunk auth set-key --server <url>` for any other server you use."
+        "inkentry: migrated a legacy server key into the per-server key map for {origin}. \
+         Run `inkentry auth set-key --server <url>` for any other server you use."
     );
     Ok(Some(legacy))
 }
@@ -122,7 +122,7 @@ pub fn bearer_for(
     server_key_for_origin(&origin, store)
 }
 
-/// `spelunk auth set-key --server <url>`: store `key` for `url`'s origin.
+/// `inkentry auth set-key --server <url>`: store `key` for `url`'s origin.
 /// Returns the normalized origin it was stored under.
 pub fn set_key_for_origin(server_url: &str, key: &str, store: &dyn SecretStore) -> Result<String> {
     let origin = normalize_origin(server_url)?;
@@ -132,7 +132,7 @@ pub fn set_key_for_origin(server_url: &str, key: &str, store: &dyn SecretStore) 
     Ok(origin)
 }
 
-/// `spelunk auth list-servers`: origins with a stored key (sorted), plus
+/// `inkentry auth list-servers`: origins with a stored key (sorted), plus
 /// whether a legacy (not-yet-migrated) flat key is also present. Never
 /// returns key material.
 pub fn list_origins(store: &dyn SecretStore) -> Result<(Vec<String>, bool)> {
@@ -144,26 +144,26 @@ pub fn list_origins(store: &dyn SecretStore) -> Result<(Vec<String>, bool)> {
 }
 
 /// Count of stored server-key credentials: map entries plus one if a legacy
-/// entry is still present (used by bare `spelunk logout` to report what it
+/// entry is still present (used by bare `inkentry logout` to report what it
 /// left untouched, D3).
 pub fn count(store: &dyn SecretStore) -> Result<usize> {
     let (origins, legacy) = list_origins(store)?;
     Ok(origins.len() + usize::from(legacy))
 }
 
-/// `spelunk logout --servers`: clear the per-origin map.
+/// `inkentry logout --servers`: clear the per-origin map.
 ///
 /// Only the map. The legacy flat entry (and any plaintext remnant still in
 /// `config.toml`) is a separate concern with its own belt-and-braces cleanup
 /// in [`super::remove_server_key`]; callers that want both call both (see
-/// `spelunk logout`'s `--servers` handling).
+/// `inkentry logout`'s `--servers` handling).
 pub fn clear_all(store: &dyn SecretStore) -> Result<()> {
     store
         .delete(KEY_SERVER_KEYS_MAP)
         .context("clearing the server_keys map")
 }
 
-/// `spelunk logout --server <url>`: clear only that origin's credential.
+/// `inkentry logout --server <url>`: clear only that origin's credential.
 /// Returns the normalized origin that was cleared.
 ///
 /// A map entry for the origin is removed if present. Otherwise, when a
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn normalize_origin_omits_default_port_and_lowercases_host() {
         assert_eq!(
-            normalize_origin("https://Spelunk.Internal.Example.Com/foo?x=1#y").unwrap(),
-            "https://spelunk.internal.example.com"
+            normalize_origin("https://Inkentry.Internal.Example.Com/foo?x=1#y").unwrap(),
+            "https://inkentry.internal.example.com"
         );
     }
 

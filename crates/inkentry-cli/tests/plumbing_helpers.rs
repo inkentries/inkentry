@@ -16,7 +16,7 @@ use tempfile::TempDir;
 // qualified, including through this re-export.
 pub use inkentry_core::test_support::isolate_git_config;
 
-// A spawned `spelunk` binary registers sqlite-vec for its own process, but a
+// A spawned `inkentry` binary registers sqlite-vec for its own process, but a
 // `rusqlite::Connection` opened here does not inherit that: without this, any
 // query touching a `vec0` table (`embeddings`, memory vectors) fails, and an
 // assertion reading through `unwrap_or(0)` misreports the error as "empty".
@@ -57,10 +57,10 @@ pub fn init_git_repo(dir: &Path) {
     run(&["commit", "-q", "-m", "initial commit"]);
 }
 
-/// Build a `spelunk` test command that never touches the OS keychain and never
-/// reads or writes the developer's real `~/.config/spelunk`.
+/// Build a `inkentry` test command that never touches the OS keychain and never
+/// reads or writes the developer's real `~/.config/inkentry`.
 ///
-/// Every integration test spawns the real `spelunk` binary, and each spawned
+/// Every integration test spawns the real `inkentry` binary, and each spawned
 /// process runs `Config::load`, which resolves a secret store. In auto mode
 /// (`INKENTRY_SECRET_STORE` unset) that selects the OS keychain whenever one is
 /// present — which on macOS is always — triggering a Keychain access prompt on
@@ -74,40 +74,40 @@ pub fn init_git_repo(dir: &Path) {
 ///   CLI can never reach the keychain. Production behaviour is unchanged: real
 ///   users still get the keychain in auto mode; only tests pin the backend.
 /// * `HOME` / `XDG_CONFIG_HOME` redirected to a throwaway temp dir — so the file
-///   store writes its `secrets.toml` into an isolated `~/.config/spelunk` under
+///   store writes its `secrets.toml` into an isolated `~/.config/inkentry` under
 ///   the temp HOME, never the developer's real config dir.
 ///
 /// The temp dir is intentionally leaked (its path is kept for the lifetime of
 /// the process) so the child can read/write it after this function returns; the
 /// OS reclaims it on the next reboot. Tests that already manage their own `HOME`
-/// (e.g. for registry isolation) should use [`spelunk_bin_in`] instead so the
+/// (e.g. for registry isolation) should use [`inkentry_bin_in`] instead so the
 /// keychain pin composes with their existing home dir.
-pub fn spelunk_bin() -> Command {
+pub fn inkentry_bin() -> Command {
     let home = TempDir::new()
-        .expect("create temp HOME for spelunk test command")
+        .expect("create temp HOME for inkentry test command")
         .keep();
-    spelunk_bin_in(&home)
+    inkentry_bin_in(&home)
 }
 
-/// Like [`spelunk_bin`], but uses the caller-supplied `home` directory as the
+/// Like [`inkentry_bin`], but uses the caller-supplied `home` directory as the
 /// isolated `HOME` instead of allocating a throwaway temp dir.
 ///
 /// Use this from tests that set `HOME` themselves (registry isolation, seeded
-/// config under `<home>/.config/spelunk`, etc.). It applies the same keychain
+/// config under `<home>/.config/inkentry`, etc.). It applies the same keychain
 /// pin (`INKENTRY_SECRET_STORE=file`) and home redirection so those tests stop
 /// prompting for Keychain access while keeping their existing home semantics.
-pub fn spelunk_bin_in(home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("spelunk").unwrap();
+pub fn inkentry_bin_in(home: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("inkentry").unwrap();
     cmd.env("INKENTRY_SECRET_STORE", "file") // never the OS keychain in tests
         .env("HOME", home)
-        // `spelunk_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
-        // XDG_CONFIG_HOME so the file store lands under `<home>/.config/spelunk`
+        // `inkentry_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
+        // XDG_CONFIG_HOME so the file store lands under `<home>/.config/inkentry`
         // and never the developer's real config dir.
         .env_remove("XDG_CONFIG_HOME")
         // `dirs::home_dir()` 6.x on Windows calls `SHGetKnownFolderPath` (a
         // Registry lookup) rather than reading `HOME`/`USERPROFILE`, so the
         // `HOME` redirect above is a no-op there: every subprocess this spawns
-        // would otherwise land on the same real `%USERPROFILE%\.config\spelunk`,
+        // would otherwise land on the same real `%USERPROFILE%\.config\inkentry`,
         // and concurrent tests racing on one `secrets.toml` corrupt it (see the
         // identical, already-documented gap on `INKENTRY_STATE_DIR` in
         // `capability/probe.rs` and `INKENTRY_SCRIPTS_DIR` in `memory/add.rs`).
@@ -129,15 +129,15 @@ pub const FIXTURE_DIR: &str = "tests/fixtures/simple-project";
 /// Project ID used by the fixture mock server.
 pub const FIXTURE_PROJECT_ID: &str = "test-org/test-project";
 
-/// Build a `spelunk plumbing --db <db>` Command pre-configured to use the
+/// Build a `inkentry plumbing --db <db>` Command pre-configured to use the
 /// given DB and config file.  Callers add the specific plumbing subcommand
 /// args (e.g. `cmd.arg("cat-chunks").arg("src/lib.rs")`).
 ///
 /// Note: `--db` is a flag on the `plumbing` subcommand, not the top-level
 /// command.  The correct invocation shape is:
-///   spelunk --config <cfg> plumbing --db <db> <subcommand> [args]
-pub fn spelunk_cmd(db_path: &Path, config_path: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+///   inkentry --config <cfg> plumbing --db <db> <subcommand> [args]
+pub fn inkentry_cmd(db_path: &Path, config_path: &Path) -> Command {
+    let mut cmd = inkentry_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("plumbing")
@@ -159,7 +159,7 @@ pub fn write_config(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
 }
 
 // Like `write_config` but also configures `server_url` + `project_id` for
-// Tier 1 operation (server-based embedding during `spelunk index`).
+// Tier 1 operation (server-based embedding during `inkentry index`).
 //
 // `Config::load` only honors `server_url`/`project_id` from a project-level
 // `.inkentry/config.toml` (discovered by walking up from CWD) or
@@ -189,13 +189,13 @@ pub fn write_config_with_server(
 // a loopback-only test that doesn't need one (see `Config::validate_with_project`)
 // leaves `project_id` genuinely unset, not set to an empty string.
 pub fn write_project_server_config(project_dir: &Path, server_url: &str, project_id: &str) {
-    let spelunk_dir = project_dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
+    let inkentry_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     let mut cfg = format!("server_url = {server_url:?}\n");
     if !project_id.is_empty() {
         cfg.push_str(&format!("project_id = {project_id:?}\n"));
     }
-    std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
+    std::fs::write(inkentry_dir.join("config.toml"), cfg).expect("write project config");
 }
 
 /// Dynamic responder for `POST /v1/projects/{id}/index/embed`.
@@ -272,11 +272,11 @@ pub async fn mount_index_embed(server: &wiremock::MockServer) {
         .await;
 }
 
-/// Run `spelunk index <fixture_dir>` backed by a mock inkentry-server.
+/// Run `inkentry index <fixture_dir>` backed by a mock inkentry-server.
 ///
 /// The mock server handles:
 /// - `GET /v1/health` — Tier 1 capability probe
-/// - `POST /v1/embeddings` — legacy endpoint used by `spelunk plumbing embed`
+/// - `POST /v1/embeddings` — legacy endpoint used by `inkentry plumbing embed`
 /// - `POST /v1/projects/{id}/index/embed` — new Tier 1 index embedding
 ///
 /// Returns `(TempDir, db_path, config_path)`.  The `TempDir` must be kept
@@ -326,7 +326,7 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
             .mount(&server)
             .await;
 
-        // Legacy /v1/embeddings — used by `spelunk plumbing embed --query`.
+        // Legacy /v1/embeddings — used by `inkentry plumbing embed --query`.
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -366,7 +366,7 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     // KNN-dependent consumer of this fixture broken. `.inkentry/config.toml`
     // doesn't recognize a `mode` key (see `write_project_server_config`), so
     // this must go through the env var.
-    spelunk_bin_in(tmp.path())
+    inkentry_bin_in(tmp.path())
         .current_dir(tmp.path())
         .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")

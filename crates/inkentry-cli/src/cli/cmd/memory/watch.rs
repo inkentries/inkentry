@@ -1,4 +1,4 @@
-//! `spelunk memory watch` — stream live memory events from inkentry-server.
+//! `inkentry memory watch` — stream live memory events from inkentry-server.
 //!
 //! Behaviour:
 //! - Opens `GET /v1/projects/{id}/memory/stream` as a persistent SSE connection.
@@ -30,7 +30,7 @@ pub(super) async fn memory_watch(args: MemoryWatchArgs, cfg: &Config) -> Result<
     // (inference-only, ADR-004) whose `server_url` is unset; watching a team
     // stream needs the explicit team server, so check for it separately.
     let base_url = cfg.server_url.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("`spelunk memory watch` requires `server_url` to be configured.")
+        anyhow::anyhow!("`inkentry memory watch` requires `server_url` to be configured.")
     })?;
     let project_id = cfg.project_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(

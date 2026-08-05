@@ -1,7 +1,7 @@
-//! Component tests for `spelunk plumbing ls-files`.
+//! Component tests for `inkentry plumbing ls-files`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ use tempfile::TempDir;
 fn ls_files_emits_jsonl_for_indexed_project() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
         .success()
@@ -47,7 +47,7 @@ fn ls_files_prefix_filter_narrows_results() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     // Use a prefix that matches nothing: expect exit 1.
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .arg("--prefix")
         .arg("/does/not/exist/")
@@ -60,7 +60,7 @@ fn ls_files_stale_flag_returns_subset_or_empty() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     // Without --stale: all files returned.
-    let all_output = spelunk_cmd(&db_path, &config_path)
+    let all_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .output()
         .unwrap();
@@ -68,7 +68,7 @@ fn ls_files_stale_flag_returns_subset_or_empty() {
     let all_count = all_rows.len();
 
     // With --stale: only stale files returned (may be 0..all_count).
-    let stale_output = spelunk_cmd(&db_path, &config_path)
+    let stale_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .arg("--stale")
         .output()
@@ -101,7 +101,7 @@ fn ls_files_stale_exits_1_when_no_stale_files() {
     // matches → --stale emits nothing → ls_files calls std::process::exit(1).
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .arg("--stale")
         .arg("--root")
@@ -124,7 +124,7 @@ fn ls_files_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -153,7 +153,7 @@ fn plumbing_exits_2_on_error() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

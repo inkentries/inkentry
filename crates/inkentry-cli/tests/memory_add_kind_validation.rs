@@ -1,9 +1,9 @@
-// Integration tests for `spelunk memory add --kind` validation.
+// Integration tests for `inkentry memory add --kind` validation.
 //
 // The bug: `memory add --kind <anything>` silently accepted any string as the
 // kind, printed `Stored [<anything>]`, and exited 0 — so a typo'd kind (e.g.
 // `decisions`) stored an entry that no retrieval path (`memory list --kind
-// decision`, `spelunk context`, `memory failures`) could ever surface, yet the
+// decision`, `inkentry context`, `memory failures`) could ever surface, yet the
 // command reported success.
 //
 // Acceptance covered here:
@@ -13,7 +13,7 @@
 //   kinds, and stores NO entry.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -47,11 +47,11 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
     cfg
 }
 
-// Build `spelunk --config <cfg> memory --db <mem_db> add …`. Callers append the
+// Build `inkentry --config <cfg> memory --db <mem_db> add …`. Callers append the
 // `--kind`/`--title`/`--body` args. INKENTRY_NO_SERVER keeps the embed phase
 // offline and deterministic (a note is still stored, just without a vector).
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")

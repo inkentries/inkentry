@@ -1,40 +1,40 @@
-# CLAUDE.md — spelunk
+# CLAUDE.md — inkentry
 
 Developer guide for AI agents (and humans) working on this codebase.
 
 ---
 
-## Agent workflow — use spelunk on this codebase
+## Agent workflow — use inkentry on this codebase
 
-This project is indexed with spelunk. Use it — don't just use Read/Grep/Glob.
+This project is indexed with inkentry. Use it — don't just use Read/Grep/Glob.
 
 **At the start of every session:**
 ```bash
-spelunk context                                   # pull prior decisions, handoffs, questions, requirements (compact by default; --budget <N> caps output tokens)
-spelunk check                                     # verify index is fresh (only if indexed)
+inkentry context                                   # pull prior decisions, handoffs, questions, requirements (compact by default; --budget <N> caps output tokens)
+inkentry check                                     # verify index is fresh (only if indexed)
 ```
 
 **Before reading any file, search first:**
 ```bash
-spelunk graph <symbol>                            # trace callers/callees (works live even without an index)
-spelunk search "<topic>" --mode text              # full-text search (always works)
-spelunk search "<topic>"                          # semantic search (if indexed + server running)
+inkentry graph <symbol>                            # trace callers/callees (works live even without an index)
+inkentry search "<topic>" --mode text              # full-text search (always works)
+inkentry search "<topic>"                          # semantic search (if indexed + server running)
 ```
 
-spelunk retrieves context — you synthesise the answer.
+inkentry retrieves context — you synthesise the answer.
 
 **Store decisions as you make them** — don't wait until the end:
 ```bash
-spelunk memory add --kind decision --title "..." --body "why, what alternatives, what breaks"
-spelunk memory add --kind requirement --title "..." --body "..."   # when user states a constraint
-spelunk memory add --kind note --title "..."                       # surprising/non-obvious facts
+inkentry memory add --kind decision --title "..." --body "why, what alternatives, what breaks"
+inkentry memory add --kind requirement --title "..." --body "..."   # when user states a constraint
+inkentry memory add --kind note --title "..."                       # surprising/non-obvious facts
 ```
 
 **At the end of every session:**
 ```bash
-spelunk memory add --kind handoff --title "Handoff: <summary>" --body "what's done, what's next, open questions"
+inkentry memory add --kind handoff --title "Handoff: <summary>" --body "what's done, what's next, open questions"
 # Optional: re-index if you've indexed the project
-spelunk index .
+inkentry index .
 ```
 
 Full reference: `SKILL.md` and `docs/agent-guide.md`.
@@ -43,15 +43,15 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 ## What This Project Is
 
-`spelunk` is a Rust CLI and context retrieval engine for AI agents.
+`inkentry` is a Rust CLI and context retrieval engine for AI agents.
 
-**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `spelunk graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, `check`, memory, and `graph` on a file path) need `spelunk init` first.
+**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `inkentry graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, `check`, memory, and `graph` on a file path) need `inkentry init` first.
 
-**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry explore`, `inkentry memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
 **Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted inkentry-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
 
-You search with spelunk, then reason over the results yourself.
+You search with inkentry, then reason over the results yourself.
 
 ---
 
@@ -64,7 +64,7 @@ Cargo.toml                    — workspace root; [workspace.dependencies] for s
 
 crates/
   inkentry-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
-  inkentry-cli/                — `spelunk` binary; depends on inkentry-core
+  inkentry-cli/                — `inkentry` binary; depends on inkentry-core
   inkentry-embed/              — library: native F2LLM-v2-330M embedder (candle); depends on inkentry-core
   inkentry-server/             — `inkentry-server` binary + lib; depends on inkentry-core + inkentry-embed
 ```
@@ -75,9 +75,9 @@ crates/
 
 ```
 lib.rs           — crate root; re-exports public modules
-error.rs         — SpelunkError enum
+error.rs         — InkentryError enum
 config/
-  mod.rs         — Config struct; load from ~/.config/spelunk/config.toml
+  mod.rs         — Config struct; load from ~/.config/inkentry/config.toml
   sync_mode.rs   — SyncMode enum: offline / local_first / cloud_first mode selection
   project_id.rs  — project-id derivation from git remote / local fallback
   paths.rs       — config-dir + project/db discovery
@@ -93,7 +93,7 @@ config/
 utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
-registry.rs      — global project registry (~/.config/spelunk/registry.db)
+registry.rs      — global project registry (~/.config/inkentry/registry.db)
 
 conventions/
   mod.rs         — ConventionRecord type; re-exports ConventionExtractor
@@ -189,37 +189,37 @@ cli/
   mod.rs         — clap structs (Cli, Command, *Args)
   cmd/
     mod.rs       — re-exports one pub fn per subcommand
-    auth.rs      — `spelunk auth set-key/list-servers` handlers (ADR-071); `--llm` stores
+    auth.rs      — `inkentry auth set-key/list-servers` handlers (ADR-071); `--llm` stores
                    the LLM endpoint credential
-    check.rs     — `spelunk check` handler
-    context.rs   — `spelunk context` handler (agent session entry point)
+    check.rs     — `inkentry check` handler
+    context.rs   — `inkentry context` handler (agent session entry point)
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
                    three, pinned so nothing is left to inheritance)
-    explore.rs   — `spelunk explore` handler
-    graph.rs     — `spelunk graph` handler
+    explore.rs   — `inkentry explore` handler
+    graph.rs     — `inkentry graph` handler
     helpers.rs   — shared output / progress helpers
-    hooks.rs     — `spelunk hooks` handler
-    init.rs      — `spelunk init` handler
-    link.rs      — `spelunk link/unlink/autoclean` handlers
-    links.rs     — `spelunk links` handler
-    misc.rs      — `spelunk chunks` / `spelunk languages` handlers
-    search.rs    — `spelunk search` handler
-    server.rs    — `spelunk server start/stop/status/logs` daemon management
-    status.rs    — `spelunk status` handler
+    hooks.rs     — `inkentry hooks` handler
+    init.rs      — `inkentry init` handler
+    link.rs      — `inkentry link/unlink/autoclean` handlers
+    links.rs     — `inkentry links` handler
+    misc.rs      — `inkentry chunks` / `inkentry languages` handlers
+    search.rs    — `inkentry search` handler
+    server.rs    — `inkentry server start/stop/status/logs` daemon management
+    status.rs    — `inkentry status` handler
     ui.rs        — TUI helpers (private)
     index/
-      mod.rs         — `spelunk index` entry point
+      mod.rs         — `inkentry index` entry point
       embed_phase.rs — embedding phase of indexing
       mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
       summaries.rs   — AI summary generation during index
       worktree.rs    — git worktree handling for index
     memory/
-      mod.rs          — `spelunk memory` dispatch
+      mod.rs          — `inkentry memory` dispatch
       add.rs          — memory add subcommand
       archive.rs      — memory archive subcommand
-      failures.rs     — `spelunk memory failures` handler
+      failures.rs     — `inkentry memory failures` handler
       graph_cmd.rs    — memory graph subcommand
       harvest.rs      — memory harvest (LLM extraction) entry point
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
@@ -228,10 +228,10 @@ cli/
       reconcile.rs    — memory reconcile subcommand (import from server.db)
       search.rs       — memory search subcommand
       show.rs         — memory show subcommand
-      since.rs        — `spelunk memory since` handler
+      since.rs        — `inkentry memory since` handler
       supersede.rs    — memory supersede subcommand
       timeline.rs     — memory timeline subcommand
-      watch.rs        — `spelunk memory watch`: SSE stream from inkentry-server
+      watch.rs        — `inkentry memory watch`: SSE stream from inkentry-server
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
       cat_chunks.rs        — emit indexed chunks for a file as JSONL
@@ -397,10 +397,10 @@ Each file is hashed with blake3. On re-index, unchanged files are skipped.
 Changed files: delete old chunks + embeddings, reparse, re-embed.
 
 ### Multi-project registry
-`~/.config/spelunk/registry.db` tracks all indexed projects and their
-dependency links. `spelunk search` automatically queries all linked project DBs
-and merges results by distance. Additionally, `spelunk memory search`,
-`spelunk memory list`, and `spelunk context` surface `locked`- or
+`~/.config/inkentry/registry.db` tracks all indexed projects and their
+dependency links. `inkentry search` automatically queries all linked project DBs
+and merges results by distance. Additionally, `inkentry memory search`,
+`inkentry memory list`, and `inkentry context` surface `locked`- or
 `cross-project`-tagged `decision` and `requirement` entries from linked
 projects' memory stores (ADR-003). Each cross-project result is tagged with its
 source project so decisions remain attributable. Pass `--local-only` to any of
@@ -553,7 +553,7 @@ cargo audit
   `crates/inkentry-cli/src/main.rs` and `crates/inkentry-server/src/main.rs`).
   The extension binary is bundled by the crate — no system install needed.
 - `regex` is used only by `crates/inkentry-core/src/indexer/secrets.rs`. Patterns
-  are compiled once via `OnceLock` at the start of `spelunk index`.
+  are compiled once via `OnceLock` at the start of `inkentry index`.
 - `ignore` respects `.gitignore`, `.ignore`, and global gitignore rules during
   file traversal. Sensitive file patterns (`.env*`, `*.pem`, etc.) are
   excluded unconditionally via `OverrideBuilder`.

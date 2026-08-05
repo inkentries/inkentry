@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn is_loopback_url_rejects_non_loopback() {
-        assert!(!is_loopback_url("http://spelunk.internal:7777"));
+        assert!(!is_loopback_url("http://inkentry.internal:7777"));
         assert!(!is_loopback_url("http://192.168.1.100:7777"));
         assert!(!is_loopback_url("https://example.com"));
         assert!(!is_loopback_url("http://10.0.0.1"));

@@ -19,17 +19,17 @@ See [Third-party models](third-party-models.md).
 - **License:** Apache License 2.0 (declared via the upstream Hugging Face
   model-card license tag). Full text:
   https://www.apache.org/licenses/LICENSE-2.0
-- **Use in spelunk:** loaded by `inkentry-server` as the 896-dim semantic
+- **Use in inkentry:** loaded by `inkentry-server` as the 896-dim semantic
   embedding backend (Qwen3 decoder architecture, candle runtime).
 
 ### Modification notice (Apache-2.0 §4)
 
-spelunk redistributes a **modified** copy of these weights: the original BF16
+inkentry redistributes a **modified** copy of these weights: the original BF16
 safetensors are **quantized to Q8_0** (projection matmuls and the token-embedding
 table are stored Q8_0; RMSNorm weights are kept F32) and packaged as a single
 GGUF file. No other changes are made to the weights.
 
-spelunk fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
+inkentry fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
 `tokenizer.json`, from a Hugging Face repository it owns
 (`spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`); that artifact carries its own
 `LICENSE`, `NOTICE`, and model card reproducing this attribution. `config.json`

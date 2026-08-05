@@ -1,21 +1,21 @@
-// End-to-end regression tests for `spelunk memory add`'s insert-then-recover
+// End-to-end regression tests for `inkentry memory add`'s insert-then-recover
 // behavior once `idx_notes_entity_id` has been promoted to UNIQUE (ADR-068's
 // fourth amendment, criteria 25-30, 33, 34).
 //
 // Every existing test proving this behavior (`entity_id_migration.rs`'s
 // `add_note_after_promotion_*` tests) drives `MemoryStore::add_note`
 // directly, the storage layer, one level below the actual regression QA
-// reproduced: "`spelunk memory add` for a second time with identical
+// reproduced: "`inkentry memory add` for a second time with identical
 // kind/title/body prints 'Error: UNIQUE constraint failed: notes.entity_id'
 // and exits 1", run against the *built CLI binary*. Nothing in the existing
-// suite drives the real `spelunk` binary through this path end to end, so
+// suite drives the real `inkentry` binary through this path end to end, so
 // this file closes that gap: it proves the CLI's own output branch
 // (criterion 33: "Stored" vs "Already recorded as") and the git-notes
 // write-through carrier's behavior on a reuse (criterion 34) against the
 // actual process, not just the library call it wraps.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin};
+use plumbing_helpers::{init_git_repo, inkentry_bin};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -37,7 +37,7 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
 }
 
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL")

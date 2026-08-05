@@ -54,7 +54,7 @@ pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
 
     // Honor the capability tier: when the server was auto-discovered via the
     // loopback probe, `cfg.server_url` is unset; fill it in from the tier so the
-    // inference client can be built (IMP-3 / spelunk#316).
+    // inference client can be built (IMP-3 / inkentry#316).
     //
     // `get_inference_tier` (not `tier`/`get_tier` above, which governs the
     // `require_tier1` feature gate): local_first always prefers the local
@@ -65,8 +65,8 @@ pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
     let eff_cfg = inference_tier.effective_config(&cfg, project_root);
     let embed_client = ServerInferenceClient::from_config(&eff_cfg).ok_or_else(|| {
         anyhow::anyhow!(
-            "'spelunk explore' requires inkentry-server.\n\
-             Set server_url in ~/.config/spelunk/config.toml to enable this feature."
+            "'inkentry explore' requires inkentry-server.\n\
+             Set server_url in ~/.config/inkentry/config.toml to enable this feature."
         )
     })?;
 

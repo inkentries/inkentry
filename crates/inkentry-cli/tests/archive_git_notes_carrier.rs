@@ -6,7 +6,7 @@
 // them, so every test here runs across two real clones of a shared origin.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -43,7 +43,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 // Fetch `refs/notes/inkentry` from `origin` into this repo's tracking ref.
-// Explicit rather than relying on `spelunk init`'s configured refspec, so
+// Explicit rather than relying on `inkentry init`'s configured refspec, so
 // each test controls exactly when a fetch happens.
 fn fetch_notes(dir: &Path) {
     git(
@@ -66,44 +66,44 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-// A `spelunk` command with an isolated HOME and no server contact.
+// A `inkentry` command with an isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 
-// Write an empty spelunk config (init needs `--config` but no values here).
+// Write an empty inkentry config (init needs `--config` but no values here).
 fn empty_config(dir: &Path) -> PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
     cfg
 }
 
-// Run `spelunk init --no-index` in `dir`, using `dir` itself as HOME (so the
+// Run `inkentry init --no-index` in `dir`, using `dir` itself as HOME (so the
 // import writes `dir/.inkentry/memory.db`). Offline, non-TTY.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
-    let out = spelunk_bin_in(dir)
+    let out = inkentry_bin_in(dir)
         .current_dir(dir)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
         .args(["init", "--no-index"])
         .output()
-        .expect("spawn spelunk init");
+        .expect("spawn inkentry init");
     assert!(
         out.status.success(),
-        "spelunk init failed: {}",
+        "inkentry init failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-// The spelunk records currently in HEAD's `refs/notes/inkentry` note.
-fn spelunk_note_lines(dir: &Path) -> Vec<String> {
+// The inkentry records currently in HEAD's `refs/notes/inkentry` note.
+fn inkentry_note_lines(dir: &Path) -> Vec<String> {
     let blob = git_stdout(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     blob.lines()
         .map(str::trim)
@@ -121,14 +121,14 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-// The `id` spelunk assigned locally (in `dir`'s own `memory.db`) to the entry
+// The `id` inkentry assigned locally (in `dir`'s own `memory.db`) to the entry
 // titled `title`. Distinct from the `id` on a git-notes record: two clones
 // mint their own rowids for the same entity independently.
 fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> i64 {
     let out = bin(home, dir)
         .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
         .output()
-        .expect("spawn spelunk memory list");
+        .expect("spawn inkentry memory list");
     assert!(
         out.status.success(),
         "memory list failed: {}",
@@ -210,7 +210,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         ])
         .assert()
         .success();
-    let seeded = spelunk_note_lines(&a);
+    let seeded = inkentry_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
     let x_id = record_field(&seeded[0], "id");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
@@ -251,7 +251,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     let default_list = bin(home_b.path(), &b)
         .args(["memory", "--backend", "git-notes", "list"])
         .output()
-        .expect("spawn spelunk memory list");
+        .expect("spawn inkentry memory list");
     assert!(default_list.status.success());
     let default_stdout = String::from_utf8_lossy(&default_list.stdout);
     assert!(
@@ -268,7 +268,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     let archived_list = bin(home_b.path(), &b)
         .args(["memory", "--backend", "git-notes", "list", "--archived"])
         .output()
-        .expect("spawn spelunk memory list --archived");
+        .expect("spawn inkentry memory list --archived");
     let archived_stdout = String::from_utf8_lossy(&archived_list.stdout);
     assert_eq!(
         archived_stdout.matches("clone-a-archives-me").count(),
@@ -286,7 +286,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     // line alongside X's original, never a replacement of it, so exactly two
     // raw lines must carry X's entity_id: the untouched original (still
     // "active") and the appended state-update ("archived").
-    let raw_lines = spelunk_note_lines(&b);
+    let raw_lines = inkentry_note_lines(&b);
     let x_entity_id = record_field(&seeded[0], "entity_id");
     let x_lines: Vec<&String> = raw_lines
         .iter()
@@ -336,13 +336,13 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
         ])
         .assert()
         .success();
-    let seeded = spelunk_note_lines(&a);
+    let seeded = inkentry_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
     let a_id = record_field(&seeded[0], "id");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B needs its own local (SQLite) copy of X to archive it through the
-    // normal command, so it imports via a real `spelunk init` rather than the
+    // normal command, so it imports via a real `inkentry init` rather than the
     // manual `.inkentry` mkdir the other clones in this file use.
     fetch_notes(&b);
     let init_stdout = run_init(&b);
@@ -370,7 +370,7 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     let archived_list = bin(&b, &b)
         .args(["memory", "--backend", "git-notes", "list", "--archived"])
         .output()
-        .expect("spawn spelunk memory list --archived");
+        .expect("spawn inkentry memory list --archived");
     assert!(archived_list.status.success());
     let archived_stdout = String::from_utf8_lossy(&archived_list.stdout);
     assert_eq!(
@@ -438,7 +438,7 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
     let out = bin(home.path(), &dir)
         .args(["memory", "archive", &id.to_string()])
         .output()
-        .expect("spawn spelunk memory archive");
+        .expect("spawn inkentry memory archive");
 
     // Restore before asserting: a panic below would otherwise leave a
     // read-only directory behind that `TempDir` cannot clean up.
@@ -466,7 +466,7 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
             "10",
         ])
         .output()
-        .expect("spawn spelunk memory list --archived");
+        .expect("spawn inkentry memory list --archived");
     assert!(
         String::from_utf8_lossy(&archived.stdout).contains("carrier-fail-probe"),
         "the SQLite primary must hold the archive even though the carrier failed, got:\n{}",

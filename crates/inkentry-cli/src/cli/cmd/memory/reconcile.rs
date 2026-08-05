@@ -1,4 +1,4 @@
-//! `spelunk memory reconcile` — import unique notes from server.db into memory.db.
+//! `inkentry memory reconcile` — import unique notes from server.db into memory.db.
 //!
 //! Discovers notes that exist in the local daemon's `server.db` but are absent
 //! from `memory.db` for the active project, and imports them in a single
@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use super::MemoryReconcileArgs;
 use crate::{
     capability,
-    capability::spelunk_state_dir,
+    capability::inkentry_state_dir,
     config::Config,
     server_client::ServerInferenceClient,
     storage::{MemoryStore, entity_id, note_entity_id},
@@ -266,7 +266,7 @@ async fn run_all_projects(
     let slugs = list_server_project_slugs(server_db_path)?;
     if slugs.is_empty() {
         if !json {
-            eprintln!("[spelunk] No projects found in server.db.");
+            eprintln!("[inkentry] No projects found in server.db.");
         }
         return Ok(());
     }
@@ -478,17 +478,17 @@ async fn reconcile_project(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Default path for the daemon's server.db: `~/.local/state/spelunk/server.db`,
+/// Default path for the daemon's server.db: `~/.local/state/inkentry/server.db`,
 /// or `INKENTRY_STATE_DIR` when set.
 ///
-/// Must go through the shared `capability::spelunk_state_dir` resolver, not
+/// Must go through the shared `capability::inkentry_state_dir` resolver, not
 /// reconstruct the path from `dirs::home_dir()` independently: the daemon
-/// (`spelunk server start`) writes `server.db` via that same resolver, so a
+/// (`inkentry server start`) writes `server.db` via that same resolver, so a
 /// second, hardcoded reconstruction here would silently stop finding it
 /// under `INKENTRY_STATE_DIR` while still reporting reconcile as a no-op
 /// success (the "server.db doesn't exist" branch) instead of an error.
 fn default_server_db_path() -> PathBuf {
-    spelunk_state_dir()
+    inkentry_state_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("server.db")
 }
@@ -615,13 +615,13 @@ fn emit_summary(summary: &ReconcileSummary, json: bool, dry_run: bool) {
 fn print_human_summary(s: &ReconcileSummary, dry_run: bool) {
     if dry_run {
         eprintln!(
-            "[spelunk] reconcile (dry-run): source={} project={} candidates={} already_present={} would_import={}",
+            "[inkentry] reconcile (dry-run): source={} project={} candidates={} already_present={} would_import={}",
             s.source_db, s.project_slug, s.candidates, s.already_present, s.would_import
         );
         return;
     }
     eprintln!(
-        "[spelunk] reconcile: source={} project={} candidates={} already_present={} imported={} without_embedding={} supersede_unresolved={}",
+        "[inkentry] reconcile: source={} project={} candidates={} already_present={} imported={} without_embedding={} supersede_unresolved={}",
         s.source_db,
         s.project_slug,
         s.candidates,
@@ -632,7 +632,7 @@ fn print_human_summary(s: &ReconcileSummary, dry_run: bool) {
     );
     if !s.errors.is_empty() {
         for e in &s.errors {
-            eprintln!("[spelunk] reconcile error ({}): {}", e.stage, e.message);
+            eprintln!("[inkentry] reconcile error ({}): {}", e.stage, e.message);
         }
     }
 }
@@ -908,8 +908,8 @@ pub(crate) fn maybe_emit_nudge(mem_path: &std::path::Path, cfg: &Config) {
 
     if let Some(n) = count_reconcilable(&server_db, mem_path, &slug) {
         eprintln!(
-            "[spelunk] {n} note(s) recorded by a local server aren't in this project's memory yet. \
-             Run 'spelunk memory reconcile' to import them."
+            "[inkentry] {n} note(s) recorded by a local server aren't in this project's memory yet. \
+             Run 'inkentry memory reconcile' to import them."
         );
     }
 }
@@ -1078,7 +1078,7 @@ mod init_import_tests {
         assert_eq!(store.list(None, 10, true).expect("list").len(), 1);
     }
 
-    /// A repo with no spelunk notes ref is a silent no-op.
+    /// A repo with no inkentry notes ref is a silent no-op.
     #[tokio::test]
     async fn init_import_no_notes_is_noop() {
         register_sqlite_vec();
@@ -1112,7 +1112,7 @@ mod init_import_tests {
         );
     }
 
-    /// A repo that HAS a commit but no spelunk notes must likewise leave no
+    /// A repo that HAS a commit but no inkentry notes must likewise leave no
     /// `memory.db` behind (the import bails before opening the store).
     #[tokio::test]
     async fn init_import_no_notes_no_db_churn() {

@@ -120,7 +120,7 @@ impl MemoryBackend for GitNotesBackend {
             let blob = self.read_note_blob(&commit).await?;
             if let Some(record) = blob
                 .lines()
-                .find_map(|line| super::parse_spelunk_line(line).filter(|r| r.id == id))
+                .find_map(|line| super::parse_inkentry_line(line).filter(|r| r.id == id))
             {
                 found = Some(record);
                 break;
@@ -144,7 +144,7 @@ impl MemoryBackend for GitNotesBackend {
         _query: &str,
         _limit: usize,
     ) -> Result<Vec<Note>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("search_timeline".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("search_timeline".into()).into())
     }
 
     async fn search(
@@ -154,7 +154,7 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("search".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("search".into()).into())
     }
 
     async fn search_text(
@@ -163,7 +163,7 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("search_text".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("search_text".into()).into())
     }
 
     async fn search_hybrid(
@@ -173,27 +173,27 @@ impl MemoryBackend for GitNotesBackend {
         _limit: usize,
         _as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("search_hybrid".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("search_hybrid".into()).into())
     }
 
     async fn supersede(&self, _old_id: NoteId, _new_id: NoteId) -> Result<bool> {
-        Err(crate::error::SpelunkError::BackendUnsupported("supersede".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("supersede".into()).into())
     }
 
     async fn harvested_shas(&self) -> Result<HashSet<String>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("harvested_shas".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("harvested_shas".into()).into())
     }
 
     async fn has_source_ref(&self, _sha: &str) -> Result<bool> {
-        Err(crate::error::SpelunkError::BackendUnsupported("has_source_ref".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("has_source_ref".into()).into())
     }
 
     async fn add_edge(&self, _from_id: i64, _to_id: i64, _kind: &str) -> Result<()> {
-        Err(crate::error::SpelunkError::BackendUnsupported("add_edge".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("add_edge".into()).into())
     }
 
     async fn get_edges(&self, _id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
-        Err(crate::error::SpelunkError::BackendUnsupported("get_edges".into()).into())
+        Err(crate::error::InkentryError::BackendUnsupported("get_edges".into()).into())
     }
 
     fn backend_kind(&self) -> &'static str {

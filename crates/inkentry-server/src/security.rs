@@ -156,7 +156,7 @@ mod tests {
     fn clean_decision_negative() {
         assert!(!hit(
             "Chose sqlite-vec over pgvector",
-            "Keeps spelunk self-contained; no external process needed.",
+            "Keeps inkentry self-contained; no external process needed.",
         ));
     }
 

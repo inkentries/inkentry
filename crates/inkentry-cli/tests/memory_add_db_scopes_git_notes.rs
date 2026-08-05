@@ -9,7 +9,7 @@
 //! appended fixture entries to the developer's real `refs/notes/inkentry`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin_in};
+use plumbing_helpers::{init_git_repo, inkentry_bin_in};
 
 use assert_cmd::Command;
 use std::path::Path;
@@ -25,9 +25,9 @@ fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn git")
 }
 
-/// The spelunk records currently on `HEAD`'s `refs/notes/inkentry` note in
+/// The inkentry records currently on `HEAD`'s `refs/notes/inkentry` note in
 /// `dir`, or `None` when that repo holds no such note at all.
-fn spelunk_note_lines(dir: &Path) -> Option<Vec<String>> {
+fn inkentry_note_lines(dir: &Path) -> Option<Vec<String>> {
     let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     if !out.status.success() {
         return None;
@@ -51,9 +51,9 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-/// A `spelunk` command with an isolated HOME and no server contact, run in `cwd`.
+/// A `inkentry` command with an isolated HOME and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
@@ -91,7 +91,7 @@ fn db_target_outside_any_repo_never_writes_cwd_repos_notes() {
         .success();
 
     assert!(
-        spelunk_note_lines(&host_repo).is_none(),
+        inkentry_note_lines(&host_repo).is_none(),
         "the host repo's refs/notes/inkentry must stay untouched when --db \
          points outside it"
     );
@@ -127,10 +127,10 @@ fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
         .success();
 
     assert!(
-        spelunk_note_lines(&host_repo).is_none(),
+        inkentry_note_lines(&host_repo).is_none(),
         "the CWD repo must not receive the note"
     );
-    let project_lines = spelunk_note_lines(&project_repo)
+    let project_lines = inkentry_note_lines(&project_repo)
         .expect("the --db target's own repo must receive the note");
     assert_eq!(project_lines.len(), 1);
     assert_eq!(
@@ -171,7 +171,7 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
         .arg("b1")
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(&project_repo).expect("first add wrote a note");
+    let old_lines = inkentry_note_lines(&project_repo).expect("first add wrote a note");
     assert_eq!(old_lines.len(), 1);
     let old_id = record_field(&old_lines[0], "id");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
@@ -193,11 +193,11 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
         .success();
 
     assert!(
-        spelunk_note_lines(&host_repo).is_none(),
+        inkentry_note_lines(&host_repo).is_none(),
         "the CWD repo must not receive the new record or the supersede \
          state-update"
     );
-    let project_lines = spelunk_note_lines(&project_repo)
+    let project_lines = inkentry_note_lines(&project_repo)
         .expect("the --db target's own repo must hold every record");
     assert_eq!(
         project_lines.len(),
@@ -239,7 +239,7 @@ fn pre_init_add_with_no_local_project_uses_cwd_repo() {
         .assert()
         .success();
 
-    let lines = spelunk_note_lines(&repo).expect("pre-init add must write to CWD's repo");
+    let lines = inkentry_note_lines(&repo).expect("pre-init add must write to CWD's repo");
     assert_eq!(lines.len(), 1);
     assert_eq!(record_field(&lines[0], "title"), "pre-init-entry");
 }
@@ -270,7 +270,7 @@ fn pre_init_supersedes_reads_and_writes_cwd_repo() {
         .arg("b1")
         .assert()
         .success();
-    let old_lines = spelunk_note_lines(&repo).expect("first pre-init add wrote a note");
+    let old_lines = inkentry_note_lines(&repo).expect("first pre-init add wrote a note");
     assert_eq!(old_lines.len(), 1);
     let old_id = record_field(&old_lines[0], "id");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
@@ -289,7 +289,7 @@ fn pre_init_supersedes_reads_and_writes_cwd_repo() {
         .assert()
         .success();
 
-    let lines = spelunk_note_lines(&repo).expect("pre-init add must write to CWD's repo");
+    let lines = inkentry_note_lines(&repo).expect("pre-init add must write to CWD's repo");
     assert_eq!(
         lines.len(),
         3,
@@ -346,11 +346,11 @@ fn db_target_nested_inside_cwd_repo_writes_there_not_cwd_repo() {
         .success();
 
     assert!(
-        spelunk_note_lines(&host_repo).is_none(),
+        inkentry_note_lines(&host_repo).is_none(),
         "the outer host repo must not receive the note even though the --db \
          target's repo is nested inside it"
     );
-    let nested_lines = spelunk_note_lines(&nested_repo)
+    let nested_lines = inkentry_note_lines(&nested_repo)
         .expect("the --db target's own nested repo must receive the note");
     assert_eq!(nested_lines.len(), 1);
     assert_eq!(

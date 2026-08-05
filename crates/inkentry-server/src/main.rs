@@ -25,7 +25,7 @@ use server_llm::{ServerLlm, check_llm_transport, resolve_llm_key};
 #[command(
     name = "inkentry-server",
     version,
-    about = "Shared memory server for spelunk",
+    about = "Shared memory server for inkentry",
     before_help = concat!("inkentry-server v", env!("CARGO_PKG_VERSION"))
 )]
 struct Args {
@@ -42,7 +42,7 @@ struct Args {
     host: String,
 
     /// Path to the server SQLite database
-    #[arg(long, default_value = "spelunk.db")]
+    #[arg(long, default_value = "inkentry.db")]
     db: PathBuf,
 
     /// Shared API key (Bearer token) passed inline. Visible in the process
@@ -458,9 +458,9 @@ struct ThreadBudget {
 fn embed_thread_budget(
     physical: usize,
     rayon_override: Option<usize>,
-    spelunk_override: Option<usize>,
+    inkentry_override: Option<usize>,
 ) -> usize {
-    if let Some(n) = spelunk_override.filter(|&n| n > 0) {
+    if let Some(n) = inkentry_override.filter(|&n| n > 0) {
         return n;
     }
     if let Some(n) = rayon_override.filter(|&n| n > 0) {
@@ -476,9 +476,9 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
         std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
     }
     let rayon = env_threads("RAYON_NUM_THREADS");
-    let spelunk = env_threads("INKENTRY_EMBED_THREADS");
-    let threads = embed_thread_budget(num_cpus::get_physical(), rayon, spelunk);
-    let source = if spelunk.filter(|&n| n > 0).is_some() {
+    let inkentry = env_threads("INKENTRY_EMBED_THREADS");
+    let threads = embed_thread_budget(num_cpus::get_physical(), rayon, inkentry);
+    let source = if inkentry.filter(|&n| n > 0).is_some() {
         "INKENTRY_EMBED_THREADS"
     } else if rayon.filter(|&n| n > 0).is_some() {
         "RAYON_NUM_THREADS"
@@ -817,10 +817,10 @@ mod arg_tests {
     fn embedder_load_failure_message_is_prefixed() {
         assert_eq!(
             super::embedder_load_failure_message(
-                "creating model cache dir /home/spelunk/.local/share/spelunk/models: \
+                "creating model cache dir /home/inkentry/.local/share/inkentry/models: \
                  Permission denied (os error 13)"
             ),
-            "failed: creating model cache dir /home/spelunk/.local/share/spelunk/models: \
+            "failed: creating model cache dir /home/inkentry/.local/share/inkentry/models: \
              Permission denied (os error 13)"
         );
     }
@@ -932,17 +932,17 @@ mod arg_tests {
         let args = Args::parse_from([
             "inkentry-server",
             "--tls-cert",
-            "/etc/spelunk/tls-cert",
+            "/etc/inkentry/tls-cert",
             "--tls-key",
-            "/etc/spelunk/tls-key",
+            "/etc/inkentry/tls-key",
         ]);
         assert_eq!(
             args.tls_cert.as_deref(),
-            Some(std::path::Path::new("/etc/spelunk/tls-cert"))
+            Some(std::path::Path::new("/etc/inkentry/tls-cert"))
         );
         assert_eq!(
             args.tls_key.as_deref(),
-            Some(std::path::Path::new("/etc/spelunk/tls-key"))
+            Some(std::path::Path::new("/etc/inkentry/tls-key"))
         );
     }
 
@@ -1120,17 +1120,17 @@ mod arg_tests {
     /// silently degrade to no-auth.
     #[test]
     fn missing_key_file_is_fatal() {
-        let path = std::path::Path::new("/nonexistent/spelunk/server-key");
+        let path = std::path::Path::new("/nonexistent/inkentry/server-key");
         assert!(super::resolve_api_key(None, Some(path), None, None).is_err());
     }
 
     /// `--key-file` parses as a path arg.
     #[test]
     fn key_file_flag_parses() {
-        let args = Args::parse_from(["inkentry-server", "--key-file", "/etc/spelunk/server-key"]);
+        let args = Args::parse_from(["inkentry-server", "--key-file", "/etc/inkentry/server-key"]);
         assert_eq!(
             args.key_file.as_deref(),
-            Some(std::path::Path::new("/etc/spelunk/server-key"))
+            Some(std::path::Path::new("/etc/inkentry/server-key"))
         );
     }
 
@@ -1139,10 +1139,10 @@ mod arg_tests {
     /// `--model-dir` parses as a path arg, for the air-gapped load path.
     #[test]
     fn model_dir_flag_parses() {
-        let args = Args::parse_from(["inkentry-server", "--model-dir", "/srv/spelunk/models"]);
+        let args = Args::parse_from(["inkentry-server", "--model-dir", "/srv/inkentry/models"]);
         assert_eq!(
             args.model_dir.as_deref(),
-            Some(std::path::Path::new("/srv/spelunk/models"))
+            Some(std::path::Path::new("/srv/inkentry/models"))
         );
     }
 
@@ -1178,7 +1178,7 @@ mod arg_tests {
         let prev = std::env::var("INKENTRY_MODEL_DIR").ok();
         // SAFETY: guarded by #[serial] so no other test reads/writes this var
         // concurrently; restored before returning.
-        unsafe { std::env::set_var("INKENTRY_MODEL_DIR", "/srv/spelunk/models") };
+        unsafe { std::env::set_var("INKENTRY_MODEL_DIR", "/srv/inkentry/models") };
 
         let args = Args::parse_from(["inkentry-server"]);
 
@@ -1189,7 +1189,7 @@ mod arg_tests {
 
         assert_eq!(
             args.model_dir.as_deref(),
-            Some(std::path::Path::new("/srv/spelunk/models"))
+            Some(std::path::Path::new("/srv/inkentry/models"))
         );
     }
 
@@ -1344,15 +1344,15 @@ mod thread_budget_tests {
     /// `INKENTRY_EMBED_THREADS` wins over both the default and a set
     /// `RAYON_NUM_THREADS`.
     #[test]
-    fn spelunk_override_wins() {
+    fn inkentry_override_wins() {
         assert_eq!(embed_thread_budget(10, None, Some(3)), 3);
         assert_eq!(embed_thread_budget(10, Some(6), Some(3)), 3);
     }
 
-    /// A user-set `RAYON_NUM_THREADS` is respected when there is no spelunk
+    /// A user-set `RAYON_NUM_THREADS` is respected when there is no inkentry
     /// override — don't override CI / power users.
     #[test]
-    fn rayon_override_respected_without_spelunk() {
+    fn rayon_override_respected_without_inkentry() {
         assert_eq!(embed_thread_budget(10, Some(4), None), 4);
     }
 

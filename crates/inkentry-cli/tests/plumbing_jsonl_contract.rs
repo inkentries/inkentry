@@ -11,8 +11,8 @@ mod plumbing_helpers;
 mod schema_contract;
 
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, parse_jsonl, spelunk_bin,
-    spelunk_cmd, write_config, write_project_server_config,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, parse_jsonl, inkentry_bin,
+    inkentry_cmd, write_config, write_project_server_config,
 };
 use schema_contract::{CommandSchema, assert_conforms, check_rows, load_golden};
 
@@ -107,7 +107,7 @@ fn assert_every_declared_field_is_load_bearing(
 // list, so it cannot drift from the binary.
 #[test]
 fn golden_schema_covers_every_plumbing_subcommand() {
-    let help = spelunk_bin()
+    let help = inkentry_bin()
         .args(["plumbing", "--help"])
         .output()
         .expect("run plumbing --help");
@@ -160,7 +160,7 @@ fn golden_schema_covers_every_plumbing_subcommand() {
 fn cat_chunks_output_matches_the_contract() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .args(["cat-chunks", "src/lib.rs"])
         .assert()
         .success()
@@ -175,7 +175,7 @@ fn cat_chunks_output_matches_the_contract() {
 fn ls_files_output_matches_the_contract() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
         .success()
@@ -191,7 +191,7 @@ fn hash_file_output_matches_the_contract() {
     let (_tmp, db_path, config_path) = index_fixture_project();
     let file = plumbing_helpers::fixture_path().join("src/lib.rs");
 
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .arg("hash-file")
         .arg(&file)
         .assert()
@@ -210,7 +210,7 @@ fn graph_edges_output_matches_the_contract() {
     // `main.rs` calls into `lib.rs`, so the edge table is non-empty for it.
     // Asserting success (not "success or exit 1") keeps this from degrading
     // into a test that passes by never checking anything.
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .args(["graph-edges", "--file", "src/main.rs"])
         .assert()
         .success()
@@ -234,7 +234,7 @@ fn knn_output_matches_the_contract() {
         "vector": vec![0.1f32; FIXTURE_EMBEDDING_DIM],
     });
 
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(payload.to_string())
         .assert()
@@ -262,7 +262,7 @@ fn knn_is_the_cat_chunks_shape_plus_a_derived_score() {
         "dimensions": FIXTURE_EMBEDDING_DIM,
         "vector": vec![0.1f32; FIXTURE_EMBEDDING_DIM],
     });
-    let knn_out = spelunk_cmd(&db_path, &config_path)
+    let knn_out = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(payload.to_string())
         .assert()
@@ -270,7 +270,7 @@ fn knn_is_the_cat_chunks_shape_plus_a_derived_score() {
         .get_output()
         .stdout
         .clone();
-    let cat_out = spelunk_cmd(&db_path, &config_path)
+    let cat_out = inkentry_cmd(&db_path, &config_path)
         .args(["cat-chunks", "src/lib.rs"])
         .assert()
         .success()
@@ -313,7 +313,7 @@ fn parse_file_output_matches_the_contract() {
 
     // `parse-file` returns before the index-exists check, so an absent DB here
     // is deliberate: it proves the command really is index-free.
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .arg("parse-file")
         .arg(&file)
         .assert()
@@ -350,7 +350,7 @@ async fn embed_output_matches_the_contract() {
     std::fs::write(&config, "mode = \"cloud_first\"\n").unwrap();
     write_project_server_config(tmp.path(), &mock.uri(), FIXTURE_PROJECT_ID);
 
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -375,7 +375,7 @@ fn read_memory_output_matches_the_contract() {
 
     // The git-notes carrier follows the process CWD and ignores `--db`, so this
     // runs in the temp dir rather than the repo under test.
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -395,7 +395,7 @@ fn read_memory_output_matches_the_contract() {
         .assert()
         .success();
 
-    let out = spelunk_cmd(&db_path, &config_path)
+    let out = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .assert()
         .success()
@@ -411,7 +411,7 @@ fn read_memory_output_matches_the_contract() {
 // a real repository state rather than hand-built, and each returns its stdout.
 
 fn seed_a_note(repo: &Path, title: &str) {
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(repo)
         .env("INKENTRY_NO_SERVER", "1")
         .args([
@@ -429,7 +429,7 @@ fn seed_a_note(repo: &Path, title: &str) {
 }
 
 fn publish_notes_stdout(repo: &Path, extra: &[&str]) -> Vec<u8> {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(repo).env("INKENTRY_NO_SERVER", "1").args([
         "plumbing",
         "publish-notes",

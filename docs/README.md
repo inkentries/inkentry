@@ -1,8 +1,8 @@
-# spelunk documentation
+# inkentry documentation
 
-> git tracks what changed. spelunk remembers why.
+> git tracks what changed. inkentry remembers why.
 
-spelunk helps you understand an unfamiliar codebase fast, then remembers the
+inkentry helps you understand an unfamiliar codebase fast, then remembers the
 decisions behind it so the next session does not re-derive them. These docs
 follow the path a new user takes, from the first five minutes to running a
 shared memory server for a team. Read them in order the first time; use the
@@ -11,13 +11,13 @@ reference (stage 4) for lookup afterwards.
 ## 1. On-ramp (first five minutes)
 
 Understand how an unfamiliar codebase fits together, with zero infrastructure.
-Install the binary, run `spelunk init`, and the first `graph` / `search` /
+Install the binary, run `inkentry init`, and the first `graph` / `search` /
 `context` already trace how a symbol connects, find the code behind a concept,
 and assemble the context around a change. This is fast understanding (how,
 where, what), not a faster grep, and it needs no server.
 
 - [README quick start](../README.md#quick-start): the install one-liner and three commands that work immediately
-- [Getting Started → install](getting-started.md#1-install-spelunk): script, Homebrew, `.deb`, or tarball
+- [Getting Started → install](getting-started.md#1-install-inkentry): script, Homebrew, `.deb`, or tarball
 - [Getting Started → first index and retrieval](getting-started.md#2-cold-start-index-and-get-your-first-answer): `init`, `index`, and your first answer
 - [Example: onboarding a new codebase](examples/onboarding-a-new-codebase.md): a full first-session walkthrough
 
@@ -25,7 +25,7 @@ where, what), not a faster grep, and it needs no server.
 
 Next, make that understanding stick. The core loop runs end to end on built-in
 storage (git-notes memory, full-text and code graph, no daemon): you record your
-first decision by hand, and a later `spelunk context` hands it back, so the same
+first decision by hand, and a later `inkentry context` hands it back, so the same
 context is not re-derived next time. From there, one step up brings in the local
 semantic server for search by meaning. That server is an inference backend only:
 it embeds queries and runs summaries, and it never stores memory. Your memory
@@ -37,23 +37,23 @@ always lives in the project's local `memory.db`.
 ## 3. Configure your agent
 
 This is where the payoff lands. If you code with an AI agent, you connect it to
-spelunk once and the why-layer starts filling itself: as the agent works, the
+inkentry once and the why-layer starts filling itself: as the agent works, the
 reasoning behind each change is captured for you, with no time set aside to sit
 down and write it up. The decisions a fresh repo could not yet show in stage 1
-now accumulate on their own, and every later `spelunk context` or `spelunk
+now accumulate on their own, and every later `inkentry context` or `inkentry
 search` hands them back.
 
-The mechanism is the agent itself. Wired to spelunk through a skill (the Claude
+The mechanism is the agent itself. Wired to inkentry through a skill (the Claude
 Code skill, or a drop-in `AGENT.md`), it records each decision as it makes it, so
 the why-layer accrues as a by-product of the work rather than from anyone stopping
 to document it. A git hook complements this: a post-commit step runs
-`spelunk memory harvest` to catch any reasoning left in commit messages, so
+`inkentry memory harvest` to catch any reasoning left in commit messages, so
 nothing slips through. Nothing else about how you work has to change.
 
-- [Agent Guide](agent-guide.md): how a session should use spelunk, plus automatic capture and JSON output
-- [AGENT.md template](examples/AGENT.md): a drop-in file that tells your agent to reach for spelunk first
-- [Claude Code skill](../SKILL.md): spelunk packaged as an agent skill
-- Automatic capture: [`spelunk hooks install`](commands.md#spelunk-hooks) plus [`spelunk memory harvest`](commands.md#spelunk-memory)
+- [Agent Guide](agent-guide.md): how a session should use inkentry, plus automatic capture and JSON output
+- [AGENT.md template](examples/AGENT.md): a drop-in file that tells your agent to reach for inkentry first
+- [Claude Code skill](../SKILL.md): inkentry packaged as an agent skill
+- Automatic capture: [`inkentry hooks install`](commands.md#inkentry-hooks) plus [`inkentry memory harvest`](commands.md#inkentry-memory)
 
 ## 4. Reference
 
@@ -95,7 +95,7 @@ the hosted spelunk.cloud service is the managed alternative.
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 
 Everyone on a team sets an explicit `server_url` (plus a shared server key)
-pointing at the same server, and [`spelunk sync`](commands.md#spelunk-sync) keeps
+pointing at the same server, and [`inkentry sync`](commands.md#inkentry-sync) keeps
 them converged: it pushes the decisions you recorded and pulls the ones your
 teammates recorded. Code never travels; it does not need to, you already have git
 for that. Only memory does.

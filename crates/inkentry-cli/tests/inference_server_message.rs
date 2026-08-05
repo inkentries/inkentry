@@ -2,7 +2,7 @@
 //!
 //! The bug: inference-only commands (`memory search --mode semantic|hybrid`,
 //! `memory timeline`, `plumbing embed`) told a solo user with no server to set a
-//! team `server_url` — when all they needed was `spelunk server start`. The fix
+//! team `server_url` — when all they needed was `inkentry server start`. The fix
 //! routes every such caller's *effective* `server_url` (which is `None` for a
 //! solo/no-server user, never the auto-discovered loopback URL) into
 //! `capability::inference_server_required_message`, whose no-`server_url` branch
@@ -22,7 +22,7 @@
 //! analysis of the `Some(url)` branch.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use predicates::prelude::*;
 use std::fs;
@@ -50,7 +50,7 @@ fn assert_local_start_no_server_url(stderr: &str) {
         "must state the feature requires the server; got: {stderr}"
     );
     assert!(
-        stderr.contains("spelunk server start"),
+        stderr.contains("inkentry server start"),
         "must point at the local auto-server; got: {stderr}"
     );
     assert!(
@@ -66,7 +66,7 @@ fn memory_search_semantic_no_server_points_at_local_start() {
     let config_path = write_no_server_config(temp.path());
     let mem_db = temp.path().join("memory.db");
 
-    let assert = spelunk_bin()
+    let assert = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
@@ -94,7 +94,7 @@ fn memory_search_hybrid_no_server_points_at_local_start() {
     let config_path = write_no_server_config(temp.path());
     let mem_db = temp.path().join("memory.db");
 
-    let assert = spelunk_bin()
+    let assert = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
@@ -118,7 +118,7 @@ fn plumbing_embed_no_server_points_at_local_start() {
     let config_path = write_no_server_config(temp.path());
     let db = temp.path().join("index.db");
 
-    let assert = spelunk_bin()
+    let assert = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
@@ -148,7 +148,7 @@ fn memory_search_semantic_message_is_nonempty() {
     let config_path = write_no_server_config(temp.path());
     let mem_db = temp.path().join("memory.db");
 
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
@@ -159,5 +159,5 @@ fn memory_search_semantic_message_is_nonempty() {
         .args(["search", "--mode", "semantic", "q"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("spelunk server start"));
+        .stderr(predicate::str::contains("inkentry server start"));
 }

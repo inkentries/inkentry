@@ -47,14 +47,14 @@ pub struct IndexArgs {
     #[arg(long = "_embed-phases", hide = true, default_value_t = false)]
     pub embed_phases: bool,
 
-    /// Detach immediately: re-exec spelunk in the background and return.
+    /// Detach immediately: re-exec inkentry in the background and return.
     /// Useful in git hooks so the hook does not block the git process.
     #[arg(long, default_value_t = false)]
     pub detach: bool,
 
     /// Parse in the foreground, then hand the (usually long) embedding phase to
     /// a detached background process and return the prompt. Confirm completion
-    /// later with `spelunk status` (it reports "embedding in progress" while the
+    /// later with `inkentry status` (it reports "embedding in progress" while the
     /// detached run has chunks left to embed).
     #[arg(long, default_value_t = false)]
     pub detach_embed: bool,
@@ -102,16 +102,16 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         .clone()
         .unwrap_or_else(|| project_root.join(".inkentry").join("index.db"));
 
-    // Serialize whole `spelunk index` runs against this project: two
+    // Serialize whole `inkentry index` runs against this project: two
     // concurrent writers reproducibly corrupt index.db (see run_lock.rs doc
     // comment), so only one process may hold this at a time. `mut` + `Option`
     // because the two background-spawn sites below explicitly release it
     // before handing off to a continuation child (see their comments).
-    let spelunk_dir = db_path
+    let inkentry_dir = db_path
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| project_root.join(".inkentry"));
-    let mut run_lock = match run_lock::try_acquire(&spelunk_dir)? {
+    let mut run_lock = match run_lock::try_acquire(&inkentry_dir)? {
         run_lock::LockOutcome::Acquired(lock) => Some(lock),
         run_lock::LockOutcome::HeldByOther { holder_pid } => {
             let who = holder_pid
@@ -136,7 +136,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                     format!(
                         "failed to open index at {}\n\
                          The database may be corrupt. Run with --force to delete it and rebuild from scratch:\n\
-                         \n  spelunk index {} --force\n",
+                         \n  inkentry index {} --force\n",
                         db_path.display(),
                         args.path.display(),
                     )
@@ -221,7 +221,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // embedding phase to a background process so the user regains the prompt
     // now. The subprocess (`--_embed-phases`) rebuilds the embed queue from the
     // DB, so nothing from `result` needs to cross the process boundary. Confirm
-    // completion later with `spelunk status`.
+    // completion later with `inkentry status`.
     //
     // The spawn is gated on "worth waiting for" (ready OR still loading), not
     // on ready alone: the worker owns the readiness wait, and a fresh install
@@ -231,7 +231,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     if args.detach_embed && tier.is_server() && continuation::detach_embed_eligible(&tier) {
         let embed_log = continuation::background_log_path(&db_path);
         // Dropping the lock before spawning closes the corruption race (the
-        // child never interleaves writes with us), but a third `spelunk
+        // child never interleaves writes with us), but a third `inkentry
         // index` can still win the reacquire in the gap; `wait_for_holder_pid`
         // below confirms the spawned pid, specifically, becomes the holder
         // before we report success.
@@ -245,7 +245,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             let stats = db.stats()?;
             let pending = stats.chunk_count - stats.embedding_count;
             if run_lock::wait_for_holder_pid(
-                &spelunk_dir,
+                &inkentry_dir,
                 child_pid,
                 continuation::HANDOFF_CONFIRM_TIMEOUT,
                 continuation::HANDOFF_POLL_INTERVAL,
@@ -257,19 +257,19 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                 if !embed_ready {
                     println!("The embedder is still loading; the background worker waits for it.");
                 }
-                println!("Run `spelunk status` to check progress.");
+                println!("Run `inkentry status` to check progress.");
                 if let Some(p) = log_in_use {
                     println!("  Log: {}", p.display());
                 }
             } else {
                 println!(
                     "Index: {} files, {} chunks. Started a background process to embed {} \
-                     chunk(s), but another `spelunk index` run claimed this project's lock \
+                     chunk(s), but another `inkentry index` run claimed this project's lock \
                      before it could take over.",
                     stats.file_count, stats.chunk_count, pending,
                 );
                 println!(
-                    "Those chunks may be left unembedded. Run `spelunk index` again once the \
+                    "Those chunks may be left unembedded. Run `inkentry index` again once the \
                      other run finishes to pick them up."
                 );
             }
@@ -283,7 +283,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     }
 
     if tier.is_server() && embed_ready {
-        // Liveness marker so `spelunk status` from another terminal reports a
+        // Liveness marker so `inkentry status` from another terminal reports a
         // foreground embed as running rather than telling the user to resume.
         let worker_guard = super::embed_worker::EmbedWorkerGuard::acquire(&db, &db_path);
         embed_phase::run_embed_phase(
@@ -330,7 +330,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         match cmd.spawn() {
             Ok(child) => {
                 if run_lock::wait_for_holder_pid(
-                    &spelunk_dir,
+                    &inkentry_dir,
                     child.id(),
                     continuation::HANDOFF_CONFIRM_TIMEOUT,
                     continuation::HANDOFF_POLL_INTERVAL,
@@ -338,9 +338,9 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                     return Ok(());
                 }
                 eprintln!(
-                    "Warning: another `spelunk index` run claimed this project's lock before \
+                    "Warning: another `inkentry index` run claimed this project's lock before \
                      the background job could take over; graph rank, spec discovery, and \
-                     summaries were not completed. Run `spelunk index` again once the other run \
+                     summaries were not completed. Run `inkentry index` again once the other run \
                      finishes."
                 );
                 return Ok(());
@@ -376,7 +376,7 @@ mod tests {
         // which `index()` then threads into `run_embed_phase`. Before this fix
         // the value was parsed but never passed through (silent no-op).
         let cli =
-            TestCli::try_parse_from(["spelunk", "some/path", "--batch-size", "16"]).expect("parse");
+            TestCli::try_parse_from(["inkentry", "some/path", "--batch-size", "16"]).expect("parse");
         assert_eq!(cli.index.batch_size, 16);
     }
 
@@ -386,7 +386,7 @@ mod tests {
         // batch size from measured throughput up to the server's own 256-chunk
         // ceiling, rather than being pinned to a fixed default (see
         // `resolve_batch_ceiling` in embed_phase.rs).
-        let cli = TestCli::try_parse_from(["spelunk", "some/path"]).expect("parse");
+        let cli = TestCli::try_parse_from(["inkentry", "some/path"]).expect("parse");
         assert_eq!(cli.index.batch_size, 0);
     }
 }

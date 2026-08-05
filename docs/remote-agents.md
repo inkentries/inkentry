@@ -1,12 +1,12 @@
 # Remote agents
 
 A *remote agent* is an AI coding agent process that does not share a filesystem
-or local network with the workstation that owns your code. Spelunk supports
+or local network with the workstation that owns your code. Inkentry supports
 these agents the same way it supports a local one: the agent installs the
-`spelunk` CLI, points it at a `inkentry-server`, and gets the same memory +
+`inkentry` CLI, points it at a `inkentry-server`, and gets the same memory +
 retrieval surface a local agent gets.
 
-Spelunk **does not run agents.** The server is to an agent what an LSP server is
+Inkentry **does not run agents.** The server is to an agent what an LSP server is
 to an editor — a long-running peer it talks to, not a runtime that hosts it.
 There is no relay, no tunnel, and no agent supervision. Everything below is
 configuration and defaults, not new behaviour.
@@ -16,9 +16,9 @@ The shapes we distinguish:
 | Shape | Where the agent runs | `INKENTRY_SERVER_URL` |
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
-| **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) |
+| **Local Docker (R1)** | A container on your machine | `https://inkentry.your-domain` (portable) |
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.spelunk.cloud` |
-| Self-hosted remote (R3) | Your own VM / pod | `https://spelunk.your-domain`: see [Server setup](server-setup.md) |
+| Self-hosted remote (R3) | Your own VM / pod | `https://inkentry.your-domain`: see [Server setup](server-setup.md) |
 
 This page covers **R1 (local Docker)**. R2 (cloud-managed) is on the roadmap and
 documented separately when it ships. R3 (self-hosted over the network) is
@@ -27,7 +27,7 @@ documented separately when it ships. R3 (self-hosted over the network) is
 ## R1 — an agent in a local Docker container
 
 A containerized agent needs three things: an env var pointing its CLI at a
-`inkentry-server`, a bind-mount of the repo, and a bind-mount of your spelunk
+`inkentry-server`, a bind-mount of the repo, and a bind-mount of your inkentry
 config so it resolves the same project.
 
 The one detail that trips people up is **which URL** the container uses. A local
@@ -47,10 +47,10 @@ URL, not a host-loopback address:
 
 ```bash
 docker run --rm -it \
-  -e INKENTRY_SERVER_URL=https://spelunk.example.com \
+  -e INKENTRY_SERVER_URL=https://inkentry.example.com \
   -e INKENTRY_SERVER_KEY=your-shared-api-key \
   -v "$PWD":/work \
-  -v "$HOME/.config/spelunk":/root/.config/spelunk \
+  -v "$HOME/.config/inkentry":/root/.config/inkentry \
   -w /work \
   your-agent-image
 ```
@@ -61,7 +61,7 @@ docker run --rm -it \
   always keyed; see [Server setup](server-setup.md)).
 - `-v "$PWD":/work` bind-mounts the repository so file paths recorded in memory
   entries mean the same thing inside the container and on the host.
-- `-v "$HOME/.config/spelunk":/root/.config/spelunk` bind-mounts your spelunk
+- `-v "$HOME/.config/inkentry":/root/.config/inkentry` bind-mounts your inkentry
   config so the container CLI resolves the same project. (Adjust the in-container
   path if your agent image runs as a non-root user — match its `$HOME`.)
 - `-w /work` runs the agent in the mounted repo.
@@ -74,12 +74,12 @@ the CA bundle, or the TLS handshake fails. Mount the bundle read-only and point
 
 ```bash
 docker run --rm -it \
-  -e INKENTRY_SERVER_URL=https://spelunk.example.com \
+  -e INKENTRY_SERVER_URL=https://inkentry.example.com \
   -e INKENTRY_SERVER_KEY=your-shared-api-key \
-  -e INKENTRY_SERVER_CA=/etc/spelunk/internal-ca.pem \
-  -v /etc/spelunk/internal-ca.pem:/etc/spelunk/internal-ca.pem:ro \
+  -e INKENTRY_SERVER_CA=/etc/inkentry/internal-ca.pem \
+  -v /etc/inkentry/internal-ca.pem:/etc/inkentry/internal-ca.pem:ro \
   -v "$PWD":/work \
-  -v "$HOME/.config/spelunk":/root/.config/spelunk \
+  -v "$HOME/.config/inkentry":/root/.config/inkentry \
   -w /work \
   your-agent-image
 ```
@@ -94,8 +94,8 @@ for how to generate the CA and issue the server a leaf from it.
 Inside the container, the CLI behaves exactly as it would on the host:
 
 ```bash
-spelunk check                 # should report the server reachable over TLS
-spelunk search "auth tokens"  # semantic search via the server
+inkentry check                 # should report the server reachable over TLS
+inkentry search "auth tokens"  # semantic search via the server
 ```
 
 The **server side** of this (the routable TLS bind and the systemd unit) is the
@@ -141,6 +141,6 @@ container, and it does so the same way on every platform.
 
 ### Notes
 
-- **Project identity.** Bind-mounting `~/.config/spelunk/` is the simplest way
+- **Project identity.** Bind-mounting `~/.config/inkentry/` is the simplest way
   to share project identity. Alternatively set `INKENTRY_PROJECT_ID` explicitly
   in the container's environment.

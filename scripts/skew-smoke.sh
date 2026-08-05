@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Version-skew smoke test: drive one real `spelunk` binary against one real
+# Version-skew smoke test: drive one real `inkentry` binary against one real
 # `inkentry-server` binary through the end-to-end memory flow.
 #
-#   usage: skew-smoke.sh <path-to-spelunk> <path-to-inkentry-server>
+#   usage: skew-smoke.sh <path-to-inkentry> <path-to-inkentry-server>
 #
 #   SKEW_EMBEDDER_TIMEOUT_SECS  wall-clock wait for the embedder (default 300)
 #   SKEW_MODEL_CACHE            model directory kept outside the isolated HOME,
@@ -21,8 +21,8 @@
 
 set -euo pipefail
 
-CLI_BIN="${1:?usage: skew-smoke.sh <spelunk> <inkentry-server>}"
-SERVER_BIN="${2:?usage: skew-smoke.sh <spelunk> <inkentry-server>}"
+CLI_BIN="${1:?usage: skew-smoke.sh <inkentry> <inkentry-server>}"
+SERVER_BIN="${2:?usage: skew-smoke.sh <inkentry> <inkentry-server>}"
 
 for bin in "$CLI_BIN" "$SERVER_BIN"; do
   [ -x "$bin" ] || { echo "FAIL: not an executable: $bin" >&2; exit 1; }
@@ -30,7 +30,7 @@ done
 
 # Resolved to absolute paths up front, because the steps below invoke the CLI
 # from inside a scratch project directory. A relative path like
-# `target/release/spelunk` silently stops resolving after that `cd`, which is
+# `target/release/inkentry` silently stops resolving after that `cd`, which is
 # how CI would be invoking this.
 CLI_BIN="$(cd "$(dirname "$CLI_BIN")" && pwd)/$(basename "$CLI_BIN")"
 SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
@@ -52,12 +52,12 @@ SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 #
 # Why this is not cosmetic: INKENTRY_SECRET_STORE=file below exists to keep old
 # released binaries off the OS keyring, but the file store is
-# <config_dir>/secrets.toml and spelunk_config_dir() honours INKENTRY_CONFIG_DIR
+# <config_dir>/secrets.toml and inkentry_config_dir() honours INKENTRY_CONFIG_DIR
 # first. With that variable inherited, the guard would have pointed those
 # binaries at the developer's real secrets.toml, to read and to write.
 
 # Needed to run at all: find binaries, make temp dirs, decode UTF-8. None of
-# them selects spelunk state.
+# them selects inkentry state.
 #
 # SSL_CERT_FILE and SSL_CERT_DIR were permitted here, justified as needed to
 # verify TLS for the model download. That premise was false: nothing in this
@@ -116,7 +116,7 @@ assert_env_is_allowlisted() {
 # level a shell can reach. A python3 launched from here sees it in os.environ; an
 # `env` launched from here does not, so the assertion above, which reads this
 # script's own environment, can neither observe it nor act on it. It is a
-# text-encoding hint and selects no spelunk path.
+# text-encoding hint and selects no inkentry path.
 
 # The released binaries pre-date the keychain fix and will block on a real
 # macOS Keychain prompt without this. It is exported rather than passed per
@@ -161,7 +161,7 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 # directory from INKENTRY_STATE_DIR or from `dirs::home_dir()`, which on Windows
 # is a Registry lookup rather than $HOME. Naming it here keeps the port file
 # written below and the file the CLI reads the same path on every platform.
-export INKENTRY_STATE_DIR="$XDG_STATE_HOME/spelunk"
+export INKENTRY_STATE_DIR="$XDG_STATE_HOME/inkentry"
 mkdir -p "$INKENTRY_STATE_DIR"
 
 # Set explicitly rather than left to the isolated HOME: an invoking user with
@@ -180,13 +180,13 @@ mkdir -p "$XDG_DATA_HOME"
 # was simply false. It is the wrong override for this job: it selects a
 # *pre-provisioned* GGUF plus tokenizer for air-gapped installs and bypasses the
 # Hugging Face download path entirely, whereas what needs redirecting is that
-# download path's own cache, `data_local_dir()/spelunk/models`. Setting it here
+# download path's own cache, `data_local_dir()/inkentry/models`. Setting it here
 # would point the server at artifacts this script never fetched.
 if [ -n "${SKEW_MODEL_CACHE:-}" ]; then
   mkdir -p "$SKEW_MODEL_CACHE"
   case "$(uname -s)" in
-    Darwin) MODEL_PARENT="$HOME/Library/Application Support/spelunk" ;;
-    *)      MODEL_PARENT="$XDG_DATA_HOME/spelunk" ;;
+    Darwin) MODEL_PARENT="$HOME/Library/Application Support/inkentry" ;;
+    *)      MODEL_PARENT="$XDG_DATA_HOME/inkentry" ;;
   esac
   mkdir -p "$MODEL_PARENT"
   ln -s "$SKEW_MODEL_CACHE" "$MODEL_PARENT/models"
@@ -237,7 +237,7 @@ echo "== CLI $CLI_VERSION  <->  server $SERVER_VERSION"
   || fail "CLI and server are both $CLI_VERSION; this run tested no skew at all"
 
 # A fixed slug shared by both checkouts below, so the second one pulls exactly
-# what the first one pushed. Left to `spelunk init` it would be a per-directory
+# what the first one pushed. Left to `inkentry init` it would be a per-directory
 # content hash and the pull would legitimately find nothing.
 PROJECT_ID="local/skewsmoke"
 

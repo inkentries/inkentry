@@ -24,7 +24,7 @@ use crate::{
     storage::{Database, MemoryStore, open_memory_backend},
 };
 
-/// Stable JSON schema for `spelunk status --format json` (issue #269).
+/// Stable JSON schema for `inkentry status --format json` (issue #269).
 ///
 /// All fields listed here are guaranteed additive-safe: new optional fields
 /// may be added in future versions, but existing fields will not be renamed or
@@ -32,7 +32,7 @@ use crate::{
 ///
 /// Field notes:
 ///
-/// - `version` — spelunk CLI semver string (e.g. `"0.7.0"`)
+/// - `version` — inkentry CLI semver string (e.g. `"0.7.0"`)
 /// - `project` — absolute path to the project root (`null` if not in a registered project)
 /// - `db_path` — absolute path to the SQLite index file
 /// - `indexed_files` — number of source files currently in the index
@@ -236,7 +236,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         let projects = reg.all_projects()?;
 
         if projects.is_empty() {
-            println!("No projects registered. Run `spelunk index <path>` to get started.");
+            println!("No projects registered. Run `inkentry index <path>` to get started.");
             return Ok(());
         }
 
@@ -308,7 +308,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let db_path = match crate::config::require_project_db(&cfg.db_path, false) {
         Ok(p) => p,
         Err(_) => {
-            println!("No spelunk project here. Run `spelunk init` first.");
+            println!("No inkentry project here. Run `inkentry init` first.");
             return Ok(());
         }
     };
@@ -318,7 +318,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
 
     if !db_path.exists() {
         println!("No index found for the current directory (checked parents too).");
-        println!("Run `spelunk index <path>` to create one.");
+        println!("Run `inkentry index <path>` to create one.");
         return Ok(());
     }
 
@@ -402,7 +402,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             println!("  {:<6}  {:<8}  {}", d.days_behind, callers, d.path);
         }
         cprintln!(
-            "  \x1b[2mRun `spelunk search \"<topic>\"` to check if these are still relevant.\x1b[0m"
+            "  \x1b[2mRun `inkentry search \"<topic>\"` to check if these are still relevant.\x1b[0m"
         );
     }
 
@@ -482,7 +482,7 @@ async fn print_tier_section(
             println!("  search          {search_label}");
             // Embedder readiness: explain *why* semantic search isn't in the
             // search line yet when the server is up but the model isn't ready.
-            // Log hints must point at the probed server: `spelunk server logs`
+            // Log hints must point at the probed server: `inkentry server logs`
             // reads the local daemon's logs, which are the wrong place when the
             // failing embedder lives on an explicit remote server_url.
             let remote_url = (!*auto_discovered).then_some(url.as_str());
@@ -501,10 +501,10 @@ async fn print_tier_section(
     println!();
 }
 
-/// The `mode` line for `spelunk status`: a neutral one-word sync-mode
+/// The `mode` line for `inkentry status`: a neutral one-word sync-mode
 /// indicator. `None` on the solo default (no `server_url`, no explicit mode):
 /// there is no sync configuration to surface. No call to action: the background
-/// reconciler owns convergence, so status must not pre-teach a manual `spelunk
+/// reconciler owns convergence, so status must not pre-teach a manual `inkentry
 /// sync` workflow.
 ///
 /// ADR-037 P2: under `local_first`, this same line additionally carries a
@@ -591,14 +591,14 @@ fn memory_backend_label(kind: &str) -> &str {
     }
 }
 
-/// Render the `embedder` line for `spelunk status` (text mode) from the
+/// Render the `embedder` line for `inkentry status` (text mode) from the
 /// server-side readiness state, or `None` when there is nothing useful to show
 /// (an older server that never reported readiness). Pure so it can be unit
 /// tested without capturing stdout.
 ///
 /// `remote_url` is `Some` when the probed server came from an explicit
 /// `server_url` (not loopback auto-discovery). The failure-hint must then point
-/// at that server's own logs: `spelunk server logs` only reads the local
+/// at that server's own logs: `inkentry server logs` only reads the local
 /// daemon's log file, so with a healthy local daemon it shows clean logs for a
 /// failure that lives elsewhere.
 fn embedder_status_line(
@@ -617,7 +617,7 @@ fn embedder_status_line(
                  server {url}; check that server's own logs]"
             ),
             None => "  embedder        \x1b[31munavailable\x1b[0m  [model failed to load; \
-                 see `spelunk server logs`]"
+                 see `inkentry server logs`]"
                 .to_string(),
         },
         EmbedderState::Ready => "  embedder        ready".to_string(),
@@ -652,7 +652,7 @@ fn humanize_eta(eta: std::time::Duration) -> String {
     }
 }
 
-/// Render the embedding-state line for `spelunk status` when the index has
+/// Render the embedding-state line for `inkentry status` when the index has
 /// more chunks than embeddings. Pure so the state matrix is unit testable.
 ///
 /// The line reports what the process knows, never a guess:
@@ -687,7 +687,7 @@ fn embedding_state_line(
         total_tokens,
     ) {
         Some(work) => format!("{work}% of work done"),
-        None => "work remaining unknown (run `spelunk index --recount` to backfill token counts)"
+        None => "work remaining unknown (run `inkentry index --recount` to backfill token counts)"
             .to_string(),
     };
     if worker_alive && let Some(eta) = eta {
@@ -699,12 +699,12 @@ fn embedding_state_line(
     } else if embedder_unavailable {
         format!(
             "  \x1b[33mEmbedding incomplete\x1b[0m   {searchable}  \u{00b7}  {progress}; \
-             the embedder is unavailable, see `spelunk server logs`"
+             the embedder is unavailable, see `inkentry server logs`"
         )
     } else {
         format!(
             "  \x1b[33mEmbedding incomplete\x1b[0m   {searchable}  \u{00b7}  {progress}; \
-             resume with `spelunk index .`"
+             resume with `inkentry index .`"
         )
     })
 }
@@ -731,7 +731,7 @@ mod tests {
     use super::*;
     use crate::capability::EmbedderState;
 
-    // ── embedder_status_line: `spelunk status` rendering of each state ──────────
+    // ── embedder_status_line: `inkentry status` rendering of each state ──────────
 
     #[test]
     fn embedder_line_loading_advises_warmup() {
@@ -744,17 +744,17 @@ mod tests {
     #[test]
     fn embedder_line_unavailable_loopback_points_at_local_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon, so
-        // `spelunk server logs` is the right place to look.
+        // `inkentry server logs` is the right place to look.
         let line = embedder_status_line(&EmbedderState::Unavailable, None)
             .expect("unavailable renders a line");
         assert!(line.contains("unavailable"));
         assert!(line.contains("failed to load"));
-        assert!(line.contains("spelunk server logs"));
+        assert!(line.contains("inkentry server logs"));
     }
 
     #[test]
     fn embedder_line_unavailable_remote_points_at_that_server_never_local_logs() {
-        // Explicit server_url: `spelunk server logs` reads the LOCAL daemon's
+        // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
         // log, which is clean when the failure lives on the team server. The
         // hint must name the probed server instead.
         let line = embedder_status_line(
@@ -765,7 +765,7 @@ mod tests {
         assert!(line.contains("unavailable"));
         assert!(line.contains("https://team.example:7777"), "got: {line}");
         assert!(
-            !line.contains("spelunk server logs"),
+            !line.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {line}"
         );
     }
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn mode_line_absent_on_solo_default() {
         clear_no_server_env();
         // No server_url, no explicit mode: nothing to explain, output unchanged.
@@ -841,7 +841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
         clear_no_server_env();
         // Isolate from any real local inkentry-server daemon on this machine:
@@ -870,7 +870,7 @@ mod tests {
         assert!(line.contains("local_first"), "got: {line}");
         // Neutral indicator only: no manual-sync imperative (the background
         // reconciler owns convergence).
-        assert!(!line.contains("spelunk sync"), "got: {line}");
+        assert!(!line.contains("inkentry sync"), "got: {line}");
         // item 32: a fresh, empty memory.db with nothing pending and nothing
         // ever synced renders no suffix clause at all (no hollow "up to date").
         assert!(!line.contains("pending"), "got: {line}");
@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn mode_line_local_first_shows_pending_count_from_local_outbox_alone() {
         clear_no_server_env();
         register_sqlite_vec_for_status_tests();
@@ -932,7 +932,7 @@ mod tests {
         assert!(line.contains("local_first"), "got: {line}");
         assert!(line.contains("2 pending"), "got: {line}");
         // item 36: never a manual-action suggestion, even with pending rows.
-        assert!(!line.contains("spelunk sync"), "got: {line}");
+        assert!(!line.contains("inkentry sync"), "got: {line}");
         // item 33: nothing has synced yet (no relay reachable) — no "last
         // synced" clause fabricated.
         assert!(!line.contains("last synced"), "got: {line}");
@@ -941,7 +941,7 @@ mod tests {
     // ── item 33: "last synced" renders once the relay has actually synced ──
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn mode_line_shows_last_synced_after_a_real_relay_round_trip() {
         clear_no_server_env();
         register_sqlite_vec_for_status_tests();
@@ -1047,7 +1047,7 @@ mod tests {
         let line = line.expect("status line must show 'last synced' after the relay syncs");
         assert!(line.contains("local_first"), "got: {line}");
         assert!(line.contains("last synced"), "got: {line}");
-        assert!(!line.contains("spelunk sync"), "got: {line}");
+        assert!(!line.contains("inkentry sync"), "got: {line}");
     }
 
     // ── pending must reflect the SAME call's own poll, not the pre-poll state ─
@@ -1060,7 +1060,7 @@ mod tests {
     // poll actually lands the ack must already show the post-apply count.
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env, server_state_dir_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn mode_line_pending_count_reflects_the_same_calls_own_poll_not_the_stale_pre_poll_state()
     {
         clear_no_server_env();
@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn mode_line_cloud_first_is_neutral_mode_word() {
         clear_no_server_env();
         let cfg = crate::config::Config {
@@ -1201,7 +1201,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(spelunk_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env)]
     async fn mode_line_explicit_offline_shown_even_without_server_url() {
         clear_no_server_env();
         // An explicit mode is sync configuration worth surfacing on its own.
@@ -1264,7 +1264,7 @@ mod tests {
         );
         assert!(!line.contains("Embedding in progress"));
         assert!(
-            line.contains("spelunk index ."),
+            line.contains("inkentry index ."),
             "must name the resume command: {line}"
         );
         assert!(!line.contains("may be running"));
@@ -1276,7 +1276,7 @@ mod tests {
         assert!(line.contains("Embedding incomplete"));
         assert!(line.contains("unavailable"), "must say so: {line}");
         assert!(
-            line.contains("spelunk server logs"),
+            line.contains("inkentry server logs"),
             "must point at the server logs: {line}"
         );
         assert!(

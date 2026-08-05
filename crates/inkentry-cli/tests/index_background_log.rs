@@ -23,8 +23,8 @@ const FILE_COUNT: usize = 120;
 /// Failsafe only: hit solely when the detached child never finishes.
 const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 
-fn log_path(spelunk_dir: &Path) -> std::path::PathBuf {
-    spelunk_dir.join("index-background.log")
+fn log_path(inkentry_dir: &Path) -> std::path::PathBuf {
+    inkentry_dir.join("index-background.log")
 }
 
 /// A project over the threshold: one chunk per file, so `indexed` tracks
@@ -59,7 +59,7 @@ async fn dead_llm_server() -> MockServer {
     server
 }
 
-/// `spelunk index` exactly as a user in the project runs it: cwd inside the
+/// `inkentry index` exactly as a user in the project runs it: cwd inside the
 /// project, config found by discovery at `.inkentry/config.toml`.
 ///
 /// Discovery rather than `--config` is deliberate. The spawn does not pass
@@ -77,7 +77,7 @@ async fn dead_llm_server() -> MockServer {
 /// resolves to any inference target at all. `cloud_first` is what makes this
 /// fixture's premise — an explicit `server_url` IS used for summaries — hold.
 fn index_command(project: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("inkentry"));
     cmd.current_dir(project)
         .env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", project)
@@ -153,7 +153,7 @@ struct Fixture {
     server: MockServer,
     db: std::path::PathBuf,
     project_path: std::path::PathBuf,
-    spelunk_dir: std::path::PathBuf,
+    inkentry_dir: std::path::PathBuf,
 }
 
 /// A >100-file project pointed at a dead LLM, laid out as a real one: config
@@ -162,14 +162,14 @@ struct Fixture {
 fn fixture(rt: &tokio::runtime::Runtime) -> Fixture {
     let project = TempDir::new().expect("temp project dir");
     write_big_fixture(project.path());
-    let spelunk_dir = project.path().join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
-    let db = spelunk_dir.join("index.db");
+    let inkentry_dir = project.path().join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
+    let db = inkentry_dir.join("index.db");
 
     let server = rt.block_on(dead_llm_server());
     let uri = server.uri();
     std::fs::write(
-        spelunk_dir.join("config.toml"),
+        inkentry_dir.join("config.toml"),
         format!(
             "db_path = {:?}\napi_base_url = {:?}\n\
              llm_model = \"test-chat\"\nserver_url = {:?}\nproject_id = \"test-org/test-project\"\n",
@@ -183,7 +183,7 @@ fn fixture(rt: &tokio::runtime::Runtime) -> Fixture {
         _project: project,
         server,
         db,
-        spelunk_dir,
+        inkentry_dir,
     }
 }
 
@@ -196,7 +196,7 @@ fn background_spawn_routes_diagnostics_to_log_and_points_at_it() {
 
     let out = index_command(&f.project_path)
         .output()
-        .expect("run spelunk index");
+        .expect("run inkentry index");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     assert!(
@@ -209,7 +209,7 @@ fn background_spawn_routes_diagnostics_to_log_and_points_at_it() {
         "fixture must be over the threshold that selects the background spawn:\n{stderr}"
     );
 
-    let log = log_path(&f.spelunk_dir);
+    let log = log_path(&f.inkentry_dir);
     // The path is printed as given, so it is relative when the path argument was.
     assert!(
         stderr.contains("Log: ") && stderr.contains("index-background.log"),
@@ -243,9 +243,9 @@ fn background_log_captures_all_child_phases_not_just_summaries() {
 
     index_command(&f.project_path)
         .output()
-        .expect("run spelunk index");
+        .expect("run inkentry index");
 
-    let contents = wait_for_log_containing(&log_path(&f.spelunk_dir), "Conventions:");
+    let contents = wait_for_log_containing(&log_path(&f.inkentry_dir), "Conventions:");
     for phase in [
         "Computing graph rank",
         "Generating summaries",
@@ -265,14 +265,14 @@ fn background_log_captures_all_child_phases_not_just_summaries() {
 fn background_log_is_truncated_per_run_not_appended() {
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let f = fixture(&rt);
-    let log = log_path(&f.spelunk_dir);
+    let log = log_path(&f.inkentry_dir);
 
     let mut sizes = Vec::new();
     for _ in 0..2 {
         index_command(&f.project_path)
             .arg("--force")
             .output()
-            .expect("run spelunk index");
+            .expect("run inkentry index");
         wait_for_log_containing(&log, "produced no summary");
         wait_for_child_to_settle(&log);
         let contents = std::fs::read_to_string(&log).expect("read log");
@@ -298,11 +298,11 @@ fn index_still_succeeds_when_the_log_cannot_be_opened() {
     let f = fixture(&rt);
 
     // A directory at the log path: the open fails, nothing can be written.
-    std::fs::create_dir_all(log_path(&f.spelunk_dir)).expect("create dir at log path");
+    std::fs::create_dir_all(log_path(&f.inkentry_dir)).expect("create dir at log path");
 
     let out = index_command(&f.project_path)
         .output()
-        .expect("run spelunk index");
+        .expect("run inkentry index");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     assert!(
@@ -325,20 +325,20 @@ fn index_still_succeeds_when_the_log_cannot_be_opened() {
 }
 
 /// The log lives at a fixed, predictable path inside the repo. A symlink
-/// planted there must not turn `spelunk index` into an overwrite primitive.
+/// planted there must not turn `inkentry index` into an overwrite primitive.
 #[cfg(unix)]
 #[test]
 fn a_symlink_at_the_log_path_is_refused_and_does_not_fail_the_index() {
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let f = fixture(&rt);
 
-    let victim = f.spelunk_dir.join("victim.txt");
+    let victim = f.inkentry_dir.join("victim.txt");
     std::fs::write(&victim, "ORIGINAL").expect("write victim");
-    std::os::unix::fs::symlink(&victim, log_path(&f.spelunk_dir)).expect("plant symlink");
+    std::os::unix::fs::symlink(&victim, log_path(&f.inkentry_dir)).expect("plant symlink");
 
     let out = index_command(&f.project_path)
         .output()
-        .expect("run spelunk index");
+        .expect("run inkentry index");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
 
     assert!(
@@ -373,7 +373,7 @@ fn detached_embed_child_routes_diagnostics_to_the_log_and_points_at_it() {
     let out = index_command(&f.project_path)
         .arg("--detach-embed")
         .output()
-        .expect("run spelunk index --detach-embed");
+        .expect("run inkentry index --detach-embed");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
@@ -388,7 +388,7 @@ fn detached_embed_child_routes_diagnostics_to_the_log_and_points_at_it() {
     // The pointer belongs after the status line, matching the other path's
     // parent-then-indented-child shape.
     let status_line = stdout
-        .find("Run `spelunk status`")
+        .find("Run `inkentry status`")
         .expect("embed path must keep its status line");
     let pointer = stdout.find("Log: ").expect("pointer present");
     assert!(
@@ -396,7 +396,7 @@ fn detached_embed_child_routes_diagnostics_to_the_log_and_points_at_it() {
         "the log pointer must follow the status line, not precede it:\n{stdout}"
     );
 
-    let contents = wait_for_log_containing(&log_path(&f.spelunk_dir), "produced no summary");
+    let contents = wait_for_log_containing(&log_path(&f.inkentry_dir), "produced no summary");
     assert!(
         contents.contains("summary batch(es) produced no summary"),
         "the detached embed child's warning must reach the log too:\n{contents}"
@@ -411,12 +411,12 @@ fn detached_embed_prints_no_pointer_when_the_log_cannot_be_opened() {
     let rt = tokio::runtime::Runtime::new().expect("build test runtime");
     let f = fixture(&rt);
 
-    std::fs::create_dir_all(log_path(&f.spelunk_dir)).expect("create dir at log path");
+    std::fs::create_dir_all(log_path(&f.inkentry_dir)).expect("create dir at log path");
 
     let out = index_command(&f.project_path)
         .arg("--detach-embed")
         .output()
-        .expect("run spelunk index --detach-embed");
+        .expect("run inkentry index --detach-embed");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
 
     assert!(
@@ -429,7 +429,7 @@ fn detached_embed_prints_no_pointer_when_the_log_cannot_be_opened() {
         "no log may be named when none was opened:\n{stdout}"
     );
     assert!(
-        stdout.contains("Run `spelunk status`"),
+        stdout.contains("Run `inkentry status`"),
         "the embed path must still report normally:\n{stdout}"
     );
 

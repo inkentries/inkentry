@@ -1,12 +1,12 @@
 //! Fail-closed behaviour when there is no local `.inkentry/` project (ADR-067).
 //!
-//! In a directory that was never `spelunk init`'d, memory/context/index-backed
+//! In a directory that was never `inkentry init`'d, memory/context/index-backed
 //! search must refuse rather than silently read or write the machine-global
-//! `~/.config/spelunk/` store. `--db` and `spelunk index` stay exempt. `status`
+//! `~/.config/inkentry/` store. `--db` and `inkentry index` stay exempt. `status`
 //! reports "no project" instead of describing the global store.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -15,17 +15,17 @@ use tempfile::TempDir;
 
 /// Exact fail-closed error text (ADR-067; em dash restructured out per the
 /// no-em-dash house rule for user-facing copy).
-const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first";
+const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
 /// ADR-068 D3 dual-escape-hatch error for `memory add`/`list` when there is
 /// neither a project DB nor a usable git repo (case 5).
-const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a git repo. Run 'spelunk init' first, \
+const NO_PROJECT_NO_REPO_ERR: &str = "no inkentry project here, and not inside a git repo. Run 'inkentry init' first, \
      or run inside a git repository.";
 
-/// A `spelunk` command with an isolated HOME (so the "global" store lives under
-/// `<home>/.config/spelunk`) and no server contact, run in `cwd`.
+/// A `inkentry` command with an isolated HOME (so the "global" store lives under
+/// `<home>/.config/inkentry`) and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");
@@ -232,10 +232,10 @@ fn zero_setup_search_matches_identifier_substring() {
         .stdout(predicate::str::contains("No results found."));
 }
 
-// ── exempt: a real local project, an explicit --db, and `spelunk index` ────────
+// ── exempt: a real local project, an explicit --db, and `inkentry index` ────────
 
 #[test]
-fn memory_add_works_with_local_dot_spelunk() {
+fn memory_add_works_with_local_dot_inkentry() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     std::fs::create_dir_all(proj.path().join(".inkentry")).unwrap();
@@ -285,7 +285,7 @@ fn index_creates_project_in_uninit_dir() {
     let proj = TempDir::new().unwrap();
     std::fs::write(proj.path().join("main.rs"), "fn main() {}\n").unwrap();
 
-    // `spelunk index <path>` is the project-creation command; never gated.
+    // `inkentry index <path>` is the project-creation command; never gated.
     bin(home.path(), proj.path())
         .args(["index", "."])
         .assert()
@@ -308,7 +308,7 @@ fn status_text_reports_no_project_when_uninit() {
         .args(["status"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("No spelunk project here"));
+        .stdout(predicate::str::contains("No inkentry project here"));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn status_labels_resolved_backend_as_sqlite_not_git_notes() {
 
 #[test]
 fn sync_arm_refuses_without_local_project() {
-    // `spelunk sync` is a top-level command whose guard lives in `main.rs`, not in
+    // `inkentry sync` is a top-level command whose guard lives in `main.rs`, not in
     // the `memory` dispatch. With no `server_url` configured, `validate_with_project`
     // passes, so the fail-closed guard is what must fire (not a config error).
     let home = TempDir::new().unwrap();
@@ -724,7 +724,7 @@ fn graph_does_not_surface_real_populated_global_index() {
 //
 // When the live graph scan finds no call sites, the message disambiguates a true
 // leaf/typo (scannable source present) from an empty tree (e.g. an umbrella repo
-// with uninitialized submodules). Neither message suggests `spelunk init`. Text
+// with uninitialized submodules). Neither message suggests `inkentry init`. Text
 // output only — the branch is in the text path; JSON stays a bare edge array.
 
 #[test]
@@ -733,14 +733,14 @@ fn graph_empty_dir_reports_no_scannable_source_hint() {
     let proj = TempDir::new().unwrap();
 
     // No source at all: the live scan reports an empty tree and steers to a
-    // populated subdir / submodule init, never to `spelunk init`.
+    // populated subdir / submodule init, never to `inkentry init`.
     bin(home.path(), proj.path())
         .args(["graph", "anything"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No scannable source files"))
         .stdout(predicate::str::contains("submodules are initialized"))
-        .stdout(predicate::str::contains("spelunk init").not())
+        .stdout(predicate::str::contains("inkentry init").not())
         // The source-present call-scan wording must not leak into the empty-tree branch.
         .stdout(predicate::str::contains("No call-site invocations").not());
 }
@@ -769,7 +769,7 @@ fn graph_populated_dir_no_match_reports_live_scan() {
         ))
         .stdout(predicate::str::contains("calls only"))
         // Source is present, so the full-index hint is appended.
-        .stdout(predicate::str::contains("spelunk init"))
+        .stdout(predicate::str::contains("inkentry init"))
         .stdout(predicate::str::contains("imports/extends/implements"))
         // The old misleading "No callers found ... (live scan)" wording is gone.
         .stdout(predicate::str::contains("No callers found").not())
@@ -855,7 +855,7 @@ fn graph_populated_dir_with_call_site_still_prints_edges() {
 //   * populated graph, no symbol → a distinct, index-specific hint
 //   * file-path query, no edges  → the unchanged "No graph edges found" message
 // The project is already initialized, so no zero-result path here may ever
-// suggest `spelunk init` (asserted on both stdout and stderr).
+// suggest `inkentry init` (asserted on both stdout and stderr).
 
 /// An init'd project whose `graph_edges` table is EMPTY (a graph-less or
 /// freshly-created index) must AUTO-FALL-BACK to the live ast-grep scan for a
@@ -904,8 +904,8 @@ fn graph_empty_index_auto_falls_back_to_live_scan() {
         .stdout(predicate::str::contains("Incoming to 'greet'"))
         .stdout(predicate::str::contains("lib.rs"))
         .stdout(predicate::str::contains("No calls to 'greet' found in the indexed graph").not())
-        .stdout(predicate::str::contains("spelunk init").not())
-        .stderr(predicate::str::contains("spelunk init").not());
+        .stdout(predicate::str::contains("inkentry init").not())
+        .stderr(predicate::str::contains("inkentry init").not());
 }
 
 /// A populated graph that simply lacks the queried symbol gets a distinct,
@@ -939,15 +939,15 @@ fn graph_populated_index_missing_symbol_reports_distinct_hint() {
             "No calls to 'no_such_symbol_xyz' found in the indexed graph",
         ))
         .stdout(predicate::str::contains(
-            "spelunk graph no_such_symbol_xyz --live",
+            "inkentry graph no_such_symbol_xyz --live",
         ))
         .stdout(predicate::str::contains("(live scan)").not())
-        .stdout(predicate::str::contains("spelunk init").not())
-        .stderr(predicate::str::contains("spelunk init").not());
+        .stdout(predicate::str::contains("inkentry init").not())
+        .stderr(predicate::str::contains("inkentry init").not());
 }
 
 /// A file-path query with no edges keeps the unchanged "No graph edges found"
-/// message and, like every zero-result path, never suggests `spelunk init`.
+/// message and, like every zero-result path, never suggests `inkentry init`.
 #[test]
 fn graph_file_query_no_edges_reports_no_edges_message() {
     let home = TempDir::new().unwrap();
@@ -974,8 +974,8 @@ fn graph_file_query_no_edges_reports_no_edges_message() {
         .stdout(predicate::str::contains(
             "No graph edges found for 'src/does_not_exist.rs'.",
         ))
-        .stdout(predicate::str::contains("spelunk init").not())
-        .stderr(predicate::str::contains("spelunk init").not());
+        .stdout(predicate::str::contains("inkentry init").not())
+        .stderr(predicate::str::contains("inkentry init").not());
 }
 
 // ── walk-up: memory resolves the ancestor project from a deep subdir ───────────
@@ -1025,7 +1025,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn memory_resolves_main_worktree_dot_spelunk_from_linked_worktree() {
+fn memory_resolves_main_worktree_dot_inkentry_from_linked_worktree() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
     let main_root = tmp.path().join("main");

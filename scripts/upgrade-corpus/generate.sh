@@ -3,7 +3,7 @@
 # scripts/upgrade-corpus/generate.sh
 #
 # Build the upgrade corpus ("DB museum"): artifacts written by real, released
-# spelunk binaries, kept so that every future build can be tested against what
+# inkentry binaries, kept so that every future build can be tested against what
 # users actually have on disk rather than against an old shape reconstructed by
 # hand. A synthetic fixture encodes what we believe the old format was; only a
 # real one encodes what it is.
@@ -43,7 +43,7 @@ CORPUS_DIR="$REPO_ROOT/crates/inkentry-cli/tests/fixtures/upgrade-corpus"
 WINGS_DIR="$CORPUS_DIR/wings"
 MANIFEST="$CORPUS_DIR/MANIFEST.json"
 CHECKSUMS="$SCRIPT_DIR/checksums.txt"
-CACHE_DIR="${INKENTRY_CORPUS_CACHE:-${TMPDIR:-/tmp}/spelunk-upgrade-corpus-cache}"
+CACHE_DIR="${INKENTRY_CORPUS_CACHE:-${TMPDIR:-/tmp}/inkentry-upgrade-corpus-cache}"
 STUB="$SCRIPT_DIR/embed_stub.py"
 STUB_PORT="${INKENTRY_CORPUS_STUB_PORT:-7799}"
 
@@ -56,8 +56,8 @@ export INKENTRY_SECRET_STORE=file
 # and created_at is wall-clock, both captured by the released binary itself and
 # outside this script's control. Compare wings by the MANIFEST sha256, never by
 # expecting two runs to produce identical bytes.
-export GIT_AUTHOR_NAME="spelunk corpus"
-export GIT_AUTHOR_EMAIL="corpus@spelunk.invalid"
+export GIT_AUTHOR_NAME="inkentry corpus"
+export GIT_AUTHOR_EMAIL="corpus@inkentry.invalid"
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_AUTHOR_DATE="2026-01-01T00:00:00+00:00"
@@ -115,7 +115,7 @@ log() { echo "==> $*"; }
 fetch_release() {
   local tag="$1" triple asset dest actual expected
   triple="$(host_triple)"
-  asset="spelunk-${tag}-${triple}.tar.gz"
+  asset="inkentry-${tag}-${triple}.tar.gz"
   dest="$CACHE_DIR/$asset"
 
   if [[ ! -f "$dest" ]]; then
@@ -142,12 +142,12 @@ EOF
     || die "$asset checksum mismatch: expected $expected, got $actual"
 
   local unpacked="$CACHE_DIR/$tag"
-  if [[ ! -x "$unpacked/spelunk" ]]; then
+  if [[ ! -x "$unpacked/inkentry" ]]; then
     mkdir -p "$unpacked"
     tar xzf "$dest" -C "$unpacked"
   fi
-  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no spelunk binary"
-  echo "$unpacked/spelunk"
+  [[ -x "$unpacked/inkentry" ]] || die "$asset contains no inkentry binary"
+  echo "$unpacked/inkentry"
 }
 
 # ── sample repo ─────────────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ EOF
   cat > "$dir/README.md" <<'EOF'
 # corpus-sample
 
-A tiny project used to produce the spelunk upgrade corpus.
+A tiny project used to produce the inkentry upgrade corpus.
 EOF
   git -C "$dir" init -q
   git -C "$dir" add -A
@@ -210,15 +210,15 @@ trap stop_stub EXIT
 # not have and does not need: note records are plain JSON, no embedding involved.
 sandbox_env() {
   local home="$1" want_server="${2:-server}"
-  mkdir -p "$home/.config/spelunk"
+  mkdir -p "$home/.config/inkentry"
   if [[ "$want_server" == "server" ]]; then
-    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/spelunk/config.toml"
+    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/inkentry/config.toml"
   else
-    : > "$home/.config/spelunk/config.toml"
+    : > "$home/.config/inkentry/config.toml"
   fi
   export HOME="$home"
-  export INKENTRY_CONFIG_DIR="$home/.config/spelunk"
-  export INKENTRY_REGISTRY_DIR="$home/.config/spelunk"
+  export INKENTRY_CONFIG_DIR="$home/.config/inkentry"
+  export INKENTRY_REGISTRY_DIR="$home/.config/inkentry"
 }
 
 # Fold the write-ahead log back into the main file and store the result gzipped.
@@ -322,7 +322,7 @@ build_registry_wing() {
   )
   stop_stub
 
-  local reg="$home/.config/spelunk/registry.db"
+  local reg="$home/.config/inkentry/registry.db"
   [[ -f "$reg" ]] || die "$tag produced no registry.db"
   stage_db "$reg" "$out/registry.db.gz"
 }
@@ -365,7 +365,7 @@ build_git_notes_wing() {
       for n in $(seq 1 "$era_entries"); do
         "$bin" memory add --backend git-notes --kind decision \
           --title "$era_title $n" \
-          --body "Recorded by spelunk $era_tag." >/dev/null
+          --body "Recorded by inkentry $era_tag." >/dev/null
       done
     )
   done

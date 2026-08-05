@@ -861,7 +861,7 @@ fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor(
 // rather than erroring. dedupe_entity_ids recomputes entity_id fresh from
 // {kind,title,body} on every call rather than reading the stored column, so
 // a row Step A was forced to skip is still discoverable and collapsible by
-// spelunk memory dedupe. Proves that end to end, with the skipped row
+// inkentry memory dedupe. Proves that end to end, with the skipped row
 // simultaneously the target of an unrelated row's superseded_by.
 #[test]
 fn step_a_skipped_row_that_is_a_supersede_target_is_still_collapsed_by_dedupe() {
@@ -919,7 +919,7 @@ fn step_a_skipped_row_that_is_a_supersede_target_is_still_collapsed_by_dedupe() 
         "precondition: Step A left the colliding row's entity_id NULL"
     );
 
-    // `spelunk memory dedupe` must still find and collapse it, even
+    // `inkentry memory dedupe` must still find and collapse it, even
     // though the stored `entity_id` column never got populated: it
     // recomputes entity_id from {kind,title,body}, not from the column.
     let summary = store.dedupe_entity_ids(false).unwrap();

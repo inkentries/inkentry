@@ -1,11 +1,11 @@
-//! Component tests for `spelunk plumbing hash-file`.
+//! Component tests for `inkentry plumbing hash-file`.
 //!
 //! `hash-file` computes the blake3 hash of a file and optionally looks up the
 //! stored hash from the index DB.  The DB stores relative paths
 //! (e.g. `src/lib.rs`), so the path argument must match what was indexed.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use predicates::prelude::*;
 use std::path::Path;
@@ -23,7 +23,7 @@ fn hash_file_emits_valid_jsonl() {
     let fixture_lib =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/lib.rs");
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("hash-file")
         .arg(&fixture_lib)
         .assert()
@@ -65,7 +65,7 @@ fn hash_file_is_current_for_relative_indexed_path() {
 
     // hash-file with the relative path should find the indexed hash.
     // Run from the fixture root so "src/lib.rs" resolves to the actual file.
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .current_dir(plumbing_helpers::fixture_path())
         .arg("hash-file")
         .arg("src/lib.rs") // relative path as stored in DB
@@ -107,7 +107,7 @@ fn hash_file_reports_null_indexed_hash_for_unknown_file() {
     let unindexed = tmp2.path().join("extra.rs");
     std::fs::write(&unindexed, "fn extra() {}").unwrap();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("hash-file")
         .arg(&unindexed)
         .assert()
@@ -138,7 +138,7 @@ fn hash_file_reports_null_indexed_hash_for_unknown_file() {
 fn hash_file_exits_nonzero_for_missing_file() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("hash-file")
         .arg("/nonexistent/file.rs")
         .assert()
@@ -163,7 +163,7 @@ fn hash_file_exits_nonzero_when_db_missing() {
     let real_file = tmp.path().join("real.rs");
     std::fs::write(&real_file, "fn x() {}").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -184,7 +184,7 @@ fn hash_file_exits_nonzero_missing_argument() {
     let config_path = tmp.path().join("config.toml");
     std::fs::write(&config_path, "llm_model = \"x\"\n").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

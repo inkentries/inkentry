@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(
             head_sources(&expanded),
             expected,
-            "repeat_kv must repeat-interleave kv heads (spelunk-oss#19)"
+            "repeat_kv must repeat-interleave kv heads (inkentry-oss#19)"
         );
 
         // Tiling bug: `Tensor::repeat` → [kv0..kv7, kv0..kv7].
@@ -880,7 +880,7 @@ mod tests {
             head_sources(&expanded),
             head_sources(&tiled),
             "interleave (repeat_kv) and tile (Tensor::repeat) must differ for n_rep > 1 — \
-             reverting to Tensor::repeat reintroduces spelunk-oss#19"
+             reverting to Tensor::repeat reintroduces inkentry-oss#19"
         );
     }
 

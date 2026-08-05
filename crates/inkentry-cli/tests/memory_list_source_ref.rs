@@ -1,4 +1,4 @@
-// Regression coverage for the reported bug: `spelunk memory list --source-ref
+// Regression coverage for the reported bug: `inkentry memory list --source-ref
 // <sha>` returned ZERO results for a commit that carries `refs/notes/inkentry`
 // notes, even though `memory add` had written entries anchored to that commit.
 //
@@ -9,15 +9,15 @@
 // commit from the notes ref and return them.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin_in};
+use plumbing_helpers::{init_git_repo, inkentry_bin_in};
 
 use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
 
-// A `spelunk` command with an isolated HOME and no server contact, run in `cwd`.
+// A `inkentry` command with an isolated HOME and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env("INKENTRY_NO_SERVER", "1")
         .env_remove("INKENTRY_SERVER_URL");

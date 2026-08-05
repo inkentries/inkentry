@@ -1,17 +1,17 @@
-# spelunk — AI Agent Skill Reference
+# inkentry — AI Agent Skill Reference
 
-spelunk is a **context retrieval tool** for AI agents. Use it to find relevant
+inkentry is a **context retrieval tool** for AI agents. Use it to find relevant
 code and prior decisions, then reason over the results yourself.
 
 ---
 
 ## Setup
 
-- `spelunk` (and `inkentry-server`) in PATH
+- `inkentry` (and `inkentry-server`) in PATH
 
 Core features (memory, full-text and ast-grep search, code graph, conventions) work without any inference server.
 
-**Semantic search and AI features** go through `inkentry-server`, which is autostarted locally on demand from v0.8.0. It bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); the embedding model and its compute path are both pinned product-wide, with no external embedding endpoint or config option. Manage it with `spelunk server start|stop|status|logs`. Commands that need the server are marked **(requires server)** below; with `INKENTRY_NO_SERVER=1` they fall back to text/ast-grep search or error clearly.
+**Semantic search and AI features** go through `inkentry-server`, which is autostarted locally on demand from v0.8.0. It bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); the embedding model and its compute path are both pinned product-wide, with no external embedding endpoint or config option. Manage it with `inkentry server start|stop|status|logs`. Commands that need the server are marked **(requires server)** below; with `INKENTRY_NO_SERVER=1` they fall back to text/ast-grep search or error clearly.
 
 ---
 
@@ -19,31 +19,31 @@ Core features (memory, full-text and ast-grep search, code graph, conventions) w
 
 ```bash
 # Full-text search — no server needed
-spelunk search "<query>" --mode text
+inkentry search "<query>" --mode text
 
 # Call/import graph — no server needed
-spelunk graph <symbol-or-file>
-spelunk graph <symbol> --kind calls       # calls | imports | extends | implements
-spelunk graph <file> --format text|json|jsonl
+inkentry graph <symbol-or-file>
+inkentry graph <symbol> --kind calls       # calls | imports | extends | implements
+inkentry graph <file> --format text|json|jsonl
 
 # Semantic search — (requires server + index)
-spelunk search "<query>"
-spelunk search "<query>" --limit 20
-spelunk search "<query>" --graph          # include call-graph neighbours
-spelunk search "<query>" --format text|json|jsonl
+inkentry search "<query>"
+inkentry search "<query>" --limit 20
+inkentry search "<query>" --graph          # include call-graph neighbours
+inkentry search "<query>" --format text|json|jsonl
 
 # Deep search — iterative, uses LLM (requires server with an LLM backend)
-spelunk explore "<question>"
-spelunk explore "<question>" --max-steps 5
-spelunk explore "<question>" --format json   # {answer, sources, steps}
+inkentry explore "<question>"
+inkentry explore "<question>" --max-steps 5
+inkentry explore "<question>" --format json   # {answer, sources, steps}
 
 # Status and checks
-spelunk status --format text|json|jsonl
-spelunk check --format text|json|jsonl
+inkentry status --format text|json|jsonl
+inkentry check --format text|json|jsonl
 
 # Inspect what was indexed for a file
-spelunk chunks <file-path>
-spelunk chunks <file-path> --format text|json|jsonl
+inkentry chunks <file-path>
+inkentry chunks <file-path> --format text|json|jsonl
 ```
 
 Use `search --mode text` for targeted lookups without a server. Use semantic `search` (with server) for concept-level queries. Use `explore` when the answer requires tracing across multiple files — it runs autonomously and reports back.
@@ -57,9 +57,9 @@ for semantic search (the embed phase uses the server). Skip embeddings if you
 only need full-text/ast-grep search, memory, or the code graph.
 
 ```bash
-spelunk index <path>           # index (subsequent runs are incremental, blake3-gated)
-spelunk index <path> --force   # full re-index (after changing embedding model)
-spelunk check                  # verify the index is fresh before starting work
+inkentry index <path>           # index (subsequent runs are incremental, blake3-gated)
+inkentry index <path> --force   # full re-index (after changing embedding model)
+inkentry check                  # verify the index is fresh before starting work
 ```
 
 Add a `.inkentryignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, self-declared `@generated`); override it with the `[index]` table in config.
@@ -69,13 +69,13 @@ Add a `.inkentryignore` file (same syntax as `.gitignore`) to exclude paths from
 ## Server daemon
 
 ```bash
-spelunk server start           # start the local daemon (idempotent; auto-binds 127.0.0.1:7777)
-spelunk server status          # PID, port, instance id, uptime
-spelunk server logs            # last 50 lines of the server log
-spelunk server stop            # stop the daemon (SIGTERM)
+inkentry server start           # start the local daemon (idempotent; auto-binds 127.0.0.1:7777)
+inkentry server status          # PID, port, instance id, uptime
+inkentry server logs            # last 50 lines of the server log
+inkentry server stop            # stop the daemon (SIGTERM)
 ```
 
-State lives under `~/.local/state/spelunk/` (`server.pid`, `server.port`, `server.log`).
+State lives under `~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.log`).
 
 ---
 
@@ -86,25 +86,25 @@ Exit codes: `0` = success, `1` = no results, `2` = error. See [Plumbing and Porc
 
 ```bash
 # Parse a file and emit AST chunks (no DB, no server)
-spelunk plumbing parse-file <file>
+inkentry plumbing parse-file <file>
 
 # Compute and verify file hash (no server)
-spelunk plumbing hash-file <file>
+inkentry plumbing hash-file <file>
 
 # Emit code graph edges (no server)
-spelunk plumbing graph-edges --file <f> | --symbol <s>
+inkentry plumbing graph-edges --file <f> | --symbol <s>
 
 # Emit memory entries as JSONL (no server)
-spelunk plumbing read-memory [--kind <k>] [--limit N]
+inkentry plumbing read-memory [--kind <k>] [--limit N]
 
 # Emit indexed chunks for a file (requires index)
-spelunk plumbing cat-chunks <file>
+inkentry plumbing cat-chunks <file>
 
 # List all indexed files (requires index)
-spelunk plumbing ls-files [--prefix <p>] [--stale]
+inkentry plumbing ls-files [--prefix <p>] [--stale]
 
 # Read embedding from stdin, return nearest chunks by similarity (requires server + index)
-echo "your query" | spelunk plumbing embed --query | spelunk plumbing knn --limit 10
+echo "your query" | inkentry plumbing embed --query | inkentry plumbing knn --limit 10
 ```
 
 ---
@@ -117,19 +117,19 @@ Answers "why was this built this way?" alongside the code index.
 ### Add an entry
 
 ```bash
-spelunk memory add \
+inkentry memory add \
   --kind decision \
   --title "Chose sqlite-vec over Qdrant" \
-  --body "Keeps spelunk self-contained; no external process. Revisit if >1M chunks." \
+  --body "Keeps inkentry self-contained; no external process. Revisit if >1M chunks." \
   --tags "architecture,storage" \
   --files "src/storage/db.rs"
 
 # Supersede an old entry (archives the old one; creates a supersedes edge)
-spelunk memory add --kind decision --title "New auth approach" --body "..." \
+inkentry memory add --kind decision --title "New auth approach" --body "..." \
   --supersedes <old-id>
 
 # Link two entries as related (creates a relates_to edge)
-spelunk memory add --kind note --title "Follow-up observation" --body "..." \
+inkentry memory add --kind note --title "Follow-up observation" --body "..." \
   --relates-to <other-id>
 ```
 
@@ -139,13 +139,13 @@ By default (`store_in_git_notes = true`) `memory add` also writes the entry to
 `refs/notes/inkentry` on `HEAD`, so memory travels with the code. Graceful no-op
 outside a git repo.
 
-To check those notes by hand with stock git, point it at the `spelunk` ref.
+To check those notes by hand with stock git, point it at the `inkentry` ref.
 Plain `git notes show` reads git's default `commits` ref and reports "no note
 found", which is a false negative:
 
 ```bash
 git notes --ref=inkentry show HEAD    # notes on the current commit
-git notes --ref=inkentry list         # every commit carrying spelunk notes
+git notes --ref=inkentry list         # every commit carrying inkentry notes
 # equivalently
 GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ```
@@ -153,31 +153,31 @@ GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ### Query
 
 ```bash
-spelunk memory search "<question>"        # semantic search over stored entries
-spelunk memory search "<q>" --expand-graph  # also include 1-hop relates_to neighbours
-spelunk memory list                       # recent entries
-spelunk memory list --kind decision       # filter by kind
-spelunk memory list --kind decision --limit 10
-spelunk memory list --as-of 2026-01-01   # point-in-time snapshot
-spelunk memory show <id>                  # full entry + relationships
-spelunk memory graph <id>                 # relationship graph for an entry
-spelunk memory timeline "<topic>"         # topic evolution across all entries (ASC time)
-spelunk memory since <epoch>              # poll for entries newer than Unix timestamp
-spelunk memory watch                      # stream new entries as they arrive (SSE; requires a configured server_url)
-spelunk memory search "<q>" --format json
-spelunk memory failures                   # list all antipatterns (shortcut for list --kind antipattern)
-spelunk memory failures --limit 30
+inkentry memory search "<question>"        # semantic search over stored entries
+inkentry memory search "<q>" --expand-graph  # also include 1-hop relates_to neighbours
+inkentry memory list                       # recent entries
+inkentry memory list --kind decision       # filter by kind
+inkentry memory list --kind decision --limit 10
+inkentry memory list --as-of 2026-01-01   # point-in-time snapshot
+inkentry memory show <id>                  # full entry + relationships
+inkentry memory graph <id>                 # relationship graph for an entry
+inkentry memory timeline "<topic>"         # topic evolution across all entries (ASC time)
+inkentry memory since <epoch>              # poll for entries newer than Unix timestamp
+inkentry memory watch                      # stream new entries as they arrive (SSE; requires a configured server_url)
+inkentry memory search "<q>" --format json
+inkentry memory failures                   # list all antipatterns (shortcut for list --kind antipattern)
+inkentry memory failures --limit 30
 ```
 
 ### Harvest from git history or Claude Code history
 
 ```bash
-spelunk memory harvest                    # analyse HEAD~10..HEAD
-spelunk memory harvest --git-range v0.1.0..HEAD
-spelunk memory harvest --branch main      # full branch history
-spelunk memory harvest --source claude-code --confirm  # extract from ~/.claude/history.jsonl
-spelunk memory harvest --source failures  # extract antipatterns from revert/bugfix commits
-spelunk memory harvest --source failures --git-range v0.4.0..HEAD
+inkentry memory harvest                    # analyse HEAD~10..HEAD
+inkentry memory harvest --git-range v0.1.0..HEAD
+inkentry memory harvest --branch main      # full branch history
+inkentry memory harvest --source claude-code --confirm  # extract from ~/.claude/history.jsonl
+inkentry memory harvest --source failures  # extract antipatterns from revert/bugfix commits
+inkentry memory harvest --source failures --git-range v0.4.0..HEAD
 ```
 
 Extracts decisions, requirements, and non-obvious notes. From git, analyzes commit messages.
@@ -190,17 +190,17 @@ Requires `llm_model` in config. The `--source claude-code` requires `--confirm` 
 ## Status & registry
 
 ```bash
-spelunk status                 # index health for current project
-spelunk status --all           # all registered projects
-spelunk status --list          # one-line table
-spelunk status --format json   # machine-readable output
+inkentry status                 # index health for current project
+inkentry status --all           # all registered projects
+inkentry status --list          # one-line table
+inkentry status --format json   # machine-readable output
 
-spelunk check                  # verify index is fresh; shows active intents and file-overlap warnings
-spelunk check --format json    # machine-readable output
+inkentry check                  # verify index is fresh; shows active intents and file-overlap warnings
+inkentry check --format json    # machine-readable output
 
-spelunk autoclean              # remove stale registry entries (deleted/moved projects)
-spelunk link <path>            # include another project's index in searches
-spelunk unlink <path>
+inkentry autoclean              # remove stale registry entries (deleted/moved projects)
+inkentry link <path>            # include another project's index in searches
+inkentry unlink <path>
 ```
 
 ---
@@ -215,7 +215,7 @@ written into the worktree:
 ```bash
 git worktree add ../my-feature my-feature-branch
 cd ../my-feature
-spelunk context    # resolves to the main worktree's index; no init needed
+inkentry context    # resolves to the main worktree's index; no init needed
 ```
 
 `memory add` is a write, not a read/query command, but it resolves the same
@@ -225,11 +225,11 @@ appends to the repo's shared `refs/notes/inkentry`. There is no separate
 per-worktree memory store, so recording memory from a worktree needs no setup
 and stays in one place.
 
-`spelunk index .` from a worktree is optional. Run it only to refresh the
+`inkentry index .` from a worktree is optional. Run it only to refresh the
 shared index with files you changed in that worktree; it re-indexes into the
 shared `<main-worktree>/.inkentry/index.db`.
 
-`spelunk autoclean` prunes stale registry entries (e.g. after a worktree or
+`inkentry autoclean` prunes stale registry entries (e.g. after a worktree or
 project directory is removed). It does not write to or clean anything inside
 the worktree.
 
@@ -240,9 +240,9 @@ the worktree.
 Set `AGENT=true` for clean machine-readable output on all commands:
 
 ```bash
-AGENT=true spelunk search "authentication flow"
-AGENT=true spelunk memory search "storage decisions"
-AGENT=true spelunk graph src/storage/db.rs
+AGENT=true inkentry search "authentication flow"
+AGENT=true inkentry memory search "storage decisions"
+AGENT=true inkentry graph src/storage/db.rs
 ```
 
 ---
@@ -252,35 +252,35 @@ AGENT=true spelunk graph src/storage/db.rs
 **Start of every session:**
 ```bash
 # Agent entry point — pulls all prior context in one command
-AGENT=true spelunk context
+AGENT=true inkentry context
 
 # Or filter to a specific memory kind
-AGENT=true spelunk context --kind decision
+AGENT=true inkentry context --kind decision
 
 # If you've indexed the project: verify the index is fresh
-AGENT=true spelunk check
+AGENT=true inkentry check
 ```
 
-`spelunk context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call. The default output is compact; pass `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens.
+`inkentry context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call. The default output is compact; pass `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens.
 
 **Understanding code:**
-1. `AGENT=true spelunk search "<topic>" --mode text` — full-text search, no server needed
-2. `AGENT=true spelunk search "<topic>"` — semantic search (requires server + index)
+1. `AGENT=true inkentry search "<topic>" --mode text` — full-text search, no server needed
+2. `AGENT=true inkentry search "<topic>"` — semantic search (requires server + index)
 3. Read reported file/line ranges
-4. `AGENT=true spelunk graph <symbol>` — trace call chains
-5. `AGENT=true spelunk memory search "<topic>"` — check recorded context for *why*
+4. `AGENT=true inkentry graph <symbol>` — trace call chains
+5. `AGENT=true inkentry memory search "<topic>"` — check recorded context for *why*
 
 **Making changes:**
 1. Search and read before changing
-2. Store significant decisions: `spelunk memory add --kind decision …`
-3. Store constraints the human states: `spelunk memory add --kind requirement …`
-4. After committing (if indexed): `spelunk index <project-root>`
+2. Store significant decisions: `inkentry memory add --kind decision …`
+3. Store constraints the human states: `inkentry memory add --kind requirement …`
+4. After committing (if indexed): `inkentry index <project-root>`
 
 **End of session:**
 ```bash
-spelunk memory add --kind handoff --title "Handoff: <summary>" \
+inkentry memory add --kind handoff --title "Handoff: <summary>" \
   --body "what's done, what's next, open questions"
-spelunk index .   # only if project is indexed
+inkentry index .   # only if project is indexed
 ```
 
 **Writing good memory entries:**
@@ -295,6 +295,6 @@ spelunk index .   # only if project is indexed
 
 - Memory and code graph commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
-- `spelunk search --mode text` and `--mode ast-grep` are always available. Semantic `spelunk search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
-- `spelunk explore`, `spelunk memory harvest`, and LLM summaries require a server with an LLM backend configured.
-- After changing the embedding model, run `spelunk index <path> --force` to rebuild the index.
+- `inkentry search --mode text` and `--mode ast-grep` are always available. Semantic `inkentry search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
+- `inkentry explore`, `inkentry memory harvest`, and LLM summaries require a server with an LLM backend configured.
+- After changing the embedding model, run `inkentry index <path> --force` to rebuild the index.

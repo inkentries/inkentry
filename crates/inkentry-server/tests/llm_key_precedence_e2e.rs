@@ -233,7 +233,7 @@ fn a_missing_key_file_refuses_to_start_rather_than_using_the_environment() {
             "--port",
             "7777",
             "--db",
-            "/nonexistent-spelunk-test-dir/server.db",
+            "/nonexistent-inkentry-test-dir/server.db",
             "--llm-url",
             "http://127.0.0.1:1",
             "--llm-key-file",

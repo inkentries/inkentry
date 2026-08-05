@@ -1,7 +1,7 @@
-//! Component tests for `spelunk plumbing cat-chunks`.
+//! Component tests for `inkentry plumbing cat-chunks`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, spelunk_bin, spelunk_cmd};
+use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -13,7 +13,7 @@ fn cat_chunks_emits_jsonl_for_indexed_file() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     // Use path suffix matching — the DB stores absolute paths.
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
         .assert()
@@ -47,7 +47,7 @@ fn cat_chunks_emits_jsonl_for_indexed_file() {
 fn cat_chunks_output_includes_function_name() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
         .assert()
@@ -71,7 +71,7 @@ fn cat_chunks_output_includes_function_name() {
 fn cat_chunks_matches_backslash_query_path() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    let output = spelunk_cmd(&db_path, &config_path)
+    let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src\\lib.rs")
         .assert()
@@ -93,7 +93,7 @@ fn cat_chunks_matches_backslash_query_path() {
 fn cat_chunks_exits_1_for_unknown_file() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    spelunk_cmd(&db_path, &config_path)
+    inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("does/not/exist.rs")
         .assert()
@@ -115,7 +115,7 @@ fn cat_chunks_exits_nonzero_when_db_missing() {
     )
     .unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")
@@ -136,7 +136,7 @@ fn cat_chunks_exits_nonzero_missing_argument() {
     let config_path = tmp.path().join("config.toml");
     std::fs::write(&config_path, "llm_model = \"x\"\n").unwrap();
 
-    spelunk_bin()
+    inkentry_bin()
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

@@ -1,5 +1,5 @@
 // Collapse duplicate-`entity_id` groups already resident in `memory.db`.
-// Backs `spelunk memory dedupe`. See ADR-068's third amendment for the merge
+// Backs `inkentry memory dedupe`. See ADR-068's third amendment for the merge
 // rule: survivor = earliest `created_at`; `tags`/`linked_files` union
 // add-wins; archived sticks.
 //

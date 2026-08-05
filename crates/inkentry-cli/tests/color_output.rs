@@ -1,13 +1,13 @@
 //! Regression coverage for the "ANSI color leaks onto piped/non-tty stdout,
 //! and NO_COLOR is ignored" bug.
 //!
-//! `spelunk memory list` (default text format) is the lightweight target here
+//! `inkentry memory list` (default text format) is the lightweight target here
 //! (no index or server needed, see `memory_list_format.rs`), but the fix
 //! lives in a shared helper so this doubles as coverage for every text-mode
 //! command that prints `\x1b[...m` escapes.
 
 mod plumbing_helpers;
-use plumbing_helpers::{spelunk_bin, write_config};
+use plumbing_helpers::{inkentry_bin, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -17,12 +17,12 @@ use tempfile::TempDir;
 /// the duration of the test.
 fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
 
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -43,7 +43,7 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
 }
 
 fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("memory")
@@ -107,7 +107,7 @@ fn no_color_env_suppresses_color() {
 #[test]
 fn color_always_flag_overrides_non_tty_default() {
     let (_tmp, mem_path, config_path) = project_with_memory_note();
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     let out = cmd
         .arg("--color")
         .arg("always")
@@ -128,7 +128,7 @@ fn color_always_flag_overrides_non_tty_default() {
 #[test]
 fn color_always_flag_overrides_no_color_env() {
     let (_tmp, mem_path, config_path) = project_with_memory_note();
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     let out = cmd
         .arg("--color")
         .arg("always")
@@ -152,7 +152,7 @@ fn color_always_flag_overrides_no_color_env() {
 #[test]
 fn color_never_flag_suppresses_color() {
     let (_tmp, mem_path, config_path) = project_with_memory_note();
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     let out = cmd
         .arg("--color")
         .arg("never")
@@ -180,7 +180,7 @@ fn color_never_flag_suppresses_color() {
 // regression that reverts one call site back to `println!` fails here even
 // if `memory list` still passes.
 
-/// `spelunk graph <symbol> --live` needs no index or config: it runs an
+/// `inkentry graph <symbol> --live` needs no index or config: it runs an
 /// in-process ast-grep scan over the given directory (see
 /// `crates/inkentry-cli/src/cli/cmd/graph.rs::graph_live`). Its header line
 /// (`\x1b[1m...\x1b[0m`) and the `calls`/location fields go through
@@ -198,7 +198,7 @@ fn graph_live_project() -> TempDir {
 #[test]
 fn graph_live_default_has_no_ansi_on_non_tty_stdout() {
     let tmp = graph_live_project();
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(tmp.path())
         .arg("graph")
         .arg("helper_fn")
@@ -214,7 +214,7 @@ fn graph_live_default_has_no_ansi_on_non_tty_stdout() {
 #[test]
 fn graph_live_color_always_has_ansi() {
     let tmp = graph_live_project();
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--color")
         .arg("always")
@@ -229,7 +229,7 @@ fn graph_live_color_always_has_ansi() {
     assert_has_ansi(&out);
 }
 
-/// `spelunk context`'s section header (`print_section_header` in
+/// `inkentry context`'s section header (`print_section_header` in
 /// `crates/inkentry-cli/src/cli/cmd/context.rs`) emits a multi-parameter SGR
 /// code (`\x1b[1;34m`), the exact form the original bug report called out as
 /// a risk for a naive strip regex. `--no-conventions --local-only` keeps this
@@ -237,11 +237,11 @@ fn graph_live_color_always_has_ansi() {
 /// embedding call needed).
 fn context_project_with_decision() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -262,7 +262,7 @@ fn context_project_with_decision() -> (TempDir, std::path::PathBuf, std::path::P
 }
 
 fn context_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.arg("--config")
         .arg(config_path)
         .arg("context")

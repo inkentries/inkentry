@@ -1,5 +1,5 @@
-//! The pre-batch local-embedding repair shared by `spelunk sync` and
-//! `spelunk memory push`.
+//! The pre-batch local-embedding repair shared by `inkentry sync` and
+//! `inkentry memory push`.
 //!
 //! A push used to leave `memory.db` exactly as it found it, so an entry that
 //! had never been embedded stayed invisible to semantic `memory search` after a
@@ -21,7 +21,7 @@ use crate::{
 /// the batch, and the config the local embedder is resolved from.
 ///
 /// Constructed by the command layer via [`LocalEmbedPolicy::for_push`] so
-/// `spelunk sync` and `spelunk memory push` decide it identically.
+/// `inkentry sync` and `inkentry memory push` decide it identically.
 pub(in crate::cli::cmd::memory) enum LocalEmbedPolicy<'a> {
     /// Embed every push-set row that lacks a usable local vector, through the
     /// loopback embedder, and commit the result to `memory.db`.
@@ -67,8 +67,8 @@ pub(in crate::cli::cmd::memory) fn unembedded_warning(count: usize) -> String {
     let entries = if count == 1 { "entry" } else { "entries" };
     format!(
         "warning: {count} {entries} pushed without a local embedding, so \
-         `spelunk memory search` cannot surface {} in this project until \
-         `spelunk memory reindex` is run.",
+         `inkentry memory search` cannot surface {} in this project until \
+         `inkentry memory reindex` is run.",
         if count == 1 { "it" } else { "them" }
     )
 }

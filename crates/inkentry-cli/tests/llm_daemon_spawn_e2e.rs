@@ -4,13 +4,13 @@
 // resolved `LlmSpawn` renders to, and what `inkentry-server` parses. Neither
 // can see a call site that stops resolving, nor a variable the child inherits
 // behind the CLI's back: both live exactly at the boundary. These run
-// `spelunk server start` against a recording stand-in for the daemon binary
+// `inkentry server start` against a recording stand-in for the daemon binary
 // and assert on the argv and environment that stand-in received.
 
 #![cfg(unix)]
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin_in;
+use plumbing_helpers::inkentry_bin_in;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -57,7 +57,7 @@ fn free_port() -> u16 {
     port
 }
 
-// Run `spelunk server start` with `config_toml` as the personal config, and
+// Run `inkentry server start` with `config_toml` as the personal config, and
 // return what the daemon stand-in was handed.
 fn start_daemon(config_toml: &str, env: &[(&str, &str)], extra_args: &[&str]) -> Spawned {
     let home = TempDir::new().unwrap().keep();
@@ -65,7 +65,7 @@ fn start_daemon(config_toml: &str, env: &[(&str, &str)], extra_args: &[&str]) ->
     let config_path = home.join("config.toml");
     std::fs::write(&config_path, config_toml).unwrap();
 
-    let mut cmd = spelunk_bin_in(&home);
+    let mut cmd = inkentry_bin_in(&home);
     cmd.env("INKENTRY_STATE_DIR", home.join("state"))
         .env_remove("INKENTRY_LLM_URL")
         .env_remove("INKENTRY_LLM_MODEL")
@@ -267,7 +267,7 @@ fn a_daemon_that_exits_immediately_is_not_reported_as_a_firewall_problem() {
     std::fs::write(&config_path, "").unwrap();
 
     let started = std::time::Instant::now();
-    let out = spelunk_bin_in(&home)
+    let out = inkentry_bin_in(&home)
         .env("INKENTRY_STATE_DIR", home.join("state"))
         .arg("--config")
         .arg(&config_path)

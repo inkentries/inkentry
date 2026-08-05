@@ -1,4 +1,4 @@
-// LLM routing for `spelunk explore` and `spelunk memory harvest`.
+// LLM routing for `inkentry explore` and `inkentry memory harvest`.
 //
 // Both commands used one inference client for two concerns: LLM completion and
 // the embedding they need for search context / dedup vectors. Once LLM and
@@ -10,7 +10,7 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, isolate_git_config, spelunk_bin_in, sse_token_response,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, isolate_git_config, inkentry_bin_in, sse_token_response,
 };
 
 use std::path::Path;
@@ -88,10 +88,10 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
 }
 
 fn write_server_config(project_dir: &Path, server_url: &str) {
-    let spelunk_dir = project_dir.join(".inkentry");
-    std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
+    let inkentry_dir = project_dir.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     std::fs::write(
-        spelunk_dir.join("config.toml"),
+        inkentry_dir.join("config.toml"),
         format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n"),
     )
     .expect("write project config");
@@ -134,7 +134,7 @@ fn write_git_project(dir: &Path) {
 }
 
 fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_MODE")
@@ -199,7 +199,7 @@ fn harvest_payload() -> String {
     .to_string()
 }
 
-// ── spelunk explore ───────────────────────────────────────────────────────
+// ── inkentry explore ───────────────────────────────────────────────────────
 
 // The loopback serves the LLM, so explore's completions go there. The remote
 // is LLM-capable too and must still see nothing.
@@ -307,7 +307,7 @@ async fn explore_stops_with_the_restart_message_when_the_local_llm_is_not_served
         "explore cannot do its job without an LLM:\n{text}"
     );
     assert!(
-        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
     // The privacy guard rendered as prose: never nudge a user who asked for a
@@ -362,7 +362,7 @@ async fn explore_stops_with_the_no_llm_message_when_none_is_available() {
     assert_no_internal_names(&text);
 }
 
-// ── spelunk memory harvest ────────────────────────────────────────────────
+// ── inkentry memory harvest ────────────────────────────────────────────────
 
 fn harvest_cmd(home: &Path, project: &Path, db: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
@@ -467,7 +467,7 @@ async fn harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served
 
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
     // The privacy guard rendered as prose: never nudge a user who asked for a
@@ -721,7 +721,7 @@ async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_n
 
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
     // The privacy guard rendered as prose: never nudge a user who asked for a
@@ -856,7 +856,7 @@ async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_i
 
     assert!(!output.status.success(), "{text}");
     assert!(
-        text.contains("spelunk server stop") && text.contains("spelunk server start"),
+        text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
     // The privacy guard rendered as prose: never nudge a user who asked for a

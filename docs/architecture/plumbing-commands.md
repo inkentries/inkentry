@@ -1,6 +1,6 @@
 # Plumbing Commands — Protocol Specification
 
-spelunk follows the git model: **plumbing** commands are low-level primitives
+inkentry follows the git model: **plumbing** commands are low-level primitives
 designed for agents and scripts, while **porcelain** commands are
 human-readable wrappers built on top of them.
 
@@ -26,7 +26,7 @@ human-readable wrappers built on top of them.
 
 ## Plumbing Commands Reference
 
-### `spelunk plumbing cat-chunks <file-path>`
+### `inkentry plumbing cat-chunks <file-path>`
 
 Emit each indexed chunk for a file as a JSON object.
 
@@ -49,7 +49,7 @@ Exit `1` if the file is not in the index.
 
 ---
 
-### `spelunk plumbing ls-files [--prefix <path>]`
+### `inkentry plumbing ls-files [--prefix <path>]`
 
 List every file tracked in the current project index.
 
@@ -68,7 +68,7 @@ List every file tracked in the current project index.
 
 ---
 
-### `spelunk plumbing parse-file <file-path>`
+### `inkentry plumbing parse-file <file-path>`
 
 Parse a file on disk and emit chunks **without storing anything** in the DB.
 Useful for previewing what the indexer would produce.
@@ -79,7 +79,7 @@ Exit `2` if the file type is unsupported or the file cannot be read.
 
 ---
 
-### `spelunk plumbing hash-file <file-path>`
+### `inkentry plumbing hash-file <file-path>`
 
 Emit the blake3 hash for a single file and whether the index is current.
 
@@ -97,7 +97,7 @@ in the index.
 
 ---
 
-### `spelunk plumbing knn <query>`
+### `inkentry plumbing knn <query>`
 
 Embed `query` and return the top-K nearest chunks.
 
@@ -128,7 +128,7 @@ Exit `1` if no chunks are above `--min-score`.
 
 ---
 
-### `spelunk plumbing embed`
+### `inkentry plumbing embed`
 
 Read lines of text from stdin; emit one embedding vector per line.
 
@@ -141,7 +141,7 @@ producing embeddings in batch without invoking the full search pipeline.
 
 ---
 
-### `spelunk plumbing graph-edges [--file <path>] [--symbol <name>]`
+### `inkentry plumbing graph-edges [--file <path>] [--symbol <name>]`
 
 Emit edges from the code graph. At least one of `--file` or `--symbol`
 is required.
@@ -160,7 +160,7 @@ Edge kinds: `calls`, `imports`, `extends`, `implements`.
 
 ---
 
-### `spelunk plumbing read-memory [--kind <kind>] [--limit <n>] [--id <id>]`
+### `inkentry plumbing read-memory [--kind <kind>] [--limit <n>] [--id <id>]`
 
 Emit memory entries from the local store.
 
@@ -187,9 +187,9 @@ Porcelain commands are encouraged (but not required) to compose plumbing
 internally. The intended layering:
 
 ```
-spelunk search "auth flow"
+inkentry search "auth flow"
     └── internally equivalent to:
-        spelunk plumbing knn "auth flow" --limit 10
+        inkentry plumbing knn "auth flow" --limit 10
         | jq -r '.file + ":" + (.start_line|tostring) + "  " + .name'
 ```
 
@@ -202,15 +202,15 @@ plumbing directly. Humans use porcelain for readable output.
 
 ```bash
 # Find the top 5 chunks relevant to "token refresh"
-spelunk plumbing knn "token refresh" --limit 5 \
+inkentry plumbing knn "token refresh" --limit 5 \
   | jq '{file, name, score}'
 
 # Check if a file is stale before re-indexing
-spelunk plumbing hash-file src/auth.rs \
-  | jq -e '.is_current' > /dev/null || spelunk index .
+inkentry plumbing hash-file src/auth.rs \
+  | jq -e '.is_current' > /dev/null || inkentry index .
 
 # Pull all decision-type memory entries
-spelunk plumbing read-memory --kind decision \
+inkentry plumbing read-memory --kind decision \
   | jq -r '"#\(.id)  \(.title)"'
 ```
 

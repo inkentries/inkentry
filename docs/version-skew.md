@@ -100,7 +100,7 @@ has to tolerate:
 ## When a capability goes missing
 
 The health body is how the CLI learns what a peer can do, so a field it cannot
-read shows up later as a capability that is quietly not there. `spelunk status`
+read shows up later as a capability that is quietly not there. `inkentry status`
 is where you see the result: `capabilities`, `embedder_state`, and
 `has_semantic_search` under `--format json`.
 
@@ -116,7 +116,7 @@ Now each field degrades on its own, and says so. The catch is that it says so at
 warnings are there but off by default:
 
 ```
-RUST_LOG=warn spelunk status
+RUST_LOG=warn inkentry status
 ```
 
 Two shapes of warning can appear:
@@ -130,7 +130,7 @@ Two shapes of warning can appear:
 - **The body was not a health object at all.** The line names the peer URL, the
   consequence, and a bounded sample of what did arrive. This one is now the
   only route to the legacy fallback, because no individual field can reach it
-  any more. In practice it means the URL is not a spelunk server.
+  any more. In practice it means the URL is not a inkentry server.
 
 If the capabilities you expect are missing and no warning appears, the peer
 genuinely did not advertise them. That distinction, between a peer that said no

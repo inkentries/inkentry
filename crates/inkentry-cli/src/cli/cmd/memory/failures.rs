@@ -18,8 +18,8 @@ pub(super) async fn memory_failures(
     if notes.is_empty() {
         println!("No antipatterns stored yet.");
         println!(
-            "Run `spelunk memory harvest --source failures` to extract them from git history,\n\
-             or add one manually with `spelunk memory add --kind antipattern --title \"...\" --body \"...\"`"
+            "Run `inkentry memory harvest --source failures` to extract them from git history,\n\
+             or add one manually with `inkentry memory add --kind antipattern --title \"...\" --body \"...\"`"
         );
         return Ok(());
     }

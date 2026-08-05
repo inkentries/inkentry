@@ -1,11 +1,11 @@
-//! Component tests for `spelunk context` (#206).
+//! Component tests for `inkentry context` (#206).
 //!
 //! Tests the porcelain `context` command which serves as the agent session
 //! entry point, printing handoffs, open questions, decisions, and requirements
 //! in one shot.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
@@ -76,7 +76,7 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
         (
             "decision",
             "Context command design",
-            "spelunk context replaces three separate memory list calls for agent workflow.",
+            "inkentry context replaces three separate memory list calls for agent workflow.",
         ),
         (
             "question",
@@ -106,7 +106,7 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     ];
 
     for (kind, title, body) in entries {
-        spelunk_bin()
+        inkentry_bin()
             // `memory add` carries every entry through to git notes in the
             // *process CWD's* repo; `--db` does not redirect that carrier. Seed
             // from the temp project or the entries land in the repo under test.
@@ -141,12 +141,12 @@ fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathB
     config_path
 }
 
-/// Helper to invoke `spelunk context` with the given args and config.
+/// Helper to invoke `inkentry context` with the given args and config.
 ///
 /// Does NOT pass `--db`; the command derives `memory.db` from `db_path` in
 /// the config, which matches where `setup_context_project` seeds entries.
 fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     // Run from the temp dir so find_project_db doesn't walk up and discover
     // the real .inkentry/index.db in the project root.
     if let Some(dir) = config_path.parent() {
@@ -181,7 +181,7 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
         ("requirement", "req1"),
     ];
     for (kind, title) in entries {
-        spelunk_bin()
+        inkentry_bin()
             // See `setup_context_project`: the git-notes carrier follows the
             // process CWD, not `--db`.
             .current_dir(tmp.path())
@@ -207,13 +207,13 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
 
 #[test]
 fn context_budget_keeps_durable_drops_questions_e2e() {
-    // Drives the real `spelunk context --budget` CLI path. A 505-token budget
+    // Drives the real `inkentry context --budget` CLI path. A 505-token budget
     // fits every decision+requirement+handoff (5 * 101) with nothing left for
     // the 3 questions, so questions must drop first while durable notes survive
     // — regardless of question being displayed before decision/requirement.
     let (_tmp, config_path) = setup_budget_project();
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     if let Some(dir) = config_path.parent() {
         cmd.current_dir(dir);
     }
@@ -498,7 +498,7 @@ fn context_empty_memory_exits_zero_with_no_output() {
 
     // Write a valid but empty memory.db so the backend can open.
     // MemoryStore::open creates the DB on demand, but context doesn't
-    // create the DB if it doesn't exist.  `spelunk memory add` will
+    // create the DB if it doesn't exist.  `inkentry memory add` will
     // create it, then we delete the entries — but that's complex.
     //
     // Instead, just create a minimal config and let the backend handle
@@ -618,7 +618,7 @@ fn context_exits_nonzero_when_config_invalid() {
     let config_path = tmp.path().join("config.toml");
     let blocker = tmp.path().join("blocker");
     std::fs::write(&blocker, b"not a directory").expect("write blocker file");
-    let db_path = blocker.join("impossible").join("spelunk.db");
+    let db_path = blocker.join("impossible").join("inkentry.db");
 
     std::fs::write(
         &config_path,
@@ -629,7 +629,7 @@ fn context_exits_nonzero_when_config_invalid() {
     )
     .expect("write config");
 
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(&tmp)
         .arg("--config")
         .arg(&config_path)

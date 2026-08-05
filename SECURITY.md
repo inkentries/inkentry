@@ -12,12 +12,12 @@
 **Please do not file public GitHub issues for security vulnerabilities.**
 
 Report security issues privately via GitHub's built-in private vulnerability reporting:
-**Security → Report a vulnerability** on the [spelunk repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
+**Security → Report a vulnerability** on the [inkentry repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
 
 ### What to include
 
 - Description of the vulnerability and its impact
-- Steps to reproduce (spelunk version, OS, minimal reproduction)
+- Steps to reproduce (inkentry version, OS, minimal reproduction)
 - Any suggested fix or relevant code references
 
 ### Response SLA
@@ -32,7 +32,7 @@ We will credit reporters in the release notes unless you prefer to remain anonym
 
 ## Scope
 
-spelunk is primarily a **local single-user CLI tool**. By default it runs a
+inkentry is primarily a **local single-user CLI tool**. By default it runs a
 local `inkentry-server` bound to `127.0.0.1` for embeddings and inference; team
 deployments may run a shared, authenticated `inkentry-server` reachable over the
 network. The most relevant security concerns are:
@@ -48,7 +48,7 @@ network. The most relevant security concerns are:
 - **Dependency vulnerabilities** — transitive Rust crate advisories
 - **Data integrity** — corruption of the local SQLite index or memory database
 
-For the default local configuration spelunk makes no outbound connections except
+For the default local configuration inkentry makes no outbound connections except
 to `127.0.0.1` (a local server the user controls). When `server_url` points at a
 remote instance, treat the network path and the server's authentication as
 in-scope — see [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md)

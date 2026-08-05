@@ -1,9 +1,9 @@
-// Subprocess-level coverage for `relates_to` edge propagation on `spelunk
+// Subprocess-level coverage for `relates_to` edge propagation on `inkentry
 // sync`. `memory add --relates-to` writes a LOCAL `relates_to` edge; this pins
 // that the edge now also travels UP to the cloud on sync, via an edge-only
 // `POST /memory/batch` keyed by each endpoint's external_id.
 //
-// The real compiled `spelunk` binary (`assert_cmd`) drives `memory add
+// The real compiled `inkentry` binary (`assert_cmd`) drives `memory add
 // --relates-to` to build the local edge, then `sync` against a mock team
 // server. The mock echoes the entry push (so both endpoints get stamped and
 // enter this round's just-synced set) and captures the edge-only batch, which
@@ -12,7 +12,7 @@
 // harness, and `memory_relates_to_edge.rs` for the `memory add` driving.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, spelunk_bin_in, write_project_server_config};
+use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in, write_project_server_config};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -114,7 +114,7 @@ fn add_note(
     title: &str,
     extra: &[&str],
 ) -> i64 {
-    let mut cmd = spelunk_bin_in(home);
+    let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
@@ -200,7 +200,7 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
 
     // Sync from the project dir, so `server_url` + `project_id` are discovered
     // from its `.inkentry/config.toml`.
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&cfg)

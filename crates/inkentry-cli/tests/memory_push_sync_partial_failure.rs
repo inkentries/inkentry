@@ -1,5 +1,5 @@
 // Subprocess-level coverage for a mid-push (partial) failure: a multi-chunk
-// `spelunk memory push` / `spelunk sync` whose later chunk fails must exit
+// `inkentry memory push` / `inkentry sync` whose later chunk fails must exit
 // non-zero, print honest partial progress (`Pushed X of Y`) plus a resume hint,
 // and never print success framing (`Done.` / `Sync complete.`).
 //
@@ -8,12 +8,12 @@
 // returns a summary marked `interrupted` rather than `?`-propagating; the
 // command layer (`push.rs` / `sync.rs`) turns that into the partial-progress
 // message and a non-zero exit via `bail!`. These tests spawn the real compiled
-// `spelunk` binary (`assert_cmd`, following `memory_push_sync_total_failure.rs`)
+// `inkentry` binary (`assert_cmd`, following `memory_push_sync_total_failure.rs`)
 // against a mock team server that serves the first chunk then 500s, so a
 // regression in the command-layer framing or exit code is what fails here.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, spelunk_bin_in};
+use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in};
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -71,7 +71,7 @@ async fn mount_batch_first_ok_then_fail(server: &MockServer) {
         .await;
 }
 
-// The pull half of `spelunk sync` runs independently of the push outcome.
+// The pull half of `inkentry sync` runs independently of the push outcome.
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -133,7 +133,7 @@ async fn memory_push_mid_chunk_failure_exits_nonzero_with_resume_hint() {
     let mem_path = proj.path().join("seed-memory.db");
     seed_source_store(&mem_path);
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)
@@ -173,7 +173,7 @@ async fn memory_sync_mid_chunk_failure_exits_nonzero_with_resume_hint() {
     let mem_path = proj.path().join("seed-memory.db");
     seed_source_store(&mem_path);
 
-    let assert = spelunk_bin_in(home.path())
+    let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)

@@ -1,4 +1,4 @@
-//! Regression test for the `spelunk memory harvest` argument-injection guard
+//! Regression test for the `inkentry memory harvest` argument-injection guard
 //! (security review finding: `--branch`/`--git-range` values starting with
 //! `-` must never reach `git log` as an option — see
 //! `crates/inkentry-cli/src/cli/cmd/memory/harvest.rs::reject_option_like_ref`).
@@ -8,7 +8,7 @@
 //! overwrite the target file.
 
 mod plumbing_helpers;
-use plumbing_helpers::{init_git_repo, spelunk_bin};
+use plumbing_helpers::{init_git_repo, inkentry_bin};
 
 use predicates::prelude::*;
 use std::fs;
@@ -66,7 +66,7 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
 
     let malicious_branch_arg = format!("--branch=--output={}", victim_path.display());
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")
@@ -98,7 +98,7 @@ fn harvest_rejects_option_like_git_range() {
 
     let malicious_range_arg = format!("--git-range=--output={}", victim_path.display());
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")
@@ -125,7 +125,7 @@ fn harvest_rejects_short_option_like_branch() {
 
     let config_path = write_harvest_config(temp.path());
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")
@@ -149,7 +149,7 @@ fn harvest_rejects_bare_double_dash_branch() {
 
     let config_path = write_harvest_config(temp.path());
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")
@@ -184,7 +184,7 @@ fn harvest_rejects_option_like_branch_with_shell_metacharacters() {
         victim_path.display()
     );
 
-    let mut cmd = spelunk_bin();
+    let mut cmd = inkentry_bin();
     cmd.current_dir(temp.path())
         .env_remove("INKENTRY_SERVER_URL")
         .env_remove("INKENTRY_LLM_URL")

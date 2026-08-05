@@ -12,7 +12,7 @@
 //! existing row. Step A's per-row UPDATE catches that and skips the row
 //! rather than hard-failing `open` (ADR-068 fifth amendment E2). Step B only
 //! promotes once a duplicate scan comes back clean; a duplicate group leaves
-//! the index non-unique and logs a message pointing at `spelunk memory
+//! the index non-unique and logs a message pointing at `inkentry memory
 //! dedupe`. Neither step ever hard-aborts `open`.
 
 use anyhow::{Context, Result};
@@ -62,8 +62,8 @@ impl MemoryStore {
                     tracing::warn!(
                         "note #{id} could not be backfilled with an entity_id: it collides \
                          with an existing row's entity_id under the already-promoted UNIQUE \
-                         index; run `spelunk memory dedupe` to collapse them, then re-run \
-                         spelunk"
+                         index; run `inkentry memory dedupe` to collapse them, then re-run \
+                         inkentry"
                     );
                 }
                 Err(e) => {
@@ -76,7 +76,7 @@ impl MemoryStore {
 
     /// Step B: promote `idx_notes_entity_id` to UNIQUE once zero duplicate
     /// groups remain. Never hard-aborts: a store with duplicates stays fully
-    /// functional under the non-unique index until the user runs `spelunk
+    /// functional under the non-unique index until the user runs `inkentry
     /// memory dedupe`.
     pub(super) fn promote_entity_id_unique_index(&self) -> Result<()> {
         let already: bool = self
@@ -97,7 +97,7 @@ impl MemoryStore {
         if dup_groups > 0 {
             tracing::warn!(
                 "entity_id has {dup_groups} duplicate group(s); run \
-                 `spelunk memory dedupe` to collapse them, then re-run spelunk \
+                 `inkentry memory dedupe` to collapse them, then re-run inkentry \
                  to enforce uniqueness"
             );
             return Ok(());
@@ -116,7 +116,7 @@ impl MemoryStore {
     }
 
     /// Count of distinct `entity_id` values shared by more than one row.
-    /// Shared by Step B's gate and `spelunk memory dedupe`'s summary.
+    /// Shared by Step B's gate and `inkentry memory dedupe`'s summary.
     pub fn entity_id_duplicate_group_count(&self) -> Result<i64> {
         self.conn
             .query_row(

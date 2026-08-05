@@ -1,10 +1,10 @@
 # Architecture
 
-This document describes spelunk's system design for contributors and anyone integrating with the codebase.
+This document describes inkentry's system design for contributors and anyone integrating with the codebase.
 
 ## Overview
 
-spelunk is a Rust CLI that:
+inkentry is a Rust CLI that:
 
 1. **Indexes** source trees using tree-sitter AST parsing
 2. **Embeds** each code chunk via an external embedding model
@@ -44,7 +44,7 @@ src/
     cmd/               One file per subcommand (index.rs, search.rs, etc.)
 
   config/
-    mod.rs             Config struct, loads from ~/.config/spelunk/config.toml
+    mod.rs             Config struct, loads from ~/.config/inkentry/config.toml
     sync_mode.rs       SyncMode enum: offline / local_first / cloud_first mode selection
     project_id.rs      project-id derivation from git remote / local fallback
     paths.rs           config-dir + project/db discovery
@@ -78,7 +78,7 @@ src/
     mod.rs             SearchResult struct
     rag.rs             RagPipeline: search + ask methods
 
-  registry.rs          Global project registry (~/.config/spelunk/registry.db)
+  registry.rs          Global project registry (~/.config/inkentry/registry.db)
 
 migrations/            SQL migration files applied in order at DB open
 ```
@@ -89,7 +89,7 @@ Architectural decisions are recorded in [docs/adr/](adr/). Key ones:
 
 ### Chunking: tree-sitter AST nodes, not line splits
 
-Tree-sitter parses source code into an AST and spelunk extracts named semantic nodes (functions, structs, classes, methods, traits, impls) as individual chunks. This means each chunk is a meaningful unit of code with a name, type, and scope — not an arbitrary 100-line window.
+Tree-sitter parses source code into an AST and inkentry extracts named semantic nodes (functions, structs, classes, methods, traits, impls) as individual chunks. This means each chunk is a meaningful unit of code with a name, type, and scope — not an arbitrary 100-line window.
 
 Fallback: a token-aware sliding window for unsupported languages and for oversized semantic nodes that need re-windowing. Each window accumulates whole lines up to `MAX_CHUNK_TOKENS` (512), with ~12.5% token overlap between adjacent windows (the ratio behind the historical 120-line/15-line-overlap split); a single line that alone exceeds the budget becomes its own window so the cap always binds. Re-windowed chunks carry the source node's `name`/`docstring`/`parent_scope` so they still embed with their symbol identity rather than `title: none`. Markdown uses heading-based chunking.
 
@@ -97,7 +97,7 @@ Fallback: a token-aware sliding window for unsupported languages and for oversiz
 
 All data lives in a single SQLite file per project. The sqlite-vec extension adds a `vec0` virtual table for KNN vector search. No separate vector database, no separate search engine.
 
-This is a deliberate constraint — see [ADR-001](adr/001-scope-boundaries.md). SQLite is zero-configuration, single-file, and sufficient for the scale spelunk targets.
+This is a deliberate constraint — see [ADR-001](adr/001-scope-boundaries.md). SQLite is zero-configuration, single-file, and sufficient for the scale inkentry targets.
 
 ### Incremental indexing via blake3
 
@@ -154,12 +154,12 @@ runner `index.db` uses) rebuilds `note_embeddings` as `FLOAT[896]` (each still
 guarded by its own marker table). There is no path that leaves
 memory stranded on the stale 768-dim layout. The `note_embeddings` rebuild is
 empty rather than converting the old vectors, so semantic recall on pre-upgrade
-notes is lost until they are re-embedded with `spelunk memory reindex`; a
+notes is lost until they are re-embedded with `inkentry memory reindex`; a
 one-line notice after the upgrade points the user at that command.
 
 ### Backend abstraction
 
-The `EmbeddingBackend` and `LlmBackend` traits (in inkentry-core's `embeddings/` and `llm/`) are the only interface between spelunk and inference. inkentry-core ships **no** concrete implementations. The native F2LLM embedder engine lives in its own `inkentry-embed` library crate (`crates/inkentry-embed/src/embedder_native.rs`, `NativeEmbedder`), which only loads the model from local files already on disk (`load_from_path`) and carries no download dependency. `inkentry-server` depends on that crate, owns the Hugging Face Hub download path that resolves those local files (`crates/inkentry-server/src/embed_hub.rs`), and additionally provides the OpenAI-compatible HTTP clients. The CLI reaches inference only through `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`, with `ServerEmbedAdapter` and `ServerLlmAdapter` as thin trait adapters over it. Embedding and LLM inference are routed by separate rules and can resolve to different servers in a single command, so a caller needing both builds two clients; the LLM rule lives in `crates/inkentry-cli/src/capability/llm_route.rs`.
+The `EmbeddingBackend` and `LlmBackend` traits (in inkentry-core's `embeddings/` and `llm/`) are the only interface between inkentry and inference. inkentry-core ships **no** concrete implementations. The native F2LLM embedder engine lives in its own `inkentry-embed` library crate (`crates/inkentry-embed/src/embedder_native.rs`, `NativeEmbedder`), which only loads the model from local files already on disk (`load_from_path`) and carries no download dependency. `inkentry-server` depends on that crate, owns the Hugging Face Hub download path that resolves those local files (`crates/inkentry-server/src/embed_hub.rs`), and additionally provides the OpenAI-compatible HTTP clients. The CLI reaches inference only through `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`, with `ServerEmbedAdapter` and `ServerLlmAdapter` as thin trait adapters over it. Embedding and LLM inference are routed by separate rules and can resolve to different servers in a single command, so a caller needing both builds two clients; the LLM rule lives in `crates/inkentry-cli/src/capability/llm_route.rs`.
 
 To add a new backend: implement the trait (in `inkentry-embed` for an embedder, or in inkentry-server for an LLM/HTTP backend) and wire it into the server's endpoint handlers. Nothing in inkentry-core imports a concrete backend.
 
@@ -171,7 +171,7 @@ This scanner is **best-effort defense-in-depth, not a security boundary** — a 
 
 ### Multi-project registry
 
-`~/.config/spelunk/registry.db` tracks all indexed projects. `spelunk link` connects projects so that `spelunk search` queries multiple databases and merges results by vector distance.
+`~/.config/inkentry/registry.db` tracks all indexed projects. `inkentry link` connects projects so that `inkentry search` queries multiple databases and merges results by vector distance.
 
 ## Data flow: index
 

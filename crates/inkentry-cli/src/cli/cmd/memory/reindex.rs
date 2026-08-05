@@ -1,4 +1,4 @@
-//! `spelunk memory reindex`: backfill missing local note embeddings.
+//! `inkentry memory reindex`: backfill missing local note embeddings.
 //!
 //! A note's vector is minted only at `memory add` time. When no embedder was
 //! reachable then, or the 768→896 store upgrade discarded every prior vector,
@@ -66,7 +66,7 @@ pub(super) async fn memory_reindex(
     // to `open_memory_backend`'s own routing (2026-07-23 founder decision).
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         anyhow::bail!(
-            "'spelunk memory reindex' is not applicable in cloud_first mode with \
+            "'inkentry memory reindex' is not applicable in cloud_first mode with \
              server_url set: memory.db is not the store of record there (server_url \
              owns memory), so there is nothing local to re-embed."
         );
@@ -151,7 +151,7 @@ pub(super) async fn memory_reindex(
                 // remainder rather than starting over.
                 return Err(e.context(format!(
                     "embedding note #{id} ({embedded} of {total} done and durably stored; \
-                     re-run 'spelunk memory reindex' to resume the rest)"
+                     re-run 'inkentry memory reindex' to resume the rest)"
                 )));
             }
         };
@@ -160,7 +160,7 @@ pub(super) async fn memory_reindex(
             .insert_embedding(*id, &blob)
             .with_context(|| format!("storing embedding for note #{id}"))?;
         embedded += 1;
-        eprintln!("[spelunk] embedded {embedded}/{total}…");
+        eprintln!("[inkentry] embedded {embedded}/{total}…");
     }
 
     summary.embedded = embedded;

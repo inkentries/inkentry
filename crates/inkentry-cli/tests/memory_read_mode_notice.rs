@@ -6,10 +6,10 @@
 //! it: no per-read manual-sync nag on stderr. These tests pin that silence and
 //! the `cloud_first` counterpart: reads route to the server and an unreachable
 //! server is a hard error, never a silent local read. They also cover the
-//! neutral `spelunk status` mode word and its scope-aware offline hints.
+//! neutral `inkentry status` mode word and its scope-aware offline hints.
 
 mod plumbing_helpers;
-use plumbing_helpers::spelunk_bin;
+use plumbing_helpers::inkentry_bin;
 
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -33,10 +33,10 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
 /// return `(tmp, mem_path, id)`.
 fn seeded_project() -> (TempDir, PathBuf, i64) {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("spelunk.db");
+    let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
     let cfg = write_cfg(tmp.path(), "config-seed.toml", &db_path, "");
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         // Not a git repo: the git-notes write-through is a no-op, so the entry
         // lands only in the local memory.db.
         .current_dir(tmp.path())
@@ -68,7 +68,7 @@ fn seeded_project() -> (TempDir, PathBuf, i64) {
 }
 
 fn memory_list(tmp: &TempDir, mem_path: &Path, cfg: &Path) -> std::process::Output {
-    spelunk_bin()
+    inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(cfg)
@@ -83,7 +83,7 @@ fn memory_list(tmp: &TempDir, mem_path: &Path, cfg: &Path) -> std::process::Outp
 /// reconciler owns convergence.
 fn assert_no_sync_nag(stderr: &str) {
     assert!(
-        !stderr.contains("spelunk sync"),
+        !stderr.contains("inkentry sync"),
         "read must not nag about manual sync: {stderr}"
     );
     assert!(
@@ -102,7 +102,7 @@ fn local_first_read_serves_data_without_sync_nag() {
     let cfg = write_cfg(
         tmp.path(),
         "config-local-first.toml",
-        &tmp.path().join("spelunk.db"),
+        &tmp.path().join("inkentry.db"),
         "",
     );
     // `server_url`/`project_id` only take effect from project-level
@@ -129,7 +129,7 @@ fn local_first_read_serves_data_without_sync_nag() {
     assert!(stdout.contains(LOCAL_TITLE), "got: {stdout}");
 }
 
-/// ADR-037 P2 item 34: the new pending/last-synced clause belongs on `spelunk
+/// ADR-037 P2 item 34: the new pending/last-synced clause belongs on `inkentry
 /// status` only. No per-read banner is reintroduced on
 /// `list`/`search`/`show`/`timeline`/`context` — extends this file's existing
 /// `assert_no_sync_nag` coverage (recorded in commit `a44279e26`) to also
@@ -140,7 +140,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
     let cfg = write_cfg(
         tmp.path(),
         "config-read-commands.toml",
-        &tmp.path().join("spelunk.db"),
+        &tmp.path().join("inkentry.db"),
         "",
     );
     plumbing_helpers::write_project_server_config(
@@ -152,7 +152,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
     let assert_clean = |out: &std::process::Output, label: &str| {
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        for needle in ["pending", "last synced", "sync error", "spelunk sync"] {
+        for needle in ["pending", "last synced", "sync error", "inkentry sync"] {
             assert!(
                 !stdout.contains(needle) && !stderr.contains(needle),
                 "{label} must never mention {needle:?} (status-only content): \
@@ -164,7 +164,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
     let list = memory_list(&tmp, &mem_path, &cfg);
     assert_clean(&list, "memory list");
 
-    let show = spelunk_bin()
+    let show = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -175,7 +175,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
         .unwrap();
     assert_clean(&show, "memory show");
 
-    let search = spelunk_bin()
+    let search = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -186,7 +186,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
         .unwrap();
     assert_clean(&search, "memory search");
 
-    let timeline = spelunk_bin()
+    let timeline = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -197,7 +197,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
         .unwrap();
     assert_clean(&timeline, "memory timeline");
 
-    let context = spelunk_bin()
+    let context = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -221,7 +221,7 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
-        &tmp.path().join("spelunk.db"),
+        &tmp.path().join("inkentry.db"),
         "mode = \"cloud_first\"\n",
     );
     plumbing_helpers::write_project_server_config(
@@ -256,9 +256,9 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
     );
 }
 
-// ── spelunk status: neutral mode word + scope-aware offline hints ─────────────
+// ── inkentry status: neutral mode word + scope-aware offline hints ─────────────
 
-/// Minimal indexed project so `spelunk status` passes the ADR-067 project
+/// Minimal indexed project so `inkentry status` passes the ADR-067 project
 /// gate. Indexed with INKENTRY_NO_SERVER=1 (no embed phase, no probes).
 fn indexed_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
@@ -267,7 +267,7 @@ fn indexed_project() -> (TempDir, PathBuf) {
     std::fs::write(project.join("lib.rs"), "pub fn hello() {}").unwrap();
     let db_path = tmp.path().join("index.db");
     let cfg = write_cfg(tmp.path(), "config-index.toml", &db_path, "");
-    spelunk_bin()
+    inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
@@ -294,7 +294,7 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
     // `.current_dir(&project)`, so it must land there, not under `tmp.path()`.
     plumbing_helpers::write_project_server_config(&project, "https://127.0.0.1:1", "team/proj");
 
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .current_dir(&project)
         .arg("--config")
         .arg(&cfg)
@@ -308,7 +308,7 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
     assert!(stdout.contains("mode"), "got: {stdout}");
     assert!(stdout.contains("local_first"), "got: {stdout}");
     assert!(
-        !stdout.contains("spelunk sync"),
+        !stdout.contains("inkentry sync"),
         "status must not pre-teach a manual sync workflow: {stdout}"
     );
     // Explore's hint must not tell the operator to set an already-set server_url.
@@ -332,7 +332,7 @@ fn status_has_no_mode_line_on_solo_default() {
         "",
     );
 
-    let out = spelunk_bin()
+    let out = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1") // hermetic: no loopback auto-discovery
         .current_dir(&project)
         .arg("--config")

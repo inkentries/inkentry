@@ -595,7 +595,7 @@ async fn append_to_git_notes_body_with_shell_metacharacters_is_literal() {
 }
 
 /// `GitNotesBackend::add` (used by the `MemoryBackend` trait impl, i.e. the
-/// `spelunk memory add` path) also writes via `add_note_stdin`. Confirm an
+/// `inkentry memory add` path) also writes via `add_note_stdin`. Confirm an
 /// option-like note title/body round-trips literally through that path too —
 /// not just through the lower-level `append_to_git_notes` free function.
 #[tokio::test]
@@ -628,7 +628,7 @@ async fn git_notes_backend_add_with_option_like_body_round_trips() {
 //
 // A note blob is JSON Lines interleaved with foreign content (prose, other
 // tools' lines). Reads skip foreign lines without erroring; writes preserve
-// every foreign line and every untargeted spelunk record byte-for-byte.
+// every foreign line and every untargeted inkentry record byte-for-byte.
 
 /// Write a raw note blob verbatim to HEAD's `refs/notes/inkentry` note, via
 /// stdin (`-F -`) so arbitrary content is delivered literally.
@@ -735,7 +735,7 @@ async fn git_notes_adr_conformance_read_skips_prose() {
     );
 }
 
-/// (b) A blob with a foreign line and no spelunk records reads as an empty list
+/// (b) A blob with a foreign line and no inkentry records reads as an empty list
 /// with no error; a permissive read never fails on unparseable lines.
 #[tokio::test]
 #[serial]
@@ -750,7 +750,7 @@ async fn git_notes_read_foreign_only_is_empty_no_error() {
 
     let backend = GitNotesBackend::with_root(root.to_path_buf());
     let notes = backend.list(None, 100, true, None).await.expect("list");
-    assert!(notes.is_empty(), "no spelunk records, no error");
+    assert!(notes.is_empty(), "no inkentry records, no error");
 }
 
 /// (c) `add` (append) preserves all prior content: the four prose blocks and the
@@ -1311,7 +1311,7 @@ async fn lock_path_is_one_identity_from_main_and_linked_worktrees() {
 /// An unusable lock file degrades to an unlocked write, never an `Err`.
 ///
 /// ADR-069 D8's one kept degradation: where the lock cannot exist at all,
-/// failing every write would make spelunk unusable on that filesystem to
+/// failing every write would make inkentry unusable on that filesystem to
 /// prevent a race that needs a second concurrent writer to matter.
 ///
 /// A directory at the lock path makes the open fail deterministically on every
@@ -1637,7 +1637,7 @@ mod git_shim {
     }
 
     impl ShimGuard {
-        /// How many spelunk note reads the shim has intercepted so far.
+        /// How many inkentry note reads the shim has intercepted so far.
         pub fn note_reads(&self) -> u32 {
             std::fs::read_to_string(&self.counter)
                 .ok()
@@ -2103,7 +2103,7 @@ fn git_rebase_scripted(root: &std::path::Path, args: &[&str], seq_editor: &str, 
     );
 }
 
-/// The spelunk note body on HEAD, or `None` when HEAD carries no note.
+/// The inkentry note body on HEAD, or `None` when HEAD carries no note.
 fn note_on_head(root: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2710,7 +2710,7 @@ fn park_working_ref_as_tracking(root: &std::path::Path) {
 /// trailing newline; git's `notes add -F -` normalization is the only thing
 /// that appends one. Without it a union welds the last line of one side onto
 /// the first line of the other and both records stop parsing. That behaviour is
-/// owned by git, not by spelunk, so it is pinned here rather than assumed: this
+/// owned by git, not by inkentry, so it is pinned here rather than assumed: this
 /// fails if git ever stops normalizing.
 #[tokio::test]
 #[serial]
@@ -2985,7 +2985,7 @@ async fn merge_leaves_no_notes_merge_state_in_the_git_dir() {
 }
 
 /// (D5) A user's own `notes.mergeStrategy` can neither drop a teammate's note
-/// nor be rewritten by spelunk.
+/// nor be rewritten by inkentry.
 ///
 /// `ours` is the dangerous setting: it resolves a conflict by discarding the
 /// other side, so a merge that honoured it would silently drop exactly what the
@@ -3014,7 +3014,7 @@ async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() 
         merged.contains("theirs") && merged.contains("mine"),
         "-s must outrank the user's 'ours' so neither side is dropped, got:\n{merged}"
     );
-    // …and spelunk must not have rewritten the setting out from under them.
+    // …and inkentry must not have rewritten the setting out from under them.
     assert_eq!(
         git_stdout_at(root, &["config", "--get", "notes.mergeStrategy"]),
         "ours",
@@ -3032,7 +3032,7 @@ async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() 
 /// The merge folds in only what the user's own `git fetch` already wrote. That
 /// is what lets a read work with the remote unreachable, and it keeps egress off
 /// a path the user never pointed at a remote. Pinned by making any network
-/// attempt fail loudly: `origin` is configured, with the refspec `spelunk init`
+/// attempt fail loudly: `origin` is configured, with the refspec `inkentry init`
 /// writes, but points at a path that does not exist.
 #[tokio::test]
 #[serial]
@@ -3106,7 +3106,7 @@ async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
 /// all.
 ///
 /// Travel is deliberately fetch **then** merge: the user's own `git fetch` is
-/// the only thing that moves data, so spelunk reading memory never reaches the
+/// the only thing that moves data, so inkentry reading memory never reaches the
 /// network on its own.
 #[tokio::test]
 #[serial]
@@ -3262,7 +3262,7 @@ async fn lock_holder_child() {
 ///
 /// The sibling test above contends two handles inside one process, which is the
 /// same OS primitive but not the same situation. This is the real one: two
-/// spelunk processes (agents, worktrees, a hook racing a shell) on one repo,
+/// inkentry processes (agents, worktrees, a hook racing a shell) on one repo,
 /// which is the case the lock exists for. The helper takes the lock via
 /// `lock_notes` itself, so nothing here re-implements the locking under test.
 ///

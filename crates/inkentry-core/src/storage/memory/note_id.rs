@@ -68,7 +68,7 @@ impl FromStr for NoteId {
 
 /// Numeric ids serialize as JSON numbers, everything else as a string.
 ///
-/// `spelunk memory list --format json` emitted `"id": 42` before identity
+/// `inkentry memory list --format json` emitted `"id": 42` before identity
 /// became opaque, and scripts parse that. Unconditionally quoting would break
 /// them for the local and team-server populations, which is every existing
 /// user, to describe a cloud UUID none of them have.

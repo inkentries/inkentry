@@ -1,27 +1,27 @@
-# spelunk config reference
+# inkentry config reference
 
-Every field in `~/.config/spelunk/config.toml` and `.inkentry/config.toml`,
+Every field in `~/.config/inkentry/config.toml` and `.inkentry/config.toml`,
 with defaults, types, and descriptions. Verified against
 `crates/inkentry-core/src/config/mod.rs`.
 
-spelunk reads configuration from two TOML files, layered with environment
+inkentry reads configuration from two TOML files, layered with environment
 variable overrides.
 
 ## Config files
 
 | File | Scope | Commit to git? |
 |------|-------|-----------------|
-| `~/.config/spelunk/config.toml` | Personal, machine-wide | No |
+| `~/.config/inkentry/config.toml` | Personal, machine-wide | No |
 | `.inkentry/config.toml` (project root, found by walking up from CWD) | Project-level, team-wide | Yes: contains no secrets by design |
 
 The two files are not interchangeable: most fields are only read from the
 personal config, and the project file accepts a deliberately narrow set (see
-[Project config fields](#spelunkconfigtoml-project-level) below).
+[Project config fields](#inkentryconfigtoml-project-level) below).
 
 Load order (later overrides earlier):
 
 1. Defaults
-2. `~/.config/spelunk/config.toml` (global personal). `server_url` is
+2. `~/.config/inkentry/config.toml` (global personal). `server_url` is
    discarded even if present here: a team server is a project-wide choice,
    never a single developer's.
 3. `.inkentry/config.toml`, discovered by walking up from the current
@@ -37,21 +37,21 @@ to it. Unset the variable to let the file value apply.
 
 Override the global config file path with `-c, --config <path>` on any command
 (also settable via `INKENTRY_CONFIG_DIR`, which overrides the whole
-`~/.config/spelunk/` directory, not just the file).
+`~/.config/inkentry/` directory, not just the file).
 
 ---
 
 ## Fields (personal config)
 
-These fields are read from `~/.config/spelunk/config.toml`. Unless noted
+These fields are read from `~/.config/inkentry/config.toml`. Unless noted
 otherwise, setting them in `.inkentry/config.toml` has no effect: the project
 file only accepts the fields listed under
-[Project config fields](#spelunkconfigtoml-project-level).
+[Project config fields](#inkentryconfigtoml-project-level).
 
 ### `db_path`
 
 - **Type:** path
-- **Default:** `~/.config/spelunk/index.db`
+- **Default:** `~/.config/inkentry/index.db`
 
 Path to the SQLite index database file. The project index and memory databases
 live alongside it (`index.db`, `memory.db`).
@@ -69,11 +69,11 @@ the CLI starts sends to that endpoint, passed as the daemon's `--llm-model`. It
 is ignored without an `llm_url`: a model with no endpoint is not a
 configuration.
 
-**A local presence flag.** When unset, `spelunk explore` is hidden from
+**A local presence flag.** When unset, `inkentry explore` is hidden from
 `--help` (it still runs if invoked directly). This is cosmetic. The value is
 not attached to any inference request the CLI makes, so it does not choose the
 model on a server the CLI merely reaches, such as a team `server_url`; that
-server's own configuration decides. `spelunk memory harvest` does not consult
+server's own configuration decides. `inkentry memory harvest` does not consult
 this field at all. For both commands, whether a chat model is actually
 available depends on the capability tier (a reachable inference server with a
 model loaded), independent of this setting.
@@ -87,7 +87,7 @@ model loaded), independent of this setting.
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
 `inkentry-server` is started against it and gains LLM capability, which is what
-`spelunk explore`, `spelunk memory harvest`, and index-time summaries need.
+`inkentry explore`, `inkentry memory harvest`, and index-time summaries need.
 When unset, the daemon runs without an LLM.
 
 Personal config only. A value in a checked-in `.inkentry/config.toml` is
@@ -96,13 +96,13 @@ per-developer choice, and committing one points the whole team at one machine.
 
 Setting this field is also a statement about where your code may go. Under the
 default `local_first` mode (and under `offline`), if `llm_url` is set but the
-running local server was not started with it, spelunk stops and asks you to
+running local server was not started with it, inkentry stops and asks you to
 restart the server rather than falling back to an LLM on `server_url`. Under
 `mode = "cloud_first"` that does not apply, because `server_url` is the
 inference target there already. See
 [Third-party models → The local-LLM guarantee](third-party-models.md#the-local-llm-guarantee-and-where-it-stops).
 
-**Precedence**, highest first: `spelunk server start --llm-url` (for that
+**Precedence**, highest first: `inkentry server start --llm-url` (for that
 daemon only) > `INKENTRY_LLM_URL` > `llm_url` here > unset. An empty value is
 handled differently in the two override positions: `INKENTRY_LLM_URL=""`
 overrides and blanks this field, leaving no endpoint at all, while
@@ -111,7 +111,7 @@ place. A variable that is set wins even when empty; a flag has to carry a value
 to win.
 
 **The credential for this endpoint is never a config field**, here or anywhere
-else. Store it with `spelunk auth set-key --llm`, which reads it from stdin or
+else. Store it with `inkentry auth set-key --llm`, which reads it from stdin or
 a prompt and keeps it in the OS secret store, or set `INKENTRY_LLM_KEY` (which
 wins over the stored value). Two properties of that are deliberate:
 
@@ -130,7 +130,7 @@ The check is scoped to a credential being present, so a keyless LAN endpoint on
 [Third-party models](third-party-models.md#security-properties).
 
 A daemon already running keeps the configuration it was started with. Restart
-it with `spelunk server stop && spelunk server start` after changing `llm_url`,
+it with `inkentry server stop && inkentry server start` after changing `llm_url`,
 `llm_model`, or the stored credential.
 
 ### `llm_context_length`
@@ -138,9 +138,9 @@ it with `spelunk server stop && spelunk server start` after changing `llm_url`,
 - **Type:** integer
 - **Default:** `8192`
 
-Context-window size (tokens) of the configured LLM, used by `spelunk memory
+Context-window size (tokens) of the configured LLM, used by `inkentry memory
 harvest` (including its `--source claude-code` variant) to split harvest
-batches that would overflow the model's window. Not consulted by `spelunk
+batches that would overflow the model's window. Not consulted by `inkentry
 explore`, which has its own `--max-steps` bound instead. Set this to match the
 context length of the model you have loaded.
 
@@ -149,7 +149,7 @@ context length of the model you have loaded.
 - **Type:** boolean
 - **Default:** `true`
 
-When true, `spelunk memory add` also appends the new entry as a line of JSON to
+When true, `inkentry memory add` also appends the new entry as a line of JSON to
 `refs/notes/inkentry` on `HEAD`. This keeps memory close to commits, so it travels
 with the code. Failure to write the git note is non-fatal: a warning is logged
 and the primary SQLite write is unaffected. Set `store_in_git_notes = false` to
@@ -199,11 +199,11 @@ read from the personal config, not from `.inkentry/config.toml`. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.
 
-`mode` also decides which server answers LLM calls for `spelunk explore`,
-`spelunk memory harvest` and index-time summaries, and it is the one setting
+`mode` also decides which server answers LLM calls for `inkentry explore`,
+`inkentry memory harvest` and index-time summaries, and it is the one setting
 that changes whether a configured [`llm_url`](#llm_url) keeps your code off a
 remote LLM. See
-[Third-party models → How spelunk finds an LLM](third-party-models.md#how-spelunk-finds-an-llm).
+[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
 
 ### `server_key`
 
@@ -213,13 +213,13 @@ remote LLM. See
 
 This field only resolves the **cloud-kind** bearer, used for spelunk.cloud
 requests (`INKENTRY_SERVER_KEY` if set, otherwise the `[auth].access_token`
-written by `spelunk login`). It is **not** the effective credential for a
+written by `inkentry login`). It is **not** the effective credential for a
 self-hosted team `inkentry-server`: since the per-origin key scoping in
 ADR-071, that bearer is resolved separately, keyed by the server's origin, so
 a developer holding keys for two different self-hosted servers doesn't have
 them collide or leak into each other.
 
-A bare `server_key` left in your personal `~/.config/spelunk/config.toml` is
+A bare `server_key` left in your personal `~/.config/inkentry/config.toml` is
 migrated into your OS keychain (macOS Keychain, Linux Secret Service, Windows
 Credential Manager) and stripped from the file automatically the next time it
 loads; it is then migrated a second time, into the per-origin key store, the
@@ -227,19 +227,19 @@ first time it's needed to authenticate a specific server.
 
 Prefer one of these instead of hand-editing this field:
 
-- `spelunk auth set-key --server <url>` stores a per-server key directly in the
+- `inkentry auth set-key --server <url>` stores a per-server key directly in the
   secret store (the key is read from stdin or an interactive prompt, never a
   flag, so it never lands in shell history or `ps` output).
-- `spelunk auth list-servers` lists which server origins have a stored key
+- `inkentry auth list-servers` lists which server origins have a stored key
   (never prints key material).
 - `INKENTRY_SERVER_KEY` works everywhere, including CI, and always takes
   precedence over both the per-origin store and `[auth]`.
 
 Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
 does not accept this field at all (see
-[Project config fields](#spelunkconfigtoml-project-level)); a line present
+[Project config fields](#inkentryconfigtoml-project-level)); a line present
 there anyway is silently dropped and never resolves to a credential. See
-[`spelunk auth`](commands.md#spelunk-auth) for the full command reference.
+[`inkentry auth`](commands.md#inkentry-auth) for the full command reference.
 
 ### `project_id`
 
@@ -250,8 +250,8 @@ there anyway is silently dropped and never resolves to a credential. See
 Human-readable project slug used to route memory on a team `inkentry-server`. It
 is sent to the server exactly as configured, whether it is a slug or a UUID:
 there is no lookup and nothing is cached. Required when `server_url` points at
-a non-loopback address (or provide it once via `spelunk sync --project <slug>`).
-If `server_url` is a loopback address, `project_id` may be omitted: spelunk
+a non-loopback address (or provide it once via `inkentry sync --project <slug>`).
+If `server_url` is a loopback address, `project_id` may be omitted: inkentry
 derives a stable id from the project's git remote, or from a hash of the local
 path if there is no remote. Normally set in `.inkentry/config.toml` alongside
 `server_url`.
@@ -273,9 +273,9 @@ for the full walkthrough.
 
 - **Type:** table, optional
 - **Default:** absent
-- **Managed by:** `spelunk login`, `spelunk org switch` - do not hand-edit
+- **Managed by:** `inkentry login`, `inkentry org switch` - do not hand-edit
 
-WorkOS device-flow tokens for spelunk.cloud, written by `spelunk login` under
+WorkOS device-flow tokens for spelunk.cloud, written by `inkentry login` under
 the global config's `[auth]` table:
 
 ```toml
@@ -338,9 +338,9 @@ else (including any personal field documented above) is silently ignored.
 
 ```toml
 # .inkentry/config.toml
-server_url = "https://spelunk.internal.example.com"
+server_url = "https://inkentry.internal.example.com"
 project_id = "my-awesome-app"
-server_ca = "/etc/spelunk/internal-ca.pem"
+server_ca = "/etc/inkentry/internal-ca.pem"
 
 [index]
 exclude = ["fixtures/**"]
@@ -350,7 +350,7 @@ exclude = ["fixtures/**"]
 committed file stays in the repo's history forever and is readable by anyone
 with repo access, so the project config has no field for it at all: a stray
 `server_key` line is silently dropped, and the file's other keys still load
-normally. Use `spelunk auth set-key --server <url>` (or `INKENTRY_SERVER_KEY`
+normally. Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY`
 in CI) to set a shared team credential per developer instead.
 
 **`llm_url` is not accepted here either**, for a related reason: it is the
@@ -359,14 +359,14 @@ committed value would point every teammate's local daemon at whichever machine
 the author happened to be running an LLM on. Set it in the personal config or
 via `INKENTRY_LLM_URL`.
 
-## `~/.config/spelunk/config.toml` (personal)
+## `~/.config/inkentry/config.toml` (personal)
 
 ```toml
-# ~/.config/spelunk/config.toml
+# ~/.config/inkentry/config.toml
 
 # Chat-completions endpoint the local inkentry-server is started against, and
 # the model it is asked for. Store the endpoint's credential with
-# `spelunk auth set-key --llm`, never here.
+# `inkentry auth set-key --llm`, never here.
 llm_url = "http://127.0.0.1:1234"
 llm_model = "google/gemma-3n-e4b"
 llm_context_length = 8192
@@ -375,7 +375,7 @@ llm_context_length = 8192
 store_in_git_notes = true
 ```
 
-Written for you by `spelunk login` (the `[auth]` table) and by the one-time
+Written for you by `inkentry login` (the `[auth]` table) and by the one-time
 `server_key` migration; you don't normally hand-edit either.
 
 ---
@@ -388,11 +388,11 @@ without error but do nothing:
 | Key | Status |
 |-----|--------|
 | `memory_server_url` | Removed. Use `server_url`. |
-| `memory_server_key` | Removed. Use `server_key`, `spelunk auth set-key`, or `spelunk login`. |
+| `memory_server_key` | Removed. Use `server_key`, `inkentry auth set-key`, or `inkentry login`. |
 | `embedding_model` | Removed. The embedding model is pinned product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension), computed only by the bundled native embedder in `inkentry-server`; there is no config key or relocation option for it. |
 
 `inference_url` is not a config key at all: it is populated at runtime only,
-when spelunk auto-discovers a loopback server, and is never read from either
+when inkentry auto-discovers a loopback server, and is never read from either
 TOML file.
 
 ---
@@ -402,12 +402,12 @@ TOML file.
 | Variable | Overrides / effect |
 |----------|--------------------|
 | `INKENTRY_SERVER_URL` | `server_url` |
-| `INKENTRY_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `spelunk login` tokens) |
+| `INKENTRY_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `inkentry login` tokens) |
 | `INKENTRY_PROJECT_ID` | `project_id` |
 | `INKENTRY_SERVER_CA` | `server_ca` |
 | `INKENTRY_LLM_URL` | `llm_url` |
 | `INKENTRY_LLM_MODEL` | `llm_model` |
-| `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `spelunk auth set-key --llm`). Not a `config.toml` field. |
+| `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `inkentry auth set-key --llm`). Not a `config.toml` field. |
 | `INKENTRY_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
 | `INKENTRY_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
 | `INKENTRY_CLOUD_URL` | spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |

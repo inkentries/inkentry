@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-/// Fuzz JSONL parsing used throughout the `spelunk spelunk` plumbing layer.
+/// Fuzz JSONL parsing used throughout the `inkentry inkentry` plumbing layer.
 ///
 /// Run with:
 ///   cargo +nightly fuzz run fuzz_jsonl_parse -- -max_total_time=600

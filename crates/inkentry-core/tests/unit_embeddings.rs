@@ -41,7 +41,7 @@ fn blob_to_vec_ignores_trailing_incomplete_chunk() {
     assert_eq!(result.len(), 3);
 }
 
-// ── int8 quantisation (PR #441 / spelunk-oss#9) ────────────────────────────────
+// ── int8 quantisation (PR #441 / inkentry-oss#9) ────────────────────────────────
 
 /// Read an int8 blob back as `i8` values for assertions.
 fn as_i8(blob: &[u8]) -> Vec<i8> {
