@@ -64,11 +64,8 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
 
     let db = Database::open(&db_path)?;
 
-    // In-project probe: indexed paths are stored relative to the project root,
-    // which is the cwd for this command. Route through the shared
-    // `staleness_report` (with `None` = check every file) so `spelunk check` and
-    // the cross-project `links check` compute freshness through one identical
-    // code path against the right root.
+    // Indexed paths are stored relative to the project root, which for an
+    // in-project command is the cwd.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let report = db.staleness_report(&cwd, None)?;
     let total = report.sampled;

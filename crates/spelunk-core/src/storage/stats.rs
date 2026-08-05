@@ -127,21 +127,15 @@ impl Database {
     /// Compare stored file hashes against on-disk content, resolving each stored
     /// path against `root`.
     ///
-    /// The indexer stores file paths *relative* to the project root so the index
-    /// stays portable (`crates/spelunk-cli/.../parse_phase.rs`). A staleness
-    /// probe must therefore be told which root those relative paths hang off:
-    /// reading a bare relative path resolves it against the *process* cwd, which
-    /// is only the project root when the probe runs from inside the project. The
-    /// cross-project freshness check (`links check` / `links list`) runs from a
-    /// *different* project, so it must pass the linked project's own root here —
-    /// otherwise every file resolves to a nonexistent path and is misreported as
-    /// changed. `Path::join` returns an absolute stored path unchanged, so any
-    /// legacy absolute paths still resolve correctly.
+    /// Indexed paths are stored *relative* to the project root, so `root` must be
+    /// the root they hang off: the cwd for an in-project probe, but the linked
+    /// project's own root for the cross-project check (`links check` / `links
+    /// list`), which runs from a different directory. Passing the wrong root
+    /// resolves every file to a nonexistent path and misreports it as changed. A
+    /// legacy absolute stored path is returned unchanged by `Path::join`.
     ///
-    /// `sample`: `Some(n)` probes up to `n` random files (fast estimate, used by
-    /// search hints and the cross-project link check); `None` checks every
-    /// indexed file (exhaustive, used by `spelunk check`). Both go through this
-    /// single implementation so in-project and cross-project probes agree.
+    /// `sample`: `Some(n)` probes up to `n` random files (a fast estimate);
+    /// `None` checks every indexed file.
     pub fn staleness_report(
         &self,
         root: &std::path::Path,
@@ -174,7 +168,6 @@ impl Database {
         let mut stale_paths: Vec<String> = Vec::new();
 
         for (path, stored_hash) in &sampled_rows {
-            // Stored paths are relative to the project root; resolve against it.
             let on_disk = root.join(path);
             let is_stale = match std::fs::read(&on_disk) {
                 Ok(bytes) => format!("{}", blake3::hash(&bytes)) != *stored_hash,
