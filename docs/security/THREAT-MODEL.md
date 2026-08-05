@@ -13,15 +13,15 @@ spelunk has two distinct operational modes with different attack surfaces:
 
 ### Mode A — Local CLI (default)
 1. Walks source trees, parses files with tree-sitter, stores chunks in SQLite
-2. Embeds chunks by sending chunk text to a `spelunk-server` over HTTP (ADR-002; the CLI never embeds in-process). The default auto-discovered loopback server embeds natively in-process (bundled F2LLM), so chunk text does **not** leave the machine.
+2. Embeds chunks by sending chunk text to a `inkentry-server` over HTTP (ADR-002; the CLI never embeds in-process). The default auto-discovered loopback server embeds natively in-process (bundled F2LLM), so chunk text does **not** leave the machine.
 3. Runs KNN search over stored embeddings via sqlite-vec
-4. Optionally sends context + a user question to the same `spelunk-server`'s LLM endpoint
+4. Optionally sends context + a user question to the same `inkentry-server`'s LLM endpoint
 5. Maintains a `memory.db` of structured notes with semantic search. **`memory.db` is the single authoritative memory store at the CLI tier** (ADR-004). All `spelunk memory` operations (add, list, search, timeline, harvest) read from and write to `memory.db`.
 6. **When `store_in_git_notes = true` (the default):** each `spelunk memory add` also appends the note as a JSON line to `refs/notes/spelunk` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-notespelunk) below.
 
-**Auto-discovered loopback spelunk-server (v0.8.0+):** spelunk auto-starts a local `spelunk-server` daemon (bound to `127.0.0.1`) to provide a native embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
+**Auto-discovered loopback inkentry-server (v0.8.0+):** spelunk auto-starts a local `inkentry-server` daemon (bound to `127.0.0.1`) to provide a native embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
 
-### Mode B — spelunk-server
+### Mode B — inkentry-server
 An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
 - Binds to a configurable interface/port; intended for shared team use. Loopback binds serve plaintext HTTP; a non-loopback bind serves HTTPS in-process (ADR-066) via `--tls-cert`/`--tls-key`
 - Bearer token authentication (`--key` / `SPELUNK_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind is refused unless **both** TLS and a key are set (see "Key difference" below)
@@ -30,15 +30,15 @@ An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search ov
 - Exposes: `POST /v1/projects/{id}/memory`, `POST /v1/projects/{id}/memory/search`, DELETE, archive, supersede
 
 ### Backend configurability
-All inference goes through `spelunk-server` (ADR-002); the CLI has no direct
+All inference goes through `inkentry-server` (ADR-002); the CLI has no direct
 embedding/LLM endpoint of its own. Egress off the local machine happens in two
 cases, both of which change the data-egress threat profile:
 
 - **Explicit team `server_url`** in config points the CLI at a remote
-  `spelunk-server`. Chunk text and query text then cross the network to that
+  `inkentry-server`. Chunk text and query text then cross the network to that
   server, which embeds them natively in-process (embedding has no external
   relocation option; see below).
-- **Server-side external LLM shim:** a `spelunk-server` operator may set
+- **Server-side external LLM shim:** a `inkentry-server` operator may set
   `--llm-url` (`SPELUNK_LLM_URL`) so the server forwards LLM calls to a
   third-party OpenAI-compatible service (OpenAI, Anthropic, Cohere, etc.).
   This is configured on the server, not by the client, and applies to LLM
@@ -76,15 +76,15 @@ User filesystem
   │
   ├─ spelunk index ─► [secret scanner] ─► SQLite index.db (chunks + vectors)
   │                                              │
-  │                                              └─► embed chunk text via HTTP ─► spelunk-server
+  │                                              └─► embed chunk text via HTTP ─► inkentry-server
   │                                                   (loopback: native, on-machine;
   │                                                    team server_url: leaves the machine)
   ├─ spelunk explore/search
-  │     ├─► embed query text via HTTP ─► spelunk-server
+  │     ├─► embed query text via HTTP ─► inkentry-server
   │     │    (chunk + query text leave the machine only if server_url is a remote
   │     │     team server; that server always embeds natively, never proxies)
   │     ├─► KNN search ─► index.db  (always local sqlite-vec)
-  │     └─► LLM prompt ─► spelunk-server
+  │     └─► LLM prompt ─► inkentry-server
   │           └─ context: code chunks + spec files + memory notes
   │
   ├─ spelunk memory add ─► memory.db (SQLite, local)  ← single canonical store (ADR-004)
@@ -98,7 +98,7 @@ User filesystem
   │                                                            └──────────────────────────────────────┘
   │
   └─ spelunk memory search
-        ├─► embed query via HTTP ─► loopback spelunk-server (inference-only)
+        ├─► embed query via HTTP ─► loopback inkentry-server (inference-only)
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
 ```
@@ -108,12 +108,12 @@ note body comes from the user's own command line or `$EDITOR` and is written to
 git notes verbatim.
 
 **Memory data-flow rule (ADR-004):** Note text for storage is never sent to the
-loopback spelunk-server. For `memory search`, only the query string crosses the
+loopback inkentry-server. For `memory search`, only the query string crosses the
 loopback trust boundary (to obtain a query embedding); the KNN search and all
 note reads/writes operate on the local `memory.db`. If a team `server_url` is
 explicitly configured, memory moves to that server instead — see Mode B.
 
-### Mode B — spelunk-server
+### Mode B — inkentry-server
 
 ```
 Client (spelunk CLI / any HTTP client)
@@ -124,7 +124,7 @@ Client (spelunk CLI / any HTTP client)
   └─► DELETE / archive / supersede         — mutate note state
          │
          ▼
-  spelunk-server (axum, bound to configured port)
+  inkentry-server (axum, bound to configured port)
     ├─ auth_middleware (bearer token, optional)
     └─ ServerDb (SQLite, server-local)
 ```
@@ -150,7 +150,7 @@ treated as no key.)
 
 ### Tenancy boundary: single trust domain (ADR-056)
 
-A `spelunk-server` instance is a **single trust domain**, and its shared key is
+A `inkentry-server` instance is a **single trust domain**, and its shared key is
 the tenancy boundary. This is a deliberate design decision recorded in
 [ADR-056](../adr/056-oss-server-tenancy-model.md), not an unimplemented control:
 
@@ -206,14 +206,14 @@ unauthenticated (no bearer required or sent).
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
-| **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/spelunk-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
-| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `spelunk-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `SPELUNK_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
+| **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
+| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `SPELUNK_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
 | Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
-| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `spelunk-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `SPELUNK_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
+| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `SPELUNK_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `SPELUNK_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
-| LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `spelunk auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `SPELUNK_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `spelunk-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
-| Detached `spelunk-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/spelunk-server/src/`, so a future reach fails CI rather than shipping. |
+| LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `spelunk auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `SPELUNK_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
+| Detached `inkentry-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/inkentry-server/src/`, so a future reach fails CI rather than shipping. |
 | `spelunk memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed:** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |
 | **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-notespelunk) section. Track: issue to add secret-scan gate on write-through path. |
 | **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/spelunk` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
@@ -253,7 +253,7 @@ unauthenticated (no bearer required or sent).
 
 ## Generic inference endpoint — `POST /v1/projects/{id}/llm/complete` (Mode B, ADR-002)
 
-ADR-002 adds a generic LLM completion primitive to `spelunk-server` so the CLI
+ADR-002 adds a generic LLM completion primitive to `inkentry-server` so the CLI
 can route `spelunk memory harvest` (and future inference-needing commands)
 through one stable route instead of a bespoke endpoint per command. This
 introduces a **new trust boundary**: a network-facing, free-form inference
@@ -355,15 +355,15 @@ pushed with notes, the credential is exfiltrated.
 
 ## Third-Party Backend Risk (all modes)
 
-The default backend is on-machine (loopback `spelunk-server`, native F2LLM
+The default backend is on-machine (loopback `inkentry-server`, native F2LLM
 embedder), so by default no code or memory content leaves the machine. This
 section covers the two paths that reach a third party. Embedding has no
 third-party path at all: it is always computed natively, in-process, by
-whichever `spelunk-server` receives the text; the control is the choice of
+whichever `inkentry-server` receives the text; the control is the choice of
 `server_url`, not a server-side embedding flag.
 
 **When a remote team `server_url` is set (chunk/query text and memory context
-cross to that server), or a `spelunk-server` operator has set an external
+cross to that server), or a `inkentry-server` operator has set an external
 `--llm-url` shim (e.g. `https://api.openai.com`) for LLM features only:**
 
 | Data sent | Trigger | Risk |
@@ -398,6 +398,6 @@ From this threat model, the following requirements are binding:
 3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
-6. **spelunk-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `SPELUNK_SERVER_KEY` is set.
-7. **Config documentation must warn** that setting a remote team `server_url` (or running a `spelunk-server` with an external `--llm-url` shim) transmits source code and memory content off the machine.
+6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `SPELUNK_SERVER_KEY` is set.
+7. **Config documentation must warn** that setting a remote team `server_url` (or running a `inkentry-server` with an external `--llm-url` shim) transmits source code and memory content off the machine.
 8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-notespelunk) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Version-skew smoke test: drive one real `spelunk` binary against one real
-# `spelunk-server` binary through the end-to-end memory flow.
+# `inkentry-server` binary through the end-to-end memory flow.
 #
-#   usage: skew-smoke.sh <path-to-spelunk> <path-to-spelunk-server>
+#   usage: skew-smoke.sh <path-to-spelunk> <path-to-inkentry-server>
 #
 #   SKEW_EMBEDDER_TIMEOUT_SECS  wall-clock wait for the embedder (default 300)
 #   SKEW_MODEL_CACHE            model directory kept outside the isolated HOME,
@@ -21,8 +21,8 @@
 
 set -euo pipefail
 
-CLI_BIN="${1:?usage: skew-smoke.sh <spelunk> <spelunk-server>}"
-SERVER_BIN="${2:?usage: skew-smoke.sh <spelunk> <spelunk-server>}"
+CLI_BIN="${1:?usage: skew-smoke.sh <spelunk> <inkentry-server>}"
+SERVER_BIN="${2:?usage: skew-smoke.sh <spelunk> <inkentry-server>}"
 
 for bin in "$CLI_BIN" "$SERVER_BIN"; do
   [ -x "$bin" ] || { echo "FAIL: not an executable: $bin" >&2; exit 1; }
@@ -45,7 +45,7 @@ SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 # than the last, and the namespace moves on its own (SPELUNK_OLD_BINARY arrived
 # and SPELUNK_NO_SLUG_CACHE left while this branch was open). Scrubbing by the
 # SPELUNK_ prefix is not enough either: CREDENTIALS_DIRECTORY is read by
-# spelunk-server to resolve its API key from systemd LoadCredential=, and is a
+# inkentry-server to resolve its API key from systemd LoadCredential=, and is a
 # secret path with no prefix at all. Anything not named below is gone, so a
 # variable added to the tree later is excluded by default rather than by
 # memory.
@@ -128,7 +128,7 @@ SERVER_PID=""
 
 cleanup() {
   # Only ever kills the server this script started. A developer box may well
-  # have its own spelunk-server on the default port; that one is not ours.
+  # have its own inkentry-server on the default port; that one is not ours.
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -176,7 +176,7 @@ mkdir -p "$XDG_DATA_HOME"
 # the timeout. Nothing the isolation exists to protect lives here.
 #
 # Still a symlink, but not for the reason previously given here. SPELUNK_MODEL_DIR
-# does exist (`spelunk-server --model-dir`), so "offers no override of its own"
+# does exist (`inkentry-server --model-dir`), so "offers no override of its own"
 # was simply false. It is the wrong override for this job: it selects a
 # *pre-provisioned* GGUF plus tokenizer for air-gapped installs and bypasses the
 # Hugging Face download path entirely, whereas what needs redirecting is that

@@ -57,7 +57,7 @@ DEB_LAYOUT="${WORKDIR}/BUILD"
 CACHE_CARGO="${WORKDIR}/cache/cargo"
 CACHE_RUSTUP="${WORKDIR}/cache/rustup"
 
-VERSION="$(grep -m1 '^version' crates/spelunk-cli/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')-dryrun"
+VERSION="$(grep -m1 '^version' crates/inkentry-cli/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')-dryrun"
 DEB_VERSION="${VERSION}"
 
 CONTAINER_PREFIX="spelunk-release-dry-run-$$"
@@ -124,10 +124,10 @@ build_in_floor_container() {
       export PATH="$HOME/.cargo/bin:$PATH"
       cargo build --release --target '"${TARGET}"' --features '"${FEATURES}"'
       strip "target/'"${TARGET}"'/release/spelunk"
-      strip "target/'"${TARGET}"'/release/spelunk-server"
+      strip "target/'"${TARGET}"'/release/inkentry-server"
     ' || die "container build failed (see docker output above)"
 
-  for bin in spelunk spelunk-server; do
+  for bin in spelunk inkentry-server; do
     [ -x "target/${TARGET}/release/${bin}" ] || die "expected binary target/${TARGET}/release/${bin} not found after build"
   done
 }
@@ -146,7 +146,7 @@ enforce_glibc_ceiling() {
       set -euo pipefail
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends binutils >/dev/null
-      for bin in spelunk spelunk-server; do
+      for bin in spelunk inkentry-server; do
         path="target/'"${TARGET}"'/release/${bin}"
         raw="$(objdump -T "$path")"
         ceiling="$(printf "%s\n" "$raw" | grep -o "GLIBC_[0-9.]*" | sort -Vu | tail -1 || true)"
@@ -178,8 +178,8 @@ assemble_deb() {
 
   mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user"
   install -m 755 "target/${TARGET}/release/spelunk" "${DEB_LAYOUT}/usr/bin/spelunk"
-  install -m 755 "target/${TARGET}/release/spelunk-server" "${DEB_LAYOUT}/usr/bin/spelunk-server"
-  install -m 644 packaging/spelunk-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/spelunk-server.service"
+  install -m 755 "target/${TARGET}/release/inkentry-server" "${DEB_LAYOUT}/usr/bin/inkentry-server"
+  install -m 644 packaging/inkentry-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/inkentry-server.service"
 
   local deb_depends
   deb_depends="$(docker run --rm --name "${CONTAINER_PREFIX}-shlibdeps" \
@@ -191,7 +191,7 @@ assemble_deb() {
       mkdir -p /tmp/sd/debian
       printf "Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
-      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/spelunk" "/w/'"${DEB_LAYOUT}"'/usr/bin/spelunk-server"
+      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/spelunk" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
     ')" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
   echo "Derived ${deb_depends}"
 
@@ -243,7 +243,7 @@ smoke_test_deb() {
         apt-get install -y -qq "/pkg/spelunk_'"${DEB_VERSION}"'_amd64.deb"
         apt-get install -y -qq --no-install-recommends git ca-certificates
         test -n "$(spelunk --version)"
-        test -n "$(spelunk-server --version)"
+        test -n "$(inkentry-server --version)"
 
         mkdir -p /w && cd /w
         git init -q .

@@ -5176,7 +5176,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-cli"
+name = "inkentry-cli"
 version = "0.9.7"
 dependencies = [
  "anyhow",
@@ -5209,8 +5209,8 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.11.0",
- "spelunk-core",
- "spelunk-server",
+ "inkentry-core",
+ "inkentry-server",
  "sqlite-vec",
  "tempfile",
  "tokio",
@@ -5221,7 +5221,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-core"
+name = "inkentry-core"
 version = "0.9.7"
 dependencies = [
  "anyhow",
@@ -5253,7 +5253,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.11.0",
- "spelunk-embed",
+ "inkentry-embed",
  "sqlite-vec",
  "tempfile",
  "thiserror 2.0.19",
@@ -5270,7 +5270,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-embed"
+name = "inkentry-embed"
 version = "0.9.7"
 dependencies = [
  "anyhow",
@@ -5291,7 +5291,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-server"
+name = "inkentry-server"
 version = "0.9.7"
 dependencies = [
  "anyhow",
@@ -5316,8 +5316,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "spelunk-core",
- "spelunk-embed",
+ "inkentry-core",
+ "inkentry-embed",
  "sqlite-vec",
  "tempfile",
  "tokenizers 0.23.1",

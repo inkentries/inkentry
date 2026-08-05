@@ -1,6 +1,6 @@
 # Model attribution
 
-spelunk-server bundles a native embedding model rather than calling an external
+inkentry-server bundles a native embedding model rather than calling an external
 embedding endpoint. `cargo-about` (see `about.toml`) covers Rust dependency
 licenses, but it does not cover the model weights downloaded at runtime, so they
 are attributed here.
@@ -19,7 +19,7 @@ See [Third-party models](third-party-models.md).
 - **License:** Apache License 2.0 (declared via the upstream Hugging Face
   model-card license tag). Full text:
   https://www.apache.org/licenses/LICENSE-2.0
-- **Use in spelunk:** loaded by `spelunk-server` as the 896-dim semantic
+- **Use in spelunk:** loaded by `inkentry-server` as the 896-dim semantic
   embedding backend (Qwen3 decoder architecture, candle runtime).
 
 ### Modification notice (Apache-2.0 §4)
@@ -33,8 +33,8 @@ spelunk fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
 `tokenizer.json`, from a Hugging Face repository it owns
 (`spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`); that artifact carries its own
 `LICENSE`, `NOTICE`, and model card reproducing this attribution. `config.json`
-(unmodified, ~1 KB) is vendored directly into the `spelunk-server` binary
-(`crates/spelunk-server/assets/f2llm-v2-330m-config.json`) rather than fetched.
+(unmodified, ~1 KB) is vendored directly into the `inkentry-server` binary
+(`crates/inkentry-server/assets/f2llm-v2-330m-config.json`) rather than fetched.
 **None of the three artifacts (GGUF, tokenizer, config) are fetched from the
 third-party upstream repo at runtime** (everything comes from our own
 first-party repo or is embedded in the binary). Set `SPELUNK_EMBEDDER_GGUF_REPO`

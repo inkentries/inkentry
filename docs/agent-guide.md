@@ -6,7 +6,7 @@
 
 **What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` use `spelunk-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+**What's server-backed:** semantic/hybrid search (`spelunk search --mode auto|semantic|hybrid`), `spelunk explore`, and `spelunk memory harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`SPELUNK_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
 
 **Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
@@ -40,12 +40,12 @@ You can also use `--format json` on individual commands.
 ## Managing the local server daemon
 
 If your config does not have a `server_url`, `spelunk` auto-discovers a local
-`spelunk-server` running on loopback by reading
+`inkentry-server` running on loopback by reading
 `~/.local/state/spelunk/server.port`.  You can start, stop, and inspect that
 daemon with the `spelunk server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance in your config.)
 
 ```bash
-# Start spelunk-server on port 7777 (idempotent — no-op if already running)
+# Start inkentry-server on port 7777 (idempotent — no-op if already running)
 spelunk server start
 
 # Check whether the daemon is running and get its PID/port/version
@@ -300,7 +300,7 @@ Conflict detection: If you write an entry semantically similar to an existing on
 
 ## Reconciling memory from a server database
 
-If you have access to a `spelunk-server` SQLite database (e.g. a team server snapshot or a local server DB at `~/.local/state/spelunk/server.db`), you can import its memory entries into your project's local database without running the server:
+If you have access to a `inkentry-server` SQLite database (e.g. a team server snapshot or a local server DB at `~/.local/state/spelunk/server.db`), you can import its memory entries into your project's local database without running the server:
 
 ```bash
 # Preview what would be imported (no writes)
@@ -348,7 +348,7 @@ Exit codes across all plumbing commands:
 - **1** — no results (empty set, not an error)
 - **2** — hard error (bad flags, missing DB, I/O failure) — diagnostics on stderr
 
-Commands marked **(requires server)** need a running `spelunk-server` with its embedder ready.
+Commands marked **(requires server)** need a running `inkentry-server` with its embedder ready.
 
 ### cat-chunks *(requires index)*
 

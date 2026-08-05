@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Minimal stand-in for the inference server that pre-0.9 binaries embed through.
 
-Releases before 0.9.0 send index chunks to a spelunk-server's
+Releases before 0.9.0 send index chunks to a inkentry-server's
 POST /v1/projects/{id}/index/embed and store the returned vectors. That era's
 server shipped a 768-dimension embedder that no longer exists, and a current
-spelunk-server answers on a wire shape those binaries cannot parse, so the
+inkentry-server answers on a wire shape those binaries cannot parse, so the
 768-dimension wing of the upgrade corpus cannot be captured against either one.
 
 This serves that era's two endpoints so the real old binary can complete a real

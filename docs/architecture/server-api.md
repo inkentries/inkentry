@@ -1,16 +1,16 @@
-# spelunk-server HTTP API Contract
+# inkentry-server HTTP API Contract
 
 **Issue:** #261  
 **Status:** Implemented. This is the current reference for the HTTP + SSE
-surface `spelunk-server` exposes. Sections below describe what the running
-server actually does, verified against `crates/spelunk-server/src/handlers.rs`.
+surface `inkentry-server` exposes. Sections below describe what the running
+server actually does, verified against `crates/inkentry-server/src/handlers.rs`.
 
 ---
 
 ## Overview
 
-This document specifies the HTTP API surface that `spelunk-cli` calls on
-`spelunk-server`: the `AuthProvider` trait, and every route the server exposes.
+This document specifies the HTTP API surface that `inkentry-cli` calls on
+`inkentry-server`: the `AuthProvider` trait, and every route the server exposes.
 
 1. The `AuthProvider` trait, which every route the server exposes goes through.
 2. Endpoints present from the server's first API-key auth implementation.
@@ -49,7 +49,7 @@ DB table is empty after `/v1/projects/{id}/index/embed` returns, and that
 ## Auth architecture
 
 Requests are authenticated through a pluggable `AuthProvider` trait
-(`crates/spelunk-server/src/auth.rs`), so an alternative auth strategy can be
+(`crates/inkentry-server/src/auth.rs`), so an alternative auth strategy can be
 added without changing any handler. The shipped implementation, `ApiKeyAuth`,
 checks the `Authorization: Bearer` header against a single configured key
 (`SPELUNK_SERVER_KEY`); with no key configured, every request is accepted,
@@ -374,7 +374,7 @@ first write.
 The server publishes its full contract at `GET /api-docs/openapi.json` (wired
 via `utoipa`). Every endpoint listed in this document appears there, with
 request/response schema components. The `utoipa::ApiDoc` type in
-`crates/spelunk-server/src/lib.rs` is the source of truth; extend it whenever
+`crates/inkentry-server/src/lib.rs` is the source of truth; extend it whenever
 an endpoint changes.
 
 CLI integration tests pull `openapi.json` and assert presence + shape of:
@@ -424,5 +424,5 @@ above, `memory/search` accepts `{"query": String}`, `index/embed` and
 `explore` are live, error responses use the `{"error": {"code", "message"}}`
 shape throughout, and the OpenAPI spec at `docs/openapi.json` is kept current
 by CI. See [Server setup](../server-setup.md) for deploying a server that
-exposes this API to a team, and `crates/spelunk-server/src/handlers.rs` for
+exposes this API to a team, and `crates/inkentry-server/src/handlers.rs` for
 the implementation this document is verified against.

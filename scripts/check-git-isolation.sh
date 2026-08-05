@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fails if a test spawns `git` without wiring in this repo's isolation
-# fixture (`isolate_git_config`/`git_command` in `spelunk_core::test_support`).
+# fixture (`isolate_git_config`/`git_command` in `inkentry_core::test_support`).
 # Structural backstop for a gap that's otherwise silent: a missing call still
 # passes on a clean machine, and only misbehaves on one with an ambient
 # `core.hooksPath`/`commit.gpgsign`/etc.
@@ -218,6 +218,6 @@ if run_check "$root"; then
   exit 0
 else
   echo "" >&2
-  echo "See crates/spelunk-core/src/test_support.rs::isolate_git_config (the one canonical definition)." >&2
+  echo "See crates/inkentry-core/src/test_support.rs::isolate_git_config (the one canonical definition)." >&2
   exit 1
 fi

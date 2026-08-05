@@ -23,7 +23,7 @@
 #   * gh (authenticated) to download release assets
 #   * python3 and sqlite3
 #   * git
-# No spelunk-server or model download is needed: the pre-1.0 embedding wire is
+# No inkentry-server or model download is needed: the pre-1.0 embedding wire is
 # served by embed_stub.py. See that file for what is and is not real.
 #
 # The CI job that consumes the corpus needs none of this. It reads the
@@ -39,7 +39,7 @@ set -euo pipefail
 REPO_SLUG="spelunk-cloud/spelunk"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CORPUS_DIR="$REPO_ROOT/crates/spelunk-cli/tests/fixtures/upgrade-corpus"
+CORPUS_DIR="$REPO_ROOT/crates/inkentry-cli/tests/fixtures/upgrade-corpus"
 WINGS_DIR="$CORPUS_DIR/wings"
 MANIFEST="$CORPUS_DIR/MANIFEST.json"
 CHECKSUMS="$SCRIPT_DIR/checksums.txt"

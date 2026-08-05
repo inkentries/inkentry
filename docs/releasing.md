@@ -7,7 +7,7 @@ This document describes how to cut a release of spelunk.
 Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 `.github/workflows/release.yml`, which:
 
-1. Builds `spelunk` and `spelunk-server` release binaries for all supported platforms.
+1. Builds `spelunk` and `inkentry-server` release binaries for all supported platforms.
 2. Strips binaries where possible to reduce download size.
 3. Packages each platform's binaries into a `.tar.gz` archive.
 4. Builds an `amd64` Debian package (`spelunk_<version>_amd64.deb`).
@@ -59,7 +59,7 @@ pipeline locally, with Docker as the only prerequisite:
 scripts/release-dry-run.sh
 ```
 
-It builds `spelunk` + `spelunk-server` inside `debian:11` (the glibc 2.31
+It builds `spelunk` + `inkentry-server` inside `debian:11` (the glibc 2.31
 floor), runs the same glibc-ceiling check as CI, assembles and builds the
 `.deb` (with `Depends` derived inside `debian:11`, matching the workflow),
 and installs + smoke-tests the result in fresh `debian:11` / `ubuntu:20.04`

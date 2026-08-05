@@ -8,10 +8,10 @@ to stand up. Install it, run `spelunk init` inside a git repository, and the fir
 
 That is the starting point. As you keep working, `spelunk` also remembers the
 decisions behind the code, so a later session (yours or a teammate's) does not
-re-derive them. A local `spelunk-server` is started for you on first use to add
+re-derive them. A local `inkentry-server` is started for you on first use to add
 search by meaning; you only think about a shared server when you want to share
 that memory with a team (see
-[Team setup](#team-setup-shared-memory-with-spelunk-server) at the end).
+[Team setup](#team-setup-shared-memory-with-inkentry-server) at the end).
 
 ## 1. Install spelunk
 
@@ -20,7 +20,7 @@ that memory with a team (see
 #### Install script (PowerShell) — recommended
 
 The PowerShell install script resolves the latest release, downloads the
-Windows `.zip`, and installs `spelunk.exe` and `spelunk-server.exe` to
+Windows `.zip`, and installs `spelunk.exe` and `inkentry-server.exe` to
 `%LOCALAPPDATA%\Programs\spelunk\`. It also adds that directory to your user
 `PATH` automatically.
 
@@ -40,7 +40,7 @@ Preview what it would do without writing anything:
 #### Scoop
 
 The repo doubles as a [Scoop](https://scoop.sh) bucket, so `scoop` installs and
-updates `spelunk.exe` and `spelunk-server.exe` from the release `.zip` and keeps
+updates `spelunk.exe` and `inkentry-server.exe` from the release `.zip` and keeps
 them current with `scoop update`:
 
 ```powershell
@@ -54,7 +54,7 @@ spelunk --version
 Download the `.zip` for your platform from the
 [releases page](https://github.com/spelunk-cloud/spelunk/releases). The Windows
 archive is named `spelunk-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
-place `spelunk.exe` and `spelunk-server.exe` anywhere on your `PATH`
+place `spelunk.exe` and `inkentry-server.exe` anywhere on your `PATH`
 (e.g. `C:\Users\<you>\bin\`).
 
 > **winget:** deferred, available on request. Track the
@@ -67,7 +67,7 @@ place `spelunk.exe` and `spelunk-server.exe` anywhere on your `PATH`
 
 The recommended install paths are Homebrew (macOS/Linux), the install script,
 and the Debian package (Linux). All three drop both `spelunk` and
-`spelunk-server` onto your `$PATH`.
+`inkentry-server` onto your `$PATH`.
 
 #### Install script (macOS and Linux) — recommended
 
@@ -132,7 +132,7 @@ binaries on your `$PATH`. Supported targets:
 ```bash
 # Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.9.0
 curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-aarch64-apple-darwin.tar.gz \
-  | tar -xz && chmod +x spelunk spelunk-server && sudo mv spelunk spelunk-server /usr/local/bin/
+  | tar -xz && chmod +x spelunk inkentry-server && sudo mv spelunk inkentry-server /usr/local/bin/
 
 # Verify
 spelunk --version
@@ -141,11 +141,11 @@ spelunk --version
 Swap the target in the filename for another platform. Building from source? See
 [Building from source](building.md).
 
-### Running spelunk-server as a service (optional)
+### Running inkentry-server as a service (optional)
 
 The release artifacts include service units for keeping a local server running:
-a launchd plist (`packaging/spelunk-server.plist`) for macOS and a systemd unit
-(`packaging/spelunk-server.service`) for Linux. Most users don't need these —
+a launchd plist (`packaging/inkentry-server.plist`) for macOS and a systemd unit
+(`packaging/inkentry-server.service`) for Linux. Most users don't need these —
 `spelunk` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
 
@@ -157,7 +157,7 @@ spelunk init
 ```
 
 That's the whole setup. `spelunk init` registers the project, starts the bundled
-`spelunk-server` in the background when run interactively (if one isn't already running),
+`inkentry-server` in the background when run interactively (if one isn't already running),
 parses and chunks every source file, and hands the embedding pass to a detached background
 worker so the prompt returns after parsing rather than after the full embed pass. Embeddings build in the background; full-text and ast-grep search
 work immediately, and semantic search becomes available as embeddings land.
@@ -287,8 +287,8 @@ the managed spelunk.cloud.
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
 | **Built-in** (zero infra) | just the `spelunk` binary | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
-| **Local semantic server** | a loopback `spelunk-server`, auto-started on demand | semantic / hybrid `search`, `explore`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
-| **Team memory server** | a shared `spelunk-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
+| **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search`, `explore`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
+| **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
 | **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
 
 Built-in works with nothing installed but the binary (the always-available
@@ -298,7 +298,7 @@ queries and runs LLM calls, but a project's memory stays in `memory.db`
 regardless of whether it is running. Memory moves off the local machine only when
 you point at a team server, self-hosted via an explicit `server_url` or the
 managed spelunk.cloud (see
-[Team setup](#team-setup-shared-memory-with-spelunk-server)); each developer's
+[Team setup](#team-setup-shared-memory-with-inkentry-server)); each developer's
 code still stays local.
 
 To stay fully offline (CI, air-gapped, or you just don't want a background
@@ -311,7 +311,7 @@ For how discovery works and how to point the CLI at a remote server, see
 
 ### Using your own LLM endpoint (advanced)
 
-By default the bundled `spelunk-server` provides embeddings (native, via the
+By default the bundled `inkentry-server` provides embeddings (native, via the
 candle-served F2LLM-v2-330M model, 896-dim) and, when a chat model is
 configured, LLM inference. The embedding **model and its compute path are
 both fixed** product-wide: `spelunk` always embeds through the bundled native
@@ -353,10 +353,10 @@ spelunk server start    # starts with the endpoint configured above
 config file and the stored credential, and `spelunk server start --llm-url` /
 `--llm-model` override those in turn for a single daemon.
 
-Or, if you run `spelunk-server` yourself, pass the flags directly:
+Or, if you run `inkentry-server` yourself, pass the flags directly:
 
 ```bash
-spelunk-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
+inkentry-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
 Add `--llm-key-file /path/to/key` (or set `SPELUNK_LLM_KEY`) if the endpoint is
@@ -466,14 +466,14 @@ spelunk check --format porcelain --files    # list files that need re-indexing
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `spelunk` with AI coding agents
 - [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
-- [Server setup](server-setup.md): exposing spelunk-server to remote agents over TLS
+- [Server setup](server-setup.md): exposing inkentry-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders
 
 ---
 
-## Team setup: Shared memory with spelunk-server
+## Team setup: Shared memory with inkentry-server
 
-Working with a team? Point everyone at a shared `spelunk-server` so they share decisions, requirements, and context instead of siloing them locally. This is a *different* server from the local one spelunk autostarts for inference — it's a long-lived, deployed instance with an API key.
+Working with a team? Point everyone at a shared `inkentry-server` so they share decisions, requirements, and context instead of siloing them locally. This is a *different* server from the local one spelunk autostarts for inference — it's a long-lived, deployed instance with an API key.
 
 Each team member's code stays local — only memory travels to the server.
 
@@ -520,7 +520,7 @@ credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
 [Commands reference](commands.md#spelunk-auth).
 
 `project_id` stays a human-readable slug, and it is sent to the server exactly
-as configured. Both a self-hosted spelunk-server and the hosted cloud API accept
+as configured. Both a self-hosted inkentry-server and the hosted cloud API accept
 either a slug or a UUID as the project key, so nothing is looked up and nothing
 is cached. See [Server setup](server-setup.md#client-configuration) for details.
 
@@ -547,6 +547,6 @@ For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker
 
 Rolling spelunk out to a managed fleet? The
 [`examples/mdm/`](../examples/mdm/README.md) directory shows how to deploy and
-pre-configure `spelunk` and `spelunk-server` via MDM (managed config file,
+pre-configure `spelunk` and `inkentry-server` via MDM (managed config file,
 fleet-wide environment, and a macOS profile for a managed server daemon),
 grounded in spelunk's real config surface.

@@ -2,7 +2,7 @@
 
 Every field in `~/.config/spelunk/config.toml` and `.spelunk/config.toml`,
 with defaults, types, and descriptions. Verified against
-`crates/spelunk-core/src/config/mod.rs`.
+`crates/inkentry-core/src/config/mod.rs`.
 
 spelunk reads configuration from two TOML files, layered with environment
 variable overrides.
@@ -86,7 +86,7 @@ model loaded), independent of this setting.
 
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
-`spelunk-server` is started against it and gains LLM capability, which is what
+`inkentry-server` is started against it and gains LLM capability, which is what
 `spelunk explore`, `spelunk memory harvest`, and index-time summaries need.
 When unset, the daemon runs without an LLM.
 
@@ -123,7 +123,7 @@ wins over the stored value). Two properties of that are deliberate:
   prompt nobody can answer. The CLI resolves the credential in your session and
   passes it to the child out of band, in its environment, never in an argument.
 
-`spelunk-server` refuses to start when a credential resolves and `llm_url` is a
+`inkentry-server` refuses to start when a credential resolves and `llm_url` is a
 plaintext `http://` URL to a non-loopback host, naming the URL in the error.
 The check is scoped to a credential being present, so a keyless LAN endpoint on
 `http://192.168.x.x:1234` is unaffected. See
@@ -161,7 +161,7 @@ opt out.
 - **Default:** unset
 - **Env override:** `SPELUNK_SERVER_URL`
 
-URL of a team `spelunk-server` instance. When set, memory commands read and write
+URL of a team `inkentry-server` instance. When set, memory commands read and write
 against that shared server: this is the only configuration that moves memory off
 the local machine. A value in the **personal** config is always discarded on
 load; set it in `.spelunk/config.toml` (project-level) or via
@@ -172,7 +172,7 @@ choice.
 `::1`, or `localhost`). A non-loopback `http://` URL is rejected at startup,
 with no opt-out, because the CLI attaches a bearer token to these requests.
 
-An auto-discovered loopback `spelunk-server` is used for inference only and is
+An auto-discovered loopback `inkentry-server` is used for inference only and is
 never a memory store; it does not require this field to be set. See the
 [server setup guide](server-setup.md) for putting TLS in front of a deployed
 team server.
@@ -214,7 +214,7 @@ remote LLM. See
 This field only resolves the **cloud-kind** bearer, used for spelunk.cloud
 requests (`SPELUNK_SERVER_KEY` if set, otherwise the `[auth].access_token`
 written by `spelunk login`). It is **not** the effective credential for a
-self-hosted team `spelunk-server`: since the per-origin key scoping in
+self-hosted team `inkentry-server`: since the per-origin key scoping in
 ADR-071, that bearer is resolved separately, keyed by the server's origin, so
 a developer holding keys for two different self-hosted servers doesn't have
 them collide or leak into each other.
@@ -247,7 +247,7 @@ there anyway is silently dropped and never resolves to a credential. See
 - **Default:** unset (derived at runtime if absent)
 - **Env override:** `SPELUNK_PROJECT_ID`
 
-Human-readable project slug used to route memory on a team `spelunk-server`. It
+Human-readable project slug used to route memory on a team `inkentry-server`. It
 is sent to the server exactly as configured, whether it is a slug or a UUID:
 there is no lookup and nothing is cached. Required when `server_url` points at
 a non-loopback address (or provide it once via `spelunk sync --project <slug>`).
@@ -364,7 +364,7 @@ via `SPELUNK_LLM_URL`.
 ```toml
 # ~/.config/spelunk/config.toml
 
-# Chat-completions endpoint the local spelunk-server is started against, and
+# Chat-completions endpoint the local inkentry-server is started against, and
 # the model it is asked for. Store the endpoint's credential with
 # `spelunk auth set-key --llm`, never here.
 llm_url = "http://127.0.0.1:1234"
@@ -389,7 +389,7 @@ without error but do nothing:
 |-----|--------|
 | `memory_server_url` | Removed. Use `server_url`. |
 | `memory_server_key` | Removed. Use `server_key`, `spelunk auth set-key`, or `spelunk login`. |
-| `embedding_model` | Removed. The embedding model is pinned product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension), computed only by the bundled native embedder in `spelunk-server`; there is no config key or relocation option for it. |
+| `embedding_model` | Removed. The embedding model is pinned product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension), computed only by the bundled native embedder in `inkentry-server`; there is no config key or relocation option for it. |
 
 `inference_url` is not a config key at all: it is populated at runtime only,
 when spelunk auto-discovers a loopback server, and is never read from either

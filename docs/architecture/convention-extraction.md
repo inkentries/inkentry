@@ -42,7 +42,7 @@ spelunk context
 
 ## Module Map
 
-### New: `crates/spelunk-core/src/conventions/`
+### New: `crates/inkentry-core/src/conventions/`
 
 ```
 conventions/
@@ -59,17 +59,17 @@ conventions/
 
 | File | Change |
 |------|--------|
-| `crates/spelunk-core/src/storage/db.rs` | expose `conventions` table methods |
-| `crates/spelunk-core/src/storage/mod.rs` | re-export `ConventionRecord`, `insert_conventions`, `list_conventions` |
-| `crates/spelunk-cli/src/cli/cmd/index/mod.rs` | call `run_extraction()` after embed phase |
-| `crates/spelunk-cli/src/cli/cmd/context.rs` | add conventions section to output |
+| `crates/inkentry-core/src/storage/db.rs` | expose `conventions` table methods |
+| `crates/inkentry-core/src/storage/mod.rs` | re-export `ConventionRecord`, `insert_conventions`, `list_conventions` |
+| `crates/inkentry-cli/src/cli/cmd/index/mod.rs` | call `run_extraction()` after embed phase |
+| `crates/inkentry-cli/src/cli/cmd/context.rs` | add conventions section to output |
 
 ---
 
 ## DB Schema — Migration 019
 
 ```sql
--- crates/spelunk-core/migrations/019_conventions.sql
+-- crates/inkentry-core/migrations/019_conventions.sql
 
 CREATE TABLE IF NOT EXISTS conventions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +93,7 @@ Convention rows are **fully replaced** after each index run:
 ## Core Types
 
 ```rust
-// crates/spelunk-core/src/conventions/mod.rs
+// crates/inkentry-core/src/conventions/mod.rs
 
 pub struct ConventionRecord {
     pub language: String,
@@ -239,11 +239,11 @@ shape as `ls_files`).
 
 ## Index Phase Integration
 
-In `crates/spelunk-cli/src/cli/cmd/index/mod.rs`, after the embed phase completes:
+In `crates/inkentry-cli/src/cli/cmd/index/mod.rs`, after the embed phase completes:
 
 ```rust
 // post-embed: extract and store conventions
-if let Err(e) = spelunk_core::conventions::run_extraction(&db) {
+if let Err(e) = inkentry_core::conventions::run_extraction(&db) {
     eprintln!("warning: convention extraction failed: {e}");
     // non-fatal — index proceeds normally
 }
@@ -269,7 +269,7 @@ Convention extraction failure must **never fail the index**. Log to stderr and c
 | AST pass walks chunks, emits candidates (naming, layout, error-handling) | `ConventionExtractor` reads stored chunks; rules cover naming, error handling, async, testing, docs |
 | Output integrated into `spelunk context` | New "Conventions" section in both text and JSON output |
 | No external dependencies | Pure heuristics, no LLM calls, no network |
-| Tests for Rust + TypeScript fixtures | Unit tests in `crates/spelunk-core/src/conventions/` + integration fixture files |
+| Tests for Rust + TypeScript fixtures | Unit tests in `crates/inkentry-core/src/conventions/` + integration fixture files |
 
 ---
 

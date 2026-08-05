@@ -6,7 +6,7 @@ colored output (default `auto`: on when stdout is a terminal and `NO_COLOR` is
 unset). The flags and defaults below match the installed binary; run
 `spelunk <command> --help` to confirm against your version.
 
-A local `spelunk-server` is autostarted on demand and provides embeddings
+A local `inkentry-server` is autostarted on demand and provides embeddings
 (native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
 configured, LLM inference. Commands that need semantic search or an LLM (`search`
 in semantic/auto mode, `explore`, `memory harvest`) use that server; the
@@ -643,7 +643,7 @@ only your own clone.
 
 ## spelunk server
 
-Manage the local `spelunk-server` daemon. Runtime state lives under
+Manage the local `inkentry-server` daemon. Runtime state lives under
 `~/.local/state/spelunk/` (`server.pid`, `server.port`, `server.log`).
 
 ```

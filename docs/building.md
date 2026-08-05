@@ -19,19 +19,19 @@ Rust 1.80 or later is required (spelunk uses the 2024 edition).
 
 ### No external inference server required
 
-From v0.9.0, `spelunk-server` bundles a native embedder
+From v0.9.0, `inkentry-server` bundles a native embedder
 (codefuse-ai/F2LLM-v2-330M, 896-dim, via candle). No LM Studio, Ollama, or
 other external inference server is needed. The CLI auto-starts the server on
 first use; model weights are downloaded once and cached under
 `~/.local/share/spelunk/models/`.
 
-If you want GPU acceleration on macOS, build `spelunk-server` with the `metal`
+If you want GPU acceleration on macOS, build `inkentry-server` with the `metal`
 feature (see [Build feature flags](#build-feature-flags) below).
 
 ## Build
 
-This is a Cargo workspace with three crates: `spelunk-core` (library),
-`spelunk-cli` (`spelunk` binary), and `spelunk-server` (`spelunk-server` binary).
+This is a Cargo workspace with three crates: `inkentry-core` (library),
+`inkentry-cli` (`spelunk` binary), and `inkentry-server` (`inkentry-server` binary).
 Build them all together:
 
 ```bash
@@ -48,31 +48,31 @@ cargo build --release
 This produces both binaries under `target/release/`. Copy them to your `$PATH`:
 
 ```bash
-cp target/release/spelunk target/release/spelunk-server ~/.local/bin/
+cp target/release/spelunk target/release/inkentry-server ~/.local/bin/
 # or
-sudo cp target/release/spelunk target/release/spelunk-server /usr/local/bin/
+sudo cp target/release/spelunk target/release/inkentry-server /usr/local/bin/
 ```
 
 Verify:
 
 ```bash
 spelunk --version
-spelunk-server --version
+inkentry-server --version
 ```
 
 ### Building individual binaries
 
 ```bash
 # CLI only
-cargo build --release -p spelunk-cli
+cargo build --release -p inkentry-cli
 
 # Server only
-cargo build --release -p spelunk-server
+cargo build --release -p inkentry-server
 ```
 
 ## Build feature flags
 
-### spelunk-server features
+### inkentry-server features
 
 | Feature | Default | Description |
 |---|---|---|
@@ -83,13 +83,13 @@ Enable non-default features with `--features`:
 
 ```bash
 # macOS release build with Metal GPU acceleration
-cargo build --release -p spelunk-server --features metal
+cargo build --release -p inkentry-server --features metal
 
 # Server without the bundled embedder (no embedding capability at all)
-cargo build --release -p spelunk-server --no-default-features
+cargo build --release -p inkentry-server --no-default-features
 ```
 
-### spelunk-cli features
+### inkentry-cli features
 
 | Feature | Default | Description |
 |---|---|---|
@@ -97,14 +97,14 @@ cargo build --release -p spelunk-server --no-default-features
 
 ```bash
 # CLI with rich document format support
-cargo build --release -p spelunk-cli --features rich-formats
+cargo build --release -p inkentry-cli --features rich-formats
 ```
 
-### spelunk-core features
+### inkentry-core features
 
 | Feature | Default | Description |
 |---|---|---|
-| `rich-formats` | no | Same as above — `spelunk-cli/rich-formats` propagates to this crate automatically. |
+| `rich-formats` | no | Same as above — `inkentry-cli/rich-formats` propagates to this crate automatically. |
 
 ## Running tests
 

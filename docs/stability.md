@@ -31,11 +31,11 @@ Stating this first, because it is the part most often assumed:
   log levels. Diagnostics on stderr from any command, including the diagnostics
   that accompany a plumbing exit 2, are advisory text and not a parseable
   interface. The *exit code* is the interface.
-- **Internal crate APIs.** `spelunk-core`, `spelunk-cli`, `spelunk-embed`, and
-  `spelunk-server` are workspace members, not published to crates.io. Any Rust
+- **Internal crate APIs.** `inkentry-core`, `inkentry-cli`, `inkentry-embed`, and
+  `inkentry-server` are workspace members, not published to crates.io. Any Rust
   item they expose, `pub` or not, may change in any release. Depending on them
   as a git dependency is unsupported.
-- **The `/local/` HTTP routes.** `spelunk-server` registers `/local/relay/push`,
+- **The `/local/` HTTP routes.** `inkentry-server` registers `/local/relay/push`,
   `/local/relay/poll`, and `/local/relay/ack` outside the documented API. They
   are deliberately absent from `docs/openapi.json` and are internal transport
   between a spelunk client and its own server.
@@ -104,7 +104,7 @@ In text mode those diagnostics remain on stdout.
 
 | Surface | Level |
 |---|---|
-| `spelunk status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/spelunk-cli/src/cli/cmd/status.rs`. |
+| `spelunk status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/inkentry-cli/src/cli/cmd/status.rs`. |
 | Every other `--format json`, `--format jsonl`, or `--format porcelain` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
 
 `status --format json` also emits a set of richer fields for tooling (`tier`,
@@ -245,7 +245,7 @@ This is the precedent the policy is written from.
    "Removed fields" row pointing at the replacement. The keys are now unknown
    fields: a config that still carries them loads fine and keeps every other
    field, but the deprecated keys have no effect. Regression tests in
-   `crates/spelunk-core/src/config/mod.rs` pin exactly that, so the removal
+   `crates/inkentry-core/src/config/mod.rs` pin exactly that, so the removal
    cannot silently regress into a partial mapping.
 
 That removal shipped pre-1.0, which is why it landed in a minor release rather
@@ -323,13 +323,13 @@ that fails CI when it is broken.
 
 | Promise | Enforced by |
 |---|---|
-| Plumbing JSONL field names and types | `crates/spelunk-cli/tests/golden/plumbing_jsonl_schema.json` plus `crates/spelunk-cli/tests/plumbing_jsonl_contract.rs`. Each command is run for real and its output checked against the committed schema. Required fields must be present and correctly typed; **undeclared fields are accepted**, so additive change passes and removal, rename, or retype fails. |
+| Plumbing JSONL field names and types | `crates/inkentry-cli/tests/golden/plumbing_jsonl_schema.json` plus `crates/inkentry-cli/tests/plumbing_jsonl_contract.rs`. Each command is run for real and its output checked against the committed schema. Required fields must be present and correctly typed; **undeclared fields are accepted**, so additive change passes and removal, rename, or retype fails. |
 | Every plumbing command has a declared schema | `golden_schema_covers_every_plumbing_subcommand`, which reads the command list out of clap's own help, so a newly added command cannot ship as an unguarded stable surface. |
-| The checker itself actually rejects things | `crates/spelunk-cli/tests/schema_contract_checker.rs`. Without it, a checker that accepted everything would leave every golden file green. It drives removal, rename, and retype across every field of every declared command, and pins the reporting wrapper too, including its refusal of a command that emitted no rows at all. |
+| The checker itself actually rejects things | `crates/inkentry-cli/tests/schema_contract_checker.rs`. Without it, a checker that accepted everything would leave every golden file green. It drives removal, rename, and retype across every field of every declared command, and pins the reporting wrapper too, including its refusal of a command that emitted no rows at all. |
 | Each declared field is load-bearing, per command | `assert_every_declared_field_is_load_bearing`, run inside every command's conformance test in `plumbing_jsonl_contract.rs`. The command's real output is replayed with one declared field dropped, then retyped, and the checker must object each time. Conformance alone would pass against a checker that never rejects anything. |
-| Plumbing exit codes 0/1/2 | `crates/spelunk-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
-| `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p spelunk-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
-| On-disk forward compatibility, for every store above | `crates/spelunk-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. Artifacts written by **real released binaries** are opened with the current build and checked for surviving rows, content, embeddings, the entity-id backfill, and full-text hits, plus upgrade idempotence. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
+| Plumbing exit codes 0/1/2 | `crates/inkentry-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
+| `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p inkentry-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
+| On-disk forward compatibility, for every store above | `crates/inkentry-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. Artifacts written by **real released binaries** are opened with the current build and checked for surviving rows, content, embeddings, the entity-id backfill, and full-text hits, plus upgrade idempotence. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
 | The stamp is never left above the opening build's version | The same suite, against a pinned older release opening a current store. This is the bound that keeps the `user_version` rewind safe, since a newer build must never skip migrations it has not run. |
 | The above run on every change | `.github/workflows/stability-contract.yml`. |
 
@@ -343,7 +343,7 @@ If a change to a stable surface is intended:
    deprecation period first, and a changelog entry under `### Removed` or
    `### Changed`.
 3. For the server, regenerate the spec:
-   `cargo run -p spelunk-server -- --print-openapi > docs/openapi.json`.
+   `cargo run -p inkentry-server -- --print-openapi > docs/openapi.json`.
 4. Update the golden schema and this document in the same change, so the
    contract and the code never disagree.
 

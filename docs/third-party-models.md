@@ -1,6 +1,6 @@
 # Third-party models
 
-`spelunk-server` bundles a native embedding model, so semantic search works
+`inkentry-server` bundles a native embedding model, so semantic search works
 with no external endpoint and no way to relocate it: the embedding model and
 its compute path are both pinned product-wide. LLM-backed features are
 different: the server has no LLM of its own, and proxies those calls to an
@@ -12,7 +12,7 @@ Looking for the bundled embedder's license and provenance instead? See
 
 ## Configuring an external LLM endpoint
 
-The CLI never talks to an LLM directly, only through `spelunk-server`. So the
+The CLI never talks to an LLM directly, only through `inkentry-server`. So the
 endpoint is always the *server's* configuration. How you set it depends on
 which server you mean.
 
@@ -73,7 +73,7 @@ The short rule: an environment variable that is *set* always wins, even when
 empty; a flag has to carry a value to win.
 
 The off-switch works because the CLI sets all three LLM variables on the daemon
-it starts, rather than letting the daemon inherit them. `spelunk-server` reads
+it starts, rather than letting the daemon inherit them. `inkentry-server` reads
 `SPELUNK_LLM_URL` and `SPELUNK_LLM_MODEL` itself, so a value the CLI resolved
 away would otherwise still reach it: an exported empty endpoint would arrive as
 a configured-but-empty one. Whatever the CLI resolves is what the daemon sees,
@@ -85,9 +85,9 @@ than promised by the [stability contract](stability.md#config), because the two
 positions answer the same question in opposite directions and reconciling them
 is still open. Pass a value you mean, and the question does not arise.
 
-### If you run `spelunk-server` yourself
+### If you run `inkentry-server` yourself
 
-Pass flags to the binary (verified against `spelunk-server --help`, v0.9.5):
+Pass flags to the binary (verified against `inkentry-server --help`, v0.9.5):
 
 | Flag | Env | Purpose |
 |---|---|---|
@@ -130,7 +130,7 @@ rather than left to be inferred:
   authorize against your keychain for it.
 - **A credential is not sent over plaintext to another host.** If a credential
   resolves and the endpoint is a plaintext `http://` URL to anything other than
-  loopback, `spelunk-server` refuses to start:
+  loopback, `inkentry-server` refuses to start:
 
   ```
   Error: invalid server URL "http://192.168.1.10:1234": plaintext http:// is only
@@ -227,7 +227,7 @@ their own opening line (`'spelunk explore' cannot run: ...`), and they **fail**
 rather than skipping, because neither can do its job without an LLM. One
 difference is worth knowing: in offline mode those two commands never reach the
 LLM rule at all. They stop earlier, on the embedding requirement, with the
-pre-existing `requires spelunk-server` error. The offline notice above is
+pre-existing `requires inkentry-server` error. The offline notice above is
 something only `spelunk index` prints.
 
 If summaries do run but a batch fails (the endpoint is up but returns an error,
@@ -316,11 +316,11 @@ set.
 
 ### Team server setup
 
-Pass the same two flags when you start the deployed `spelunk-server` (see
+Pass the same two flags when you start the deployed `inkentry-server` (see
 [Server setup](server-setup.md)):
 
 ```bash
-spelunk-server --host 0.0.0.0 --port 7777 \
+inkentry-server --host 0.0.0.0 --port 7777 \
   --tls-cert /etc/spelunk/tls-cert --tls-key /etc/spelunk/tls-key \
   --llm-url https://llm-host:1234 --llm-model your-chat-model-id \
   --llm-key-file /etc/spelunk/llm-key
@@ -355,6 +355,6 @@ directory layout and the fetch-and-transfer procedure.
 
 ## Related
 
-- [Server setup](server-setup.md): deploying `spelunk-server`, TLS, client configuration
+- [Server setup](server-setup.md): deploying `inkentry-server`, TLS, client configuration
 - [Model attribution](model-attribution.md): license and provenance for the bundled embedder
 - [Getting started](getting-started.md): the zero-setup local path

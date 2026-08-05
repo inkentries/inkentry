@@ -54,6 +54,6 @@ is redistributed **unmodified**. No other modifications were made.
 
 ## Usage in Spelunk
 
-`spelunk-server` downloads the GGUF and tokenizer directly from here by
+`inkentry-server` downloads the GGUF and tokenizer directly from here by
 default. Set `SPELUNK_EMBEDDER_GGUF_REPO` to a different repo to fetch both
 from there instead (it must host both files).

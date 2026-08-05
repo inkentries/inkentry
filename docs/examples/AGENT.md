@@ -109,5 +109,5 @@ A post-commit hook can do this automatically; see `spelunk hooks install`.
 
 - It cannot run your tests or build the project; use shell commands for that
 - Semantic search results are only as fresh as the last `spelunk index` run
-- `spelunk explore` requires a running `spelunk-server` with an LLM backend configured
+- `spelunk explore` requires a running `inkentry-server` with an LLM backend configured
 - `spelunk search` (semantic) requires an embedding server and a built index; use `--mode text` for full-text search without either

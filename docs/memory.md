@@ -6,7 +6,7 @@ Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
 `refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
+`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
@@ -140,7 +140,7 @@ immediately, with no network call in the write's own path; it queues in a
 local outbox (the same
 `memory.db` rows, not a separate table) until a background reconciler drains
 it. From an interactive terminal session, the write opportunistically starts
-(or reuses) a local `spelunk-server` and hands it the outbox to push; that
+(or reuses) a local `inkentry-server` and hands it the outbox to push; that
 same background process also holds a live pull connection to the team server,
 so entries recorded elsewhere on the team tend to show up locally without any
 explicit step. Non-interactive invocations (CI, scripts, git hooks) never
@@ -175,7 +175,7 @@ project_id = "my-awesome-app"
 mode = "cloud_first"
 ```
 
-`server_url` may point at a self-hosted `spelunk-server` or at the hosted API.
+`server_url` may point at a self-hosted `inkentry-server` or at the hosted API.
 The two expose different memory routes, so spelunk settles which to speak when
 the backend opens, by reading the capability list `/v1/health` already
 advertises. A peer advertising SSE memory streaming is the hosted API; anything
@@ -626,7 +626,7 @@ spelunk context --local-only
 # Tag a decision as locked so linked projects can see it
 spelunk memory add --kind decision \
   --title "SSE memory stream is Cloud-only" \
-  --body "OSS spelunk-server must not expose SSE; Cloud API owns that surface." \
+  --body "OSS inkentry-server must not expose SSE; Cloud API owns that surface." \
   --tags v1,locked
 
 # Tag a requirement that applies across all linked projects
@@ -639,7 +639,7 @@ spelunk memory add --kind requirement \
 ### Privacy boundary
 
 The dep pass reads each linked project's `memory.db` directly from disk (local
-SQLite only). It does not route through `spelunk-server` or any remote endpoint.
+SQLite only). It does not route through `inkentry-server` or any remote endpoint.
 A linked project's memory is only reachable if its `memory.db` file is
 accessible on the local filesystem (same machine, same user). Remote or
 server-backed linked projects whose memory lives exclusively on a remote server
@@ -666,7 +666,7 @@ spelunk memory graph 42 --format json
 
 ## Harvesting from git history
 
-`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `spelunk-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/spelunk/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
+`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/spelunk/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
 
 ```bash
 # Default: last 10 commits (fewer if the repo has fewer than 10)
@@ -702,7 +702,7 @@ spelunk hooks install --pre-push
 ## Importing from a local server
 
 `spelunk memory reconcile` imports notes that were recorded by a running
-`spelunk-server` daemon into the project's local `memory.db`. This is useful
+`inkentry-server` daemon into the project's local `memory.db`. This is useful
 after a session where entries were written through `server_url` and need to be
 pulled into the project's local store, or when migrating from server-backed to
 local storage.
@@ -854,7 +854,7 @@ over the embedding vectors and this note has none.
 `spelunk memory reindex` is the recovery command: it embeds the notes that have
 no vector, using the same embedder `memory add` uses. In the default
 `local_first` mode (and `offline`), that is always the local, auto-discovered
-loopback `spelunk-server`, even when a team `server_url` is also configured:
+loopback `inkentry-server`, even when a team `server_url` is also configured:
 inference stays on-machine there regardless of the sync-mode replica setting.
 In `cloud_first` with a team `server_url` set, `reindex` is not applicable and
 exits with an actionable error, since `memory.db` isn't the store of record in

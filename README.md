@@ -12,7 +12,7 @@ spelunk search "error handling" --mode text        # full-text search, no server
 spelunk memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
 ```
 
-Semantic search works out of the box: `spelunk` autostarts a local `spelunk-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `spelunk-server` to share memory across a team.
+Semantic search works out of the box: `spelunk` autostarts a local `inkentry-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `inkentry-server` to share memory across a team.
 
 ## Quick start
 
@@ -59,8 +59,8 @@ AI coding agents lose context between sessions and can't trace how code connects
 - **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
 - **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
 - **Works without any server** — memory, code graph, and full-text/structural (ast-grep) search work with just the binary. No API keys, no configuration.
-- **Semantic search built in** — a local `spelunk-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point spelunk at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
-- **100% local** — your code never leaves your machine. The server is self-hosted (local by default). This claim is enforced, not just asserted: `crates/spelunk-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
+- **Semantic search built in** — a local `inkentry-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point spelunk at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
+- **100% local** — your code never leaves your machine. The server is self-hosted (local by default). This claim is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
 
 ### When to use spelunk vs grep
@@ -72,7 +72,7 @@ AI coding agents lose context between sessions and can't trace how code connects
 | See what calls a function | `spelunk graph validate_token` |
 | Remember why a decision was made | `spelunk memory search "why sqlite-vec"` |
 | Store a design decision for future sessions | `spelunk memory add --kind decision ...` |
-| Share context across a team | `spelunk-server` + `server_url` |
+| Share context across a team | `inkentry-server` + `server_url` |
 
 ## Core features
 
@@ -170,13 +170,13 @@ This is a Cargo workspace with three crates:
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `spelunk-core` | `crates/spelunk-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
-| `spelunk-cli` | `crates/spelunk-cli` | `spelunk` binary — CLI commands; depends on `spelunk-core` |
-| `spelunk-server` | `crates/spelunk-server` | `spelunk-server` binary + lib — shared memory server; depends on `spelunk-core` |
+| `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
+| `inkentry-cli` | `crates/inkentry-cli` | `spelunk` binary — CLI commands; depends on `inkentry-core` |
+| `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` |
 
 ```bash
-cargo build -p spelunk-cli    # build the CLI
-cargo build -p spelunk-server # build the server
+cargo build -p inkentry-cli    # build the CLI
+cargo build -p inkentry-server # build the server
 cargo test                    # test all crates
 ```
 
@@ -191,7 +191,7 @@ Supported platforms and host requirements are listed in
 
 [MIT](LICENSE)
 
-spelunk-server bundles a third-party embedding model (Apache-2.0). See
+inkentry-server bundles a third-party embedding model (Apache-2.0). See
 [Model attribution](docs/model-attribution.md) for licensing, or
 [Third-party models](docs/third-party-models.md) for configuring an external
 LLM or embedding endpoint.

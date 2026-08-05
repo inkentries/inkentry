@@ -3,7 +3,7 @@
 A *remote agent* is an AI coding agent process that does not share a filesystem
 or local network with the workstation that owns your code. Spelunk supports
 these agents the same way it supports a local one: the agent installs the
-`spelunk` CLI, points it at a `spelunk-server`, and gets the same memory +
+`spelunk` CLI, points it at a `inkentry-server`, and gets the same memory +
 retrieval surface a local agent gets.
 
 Spelunk **does not run agents.** The server is to an agent what an LSP server is
@@ -27,11 +27,11 @@ documented separately when it ships. R3 (self-hosted over the network) is
 ## R1 — an agent in a local Docker container
 
 A containerized agent needs three things: an env var pointing its CLI at a
-`spelunk-server`, a bind-mount of the repo, and a bind-mount of your spelunk
+`inkentry-server`, a bind-mount of the repo, and a bind-mount of your spelunk
 config so it resolves the same project.
 
 The one detail that trips people up is **which URL** the container uses. A local
-`spelunk-server` binds the host's loopback (`127.0.0.1`), and a container's
+`inkentry-server` binds the host's loopback (`127.0.0.1`), and a container's
 network namespace cannot reach the host's loopback by any portable means — so
 the reliable answer is to point the container at the team server's **HTTPS
 endpoint**, the same `https://` URL any other client uses, not at a Docker bridge

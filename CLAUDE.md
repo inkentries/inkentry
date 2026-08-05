@@ -47,9 +47,9 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `spelunk graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, `check`, memory, and `graph` on a file path) need `spelunk init` first.
 
-**Semantic search via spelunk-server:** from v0.9.0 the default UX runs a local `spelunk-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `spelunk explore`, `spelunk memory harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `spelunk server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
-**Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted spelunk-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
+**Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted inkentry-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
 
 You search with spelunk, then reason over the results yourself.
 
@@ -63,15 +63,15 @@ This is a Cargo workspace with four crates:
 Cargo.toml                    — workspace root; [workspace.dependencies] for shared versions
 
 crates/
-  spelunk-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
-  spelunk-cli/                — `spelunk` binary; depends on spelunk-core
-  spelunk-embed/              — library: native F2LLM-v2-330M embedder (candle); depends on spelunk-core
-  spelunk-server/             — `spelunk-server` binary + lib; depends on spelunk-core + spelunk-embed
+  inkentry-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
+  inkentry-cli/                — `spelunk` binary; depends on inkentry-core
+  inkentry-embed/              — library: native F2LLM-v2-330M embedder (candle); depends on inkentry-core
+  inkentry-server/             — `inkentry-server` binary + lib; depends on inkentry-core + inkentry-embed
 ```
 
 ## Module Map
 
-### spelunk-core (`crates/spelunk-core/src/`)
+### inkentry-core (`crates/inkentry-core/src/`)
 
 ```
 lib.rs           — crate root; re-exports public modules
@@ -160,11 +160,11 @@ search/
   tokens.rs      — token-budget helpers
   tools.rs       — tool-call helpers for LLM search
 
-migrations/  (crates/spelunk-core/migrations/)
+migrations/  (crates/inkentry-core/migrations/)
   001_initial.sql – 018_graph_edges_compound_idx.sql — incremental DB schema
 ```
 
-### spelunk-cli (`crates/spelunk-cli/src/`)
+### inkentry-cli (`crates/inkentry-cli/src/`)
 
 ```
 main.rs          — entry point: parse CLI, dispatch to commands
@@ -180,7 +180,7 @@ capability/      — Tier 0/1 capability detection (server reachable probe, cach
                    routing; never consults Config::resolve_inference_url
   llm_message.rs:  no_llm_message: the user-facing text over (NoLlmReason x LlmFeature),
                    shared by index summaries, explore and memory harvest
-server_client.rs:  ServerInferenceClient, the single HTTP client for spelunk-server's
+server_client.rs:  ServerInferenceClient, the single HTTP client for inkentry-server's
                    inference endpoints, plus ServerEmbedAdapter / ServerLlmAdapter, two
                    thin trait adapters over the same Arc. Embedding and LLM can resolve
                    to different base URLs, so a caller needing both builds two clients
@@ -231,7 +231,7 @@ cli/
       since.rs        — `spelunk memory since` handler
       supersede.rs    — memory supersede subcommand
       timeline.rs     — memory timeline subcommand
-      watch.rs        — `spelunk memory watch`: SSE stream from spelunk-server
+      watch.rs        — `spelunk memory watch`: SSE stream from inkentry-server
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
       cat_chunks.rs        — emit indexed chunks for a file as JSONL
@@ -244,7 +244,7 @@ cli/
       read_memory.rs       — emit memory entries as JSONL
 ```
 
-### spelunk-server (`crates/spelunk-server/src/`)
+### inkentry-server (`crates/inkentry-server/src/`)
 
 ```
 main.rs            — entry point: parse args, register sqlite-vec, start Axum server
@@ -271,26 +271,26 @@ server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind
                      travel in the clear
 embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
                      `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
-                     calls spelunk-embed's `NativeEmbedder::load_from_path`. The only place in the
+                     calls inkentry-embed's `NativeEmbedder::load_from_path`. The only place in the
                      workspace that depends on `hf-hub`.
 
-migrations/  (crates/spelunk-server/migrations/)
+migrations/  (crates/inkentry-server/migrations/)
   server_001.sql — projects + server memory schema
   server_002.sql — server memory FTS
 ```
 
-The native embedder engine lives in the `spelunk-embed` crate (below). The
-server's `embed-native` feature enables the optional `spelunk-embed` dep (and
-the server's own hf-hub download path); `metal` forwards to `spelunk-embed`'s
-`metal` feature. `spelunk-embed` gates candle/tokenizers behind its own
-default-on `native` feature. `spelunk-core` depends on it with
+The native embedder engine lives in the `inkentry-embed` crate (below). The
+server's `embed-native` feature enables the optional `inkentry-embed` dep (and
+the server's own hf-hub download path); `metal` forwards to `inkentry-embed`'s
+`metal` feature. `inkentry-embed` gates candle/tokenizers behind its own
+default-on `native` feature. `inkentry-core` depends on it with
 `default-features = false` to get only the `EmbeddingBackend` trait + `MODEL_ID`
-(no candle): spelunk-cli only ever calls inference over HTTP via
+(no candle): inkentry-cli only ever calls inference over HTTP via
 `server_client.rs`, never constructs a `NativeEmbedder`, so it has no reason to
-statically link candle. spelunk-server keeps `native` on, since it's the one
+statically link candle. inkentry-server keeps `native` on, since it's the one
 binary that actually constructs one.
 
-### spelunk-embed (`crates/spelunk-embed/src/`)
+### inkentry-embed (`crates/inkentry-embed/src/`)
 
 ```
 lib.rs             - crate root; re-exports NativeEmbedder + DIM behind the default-on
@@ -300,7 +300,7 @@ embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal
                      NativeEmbedder::load_from_path(gguf, tokenizer, config) loads local files
                      already on disk with zero network access — the crate's only load entry
                      point, and it carries no download/fetch dependency. Implements
-                     spelunk-core's EmbeddingBackend. spelunk-server's embed_hub module (above)
+                     inkentry-core's EmbeddingBackend. inkentry-server's embed_hub module (above)
                      resolves those local files via the Hugging Face Hub before calling it.
 ```
 
@@ -308,23 +308,23 @@ embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal
 
 ## Inference Backend
 
-All AI inference goes through **spelunk-server**. The CLI calls the server via
-`ServerInferenceClient` in `crates/spelunk-cli/src/server_client.rs`: the only
-place in spelunk-cli that issues AI inference requests. `ServerEmbedAdapter` and
+All AI inference goes through **inkentry-server**. The CLI calls the server via
+`ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`: the only
+place in inkentry-cli that issues AI inference requests. `ServerEmbedAdapter` and
 `ServerLlmAdapter` in the same file are thin trait adapters over one `Arc` of
 that client, not separate clients. (There is no `ServerLlmClient` or
 `ServerEmbedClient`; those names are long gone.)
 
-`spelunk-core` defines the `EmbeddingBackend` and `LlmBackend` traits
+`inkentry-core` defines the `EmbeddingBackend` and `LlmBackend` traits
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
-The native embedding *engine* lives in the `spelunk-embed` crate
-(`NativeEmbedder`, local-path load only); spelunk-server's `embed_hub` module
+The native embedding *engine* lives in the `inkentry-embed` crate
+(`NativeEmbedder`, local-path load only); inkentry-server's `embed_hub` module
 owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. There is no external embedder
 backend: embedding always runs through the bundled native engine. The LLM
-backend (with its own external HTTP shim, `--llm-url`) lives in spelunk-server
+backend (with its own external HTTP shim, `--llm-url`) lives in inkentry-server
 (`server_llm.rs`). The endpoint, model and credential that shim runs on are
-resolved client-side by `spelunk-cli`'s `cli/cmd/daemon_llm.rs` and handed to
+resolved client-side by `inkentry-cli`'s `cli/cmd/daemon_llm.rs` and handed to
 the spawned daemon: url and model in argv, the credential in the child
 environment only, because the detached daemon must never open the keychain
 itself.
@@ -350,7 +350,7 @@ clients: see `cli/cmd/memory/harvest.rs::harvest_clients` for the shape. The
 user-facing text for every no-LLM outcome comes from
 `capability::no_llm_message`, never from an ad-hoc string at the call site.
 
-**Inference vs. memory storage are separate concerns.** Reaching the server for inference does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/spelunk-core/src/config/sync_mode.rs`.
+**Inference vs. memory storage are separate concerns.** Reaching the server for inference does **not** mean memory is stored there. For an auto-discovered loopback server, memory CRUD (`add`, `list`, `search`, `timeline`, `context`, `harvest`, `read-memory`) resolves to the project's local `memory.db`; the server is used only to embed the query for `memory search`, with the vector KNN run locally against `memory.db`. Memory lives on a server **only** when an explicit team `server_url` is configured with `mode = "cloud_first"`; under the default `local_first` mode, reads and writes stay in `memory.db` and the server is a converging replica. See `docs/adr/004-unified-memory-storage.md` and the sync-mode table in `crates/inkentry-core/src/config/sync_mode.rs`.
 
 ---
 
@@ -375,15 +375,15 @@ F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:
   - Memory/QA: `Instruct: Given a question, retrieve passages that answer the question\nQuery: {q}`
 
 Document format is produced by `Chunk::embedding_text()` in
-`crates/spelunk-core/src/indexer/chunker.rs`. Query prefixes are applied by
+`crates/inkentry-core/src/indexer/chunker.rs`. Query prefixes are applied by
 `handlers.rs` (server-side code search), `embed_query_vec()` in `helpers.rs`
 (CLI-side memory search), and `embed_cmd.rs` (plumbing embed --query).
 
 ### SQLite + sqlite-vec
 No separate vector DB. The sqlite-vec extension adds a `vec0` virtual table
 for KNN queries. The extension is registered via `sqlite3_auto_extension`
-before any connection is opened (see `crates/spelunk-cli/src/main.rs` and
-`crates/spelunk-server/src/main.rs`).
+before any connection is opened (see `crates/inkentry-cli/src/main.rs` and
+`crates/inkentry-server/src/main.rs`).
 
 Chunk embeddings are stored as `INT8[896]` (F2LLM vectors are
 L2-normalised, so int8 is lossless enough for ranking and ~4x smaller on disk);
@@ -408,7 +408,7 @@ these commands to query only the primary project's memory. See
 `docs/memory.md#cross-project-visibility`.
 
 ### Secret scanning
-`crates/spelunk-core/src/indexer/secrets.rs` runs before each chunk is stored, scanning the full
+`crates/inkentry-core/src/indexer/secrets.rs` runs before each chunk is stored, scanning the full
 text that will be persisted and embedded (docstring + content; LLM summaries are scanned
 separately when generated, since they don't exist yet at store time). Chunks matching known
 credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped — including
@@ -418,7 +418,7 @@ stored. **This is best-effort defense-in-depth, not a security boundary**: a fin
 cannot catch every credential format. The real boundary is that code never leaves the local
 machine unless a team `server_url` is explicitly configured (see above); the scanner only reduces
 the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted)
-by accident. That boundary is enforced by `crates/spelunk-cli/tests/egress_containment.rs`, which
+by accident. That boundary is enforced by `crates/inkentry-cli/tests/egress_containment.rs`, which
 traps every outbound connection across local-tier CLI flows (`init`, `index`, `search`, `memory`,
 `graph --live`, plumbing) and fails loudly, naming the destination, on any escape past loopback.
 
@@ -505,33 +505,33 @@ cargo build
 cargo build --release
 
 # Build specific binaries
-cargo build -p spelunk-cli
-cargo build -p spelunk-server
+cargo build -p inkentry-cli
+cargo build -p inkentry-server
 
 # Run the CLI
-cargo run -p spelunk-cli -- index ./some/project
-cargo run -p spelunk-cli -- search "how does authentication work"
-cargo run -p spelunk-cli -- status
-cargo run -p spelunk-cli -- status --all
-cargo run -p spelunk-cli -- graph <symbol>
-cargo run -p spelunk-cli -- chunks src/some/file.rs
-cargo run -p spelunk-cli -- languages
-cargo run -p spelunk-cli -- sync              # two-way: push local memory to server, pull teammates' entries down
-cargo run -p spelunk-cli -- memory push       # one-way: seed the server from local memory only
+cargo run -p inkentry-cli -- index ./some/project
+cargo run -p inkentry-cli -- search "how does authentication work"
+cargo run -p inkentry-cli -- status
+cargo run -p inkentry-cli -- status --all
+cargo run -p inkentry-cli -- graph <symbol>
+cargo run -p inkentry-cli -- chunks src/some/file.rs
+cargo run -p inkentry-cli -- languages
+cargo run -p inkentry-cli -- sync              # two-way: push local memory to server, pull teammates' entries down
+cargo run -p inkentry-cli -- memory push       # one-way: seed the server from local memory only
 
 # Run the server
-cargo run -p spelunk-server -- --port 7777
+cargo run -p inkentry-server -- --port 7777
 
 # Verbose logging
-RUST_LOG=debug cargo run -p spelunk-cli -- index .
+RUST_LOG=debug cargo run -p inkentry-cli -- index .
 
 # Tests (all crates)
 cargo test
 
 # Tests for a specific crate
-cargo test -p spelunk-core
-cargo test -p spelunk-cli
-cargo test -p spelunk-server
+cargo test -p inkentry-core
+cargo test -p inkentry-cli
+cargo test -p inkentry-server
 
 # Security audit (requires cargo-audit)
 cargo audit
@@ -548,11 +548,11 @@ cargo audit
   `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
   `tree-sitter` core, check that `ast-grep-language` (and the two standalone
   grammars) still resolve to the same runtime line. `ast-grep-core` provides the
-  in-process structural-search fallback (`crates/spelunk-core/src/search/live.rs`).
+  in-process structural-search fallback (`crates/inkentry-core/src/search/live.rs`).
 - `sqlite-vec` is loaded at runtime via `sqlite3_auto_extension` (see
-  `crates/spelunk-cli/src/main.rs` and `crates/spelunk-server/src/main.rs`).
+  `crates/inkentry-cli/src/main.rs` and `crates/inkentry-server/src/main.rs`).
   The extension binary is bundled by the crate — no system install needed.
-- `regex` is used only by `crates/spelunk-core/src/indexer/secrets.rs`. Patterns
+- `regex` is used only by `crates/inkentry-core/src/indexer/secrets.rs`. Patterns
   are compiled once via `OnceLock` at the start of `spelunk index`.
 - `ignore` respects `.gitignore`, `.ignore`, and global gitignore rules during
   file traversal. Sensitive file patterns (`.env*`, `*.pem`, etc.) are

@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "spelunk-server",
+    "title": "inkentry-server",
     "description": "Shared memory server for spelunk. Stores decisions, requirements, and context for a team and serves them over HTTP.",
     "contact": {
       "name": "spelunk",
@@ -1376,7 +1376,7 @@
       },
       "BatchNoteItem": {
         "type": "object",
-        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`spelunk-core/src/storage/remote/sync.rs`): the CLI\nnever sends `embedding` today (its push is text-only), but the\nfield is accepted when present for forward compatibility with a possible\nfuture pushed-vector optimization: the server must not require it.",
+        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`): the CLI\nnever sends `embedding` today (its push is text-only), but the\nfield is accepted when present for forward compatibility with a possible\nfuture pushed-vector optimization: the server must not require it.",
         "required": [
           "kind",
           "title",

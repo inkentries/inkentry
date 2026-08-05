@@ -42,7 +42,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 
 See [SECURITY.md](../SECURITY.md) for how to report vulnerabilities privately.
 
-Compatibility between the CLI and a team `spelunk-server` of a different
+Compatibility between the CLI and a team `inkentry-server` of a different
 version: within the v1 line the server API under `/v1/` evolves additively.
 Run matching versions where you can; adjacent versions are expected to
 interoperate for the memory workflows.

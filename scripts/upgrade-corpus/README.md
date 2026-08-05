@@ -17,7 +17,7 @@ scripts/upgrade-corpus/
   embed_stub.py       stand-in for the pre-1.0 embedding wire
   checksums.txt       pinned sha256 per release asset
 
-crates/spelunk-cli/tests/
+crates/inkentry-cli/tests/
   fixtures/upgrade-corpus/
     MANIFEST.json     one entry per wing: producer, artifact, digest, expected content
     wings/<id>/       the artifact itself, gzipped
@@ -49,7 +49,7 @@ pinned by the sha256 GitHub records for them. Every database file, its schema,
 its `vec0` table declarations and every row in it were written by that binary.
 
 Not real, and deliberately so: the **values** inside the embedding vectors.
-Pre-1.0 releases embed by calling a `spelunk-server` that shipped an embedder
+Pre-1.0 releases embed by calling a `inkentry-server` that shipped an embedder
 which no longer exists, and a current server answers on a wire shape those
 binaries cannot parse, so neither can produce these wings. `embed_stub.py`
 serves that era's `/v1/health` and embedding endpoints so the real old binary
@@ -117,7 +117,7 @@ another's.
 
 ## Regenerating
 
-Needs `gh` (authenticated), `python3`, `sqlite3`, and `git`. No spelunk-server
+Needs `gh` (authenticated), `python3`, `sqlite3`, and `git`. No inkentry-server
 and no model download.
 
 ```sh
@@ -138,7 +138,7 @@ churn the others.
    `capture_expect.py` over the whole corpus, which is what records the new
    wing's expectations and its `sha256` pin in `MANIFEST.json`. Untouched wings
    come back byte-identical, so the diff should be the new wing only.
-4. Run `cargo test -p spelunk-cli --test upgrade_corpus`.
+4. Run `cargo test -p inkentry-cli --test upgrade_corpus`.
 5. Check the old-binary leg against
    [When this contract flips](#when-this-contract-flips). A release carrying the
    `memory.db` version guard is expected to *refuse* a newer memory store rather

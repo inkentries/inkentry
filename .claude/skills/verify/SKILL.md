@@ -16,7 +16,7 @@ Run every gate below and fix until green. A gate you did not watch pass has not 
 platform secret store.
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo test -p spelunk-cli
+SPELUNK_SECRET_STORE=file cargo test -p inkentry-cli
 ```
 
 Without it, cargo reaches the real OS keyring and **blocks on a live interactive permission
@@ -62,7 +62,7 @@ SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo nextest run --li
 SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo test --doc
 ```
 
-Scope to the crate you touched while iterating (`-p spelunk-cli`), but run the full suite before
+Scope to the crate you touched while iterating (`-p inkentry-cli`), but run the full suite before
 the PR.
 
 ### Isolate the suite from your own spelunk config

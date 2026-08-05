@@ -9,7 +9,7 @@ The CLI talks to three server-side peers, and they drift independently:
 | Peer | How it is reached | Why it drifts |
 |---|---|---|
 | **Loopback server** | auto-discovered on `127.0.0.1:7777` | The CLI starts and manages it, so it is normally the same version. It can go stale when a long-running daemon outlives an upgrade. |
-| **Team `spelunk-server`** | explicit `server_url` | Upgraded on someone else's schedule. Skew is guaranteed, in both directions. |
+| **Team `inkentry-server`** | explicit `server_url` | Upgraded on someone else's schedule. Skew is guaranteed, in both directions. |
 | **cloud-api** | explicit `server_url` | Released independently of the CLI, so it can be ahead of any released CLI at any time. |
 
 Drift can enter from any of the three independently. A newer CLI meets an older
@@ -185,7 +185,7 @@ resource, both as documented contracts:
 | Peer | Field | Type |
 |---|---|---|
 | cloud-api | `ProjectItem.id` | `string`, format `uuid` |
-| `spelunk-server` | `Project.id` | `integer`, format `int64` |
+| `inkentry-server` | `Project.id` | `integer`, format `int64` |
 
 This is live today, not a hypothetical. The CLI is unaffected for exactly one
 reason: it never holds a typed project id. It carries the identifier as an
@@ -194,7 +194,7 @@ peers' shapes pass through untouched.
 
 That immunity is load-bearing and invisible in the type signature, so it is
 pinned by `project_id_stays_opaque_across_both_peers_id_types` in
-`crates/spelunk-cli/src/server_client.rs`. Narrowing the project id to an `i64`
+`crates/inkentry-cli/src/server_client.rs`. Narrowing the project id to an `i64`
 or a `Uuid` would make the CLI incompatible with one peer or the other; the
 test exists to make that a loud failure rather than a discovery in production.
 
@@ -217,7 +217,7 @@ actually protects you, and that holds whatever the two peers do next.
 | Unknown fields and enum values are ignored | `unknown_fields_from_a_newer_peer_are_ignored` | Real recorded response, unknown fields added |
 | No field can take the whole body down with it | `every_health_field_degrades_alone_rather_than_taking_the_body_down` | Every member of the recorded body, mutated one at a time |
 | The project id stays opaque | `project_id_stays_opaque_across_both_peers_id_types` | Two peers' published id shapes |
-| Memory read endpoints return an object envelope | `*_returns_object_envelope_not_bare_array` (spelunk-server `wire_shape_tests`) | The running handlers |
+| Memory read endpoints return an object envelope | `*_returns_object_envelope_not_bare_array` (inkentry-server `wire_shape_tests`) | The running handlers |
 | The CLI reads both the envelope and a legacy bare array | `list_accepts_*` / `search_accepts_*` / `harvested_shas_accepts_both_shapes` (`storage/remote/tests.rs`), plus `cloud_first_reads_remotely_with_the_configured_slug_verbatim` end to end | Mock responses in both shapes; a real bare-array subprocess |
 | Two real binaries complete the memory flow | `scripts/skew-smoke.sh`, run both ways by `.github/workflows/version-skew.yml` | Real released binaries |
 | `/v1/` matches `docs/openapi.json` | `openapi-snapshot` job in `.github/workflows/ci.yml` | The running binary |
@@ -229,19 +229,19 @@ tests is a mock written to the shape we *believe* that peer has, which means
 almost nothing here can falsify a premise about a real peer. Where a fixture is
 real, that is worth knowing; where it is not, that is worth knowing more.
 
-**Recorded from a running binary** (`crates/spelunk-cli/tests/fixtures/skew/`).
+**Recorded from a running binary** (`crates/inkentry-cli/tests/fixtures/skew/`).
 Released binaries where the version is released, the current build where it is
 not, which is the distinction the last column exists to make:
 
 | File | Source | Released binary |
 |---|---|---|
-| `health-v0.8.0.json` | `GET /v1/health` from the v0.8.0 `spelunk-server` | yes |
-| `health-v0.9.0.json` | `GET /v1/health` from the v0.9.0 `spelunk-server` | yes |
-| `health-v0.9.4-loading.json` | v0.9.4 `spelunk-server`, embedder still loading | yes |
-| `health-v0.9.4-ready.json` | v0.9.4 `spelunk-server`, embedder ready | yes |
+| `health-v0.8.0.json` | `GET /v1/health` from the v0.8.0 `inkentry-server` | yes |
+| `health-v0.9.0.json` | `GET /v1/health` from the v0.9.0 `inkentry-server` | yes |
+| `health-v0.9.4-loading.json` | v0.9.4 `inkentry-server`, embedder still loading | yes |
+| `health-v0.9.4-ready.json` | v0.9.4 `inkentry-server`, embedder ready | yes |
 | `health-v0.9.5-loading.json` | current build, embedder still loading | no |
 | `health-v0.9.5-ready.json` | current build, embedder ready | no |
-| `openapi-v0.9.4.json` | `spelunk-server --print-openapi` from the v0.9.4 binary | yes |
+| `openapi-v0.9.4.json` | `inkentry-server --print-openapi` from the v0.9.4 binary | yes |
 
 The v0.8.0 and v0.9.0 bodies are the interesting ones: they genuinely omit
 `embedder`, `embedding_dim`, and `limits`, so the absent-optional path is
@@ -255,14 +255,14 @@ that binary emits, which is the only property it has.
 
 A recording is evidence only for as long as the live peer still sends the same
 shape, and nothing was watching for that drift. `health-v0.9.5-ready.json` is
-therefore also compared against a live body by a test in `spelunk-server`, so
+therefore also compared against a live body by a test in `inkentry-server`, so
 the current server changing its health keys fails there rather than silently
 turning a fixture into fiction. The v0.8.x and v0.9.0 recordings have no such
 guard and cannot have one: those binaries are frozen, which is exactly why
 their recordings stay useful.
 
 **Hand-written to our belief:** the `health_body()` helper in
-`crates/spelunk-cli/src/capability/probe.rs`, which predates this document, and
+`crates/inkentry-cli/src/capability/probe.rs`, which predates this document, and
 the unknown-field additions grafted onto the recorded v0.9.5 body (no peer
 sends those fields yet, by construction: they stand in for a future one).
 
@@ -314,7 +314,7 @@ above as a coverage claim:
   every request and response fixture passes whether the peer calls it a `uuid`
   or an `int64`. A query parameter a peer accepts and then ignores is the same
   class of thing, and one such case is pinned in
-  `crates/spelunk-core/src/storage/remote/tests.rs` rather than fixed. Where the
+  `crates/inkentry-core/src/storage/remote/tests.rs` rather than fixed. Where the
   two ends disagree without either one erroring, only a test that compares the
   two contracts directly will see it.
 

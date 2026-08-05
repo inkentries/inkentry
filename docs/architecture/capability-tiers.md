@@ -8,7 +8,7 @@
 ## Overview
 
 The spelunk CLI operates in one of two capability tiers determined at runtime
-by whether a `spelunk-server` is reachable. No compile-time feature flags are
+by whether a `inkentry-server` is reachable. No compile-time feature flags are
 used; the binary is the same in both tiers.
 
 | | Tier 0 — Offline | Tier 1 — Server-connected |
@@ -23,7 +23,7 @@ used; the binary is the same in both tiers.
 | **Explore** | Not available | CLI pre-fetches context chunks locally, sends to server LLM loop |
 
 **The CLI never calls embedding or LLM APIs directly, regardless of
-configuration.** All inference routes through `spelunk-server`.
+configuration.** All inference routes through `inkentry-server`.
 
 > **Reserved: Plan.** `/plan` is reserved as a server-owned route per ADR-002,
 > but nothing ships today: there is no `spelunk plan` subcommand and no `/plan`
@@ -88,7 +88,7 @@ fn probe_server(cfg: &Config) -> Tier {
             Tier::Server { capabilities: caps }
         }
         _ => {
-            warn!("spelunk-server at {url} unreachable — running in offline mode");
+            warn!("inkentry-server at {url} unreachable — running in offline mode");
             Tier::Offline
         }
     }
@@ -149,7 +149,7 @@ Key points:
   the server was started by a different user — a security hint on shared
   machines. Implemented in both server and CLI (shipped with PRs #329/#333).
 - **Autostart.** If nothing is reachable, the CLI spawns the bundled
-  `spelunk-server` as a background child owned by the current user, then waits
+  `inkentry-server` as a background child owned by the current user, then waits
   for its health endpoint before proceeding.
 - **`SPELUNK_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
   autostart. The CLI runs in Tier 0 and inference-only commands exit 1 with the
@@ -245,7 +245,7 @@ The `require_tier1` commands (`explore`, `memory push`, `memory pull`, `sync`,
 `memory watch`) point the user at `server_url`:
 
 ```
-Error: 'spelunk explore' requires spelunk-server.
+Error: 'spelunk explore' requires inkentry-server.
 Set server_url in ~/.config/spelunk/config.toml to enable this feature.
        (Tried: https://spelunk.internal.example.com — connection refused)
 ```
@@ -254,7 +254,7 @@ The `(Tried: ...)` line is appended only when a `server_url` is configured but
 unreachable. If `server_url` is not set at all it is omitted:
 
 ```
-Error: 'spelunk explore' requires spelunk-server.
+Error: 'spelunk explore' requires inkentry-server.
 Set server_url in ~/.config/spelunk/config.toml to enable this feature.
 ```
 
@@ -262,7 +262,7 @@ The inference-only commands (`memory search`, `memory harvest`) point the user
 at the local server instead, and also exit 1:
 
 ```
-Error: 'spelunk memory search' requires spelunk-server.
+Error: 'spelunk memory search' requires inkentry-server.
 Run `spelunk server start` to enable this feature.
 ```
 
