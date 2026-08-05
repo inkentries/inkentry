@@ -7,12 +7,14 @@ use std::path::Path;
 mod dedupe;
 mod edges;
 mod entity_id_migration;
+mod note_id;
 mod notes;
 mod search;
 mod sync;
 
 pub use dedupe::DedupeSummary;
-pub use sync::SyncRow;
+pub use note_id::NoteId;
+pub use sync::{SyncEdge, SyncRow};
 
 #[cfg(test)]
 mod tests;
@@ -55,7 +57,7 @@ pub struct MemoryEdge {
 
 #[derive(Debug, Serialize)]
 pub struct Note {
-    pub id: i64,
+    pub id: NoteId,
     pub kind: String,
     pub title: String,
     pub body: String,
@@ -64,7 +66,7 @@ pub struct Note {
     pub created_at: i64,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub superseded_by: Option<i64>,
+    pub superseded_by: Option<NoteId>,
     /// Git commit SHA for harvested entries; NULL for manually created entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,

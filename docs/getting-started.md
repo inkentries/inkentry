@@ -168,15 +168,15 @@ spelunk search "where do we validate auth tokens"
 ```
 
 `init` also writes `.spelunk/.gitignore` so the machine-specific SQLite
-(`index.db*`, `memory.db*`) stays out of version control, and records the
+(`index.db*`, `memory.db*`) and the per-run index lock (`index.lock*`, whose
+`.pid` sidecar holds a local process id) stay out of version control, and records the
 project slug as `project_id` in `.spelunk/config.toml`. The slug defaults to the
 git-derived identity (`host/owner/repo` when an `origin` remote exists, else
 `local/<blake3-hex>` of the path); pass `spelunk init --name <slug>` to set an
-explicit one for a repo without a remote. Both `.spelunk/config.toml` and
-`.spelunk/cloud-project-id.lock` stay tracked, since they are meant to be
-committed and shared, so the whole team resolves to one project identity. An
-existing `project_id` or `.spelunk/.gitignore` is never overwritten, so
-re-running `init` is safe.
+explicit one for a repo without a remote. `.spelunk/config.toml` stays tracked,
+since it is meant to be committed and shared, so the whole team resolves to one
+project identity. An existing `project_id` or `.spelunk/.gitignore` is never
+overwritten, so re-running `init` is safe.
 
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
@@ -305,39 +305,73 @@ configured, LLM inference. The embedding **model and its compute path are
 both fixed** product-wide: `spelunk` always embeds through the bundled native
 embedder, and there is no way to relocate or swap it. LLM inference is
 different: the server has no LLM of its own, so you point it at your own
-OpenAI-compatible chat-completions endpoint. Configure **the server**: this
-is not a CLI `config.toml` key. `spelunk-server` reads these environment
-variables (each has an equivalent flag):
+OpenAI-compatible chat-completions endpoint (LM Studio, Ollama, vLLM, a
+self-hosted gateway).
 
-| Variable | Flag | Purpose |
-|---|---|---|
-| `SPELUNK_LLM_URL` | `--llm-url` | Base URL of an OpenAI-compatible chat-completions endpoint for LLM features (`explore`, summaries, `memory harvest`). |
-| `SPELUNK_LLM_MODEL` | `--llm-model` | Chat model id to send to that endpoint. |
+Set it once in your **personal** config, and every daemon the CLI starts is
+configured with it:
 
-`explore` and `memory harvest` pick up an LLM-configured local daemon
-automatically. Index-time chunk summaries are the exception: they additionally
-need an *explicit* `server_url` in `.spelunk/config.toml` (even a loopback one),
-not just a reachable server: see
-[Third-party models](third-party-models.md#what-this-unlocks) for the full
-absence-behavior and the team-server equivalent.
+```toml
+# ~/.config/spelunk/config.toml
+llm_url = "http://127.0.0.1:1234"
+llm_model = "your-chat-model-id"
+```
 
-For the auto-started local daemon, export the variables and then restart the
-server so it picks them up. The daemon inherits your shell environment, but a
-daemon that is already running keeps its old configuration until restarted:
+If the endpoint needs a credential, store it once:
 
 ```bash
-export SPELUNK_LLM_URL="http://127.0.0.1:1234"
-export SPELUNK_LLM_MODEL="your-chat-model-id"
+spelunk auth set-key --llm
+```
 
+It is read from stdin or a prompt and kept in your OS secret store, never in a
+config file and never in a command-line argument. The CLI resolves it when it
+starts the daemon and hands it over in the child's environment; the daemon
+never reads your keychain itself, because a detached background process cannot
+answer the authorization prompt that would raise.
+
+Then restart the daemon, because one that is already running keeps the
+configuration it started with:
+
+```bash
 spelunk server stop     # if one is already running
 spelunk server start    # starts with the endpoint configured above
 ```
+
+`SPELUNK_LLM_URL`, `SPELUNK_LLM_MODEL`, and `SPELUNK_LLM_KEY` override the
+config file and the stored credential, and `spelunk server start --llm-url` /
+`--llm-model` override those in turn for a single daemon.
 
 Or, if you run `spelunk-server` yourself, pass the flags directly:
 
 ```bash
 spelunk-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
+
+Add `--llm-key-file /path/to/key` (or set `SPELUNK_LLM_KEY`) if the endpoint is
+keyed. With a credential configured, a plaintext `http://` endpoint on anything
+but loopback is refused at startup rather than sending the credential in the
+clear: use `https://` for a remote endpoint. A keyless endpoint is unaffected,
+so an existing LM Studio or Ollama box on your LAN keeps working.
+
+`explore`, `memory harvest` and index-time chunk summaries all pick up an
+LLM-configured local daemon automatically, and fall back to a `server_url` that
+provides an LLM when your local one does not.
+
+Two things are worth knowing before you hit them:
+
+- **A daemon that was already running does not have your new `llm_url`.** In
+  that case spelunk stops and asks you to restart it rather than falling back to
+  a remote LLM, so under the default `local_first` mode a configured local
+  endpoint means your code is not sent elsewhere. That guarantee does not hold
+  under `mode = "cloud_first"`, where `server_url` is the inference target
+  already.
+- **`spelunk index` never fails over a missing LLM.** It prints why summaries
+  were skipped and exits 0. Pass `--no-summaries` to skip the step silently.
+  `explore` and `memory harvest` do fail, since neither can run without an LLM.
+
+See [Third-party models](third-party-models.md#how-spelunk-finds-an-llm) for the
+routing rule, the exact messages, the full precedence and security details, and
+the team-server equivalent.
 
 This is an advanced override; most users never set it: `explore`, summaries,
 and `memory harvest` are simply unavailable without an LLM configured, and
@@ -473,10 +507,10 @@ back to an owner-only `~/.config/spelunk/secrets.toml`. For the full
 credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
 [Commands reference](commands.md#spelunk-auth).
 
-`project_id` stays a human-readable slug. If the server routes projects by an
-internal UUID (as a team/cloud memory server does), the CLI resolves the slug
-for you on first use and caches the result locally, so no manual UUID lookup is
-needed. See [Server setup](server-setup.md#client-configuration) for details.
+`project_id` stays a human-readable slug, and it is sent to the server exactly
+as configured. Both a self-hosted spelunk-server and the hosted cloud API accept
+either a slug or a UUID as the project key, so nothing is looked up and nothing
+is cached. See [Server setup](server-setup.md#client-configuration) for details.
 
 After setup, all `spelunk memory` commands transparently use the server. Seed it
 with your existing local memory, then keep recording decisions as usual:

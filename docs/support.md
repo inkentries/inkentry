@@ -46,3 +46,7 @@ Compatibility between the CLI and a team `spelunk-server` of a different
 version: within the v1 line the server API under `/v1/` evolves additively.
 Run matching versions where you can; adjacent versions are expected to
 interoperate for the memory workflows.
+
+[Version skew](version-skew.md) states the supported window per peer, what
+happens outside it, and how to tell a capability the peer did not advertise
+from one the CLI could not read.

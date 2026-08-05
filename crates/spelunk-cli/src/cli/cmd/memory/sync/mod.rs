@@ -51,7 +51,9 @@ mod test_support;
 
 pub(super) use pull::parse_iso_to_secs;
 use pull::pull_and_apply;
-pub(super) use push::push_local_oneway;
+pub(super) use push::{
+    LocalEmbedPolicy, local_embed_summary, push_local_oneway, unembedded_warning,
+};
 use round::{SyncRoundOutcome, sync_round};
 
 /// Resolve the project slug to sync into, or halt with actionable guidance.
@@ -150,13 +152,25 @@ pub async fn memory_sync(
     // pre-round cursor. See `sync_round` for why a plain push-then-pull (or
     // even pull-then-push) reorder is not sufficient. ───────────────────────
     let accepts_pushed_vectors = tier.caps().is_some_and(|c| c.accepts_pushed_vectors);
+    let local_embed = LocalEmbedPolicy::for_push(cfg, src_path);
     let SyncRoundOutcome { pushed, pulled } = sync_round(
         &local,
         &client,
         args.include_archived,
         accepts_pushed_vectors,
+        &local_embed,
     )
     .await?;
+    if pushed.without_local_vector > 0 {
+        eprintln!("{}", unembedded_warning(pushed.without_local_vector));
+    }
+    // Appended to the success summaries so relates_to propagation is visible
+    // without cluttering the (unchanged) failure/interrupted framing.
+    let edges_note = if pushed.edges_pushed > 0 {
+        format!(" Linked {} relationship edge(s).", pushed.edges_pushed)
+    } else {
+        String::new()
+    };
 
     if pushed.attempted == 0 {
         println!(
@@ -193,13 +207,24 @@ pub async fn memory_sync(
         );
     } else if pushed.failed > 0 {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.",
-            pushed.attempted, pushed.created, pushed.skipped, pushed.failed, pulled
+            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.{}{}",
+            pushed.attempted,
+            pushed.created,
+            pushed.skipped,
+            pushed.failed,
+            pulled,
+            local_embed_summary(&pushed),
+            edges_note
         );
     } else {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.",
-            pushed.attempted, pushed.created, pushed.skipped, pulled
+            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.{}{}",
+            pushed.attempted,
+            pushed.created,
+            pushed.skipped,
+            pulled,
+            local_embed_summary(&pushed),
+            edges_note
         );
     }
     Ok(())

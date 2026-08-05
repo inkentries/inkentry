@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use crate::storage::{CloudSyncClient, MemoryStore};
 
 use super::pull::pull_and_apply_since;
-use super::push::{PushSummary, push_local};
+use super::push::{LocalEmbedPolicy, PushSummary, push_local};
 
 /// Outcome of one [`sync_round`]: the push summary plus the total newly
 /// applied entries across both pull passes.
@@ -58,16 +58,31 @@ pub(super) async fn sync_round(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<SyncRoundOutcome> {
     let pre_round_cursor = local.max_remote_id()?;
 
     if pre_round_cursor.is_none() {
-        return sync_round_first(local, client, include_archived, accepts_pushed_vectors).await;
+        return sync_round_first(
+            local,
+            client,
+            include_archived,
+            accepts_pushed_vectors,
+            local_embed,
+        )
+        .await;
     }
 
     let pulled_first = pull_and_apply_since(local, client, pre_round_cursor.as_deref()).await?;
 
-    let pushed = push_local(local, client, include_archived, accepts_pushed_vectors).await?;
+    let pushed = push_local(
+        local,
+        client,
+        include_archived,
+        accepts_pushed_vectors,
+        local_embed,
+    )
+    .await?;
 
     // If this second pull errors (network blip, transient 5xx), the error
     // propagates out of `sync_round` rather than being swallowed: `?`
@@ -115,8 +130,16 @@ async fn sync_round_first(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<SyncRoundOutcome> {
-    let pushed = push_local(local, client, include_archived, accepts_pushed_vectors).await?;
+    let pushed = push_local(
+        local,
+        client,
+        include_archived,
+        accepts_pushed_vectors,
+        local_embed,
+    )
+    .await?;
 
     // Mirrors the established-client confirmation pull's error handling: a
     // pull failure here must not read as "nothing happened" when the push
@@ -150,14 +173,14 @@ mod tests {
     // differently-configured in-process probes in one test binary would see
     // stale tiers from whichever test's probe ran first.
 
-    /// The primary repro, fixed: a client with local-only, never-pushed
-    /// content, running the actual `sync_round` sequence against a project
-    /// that already has a teammate's prior entry (pushed strictly before
-    /// this round begins),
-    /// ends the round with that teammate entry applied - not 0. This is
-    /// exactly the case the existing `two_established_clients_...` test
-    /// deliberately routes around (see its own comment) because, before this
-    /// fix, `memory_sync`'s push-then-pull order shadowed it permanently.
+    // The primary repro, fixed: a client with local-only, never-pushed
+    // content, running the actual `sync_round` sequence against a project
+    // that already has a teammate's prior entry (pushed strictly before
+    // this round begins),
+    // ends the round with that teammate entry applied - not 0. This is
+    // exactly the case the existing `two_established_clients_...` test
+    // deliberately routes around (see its own comment) because, before this
+    // fix, `memory_sync`'s push-then-pull order shadowed it permanently.
     #[tokio::test]
     async fn sync_round_pulls_teammates_prior_entry_on_a_first_round_with_local_content() {
         let addr = spawn_spelunk_server().await;
@@ -179,7 +202,7 @@ mod tests {
             .unwrap();
         let client_a = CloudSyncClient::new(&base_url, "proj-primary", None, None).unwrap();
         assert_eq!(
-            push_local(&store_a, &client_a, false, false)
+            push_local(&store_a, &client_a, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -201,7 +224,9 @@ mod tests {
             .unwrap();
         let client_c = CloudSyncClient::new(&base_url, "proj-primary", None, None).unwrap();
 
-        let outcome = sync_round(&store_c, &client_c, false, false).await.unwrap();
+        let outcome = sync_round(&store_c, &client_c, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(outcome.pushed.created, 1, "C's own entry must land");
         assert_eq!(
             outcome.pulled, 1,
@@ -216,10 +241,10 @@ mod tests {
         assert!(titles.contains(&"A1".to_string()) && titles.contains(&"C1".to_string()));
     }
 
-    /// Idempotence + no double-counting: running `sync_round` twice back to
-    /// back with nothing new to push or pull is a no-op both times, and the
-    /// round's own just-pushed row (harmlessly re-fetched by the second,
-    /// pre-round-cursor pull) is never counted twice or duplicated locally.
+    // Idempotence + no double-counting: running `sync_round` twice back to
+    // back with nothing new to push or pull is a no-op both times, and the
+    // round's own just-pushed row (harmlessly re-fetched by the second,
+    // pre-round-cursor pull) is never counted twice or duplicated locally.
     #[tokio::test]
     async fn sync_round_twice_with_nothing_new_is_idempotent_and_never_double_counts() {
         let addr = spawn_spelunk_server().await;
@@ -231,7 +256,9 @@ mod tests {
             .unwrap();
         let client = CloudSyncClient::new(&base_url, "proj-idem", None, None).unwrap();
 
-        let r1 = sync_round(&store, &client, false, false).await.unwrap();
+        let r1 = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(r1.pushed.created, 1);
         assert_eq!(
             r1.pulled, 0,
@@ -240,7 +267,9 @@ mod tests {
         );
         assert_eq!(store.count().unwrap(), 1, "no duplicate local row");
 
-        let r2 = sync_round(&store, &client, false, false).await.unwrap();
+        let r2 = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(
             (r2.pushed.attempted, r2.pushed.already_synced, r2.pulled),
             (0, 1, 0),
@@ -249,18 +278,18 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
     }
 
-    /// The race window a plain reorder cannot close: a teammate's push
-    /// that lands on the server strictly between this round's own first pull
-    /// and its own push must still be picked up within this same round (via
-    /// the second pull, reusing the pre-round cursor) rather than being
-    /// permanently shadowed by the round's own push becoming the new
-    /// `MAX(remote_id)`.
-    ///
-    /// Real network concurrency can't be forced deterministically in a unit
-    /// test, so this composes `sync_round`'s exact same three calls
-    /// (`pull_and_apply_since` / `push_local` / `pull_and_apply_since`,
-    /// reusing one `pre_round_cursor`) with the teammate's push manually
-    /// interleaved at the precise point the race window occupies.
+    // The race window a plain reorder cannot close: a teammate's push
+    // that lands on the server strictly between this round's own first pull
+    // and its own push must still be picked up within this same round (via
+    // the second pull, reusing the pre-round cursor) rather than being
+    // permanently shadowed by the round's own push becoming the new
+    // `MAX(remote_id)`.
+    //
+    // Real network concurrency can't be forced deterministically in a unit
+    // test, so this composes `sync_round`'s exact same three calls
+    // (`pull_and_apply_since` / `push_local` / `pull_and_apply_since`,
+    // reusing one `pre_round_cursor`) with the teammate's push manually
+    // interleaved at the precise point the race window occupies.
     #[tokio::test]
     async fn sync_round_catches_a_teammate_push_landing_between_its_own_pull_and_push() {
         let addr = spawn_spelunk_server().await;
@@ -296,7 +325,7 @@ mod tests {
             .unwrap();
         let client_b = CloudSyncClient::new(&base_url, "proj-race", None, None).unwrap();
         assert_eq!(
-            push_local(&store_b, &client_b, false, false)
+            push_local(&store_b, &client_b, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -304,7 +333,9 @@ mod tests {
         );
 
         // Step 2 of sync_round: this round's own push.
-        let pushed = push_local(&store, &client, false, false).await.unwrap();
+        let pushed = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
         assert_eq!(pushed.created, 1);
 
         // Step 3 of sync_round: the second pull, reusing pre_round_cursor
@@ -328,10 +359,10 @@ mod tests {
         assert!(titles.contains(&"B1".to_string()));
     }
 
-    /// `memory pull` (one-way, no push) is unaffected by the `sync_round`
-    /// two-phase reconciliation added for `sync`. It keeps
-    /// deriving a single cursor from the store itself via `pull_and_apply`,
-    /// unmodified.
+    // `memory pull` (one-way, no push) is unaffected by the `sync_round`
+    // two-phase reconciliation added for `sync`. It keeps
+    // deriving a single cursor from the store itself via `pull_and_apply`,
+    // unmodified.
     #[tokio::test]
     async fn pull_and_apply_one_way_pull_still_derives_its_own_single_cursor() {
         let addr = spawn_spelunk_server().await;
@@ -343,7 +374,7 @@ mod tests {
             .unwrap();
         let client_a = CloudSyncClient::new(&base_url, "proj-pull", None, None).unwrap();
         assert_eq!(
-            push_local(&store_a, &client_a, false, false)
+            push_local(&store_a, &client_a, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -353,7 +384,7 @@ mod tests {
             .add_note("decision", "A2", "second", &[], &[], None, None)
             .unwrap();
         assert_eq!(
-            push_local(&store_a, &client_a, false, false)
+            push_local(&store_a, &client_a, false, false, &LocalEmbedPolicy::Skip)
                 .await
                 .unwrap()
                 .created,
@@ -381,11 +412,11 @@ mod tests {
     // provisions it, so the pre-push pull on a first sync has nothing valid
     // to query yet.
 
-    /// Mock `/memory/since` responder that fails like the real bug (400)
-    /// until this project has been provisioned by a push, then succeeds:
-    /// models "the project does not exist yet" without depending on the real
-    /// cloud-api's own id-resolution details, which are out of scope for
-    /// this client-side fix.
+    // Mock `/memory/since` responder that fails like the real bug (400)
+    // until this project has been provisioned by a push, then succeeds:
+    // models "the project does not exist yet" without depending on the real
+    // cloud-api's own id-resolution details, which are out of scope for
+    // this client-side fix.
     struct SinceUntilProvisioned {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
@@ -402,9 +433,9 @@ mod tests {
         }
     }
 
-    /// Mock `/memory/batch` responder that marks the project provisioned as
-    /// it lands the push, so a subsequent `/memory/since` call (via
-    /// [`SinceUntilProvisioned`]) succeeds.
+    // Mock `/memory/batch` responder that marks the project provisioned as
+    // it lands the push, so a subsequent `/memory/since` call (via
+    // `SinceUntilProvisioned`) succeeds.
     struct BatchProvisions {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
         external_id: String,
@@ -466,7 +497,7 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let outcome = sync_round(&store, &client, false, false)
+        let outcome = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
             .await
             .expect("a first sync must not surface the pre-push pull's 400 to the user");
 
@@ -541,7 +572,9 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        sync_round(&store, &client, false, false).await.unwrap();
+        sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap();
 
         let reqs = server.received_requests().await.unwrap();
         let methods: Vec<&str> = reqs.iter().map(|r| r.method.as_str()).collect();
@@ -615,7 +648,7 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let outcome = sync_round(&store, &client, false, false)
+        let outcome = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
             .await
             .expect("a skipped-not-created push must not be treated as a failure");
 
@@ -676,9 +709,11 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let err = sync_round(&store, &client, false, false).await.expect_err(
-            "a pull failure after a totally failed push must still surface as an error",
-        );
+        let err = sync_round(&store, &client, false, false, &LocalEmbedPolicy::Skip)
+            .await
+            .expect_err(
+                "a pull failure after a totally failed push must still surface as an error",
+            );
 
         assert!(
             format!("{err:#}").contains("post-push pull failed"),
@@ -694,10 +729,10 @@ mod tests {
     // provision the same project must not trip the pre-push-pull bug for
     // either of them ─────────────────────────────────────────────────────
 
-    /// Mock `/memory/batch` responder that provisions the project and echoes
-    /// back a generated cloud id per pushed `external_id`, so two different
-    /// clients pushing two different entries concurrently each get a
-    /// coherent per-item result rather than a hardcoded single id.
+    // Mock `/memory/batch` responder that provisions the project and echoes
+    // back a generated cloud id per pushed `external_id`, so two different
+    // clients pushing two different entries concurrently each get a
+    // coherent per-item result rather than a hardcoded single id.
     struct BatchProvisionsEcho {
         provisioned: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
@@ -781,8 +816,8 @@ mod tests {
         let client_y = CloudSyncClient::new(&server.uri(), "proj-race-first", None, None).unwrap();
 
         let (outcome_x, outcome_y) = tokio::join!(
-            sync_round(&store_x, &client_x, false, false),
-            sync_round(&store_y, &client_y, false, false),
+            sync_round(&store_x, &client_x, false, false, &LocalEmbedPolicy::Skip),
+            sync_round(&store_y, &client_y, false, false, &LocalEmbedPolicy::Skip),
         );
 
         assert_eq!(

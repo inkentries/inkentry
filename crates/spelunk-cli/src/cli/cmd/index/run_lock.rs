@@ -13,6 +13,7 @@
 use anyhow::Result;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 const LOCK_FILE_NAME: &str = "index.lock";
 /// Holder pid, written and read separately from `LOCK_FILE_NAME` itself:
@@ -77,6 +78,40 @@ pub fn try_acquire(spelunk_dir: &Path) -> Result<LockOutcome> {
     }
 }
 
+/// Best-effort read of the pid last written to the lock file, regardless of
+/// whether the lock is currently held: `try_acquire` (re)writes this on
+/// every successful acquire, so it reflects the most recent holder even
+/// after that holder has since released.
+fn read_recorded_pid(spelunk_dir: &Path) -> Option<u32> {
+    std::fs::read_to_string(spelunk_dir.join(LOCK_PID_FILE_NAME))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// Poll for `expected_pid` to appear as the lock file's recorded holder,
+/// giving up after `timeout`. A caller that just dropped its own hold and
+/// spawned a continuation process uses this to confirm that process -
+/// specifically - became the new holder, rather than an unrelated third
+/// process that raced into the gap between the drop and the continuation's
+/// own acquire attempt, before reporting the handoff as a success.
+pub fn wait_for_holder_pid(
+    spelunk_dir: &Path,
+    expected_pid: u32,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if read_recorded_pid(spelunk_dir) == Some(expected_pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +160,68 @@ mod tests {
         assert!(
             matches!(second, LockOutcome::Acquired(_)),
             "once the first guard drops, a fresh acquire must succeed"
+        );
+    }
+
+    // ── wait_for_holder_pid: handoff-confirmation polling ────────────────────
+
+    #[test]
+    fn wait_for_holder_pid_returns_true_once_content_already_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = try_acquire(dir.path()).expect("acquire");
+        assert!(wait_for_holder_pid(
+            dir.path(),
+            std::process::id(),
+            Duration::from_millis(200),
+            Duration::from_millis(5),
+        ));
+    }
+
+    #[test]
+    fn wait_for_holder_pid_times_out_when_the_recorded_pid_never_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        // Records our own pid - stands in for the "some other process holds
+        // it" case: the pid polled for below is never the one recorded.
+        let _held = try_acquire(dir.path()).expect("acquire");
+
+        let started = Instant::now();
+        let confirmed = wait_for_holder_pid(
+            dir.path(),
+            std::process::id().wrapping_add(1),
+            Duration::from_millis(150),
+            Duration::from_millis(10),
+        );
+        assert!(
+            !confirmed,
+            "must not confirm a pid that was never the recorded holder"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "must wait out the full timeout rather than returning early"
+        );
+    }
+
+    #[test]
+    fn wait_for_holder_pid_detects_a_holder_that_appears_after_a_delay() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let pid = std::process::id();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            let held = try_acquire(&dir_path).expect("delayed acquire");
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+
+        assert!(
+            wait_for_holder_pid(
+                dir.path(),
+                pid,
+                Duration::from_millis(500),
+                Duration::from_millis(10),
+            ),
+            "must detect a holder that appears mid-poll, not just one already present at the \
+             first check"
         );
     }
 }

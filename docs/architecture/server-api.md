@@ -128,6 +128,20 @@ pre-computed vector.
 { "query": "how does authentication work", "limit": 20 }
 ```
 
+**Response `200`:** an object envelope, never a bare array. `entries` carries
+the matching notes (nearest-neighbour ordered); `total` is their count in this
+response (already `limit`-capped, not a project-wide total).
+
+```json
+{ "entries": [ { "id": 42, "kind": "decision", "title": "…" } ], "total": 1 }
+```
+
+`GET /v1/projects/{project_id}/memory` (list) uses the same `{entries, total}`
+envelope, and `GET …/memory/harvested-shas` returns `{ "shas": [...] }`. A JSON
+response root is always an object here, never a bare array (ADR-076: the memory
+wire contract). Older CLIs predate this and read a bare array; see
+[version skew](../version-skew.md#the-memory-read-endpoint-envelope).
+
 If the server has no embedder configured, it returns `400`:
 
 ```json

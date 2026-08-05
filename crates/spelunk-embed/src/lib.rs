@@ -16,10 +16,12 @@
 //!
 //! The result is a [`NativeEmbedder`], which implements the crate's own
 //! [`EmbeddingBackend`] trait (re-exported by spelunk-core at
-//! `spelunk_core::embeddings::EmbeddingBackend`). candle is an unconditional
-//! dependency: depending on this crate means you want its native embedder, so
-//! there is no feature gate to opt out of candle. Add the `metal` feature for
-//! Metal GPU acceleration on macOS.
+//! `spelunk_core::embeddings::EmbeddingBackend`). `NativeEmbedder` itself, and
+//! candle/tokenizers with it, live behind the default-on `native` feature: a
+//! consumer that only needs the trait + [`MODEL_ID`] (spelunk-core, so
+//! spelunk-cli doesn't statically link an embedder it only ever calls over
+//! HTTP) depends on this crate with `default-features = false`. Add the
+//! `metal` feature for Metal GPU acceleration on macOS.
 
 mod backend;
 pub use backend::EmbeddingBackend;
@@ -37,8 +39,12 @@ pub use backend::EmbeddingBackend;
 /// acceptance criteria that work must meet.
 pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
 
+#[cfg(feature = "native")]
 mod embedder_native;
+#[cfg(feature = "native")]
 pub use embedder_native::{DIM, NativeEmbedder};
 
+#[cfg(feature = "native")]
 mod error;
+#[cfg(feature = "native")]
 pub use error::EmbedError;
