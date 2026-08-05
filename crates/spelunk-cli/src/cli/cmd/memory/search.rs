@@ -18,6 +18,11 @@ pub(super) async fn memory_search(
     let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
     crate::storage::record_usage_at(&index_db_path, "memory search");
 
+    // Fold in any fetched teammate notes before searching, so a teammate's
+    // newly-published entry is searchable on the default path without a re-init
+    // (ADR-077 D1).
+    super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, backend_override).await;
+
     // Discovery nudge: warn once when unimported server.db notes exist.
     super::reconcile::maybe_emit_nudge(mem_path, cfg);
     super::outbox::poll_and_apply(cfg, mem_path).await;

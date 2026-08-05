@@ -24,11 +24,13 @@ pub use entity_id::{entity_id, note_entity_id};
 pub use files::FileRecord;
 pub use git_notes::{
     AppendOutcome, GitNotesBackend, LOCK_WAIT_BUDGET, LockAttempt, NotesLock, NotesMergeOutcome,
-    PublishOutcome, RewriteRefStatus, SkipReason, append_state_update, append_to_git_notes,
-    ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes, publish_notes,
+    NotesRefs, PublishOutcome, RewriteRefStatus, SkipReason, append_state_update,
+    append_to_git_notes, ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes, publish_notes,
 };
 pub use graph::GraphEdge;
-pub use memory::{DedupeSummary, MemoryEdge, MemoryStore, NoteId, SyncEdge, SyncRow};
+pub use memory::{
+    DedupeSummary, MemoryEdge, MemoryStore, NoteId, NotesImportMarker, SyncEdge, SyncRow,
+};
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{NoteRecord, now_millis, now_secs};
 pub use remote::{
