@@ -110,7 +110,7 @@ the floor, not the target.
 
 Every `mod.rs` and `lib.rs` should open with a `//!` explaining what the module
 is for and how its pieces relate. This is the single highest-value doc-comment
-in the tree and the one most often missing.
+in the tree and the one most often missing. The exception is test modules.
 
 **Changing.** `spelunk-core/src/lib.rs` and `spelunk-server/src/lib.rs`, the two
 crate roots, currently have none. Adding module docs to a file you are already
