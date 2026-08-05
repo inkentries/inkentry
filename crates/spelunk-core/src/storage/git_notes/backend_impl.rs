@@ -60,14 +60,23 @@ impl MemoryBackend for GitNotesBackend {
             .await
     }
 
+    /// Filters by the git-notes **anchor** (the commit each entry's note is
+    /// attached to), not a stored `source_ref` field — the notes carrier never
+    /// records the anchor commit inside the record, only as the attachment. This
+    /// is what makes a note-anchored `memory add` entry findable by its commit
+    /// on the git-notes-primary path; the SQLite-primary path resolves the same
+    /// anchors via [`GitNotesBackend::entity_ids_anchored_to`] and reads the
+    /// authoritative local rows back.
     async fn list_by_source_ref(
         &self,
-        _source_ref_prefix: &str,
-        _limit: usize,
-        _include_archived: bool,
-        _as_of: Option<i64>,
+        source_ref_prefix: &str,
+        limit: usize,
+        include_archived: bool,
+        as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
-        Err(crate::error::SpelunkError::BackendUnsupported("list_by_source_ref".into()).into())
+        let effective_limit = limit.min(super::GIT_NOTES_MAX_LIST);
+        self.list_anchored_to(source_ref_prefix, include_archived, as_of, effective_limit)
+            .await
     }
 
     /// Folds every commit's records first (`folded_records`), then looks up

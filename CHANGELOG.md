@@ -48,6 +48,41 @@ spelunk uses [Semantic Versioning](https://semver.org/).
   commit the file yourself so the slug travels with the repo. The docs describe
   committing it as an explicit user step (ADR-077 D5).
 
+- **`spelunk memory list --source-ref <sha>` now finds entries anchored to a
+  commit by git notes, not just harvested entries.** Every entry written by
+  `spelunk memory add` (with the default git-notes write-through) is anchored to
+  a commit — its memory note is attached to that commit in `refs/notes/spelunk`
+  — but that anchor was recorded only as the git-notes attachment, never in the
+  SQLite `source_ref` column (which carries a commit SHA only for *harvested*
+  entries). `--source-ref` filtered on that column alone, so it returned zero
+  results for every commit whose entries came from `memory add`, even with the
+  notes plainly present under `git notes --ref=spelunk show <sha>`. The filter
+  now also resolves, from the notes ref, which entries are anchored to the
+  requested commit (exact SHA or prefix) and reads the authoritative local rows
+  back, so those entries are found while their ids and status stay consistent
+  with a plain `memory list`. Harvested `source_ref`-column matches are
+  unchanged. On the `--backend git-notes` (and pre-init) path the git-notes
+  backend now serves `--source-ref` directly by the same commit anchor instead
+  of returning an unsupported-operation error.
+
+- **`spelunk check --format porcelain` now emits only the stable `key=value`
+  summary on stdout.** It previously also wrote the human diagnostics — the
+  `Server: … ✓` reachability line, the "Active agent sessions" list, and the
+  `⚠ Overlap:` warning (with their Unicode glyphs) — to the same stdout stream,
+  so a script doing `spelunk check --format porcelain | while read -r line`
+  had to filter out prose. Those diagnostics now go to **stderr** in porcelain
+  mode, keeping the signal for a human watching the terminal while leaving
+  stdout machine-parseable. Text (human) mode is unchanged: the diagnostics
+  still print to stdout. Exit codes are unchanged in both modes (0 fresh,
+  1 stale).
+- **`spelunk explore` is now listed in the top-level `spelunk --help` command
+  list.** The agentic-search command was hidden from `--help` whenever no chat
+  model was configured, so a user or agent enumerating capabilities from
+  `--help` never discovered it — even though `spelunk explore --help` and the
+  command itself always worked. It now always lists, like the other commands
+  that need infrastructure the user may not have (`sync`, `login`, `org`).
+  Running `spelunk explore` without an LLM still fails with the same
+  locked-feature message as before; only its visibility in `--help` changed.
 - **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
   pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
   the SQLite files and logs but not the lock, so a `git add -A` staged and

@@ -138,6 +138,84 @@ async fn git_notes_list_without_kind_returns_all() {
     assert_eq!(all.len(), 2, "expected two notes across two commits");
 }
 
+// ── list_by_source_ref: anchor-commit filtering ──────────────────────────────
+
+// The HEAD sha of the repo at `root`, isolated from the developer's git config.
+fn head_sha(root: &std::path::Path) -> String {
+    let out = common::git_command(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git rev-parse HEAD");
+    assert!(out.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+// On the git-notes-primary path, `list_by_source_ref` filters by the commit
+// each entry's note is ANCHORED to (the attachment target), not by a stored
+// field — the carrier never records the anchor commit inside the record. An
+// entry added while HEAD was commit A must be returned for A and only A.
+#[tokio::test]
+#[serial]
+async fn git_notes_list_by_source_ref_filters_by_anchor_commit() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    // Entry one anchors to commit A (the initial commit / current HEAD).
+    backend
+        .add(note_input("decision", "on-A"))
+        .await
+        .expect("add A");
+    let sha_a = head_sha(root);
+
+    // Move HEAD to commit B, then entry two anchors to B.
+    common::git_command(root)
+        .args(["commit", "--no-gpg-sign", "--allow-empty", "-m", "second"])
+        .output()
+        .expect("second commit");
+    let sha_b = head_sha(root);
+    assert_ne!(
+        sha_a, sha_b,
+        "the two entries must anchor to distinct commits"
+    );
+    backend
+        .add(note_input("note", "on-B"))
+        .await
+        .expect("add B");
+
+    let on_a = backend
+        .list_by_source_ref(&sha_a, 50, false, None)
+        .await
+        .expect("list A");
+    let titles_a: Vec<&str> = on_a.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles_a, vec!["on-A"], "A must return only A's entry");
+
+    let on_b = backend
+        .list_by_source_ref(&sha_b, 50, false, None)
+        .await
+        .expect("list B");
+    let titles_b: Vec<&str> = on_b.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles_b, vec!["on-B"], "B must return only B's entry");
+
+    // A short prefix of A's sha matches too.
+    let on_a_prefix = backend
+        .list_by_source_ref(&sha_a[..8], 50, false, None)
+        .await
+        .expect("list A prefix");
+    assert_eq!(
+        on_a_prefix.len(),
+        1,
+        "the 8-char prefix must match A's entry"
+    );
+
+    // A commit that carries no note returns nothing (no false positives).
+    let none = backend
+        .list_by_source_ref("0000000000000000000000000000000000000000", 50, false, None)
+        .await
+        .expect("list unrelated");
+    assert!(none.is_empty(), "a commit with no note must return nothing");
+}
+
 // ── concurrent write safety (#185) ───────────────────────────────────────────
 
 /// Two tasks writing a note to the same HEAD concurrently must both survive, as
