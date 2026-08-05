@@ -9,6 +9,19 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.7] — 2026-08-05
+
+### Added
+
+- **`spelunk sync` now propagates `relates_to` links to a hosted project.**
+  `memory add --relates-to` records the link locally, but sync never sent it
+  upstream, so a shared knowledge graph showed related entries as unconnected
+  nodes. Sync now pushes those links as part of the normal push, once both ends
+  of a link have themselves synced, and posts nothing when there is nothing new.
+  Link push is best-effort: a failure warns and is retried on a later sync
+  rather than failing the entry push. `supersedes` links continue to travel with
+  their entry, and `contradicts` links are still generated server-side.
+
 ### Changed
 
 - **The team `spelunk-server`'s memory read endpoints now return an object
@@ -25,6 +38,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Symbols with non-ASCII characters are now reachable from `spelunk graph`.**
+  A reference to a symbol such as `café` was split at the first non-ASCII
+  character into a fragment that matched nothing, so non-ASCII identifiers
+  produced no graph edges and were invisible to reverse lookups, even though
+  their definitions were indexed correctly. Identifiers now accept Unicode
+  alphanumerics, and the length bound counts characters rather than bytes so
+  multibyte names are bounded the same way as ASCII ones. Re-index to pick up
+  edges for existing code.
 - **`spelunk links check` / `spelunk links list` no longer report a freshly
   indexed linked project as stale.** The cross-project freshness probe resolved
   each linked index's stored (root-relative) file paths against the *linking*
