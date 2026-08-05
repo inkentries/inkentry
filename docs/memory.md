@@ -561,6 +561,13 @@ spelunk memory list --as-of 2026-01-01
 spelunk memory list --source-ref abc1234
 ```
 
+`--source-ref <sha>` returns every entry associated with that commit, matched
+two ways: harvested entries carry the commit SHA they were harvested from in
+their `source_ref` provenance field, and entries added with `spelunk memory add`
+are anchored to a commit by the git note that carries them (the same note you
+see under `git notes --ref=spelunk show <sha>`). Both are found; the SHA may be
+given in full or as a prefix.
+
 `question` and `answer` entries show titles only in list view to avoid context saturation. Use `spelunk memory show <id>` to read the full body.
 
 ## Cross-project visibility

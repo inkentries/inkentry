@@ -25,6 +25,23 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk memory list --source-ref <sha>` now finds entries anchored to a
+  commit by git notes, not just harvested entries.** Every entry written by
+  `spelunk memory add` (with the default git-notes write-through) is anchored to
+  a commit — its memory note is attached to that commit in `refs/notes/spelunk`
+  — but that anchor was recorded only as the git-notes attachment, never in the
+  SQLite `source_ref` column (which carries a commit SHA only for *harvested*
+  entries). `--source-ref` filtered on that column alone, so it returned zero
+  results for every commit whose entries came from `memory add`, even with the
+  notes plainly present under `git notes --ref=spelunk show <sha>`. The filter
+  now also resolves, from the notes ref, which entries are anchored to the
+  requested commit (exact SHA or prefix) and reads the authoritative local rows
+  back, so those entries are found while their ids and status stay consistent
+  with a plain `memory list`. Harvested `source_ref`-column matches are
+  unchanged. On the `--backend git-notes` (and pre-init) path the git-notes
+  backend now serves `--source-ref` directly by the same commit anchor instead
+  of returning an unsupported-operation error.
+
 - **`spelunk check --format porcelain` now emits only the stable `key=value`
   summary on stdout.** It previously also wrote the human diagnostics — the
   `Server: … ✓` reachability line, the "Active agent sessions" list, and the
