@@ -27,7 +27,7 @@ use inkentry_core::config::{AuthTokens, Config};
 /// Default cloud API base URL (used for `GET /v1/me`, and as the cloud-vs-
 /// self-hosted origin boundary for bearer resolution, ADR-071 D2). Single
 /// source of truth lives in `inkentry_core::config::server_keys`, which also
-/// reads it (and its `SPELUNK_CLOUD_URL` override) when deciding credential
+/// reads it (and its `INKENTRY_CLOUD_URL` override) when deciding credential
 /// kind; re-exported here so every existing `auth_api::DEFAULT_CLOUD_URL`
 /// call site keeps working unchanged.
 pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
@@ -59,10 +59,10 @@ pub fn build_client() -> Result<reqwest::Client> {
 
 /// Resolve the WorkOS base URL.
 ///
-/// `SPELUNK_WORKOS_URL` overrides the default (used by tests to point at a mock
+/// `INKENTRY_WORKOS_URL` overrides the default (used by tests to point at a mock
 /// server). Trailing slashes are trimmed.
 pub fn workos_url() -> String {
-    std::env::var("SPELUNK_WORKOS_URL")
+    std::env::var("INKENTRY_WORKOS_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WORKOS_URL.to_string())
@@ -74,12 +74,12 @@ pub fn workos_url() -> String {
 ///
 /// Selection mirrors the cloud-url default-vs-override pattern already used for
 /// the rest of the CLI's environment config:
-///   1. `SPELUNK_WORKOS_CLIENT_ID` — explicit override (tests / bespoke envs).
+///   1. `INKENTRY_WORKOS_CLIENT_ID` — explicit override (tests / bespoke envs).
 ///   2. Otherwise derived from `cloud_url`: the production cloud host
 ///      (`api.spelunk.cloud`) selects the prod client_id; anything else (a dev
 ///      override, localhost, a staging host) selects the dev client_id.
 pub fn workos_client_id(cloud_url: &str) -> String {
-    if let Ok(v) = std::env::var("SPELUNK_WORKOS_CLIENT_ID")
+    if let Ok(v) = std::env::var("INKENTRY_WORKOS_CLIENT_ID")
         && !v.trim().is_empty()
     {
         return v;
@@ -649,8 +649,8 @@ mod tests {
     #[test]
     fn workos_client_id_prod_for_canonical_host() {
         // No override env set in this case path.
-        let prev = std::env::var("SPELUNK_WORKOS_CLIENT_ID").ok();
-        unsafe { std::env::remove_var("SPELUNK_WORKOS_CLIENT_ID") };
+        let prev = std::env::var("INKENTRY_WORKOS_CLIENT_ID").ok();
+        unsafe { std::env::remove_var("INKENTRY_WORKOS_CLIENT_ID") };
         assert_eq!(
             workos_client_id("https://api.spelunk.cloud"),
             WORKOS_CLIENT_ID_PROD
@@ -664,7 +664,7 @@ mod tests {
             WORKOS_CLIENT_ID_DEV
         );
         if let Some(v) = prev {
-            unsafe { std::env::set_var("SPELUNK_WORKOS_CLIENT_ID", v) };
+            unsafe { std::env::set_var("INKENTRY_WORKOS_CLIENT_ID", v) };
         }
     }
 

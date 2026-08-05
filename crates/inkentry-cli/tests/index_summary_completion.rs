@@ -40,7 +40,7 @@ fn write_fixture(dir: &Path, name: &str) {
 // `Child` across the gate; `assert_cmd`'s runner blocks until exit.
 // Mirrors `plumbing_helpers::spelunk_bin_in`'s keychain/home pinning.
 //
-// `SPELUNK_MODE=cloud_first`: every test in this file drives its fixture's
+// `INKENTRY_MODE=cloud_first`: every test in this file drives its fixture's
 // explicit `server_url` for LLM summaries (2026-07-23 ADR-004 revision), and
 // `cloud_first` is the mode where that server owns inference. These tests are
 // about the summary pass being awaited, not about which server serves it, so
@@ -48,14 +48,14 @@ fn write_fixture(dir: &Path, name: &str) {
 // what happens to be listening on the machine's loopback ports.
 fn index_command(home: &Path, config: &Path, db: &Path, project: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
-    cmd.env("SPELUNK_SECRET_STORE", "file")
+    cmd.env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", home)
         // Derived from this test's own `HOME` rather than inherited: an ambient
-        // `SPELUNK_CONFIG_DIR` wins over `HOME`, so without this every test in
+        // `INKENTRY_CONFIG_DIR` wins over `HOME`, so without this every test in
         // the file would share one config and secret store instead of getting
         // an isolated one.
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
         // Project-level config discovery walks up from CWD; every caller here
         // writes `server_url` to `<project>/.inkentry/config.toml`.

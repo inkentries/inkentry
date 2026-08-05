@@ -54,8 +54,8 @@ fn embedding_model_flag_rejected_by_real_binary() {
 #[test]
 fn embedding_env_vars_are_inert_in_real_binary() {
     let output = Command::new(env!("CARGO_BIN_EXE_inkentry-server"))
-        .env("SPELUNK_EMBEDDING_URL", "http://127.0.0.1:1234")
-        .env("SPELUNK_EMBEDDING_MODEL", "some-model")
+        .env("INKENTRY_EMBEDDING_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_EMBEDDING_MODEL", "some-model")
         .arg("--print-openapi")
         .output()
         .expect("spawning inkentry-server");

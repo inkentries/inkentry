@@ -67,7 +67,7 @@ fn memory_search_semantic_no_server_points_at_local_start() {
     let mem_db = temp.path().join("memory.db");
 
     let assert = spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -95,7 +95,7 @@ fn memory_search_hybrid_no_server_points_at_local_start() {
     let mem_db = temp.path().join("memory.db");
 
     let assert = spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -119,7 +119,7 @@ fn plumbing_embed_no_server_points_at_local_start() {
     let db = temp.path().join("index.db");
 
     let assert = spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -149,7 +149,7 @@ fn memory_search_semantic_message_is_nonempty() {
     let mem_db = temp.path().join("memory.db");
 
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)

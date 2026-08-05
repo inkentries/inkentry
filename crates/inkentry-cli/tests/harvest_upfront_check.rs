@@ -37,11 +37,11 @@ fn write_harvest_config(dir: &std::path::Path, extra: &str) -> std::path::PathBu
 fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command {
     let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_LLM_URL")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_LLM_URL")
         // Disable loopback auto-discovery so the server gate fires before the
         // git-log step even when a local inkentry-server happens to be running.
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(config_path)
         .arg("memory")
@@ -79,7 +79,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // they're written separately from `write_harvest_config`'s `extra`.
     //
     // `mode = "cloud_first"` is required since the 2026-07-23 ADR-004
-    // revision: with `SPELUNK_NO_SERVER=1` forcing
+    // revision: with `INKENTRY_NO_SERVER=1` forcing
     // `Tier::Offline` (no loopback probe at all) and no explicit mode, a
     // bare `server_url` now defaults to `local_first`, which never falls
     // back to `server_url` for inference — so the Tier-0 gate this test
@@ -93,7 +93,7 @@ fn harvest_check_passes_when_server_url_is_set() {
         "test/proj",
     );
 
-    // `SPELUNK_NO_SERVER=1` (set by `harvest_cmd` for the other two tests in
+    // `INKENTRY_NO_SERVER=1` (set by `harvest_cmd` for the other two tests in
     // this file) is a hard offline kill-switch: `resolve_mode()` forces
     // `Offline` under it regardless of the configured `mode`
     // (`resolve_mode_no_server_env_forces_offline`), which would make
@@ -107,7 +107,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // The command will fail (no live server, no git repo) but NOT with the
     // Tier-0 "requires inkentry-server" message.
     harvest_cmd(&config_path, temp.path())
-        .env_remove("SPELUNK_NO_SERVER")
+        .env_remove("INKENTRY_NO_SERVER")
         .assert()
         .failure()
         .stderr(predicate::str::contains(SERVER_REQUIRED).not());

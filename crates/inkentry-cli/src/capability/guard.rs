@@ -39,7 +39,7 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
             "'spelunk {feature}' requires inkentry-server.\n\
              The configured server_url ({url}) did not respond to the health probe.\n\
              Check that server and your network; for TLS trust failures see \
-             server_ca / SPELUNK_SERVER_CA."
+             server_ca / INKENTRY_SERVER_CA."
         ),
         None => anyhow::bail!(
             "'spelunk {feature}' requires inkentry-server.\n\

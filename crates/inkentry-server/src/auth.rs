@@ -49,9 +49,9 @@ impl ApiKeyAuth {
         }
     }
 
-    /// Construct from the `SPELUNK_SERVER_KEY` environment variable.
+    /// Construct from the `INKENTRY_SERVER_KEY` environment variable.
     pub fn from_env() -> Self {
-        Self::new(std::env::var("SPELUNK_SERVER_KEY").ok())
+        Self::new(std::env::var("INKENTRY_SERVER_KEY").ok())
     }
 }
 

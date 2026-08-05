@@ -133,7 +133,7 @@ fn cloud_first_mode_write_never_auto_starts() {
     );
 }
 
-// ── item 27: SPELUNK_NO_SERVER=1 is a hard kill-switch regardless of TTY ────
+// ── item 27: INKENTRY_NO_SERVER=1 is a hard kill-switch regardless of TTY ────
 
 #[test]
 fn spelunk_no_server_env_write_never_auto_starts() {
@@ -146,7 +146,7 @@ fn spelunk_no_server_env_write_never_auto_starts() {
     write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
 
     let out = spelunk_bin_in(&home)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project)
         .arg("--config")
         .arg(&config_path)
@@ -159,7 +159,7 @@ fn spelunk_no_server_env_write_never_auto_starts() {
 
     assert!(
         !state_dir_under(&home).exists(),
-        "SPELUNK_NO_SERVER=1 must never auto-start, matching the existing hard kill-switch"
+        "INKENTRY_NO_SERVER=1 must never auto-start, matching the existing hard kill-switch"
     );
 }
 
@@ -311,9 +311,9 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
 
     let out = spelunk_bin_in(&home)
         .current_dir(&repo)
-        .env("SPELUNK_SERVER_URL", "https://team.invalid:7777")
-        .env("SPELUNK_PROJECT_ID", "team/proj")
-        .env("SPELUNK_MODE", "local_first")
+        .env("INKENTRY_SERVER_URL", "https://team.invalid:7777")
+        .env("INKENTRY_PROJECT_ID", "team/proj")
+        .env("INKENTRY_MODE", "local_first")
         .args([
             "memory",
             "add",
@@ -347,7 +347,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
          a .inkentry/ project as a side effect of the post-write relay nudge"
     );
     // The placeholder `mem_path` resolves to `cfg.db_path.with_file_name(...)`
-    // (the global, no-project default under `SPELUNK_CONFIG_DIR`), not
+    // (the global, no-project default under `INKENTRY_CONFIG_DIR`), not
     // anywhere under `repo`: this is the actual file `MemoryStore::open`
     // would create if the nudge gate let a placeholder path through.
     assert!(

@@ -5,7 +5,7 @@
 //!
 //! ## Loopback auto-discovery (spelunk#316 / 0.8.0)
 //!
-//! When `cfg.server_url` is `None` **and** `SPELUNK_NO_SERVER` is not set, the probe
+//! When `cfg.server_url` is `None` **and** `INKENTRY_NO_SERVER` is not set, the probe
 //! attempts to reach a locally-running inkentry-server before falling through to
 //! `Tier::Offline`:
 //!
@@ -16,7 +16,7 @@
 //! 3. On success, treat as `Tier::Server` with `auto_discovered = true`.
 //! 4. On failure, return `Tier::Offline`.
 //!
-//! `SPELUNK_NO_SERVER=1` short-circuits all loopback probing and forces `Tier::Offline`.
+//! `INKENTRY_NO_SERVER=1` short-circuits all loopback probing and forces `Tier::Offline`.
 //!
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.

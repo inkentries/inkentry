@@ -32,11 +32,11 @@ const EM_DASH: &str = "—";
 /// Indexing a directory with no indexable source files still runs migrations and
 /// writes the project DB, so the DB exists (the resolver's existence check
 /// passes) while the stats report zero chunks — exactly the state the empty-index
-/// branch keys off. Offline (`SPELUNK_NO_SERVER=1`): with no chunks there is
+/// branch keys off. Offline (`INKENTRY_NO_SERVER=1`): with no chunks there is
 /// nothing to embed, so no server is needed.
 fn init_empty_project(home: &Path, proj: &Path) {
     spelunk_bin_in(home)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj)
         .args(["index", "."])
         .assert()
@@ -57,7 +57,7 @@ fn search_mode_text_empty_index_points_at_zero_setup_modes() {
     init_empty_project(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "text"])
         .assert()
@@ -92,7 +92,7 @@ fn search_mode_semantic_empty_index_keeps_shared_message() {
     init_empty_project(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "semantic"])
         .assert()
@@ -120,7 +120,7 @@ fn search_mode_hybrid_empty_index_keeps_shared_message() {
     init_empty_project(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "hybrid"])
         .assert()

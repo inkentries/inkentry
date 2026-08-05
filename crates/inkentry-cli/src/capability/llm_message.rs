@@ -44,7 +44,7 @@ pub fn no_llm_message(reason: NoLlmReason, feature: LlmFeature) -> String {
     let subject = feature.subject();
     let body = match reason {
         NoLlmReason::Offline => "offline mode is on, so no inference will run.\n\
-             Turn offline mode off to enable it: unset SPELUNK_NO_SERVER, or remove \
+             Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove \
              `mode = \"offline\"` from your spelunk config."
             .to_string(),
         NoLlmReason::LocalConfiguredButNotServed => {
@@ -128,7 +128,7 @@ mod tests {
                     "{reason:?}/{feature:?} must lead with the command it concerns: {msg}"
                 );
                 assert!(
-                    msg.contains("spelunk ") || msg.contains("SPELUNK_"),
+                    msg.contains("spelunk ") || msg.contains("INKENTRY_"),
                     "{reason:?}/{feature:?} must give a command or setting to act on: {msg}"
                 );
             }
@@ -139,7 +139,7 @@ mod tests {
     fn offline_message_names_offline_mode_and_how_to_leave_it() {
         let msg = no_llm_message(NoLlmReason::Offline, LlmFeature::Summaries);
         assert!(msg.contains("offline mode is on"), "{msg}");
-        assert!(msg.contains("SPELUNK_NO_SERVER"), "{msg}");
+        assert!(msg.contains("INKENTRY_NO_SERVER"), "{msg}");
         assert!(msg.contains("mode = \"offline\""), "{msg}");
     }
 

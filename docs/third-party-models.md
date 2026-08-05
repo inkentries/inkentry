@@ -23,9 +23,9 @@ daemon it starts, so you set it once rather than per launch.
 
 | Setting | Personal `config.toml` | Environment | `spelunk server start` flag |
 |---|---|---|---|
-| Endpoint | `llm_url` | `SPELUNK_LLM_URL` | `--llm-url` |
-| Model | `llm_model` | `SPELUNK_LLM_MODEL` | `--llm-model` |
-| Credential | not a config key, by design | `SPELUNK_LLM_KEY` | no flag, by design |
+| Endpoint | `llm_url` | `INKENTRY_LLM_URL` | `--llm-url` |
+| Model | `llm_model` | `INKENTRY_LLM_MODEL` | `--llm-model` |
+| Credential | not a config key, by design | `INKENTRY_LLM_KEY` | no flag, by design |
 
 `llm_url` and `llm_model` are read from the **personal** config
 (`~/.config/spelunk/config.toml`) only. A value in a checked-in
@@ -43,15 +43,15 @@ It is read from stdin if piped, otherwise from an interactive prompt, and kept
 in your OS secret store (macOS Keychain, Linux Secret Service, Windows
 Credential Manager, or an owner-only `secrets.toml` when no keychain is
 available). It is never accepted as a flag value or a positional argument. Set
-`SPELUNK_LLM_KEY` instead when you need a non-interactive path such as CI.
+`INKENTRY_LLM_KEY` instead when you need a non-interactive path such as CI.
 
 **Precedence**, highest first:
 
 | Value | Order |
 |---|---|
-| Endpoint | `spelunk server start --llm-url` (that daemon only) > `SPELUNK_LLM_URL` > `llm_url` in the personal config > unset |
-| Model | `spelunk server start --llm-model` > `SPELUNK_LLM_MODEL` > `llm_model` in the personal config > unset |
-| Credential | `SPELUNK_LLM_KEY` > the secret-store entry written by `spelunk auth set-key --llm` > unset |
+| Endpoint | `spelunk server start --llm-url` (that daemon only) > `INKENTRY_LLM_URL` > `llm_url` in the personal config > unset |
+| Model | `spelunk server start --llm-model` > `INKENTRY_LLM_MODEL` > `llm_model` in the personal config > unset |
+| Credential | `INKENTRY_LLM_KEY` > the secret-store entry written by `spelunk auth set-key --llm` > unset |
 
 A model with no endpoint is not a configuration: if nothing resolves an
 endpoint, the daemon starts without an LLM whatever the model is set to.
@@ -60,10 +60,10 @@ An **empty** value is handled differently in the two override positions. They
 answer the same-shaped question in opposite directions, so it is worth knowing
 which is which before it surprises you:
 
-- `SPELUNK_LLM_URL=""` counts as an override like any other, so it **blanks**
+- `INKENTRY_LLM_URL=""` counts as an override like any other, so it **blanks**
   the personal config's `llm_url` rather than falling through to it. The net
   result is no endpoint, which makes an exported empty value a way to switch
-  the configured endpoint off for a shell. `SPELUNK_LLM_MODEL=""` does the same
+  the configured endpoint off for a shell. `INKENTRY_LLM_MODEL=""` does the same
   to `llm_model`.
 - `--llm-url ""` does the opposite: a blank flag value is not treated as an
   instruction, so it is **discarded** and the environment or config value still
@@ -74,7 +74,7 @@ empty; a flag has to carry a value to win.
 
 The off-switch works because the CLI sets all three LLM variables on the daemon
 it starts, rather than letting the daemon inherit them. `inkentry-server` reads
-`SPELUNK_LLM_URL` and `SPELUNK_LLM_MODEL` itself, so a value the CLI resolved
+`INKENTRY_LLM_URL` and `INKENTRY_LLM_MODEL` itself, so a value the CLI resolved
 away would otherwise still reach it: an exported empty endpoint would arrive as
 a configured-but-empty one. Whatever the CLI resolves is what the daemon sees,
 and nothing else is.
@@ -91,15 +91,15 @@ Pass flags to the binary (verified against `inkentry-server --help`, v0.9.5):
 
 | Flag | Env | Purpose |
 |---|---|---|
-| `--llm-url` | `SPELUNK_LLM_URL` | Base URL of an OpenAI-compatible chat-completions server (e.g. LM Studio, Ollama, vLLM). |
-| `--llm-model` | `SPELUNK_LLM_MODEL` | Model name to send to that endpoint (e.g. `google/gemma-3n-e4b`). |
+| `--llm-url` | `INKENTRY_LLM_URL` | Base URL of an OpenAI-compatible chat-completions server (e.g. LM Studio, Ollama, vLLM). |
+| `--llm-model` | `INKENTRY_LLM_MODEL` | Model name to send to that endpoint (e.g. `google/gemma-3n-e4b`). |
 | `--llm-key` | | Credential for that endpoint, passed inline. Visible in the process table, so prefer the alternatives. |
 | `--llm-key-file` | | File whose whole trimmed contents are the credential. An unreadable path is fatal, never a fall-through to another source. |
 
 Neither key flag is bound to an environment variable, deliberately. The
-credential can still come from `SPELUNK_LLM_KEY`, but it enters at its own rank
+credential can still come from `INKENTRY_LLM_KEY`, but it enters at its own rank
 rather than through a flag: precedence is `--llm-key` > `--llm-key-file` >
-`SPELUNK_LLM_KEY` > unset. Binding the variable to `--llm-key` would let merely
+`INKENTRY_LLM_KEY` > unset. Binding the variable to `--llm-key` would let merely
 exporting it silently outrank a `--llm-key-file` you also passed.
 
 `--llm-key` is the endpoint's credential, and is a different secret from
@@ -170,7 +170,7 @@ set. What follows is the LLM rule only.
 
 In order:
 
-1. **Offline mode** (`SPELUNK_NO_SERVER=1`, or `mode = "offline"`): there is no
+1. **Offline mode** (`INKENTRY_NO_SERVER=1`, or `mode = "offline"`): there is no
    LLM, and nothing is probed.
 2. **Your local server serves an LLM**: it is used.
 3. **`llm_url` is set but your local server does not serve an LLM**: spelunk
@@ -219,7 +219,7 @@ A running server keeps the settings it started with, so restart it to pick yours
 
 ```
 Skipping chunk summaries: offline mode is on, so no inference will run.
-Turn offline mode off to enable it: unset SPELUNK_NO_SERVER, or remove `mode = "offline"` from your spelunk config.
+Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your spelunk config.
 ```
 
 `spelunk explore` and `spelunk memory harvest` use the same three messages with
@@ -255,13 +255,13 @@ never runs: LLM calls go to that server even with `llm_url` set. This is
 consistent rather than contradictory, because `cloud_first` already routes
 embedding to the same server, so your chunk text reaches it either way. But it
 is a real boundary. If you want the guarantee, stay on `local_first` (or
-`offline`); `mode` is read from your personal config or `SPELUNK_MODE`, never
+`offline`); `mode` is read from your personal config or `INKENTRY_MODE`, never
 from a checked-in `.inkentry/config.toml`.
 
 ### If the server itself has no LLM
 
 The server's own `/explore` and `/llm/complete` routes return `503` with
-`"This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."`
+`"This server has no LLM configured. Set INKENTRY_LLM_URL and INKENTRY_LLM_MODEL."`
 
 ### Loopback (local dev) setup
 
@@ -295,9 +295,9 @@ yours to make.
 Environment variables work as well, and take precedence over the config file:
 
 ```bash
-export SPELUNK_LLM_URL="http://127.0.0.1:1234"
-export SPELUNK_LLM_MODEL="your-chat-model-id"
-export SPELUNK_LLM_KEY="<your-endpoint-credential>"   # only if the endpoint is keyed
+export INKENTRY_LLM_URL="http://127.0.0.1:1234"
+export INKENTRY_LLM_MODEL="your-chat-model-id"
+export INKENTRY_LLM_KEY="<your-endpoint-credential>"   # only if the endpoint is keyed
 
 spelunk server stop
 spelunk server start
@@ -339,15 +339,15 @@ extra client-side configuration.
 
 Embeddings have no external endpoint or config: the model is pinned
 product-wide to F2LLM-v2-330M at 896 dimensions, computed only by the bundled
-native embedder. `SPELUNK_EMBEDDER_GGUF_REPO` points that *bundled native*
+native embedder. `INKENTRY_EMBEDDER_GGUF_REPO` points that *bundled native*
 embedder at an alternate source for the same F2LLM-v2-330M GGUF and tokenizer
 artifacts, not a different model. See [Model attribution](model-attribution.md).
 
 ## Running with no network access at all
 
-`SPELUNK_EMBEDDER_GGUF_REPO` above still calls out over the network, just to a
+`INKENTRY_EMBEDDER_GGUF_REPO` above still calls out over the network, just to a
 different (self-hosted) source. For a host with no route out at all, not
-even to an alternate source, `--model-dir` / `SPELUNK_MODEL_DIR` loads the
+even to an alternate source, `--model-dir` / `INKENTRY_MODEL_DIR` loads the
 bundled native embedder from a directory you provision ahead of time instead
 of fetching it from Hugging Face Hub. See [Server setup → Air-gapped /
 no-egress install](server-setup.md#air-gapped--no-egress-install) for the

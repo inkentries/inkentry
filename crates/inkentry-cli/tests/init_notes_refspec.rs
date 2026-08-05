@@ -26,8 +26,8 @@
 //!   `memory list` (D5).
 //! - non-TTY: piped-stdin init completes without prompting/hanging.
 //!
-//! Every spawned `spelunk` uses `spelunk_bin` (pins `SPELUNK_SECRET_STORE=file`),
-//! `SPELUNK_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
+//! Every spawned `spelunk` uses `spelunk_bin` (pins `INKENTRY_SECRET_STORE=file`),
+//! `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
 
 mod plumbing_helpers;
 use plumbing_helpers::spelunk_bin;
@@ -100,7 +100,7 @@ fn run_init(dir: &Path) -> String {
     let out = spelunk_bin()
         .current_dir(dir)
         .env("HOME", dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
         .args(["init", "--no-index"])
@@ -394,8 +394,8 @@ fn notes_round_trip_through_bare_origin() {
     spelunk_bin()
         .current_dir(&repo)
         .env("HOME", &repo)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .arg("memory")
@@ -482,8 +482,8 @@ fn notes_round_trip_through_bare_origin() {
     let listed = spelunk_bin()
         .current_dir(&clone)
         .env("HOME", &clone)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .args(["memory", "--backend", "git-notes", "list"])
         .output()
         .expect("spawn spelunk memory list");
@@ -565,8 +565,8 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     let out = spelunk_bin()
         .current_dir(&repo)
         .env("HOME", &repo)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .args(["context", "--backend", "git-notes"])

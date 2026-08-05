@@ -48,7 +48,7 @@ server_key = "sk-..."
 
 # .inkentry/config.toml  (project-level — safe to commit if key is in env)
 project_id = "acme/my-app"
-server_url = "https://spelunk.internal.example.com"   # key via SPELUNK_SERVER_KEY env var
+server_url = "https://spelunk.internal.example.com"   # key via INKENTRY_SERVER_KEY env var
 ```
 
 > `server_url` must be `https://` unless it resolves to loopback
@@ -61,9 +61,9 @@ Environment variable overrides:
 
 | Field | Env var |
 |---|---|
-| `server_url` | `SPELUNK_SERVER_URL` |
-| `server_key` | `SPELUNK_SERVER_KEY` |
-| `project_id` | `SPELUNK_PROJECT_ID` |
+| `server_url` | `INKENTRY_SERVER_URL` |
+| `server_key` | `INKENTRY_SERVER_KEY` |
+| `project_id` | `INKENTRY_PROJECT_ID` |
 
 ### Validation
 
@@ -114,7 +114,7 @@ Discovery runs before the configured-`server_url` probe and only on loopback:
 
 ```
 fn discover_local_server() -> Option<ServerHandle> {
-    if env::var("SPELUNK_NO_SERVER").is_ok() { return None; }   // hard opt-out
+    if env::var("INKENTRY_NO_SERVER").is_ok() { return None; }   // hard opt-out
 
     // 1. Probe the well-known loopback endpoint.
     match GET http://127.0.0.1:7777/v1/health within 250ms {
@@ -151,7 +151,7 @@ Key points:
 - **Autostart.** If nothing is reachable, the CLI spawns the bundled
   `inkentry-server` as a background child owned by the current user, then waits
   for its health endpoint before proceeding.
-- **`SPELUNK_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
+- **`INKENTRY_NO_SERVER`.** When set, discovery is skipped entirely: no probe, no
   autostart. The CLI runs in Tier 0 and inference-only commands exit 1 with the
   locked-feature message.
 

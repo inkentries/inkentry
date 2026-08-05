@@ -27,8 +27,8 @@ fn start_with(llm_url: &str, key: Option<&str>) -> Output {
         llm_url,
     ]);
     match key {
-        Some(k) => cmd.env("SPELUNK_LLM_KEY", k),
-        None => cmd.env_remove("SPELUNK_LLM_KEY"),
+        Some(k) => cmd.env("INKENTRY_LLM_KEY", k),
+        None => cmd.env_remove("INKENTRY_LLM_KEY"),
     };
     cmd.output().expect("spawning inkentry-server")
 }
@@ -47,7 +47,7 @@ fn start_with_inline_key(llm_url: &str, key: &str) -> Output {
         "--llm-key",
         key,
     ]);
-    cmd.env_remove("SPELUNK_LLM_KEY");
+    cmd.env_remove("INKENTRY_LLM_KEY");
     cmd.output().expect("spawning inkentry-server")
 }
 

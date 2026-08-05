@@ -377,7 +377,7 @@ fn read_memory_output_matches_the_contract() {
     // runs in the temp dir rather than the repo under test.
     spelunk_bin()
         .current_dir(tmp.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("memory")
@@ -413,7 +413,7 @@ fn read_memory_output_matches_the_contract() {
 fn seed_a_note(repo: &Path, title: &str) {
     spelunk_bin()
         .current_dir(repo)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .args([
             "memory",
             "add",
@@ -430,7 +430,7 @@ fn seed_a_note(repo: &Path, title: &str) {
 
 fn publish_notes_stdout(repo: &Path, extra: &[&str]) -> Vec<u8> {
     let mut cmd = spelunk_bin();
-    cmd.current_dir(repo).env("SPELUNK_NO_SERVER", "1").args([
+    cmd.current_dir(repo).env("INKENTRY_NO_SERVER", "1").args([
         "plumbing",
         "publish-notes",
         "origin",

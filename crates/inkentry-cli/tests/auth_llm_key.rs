@@ -2,7 +2,7 @@
 // endpoint.
 //
 // Drives the real binary against an isolated HOME (`spelunk_bin_in` forces
-// `SPELUNK_SECRET_STORE=file`), so nothing here reaches the developer's real
+// `INKENTRY_SECRET_STORE=file`), so nothing here reaches the developer's real
 // config dir or the OS keychain.
 
 mod plumbing_helpers;

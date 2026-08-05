@@ -1283,8 +1283,8 @@ mod tests {
     /// into a false pass.
     #[test]
     fn insert_embeddings_shaped_batch_leaves_nothing_after_a_hard_process_exit() {
-        const HELPER_ENV: &str = "SPELUNK_TEST_CRASH_MID_BATCH_DB_PATH";
-        const STAGED_MARKER: &str = "SPELUNK_TEST_CRASH_MID_BATCH_STAGED";
+        const HELPER_ENV: &str = "INKENTRY_TEST_CRASH_MID_BATCH_DB_PATH";
+        const STAGED_MARKER: &str = "INKENTRY_TEST_CRASH_MID_BATCH_STAGED";
 
         if let Ok(path) = std::env::var(HELPER_ENV) {
             // Child mode: stage a 3-row batch inside an open transaction using

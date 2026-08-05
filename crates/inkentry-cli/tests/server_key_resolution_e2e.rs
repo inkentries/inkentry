@@ -39,7 +39,7 @@ async fn mount_health_and_since(server: &MockServer) {
         .await;
 }
 
-// `server_url`/`project_id` are set via `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID`
+// `server_url`/`project_id` are set via `INKENTRY_SERVER_URL`/`INKENTRY_PROJECT_ID`
 // env on each command below, not this file: `Config::load` only honors those
 // two fields from a project-level `.inkentry/config.toml` (discovered by
 // walking up from CWD) or env, never from the `--config` file this test
@@ -88,9 +88,9 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     let mem_db = cfg_dir.path().join("memory.db");
 
     spelunk_bin_in(home.path())
-        .env_remove("SPELUNK_SERVER_KEY")
-        .env("SPELUNK_SERVER_URL", server_a.uri())
-        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
+        .env_remove("INKENTRY_SERVER_KEY")
+        .env("INKENTRY_SERVER_URL", server_a.uri())
+        .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_a)
         .arg("memory")
@@ -102,9 +102,9 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
         .success();
 
     spelunk_bin_in(home.path())
-        .env_remove("SPELUNK_SERVER_KEY")
-        .env("SPELUNK_SERVER_URL", server_b.uri())
-        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
+        .env_remove("INKENTRY_SERVER_KEY")
+        .env("INKENTRY_SERVER_URL", server_b.uri())
+        .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_b)
         .arg("memory")
@@ -181,9 +181,9 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     let mem_db = cfg_dir.path().join("memory.db");
 
     spelunk_bin_in(home.path())
-        .env_remove("SPELUNK_SERVER_KEY")
-        .env("SPELUNK_SERVER_URL", server.uri())
-        .env("SPELUNK_PROJECT_ID", PROJECT_ID)
+        .env_remove("INKENTRY_SERVER_KEY")
+        .env("INKENTRY_SERVER_URL", server.uri())
+        .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_path)
         .arg("memory")

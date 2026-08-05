@@ -6,8 +6,8 @@
 // the default `memory.db` path (no `--backend git-notes`). Reading the git ref
 // directly proves the merge, not the read path a real user hits.
 //
-// Every spawned `spelunk` pins `SPELUNK_SECRET_STORE=file` (via `spelunk_bin`),
-// `SPELUNK_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
+// Every spawned `spelunk` pins `INKENTRY_SECRET_STORE=file` (via `spelunk_bin`),
+// `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
 
 mod plumbing_helpers;
 use plumbing_helpers::{register_sqlite_vec, spelunk_bin};
@@ -103,8 +103,8 @@ fn run_init(dir: &Path) -> String {
     let out = spelunk_bin()
         .current_dir(dir)
         .env("HOME", dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .args(["init", "--no-index"])
@@ -126,8 +126,8 @@ fn publish_note(author: &Path, title: &str, body: &str) {
     let out = spelunk_bin()
         .current_dir(author)
         .env("HOME", author)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .arg("memory")
@@ -160,8 +160,8 @@ fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
     let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
         .env("HOME", dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .arg("memory")
@@ -180,8 +180,8 @@ fn read_context(dir: &Path) -> Output {
     spelunk_bin()
         .current_dir(dir)
         .env("HOME", dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .arg("context")
@@ -599,8 +599,8 @@ fn no_git_repo_read_makes_no_import_attempt() {
     spelunk_bin()
         .current_dir(dir)
         .env("HOME", dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&cfg)
         .arg("memory")

@@ -259,7 +259,7 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
 // ── spelunk status: neutral mode word + scope-aware offline hints ─────────────
 
 /// Minimal indexed project so `spelunk status` passes the ADR-067 project
-/// gate. Indexed with SPELUNK_NO_SERVER=1 (no embed phase, no probes).
+/// gate. Indexed with INKENTRY_NO_SERVER=1 (no embed phase, no probes).
 fn indexed_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().join("project");
@@ -268,7 +268,7 @@ fn indexed_project() -> (TempDir, PathBuf) {
     let db_path = tmp.path().join("index.db");
     let cfg = write_cfg(tmp.path(), "config-index.toml", &db_path, "");
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
         .arg("index")
@@ -333,7 +333,7 @@ fn status_has_no_mode_line_on_solo_default() {
     );
 
     let out = spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1") // hermetic: no loopback auto-discovery
+        .env("INKENTRY_NO_SERVER", "1") // hermetic: no loopback auto-discovery
         .current_dir(&project)
         .arg("--config")
         .arg(&cfg)

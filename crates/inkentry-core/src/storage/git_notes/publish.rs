@@ -11,7 +11,7 @@ use super::{NotesMergeOutcome, INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF, merge_
 
 /// Set on the nested notes push. `--no-verify` is the real recursion guard; a
 /// hook that re-enters despite it stops here.
-const NOTES_PUSH_SENTINEL: &str = "SPELUNK_NOTES_PUSH";
+const NOTES_PUSH_SENTINEL: &str = "INKENTRY_NOTES_PUSH";
 
 /// Under a concurrent 3-way race the third developer only won on attempt 3.
 const MAX_PUSH_ATTEMPTS: u32 = 3;

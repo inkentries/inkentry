@@ -143,7 +143,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     //
     // An explicit `--mode semantic` / `--mode hybrid` needs a reachable
     // inference server to embed the query. With no server — the
-    // `SPELUNK_NO_SERVER` kill-switch, or simply nothing reachable — surface the
+    // `INKENTRY_NO_SERVER` kill-switch, or simply nothing reachable — surface the
     // same actionable locked-feature error the other inference-gated commands
     // emit (`memory search`, `memory timeline`, `plumbing embed`) via the shared
     // `require_server_client` helper, rather than silently falling back to text

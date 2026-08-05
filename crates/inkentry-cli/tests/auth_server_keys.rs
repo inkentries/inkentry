@@ -2,7 +2,7 @@
 //! server-key scoping correction (ADR-071 D1/D3).
 //!
 //! Drives the real binary end to end against an isolated `HOME` (via
-//! `spelunk_bin_in`, `SPELUNK_SECRET_STORE=file`) so these tests never touch
+//! `spelunk_bin_in`, `INKENTRY_SECRET_STORE=file`) so these tests never touch
 //! the developer's real `~/.config/spelunk` or the OS keychain, and so
 //! `auth set-key`'s persisted key survives across the separate process spawns
 //! each assertion below makes.

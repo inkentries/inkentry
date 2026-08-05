@@ -11,7 +11,7 @@
 //! ## State directory
 //!
 //! All runtime state lives under `~/.local/state/spelunk/` (or
-//! `SPELUNK_STATE_DIR` when set; see `capability::spelunk_state_dir`, the
+//! `INKENTRY_STATE_DIR` when set; see `capability::spelunk_state_dir`, the
 //! single resolver every reader and writer of this directory shares):
 //! - `server.pid`  — PID of the running daemon process
 //! - `server.port`: TCP port the daemon is listening on (read by `capability/probe.rs`)
@@ -405,11 +405,11 @@ pub struct ServerStartArgs {
     pub db: Option<PathBuf>,
 
     /// Base URL of an OpenAI-compatible chat completions endpoint for this
-    /// daemon. Overrides `SPELUNK_LLM_URL` and `llm_url` in the personal config.
+    /// daemon. Overrides `INKENTRY_LLM_URL` and `llm_url` in the personal config.
     #[arg(long)]
     pub llm_url: Option<String>,
 
-    /// LLM model name for this daemon. Overrides `SPELUNK_LLM_MODEL` and
+    /// LLM model name for this daemon. Overrides `INKENTRY_LLM_MODEL` and
     /// `llm_model` in the personal config.
     #[arg(long)]
     pub llm_model: Option<String>,
@@ -762,7 +762,7 @@ pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std
 ///
 /// Shared by both spawn helpers so neither platform can drift into leaving one
 /// of the three variables to inheritance. Removing a variable is as load-bearing
-/// as setting one: `inkentry-server` reads `SPELUNK_LLM_URL`/`SPELUNK_LLM_MODEL`
+/// as setting one: `inkentry-server` reads `INKENTRY_LLM_URL`/`INKENTRY_LLM_MODEL`
 /// through clap `env`, so anything left inherited is a value the daemon acts on
 /// that this process already decided against.
 fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
@@ -1396,7 +1396,7 @@ mod tests {
 
     // `build_daemon_args` and `child_env` only describe the split; this drives
     // the spawn helper that has to apply it. The parent deliberately carries no
-    // SPELUNK_LLM_KEY, so inheritance cannot be what delivers the credential:
+    // INKENTRY_LLM_KEY, so inheritance cannot be what delivers the credential:
     // only an explicit `cmd.env` on the child can put it there.
     #[cfg(unix)]
     #[test]
@@ -1406,7 +1406,7 @@ mod tests {
 
         // SAFETY: pinned to the `path_env` serial group, which is the only
         // group in this module that mutates process-global environment.
-        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
 
         let tmp = TempDir::new().unwrap();
         let record = tmp.path().join("record.txt");
@@ -1438,7 +1438,7 @@ mod tests {
         assert!(
             recorded
                 .lines()
-                .any(|l| l == "SPELUNK_LLM_KEY=sk-llm-secret"),
+                .any(|l| l == "INKENTRY_LLM_KEY=sk-llm-secret"),
             "the credential must reach the child environment: {recorded}"
         );
         assert!(
@@ -1460,7 +1460,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         // SAFETY: see the sibling test; same serial group.
-        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
 
         let tmp = TempDir::new().unwrap();
         let record = tmp.path().join("record.txt");
@@ -1485,13 +1485,13 @@ mod tests {
 
         let recorded = std::fs::read_to_string(&record).unwrap();
         assert!(
-            !recorded.contains("SPELUNK_LLM_KEY"),
+            !recorded.contains("INKENTRY_LLM_KEY"),
             "no credential resolved, so none should have been set: {recorded}"
         );
     }
 
     // The LLM variables the child must never simply inherit.
-    const LLM_ENV: [&str; 3] = ["SPELUNK_LLM_URL", "SPELUNK_LLM_MODEL", "SPELUNK_LLM_KEY"];
+    const LLM_ENV: [&str; 3] = ["INKENTRY_LLM_URL", "INKENTRY_LLM_MODEL", "INKENTRY_LLM_KEY"];
 
     // Restores the LLM and secret-store variables on drop, so a panic mid-test
     // cannot leak a mutated environment into another test.
@@ -1502,7 +1502,7 @@ mod tests {
         // store under `config_dir`, so whatever a spawned child ends up with
         // can only have come from what the code under test resolved.
         fn isolated(config_dir: &Path) -> Self {
-            let names = ["SPELUNK_SECRET_STORE", "SPELUNK_CONFIG_DIR"];
+            let names = ["INKENTRY_SECRET_STORE", "INKENTRY_CONFIG_DIR"];
             let saved = LLM_ENV
                 .iter()
                 .chain(names.iter())
@@ -1515,8 +1515,8 @@ mod tests {
                 for name in LLM_ENV {
                     std::env::remove_var(name);
                 }
-                std::env::set_var("SPELUNK_SECRET_STORE", "file");
-                std::env::set_var("SPELUNK_CONFIG_DIR", config_dir);
+                std::env::set_var("INKENTRY_SECRET_STORE", "file");
+                std::env::set_var("INKENTRY_CONFIG_DIR", config_dir);
             }
             Self(saved)
         }
@@ -1561,7 +1561,7 @@ mod tests {
         record
     }
 
-    // `inkentry-server` reads SPELUNK_LLM_URL/MODEL through clap `env`, so a
+    // `inkentry-server` reads INKENTRY_LLM_URL/MODEL through clap `env`, so a
     // variable this process resolved away has to be cleared on the child, not
     // merely left out of argv. The exported empty endpoint is the case that
     // makes it visible: it means "no endpoint", and inheriting it hands the
@@ -1573,9 +1573,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let record = recording_server_named(tmp.path(), "fake-inkentry-server");
         let guard = LlmEnvGuard::isolated(tmp.path());
-        guard.export("SPELUNK_LLM_URL", "");
-        guard.export("SPELUNK_LLM_MODEL", "stale-model");
-        guard.export("SPELUNK_LLM_KEY", "");
+        guard.export("INKENTRY_LLM_URL", "");
+        guard.export("INKENTRY_LLM_MODEL", "stale-model");
+        guard.export("INKENTRY_LLM_KEY", "");
 
         let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
         let mut child = spawn_daemon_unix(
@@ -1645,13 +1645,13 @@ mod tests {
 
     // ── probe_local_relay_port: non-starting local-daemon detection (D6) ─────
 
-    /// Restores `SPELUNK_STATE_DIR` on drop, so a panic mid-test can't leak a
+    /// Restores `INKENTRY_STATE_DIR` on drop, so a panic mid-test can't leak a
     /// mutated env var into other tests. Mirrors `PathGuard` above.
     struct StateDirGuard(Option<std::ffi::OsString>);
     impl StateDirGuard {
         fn set(dir: &Path) -> Self {
-            let prev = std::env::var_os("SPELUNK_STATE_DIR");
-            unsafe { std::env::set_var("SPELUNK_STATE_DIR", dir) };
+            let prev = std::env::var_os("INKENTRY_STATE_DIR");
+            unsafe { std::env::set_var("INKENTRY_STATE_DIR", dir) };
             Self(prev)
         }
     }
@@ -1661,8 +1661,8 @@ mod tests {
             // this guard serialises against all others touching the var.
             unsafe {
                 match &self.0 {
-                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                    Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                    None => std::env::remove_var("INKENTRY_STATE_DIR"),
                 }
             }
         }

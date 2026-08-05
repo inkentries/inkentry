@@ -37,7 +37,7 @@ spelunk fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
 (`crates/inkentry-server/assets/f2llm-v2-330m-config.json`) rather than fetched.
 **None of the three artifacts (GGUF, tokenizer, config) are fetched from the
 third-party upstream repo at runtime** (everything comes from our own
-first-party repo or is embedded in the binary). Set `SPELUNK_EMBEDDER_GGUF_REPO`
+first-party repo or is embedded in the binary). Set `INKENTRY_EMBEDDER_GGUF_REPO`
 to a different repo to fetch the GGUF and tokenizer from there instead (it must
 host both files). See `docs/embedder-artifact/` for the text that accompanies
 the distributed artifact.

@@ -22,7 +22,7 @@ fn register_sqlite_vec() {
 }
 
 fn clear_env() {
-    unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 }
 
 #[tokio::test]
@@ -160,7 +160,7 @@ async fn cloud_first_mode_routes_remote() {
     let original_home = std::env::var("HOME").ok();
     unsafe {
         std::env::set_var("HOME", home.path());
-        std::env::set_var("SPELUNK_SECRET_STORE", "file");
+        std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
     // The backend is built without contacting the server at all, so nothing
@@ -175,7 +175,7 @@ async fn cloud_first_mode_routes_remote() {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
-        std::env::remove_var("SPELUNK_SECRET_STORE");
+        std::env::remove_var("INKENTRY_SECRET_STORE");
     }
 
     assert_eq!(
@@ -324,7 +324,7 @@ async fn a_leftover_project_id_cache_on_disk_changes_nothing() {
     let original_home = std::env::var("HOME").ok();
     unsafe {
         std::env::set_var("HOME", home.path());
-        std::env::set_var("SPELUNK_SECRET_STORE", "file");
+        std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
     let server = MockServer::start().await;
@@ -345,7 +345,7 @@ async fn a_leftover_project_id_cache_on_disk_changes_nothing() {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
-        std::env::remove_var("SPELUNK_SECRET_STORE");
+        std::env::remove_var("INKENTRY_SECRET_STORE");
     }
 
     assert_eq!(be.count().await.unwrap(), 4);
@@ -371,7 +371,7 @@ async fn cloud_first_loopback_slug_needs_no_lookup() {
     let original_home = std::env::var("HOME").ok();
     unsafe {
         std::env::set_var("HOME", home.path());
-        std::env::set_var("SPELUNK_SECRET_STORE", "file");
+        std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
     let server = MockServer::start().await;
@@ -387,7 +387,7 @@ async fn cloud_first_loopback_slug_needs_no_lookup() {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
-        std::env::remove_var("SPELUNK_SECRET_STORE");
+        std::env::remove_var("INKENTRY_SECRET_STORE");
     }
 
     assert_eq!(be.count().await.unwrap(), 2);
@@ -601,7 +601,7 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
     assert!(be.harvested_shas().await.unwrap().contains("deadbeef"));
 }
 
-// `SPELUNK_NO_SLUG_CACHE` gated the deleted resolution cache. It must now
+// `INKENTRY_NO_SLUG_CACHE` gated the deleted resolution cache. It must now
 // be inert rather than change any routing decision.
 #[tokio::test]
 #[serial_test::serial]
@@ -614,13 +614,13 @@ async fn no_slug_cache_env_var_is_inert() {
 
     let mut counts = Vec::new();
     for value in ["1", "0"] {
-        unsafe { std::env::set_var("SPELUNK_NO_SLUG_CACHE", value) };
+        unsafe { std::env::set_var("INKENTRY_NO_SLUG_CACHE", value) };
         let be = open_seam(&cloud_first_cfg(&url, "my-awesome-app"), &url)
             .await
             .unwrap();
         counts.push(be.count().await.unwrap());
     }
-    unsafe { std::env::remove_var("SPELUNK_NO_SLUG_CACHE") };
+    unsafe { std::env::remove_var("INKENTRY_NO_SLUG_CACHE") };
 
     assert_eq!(counts, vec![9, 9]);
     assert!(
@@ -734,16 +734,16 @@ async fn no_server_kill_switch_forces_local() {
         mode: Some(SyncMode::CloudFirst),
         ..Default::default()
     };
-    unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
+    unsafe { std::env::set_var("INKENTRY_NO_SERVER", "1") };
     let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
         .await
         .unwrap();
     assert_eq!(
         be.backend_kind(),
         "sqlite",
-        "SPELUNK_NO_SERVER=1 forces offline → local backend"
+        "INKENTRY_NO_SERVER=1 forces offline → local backend"
     );
-    unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 }
 
 // ── the peer probe picks the dialect, and never strands the self-hosted one ──

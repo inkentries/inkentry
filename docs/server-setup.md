@@ -44,7 +44,7 @@ k8s pod, or a teammate's laptop across a VPN) to reach it, you are in the
 network: the same CLI, the same env vars, the same API. The only thing the
 network adds is that TLS becomes mandatory, and the server provides it.
 
-> **Trust model.** Everything that holds the shared `SPELUNK_SERVER_KEY` is a
+> **Trust model.** Everything that holds the shared `INKENTRY_SERVER_KEY` is a
 > full administrator of every project on this server instance; there is no
 > per-project access control. See [Trust model](#trust-model) and
 > [ADR-056](adr/056-oss-server-tenancy-model.md) before sharing a key with more
@@ -113,7 +113,7 @@ Two details in this recipe are load-bearing, not stylistic:
   extension (as above), before you distribute the cert.
 
 Distribute `tls-cert.pem` to `--tls-cert` (or the systemd/Docker steps below)
-and to clients as `SPELUNK_SERVER_CA` (or `server_ca` in `.inkentry/config.toml`);
+and to clients as `INKENTRY_SERVER_CA` (or `server_ca` in `.inkentry/config.toml`);
 see [Trusting the server's certificate on the client](#trusting-the-servers-certificate-on-the-client).
 Keep `tls-key.pem` private (`0600`, root-owned); it never leaves the server.
 
@@ -123,7 +123,7 @@ Bind a routable interface and pass the cert, the key, and an API key. The server
 terminates HTTPS itself:
 
 ```bash
-SPELUNK_SERVER_KEY=$(openssl rand -hex 32) \
+INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
 inkentry-server \
   --host 0.0.0.0 --port 7777 \
   --tls-cert /etc/spelunk/tls-cert \
@@ -134,9 +134,9 @@ inkentry-server \
   off-host. Loopback (`127.0.0.1`, the default) stays plain-HTTP local-only.
 - `--tls-cert` / `--tls-key` are the PEM certificate chain and private key. Both
   or neither: setting one without the other is a startup error. They can also be
-  supplied as `SPELUNK_SERVER_TLS_CERT` / `SPELUNK_SERVER_TLS_KEY`.
+  supplied as `INKENTRY_SERVER_TLS_CERT` / `INKENTRY_SERVER_TLS_KEY`.
 - An API key is required for any non-loopback bind (`--key` / `--key-file` /
-  `SPELUNK_SERVER_KEY`). A routable bind with TLS but no key is refused, as is a
+  `INKENTRY_SERVER_KEY`). A routable bind with TLS but no key is refused, as is a
   routable bind with no TLS.
 
 That is the whole exposure story: `https://<host>:7777` now answers, the bearer
@@ -220,10 +220,10 @@ install it verbatim as above.
 > enabling. The shipped unit leaves it commented.
 
 **Key sources.** The credential file is preferred under systemd, but it is not
-the only supported source: `SPELUNK_SERVER_KEY` remains a fully-supported equal
+the only supported source: `INKENTRY_SERVER_KEY` remains a fully-supported equal
 alternative (e.g. an `EnvironmentFile=` pointing at a `0600` root-owned file, or
 set by tooling that runs the binary outside systemd). Resolution precedence is
-`--key` → `--key-file` → `SPELUNK_SERVER_KEY` → `$CREDENTIALS_DIRECTORY/server-key`.
+`--key` → `--key-file` → `INKENTRY_SERVER_KEY` → `$CREDENTIALS_DIRECTORY/server-key`.
 To rotate the bearer key, replace `/etc/spelunk/server-key`, `sudo systemctl
 restart inkentry-server`, and redistribute it to clients. To renew the
 certificate, replace `/etc/spelunk/tls-cert` (and `/etc/spelunk/tls-key` if the
@@ -270,15 +270,15 @@ readers not using Compose.
 git clone https://github.com/spelunk-cloud/spelunk
 cd spelunk
 
-SPELUNK_SERVER_KEY=$(openssl rand -hex 32) \
-SPELUNK_TLS_CERT=/etc/spelunk/tls-cert SPELUNK_TLS_KEY=/etc/spelunk/tls-key \
+INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
+INKENTRY_TLS_CERT=/etc/spelunk/tls-cert INKENTRY_TLS_KEY=/etc/spelunk/tls-key \
 docker compose --profile team-server up -d
 ```
 
 `docker compose`'s `pull_policy: build` builds the image for you, no separate
 `docker build` step needed. The `team-server` service mounts the cert/key from
 the host paths above, publishes the container's routable TLS port on the
-host's `443`, and refuses to bind without `SPELUNK_SERVER_KEY` set (ADR-066).
+host's `443`, and refuses to bind without `INKENTRY_SERVER_KEY` set (ADR-066).
 `https://<host>` now answers, keyed, with the container serving TLS itself.
 
 The `team-server` service runs with `restart: unless-stopped` (not
@@ -297,7 +297,7 @@ cd spelunk
 # "Unable to find image 'inkentry-server:latest' locally".
 docker build -t inkentry-server .
 
-export SPELUNK_SERVER_KEY=$(openssl rand -hex 32)
+export INKENTRY_SERVER_KEY=$(openssl rand -hex 32)
 
 # Team server: routable TLS bind, cert + key mounted, port published.
 # No --rm here: this is a long-lived server, and --rm deletes the container
@@ -308,9 +308,9 @@ docker run -d --name inkentry-server \
   -v spelunk-data:/data \
   -v /etc/spelunk/tls-cert:/tls/cert:ro \
   -v /etc/spelunk/tls-key:/tls/key:ro \
-  -e SPELUNK_SERVER_KEY \
-  -e SPELUNK_SERVER_TLS_CERT=/tls/cert \
-  -e SPELUNK_SERVER_TLS_KEY=/tls/key \
+  -e INKENTRY_SERVER_KEY \
+  -e INKENTRY_SERVER_TLS_CERT=/tls/cert \
+  -e INKENTRY_SERVER_TLS_KEY=/tls/key \
   inkentry-server --host 0.0.0.0 --port 7777
 ```
 
@@ -353,8 +353,8 @@ On the remote host (or in its container), the configuration is identical to
 [R1](remote-agents.md); only the URL and the mandatory key change:
 
 ```bash
-export SPELUNK_SERVER_URL=https://spelunk.example.com
-export SPELUNK_SERVER_KEY=your-shared-api-key
+export INKENTRY_SERVER_URL=https://spelunk.example.com
+export INKENTRY_SERVER_KEY=your-shared-api-key
 
 spelunk check                 # should report the server reachable over TLS
 spelunk search "auth tokens"
@@ -417,7 +417,7 @@ For CI / headless use, the environment variable still works and takes
 precedence over any stored key:
 
 ```bash
-export SPELUNK_SERVER_KEY=your-shared-api-key
+export INKENTRY_SERVER_KEY=your-shared-api-key
 ```
 
 `project_id` is a human-readable slug, and it goes on the wire exactly as you
@@ -454,10 +454,10 @@ modes](memory.md#team-server-and-sync-modes).
 
 When the server's certificate chains to a public CA, agents need no extra
 configuration. When it is signed by a self-signed or internal CA, point the CLI
-at the CA bundle explicitly with the `SPELUNK_SERVER_CA` environment variable:
+at the CA bundle explicitly with the `INKENTRY_SERVER_CA` environment variable:
 
 ```bash
-export SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle, or the
+export INKENTRY_SERVER_CA=/etc/spelunk/internal-ca.pem   # PEM CA bundle, or the
                                                           # self-signed leaf itself
 ```
 
@@ -467,12 +467,12 @@ or set it per project in `.inkentry/config.toml`:
 server_ca = "/etc/spelunk/internal-ca.pem"
 ```
 
-`SPELUNK_SERVER_CA` overrides the config value. The bundle is added as a trust
+`INKENTRY_SERVER_CA` overrides the config value. The bundle is added as a trust
 anchor on top of the built-in roots. TLS verification stays on; there is no
 option to disable it.
 
 If you used the self-signed recipe above (a single `CA:FALSE` leaf, not a
-separate CA), point `SPELUNK_SERVER_CA` at that same `tls-cert.pem`. If instead
+separate CA), point `INKENTRY_SERVER_CA` at that same `tls-cert.pem`. If instead
 you generated a real internal CA and issued the server a leaf from it,
 distribute the **CA** certificate here, not the server's leaf: a certificate
 made with a plain `openssl req -x509` and no `basicConstraints` is a self-signed
@@ -507,7 +507,7 @@ directly from the trust model below.
 ## Trust model
 
 **A `inkentry-server` instance is a single trust domain.** The shared API key
-(`--key` / `SPELUNK_SERVER_KEY`) is the *only* access boundary the server has.
+(`--key` / `INKENTRY_SERVER_KEY`) is the *only* access boundary the server has.
 It answers exactly one question, "does this bearer token match the
 configured key?", and nothing more: there is no per-project or per-user
 authorization layer. Concretely, holding a server's key grants **full
@@ -585,18 +585,18 @@ cargo build --release --bin inkentry-server
 |---|---|---|---|
 | `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs both a key and TLS (`--tls-cert`/`--tls-key`); see below. |
 | `--port` | (none) | `7777` | Port to bind. |
-| `--key` | (none) | unset | Shared bearer API key, passed inline. Visible in the process table; prefer `--key-file` or `SPELUNK_SERVER_KEY`. Leave every key source unset only for a loopback dev server. |
-| `--key-file` | (none) | unset | Read the key from a file (whole contents, trimmed). First-class alternative to `SPELUNK_SERVER_KEY`, not a fallback. |
-| (none) | `SPELUNK_SERVER_KEY` | unset | Read the key from the environment. Fully supported alongside `--key-file`. |
-| `--tls-cert` | `SPELUNK_SERVER_TLS_CERT` | unset | PEM certificate chain (leaf + intermediates) for in-process HTTPS. The chain is public. Set with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`. |
-| `--tls-key` | `SPELUNK_SERVER_TLS_KEY` | unset | PEM private key matching `--tls-cert`. A high-value secret: supply via a systemd credential or a `0600` root-owned file, never an `Environment=` line. Set with `--tls-cert`. |
+| `--key` | (none) | unset | Shared bearer API key, passed inline. Visible in the process table; prefer `--key-file` or `INKENTRY_SERVER_KEY`. Leave every key source unset only for a loopback dev server. |
+| `--key-file` | (none) | unset | Read the key from a file (whole contents, trimmed). First-class alternative to `INKENTRY_SERVER_KEY`, not a fallback. |
+| (none) | `INKENTRY_SERVER_KEY` | unset | Read the key from the environment. Fully supported alongside `--key-file`. |
+| `--tls-cert` | `INKENTRY_SERVER_TLS_CERT` | unset | PEM certificate chain (leaf + intermediates) for in-process HTTPS. The chain is public. Set with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`. |
+| `--tls-key` | `INKENTRY_SERVER_TLS_KEY` | unset | PEM private key matching `--tls-cert`. A high-value secret: supply via a systemd credential or a `0600` root-owned file, never an `Environment=` line. Set with `--tls-cert`. |
 
 The certificate is bring-your-own PEM (an internal CA, a self-signed cert you
 mint yourself, `certbot`, or a cloud-issued cert). `inkentry-server` does not
 obtain or renew it (no ACME); the operator renews it.
 
 The key is resolved from, in precedence order: `--key` → `--key-file` →
-`SPELUNK_SERVER_KEY` → a systemd `LoadCredential=server-key` (read automatically
+`INKENTRY_SERVER_KEY` → a systemd `LoadCredential=server-key` (read automatically
 from `$CREDENTIALS_DIRECTORY/server-key` when present). A blank value from any
 source is ignored and falls through to the next. Under systemd the credential
 path is preferred: it keeps the key out of the world-readable process
@@ -611,9 +611,9 @@ count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
-| `SPELUNK_EMBED_THREADS` | `max(1, physical cores − 2)` | CPU threads the native embedder may use. Reserves ~2 cores for request serving. |
+| `INKENTRY_EMBED_THREADS` | `max(1, physical cores − 2)` | CPU threads the native embedder may use. Reserves ~2 cores for request serving. |
 
-Precedence: `SPELUNK_EMBED_THREADS` > an already-set `RAYON_NUM_THREADS` >
+Precedence: `INKENTRY_EMBED_THREADS` > an already-set `RAYON_NUM_THREADS` >
 the bounded default. A pre-set `RAYON_NUM_THREADS` is respected and never
 overridden. The resolved value and its source are logged at startup
 (`embed CPU thread budget resolved`). GPU (Metal/CUDA) builds are unaffected.
@@ -636,7 +636,7 @@ request immediately with `429` and a `Retry-After` header instead (see
 
 `inkentry-server` refuses to bind a non-loopback address over plaintext HTTP,
 whether or not a key is set, and there is no opt-out. With no key that would be
-an open, unauthenticated server; with a key the bearer `SPELUNK_SERVER_KEY`
+an open, unauthenticated server; with a key the bearer `INKENTRY_SERVER_KEY`
 would travel across the network in cleartext. The refusal names the
 interface/port and points at `--tls-cert`/`--tls-key`.
 
@@ -660,14 +660,14 @@ override.
 Hugging Face Hub the first time it's needed (see [Getting
 started](getting-started.md)). On a host with no route to `huggingface.co`,
 an air-gapped network, a strict corp firewall, a build image with no egress,
-that download has nothing to reach. `--model-dir` (or `SPELUNK_MODEL_DIR`)
+that download has nothing to reach. `--model-dir` (or `INKENTRY_MODEL_DIR`)
 points the bundled native embedder at a directory you provisioned out of
 band instead, with zero network access at startup or at runtime:
 
 ```bash
 inkentry-server --model-dir /srv/spelunk/models
 # or
-export SPELUNK_MODEL_DIR=/srv/spelunk/models
+export INKENTRY_MODEL_DIR=/srv/spelunk/models
 inkentry-server
 ```
 
@@ -711,7 +711,7 @@ carry it to the air-gapped host:
    ```
 3. Transfer `offline-model/` to the air-gapped host by whatever out-of-band
    means your environment allows (removable media, an internal artifact
-   store, etc.), and point `--model-dir` / `SPELUNK_MODEL_DIR` at it there.
+   store, etc.), and point `--model-dir` / `INKENTRY_MODEL_DIR` at it there.
 
 ### Verifying integrity
 

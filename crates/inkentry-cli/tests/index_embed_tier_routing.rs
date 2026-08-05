@@ -10,7 +10,7 @@
 // explicit `server_url` legitimately serves inference too (test 2 is a
 // regression guard for that path).
 //
-// The mock loopback server is wired in via `SPELUNK_STATE_DIR`/`server.port`
+// The mock loopback server is wired in via `INKENTRY_STATE_DIR`/`server.port`
 // (real auto-discovery), not `server_url`, so a routing regression surfaces
 // as a genuine connection/DNS failure against the deliberately-unroutable
 // `server_url` rather than a silently-passing test.
@@ -52,7 +52,7 @@ fn write_project(dir: &Path) {
 // `ProjectConfig` (`inkentry-core/src/config/mod.rs`) only deserializes
 // `server_url`/`project_id`/`server_ca`/`index` from this file; any other
 // key (notably `mode`) is silently dropped by serde. `mode` must go through
-// `SPELUNK_MODE` (or the personal global `--config` file) instead.
+// `INKENTRY_MODE` (or the personal global `--config` file) instead.
 fn write_server_config(project_dir: &Path, server_url: &str) {
     let spelunk_dir = project_dir.join(".inkentry");
     std::fs::create_dir_all(&spelunk_dir).expect("create .inkentry dir");
@@ -60,7 +60,7 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
     std::fs::write(spelunk_dir.join("config.toml"), cfg).expect("write project config");
 }
 
-// Point loopback auto-discovery (`SPELUNK_STATE_DIR`/`server.port`, step 3a
+// Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, step 3a
 // of `capability::probe`) at `url`.
 fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::create_dir_all(state_dir).expect("create state dir");
@@ -90,18 +90,18 @@ async fn mount_health_loading(server: &MockServer) {
 }
 
 // Build a `spelunk index --db <db> .` command against `project`, defensively
-// scrubbed of every `SPELUNK_*` env var these tests care about isolating
+// scrubbed of every `INKENTRY_*` env var these tests care about isolating
 // (an ambient value in the developer/CI shell must never leak into the
 // child and quietly change which tier gets probed). Callers add back
 // exactly the env each scenario needs.
 fn index_cmd(home: &Path, project: &Path, db: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MODE")
-        .env_remove("SPELUNK_PROJECT_ID")
-        .env_remove("SPELUNK_NO_SERVER")
-        .env_remove("SPELUNK_STATE_DIR")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env_remove("INKENTRY_PROJECT_ID")
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_STATE_DIR")
         .arg("index")
         .arg("--db")
         .arg(db)
@@ -175,7 +175,7 @@ async fn local_first_foreground_embeds_via_loopback_not_unroutable_server_url() 
 
     let db = project.path().join("index.db");
     index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
 
@@ -206,13 +206,13 @@ async fn cloud_first_foreground_still_embeds_via_explicit_server_url() {
 
     let db = project.path().join("index.db");
     index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         // Defensive: an isolated, empty state dir means any accidental
         // fallback to `local_first`'s loopback probe fails loudly (nothing
         // listens on the default port from this dir), instead of silently
         // hitting a real inkentry-server daemon that happens to be running on
         // this machine's default port 7777.
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
 
@@ -251,7 +251,7 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
 
     let db = project.path().join("index.db");
     index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
 
@@ -262,7 +262,7 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     );
 }
 
-// Test 4 (unchanged): explicit offline (`SPELUNK_NO_SERVER=1`) skips the
+// Test 4 (unchanged): explicit offline (`INKENTRY_NO_SERVER=1`) skips the
 // embed phase with the existing differentiated notice; no server is
 // contacted.
 #[tokio::test]
@@ -273,7 +273,7 @@ async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -309,7 +309,7 @@ async fn loopback_embedder_loading_skips_foreground_embed_with_warmup_notice() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -345,7 +345,7 @@ async fn local_first_detached_embed_routes_to_loopback_not_unroutable_server_url
 
     let db = project.path().join("index.db");
     index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("--detach-embed")
         .assert()
         .success();

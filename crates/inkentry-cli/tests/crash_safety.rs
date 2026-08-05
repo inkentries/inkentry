@@ -36,10 +36,10 @@ const MARKER_TIMEOUT: Duration = Duration::from_secs(30);
 /// below; `assert_cmd::Command` does not expose that).
 fn spelunk_command(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
-    cmd.env("SPELUNK_SECRET_STORE", "file")
+    cmd.env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
     cmd
@@ -54,15 +54,15 @@ struct PausedChild {
     stdout_so_far: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
-/// Spawn `cmd` with `SPELUNK_TEST_CRASH_POINT=<point>` and block until the
-/// child prints the matching `SPELUNK_TEST_CRASH_POINT_REACHED:<point>`
+/// Spawn `cmd` with `INKENTRY_TEST_CRASH_POINT=<point>` and block until the
+/// child prints the matching `INKENTRY_TEST_CRASH_POINT_REACHED:<point>`
 /// marker (see `storage::pause_for_crash_test` / `crash_test_hook::pause_at`),
 /// proving it is parked exactly inside the write window under test rather
 /// than merely "probably there by now". Panics loudly (with the child's
 /// stdout so far) if the marker never arrives, rather than hanging or
 /// silently no-opping the drill.
 fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
-    cmd.env("SPELUNK_TEST_CRASH_POINT", point)
+    cmd.env("INKENTRY_TEST_CRASH_POINT", point)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -81,7 +81,7 @@ fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let buf_writer = buf.clone();
-    let marker = format!("SPELUNK_TEST_CRASH_POINT_REACHED:{point}");
+    let marker = format!("INKENTRY_TEST_CRASH_POINT_REACHED:{point}");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -253,7 +253,7 @@ fn crash_mid_target_file() -> InterruptedFixture {
 
     let mut cmd = spelunk_command(home.path());
     cmd.current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".");
     let paused = spawn_paused_at(cmd, "after_index_hash_write:target.py");
@@ -312,7 +312,7 @@ fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
     let mut cmd = spelunk_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .output()
@@ -362,7 +362,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
     let mut first = spelunk_command(home.path());
     let first_out = first
         .current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .output()
@@ -393,7 +393,7 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
     let mut second = spelunk_command(home.path());
     second
         .current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".");
     let paused = spawn_paused_at(second, "after_index_hash_write:empty.py");
@@ -411,7 +411,7 @@ fn force_reindex_heals_the_interrupted_file() {
     let mut cmd = spelunk_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .arg("--force")
@@ -489,7 +489,7 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     // and 1 missing - a small, deterministic split, not an approximation.
     let mut cmd = spelunk_command(f._home.path());
     cmd.current_dir(f.project.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
         .arg(".")
         .arg("--no-summaries");
@@ -513,7 +513,7 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     let mut cmd2 = spelunk_command(f._home.path());
     let out = cmd2
         .current_dir(f.project.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
         .arg(".")
         .arg("--no-summaries")
@@ -547,7 +547,7 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
 
 // ── Drill 5-6: disk-full (SQLITE_FULL) surfaces cleanly, never corrupts ──────
 //
-// `SPELUNK_TEST_MAX_PAGE_COUNT` caps a freshly-opened connection's
+// `INKENTRY_TEST_MAX_PAGE_COUNT` caps a freshly-opened connection's
 // `PRAGMA max_page_count` (see `storage::apply_test_page_cap`), which forces
 // the identical `SQLITE_FULL` SQLite would raise for a real disk-full without
 // needing a size-capped filesystem or a custom VFS - `max_page_count` is a
@@ -573,7 +573,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     let mut baseline = spelunk_command(home.path());
     let out = baseline
         .current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .output()
@@ -598,9 +598,9 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     let mut capped = spelunk_command(home.path());
     let out = capped
         .current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .env(
-            "SPELUNK_TEST_MAX_PAGE_COUNT",
+            "INKENTRY_TEST_MAX_PAGE_COUNT",
             (baseline_pages + 2).to_string(),
         )
         .arg("index")
@@ -645,8 +645,8 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
         |home: &Path, extra_env: Option<(&str, &str)>, body: &str| -> std::process::Output {
             let mut cmd = spelunk_command(home);
             cmd.current_dir(project.path())
-                .env("SPELUNK_NO_SERVER", "1")
-                .env_remove("SPELUNK_SERVER_URL")
+                .env("INKENTRY_NO_SERVER", "1")
+                .env_remove("INKENTRY_SERVER_URL")
                 .arg("--config")
                 .arg(&config_path)
                 .arg("memory")
@@ -688,7 +688,7 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
     let out = memory_add(
         home.path(),
         Some((
-            "SPELUNK_TEST_MAX_PAGE_COUNT",
+            "INKENTRY_TEST_MAX_PAGE_COUNT",
             &(baseline_pages + 2).to_string(),
         )),
         &huge_body,
@@ -769,7 +769,7 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
             std::thread::spawn(move || {
                 let mut cmd = spelunk_command(&home_dir);
                 cmd.current_dir(&project_dir)
-                    .env("SPELUNK_NO_SERVER", "1")
+                    .env("INKENTRY_NO_SERVER", "1")
                     .arg("index")
                     .arg(".")
                     .arg("--force")
@@ -859,7 +859,7 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
 
     let mut cmd = spelunk_command(f._home.path());
     cmd.current_dir(f.project.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
         .arg(".")
         .arg("--no-summaries");
@@ -868,7 +868,7 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
     let mut search_cmd = spelunk_command(f._home.path());
     let search_out = search_cmd
         .current_dir(f.project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("search")
         .arg("one")
         .arg("--mode")
@@ -923,7 +923,7 @@ fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
     let mut cmd = spelunk_command(f._home.path());
     let out = cmd
         .current_dir(f.project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .output()
@@ -957,7 +957,7 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
     let mut cmd_a = spelunk_command(home.path());
     cmd_a
         .current_dir(project_a.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".");
     let paused_a = spawn_paused_at(cmd_a, "after_index_hash_write:target.py");
@@ -967,7 +967,7 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
     let mut cmd_b = spelunk_command(home.path());
     let out_b = cmd_b
         .current_dir(project_b.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".")
         .output()
@@ -1001,7 +1001,7 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
 
     let mut cmd = spelunk_command(home.path());
     cmd.current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".");
     let paused = spawn_paused_at(cmd, "after_index_hash_write:target.py");
@@ -1012,7 +1012,7 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
         let mut child_cmd = spelunk_command(home.path());
         let child_out = child_cmd
             .current_dir(project.path())
-            .env("SPELUNK_NO_SERVER", "1")
+            .env("INKENTRY_NO_SERVER", "1")
             .arg("index")
             .arg(".")
             .arg(mode_flag)
@@ -1061,7 +1061,7 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
 
     let mut cmd = spelunk_command(f._home.path());
     cmd.current_dir(f.project.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("index")
         .arg(".")
         .arg("--detach-embed")
@@ -1086,7 +1086,7 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
     let mut third_cmd = spelunk_command(f._home.path());
     third_cmd
         .current_dir(f.project.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg(".");
     let paused_third = spawn_paused_at(third_cmd, "after_index_hash_write:three.py");

@@ -107,7 +107,7 @@ pub struct Config {
 
     /// Chat model id, resolved by inkentry-server, for `ask` and `memory harvest`.
     /// When unset, commands that require a chat model are unavailable.
-    /// `SPELUNK_LLM_MODEL` overrides this.
+    /// `INKENTRY_LLM_MODEL` overrides this.
     #[serde(default)]
     pub llm_model: Option<String>,
 
@@ -115,7 +115,7 @@ pub struct Config {
     /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
-    /// Personal config (`~/.config/spelunk/config.toml`) or `SPELUNK_LLM_URL`
+    /// Personal config (`~/.config/spelunk/config.toml`) or `INKENTRY_LLM_URL`
     /// only, never `.inkentry/config.toml`: a checked-in endpoint points the
     /// whole team at one developer's machine, and it is the natural sibling of
     /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
@@ -127,14 +127,14 @@ pub struct Config {
     /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search, embedding, and explore.
-    /// Set in `.inkentry/config.toml` (project-level) or via `SPELUNK_SERVER_URL` only:
+    /// Set in `.inkentry/config.toml` (project-level) or via `INKENTRY_SERVER_URL` only:
     /// [`Config::load_with_store`] discards any value from the global personal
     /// config, since a team server is a project-wide choice, not a
     /// per-developer one.
     #[serde(default)]
     pub server_url: Option<String>,
 
-    /// The **cloud-kind** bearer only (ADR-071 D2): `SPELUNK_SERVER_KEY` env
+    /// The **cloud-kind** bearer only (ADR-071 D2): `INKENTRY_SERVER_KEY` env
     /// override, else the `[auth].access_token` written by `spelunk login`.
     /// Resolved once at load time because both tiers are origin-independent.
     ///
@@ -147,7 +147,7 @@ pub struct Config {
 
     /// Project slug for the inkentry-server (e.g. `acme/my-app`).
     /// Required when `server_url` is set.
-    /// Set in `.inkentry/config.toml` (project-level) or via `SPELUNK_PROJECT_ID`.
+    /// Set in `.inkentry/config.toml` (project-level) or via `INKENTRY_PROJECT_ID`.
     #[serde(default)]
     pub project_id: Option<String>,
 
@@ -155,7 +155,7 @@ pub struct Config {
     /// connecting to a team `server_url` whose certificate is signed by a
     /// self-signed or internal CA. Verification stays ON — this only adds a
     /// trust anchor, it does not disable checks.
-    /// `SPELUNK_SERVER_CA` overrides this; set in either config file.
+    /// `INKENTRY_SERVER_CA` overrides this; set in either config file.
     #[serde(default)]
     pub server_ca: Option<String>,
 
@@ -164,8 +164,8 @@ pub struct Config {
     /// Stored as `Option` so the serde default can preserve today's behaviour:
     /// when absent, [`Config::resolve_mode`] derives the effective mode from
     /// `server_url` (no `server_url` ⇒ `offline`; `server_url` present ⇒
-    /// `local_first`). An explicit value here pins the mode; `SPELUNK_MODE`
-    /// overrides it, and `SPELUNK_NO_SERVER=1` forces `offline` regardless.
+    /// `local_first`). An explicit value here pins the mode; `INKENTRY_MODE`
+    /// overrides it, and `INKENTRY_NO_SERVER=1` forces `offline` regardless.
     /// Always read it through [`Config::resolve_mode`], never directly.
     #[serde(default)]
     pub mode: Option<SyncMode>,
@@ -335,7 +335,7 @@ impl Config {
     ///   1. Defaults
     ///   2. `~/.config/spelunk/config.toml` (global personal)
     ///   3. `.inkentry/config.toml` discovered by walking up from CWD (project-level, team-wide)
-    ///   4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, `SPELUNK_PROJECT_ID`
+    ///   4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, `INKENTRY_PROJECT_ID`
     ///
     /// `server_url` is the one field step 2 is not allowed to set (see the
     /// `server_url` field doc): a team server is a project-wide decision, so
@@ -454,15 +454,15 @@ impl Config {
         }
 
         // ── 3. Environment variable overrides ────────────────────────────────
-        if let Ok(v) = std::env::var("SPELUNK_SERVER_URL") {
+        if let Ok(v) = std::env::var("INKENTRY_SERVER_URL") {
             cfg.server_url = Some(v);
         }
-        let env_server_key = std::env::var("SPELUNK_SERVER_KEY").ok();
-        if let Ok(v) = std::env::var("SPELUNK_PROJECT_ID") {
+        let env_server_key = std::env::var("INKENTRY_SERVER_KEY").ok();
+        if let Ok(v) = std::env::var("INKENTRY_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
         // Env wins over either config file (personal or project-level).
-        if let Ok(v) = std::env::var("SPELUNK_SERVER_CA") {
+        if let Ok(v) = std::env::var("INKENTRY_SERVER_CA") {
             cfg.server_ca = Some(v);
         }
         if let Ok(v) = std::env::var(llm_key::ENV_LLM_URL) {
@@ -471,14 +471,14 @@ impl Config {
         if let Ok(v) = std::env::var(llm_key::ENV_LLM_MODEL) {
             cfg.llm_model = Some(v);
         }
-        // SPELUNK_MODE overrides the configured sync mode. An
+        // INKENTRY_MODE overrides the configured sync mode. An
         // unrecognised value is a hard error — silently falling back to a
         // default would defeat the deterministic-mode guarantee the Founder
         // needs to separate OSS-local test runs from cloud dogfood runs.
-        if let Ok(v) = std::env::var("SPELUNK_MODE") {
+        if let Ok(v) = std::env::var("INKENTRY_MODE") {
             let parsed = SyncMode::parse(&v).with_context(|| {
                 format!(
-                    "SPELUNK_MODE={v:?} is not a valid sync mode (expected one of: {})",
+                    "INKENTRY_MODE={v:?} is not a valid sync mode (expected one of: {})",
                     SyncMode::valid_values()
                 )
             })?;
@@ -487,7 +487,7 @@ impl Config {
 
         // ── 4. Resolve the cloud-kind bearer (ADR-071 D2) ────────────────────
         // `cfg.server_key` is now the **cloud-kind** bearer only:
-        //   1. `SPELUNK_SERVER_KEY` env var (CI / headless escape hatch) — wins.
+        //   1. `INKENTRY_SERVER_KEY` env var (CI / headless escape hatch) — wins.
         //   2. `[auth].access_token` from `spelunk login` (WorkOS device flow).
         // Both tiers are origin-independent, so resolving them once here (with
         // no secret-store read at all) is correct and cheap. A self-hosted
@@ -587,7 +587,7 @@ fn config_parse_error(path: &Path, source: toml::de::Error) -> anyhow::Error {
 ///
 /// An unrecognised `mode` is singled out so the message names the bad value
 /// and lists the accepted set explicitly — the same guidance as the
-/// `SPELUNK_MODE` env-var error — rather than relying on however serde/toml
+/// `INKENTRY_MODE` env-var error — rather than relying on however serde/toml
 /// happens to render the underlying enum error.
 fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
     toml::from_str::<Config>(raw).map_err(|source| {
@@ -641,7 +641,7 @@ impl Config {
             anyhow::bail!(
                 "server_url is set but project_id is missing.\n\
                  Add `project_id = \"my-project\"` to .inkentry/config.toml \
-                 or set SPELUNK_PROJECT_ID."
+                 or set INKENTRY_PROJECT_ID."
             );
         }
         if let Some(url) = &self.server_url
@@ -691,9 +691,9 @@ impl Config {
     /// Resolve the effective sync mode.
     ///
     /// Precedence (highest first):
-    /// 1. `SPELUNK_NO_SERVER=1` (or `true`/`yes`) → [`SyncMode::Offline`] — a hard
+    /// 1. `INKENTRY_NO_SERVER=1` (or `true`/`yes`) → [`SyncMode::Offline`] — a hard
     ///    kill-switch that wins over everything else.
-    /// 2. An explicit `mode` in config / `SPELUNK_MODE` (already folded into
+    /// 2. An explicit `mode` in config / `INKENTRY_MODE` (already folded into
     ///    `self.mode` by [`Config::load`]).
     /// 3. Serde default: no `server_url` ⇒ [`SyncMode::Offline`]; `server_url`
     ///    present ⇒ [`SyncMode::LocalFirst`]. This preserves today's behaviour
@@ -737,13 +737,13 @@ mod tests {
     /// Unset all spelunk-related env vars to prevent cross-test contamination.
     fn clear_spelunk_env() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_URL");
-            std::env::remove_var("SPELUNK_SERVER_KEY");
-            std::env::remove_var("SPELUNK_PROJECT_ID");
-            std::env::remove_var("SPELUNK_MODE");
-            std::env::remove_var("SPELUNK_NO_SERVER");
-            std::env::remove_var("SPELUNK_LLM_URL");
-            std::env::remove_var("SPELUNK_LLM_MODEL");
+            std::env::remove_var("INKENTRY_SERVER_URL");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
+            std::env::remove_var("INKENTRY_PROJECT_ID");
+            std::env::remove_var("INKENTRY_MODE");
+            std::env::remove_var("INKENTRY_NO_SERVER");
+            std::env::remove_var("INKENTRY_LLM_URL");
+            std::env::remove_var("INKENTRY_LLM_MODEL");
         }
     }
 
@@ -793,9 +793,9 @@ mod tests {
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
-        unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
+        unsafe { std::env::set_var("INKENTRY_NO_SERVER", "1") };
         assert_eq!(cfg.resolve_mode(), SyncMode::Offline);
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
     }
 
     #[test]
@@ -806,10 +806,10 @@ mod tests {
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "mode = \"offline\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_MODE", "cloud_first") };
+        unsafe { std::env::set_var("INKENTRY_MODE", "cloud_first") };
         let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.mode, Some(SyncMode::CloudFirst));
-        unsafe { std::env::remove_var("SPELUNK_MODE") };
+        unsafe { std::env::remove_var("INKENTRY_MODE") };
     }
 
     #[test]
@@ -820,10 +820,10 @@ mod tests {
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_MODE", "sideways") };
+        unsafe { std::env::set_var("INKENTRY_MODE", "sideways") };
         let err = load_hermetic(&config_path).unwrap_err();
-        assert!(err.to_string().contains("SPELUNK_MODE"));
-        unsafe { std::env::remove_var("SPELUNK_MODE") };
+        assert!(err.to_string().contains("INKENTRY_MODE"));
+        unsafe { std::env::remove_var("INKENTRY_MODE") };
     }
 
     #[test]
@@ -1257,7 +1257,7 @@ memory_server_key = "old-token"
         .unwrap();
 
         unsafe {
-            std::env::set_var("SPELUNK_SERVER_URL", "http://env.example.com:7777");
+            std::env::set_var("INKENTRY_SERVER_URL", "http://env.example.com:7777");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
@@ -1280,7 +1280,7 @@ memory_server_key = "old-token"
         .unwrap();
 
         unsafe {
-            std::env::set_var("SPELUNK_SERVER_KEY", "env-token");
+            std::env::set_var("INKENTRY_SERVER_KEY", "env-token");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.server_key, Some("env-token".to_string()));
@@ -1300,7 +1300,7 @@ memory_server_key = "old-token"
         .unwrap();
 
         unsafe {
-            std::env::set_var("SPELUNK_PROJECT_ID", "env-proj");
+            std::env::set_var("INKENTRY_PROJECT_ID", "env-proj");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(cfg.project_id, Some("env-proj".to_string()));
@@ -1309,7 +1309,7 @@ memory_server_key = "old-token"
     #[test]
     #[serial_test::serial]
     fn env_spelunk_memory_server_url_is_ignored() {
-        // Breaking change: the deprecated SPELUNK_MEMORY_SERVER_URL env fallback
+        // Breaking change: the deprecated INKENTRY_MEMORY_SERVER_URL env fallback
         // was removed. Setting it alone must NOT populate server_url. (Not in
         // clear_spelunk_env's unset list since nothing reads it — clean up here.)
         clear_spelunk_env();
@@ -1318,11 +1318,11 @@ memory_server_key = "old-token"
         std::fs::write(&config_path, "").unwrap();
 
         unsafe {
-            std::env::set_var("SPELUNK_MEMORY_SERVER_URL", "http://old.example.com:7777");
+            std::env::set_var("INKENTRY_MEMORY_SERVER_URL", "http://old.example.com:7777");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         unsafe {
-            std::env::remove_var("SPELUNK_MEMORY_SERVER_URL");
+            std::env::remove_var("INKENTRY_MEMORY_SERVER_URL");
         }
         assert_eq!(cfg.server_url, None);
     }
@@ -1485,7 +1485,7 @@ project_id = "team/proj"
     // ── actionable parse-error messages ────────────────────────────────────────
 
     // An unrecognised `mode` names the bad value AND lists the valid modes AND
-    // the file, mirroring the `SPELUNK_MODE` env-var message.
+    // the file, mirroring the `INKENTRY_MODE` env-var message.
     #[test]
     #[serial_test::serial]
     fn invalid_mode_value_error_names_value_modes_and_file() {
@@ -1527,7 +1527,7 @@ project_id = "team/proj"
         );
     }
 
-    /// `SPELUNK_SERVER_KEY` (CI) overrides the `[auth]` access token.
+    /// `INKENTRY_SERVER_KEY` (CI) overrides the `[auth]` access token.
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_auth_tokens() {
@@ -1536,12 +1536,12 @@ project_id = "team/proj"
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "ci-token") };
+        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "ci-token") };
         let cfg = load_hermetic(&path).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("ci-token"));
         // The refresh token is still available for the refresh path.
         assert_eq!(cfg.auth.unwrap().refresh_token, "rt-sample");
-        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
     /// A legacy bare `server_key` no longer feeds `cfg.server_key` (cloud-kind
@@ -1890,7 +1890,7 @@ project_id = "team/new"
         assert_eq!(cfg.server_key, None);
     }
 
-    /// Env-var precedence: `SPELUNK_SERVER_KEY` wins over a stored credential.
+    /// Env-var precedence: `INKENTRY_SERVER_KEY` wins over a stored credential.
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_store() {
@@ -1902,10 +1902,10 @@ project_id = "team/new"
         let store = MemoryStore::default();
         store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "sk-from-env") };
+        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
-        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
     /// Precedence: `[auth]` access token wins over a stored `server_key`.
@@ -2046,7 +2046,7 @@ project_id = "team/new"
         }
     }
 
-    /// `SPELUNK_SERVER_KEY` outranks the personal store, so the store must
+    /// `INKENTRY_SERVER_KEY` outranks the personal store, so the store must
     /// never be asked for `server_key` at all — not just overridden after the
     /// fact. Regression test for the redundant-keychain-read fix.
     #[test]
@@ -2058,15 +2058,15 @@ project_id = "team/new"
         std::fs::write(&path, "").unwrap();
 
         let store = CountingStore::default();
-        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "sk-from-env") };
+        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
 
         assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
         assert_eq!(
             store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "the personal secret store must not be read when SPELUNK_SERVER_KEY \
+            "the personal secret store must not be read when INKENTRY_SERVER_KEY \
              already resolves the bearer"
         );
     }
@@ -2127,14 +2127,14 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn server_ca_env_overrides_config() {
-        // Env `SPELUNK_SERVER_CA` wins over the personal/global config value.
+        // Env `INKENTRY_SERVER_CA` wins over the personal/global config value.
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "server_ca = \"/from/config.pem\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_SERVER_CA", "/from/env.pem") };
+        unsafe { std::env::set_var("INKENTRY_SERVER_CA", "/from/env.pem") };
         let cfg = load_hermetic(&global).unwrap();
-        unsafe { std::env::remove_var("SPELUNK_SERVER_CA") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_CA") };
 
         assert_eq!(cfg.server_ca.as_deref(), Some("/from/env.pem"));
     }
@@ -2146,7 +2146,7 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "server_ca = \"/from/config.pem\"\n").unwrap();
 
-        unsafe { std::env::remove_var("SPELUNK_SERVER_CA") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_CA") };
         let cfg = load_hermetic(&global).unwrap();
 
         assert_eq!(cfg.server_ca.as_deref(), Some("/from/config.pem"));
@@ -2213,9 +2213,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_URL", "https://gateway.example") };
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "https://gateway.example") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_URL") };
 
         assert_eq!(
             cfg.unwrap().llm_url.as_deref(),
@@ -2231,9 +2231,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_URL", "https://gateway.example") };
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "https://gateway.example") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_URL") };
 
         assert_eq!(
             cfg.unwrap().llm_url.as_deref(),
@@ -2249,9 +2249,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_model = \"from-config\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "from-env") };
+        unsafe { std::env::set_var("INKENTRY_LLM_MODEL", "from-env") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_MODEL") };
 
         assert_eq!(cfg.unwrap().llm_model.as_deref(), Some("from-env"));
     }
@@ -2264,9 +2264,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "from-env") };
+        unsafe { std::env::set_var("INKENTRY_LLM_MODEL", "from-env") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_MODEL") };
 
         assert_eq!(cfg.unwrap().llm_model.as_deref(), Some("from-env"));
     }
@@ -2368,12 +2368,12 @@ project_id = "team/new"
 
         let prev_store = std::env::var(secret_store::ENV_SECRET_STORE).ok();
         unsafe {
-            std::env::set_var("SPELUNK_CONFIG_DIR", tmp.path());
+            std::env::set_var("INKENTRY_CONFIG_DIR", tmp.path());
             std::env::set_var(secret_store::ENV_SECRET_STORE, "file");
         }
         let loaded = Config::load(Some(&global));
         unsafe {
-            std::env::remove_var("SPELUNK_CONFIG_DIR");
+            std::env::remove_var("INKENTRY_CONFIG_DIR");
             match &prev_store {
                 Some(v) => std::env::set_var(secret_store::ENV_SECRET_STORE, v),
                 None => std::env::remove_var(secret_store::ENV_SECRET_STORE),
@@ -2384,7 +2384,7 @@ project_id = "team/new"
         assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
     }
 
-    // An explicitly empty SPELUNK_LLM_URL is an override like any other value,
+    // An explicitly empty INKENTRY_LLM_URL is an override like any other value,
     // so it blanks the personal config rather than falling through to it. The
     // spawn path then normalizes the blank away and configures no endpoint.
     #[test]
@@ -2395,9 +2395,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_url = \"http://127.0.0.1:1234\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_URL", "") };
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_URL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_URL") };
 
         assert_eq!(cfg.unwrap().llm_url.as_deref(), Some(""));
     }
@@ -2410,9 +2410,9 @@ project_id = "team/new"
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "llm_model = \"gpt-oss\"\n").unwrap();
 
-        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "") };
+        unsafe { std::env::set_var("INKENTRY_LLM_MODEL", "") };
         let cfg = load_hermetic(&global);
-        unsafe { std::env::remove_var("SPELUNK_LLM_MODEL") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_MODEL") };
 
         assert_eq!(cfg.unwrap().llm_model.as_deref(), Some(""));
     }

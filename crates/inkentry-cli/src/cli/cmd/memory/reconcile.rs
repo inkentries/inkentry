@@ -479,13 +479,13 @@ async fn reconcile_project(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Default path for the daemon's server.db: `~/.local/state/spelunk/server.db`,
-/// or `SPELUNK_STATE_DIR` when set.
+/// or `INKENTRY_STATE_DIR` when set.
 ///
 /// Must go through the shared `capability::spelunk_state_dir` resolver, not
 /// reconstruct the path from `dirs::home_dir()` independently: the daemon
 /// (`spelunk server start`) writes `server.db` via that same resolver, so a
 /// second, hardcoded reconstruction here would silently stop finding it
-/// under `SPELUNK_STATE_DIR` while still reporting reconcile as a no-op
+/// under `INKENTRY_STATE_DIR` while still reporting reconcile as a no-op
 /// success (the "server.db doesn't exist" branch) instead of an error.
 fn default_server_db_path() -> PathBuf {
     spelunk_state_dir()
@@ -889,9 +889,9 @@ pub(super) fn count_reconcilable(
 /// - `server.db` doesn't exist or has no new notes.
 /// - Any note in `memory.db` has `source_ref = 'reconcile:server.db'` (prior
 ///   reconcile has already run — we trust the user has seen the nudge).
-/// - `SPELUNK_NO_RECONCILE_NUDGE=1` is set (CI / scripting escape hatch).
+/// - `INKENTRY_NO_RECONCILE_NUDGE=1` is set (CI / scripting escape hatch).
 pub(crate) fn maybe_emit_nudge(mem_path: &std::path::Path, cfg: &Config) {
-    if std::env::var_os("SPELUNK_NO_RECONCILE_NUDGE").is_some() {
+    if std::env::var_os("INKENTRY_NO_RECONCILE_NUDGE").is_some() {
         return;
     }
 

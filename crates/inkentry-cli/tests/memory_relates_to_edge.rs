@@ -37,7 +37,7 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
 fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
-        .env_remove("SPELUNK_SERVER_URL")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(cfg)
         .arg("memory")

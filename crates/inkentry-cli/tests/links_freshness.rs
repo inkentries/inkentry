@@ -27,7 +27,7 @@ use tempfile::TempDir;
 
 // ── test-registry helpers ─────────────────────────────────────────────────────
 
-// The directory the CLI reads via `SPELUNK_REGISTRY_DIR`, under the isolated
+// The directory the CLI reads via `INKENTRY_REGISTRY_DIR`, under the isolated
 // test HOME. Mirrors the real `registry_path()` layout.
 fn registry_dir(home: &Path) -> PathBuf {
     home.join(".config").join("inkentry")
@@ -188,9 +188,9 @@ fn setup() -> Linked {
 fn cmd(env: &Linked, cwd: &Path, config: &Path) -> Command {
     let mut c = spelunk_bin_in(&env.home);
     c.env("HOME", &env.home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&env.home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&env.home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(cwd)
         .arg("--config")
         .arg(config);

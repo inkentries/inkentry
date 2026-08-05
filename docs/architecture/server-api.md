@@ -52,7 +52,7 @@ Requests are authenticated through a pluggable `AuthProvider` trait
 (`crates/inkentry-server/src/auth.rs`), so an alternative auth strategy can be
 added without changing any handler. The shipped implementation, `ApiKeyAuth`,
 checks the `Authorization: Bearer` header against a single configured key
-(`SPELUNK_SERVER_KEY`); with no key configured, every request is accepted,
+(`INKENTRY_SERVER_KEY`); with no key configured, every request is accepted,
 which is safe only when the server is bound to loopback (see [Trust
 model](../server-setup.md#trust-model)). No handler currently reads the
 authenticated principal.

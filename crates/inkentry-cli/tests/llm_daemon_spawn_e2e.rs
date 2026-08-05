@@ -66,10 +66,10 @@ fn start_daemon(config_toml: &str, env: &[(&str, &str)], extra_args: &[&str]) ->
     std::fs::write(&config_path, config_toml).unwrap();
 
     let mut cmd = spelunk_bin_in(&home);
-    cmd.env("SPELUNK_STATE_DIR", home.join("state"))
-        .env_remove("SPELUNK_LLM_URL")
-        .env_remove("SPELUNK_LLM_MODEL")
-        .env_remove("SPELUNK_LLM_KEY");
+    cmd.env("INKENTRY_STATE_DIR", home.join("state"))
+        .env_remove("INKENTRY_LLM_URL")
+        .env_remove("INKENTRY_LLM_MODEL")
+        .env_remove("INKENTRY_LLM_KEY");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -131,8 +131,8 @@ fn an_environment_endpoint_reaches_the_spawned_daemon() {
     let spawned = start_daemon(
         "",
         &[
-            ("SPELUNK_LLM_URL", "http://from-env.invalid:1234"),
-            ("SPELUNK_LLM_MODEL", "from-env"),
+            ("INKENTRY_LLM_URL", "http://from-env.invalid:1234"),
+            ("INKENTRY_LLM_MODEL", "from-env"),
         ],
         &[],
     );
@@ -157,8 +157,8 @@ fn the_start_flags_outrank_both_the_environment_and_the_config() {
     let spawned = start_daemon(
         "llm_url = \"http://from-config.invalid:1234\"\nllm_model = \"from-config\"\n",
         &[
-            ("SPELUNK_LLM_URL", "http://from-env.invalid:1234"),
-            ("SPELUNK_LLM_MODEL", "from-env"),
+            ("INKENTRY_LLM_URL", "http://from-env.invalid:1234"),
+            ("INKENTRY_LLM_MODEL", "from-env"),
         ],
         &[
             "--llm-url",
@@ -186,16 +186,16 @@ fn the_start_flags_outrank_both_the_environment_and_the_config() {
         spawned.argv
     );
     assert_eq!(
-        spawned.env_value("SPELUNK_LLM_URL"),
+        spawned.env_value("INKENTRY_LLM_URL"),
         Some("http://from-flag.invalid:1234"),
         "the child's inherited variable must be replaced, not left as the parent's"
     );
-    assert_eq!(spawned.env_value("SPELUNK_LLM_MODEL"), Some("from-flag"));
+    assert_eq!(spawned.env_value("INKENTRY_LLM_MODEL"), Some("from-flag"));
 }
 
 // An exported empty value is an override that blanks the configured endpoint,
 // so the daemon must start with no LLM at all. The CLI omitting the argument
-// is not enough: `inkentry-server` reads `SPELUNK_LLM_URL` through clap `env`,
+// is not enough: `inkentry-server` reads `INKENTRY_LLM_URL` through clap `env`,
 // so an inherited empty value arrives as a present-but-empty endpoint, which
 // is either a daemon advertising an LLM it cannot reach or, with a credential
 // configured, a daemon that refuses to start.
@@ -203,7 +203,7 @@ fn the_start_flags_outrank_both_the_environment_and_the_config() {
 fn an_exported_empty_endpoint_leaves_the_daemon_with_no_llm_at_all() {
     let spawned = start_daemon(
         "llm_url = \"http://from-config.invalid:1234\"\nllm_model = \"from-config\"\n",
-        &[("SPELUNK_LLM_URL", ""), ("SPELUNK_LLM_MODEL", "")],
+        &[("INKENTRY_LLM_URL", ""), ("INKENTRY_LLM_MODEL", "")],
         &[],
     );
 
@@ -213,12 +213,12 @@ fn an_exported_empty_endpoint_leaves_the_daemon_with_no_llm_at_all() {
         spawned.argv
     );
     assert_eq!(
-        spawned.env_value("SPELUNK_LLM_URL"),
+        spawned.env_value("INKENTRY_LLM_URL"),
         None,
         "the child inherited the blank endpoint, which its own clap env binding \
          then reads as a configured one"
     );
-    assert_eq!(spawned.env_value("SPELUNK_LLM_MODEL"), None);
+    assert_eq!(spawned.env_value("INKENTRY_LLM_MODEL"), None);
 }
 
 // A model with no endpoint is not a configuration, on either channel.
@@ -231,8 +231,8 @@ fn a_model_without_an_endpoint_reaches_the_daemon_on_neither_channel() {
         "got {}",
         spawned.argv
     );
-    assert_eq!(spawned.env_value("SPELUNK_LLM_MODEL"), None);
-    assert_eq!(spawned.env_value("SPELUNK_LLM_URL"), None);
+    assert_eq!(spawned.env_value("INKENTRY_LLM_MODEL"), None);
+    assert_eq!(spawned.env_value("INKENTRY_LLM_URL"), None);
 }
 
 // The credential travels in the environment and only there, whatever else is
@@ -241,12 +241,12 @@ fn a_model_without_an_endpoint_reaches_the_daemon_on_neither_channel() {
 fn the_credential_reaches_the_child_environment_and_never_its_argv() {
     let spawned = start_daemon(
         "llm_url = \"http://endpoint.invalid:1234\"\n",
-        &[("SPELUNK_LLM_KEY", "sk-endpoint-credential")],
+        &[("INKENTRY_LLM_KEY", "sk-endpoint-credential")],
         &[],
     );
 
     assert_eq!(
-        spawned.env_value("SPELUNK_LLM_KEY"),
+        spawned.env_value("INKENTRY_LLM_KEY"),
         Some("sk-endpoint-credential")
     );
     assert!(
@@ -268,7 +268,7 @@ fn a_daemon_that_exits_immediately_is_not_reported_as_a_firewall_problem() {
 
     let started = std::time::Instant::now();
     let out = spelunk_bin_in(&home)
-        .env("SPELUNK_STATE_DIR", home.join("state"))
+        .env("INKENTRY_STATE_DIR", home.join("state"))
         .arg("--config")
         .arg(&config_path)
         .args(["server", "start", "--port"])

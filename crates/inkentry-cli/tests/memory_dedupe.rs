@@ -99,7 +99,7 @@ fn dedupe_cmd(config_path: &Path) -> Command {
         .expect("config_path must have a parent");
     let mut cmd = spelunk_bin();
     cmd.current_dir(tmp_dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(config_path)
         .arg("memory")
@@ -178,7 +178,7 @@ fn zero_duplicates_reports_all_zero_and_writes_nothing() {
     // the empty-store Step B promotes the index: no duplicates ever exist.
     spelunk_bin()
         .current_dir(tmp.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("memory")

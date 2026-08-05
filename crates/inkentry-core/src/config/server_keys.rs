@@ -26,7 +26,7 @@ use super::secret_store::{KEY_SERVER_KEY, SecretStore};
 /// distinct from the legacy flat [`KEY_SERVER_KEY`] (ADR-071 D1).
 pub const KEY_SERVER_KEYS_MAP: &str = "server_keys";
 
-/// Default spelunk.cloud API origin. Overridable via `SPELUNK_CLOUD_URL`,
+/// Default spelunk.cloud API origin. Overridable via `INKENTRY_CLOUD_URL`,
 /// which is read directly here (and by every cloud-api call site) so bearer
 /// resolution, `/v1/me`, and WorkOS client-id selection all agree on the same
 /// value. Single source of truth for the constant: `inkentry-cli`'s
@@ -50,7 +50,7 @@ pub fn normalize_origin(url: &str) -> Result<String> {
 
 /// The cloud origin bearer resolution branches against (D2).
 fn cloud_origin() -> Result<String> {
-    let raw = std::env::var("SPELUNK_CLOUD_URL")
+    let raw = std::env::var("INKENTRY_CLOUD_URL")
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_CLOUD_URL.to_string());
@@ -98,9 +98,9 @@ fn server_key_for_origin(origin: &str, store: &dyn SecretStore) -> Result<Option
 ///
 /// Branches on credential kind by origin before touching any store:
 /// * **Cloud kind** (origin matches [`DEFAULT_CLOUD_URL`] /
-///   `SPELUNK_CLOUD_URL`): `SPELUNK_SERVER_KEY` env, then `[auth]`'s access
+///   `INKENTRY_CLOUD_URL`): `INKENTRY_SERVER_KEY` env, then `[auth]`'s access
 ///   token. The map and the legacy entry are never consulted.
-/// * **Server-key kind** (any other origin): `SPELUNK_SERVER_KEY` env, then
+/// * **Server-key kind** (any other origin): `INKENTRY_SERVER_KEY` env, then
 ///   the per-origin map, then (migrating on read) the legacy flat entry.
 ///   `[auth]` is never consulted.
 pub fn bearer_for(
@@ -108,7 +108,7 @@ pub fn bearer_for(
     server_url: &str,
     store: &dyn SecretStore,
 ) -> Result<Option<String>> {
-    if let Ok(v) = std::env::var("SPELUNK_SERVER_KEY") {
+    if let Ok(v) = std::env::var("INKENTRY_SERVER_KEY") {
         return Ok(Some(v));
     }
     let origin = normalize_origin(server_url)?;
@@ -199,8 +199,8 @@ mod tests {
 
     fn clear_env() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
-            std::env::remove_var("SPELUNK_CLOUD_URL");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
+            std::env::remove_var("INKENTRY_CLOUD_URL");
         }
     }
 
@@ -242,7 +242,7 @@ mod tests {
     #[serial_test::serial]
     fn bearer_for_env_wins_over_everything_and_skips_store() {
         clear_env();
-        unsafe { std::env::set_var("SPELUNK_SERVER_KEY", "sk-from-env") };
+        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
 
         let store = MemoryStore::default();
         store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
@@ -257,7 +257,7 @@ mod tests {
             Some("sk-legacy")
         );
 
-        unsafe { std::env::remove_var("SPELUNK_SERVER_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
     // ── bearer_for: cloud kind ───────────────────────────────────────────────

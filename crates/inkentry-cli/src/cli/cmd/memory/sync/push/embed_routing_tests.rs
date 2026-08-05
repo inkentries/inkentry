@@ -366,8 +366,8 @@ async fn the_repair_applies_exactly_where_reindex_does() {
     use crate::cli::cmd::memory::MemoryReindexArgs;
     use crate::cli::cmd::memory::reindex::memory_reindex;
 
-    let prev_no_server = std::env::var_os("SPELUNK_NO_SERVER");
-    unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+    let prev_no_server = std::env::var_os("INKENTRY_NO_SERVER");
+    unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
     let team = "https://cloud.invalid.example:1".to_string();
     let shapes = [
@@ -428,7 +428,7 @@ async fn the_repair_applies_exactly_where_reindex_does() {
 
     unsafe {
         if let Some(v) = prev_no_server {
-            std::env::set_var("SPELUNK_NO_SERVER", v);
+            std::env::set_var("INKENTRY_NO_SERVER", v);
         }
     }
 }

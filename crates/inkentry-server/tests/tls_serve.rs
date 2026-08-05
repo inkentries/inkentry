@@ -233,12 +233,12 @@ fn make_ca_and_leaf(
 }
 
 /// End-to-end proof of the custom-CA trust path (`config::apply_server_ca` /
-/// `SPELUNK_SERVER_CA`). Stands up the real TLS transport with a leaf cert
+/// `INKENTRY_SERVER_CA`). Stands up the real TLS transport with a leaf cert
 /// signed by an internal CA, then contrasts three reqwest clients against the
 /// *same* server:
 ///   - default roots only                 → TLS verification FAILS (untrusted),
 ///   - built via `apply_server_ca(ca)`     → handshake succeeds, `/v1/health` 200s,
-///   - the `SPELUNK_SERVER_CA`-provided path → same success.
+///   - the `INKENTRY_SERVER_CA`-provided path → same success.
 ///
 /// Verification stays ON throughout — `apply_server_ca` only adds the CA as a
 /// trust anchor; the untrusted-client control confirms this isn't
@@ -319,11 +319,11 @@ async fn server_ca_establishes_trust_over_real_https() {
     );
     eprintln!("untrusted client rejected as expected: {err}");
 
-    // Env path: `SPELUNK_SERVER_CA` supplies the same PEM, read exactly as
+    // Env path: `INKENTRY_SERVER_CA` supplies the same PEM, read exactly as
     // `Config::load` does, then routed through `apply_server_ca`.
-    unsafe { std::env::set_var("SPELUNK_SERVER_CA", &cert) };
-    let env_ca = std::env::var("SPELUNK_SERVER_CA").expect("SPELUNK_SERVER_CA set");
-    unsafe { std::env::remove_var("SPELUNK_SERVER_CA") };
+    unsafe { std::env::set_var("INKENTRY_SERVER_CA", &cert) };
+    let env_ca = std::env::var("INKENTRY_SERVER_CA").expect("INKENTRY_SERVER_CA set");
+    unsafe { std::env::remove_var("INKENTRY_SERVER_CA") };
     let via_env = apply_server_ca(
         reqwest::Client::builder().timeout(timeout),
         Some(Path::new(&env_ca)),
@@ -340,7 +340,7 @@ async fn server_ca_establishes_trust_over_real_https() {
     assert_eq!(
         env_status,
         reqwest::StatusCode::OK,
-        "SPELUNK_SERVER_CA path must also establish trust"
+        "INKENTRY_SERVER_CA path must also establish trust"
     );
 
     server.abort();

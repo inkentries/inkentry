@@ -3,7 +3,7 @@
 //
 // The unit tests in `server_llm.rs` pin `resolve_llm_key` in isolation, which
 // cannot see how clap fills the args in the first place. If `--llm-key` ever
-// gained an `env = "SPELUNK_LLM_KEY"` attribute, `resolve_llm_key` would still
+// gained an `env = "INKENTRY_LLM_KEY"` attribute, `resolve_llm_key` would still
 // be correct and still be green, while the binary quietly started preferring
 // the environment over `--llm-key-file`. Only an end-to-end assertion on the
 // wire catches that.
@@ -111,7 +111,7 @@ async fn start(llm_url: &str, configure: impl FnOnce(&mut Command)) -> Fixture {
         "--llm-model",
         "test-model",
     ]);
-    cmd.env_remove("SPELUNK_LLM_KEY");
+    cmd.env_remove("INKENTRY_LLM_KEY");
     configure(&mut cmd);
 
     let child = cmd
@@ -144,7 +144,7 @@ async fn a_key_file_outranks_the_environment_on_the_wire() {
 
     let fixture = start(&upstream.uri(), |cmd| {
         cmd.args(["--llm-key-file", path.to_str().unwrap()])
-            .env("SPELUNK_LLM_KEY", "sk-from-env");
+            .env("INKENTRY_LLM_KEY", "sk-from-env");
     })
     .await;
 
@@ -170,7 +170,7 @@ async fn the_inline_key_outranks_both_the_key_file_and_the_environment() {
     let fixture = start(&upstream.uri(), |cmd| {
         cmd.args(["--llm-key", "sk-inline"])
             .args(["--llm-key-file", path.to_str().unwrap()])
-            .env("SPELUNK_LLM_KEY", "sk-from-env");
+            .env("INKENTRY_LLM_KEY", "sk-from-env");
     })
     .await;
 
@@ -184,7 +184,7 @@ async fn the_inline_key_outranks_both_the_key_file_and_the_environment() {
     );
 }
 
-// A blank environment value is what `${SPELUNK_LLM_KEY:-}` expands to with the
+// A blank environment value is what `${INKENTRY_LLM_KEY:-}` expands to with the
 // variable unset, and must read as unauthenticated rather than as a real
 // empty-string credential that every upstream request then carries.
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn a_blank_environment_key_sends_no_authorization_header() {
         .await;
 
     let fixture = start(&upstream.uri(), |cmd| {
-        cmd.env("SPELUNK_LLM_KEY", "   ");
+        cmd.env("INKENTRY_LLM_KEY", "   ");
     })
     .await;
 
@@ -239,7 +239,7 @@ fn a_missing_key_file_refuses_to_start_rather_than_using_the_environment() {
             "--llm-key-file",
             missing.to_str().unwrap(),
         ])
-        .env("SPELUNK_LLM_KEY", "sk-from-env")
+        .env("INKENTRY_LLM_KEY", "sk-from-env")
         .output()
         .expect("spawning inkentry-server");
 

@@ -599,9 +599,9 @@ fn every_registry_wing_keeps_its_projects_and_dependency_links() {
             );
         }
 
-        // SPELUNK_REGISTRY_DIR is the only way to point Registry::open at a
+        // INKENTRY_REGISTRY_DIR is the only way to point Registry::open at a
         // temp copy; dirs::config_dir() is not redirectable on every platform.
-        unsafe { std::env::set_var("SPELUNK_REGISTRY_DIR", tmp.path()) };
+        unsafe { std::env::set_var("INKENTRY_REGISTRY_DIR", tmp.path()) };
         let registry = Registry::open()
             .unwrap_or_else(|e| panic!("opening wing {} with the current build: {e}", wing.id));
 
@@ -682,7 +682,7 @@ fn every_registry_wing_keeps_its_projects_and_dependency_links() {
             wing.id
         );
 
-        unsafe { std::env::remove_var("SPELUNK_REGISTRY_DIR") };
+        unsafe { std::env::remove_var("INKENTRY_REGISTRY_DIR") };
     }
 }
 
@@ -858,9 +858,9 @@ fn open_for_kind(kind: &str, db_path: &Path, dir: &Path) {
             MemoryStore::open(db_path).expect("opening memory wing");
         }
         "registry" => {
-            unsafe { std::env::set_var("SPELUNK_REGISTRY_DIR", dir) };
+            unsafe { std::env::set_var("INKENTRY_REGISTRY_DIR", dir) };
             Registry::open().expect("opening registry wing");
-            unsafe { std::env::remove_var("SPELUNK_REGISTRY_DIR") };
+            unsafe { std::env::remove_var("INKENTRY_REGISTRY_DIR") };
         }
         other => panic!("no opener wired up for wing kind {other:?}"),
     }
@@ -888,17 +888,17 @@ fn open_for_kind(kind: &str, db_path: &Path, dir: &Path) {
 // against a schema that already has them.
 //
 // Ignored by default because it needs a downloaded release. CI runs it with
-// SPELUNK_OLD_BINARY pointing at one; run it locally the same way.
+// INKENTRY_OLD_BINARY pointing at one; run it locally the same way.
 
 fn old_binary() -> PathBuf {
-    let raw = std::env::var("SPELUNK_OLD_BINARY").expect(
-        "SPELUNK_OLD_BINARY must point at a pinned released spelunk binary; \
+    let raw = std::env::var("INKENTRY_OLD_BINARY").expect(
+        "INKENTRY_OLD_BINARY must point at a pinned released spelunk binary; \
          scripts/upgrade-corpus/generate.sh downloads one into its cache",
     );
     let path = PathBuf::from(raw);
     assert!(
         path.is_file(),
-        "SPELUNK_OLD_BINARY does not exist: {}",
+        "INKENTRY_OLD_BINARY does not exist: {}",
         path.display()
     );
     path
@@ -972,7 +972,7 @@ fn table_counts(dot: &Path) -> (i32, i64, i64, i32, i64) {
 }
 
 #[test]
-#[ignore = "needs a downloaded release binary in SPELUNK_OLD_BINARY"]
+#[ignore = "needs a downloaded release binary in INKENTRY_OLD_BINARY"]
 #[serial_test::serial]
 fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
     let bin = old_binary();
@@ -991,10 +991,10 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
             .args(args)
             // An old binary predates the file secret-store default and would
             // otherwise reach the OS keychain and block on a prompt.
-            .env("SPELUNK_SECRET_STORE", "file")
+            .env("INKENTRY_SECRET_STORE", "file")
             .env("HOME", &home)
-            .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
-            .env("SPELUNK_REGISTRY_DIR", home.join(".config").join("inkentry"))
+            .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
+            .env("INKENTRY_REGISTRY_DIR", home.join(".config").join("inkentry"))
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap_or_else(|e| panic!("running the old binary with {args:?}: {e}"))

@@ -61,7 +61,7 @@ fn the_server_crate_never_reaches_for_a_secret_store() {
     assert!(
         offenders.is_empty(),
         "inkentry-server must resolve no credential from a secret store; the CLI passes \
-         the LLM key in via SPELUNK_LLM_KEY or --llm-key-file instead. Found: {offenders:#?}"
+         the LLM key in via INKENTRY_LLM_KEY or --llm-key-file instead. Found: {offenders:#?}"
     );
 }
 
@@ -82,15 +82,15 @@ fn the_llm_credential_has_exactly_three_inbound_channels() {
         if text.contains("args.llm_key_file.as_deref()") {
             sources.push("--llm-key-file");
         }
-        if text.contains("std::env::var(\"SPELUNK_LLM_KEY\")") {
-            sources.push("SPELUNK_LLM_KEY");
+        if text.contains("std::env::var(\"INKENTRY_LLM_KEY\")") {
+            sources.push("INKENTRY_LLM_KEY");
         }
     }
     sources.sort_unstable();
 
     assert_eq!(
         sources,
-        vec!["--llm-key", "--llm-key-file", "SPELUNK_LLM_KEY"],
+        vec!["--llm-key", "--llm-key-file", "INKENTRY_LLM_KEY"],
         "the credential's inbound channels changed; re-check the precedence tests and \
          the constraint that no keychain is involved"
     );

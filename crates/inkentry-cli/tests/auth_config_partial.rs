@@ -27,14 +27,14 @@ fn status_runs_with_partial_auth_block() {
     let config_path = temp.path().join("config.toml");
 
     // Build the index first with a clean config so setup is not what we test.
-    // `SPELUNK_NO_SERVER=1` forces offline: no embedding server is needed.
+    // `INKENTRY_NO_SERVER=1` forces offline: no embedding server is needed.
     fs::write(
         &config_path,
         format!("db_path = {:?}\n", db_path.display().to_string()),
     )
     .unwrap();
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -59,7 +59,7 @@ fn status_runs_with_partial_auth_block() {
     .unwrap();
 
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)

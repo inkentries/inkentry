@@ -3,7 +3,7 @@ use std::path::Path;
 
 /// Apply the configured custom CA bundle to a reqwest client builder.
 ///
-/// `ca_path` is the resolved [`Config::server_ca`] (env `SPELUNK_SERVER_CA`
+/// `ca_path` is the resolved [`Config::server_ca`] (env `INKENTRY_SERVER_CA`
 /// precedence is already applied at load time). Adds every certificate in the
 /// PEM bundle as a trust anchor **on top of** the built-in roots; certificate
 /// verification stays on. A `None` path is a no-op, so every
@@ -16,7 +16,7 @@ pub fn apply_server_ca(
         return Ok(builder);
     };
     let pem = std::fs::read(path)
-        .with_context(|| format!("reading SPELUNK_SERVER_CA bundle at {}", path.display()))?;
+        .with_context(|| format!("reading INKENTRY_SERVER_CA bundle at {}", path.display()))?;
     let certs = reqwest::Certificate::from_pem_bundle(&pem)
         .with_context(|| format!("parsing PEM CA bundle at {}", path.display()))?;
     // `from_pem_bundle` yields an empty vec for a file with no PEM blocks rather
@@ -40,7 +40,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── Custom CA trust (SPELUNK_SERVER_CA / config `server_ca`) ─────────────
+    // ── Custom CA trust (INKENTRY_SERVER_CA / config `server_ca`) ─────────────
 
     /// A throwaway self-signed CA used only to prove the PEM is parsed and
     /// accepted as a trust anchor. Not trusted by anything real.
@@ -90,7 +90,7 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
     fn apply_server_ca_missing_file_errors() {
         let missing = Path::new("/nonexistent/inkentry-server-ca.pem");
         let err = apply_server_ca(reqwest::Client::builder(), Some(missing)).unwrap_err();
-        assert!(err.to_string().contains("SPELUNK_SERVER_CA"), "got: {err}");
+        assert!(err.to_string().contains("INKENTRY_SERVER_CA"), "got: {err}");
     }
 
     #[test]

@@ -31,10 +31,10 @@ use tempfile::TempDir;
 
 // ── test-registry helpers ─────────────────────────────────────────────────────
 
-/// The directory the CLI is pointed at via `SPELUNK_REGISTRY_DIR` during tests.
+/// The directory the CLI is pointed at via `INKENTRY_REGISTRY_DIR` during tests.
 ///
 /// A fixed location under the isolated test `home` that every CLI invocation
-/// sets `SPELUNK_REGISTRY_DIR` to. The real `registry_path()` uses
+/// sets `INKENTRY_REGISTRY_DIR` to. The real `registry_path()` uses
 /// `dirs::config_dir()`, which is not `HOME`-redirectable on Windows
 /// (`%APPDATA%` via the Known Folder API), so an explicit override is the only
 /// way to isolate the registry across all platforms.
@@ -54,7 +54,7 @@ fn canon(p: &Path) -> PathBuf {
 /// A self-contained test registry backed by a file inside the test's HOME dir.
 ///
 /// The registry is a `registry.db`-format SQLite file.  Every CLI invocation
-/// sets `SPELUNK_REGISTRY_DIR` to [`registry_dir`] so tests never touch the
+/// sets `INKENTRY_REGISTRY_DIR` to [`registry_dir`] so tests never touch the
 /// developer's real registry.
 struct TestRegistry {
     conn: Connection,
@@ -62,7 +62,7 @@ struct TestRegistry {
 
 impl TestRegistry {
     /// Create a fresh registry under `home_dir` at [`registry_dir`] — the same
-    /// location the CLI reads via `SPELUNK_REGISTRY_DIR`. Using an explicit
+    /// location the CLI reads via `INKENTRY_REGISTRY_DIR`. Using an explicit
     /// override keeps isolation working on every OS (on Windows the real
     /// `dirs::config_dir()` is not `HOME`-redirectable).
     fn new(home_dir: &Path) -> Self {
@@ -294,18 +294,18 @@ fn setup_linked_projects() -> (
 /// Build a base `spelunk memory` command for the primary project.
 ///
 /// - `HOME` is set to the isolated home dir (registry isolation).
-/// - `SPELUNK_NO_SERVER=1` disables the loopback-server capability probe.
+/// - `INKENTRY_NO_SERVER=1` disables the loopback-server capability probe.
 /// - `current_dir` is `primary_root` so registry path lookup walks from there.
 /// - `--config` points to the primary config.toml (which has `db_path = <index.db>`).
 /// - `memory --db <primary_mem>` routes memory reads to the primary's memory.db.
 fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.env("HOME", home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(home))
         // Unset XDG_CONFIG_HOME so dirs::config_dir() uses $HOME/.config on Linux,
         // matching what TestRegistry::new() writes to home_dir.join(".config").
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(primary_root)
         .arg("--config")
         .arg(config)
@@ -325,9 +325,9 @@ fn context_cmd(
 ) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.env("HOME", home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(primary_root)
         .arg("--config")
         .arg(config)
@@ -532,9 +532,9 @@ fn untagged_dep_decision_is_not_surfaced() {
 
     let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)
@@ -577,9 +577,9 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
 
     let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)
@@ -667,9 +667,9 @@ fn single_project_no_deps_works_unchanged() {
 
     let output = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_root)
         .arg("--config")
         .arg(&config)
@@ -976,9 +976,9 @@ fn archived_dep_decision_is_not_surfaced() {
 
     let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)
@@ -1059,9 +1059,9 @@ fn dep_question_is_never_surfaced_cross_project() {
 
     let raw = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)
@@ -1149,9 +1149,9 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
 
     let output = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)
@@ -1233,9 +1233,9 @@ fn missing_dep_memory_db_is_skipped_silently() {
 
     let output = spelunk_bin_in(&home)
         .env("HOME", &home)
-        .env("SPELUNK_REGISTRY_DIR", registry_dir(&home))
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(&home))
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&primary_root)
         .arg("--config")
         .arg(&primary_config)

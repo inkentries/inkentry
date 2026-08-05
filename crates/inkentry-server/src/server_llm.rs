@@ -3,13 +3,13 @@
 //!
 //! The credential never comes from a keychain: this process is commonly a
 //! detached daemon with no user session, so the spawning CLI resolves the
-//! value and passes it in via `SPELUNK_LLM_KEY` (or, for an operator running
+//! value and passes it in via `INKENTRY_LLM_KEY` (or, for an operator running
 //! the binary directly, `--llm-key-file`).
 
 use anyhow::{Context, Result};
 
 /// Trim `raw` and treat a blank result as "no key", so a set-but-empty
-/// `SPELUNK_LLM_KEY` reads as unauthenticated rather than as an empty-string
+/// `INKENTRY_LLM_KEY` reads as unauthenticated rather than as an empty-string
 /// credential that every upstream request would then send.
 fn normalize(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
@@ -18,7 +18,7 @@ fn normalize(raw: Option<&str>) -> Option<String> {
 }
 
 /// Resolve the LLM credential: `--llm-key`, then `--llm-key-file`, then
-/// `SPELUNK_LLM_KEY`.
+/// `INKENTRY_LLM_KEY`.
 ///
 /// An unreadable `--llm-key-file` is fatal rather than a fall-through: an
 /// operator who named a file meant that file, and silently authenticating

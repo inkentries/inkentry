@@ -111,13 +111,13 @@ Six wings, all produced by actual releases, covering the pre-`user_version`
 a registry with a dependency link, and all three git-notes eras on one ref.
 
 ```sh
-SPELUNK_SECRET_STORE=file cargo test -p inkentry-cli --test upgrade_corpus
+INKENTRY_SECRET_STORE=file cargo test -p inkentry-cli --test upgrade_corpus
 ```
 
 It needs no network and no server: the fixtures are checked in, and the suite
 expands each gzipped wing into a temp dir, since opening a database migrates it
 and would otherwise destroy the fixture on first run. One test is `#[ignore]`d
-because it needs a downloaded release binary in `SPELUNK_OLD_BINARY`; CI runs
+because it needs a downloaded release binary in `INKENTRY_OLD_BINARY`; CI runs
 that leg separately.
 
 This suite is what enforces the on-disk half of the
@@ -318,7 +318,7 @@ file itself stays accurate.
   spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
   full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
   API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable.
-  Tests that need deterministic isolation should set `SPELUNK_STATE_DIR`
+  Tests that need deterministic isolation should set `INKENTRY_STATE_DIR`
   directly instead of relying on `HOME`: it is a supported override of the
   entire state directory, read by the single resolver
   (`capability::spelunk_state_dir`) every reader and writer of runtime state

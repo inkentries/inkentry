@@ -10,12 +10,12 @@
 // `inkentry_embed::embedder_native`'s accessor tests.
 //
 // Run it with:
-//   SPELUNK_SECRET_STORE=file cargo test -p inkentry-server \
+//   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
 //     --test health_under_index_load -- --ignored --nocapture
 //
 // Tunable via env:
-//   SPELUNK_HEALTH_LOAD_REPO    repo to draw real text from (default: this workspace)
-//   SPELUNK_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
+//   INKENTRY_HEALTH_LOAD_REPO    repo to draw real text from (default: this workspace)
+//   INKENTRY_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
 //
 // This drives the HTTP surface directly rather than shelling out to the CLI.
 // `/v1/health` is the sole endpoint `spelunk server status` reads (it renders
@@ -51,7 +51,7 @@ const DIM: usize = inkentry_core::embeddings::EMBEDDING_DIM;
 const PROJECT: &str = "health-under-load";
 
 fn repo_root() -> PathBuf {
-    if let Ok(dir) = std::env::var("SPELUNK_HEALTH_LOAD_REPO") {
+    if let Ok(dir) = std::env::var("INKENTRY_HEALTH_LOAD_REPO") {
         return PathBuf::from(dir);
     }
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -62,7 +62,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn chunk_budget() -> usize {
-    std::env::var("SPELUNK_HEALTH_LOAD_CHUNKS")
+    std::env::var("INKENTRY_HEALTH_LOAD_CHUNKS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2048)
@@ -337,7 +337,7 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
     assert!(
         samples >= 4,
         "the embed phase finished too fast to prove anything ({samples} samples); \
-         raise SPELUNK_HEALTH_LOAD_CHUNKS"
+         raise INKENTRY_HEALTH_LOAD_CHUNKS"
     );
     assert!(
         search.await.expect("search task"),

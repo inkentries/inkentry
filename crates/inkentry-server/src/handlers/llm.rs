@@ -124,7 +124,7 @@ pub async fn llm_complete(
     let llm = state.llm.clone().ok_or_else(|| {
         AppError::ServiceUnavailable(
             "llm.complete requires an LLM backend. \
-             Configure the chat model on the server (--llm-url / SPELUNK_LLM_URL)."
+             Configure the chat model on the server (--llm-url / INKENTRY_LLM_URL)."
                 .to_string(),
         )
     })?;

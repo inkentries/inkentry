@@ -9,14 +9,14 @@ Run every gate below and fix until green. A gate you did not watch pass has not 
 
 ---
 
-## 0. Every cargo command needs `SPELUNK_SECRET_STORE=file`
+## 0. Every cargo command needs `INKENTRY_SECRET_STORE=file`
 
 **Unconditional. Every cargo invocation, every time. `test`, `build`, `run`, `check`, `clippy`,
 `fmt`, `nextest`.** Not a test-only concern: any command that links the crate can reach the
 platform secret store.
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo test -p inkentry-cli
+INKENTRY_SECRET_STORE=file cargo test -p inkentry-cli
 ```
 
 Without it, cargo reaches the real OS keyring and **blocks on a live interactive permission
@@ -35,7 +35,7 @@ you're on. Put it in the command.
 ## 1. Format
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo fmt --all -- --check
+INKENTRY_SECRET_STORE=file cargo fmt --all -- --check
 ```
 
 ## 2. Clippy: zero warnings
@@ -46,20 +46,20 @@ and are meant to be run explicitly with the right features, not swept in by a
 workspace-wide command that doesn't grant them).
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+INKENTRY_SECRET_STORE=file cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
 ```
 
 ## 3. Build
 
 ```bash
-SPELUNK_SECRET_STORE=file cargo build --lib --bins --tests --benches --features rich-formats
+INKENTRY_SECRET_STORE=file cargo build --lib --bins --tests --benches --features rich-formats
 ```
 
 ## 4. Tests + doctests
 
 ```bash
-SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo nextest run --lib --bins --tests --benches
-SPELUNK_SECRET_STORE=file SPELUNK_CONFIG_DIR=$(mktemp -d) cargo test --doc
+INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo nextest run --lib --bins --tests --benches
+INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo test --doc
 ```
 
 Scope to the crate you touched while iterating (`-p inkentry-cli`), but run the full suite before
@@ -67,12 +67,12 @@ the PR.
 
 ### Isolate the suite from your own spelunk config
 
-`SPELUNK_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
+`INKENTRY_CONFIG_DIR` overrides the whole config directory, so a fresh temp dir gives the suite the
 default configuration instead of yours.
 
 A spawned `spelunk` escapes your own config by one of two routes: the helper that spawns it pins
-`SPELUNK_CONFIG_DIR` itself (`plumbing_helpers::spelunk_bin_in`, and the handful of files that build
-their own `Command`), or you export `SPELUNK_CONFIG_DIR` for the whole run as above and the child
+`INKENTRY_CONFIG_DIR` itself (`plumbing_helpers::spelunk_bin_in`, and the handful of files that build
+their own `Command`), or you export `INKENTRY_CONFIG_DIR` for the whole run as above and the child
 inherits that. With neither, the child reads `~/.config/spelunk/config.toml`.
 So if you have configured spelunk for your own use, particularly a `server_url` with
 `mode = "cloud_first"`, a run without the export picks that up and starts talking to a real server.

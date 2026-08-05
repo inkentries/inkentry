@@ -117,7 +117,7 @@ impl EgressTrap {
     }
 }
 
-// Point loopback auto-discovery (`SPELUNK_STATE_DIR`/`server.port`, the
+// Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, the
 // same mechanism `capability::probe::probe_loopback` reads) at `url`. This
 // is the "auto-discovered inference server" path, deliberately distinct
 // from an explicit `server_url` (a team-server opt-in, out of scope here).

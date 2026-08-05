@@ -3204,7 +3204,7 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
 
 /// Repo root the [`lock_holder_child`] helper process locks. Set only by
 /// [`merge_skips_without_touching_the_ref_when_another_process_holds_the_lock`].
-const LOCK_HOLDER_REPO_ENV: &str = "SPELUNK_TEST_LOCK_HOLDER_REPO";
+const LOCK_HOLDER_REPO_ENV: &str = "INKENTRY_TEST_LOCK_HOLDER_REPO";
 
 /// Marker the helper writes once it holds the lock.
 fn held_marker(root: &std::path::Path) -> std::path::PathBuf {

@@ -441,13 +441,13 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
 /// *not* consider the old `~/scripts/web-to-md.ts` location — see the
 /// opt-in-guard comment above this function's call site.
 ///
-/// `SPELUNK_SCRIPTS_DIR` overrides the `~/.config/spelunk/scripts` directory
+/// `INKENTRY_SCRIPTS_DIR` overrides the `~/.config/spelunk/scripts` directory
 /// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
 /// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
 /// making per-process environment overrides of `HOME` ineffective — see the
 /// identical note on `spelunk_state_dir` in `capability/probe.rs`.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
-    if let Some(dir) = std::env::var_os("SPELUNK_SCRIPTS_DIR") {
+    if let Some(dir) = std::env::var_os("INKENTRY_SCRIPTS_DIR") {
         return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));
     }
     dirs::home_dir().map(|h| {
@@ -519,34 +519,34 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Run `f` with `SPELUNK_SCRIPTS_DIR` pointed at `dir` for the duration of
+    /// Run `f` with `INKENTRY_SCRIPTS_DIR` pointed at `dir` for the duration of
     /// the call. `#[serial]` on each test guards the shared process-wide env
-    /// var. Deliberately overrides `SPELUNK_SCRIPTS_DIR` rather than `HOME` —
+    /// var. Deliberately overrides `INKENTRY_SCRIPTS_DIR` rather than `HOME` —
     /// `dirs::home_dir()` (v6) doesn't read `HOME` on Windows (it calls
     /// `SHGetKnownFolderPath`), so a `HOME`-only override is silently
     /// ineffective there. See the identical note on `web_to_md_script_path`.
     fn with_scripts_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
-        let prev = std::env::var_os("SPELUNK_SCRIPTS_DIR");
+        let prev = std::env::var_os("INKENTRY_SCRIPTS_DIR");
         // SAFETY: guarded by #[serial] — no other thread in this test binary
-        // reads/writes SPELUNK_SCRIPTS_DIR concurrently.
-        unsafe { std::env::set_var("SPELUNK_SCRIPTS_DIR", dir) };
+        // reads/writes INKENTRY_SCRIPTS_DIR concurrently.
+        unsafe { std::env::set_var("INKENTRY_SCRIPTS_DIR", dir) };
         f();
         unsafe {
             match &prev {
-                Some(v) => std::env::set_var("SPELUNK_SCRIPTS_DIR", v),
-                None => std::env::remove_var("SPELUNK_SCRIPTS_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_SCRIPTS_DIR", v),
+                None => std::env::remove_var("INKENTRY_SCRIPTS_DIR"),
             }
         }
     }
 
     /// `web_to_md_script_path` must resolve to the new, spelunk-owned path
-    /// (`~/.config/spelunk/scripts/web-to-md.ts`, or `SPELUNK_SCRIPTS_DIR` if set).
+    /// (`~/.config/spelunk/scripts/web-to-md.ts`, or `INKENTRY_SCRIPTS_DIR` if set).
     #[test]
     #[serial]
     fn web_to_md_script_path_is_config_spelunk_scripts() {
         let tmp = TempDir::new().unwrap();
         with_scripts_dir(tmp.path(), || {
-            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            let path = web_to_md_script_path().expect("INKENTRY_SCRIPTS_DIR is set");
             assert_eq!(path, tmp.path().join("web-to-md.ts"));
         });
     }
@@ -567,7 +567,7 @@ mod tests {
 
         let new_dir = tmp.path().join("new-scripts");
         with_scripts_dir(&new_dir, || {
-            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            let path = web_to_md_script_path().expect("INKENTRY_SCRIPTS_DIR is set");
             assert_ne!(
                 path,
                 old_dir.join("web-to-md.ts"),
@@ -592,7 +592,7 @@ mod tests {
         std::fs::write(new_dir.join("web-to-md.ts"), b"// new script").unwrap();
 
         with_scripts_dir(&new_dir, || {
-            let path = web_to_md_script_path().expect("SPELUNK_SCRIPTS_DIR is set");
+            let path = web_to_md_script_path().expect("INKENTRY_SCRIPTS_DIR is set");
             assert!(
                 path.exists(),
                 "script placed at the new opt-in path should be found"

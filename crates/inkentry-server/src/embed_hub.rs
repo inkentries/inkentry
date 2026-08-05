@@ -35,18 +35,18 @@ const CONFIG_JSON: &str = include_str!("../assets/f2llm-v2-330m-config.json");
 
 /// Override env var naming the Hugging Face repo id that holds a **pre-quantized
 /// Q8_0 GGUF** (and, alongside it, the tokenizer) for the embedder. Read from
-/// `SPELUNK_EMBEDDER_GGUF_REPO` at load time; see [`prequantized_gguf_repo`]
+/// `INKENTRY_EMBEDDER_GGUF_REPO` at load time; see [`prequantized_gguf_repo`]
 /// for the accepted values.
 ///
 /// By default (unset) the loader fetches `QUANT_GGUF` and `tokenizer.json`
 /// from [`DEFAULT_GGUF_REPO`] via the existing hf-hub cache — first-run
 /// download is ~339 MB. Set this to a different `org/repo` to fetch both from
 /// there instead (it must host both files, e.g. a mirror of our repo).
-const GGUF_REPO_ENV: &str = "SPELUNK_EMBEDDER_GGUF_REPO";
+const GGUF_REPO_ENV: &str = "INKENTRY_EMBEDDER_GGUF_REPO";
 
 /// Default Hugging Face repo id holding our **own pre-quantized Q8_0 GGUF**
 /// (`f2llm-v2-330m-q8_0.gguf`) and tokenizer (`tokenizer.json`). Used when
-/// `SPELUNK_EMBEDDER_GGUF_REPO` is unset, so a stock install fetches the
+/// `INKENTRY_EMBEDDER_GGUF_REPO` is unset, so a stock install fetches the
 /// ~339 MB pre-quant GGUF plus tokenizer from here — no third-party repo
 /// involved. Override with the env var (see [`GGUF_REPO_ENV`]).
 const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
@@ -64,7 +64,7 @@ const QUANT_GGUF: &str = "f2llm-v2-330m-q8_0.gguf";
 /// tokenizer (`tokenizer.json`) straight from
 /// `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` through the hf-hub cache
 /// (checksum/resume reused) — first-run download is ~339 MB, cached in
-/// `~/.local/share/spelunk/models/`. Set `SPELUNK_EMBEDDER_GGUF_REPO` to a
+/// `~/.local/share/spelunk/models/`. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a
 /// different `org/repo` to fetch both from there instead. `config.json` is
 /// embedded in the binary (see [`CONFIG_JSON`]) and written to the same cache
 /// directory so it lands next to the other artifacts as a real file.
@@ -130,7 +130,7 @@ pub fn load_from_hub() -> Result<NativeEmbedder> {
 
 /// Load the F2LLM-v2-330M embedder from a directory an operator provisioned
 /// out-of-band (`inkentry-server --model-dir <path>` /
-/// `SPELUNK_MODEL_DIR`), with zero network access. Unlike [`load_from_hub`],
+/// `INKENTRY_MODEL_DIR`), with zero network access. Unlike [`load_from_hub`],
 /// this function never references `hf_hub`: the offline path is a pure
 /// filesystem read, so there is no code path here for a corp firewall to
 /// block. See "Air-gapped / no-egress install" in `docs/server-setup.md` for
@@ -193,7 +193,7 @@ fn model_cache_dir() -> Result<PathBuf> {
 }
 
 /// Resolve the HF repo id of the pre-quantized Q8_0 GGUF (and tokenizer) to
-/// fetch, from `SPELUNK_EMBEDDER_GGUF_REPO`.
+/// fetch, from `INKENTRY_EMBEDDER_GGUF_REPO`.
 ///
 /// The env var (after trimming surrounding whitespace) is interpreted as:
 ///
@@ -234,7 +234,7 @@ mod tests {
     use super::*;
 
     /// `prequantized_gguf_repo()` resolves the GGUF source from
-    /// `SPELUNK_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;
+    /// `INKENTRY_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;
     /// `off` (any case, any surrounding whitespace) → hard error, since the
     /// on-device-quantize escape hatch it used to select has been removed;
     /// any other value → that `org/repo` (trimmed). Uses `serial` because it
@@ -352,7 +352,7 @@ mod tests {
     /// default: downloads the model and runs inference.
     ///
     /// Run with:
-    ///   SPELUNK_SECRET_STORE=file cargo test -p inkentry-server \
+    ///   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
     ///     -- --ignored oversized_chunk_embeds_without_oom
     #[test]
     #[ignore = "downloads the F2LLM model and runs inference"]
@@ -407,7 +407,7 @@ mod tests {
     /// first run.
     ///
     /// Run with:
-    ///   SPELUNK_SECRET_STORE=file cargo test -p inkentry-server \
+    ///   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
     ///     -- --ignored load_from_path_embeds
     #[test]
     #[ignore = "requires model artifacts already present in the local cache"]
@@ -457,7 +457,7 @@ mod tests {
     /// derivation itself (`derive_token_cap`/`single_chunk_budget`) has its own
     /// unconditional unit coverage in `inkentry_embed::embedder_native::tests`.
     /// Ignored by default: downloads the model. Run with:
-    ///   SPELUNK_SECRET_STORE=file cargo test -p inkentry-server \
+    ///   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
     ///     -- --ignored native_embedder_reports_its_token_cap
     #[test]
     #[ignore = "downloads the F2LLM model"]
@@ -786,7 +786,7 @@ mod tests {
     /// offline path actually loads. Ignored by default: downloads the model.
     ///
     /// Run with:
-    ///   SPELUNK_SECRET_STORE=file cargo test -p inkentry-server \
+    ///   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
     ///     -- --ignored offline_model_dir_round_trips_with_hub_artifacts
     #[test]
     #[ignore = "downloads the F2LLM model"]

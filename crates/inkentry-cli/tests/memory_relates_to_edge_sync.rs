@@ -116,7 +116,7 @@ fn add_note(
 ) -> i64 {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env_remove("SPELUNK_SERVER_URL")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(cfg)
         .arg("memory")

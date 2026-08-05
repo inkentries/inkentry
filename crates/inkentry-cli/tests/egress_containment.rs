@@ -9,7 +9,7 @@
 // ADR-050 (`docs/adr/050-cli-auto-update-check.md`) designs an opt-out
 // `api.github.com` update-notification check, but at the time this suite was
 // written no code in the workspace implements it yet: there is no
-// `SPELUNK_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
+// `INKENTRY_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
 // site, no `state.toml`. `update_check_unimplemented_tripwire` below is a
 // deliberate tripwire, not a behavioral test: it fails the moment someone
 // adds the feature, which is the cue to replace it with real coverage of
@@ -89,17 +89,17 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-// Build a `spelunk` command isolated from ambient `SPELUNK_*` env, wired
+// Build a `spelunk` command isolated from ambient `INKENTRY_*` env, wired
 // against `project` as CWD and `state_dir` for loopback auto-discovery.
 fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
         .timeout(CHILD_TIMEOUT)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MODE")
-        .env_remove("SPELUNK_PROJECT_ID")
-        .env_remove("SPELUNK_NO_SERVER")
-        .env("SPELUNK_STATE_DIR", state_dir);
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env_remove("INKENTRY_PROJECT_ID")
+        .env_remove("INKENTRY_NO_SERVER")
+        .env("INKENTRY_STATE_DIR", state_dir);
     cmd
 }
 
@@ -424,7 +424,7 @@ async fn plumbing_embed_zero_egress() {
     // bridge every other inference-calling command goes through (see
     // `capability::tier::Tier::effective_config`'s doc comment on why that
     // bridge exists), so unlike `search`/`memory search`, loopback
-    // auto-discovery alone (`SPELUNK_STATE_DIR`) does not reach it; only an
+    // auto-discovery alone (`INKENTRY_STATE_DIR`) does not reach it; only an
     // explicit `server_url` under `cloud_first` does. That URL is still a
     // loopback address here (the same mock server as every other test in
     // this file uses), so the egress claim under test (zero non-loopback
@@ -442,7 +442,7 @@ async fn plumbing_embed_zero_egress() {
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
-    cmd.env("SPELUNK_MODE", "cloud_first");
+    cmd.env("INKENTRY_MODE", "cloud_first");
     // `plumbing embed` reads lines from stdin (`--query` only toggles which
     // F2LLM instruction prefix to apply), not a positional query arg.
     cmd.arg("plumbing")
@@ -464,7 +464,7 @@ fn update_check_unimplemented_tripwire() {
     // very file's doc comment naming these identifiers.
     let crates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut hits = Vec::new();
-    for needle in ["SPELUNK_NO_UPDATE_CHECK", "releases/latest", "UpdateConfig"] {
+    for needle in ["INKENTRY_NO_UPDATE_CHECK", "releases/latest", "UpdateConfig"] {
         for crate_dir in [
             "inkentry-cli",
             "inkentry-core",

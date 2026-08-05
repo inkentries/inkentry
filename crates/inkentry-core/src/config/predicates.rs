@@ -1,10 +1,10 @@
-/// Returns `true` when `SPELUNK_NO_SERVER` is set to a truthy value.
+/// Returns `true` when `INKENTRY_NO_SERVER` is set to a truthy value.
 ///
 /// This is the hard offline kill-switch shared by [`Config::resolve_mode`] and
 /// the CLI capability probe; both must agree on what "no server" means.
 pub fn no_server_env_set() -> bool {
     matches!(
-        std::env::var("SPELUNK_NO_SERVER").as_deref(),
+        std::env::var("INKENTRY_NO_SERVER").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
 }

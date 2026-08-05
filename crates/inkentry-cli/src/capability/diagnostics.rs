@@ -140,7 +140,7 @@ fn describe_rustls_error(e: &rustls::Error) -> String {
     }
 }
 
-/// Hint appended to a TLS WARN when `server_ca` / `SPELUNK_SERVER_CA` is
+/// Hint appended to a TLS WARN when `server_ca` / `INKENTRY_SERVER_CA` is
 /// configured: the two classic server-setup.md client-trust traps, so a user
 /// does not have to rediscover them by trial and error.
 pub(crate) fn cert_trust_hint() -> String {

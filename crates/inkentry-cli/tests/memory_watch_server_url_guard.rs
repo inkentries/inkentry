@@ -11,7 +11,7 @@
 //! guard's return type.
 //!
 //! A mock server backs the loopback probe. It is pointed at via
-//! `SPELUNK_STATE_DIR`'s `server.port` file (the same file `spelunk server
+//! `INKENTRY_STATE_DIR`'s `server.port` file (the same file `spelunk server
 //! start` writes), so `capability::get_tier` classifies it as `Tier::Server`
 //! with `server_url` still unset in config.
 
@@ -57,8 +57,8 @@ async fn watch_with_loopback_server_and_no_server_url_errors_instead_of_panickin
     write_server_port_file(&state_dir, &server);
 
     let assert = spelunk_bin()
-        .env("SPELUNK_STATE_DIR", &state_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env_remove("INKENTRY_NO_SERVER")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)
@@ -103,8 +103,8 @@ async fn watch_with_loopback_server_and_no_server_url_message_is_nonempty() {
     write_server_port_file(&state_dir, &server);
 
     spelunk_bin()
-        .env("SPELUNK_STATE_DIR", &state_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env_remove("INKENTRY_NO_SERVER")
         .current_dir(temp.path())
         .arg("--config")
         .arg(&config_path)

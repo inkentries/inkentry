@@ -26,14 +26,14 @@
 //! running Secret Service daemon. This module **never hard-fails** in those
 //! environments:
 //!
-//! * `SPELUNK_SERVER_KEY` remains the non-interactive escape hatch and is read
+//! * `INKENTRY_SERVER_KEY` remains the non-interactive escape hatch and is read
 //!   directly by [`crate::config::Config::load`] — it bypasses this store
 //!   entirely.
 //! * When no keychain backend is available, [`SecretStore::default_store`]
 //!   transparently falls back to an **opt-out file store** that keeps the
 //!   pre-existing `config.toml` behaviour (a clear, non-fatal degradation rather
-//!   than an error). Set `SPELUNK_SECRET_STORE=file` to force the file backend,
-//!   or `SPELUNK_SECRET_STORE=keychain` to require the keychain (erroring if it
+//!   than an error). Set `INKENTRY_SECRET_STORE=file` to force the file backend,
+//!   or `INKENTRY_SECRET_STORE=keychain` to require the keychain (erroring if it
 //!   is unavailable instead of falling back).
 //!
 //! Secrets are **never logged** — only key names and backend kinds appear in
@@ -70,7 +70,7 @@ pub const KEY_LLM_KEY: &str = "llm_key";
 /// * `keychain`     — require the OS keychain; error if it is unavailable.
 /// * `file`         — always use the plaintext file store (opt-in, e.g. for a
 ///   container that mounts `~/.config` from a secret manager).
-pub const ENV_SECRET_STORE: &str = "SPELUNK_SECRET_STORE";
+pub const ENV_SECRET_STORE: &str = "INKENTRY_SECRET_STORE";
 
 /// A pluggable secret backend: opaque string secrets keyed by name.
 ///
@@ -180,7 +180,7 @@ impl SecretStore for KeyringStore {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Plaintext-file [`SecretStore`] — the graceful fallback when no keychain is
-/// available, and the opt-in target for `SPELUNK_SECRET_STORE=file`.
+/// available, and the opt-in target for `INKENTRY_SECRET_STORE=file`.
 ///
 /// Secrets live as top-level TOML keys in `<dir>/secrets.toml`, written `0600`
 /// on Unix. This is the same trust level as the pre-existing plaintext
@@ -338,7 +338,7 @@ pub fn default_store(config_dir: &Path) -> Result<Box<dyn SecretStore>> {
                     "{ENV_SECRET_STORE}=keychain but no OS keychain backend is available \
                      (no Keychain / Secret Service). Unset {ENV_SECRET_STORE} to fall back to \
                      file storage, or set {ENV_SECRET_STORE}=file, or pass the credential via \
-                     SPELUNK_SERVER_KEY."
+                     INKENTRY_SERVER_KEY."
                 );
             }
         }
@@ -350,7 +350,7 @@ pub fn default_store(config_dir: &Path) -> Result<Box<dyn SecretStore>> {
                 tracing::info!(
                     "no OS keychain backend available — falling back to file storage at {}. \
                      Set {ENV_SECRET_STORE}=keychain to require the keychain, or pass the \
-                     credential via SPELUNK_SERVER_KEY in CI/headless environments.",
+                     credential via INKENTRY_SERVER_KEY in CI/headless environments.",
                     file_path.display()
                 );
                 Ok(Box::new(FileStore::new(file_path)))

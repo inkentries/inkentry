@@ -6,7 +6,7 @@
 //! Mirrors the server's own pid-file shape: one small state file per datum,
 //! written 0600 into the same state directory as the server's pid/port files
 //! (`capability::spelunk_state_dir`, the single resolver both share, so an
-//! `SPELUNK_STATE_DIR` override applies to worker and server files alike), a
+//! `INKENTRY_STATE_DIR` override applies to worker and server files alike), a
 //! `pid_is_alive` liveness check, and a foreign-pid classification so a
 //! recycled pid is never misreported as a live worker. Files are keyed by a
 //! hash of the index path because workers are per-project while the state

@@ -67,7 +67,7 @@ async fn dead_llm_server() -> MockServer {
 /// child silently find no `server_url` and skip the summary pass the test is
 /// about.
 ///
-/// `SPELUNK_MODE=cloud_first`: every test in this file drives its fixture's
+/// `INKENTRY_MODE=cloud_first`: every test in this file drives its fixture's
 /// explicit `server_url` (2026-07-23 ADR-004 revision).
 /// `index/summaries.rs::generate_summaries` calls `ServerInferenceClient::
 /// from_config` directly on the loaded `Config` with no loopback
@@ -79,17 +79,17 @@ async fn dead_llm_server() -> MockServer {
 fn index_command(project: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("spelunk"));
     cmd.current_dir(project)
-        .env("SPELUNK_SECRET_STORE", "file")
+        .env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", project)
         // Derived from this test's own `HOME` rather than inherited: an ambient
-        // `SPELUNK_CONFIG_DIR` wins over `HOME`, so without this every test in
+        // `INKENTRY_CONFIG_DIR` wins over `HOME`, so without this every test in
         // the file would share one config and secret store instead of getting
         // an isolated one.
         .env(
-            "SPELUNK_CONFIG_DIR",
+            "INKENTRY_CONFIG_DIR",
             project.join(".config").join("inkentry"),
         )
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .env_remove("XDG_CONFIG_HOME")
         .arg("index")
         .arg(".");

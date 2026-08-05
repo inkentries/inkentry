@@ -821,7 +821,7 @@ mod tests {
     fn clear_no_server_env() {
         // SAFETY: serialised via #[serial] on every test that calls this, so no
         // other test reads/writes this env var concurrently.
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
     }
 
     /// A path that opens as an empty, ephemeral SQLite DB — fine for the mode
@@ -845,10 +845,10 @@ mod tests {
     async fn mode_line_local_first_is_neutral_mode_word_without_call_to_action() {
         clear_no_server_env();
         // Isolate from any real local inkentry-server daemon on this machine:
-        // the local_first branch polls the local relay via `SPELUNK_STATE_DIR`.
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        // the local_first branch polls the local relay via `INKENTRY_STATE_DIR`.
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
 
         let cfg = crate::config::Config {
             server_url: Some("https://team.example:7777".to_string()),
@@ -862,8 +862,8 @@ mod tests {
         // other test touching this var.
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 
@@ -898,11 +898,11 @@ mod tests {
     async fn mode_line_local_first_shows_pending_count_from_local_outbox_alone() {
         clear_no_server_env();
         register_sqlite_vec_for_status_tests();
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
         // Empty state dir: no local relay reachable, so this must come from
         // `pending_sync_count()` alone, never a poll.
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
 
         let tmp_mem = tempfile::TempDir::new().unwrap();
         let mem_path = tmp_mem.path().join("memory.db");
@@ -924,8 +924,8 @@ mod tests {
 
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 
@@ -997,9 +997,9 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
         std::fs::write(
             tmp_state.path().join("server.port"),
             format!("{relay_port}\n"),
@@ -1039,8 +1039,8 @@ mod tests {
 
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 
@@ -1108,9 +1108,9 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp_state.path()) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
         std::fs::write(
             tmp_state.path().join("server.port"),
             format!("{relay_port}\n"),
@@ -1166,8 +1166,8 @@ mod tests {
 
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 

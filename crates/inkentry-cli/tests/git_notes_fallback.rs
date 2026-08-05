@@ -42,8 +42,8 @@ const NO_PROJECT_ERR: &str = "no spelunk project here. Run 'spelunk init' first"
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 
@@ -779,8 +779,8 @@ fn failed_pre_init_carry_is_fatal_and_writes_nothing() {
 
     let mut cmd = spelunk_bin_in(home.path());
     cmd.current_dir(repo.path())
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         // Neutralize every identity source for the git subprocess spelunk spawns.
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")

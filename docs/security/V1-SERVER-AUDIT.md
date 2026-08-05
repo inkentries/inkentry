@@ -147,9 +147,9 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
 
 | Check | Status |
 |---|---|
-| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface. Neither refusal has an opt-out. |
+| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `INKENTRY_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface. Neither refusal has an opt-out. |
 | `DATABASE_URL` never logged | N/A (cloud-only). No `DATABASE_URL`; the DB is a local SQLite file path. The applicable rule, that the bearer key is never logged, holds: ☑ `auth.rs` never logs the key or its hash. |
-| No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `SPELUNK_SERVER_KEY` is supplied by the operator at runtime |
+| No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `INKENTRY_SERVER_KEY` is supplied by the operator at runtime |
 | `.env*` excluded from any server-side file operations | N/A. The server does not walk the filesystem or index files; only the CLI indexer reads project trees (where `.env*` exclusion applies, and is documented in the CLI program). |
 
 ## 8. Error responses
@@ -176,14 +176,14 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
 ## Running the checks
 
 ```bash
-# From the workspace root. Export SPELUNK_SECRET_STORE=file on macOS to avoid
+# From the workspace root. Export INKENTRY_SECRET_STORE=file on macOS to avoid
 # Keychain prompts during tests.
 cargo audit
 cargo deny check advisories licenses bans
 cargo clippy -p inkentry-server -- -W clippy::all -D warnings
 
 # Server unit + handler tests (SQLite; no external services required)
-SPELUNK_SECRET_STORE=file cargo test -p inkentry-server
+INKENTRY_SECRET_STORE=file cargo test -p inkentry-server
 
 # Auth, injection-scan, input-cap, and error-mapping tests live in-crate:
 #   auth.rs (constant-time key compare), security.rs (injection patterns),

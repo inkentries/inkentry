@@ -122,7 +122,7 @@ git-notes carrier rationale.
 ### Team server and sync modes
 
 Configuring a team `server_url` does not, by itself, redirect reads or writes
-to the server. The `mode` config field (or the `SPELUNK_MODE` environment
+to the server. The `mode` config field (or the `INKENTRY_MODE` environment
 variable) controls how the CLI reconciles the local store and the server:
 
 | `mode` | reads | writes | when the server is unreachable |
@@ -166,7 +166,7 @@ sync](#repair-during-push-and-sync)).
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
-(for certificate trust, see `server_ca` / `SPELUNK_SERVER_CA`). The CLI never
+(for certificate trust, see `server_ca` / `INKENTRY_SERVER_CA`). The CLI never
 falls back to local data in this mode. Configure it in `.inkentry/config.toml`:
 
 ```toml
@@ -193,7 +193,7 @@ but its cost grows with the size of the project rather than staying an indexed
 lookup.
 
 **`offline`** guarantees no server contact at all, even with `server_url`
-set. `SPELUNK_NO_SERVER=1` forces it regardless of config.
+set. `INKENTRY_NO_SERVER=1` forces it regardless of config.
 
 ### Sharing memory across clones via git-notes
 
@@ -500,7 +500,7 @@ For GitHub issues, `spelunk` calls `gh api` to get structured issue data (requir
 
 For non-GitHub URLs, if a script exists at `~/.config/spelunk/scripts/web-to-md.ts`, `spelunk` runs it under `bun` (`bun ~/.config/spelunk/scripts/web-to-md.ts <url>`) and uses its stdout instead of the built-in HTML-stripping fallback — useful for sites that need JS rendering or custom extraction logic. The script's first line (`# Title`) becomes the entry title; the rest becomes the body.
 
-This is opt-in by design: the script only runs if you've placed it at that exact, spelunk-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `spelunk` silently falls back to the built-in HTML extraction. Set `SPELUNK_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/spelunk/scripts`.
+This is opt-in by design: the script only runs if you've placed it at that exact, spelunk-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `spelunk` silently falls back to the built-in HTML extraction. Set `INKENTRY_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/spelunk/scripts`.
 
 > **Breaking change:** prior to this, `spelunk` looked for the hook script at
 > `~/scripts/web-to-md.ts`. That location is **no longer read** — any script
@@ -741,7 +741,7 @@ hard errors (unreadable source DB, write failure). When `server.db` does not
 exist the command is a no-op and exits 0.
 
 If reconcilable notes are detected at startup, spelunk prints a one-time nudge
-to stderr. Set `SPELUNK_NO_RECONCILE_NUDGE=1` to suppress it in CI or scripts.
+to stderr. Set `INKENTRY_NO_RECONCILE_NUDGE=1` to suppress it in CI or scripts.
 
 ### Security notes
 

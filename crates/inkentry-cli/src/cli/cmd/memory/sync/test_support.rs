@@ -54,7 +54,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
 
 // A mocked local inkentry-server standing in for the loopback embedder, wired
 // up the way auto-discovery actually finds one: a `server.port` file under
-// `SPELUNK_STATE_DIR` pointing at the mock. Going through the real discovery
+// `INKENTRY_STATE_DIR` pointing at the mock. Going through the real discovery
 // path (rather than injecting an `inference_url`) is what makes the
 // "embed never reaches the team server_url" tests meaningful, and pins the
 // probe to this mock instead of whatever happens to listen on port 7777 on the
@@ -72,12 +72,12 @@ impl Drop for LoopbackEmbedder {
     fn drop(&mut self) {
         unsafe {
             match self.prev_state_dir.take() {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
             match self.prev_no_server.take() {
-                Some(v) => std::env::set_var("SPELUNK_NO_SERVER", v),
-                None => std::env::remove_var("SPELUNK_NO_SERVER"),
+                Some(v) => std::env::set_var("INKENTRY_NO_SERVER", v),
+                None => std::env::remove_var("INKENTRY_NO_SERVER"),
             }
         }
     }
@@ -135,11 +135,11 @@ pub(super) async fn spawn_loopback_embedder(
     let port = server.address().port();
     let state_dir = tempfile::TempDir::new().unwrap();
     std::fs::write(state_dir.path().join("server.port"), format!("{port}\n")).unwrap();
-    let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
-    let prev_no_server = std::env::var_os("SPELUNK_NO_SERVER");
+    let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+    let prev_no_server = std::env::var_os("INKENTRY_NO_SERVER");
     unsafe {
-        std::env::set_var("SPELUNK_STATE_DIR", state_dir.path());
-        std::env::remove_var("SPELUNK_NO_SERVER");
+        std::env::set_var("INKENTRY_STATE_DIR", state_dir.path());
+        std::env::remove_var("INKENTRY_NO_SERVER");
     }
     LoopbackEmbedder {
         server,

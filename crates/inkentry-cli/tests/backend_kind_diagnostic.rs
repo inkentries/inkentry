@@ -33,13 +33,13 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     )
     .unwrap();
 
-    // Build index. `SPELUNK_NO_SERVER=1` forces offline so the index skips the
+    // Build index. `INKENTRY_NO_SERVER=1` forces offline so the index skips the
     // embed phase entirely (no embedding server needed); without it, loopback
     // auto-discovery can pick up a `inkentry-server` running on 127.0.0.1:7777
     // and route the embed call there, which fails the build with a dimension
     // mismatch. We only care about the SQLite memory-backend path here.
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -60,8 +60,8 @@ fn status_json_includes_memory_backend_field() {
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -110,8 +110,8 @@ fn check_json_includes_memory_backend_field() {
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("check")
@@ -157,8 +157,8 @@ fn status_text_mentions_memory_backend() {
 
     spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env("SPELUNK_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("status")

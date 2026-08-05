@@ -208,7 +208,7 @@ spelunk server stop      # stop the daemon
 
 In non-interactive contexts (CI, agent harnesses) `spelunk init` does **not**
 auto-spawn the server — run `spelunk server start` first if you want semantic
-search there, or set `SPELUNK_NO_SERVER=1` to stay fully offline.
+search there, or set `INKENTRY_NO_SERVER=1` to stay fully offline.
 
 ## 3. Start using it inside your project
 
@@ -302,7 +302,7 @@ managed spelunk.cloud (see
 code still stays local.
 
 To stay fully offline (CI, air-gapped, or you just don't want a background
-process), set `SPELUNK_NO_SERVER=1`: spelunk then runs built-in only, and
+process), set `INKENTRY_NO_SERVER=1`: spelunk then runs built-in only, and
 inference-only commands exit with a clear message instead of starting anything.
 
 For how discovery works and how to point the CLI at a remote server, see
@@ -349,7 +349,7 @@ spelunk server stop     # if one is already running
 spelunk server start    # starts with the endpoint configured above
 ```
 
-`SPELUNK_LLM_URL`, `SPELUNK_LLM_MODEL`, and `SPELUNK_LLM_KEY` override the
+`INKENTRY_LLM_URL`, `INKENTRY_LLM_MODEL`, and `INKENTRY_LLM_KEY` override the
 config file and the stored credential, and `spelunk server start --llm-url` /
 `--llm-model` override those in turn for a single daemon.
 
@@ -359,7 +359,7 @@ Or, if you run `inkentry-server` yourself, pass the flags directly:
 inkentry-server --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-Add `--llm-key-file /path/to/key` (or set `SPELUNK_LLM_KEY`) if the endpoint is
+Add `--llm-key-file /path/to/key` (or set `INKENTRY_LLM_KEY`) if the endpoint is
 keyed. With a credential configured, a plaintext `http://` endpoint on anything
 but loopback is refused at startup rather than sending the credential in the
 clear: use `https://` for a remote endpoint. A keyless endpoint is unaffected,
@@ -503,11 +503,11 @@ spelunk auth set-key --server https://spelunk.internal.example.com
 The key is stored in your OS keychain (macOS Keychain, Linux Secret Service,
 Windows Credential Manager) rather than in plaintext, keyed by the server's
 origin so a second project's server key never collides with this one. For CI /
-headless use, the `SPELUNK_SERVER_KEY` environment variable works everywhere
+headless use, the `INKENTRY_SERVER_KEY` environment variable works everywhere
 and takes precedence over the stored key:
 
 ```bash
-export SPELUNK_SERVER_KEY="your-shared-api-key"
+export INKENTRY_SERVER_KEY="your-shared-api-key"
 ```
 
 If you have an old personal `~/.config/spelunk/config.toml` with a bare
@@ -516,7 +516,7 @@ automatically the first time it's needed; no action required. A `server_key`
 line in a project's checked-in `.inkentry/config.toml` is no longer read at all,
 so remove it if one is still there. On a host with no keychain, spelunk falls
 back to an owner-only `~/.config/spelunk/secrets.toml`. For the full
-credential-storage rules and the `SPELUNK_SECRET_STORE` override, see the
+credential-storage rules and the `INKENTRY_SECRET_STORE` override, see the
 [Commands reference](commands.md#spelunk-auth).
 
 `project_id` stays a human-readable slug, and it is sent to the server exactly

@@ -647,7 +647,7 @@ mod tests {
         // a loading -> ready transition across several polls. `server_url` is
         // deliberately unroutable, so an accidental fallback to it surfaces
         // as a connection/DNS error, not a silent wrong-but-passing result.
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
         let loopback = MockServer::start().await;
         Mock::given(method("GET"))
@@ -676,10 +676,10 @@ mod tests {
         std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
 
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
         // SAFETY: serialised via #[serial(server_state_dir_env)] against
         // every other test touching this var.
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
 
         let cfg = Config {
             server_url: Some("https://cloud.invalid.example:1".to_string()),
@@ -693,8 +693,8 @@ mod tests {
 
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 

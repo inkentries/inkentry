@@ -994,7 +994,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_attaches_refresh_state_for_auth_token_bearer() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1029,7 +1029,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_no_refresh_state_for_legacy_server_key() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1070,7 +1070,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let cfg = crate::config::Config {
             server_url: Some("http://127.0.0.1:9797".to_string()),
@@ -1086,7 +1086,7 @@ mod tests {
         // secret store; on macOS in a headless session that keychain
         // lookup blocks indefinitely instead of failing fast, which is what
         // made this test (and the whole module) appear to hang "even in
-        // isolation" without `SPELUNK_SECRET_STORE=file` set in the
+        // isolation" without `INKENTRY_SECRET_STORE=file` set in the
         // environment.
         let store = inkentry_core::config::secret_store::MemoryStore::default();
         let client =
@@ -1108,7 +1108,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_local_first_with_only_server_url_set_has_no_inference_target() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let cfg = crate::config::Config {
             server_url: Some("https://api.spelunk.cloud".to_string()),
@@ -1140,7 +1140,7 @@ mod tests {
     #[serial_test::serial]
     async fn embed_text_local_first_uses_loopback_not_configured_server_url() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let loopback = MockServer::start().await;
         let dim = inkentry_core::embeddings::EMBEDDING_DIM;
@@ -1318,7 +1318,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_accepts_loopback_http_inference_url() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1335,7 +1335,7 @@ mod tests {
     #[serial_test::serial]
     fn from_config_accepts_https_inference_url() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1359,7 +1359,7 @@ mod tests {
     #[serial_test::serial]
     fn explicit_remote_constructor_keeps_the_flag_when_the_inference_target_is_set() {
         unsafe {
-            std::env::remove_var("SPELUNK_SERVER_KEY");
+            std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let cfg = crate::config::Config {
             inference_url: Some("https://team.example:7777".to_string()),

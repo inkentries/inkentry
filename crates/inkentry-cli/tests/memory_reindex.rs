@@ -4,10 +4,10 @@
 // store upgrade dropped them, or no embedder was reachable at add time). These
 // tests drive the real binary with the embed endpoint mocked via wiremock, so
 // none of them depend on the in-process native embedder (the `--no-default-
-// features` gate stays valid). The no-embedder case uses `SPELUNK_NO_SERVER=1`.
+// features` gate stays valid). The no-embedder case uses `INKENTRY_NO_SERVER=1`.
 //
 // The mock embedder is wired in via **loopback auto-discovery**
-// (`SPELUNK_STATE_DIR`/`server.port`), not `server_url`, since the
+// (`INKENTRY_STATE_DIR`/`server.port`), not `server_url`, since the
 // 2026-07-23 ADR-004 revision: `reindex` runs in the
 // default `local_first` mode here (no explicit `mode` is set), and
 // `local_first` never routes inference through an explicit `server_url` —
@@ -162,7 +162,7 @@ struct Fixture {
     project_dir: PathBuf,
     mem_path: PathBuf,
     global_config: PathBuf,
-    // Isolated `SPELUNK_STATE_DIR` for this fixture's loopback auto-discovery
+    // Isolated `INKENTRY_STATE_DIR` for this fixture's loopback auto-discovery
     // (`server.port`, step 3a). Never the hard-coded default port 7777.
     state_dir: PathBuf,
 }
@@ -197,13 +197,13 @@ fn fixture() -> Fixture {
     }
 }
 
-// Seed one unembedded note via the real `memory add`. `SPELUNK_NO_SERVER=1` plus
+// Seed one unembedded note via the real `memory add`. `INKENTRY_NO_SERVER=1` plus
 // the absence of a project server config means the add path stores no vector.
 fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
     spelunk_bin()
         .current_dir(&f.project_dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -237,9 +237,9 @@ fn set_server(f: &Fixture, url: &str) {
 }
 
 // Remove the port file so `seed` stores notes unembedded: loopback
-// auto-discovery is honored even under `SPELUNK_NO_SERVER=0` (unset), so
+// auto-discovery is honored even under `INKENTRY_NO_SERVER=0` (unset), so
 // seeding an unembedded note after a server has been configured requires
-// clearing it. `seed`/`archive_note` set `SPELUNK_NO_SERVER=1` themselves, so
+// clearing it. `seed`/`archive_note` set `INKENTRY_NO_SERVER=1` themselves, so
 // in practice this is defensive; kept for symmetry with `set_server`.
 fn clear_server(f: &Fixture) {
     let p = f.state_dir.join("server.port");
@@ -252,7 +252,7 @@ fn clear_server(f: &Fixture) {
 fn reindex_cmd(f: &Fixture) -> Command {
     let mut cmd = spelunk_bin();
     cmd.current_dir(&f.project_dir)
-        .env("SPELUNK_STATE_DIR", &f.state_dir)
+        .env("INKENTRY_STATE_DIR", &f.state_dir)
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -268,8 +268,8 @@ fn reindex_cmd(f: &Fixture) -> Command {
 fn archive_note(f: &Fixture, id: i64) {
     spelunk_bin()
         .current_dir(&f.project_dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -489,8 +489,8 @@ fn reindex_without_embedder_errors_and_writes_nothing() {
     // No project server config set: no server_url anywhere.
 
     reindex_cmd(&f)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .assert()
         .failure()
         .stderr(predicates::str::contains("requires inkentry-server"));
@@ -631,7 +631,7 @@ fn migration_notice_fires_once_after_768_upgrade() {
     // First memory command after the upgrade: the notice fires on stderr.
     spelunk_bin()
         .current_dir(&f.project_dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -651,7 +651,7 @@ fn migration_notice_fires_once_after_768_upgrade() {
     // The sentinel is now set: a second command must NOT repeat the notice.
     spelunk_bin()
         .current_dir(&f.project_dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -741,7 +741,7 @@ fn no_reembed_notice_on_fresh_store() {
 
     spelunk_bin()
         .current_dir(&f.project_dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")
@@ -776,7 +776,7 @@ fn reindex_in_cloud_first_with_server_url_is_not_applicable() {
     );
 
     reindex_cmd(&f)
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .assert()
         .failure()
         .stderr(predicates::str::contains("not applicable in cloud_first"))
@@ -807,7 +807,7 @@ fn reindex_in_cloud_first_without_server_url_proceeds() {
     set_server(&f, &mock.uri());
 
     reindex_cmd(&f)
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .assert()
         .success()
         .stdout(predicates::str::contains("1 embedded"));

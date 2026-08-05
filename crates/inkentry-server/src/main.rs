@@ -46,14 +46,14 @@ struct Args {
     db: PathBuf,
 
     /// Shared API key (Bearer token) passed inline. Visible in the process
-    /// table and `systemctl show`, so prefer --key-file or SPELUNK_SERVER_KEY
+    /// table and `systemctl show`, so prefer --key-file or INKENTRY_SERVER_KEY
     /// for real deployments. Leave all key sources unset to disable auth
     /// (loopback dev only). Overrides every other key source.
     #[arg(long)]
     key: Option<String>,
 
     /// Read the shared API key from a file (its whole trimmed contents). A
-    /// first-class alternative to SPELUNK_SERVER_KEY, not a fallback: point it
+    /// first-class alternative to INKENTRY_SERVER_KEY, not a fallback: point it
     /// at a `0600` file, or at `$CREDENTIALS_DIRECTORY/server-key` when run
     /// under systemd `LoadCredential=`. When run under systemd, a
     /// `server-key` credential is picked up automatically even without this
@@ -65,13 +65,13 @@ struct Args {
     /// with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`,
     /// which are the bearer API key — a different secret. The certificate chain
     /// is public; a routable bind needs this plus `--tls-key` and an API key.
-    #[arg(long, env = "SPELUNK_SERVER_TLS_CERT", value_name = "PATH")]
+    #[arg(long, env = "INKENTRY_SERVER_TLS_CERT", value_name = "PATH")]
     tls_cert: Option<PathBuf>,
 
     /// PEM private key matching `--tls-cert`. Set with `--tls-cert` (both or
     /// neither). A high-value secret: supply via a systemd credential or a
     /// `0600` root-owned file, never an `Environment=` line.
-    #[arg(long, env = "SPELUNK_SERVER_TLS_KEY", value_name = "PATH")]
+    #[arg(long, env = "INKENTRY_SERVER_TLS_KEY", value_name = "PATH")]
     tls_key: Option<PathBuf>,
 
     /// Embedding dimension expected from clients (must match the team's model).
@@ -91,20 +91,20 @@ struct Args {
     /// loads from this directory instead of the Hugging Face Hub: zero
     /// network access, at startup or at runtime. Only consulted when the
     /// bundled native embedder is the active backend; ignored otherwise.
-    #[arg(long, env = "SPELUNK_MODEL_DIR", value_name = "PATH")]
+    #[arg(long, env = "INKENTRY_MODEL_DIR", value_name = "PATH")]
     model_dir: Option<PathBuf>,
 
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
-    /// (`/explore`). Overrides `SPELUNK_LLM_URL`.
-    #[arg(long, env = "SPELUNK_LLM_URL")]
+    /// (`/explore`). Overrides `INKENTRY_LLM_URL`.
+    #[arg(long, env = "INKENTRY_LLM_URL")]
     llm_url: Option<String>,
 
-    /// LLM model name (e.g. `google/gemma-3n-e4b`). Overrides `SPELUNK_LLM_MODEL`.
-    #[arg(long, env = "SPELUNK_LLM_MODEL", default_value = "")]
+    /// LLM model name (e.g. `google/gemma-3n-e4b`). Overrides `INKENTRY_LLM_MODEL`.
+    #[arg(long, env = "INKENTRY_LLM_MODEL", default_value = "")]
     llm_model: String,
 
     /// Credential for the `--llm-url` endpoint, passed inline. Visible in the
-    /// process table: prefer `--llm-key-file` or `SPELUNK_LLM_KEY`. Distinct
+    /// process table: prefer `--llm-key-file` or `INKENTRY_LLM_KEY`. Distinct
     /// from `--key`, which is this server's own inbound bearer.
     #[arg(long, value_name = "KEY")]
     llm_key: Option<String>,
@@ -182,12 +182,12 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         "embed CPU thread budget resolved"
     );
 
-    // Resolve the API key from --key / --key-file / SPELUNK_SERVER_KEY /
+    // Resolve the API key from --key / --key-file / INKENTRY_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
     // value from any source counts as "no key" — a set-but-empty
-    // `SPELUNK_SERVER_KEY` (docker-compose's `${SPELUNK_SERVER_KEY:-}` default)
+    // `INKENTRY_SERVER_KEY` (docker-compose's `${INKENTRY_SERVER_KEY:-}` default)
     // must read as unauthenticated, not as a broken empty-token key.
-    let env_key = std::env::var("SPELUNK_SERVER_KEY").ok();
+    let env_key = std::env::var("INKENTRY_SERVER_KEY").ok();
     let credentials_dir = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
     let api_key = resolve_api_key(
         args.key.as_deref(),
@@ -208,7 +208,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // usually a detached daemon with no user session, so a keychain read would
     // be an invisible, unanswerable authorization prompt. The spawning CLI
     // resolves it and hands it over out of band.
-    let env_llm_key = std::env::var("SPELUNK_LLM_KEY").ok();
+    let env_llm_key = std::env::var("INKENTRY_LLM_KEY").ok();
     let llm_key = resolve_llm_key(
         args.llm_key.as_deref(),
         args.llm_key_file.as_deref(),
@@ -233,7 +233,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     if api_key.is_none() {
         tracing::warn!(
             "No API key configured — server is running without authentication. \
-             Set --key-file, SPELUNK_SERVER_KEY, or --key for production use."
+             Set --key-file, INKENTRY_SERVER_KEY, or --key for production use."
         );
     }
 
@@ -292,7 +292,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     };
 
     // Server-side max_tokens ceiling: env var or 8192 default.
-    let max_tokens_ceiling: usize = std::env::var("SPELUNK_MAX_TOKENS")
+    let max_tokens_ceiling: usize = std::env::var("INKENTRY_MAX_TOKENS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8192);
@@ -367,7 +367,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
 
     // Load the native embedder on a background task now that health is live.
     // Both `embed_hub::load_from_hub()` (network) and `load_from_model_dir()`
-    // (offline, when `--model-dir`/`SPELUNK_MODEL_DIR` is set) are
+    // (offline, when `--model-dir`/`INKENTRY_MODEL_DIR` is set) are
     // blocking/CPU-heavy, so run whichever applies on the blocking pool;
     // publish the backend into the slot on success (state → ready) or record
     // the failure (state → unavailable) either way: an offline host with no
@@ -452,7 +452,7 @@ struct ThreadBudget {
 }
 
 /// CPU threads candle may use for a forward pass, so a running embed leaves
-/// cores free to serve requests. Precedence: `SPELUNK_EMBED_THREADS` > an
+/// cores free to serve requests. Precedence: `INKENTRY_EMBED_THREADS` > an
 /// already-set `RAYON_NUM_THREADS` > `max(1, physical - 2)`. A zero or
 /// unparseable override is `None`/`Some(0)` here and falls through.
 fn embed_thread_budget(
@@ -476,10 +476,10 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
         std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
     }
     let rayon = env_threads("RAYON_NUM_THREADS");
-    let spelunk = env_threads("SPELUNK_EMBED_THREADS");
+    let spelunk = env_threads("INKENTRY_EMBED_THREADS");
     let threads = embed_thread_budget(num_cpus::get_physical(), rayon, spelunk);
     let source = if spelunk.filter(|&n| n > 0).is_some() {
-        "SPELUNK_EMBED_THREADS"
+        "INKENTRY_EMBED_THREADS"
     } else if rayon.filter(|&n| n > 0).is_some() {
         "RAYON_NUM_THREADS"
     } else {
@@ -506,7 +506,7 @@ fn host_is_loopback(host: &str) -> bool {
 }
 
 /// Normalise a configured API key: a blank/whitespace value (e.g. a
-/// set-but-empty `SPELUNK_SERVER_KEY`, or an empty credential file) becomes
+/// set-but-empty `INKENTRY_SERVER_KEY`, or an empty credential file) becomes
 /// `None`, so "empty key" is treated as "no key" everywhere — both by the
 /// bind-safety guard and by the auth provider.
 fn normalize_api_key(key: Option<&str>) -> Option<String> {
@@ -524,7 +524,7 @@ const SERVER_KEY_CREDENTIAL: &str = "server-key";
 ///
 /// 1. `--key <value>` — inline flag (most explicit).
 /// 2. `--key-file <path>` — explicit file; a read failure is fatal.
-/// 3. `SPELUNK_SERVER_KEY` — environment variable.
+/// 3. `INKENTRY_SERVER_KEY` — environment variable.
 /// 4. `$CREDENTIALS_DIRECTORY/server-key` — systemd `LoadCredential=`, used
 ///    automatically when the credential is present.
 ///
@@ -615,7 +615,7 @@ fn check_bind_safety(host: &str, port: u16, key_is_set: bool, tls_is_set: bool) 
             "Refusing to bind to non-loopback address '{host}:{port}' over plaintext HTTP.\n\
              A server reachable from other machines must terminate TLS in-process. Either:\n  \
              • pass --tls-cert <pem> --tls-key <pem> and an API key \
-             (--key / --key-file / SPELUNK_SERVER_KEY) to serve HTTPS on {host}:{port}, or\n  \
+             (--key / --key-file / INKENTRY_SERVER_KEY) to serve HTTPS on {host}:{port}, or\n  \
              • bind to loopback (the default --host 127.0.0.1) for local-only plaintext use."
         );
     }
@@ -626,7 +626,7 @@ fn check_bind_safety(host: &str, port: u16, key_is_set: bool, tls_is_set: bool) 
         anyhow::bail!(
             "Refusing to bind to non-loopback address '{host}:{port}' with TLS but no API key.\n\
              A remote HTTPS server must require an API key so callers are authenticated. Either:\n  \
-             • set --key / --key-file / SPELUNK_SERVER_KEY, or\n  \
+             • set --key / --key-file / INKENTRY_SERVER_KEY, or\n  \
              • bind to loopback (the default --host 127.0.0.1) for local-only use."
         );
     }
@@ -742,7 +742,7 @@ mod arg_tests {
     }
 
     // `--llm-key` deliberately carries no clap `env` attribute. With one,
-    // SPELUNK_LLM_KEY would populate `args.llm_key`, which `resolve_llm_key`
+    // INKENTRY_LLM_KEY would populate `args.llm_key`, which `resolve_llm_key`
     // ranks above `--llm-key-file`, silently inverting the documented
     // precedence. Precedence lives in `resolve_llm_key` alone, so this pins the
     // absence against a future tidy-up.
@@ -750,14 +750,14 @@ mod arg_tests {
     #[serial_test::serial(llm_key_env)]
     fn the_key_env_var_does_not_populate_the_inline_key_arg() {
         // SAFETY: pinned to the `llm_key_env` serial group, so no other test
-        // reads or writes SPELUNK_LLM_KEY concurrently.
-        unsafe { std::env::set_var("SPELUNK_LLM_KEY", "sk-from-env") };
+        // reads or writes INKENTRY_LLM_KEY concurrently.
+        unsafe { std::env::set_var("INKENTRY_LLM_KEY", "sk-from-env") };
         let args = Args::parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
 
         assert_eq!(
             args.llm_key, None,
-            "SPELUNK_LLM_KEY must not reach args.llm_key: it would outrank --llm-key-file"
+            "INKENTRY_LLM_KEY must not reach args.llm_key: it would outrank --llm-key-file"
         );
     }
 
@@ -765,9 +765,9 @@ mod arg_tests {
     #[serial_test::serial(llm_key_env)]
     fn the_key_env_var_does_not_populate_the_key_file_arg_either() {
         // SAFETY: see the sibling test; same serial group.
-        unsafe { std::env::set_var("SPELUNK_LLM_KEY", "/etc/passwd") };
+        unsafe { std::env::set_var("INKENTRY_LLM_KEY", "/etc/passwd") };
         let args = Args::parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("SPELUNK_LLM_KEY") };
+        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
 
         assert_eq!(args.llm_key_file, None);
     }
@@ -947,7 +947,7 @@ mod arg_tests {
     }
 
     /// A blank/whitespace key (incl. clap's `Some("")` for a set-but-empty
-    /// `SPELUNK_SERVER_KEY`, e.g. docker-compose's default) normalises to `None`
+    /// `INKENTRY_SERVER_KEY`, e.g. docker-compose's default) normalises to `None`
     /// — otherwise a keyless container would slip past the bind-safety guard.
     #[test]
     fn blank_api_key_normalises_to_none() {
@@ -1042,7 +1042,7 @@ mod arg_tests {
         assert_eq!(key.as_deref(), Some("cred-secret"));
     }
 
-    /// Precedence: inline `--key` > `--key-file` > `SPELUNK_SERVER_KEY` >
+    /// Precedence: inline `--key` > `--key-file` > `INKENTRY_SERVER_KEY` >
     /// systemd credential. Each non-blank source wins over the ones below it.
     #[test]
     fn key_source_precedence() {
@@ -1086,7 +1086,7 @@ mod arg_tests {
     }
 
     /// A blank source is ignored and resolution falls through to the next one —
-    /// e.g. a set-but-empty `SPELUNK_SERVER_KEY` must not mask a real credential.
+    /// e.g. a set-but-empty `INKENTRY_SERVER_KEY` must not mask a real credential.
     #[test]
     fn blank_source_falls_through() {
         let dir = tempfile::tempdir().unwrap();
@@ -1155,36 +1155,36 @@ mod arg_tests {
         // the real process env var, and cargo test runs in threads within one
         // process, so an unguarded reader can observe another test's
         // temporarily-set value.
-        let prev = std::env::var("SPELUNK_MODEL_DIR").ok();
+        let prev = std::env::var("INKENTRY_MODEL_DIR").ok();
         // SAFETY: guarded by #[serial] so no other test reads/writes this var
         // concurrently.
-        unsafe { std::env::remove_var("SPELUNK_MODEL_DIR") };
+        unsafe { std::env::remove_var("INKENTRY_MODEL_DIR") };
 
         let args = Args::parse_from(["inkentry-server"]);
 
         if let Some(v) = prev {
-            unsafe { std::env::set_var("SPELUNK_MODEL_DIR", v) };
+            unsafe { std::env::set_var("INKENTRY_MODEL_DIR", v) };
         }
 
         assert_eq!(args.model_dir, None);
     }
 
-    /// `SPELUNK_MODEL_DIR` is a first-class equal source, not just a flag:
-    /// the same convention as `SPELUNK_SERVER_TLS_CERT`/`SPELUNK_LLM_URL`, so
+    /// `INKENTRY_MODEL_DIR` is a first-class equal source, not just a flag:
+    /// the same convention as `INKENTRY_SERVER_TLS_CERT`/`INKENTRY_LLM_URL`, so
     /// a systemd unit or container entrypoint can set it without a flag.
     #[test]
     #[serial_test::serial(model_dir_env)]
     fn model_dir_env_var_is_honoured() {
-        let prev = std::env::var("SPELUNK_MODEL_DIR").ok();
+        let prev = std::env::var("INKENTRY_MODEL_DIR").ok();
         // SAFETY: guarded by #[serial] so no other test reads/writes this var
         // concurrently; restored before returning.
-        unsafe { std::env::set_var("SPELUNK_MODEL_DIR", "/srv/spelunk/models") };
+        unsafe { std::env::set_var("INKENTRY_MODEL_DIR", "/srv/spelunk/models") };
 
         let args = Args::parse_from(["inkentry-server"]);
 
         match prev {
-            Some(v) => unsafe { std::env::set_var("SPELUNK_MODEL_DIR", v) },
-            None => unsafe { std::env::remove_var("SPELUNK_MODEL_DIR") },
+            Some(v) => unsafe { std::env::set_var("INKENTRY_MODEL_DIR", v) },
+            None => unsafe { std::env::remove_var("INKENTRY_MODEL_DIR") },
         }
 
         assert_eq!(
@@ -1196,8 +1196,8 @@ mod arg_tests {
     // ── Removed external-embedding relocation options ────────────────────────
     //
     // The embedding model is pinned product-wide to the bundled native
-    // embedder: `--embedding-url` / `SPELUNK_EMBEDDING_URL` (relocate compute)
-    // and the legacy `--embedding-model` / `SPELUNK_EMBEDDING_MODEL` (select a
+    // embedder: `--embedding-url` / `INKENTRY_EMBEDDING_URL` (relocate compute)
+    // and the legacy `--embedding-model` / `INKENTRY_EMBEDDING_MODEL` (select a
     // model) must no longer exist as parseable flags at all.
 
     /// `--embedding-url` is unknown to clap, not silently accepted.
@@ -1231,7 +1231,7 @@ mod arg_tests {
         );
     }
 
-    /// `SPELUNK_EMBEDDING_URL` / `SPELUNK_EMBEDDING_MODEL` in the environment
+    /// `INKENTRY_EMBEDDING_URL` / `INKENTRY_EMBEDDING_MODEL` in the environment
     /// are plain unread variables now (no `env = "..."` attribute maps them to
     /// any field): parsing must succeed and must not be influenced by them.
     #[test]
@@ -1240,14 +1240,14 @@ mod arg_tests {
         // SAFETY: test-only, guarded by #[serial_test::serial] against
         // concurrent env mutation from other tests.
         unsafe {
-            std::env::set_var("SPELUNK_EMBEDDING_URL", "http://127.0.0.1:1234");
-            std::env::set_var("SPELUNK_EMBEDDING_MODEL", "some-model");
+            std::env::set_var("INKENTRY_EMBEDDING_URL", "http://127.0.0.1:1234");
+            std::env::set_var("INKENTRY_EMBEDDING_MODEL", "some-model");
         }
         let args = Args::parse_from(["inkentry-server"]);
         assert_eq!(args.host, "127.0.0.1", "parsing must succeed unaffected");
         unsafe {
-            std::env::remove_var("SPELUNK_EMBEDDING_URL");
-            std::env::remove_var("SPELUNK_EMBEDDING_MODEL");
+            std::env::remove_var("INKENTRY_EMBEDDING_URL");
+            std::env::remove_var("INKENTRY_EMBEDDING_MODEL");
         }
     }
 
@@ -1341,7 +1341,7 @@ mod thread_budget_tests {
         assert_eq!(embed_thread_budget(3, None, None), 1);
     }
 
-    /// `SPELUNK_EMBED_THREADS` wins over both the default and a set
+    /// `INKENTRY_EMBED_THREADS` wins over both the default and a set
     /// `RAYON_NUM_THREADS`.
     #[test]
     fn spelunk_override_wins() {

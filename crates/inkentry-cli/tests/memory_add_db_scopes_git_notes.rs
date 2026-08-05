@@ -55,8 +55,8 @@ fn record_field(line: &str, key: &str) -> String {
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 

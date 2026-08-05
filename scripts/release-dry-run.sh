@@ -226,7 +226,7 @@ build_deb() {
 # apt-get install succeeds on a .deb whose Depends omits a linked library;
 # only executing real subcommands (a git-backed memory round trip included)
 # surfaces that gap and proves the installed binary runs, not just links.
-# SPELUNK_SECRET_STORE=file keeps the smoke test from touching a keychain
+# INKENTRY_SECRET_STORE=file keeps the smoke test from touching a keychain
 # inside the container. The scratch git repo lives in the container's own
 # filesystem, never in this checkout.
 smoke_test_deb() {
@@ -235,7 +235,7 @@ smoke_test_deb() {
     docker run --rm --name "${CONTAINER_PREFIX}-smoke" \
       --platform "${DOCKER_PLATFORM}" \
       -v "${REPO_ROOT}/${DEB_PATH}:/pkg/spelunk_${DEB_VERSION}_amd64.deb:ro" \
-      -e SPELUNK_SECRET_STORE=file \
+      -e INKENTRY_SECRET_STORE=file \
       "${image}" bash -euc '
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive

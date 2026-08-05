@@ -1,7 +1,7 @@
 # spelunk Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `SPELUNK_EMBEDDING_URL` removed: embedding can no longer egress to a third party)  
+**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `INKENTRY_EMBEDDING_URL` removed: embedding can no longer egress to a third party)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -24,7 +24,7 @@ spelunk has two distinct operational modes with different attack surfaces:
 ### Mode B — inkentry-server
 An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
 - Binds to a configurable interface/port; intended for shared team use. Loopback binds serve plaintext HTTP; a non-loopback bind serves HTTPS in-process (ADR-066) via `--tls-cert`/`--tls-key`
-- Bearer token authentication (`--key` / `SPELUNK_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind is refused unless **both** TLS and a key are set (see "Key difference" below)
+- Bearer token authentication (`--key` / `INKENTRY_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind is refused unless **both** TLS and a key are set (see "Key difference" below)
 - Accepts pre-computed embedding vectors from clients (clients embed locally, server stores and searches)
 - Serves multiple projects via project_id routing
 - Exposes: `POST /v1/projects/{id}/memory`, `POST /v1/projects/{id}/memory/search`, DELETE, archive, supersede
@@ -39,7 +39,7 @@ cases, both of which change the data-egress threat profile:
   server, which embeds them natively in-process (embedding has no external
   relocation option; see below).
 - **Server-side external LLM shim:** a `inkentry-server` operator may set
-  `--llm-url` (`SPELUNK_LLM_URL`) so the server forwards LLM calls to a
+  `--llm-url` (`INKENTRY_LLM_URL`) so the server forwards LLM calls to a
   third-party OpenAI-compatible service (OpenAI, Anthropic, Cohere, etc.).
   This is configured on the server, not by the client, and applies to LLM
   features only: embedding has no equivalent flag and always runs on the
@@ -145,7 +145,7 @@ itself (`--tls-cert`/`--tls-key`) **and** an API key is set: this keeps the bear
 key off the wire in cleartext and prevents an open, unauthenticated server. A
 keyless or plaintext server can therefore only bind loopback (`127.0.0.1`), where
 it is reachable by local processes but not by other machines. (A blank or
-whitespace key, e.g. docker-compose's `${SPELUNK_SERVER_KEY:-}` default, is
+whitespace key, e.g. docker-compose's `${INKENTRY_SERVER_KEY:-}` default, is
 treated as no key.)
 
 ### Tenancy boundary: single trust domain (ADR-056)
@@ -182,7 +182,7 @@ unauthenticated (no bearer required or sent).
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Client impersonates a legitimate spelunk user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--key` / `SPELUNK_SERVER_KEY`. |
+| Client impersonates a legitimate spelunk user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--key` / `INKENTRY_SERVER_KEY`. |
 | Attacker spoofs the embedding/LLM backend to return adversarial responses | A | Low | Medium | The loopback server is on-machine, so this only applies when a remote team `server_url` (or a server's external `--llm-url`) is used over plaintext HTTP. `validate_transport_url` rejects a non-loopback `http://` `server_url` (loopback-only plaintext; https required otherwise), so a remote backend must be HTTPS. |
 
 ### T — Tampering
@@ -207,12 +207,12 @@ unauthenticated (no bearer required or sent).
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
-| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `SPELUNK_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
-| Server memory accessible without auth | B | Medium | High | No `--key` / `SPELUNK_SERVER_KEY` by default; any process that can reach the port reads all notes |
-| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `SPELUNK_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
+| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `spelunk explore` and `memory harvest` send memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
+| Server memory accessible without auth | B | Medium | High | No `--key` / `INKENTRY_SERVER_KEY` by default; any process that can reach the port reads all notes |
+| Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `INKENTRY_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
-| CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `SPELUNK_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
-| LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `spelunk auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `SPELUNK_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
+| CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `INKENTRY_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
+| LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `spelunk auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `INKENTRY_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
 | Detached `inkentry-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/inkentry-server/src/`, so a future reach fails CI rather than shipping. |
 | `spelunk memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed:** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |
 | **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-notespelunk) section. Track: issue to add secret-scan gate on write-through path. |
@@ -398,6 +398,6 @@ From this threat model, the following requirements are binding:
 3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
-6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `SPELUNK_SERVER_KEY` is set.
+6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `INKENTRY_SERVER_KEY` is set.
 7. **Config documentation must warn** that setting a remote team `server_url` (or running a `inkentry-server` with an external `--llm-url` shim) transmits source code and memory content off the machine.
 8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-notespelunk) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**

@@ -37,16 +37,16 @@ use tempfile::TempDir;
 // runs directly leaves the hook's child ambient.
 //
 // `HOME` alone is not enough, because `spelunk_config_dir()` returns
-// `SPELUNK_CONFIG_DIR` before it consults `dirs::home_dir()`. A runner that
-// exports `SPELUNK_CONFIG_DIR` to isolate the suite from a developer's own
+// `INKENTRY_CONFIG_DIR` before it consults `dirs::home_dir()`. A runner that
+// exports `INKENTRY_CONFIG_DIR` to isolate the suite from a developer's own
 // config would otherwise win over `HOME` and point the hook's child at a
 // directory no test seeded.
 fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
-        .env("SPELUNK_SECRET_STORE", "file")
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_SECRET_STORE", "file")
         .env_remove("XDG_CONFIG_HOME")
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
@@ -104,8 +104,8 @@ fn init_repo(home: &Path, dir: &Path) {
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 

@@ -407,15 +407,15 @@ mod tests {
         addr
     }
 
-    /// Sets `SPELUNK_STATE_DIR` to a fresh temp dir for the test's duration,
+    /// Sets `INKENTRY_STATE_DIR` to a fresh temp dir for the test's duration,
     /// restoring the previous value on drop. Mirrors the guard in
     /// `server.rs`'s own tests.
     struct StateDirGuard(Option<std::ffi::OsString>, TempDir);
     impl StateDirGuard {
         fn new() -> Self {
-            let prev = std::env::var_os("SPELUNK_STATE_DIR");
+            let prev = std::env::var_os("INKENTRY_STATE_DIR");
             let tmp = TempDir::new().unwrap();
-            unsafe { std::env::set_var("SPELUNK_STATE_DIR", tmp.path()) };
+            unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp.path()) };
             Self(prev, tmp)
         }
         fn path(&self) -> &std::path::Path {
@@ -429,8 +429,8 @@ mod tests {
             // (this crate's `server.rs` tests use the same group name).
             unsafe {
                 match &self.0 {
-                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                    Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                    None => std::env::remove_var("INKENTRY_STATE_DIR"),
                 }
             }
         }
@@ -574,7 +574,7 @@ mod tests {
             project_id: None,
             ..Default::default()
         };
-        // No SPELUNK_STATE_DIR override, no local relay reachable either way:
+        // No INKENTRY_STATE_DIR override, no local relay reachable either way:
         // this must return promptly without an unbounded wait.
         let start = std::time::Instant::now();
         nudge_after_write(&cfg, &mem_path).await;
@@ -677,23 +677,23 @@ mod tests {
         }
     }
 
-    /// Point `SPELUNK_STATE_DIR` at `dir` for the remainder of the current
+    /// Point `INKENTRY_STATE_DIR` at `dir` for the remainder of the current
     /// scope. Caller must hold `#[serial(server_state_dir_env)]` AND keep a
     /// [`RestoreStateDirOnDrop`] alive for the test's duration, or the
     /// mutated value leaks into whichever test in the same serial group runs
     /// next.
     fn point_state_dir_at(dir: &std::path::Path) {
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", dir) };
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", dir) };
     }
 
-    /// Captures the current `SPELUNK_STATE_DIR` on construction and restores
+    /// Captures the current `INKENTRY_STATE_DIR` on construction and restores
     /// it on drop. Tests that call [`point_state_dir_at`] more than once (so
     /// [`StateDirGuard`] alone won't do, since it only knows the value it
     /// itself set) must hold one of these for the whole test body.
     struct RestoreStateDirOnDrop(Option<std::ffi::OsString>);
     impl RestoreStateDirOnDrop {
         fn capture() -> Self {
-            Self(std::env::var_os("SPELUNK_STATE_DIR"))
+            Self(std::env::var_os("INKENTRY_STATE_DIR"))
         }
     }
     impl Drop for RestoreStateDirOnDrop {
@@ -701,8 +701,8 @@ mod tests {
             // SAFETY: see `StateDirGuard::drop` above; same serial group.
             unsafe {
                 match &self.0 {
-                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                    Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                    None => std::env::remove_var("INKENTRY_STATE_DIR"),
                 }
             }
         }

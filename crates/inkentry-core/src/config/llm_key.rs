@@ -16,27 +16,27 @@ use super::secret_store::{KEY_LLM_KEY, SecretStore};
 
 /// Environment variable holding the LLM credential, for CI and containers
 /// that have no keychain.
-pub const ENV_LLM_KEY: &str = "SPELUNK_LLM_KEY";
+pub const ENV_LLM_KEY: &str = "INKENTRY_LLM_KEY";
 
 /// Environment variable overriding [`Config::llm_url`](super::Config::llm_url).
 ///
 /// Named here rather than spelled inline so the loader that reads it and the
 /// spawn path that pins it on the child cannot drift apart.
-pub const ENV_LLM_URL: &str = "SPELUNK_LLM_URL";
+pub const ENV_LLM_URL: &str = "INKENTRY_LLM_URL";
 
 /// Environment variable overriding [`Config::llm_model`](super::Config::llm_model).
-pub const ENV_LLM_MODEL: &str = "SPELUNK_LLM_MODEL";
+pub const ENV_LLM_MODEL: &str = "INKENTRY_LLM_MODEL";
 
 /// Trim `raw` and treat a blank result as "no key".
 ///
-/// A set-but-empty value is what `${SPELUNK_LLM_KEY:-}` expands to in a
+/// A set-but-empty value is what `${INKENTRY_LLM_KEY:-}` expands to in a
 /// docker-compose file with the variable unset; that must read as
 /// unauthenticated rather than as a broken empty-string credential.
 fn normalize(raw: Option<String>) -> Option<String> {
     raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// Resolve the LLM credential: `SPELUNK_LLM_KEY` first, then `store`.
+/// Resolve the LLM credential: `INKENTRY_LLM_KEY` first, then `store`.
 ///
 /// Takes the store by reference so tests can inject one and never reach the
 /// host keychain.

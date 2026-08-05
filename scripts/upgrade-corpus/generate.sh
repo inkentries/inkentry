@@ -43,13 +43,13 @@ CORPUS_DIR="$REPO_ROOT/crates/inkentry-cli/tests/fixtures/upgrade-corpus"
 WINGS_DIR="$CORPUS_DIR/wings"
 MANIFEST="$CORPUS_DIR/MANIFEST.json"
 CHECKSUMS="$SCRIPT_DIR/checksums.txt"
-CACHE_DIR="${SPELUNK_CORPUS_CACHE:-${TMPDIR:-/tmp}/spelunk-upgrade-corpus-cache}"
+CACHE_DIR="${INKENTRY_CORPUS_CACHE:-${TMPDIR:-/tmp}/spelunk-upgrade-corpus-cache}"
 STUB="$SCRIPT_DIR/embed_stub.py"
-STUB_PORT="${SPELUNK_CORPUS_STUB_PORT:-7799}"
+STUB_PORT="${INKENTRY_CORPUS_STUB_PORT:-7799}"
 
 # An old binary predates the file secret-store default and would otherwise
 # reach the OS keychain and block on an interactive prompt.
-export SPELUNK_SECRET_STORE=file
+export INKENTRY_SECRET_STORE=file
 
 # Pinned so git-level metadata is not a source of churn between regeneration
 # runs. This does not make a wing byte-reproducible: note ids are epoch millis
@@ -217,8 +217,8 @@ sandbox_env() {
     : > "$home/.config/spelunk/config.toml"
   fi
   export HOME="$home"
-  export SPELUNK_CONFIG_DIR="$home/.config/spelunk"
-  export SPELUNK_REGISTRY_DIR="$home/.config/spelunk"
+  export INKENTRY_CONFIG_DIR="$home/.config/spelunk"
+  export INKENTRY_REGISTRY_DIR="$home/.config/spelunk"
 }
 
 # Fold the write-ahead log back into the main file and store the result gzipped.

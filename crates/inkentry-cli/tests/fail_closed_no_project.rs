@@ -27,8 +27,8 @@ const NO_PROJECT_NO_REPO_ERR: &str = "no spelunk project here, and not inside a 
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 

@@ -62,7 +62,7 @@ pub fn init_git_repo(dir: &Path) {
 ///
 /// Every integration test spawns the real `spelunk` binary, and each spawned
 /// process runs `Config::load`, which resolves a secret store. In auto mode
-/// (`SPELUNK_SECRET_STORE` unset) that selects the OS keychain whenever one is
+/// (`INKENTRY_SECRET_STORE` unset) that selects the OS keychain whenever one is
 /// present — which on macOS is always — triggering a Keychain access prompt on
 /// every test binary. "Always Allow" never sticks because each rebuilt test
 /// binary is a fresh app to the Keychain ACL. CI (Linux, no Secret Service) is
@@ -70,7 +70,7 @@ pub fn init_git_repo(dir: &Path) {
 ///
 /// This constructor pins two things on the child process:
 ///
-/// * `SPELUNK_SECRET_STORE=file` — force the plaintext file store, so a spawned
+/// * `INKENTRY_SECRET_STORE=file` — force the plaintext file store, so a spawned
 ///   CLI can never reach the keychain. Production behaviour is unchanged: real
 ///   users still get the keychain in auto mode; only tests pin the backend.
 /// * `HOME` / `XDG_CONFIG_HOME` redirected to a throwaway temp dir — so the file
@@ -94,11 +94,11 @@ pub fn spelunk_bin() -> Command {
 ///
 /// Use this from tests that set `HOME` themselves (registry isolation, seeded
 /// config under `<home>/.config/spelunk`, etc.). It applies the same keychain
-/// pin (`SPELUNK_SECRET_STORE=file`) and home redirection so those tests stop
+/// pin (`INKENTRY_SECRET_STORE=file`) and home redirection so those tests stop
 /// prompting for Keychain access while keeping their existing home semantics.
 pub fn spelunk_bin_in(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("spelunk").unwrap();
-    cmd.env("SPELUNK_SECRET_STORE", "file") // never the OS keychain in tests
+    cmd.env("INKENTRY_SECRET_STORE", "file") // never the OS keychain in tests
         .env("HOME", home)
         // `spelunk_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
         // XDG_CONFIG_HOME so the file store lands under `<home>/.config/spelunk`
@@ -109,11 +109,11 @@ pub fn spelunk_bin_in(home: &Path) -> Command {
         // `HOME` redirect above is a no-op there: every subprocess this spawns
         // would otherwise land on the same real `%USERPROFILE%\.config\spelunk`,
         // and concurrent tests racing on one `secrets.toml` corrupt it (see the
-        // identical, already-documented gap on `SPELUNK_STATE_DIR` in
-        // `capability/probe.rs` and `SPELUNK_SCRIPTS_DIR` in `memory/add.rs`).
-        // `SPELUNK_CONFIG_DIR` bypasses `dirs::home_dir()` entirely and works
+        // identical, already-documented gap on `INKENTRY_STATE_DIR` in
+        // `capability/probe.rs` and `INKENTRY_SCRIPTS_DIR` in `memory/add.rs`).
+        // `INKENTRY_CONFIG_DIR` bypasses `dirs::home_dir()` entirely and works
         // identically on every platform.
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
         // The HOME redirect above hides `~/.gitconfig` from the git this child
         // spawns, but an exported GIT_CONFIG_GLOBAL outranks HOME and would
         // still reach it. Not a Windows path, but git skips a scope whenever
@@ -163,7 +163,7 @@ pub fn write_config(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
 //
 // `Config::load` only honors `server_url`/`project_id` from a project-level
 // `.inkentry/config.toml` (discovered by walking up from CWD) or
-// `SPELUNK_SERVER_URL`/`SPELUNK_PROJECT_ID` env, never from the `--config`
+// `INKENTRY_SERVER_URL`/`INKENTRY_PROJECT_ID` env, never from the `--config`
 // file, which is the global personal config. So this writes those two fields
 // to `<project_dir>/.inkentry/config.toml` instead of the returned global
 // file. The caller's `Command` must set `.current_dir(project_dir)` (or
@@ -358,7 +358,7 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     // from CWD, not from the `project_dir` positional arg (which may be an
     // unrelated source tree, e.g. the shared fixture).
     //
-    // `SPELUNK_MODE=cloud_first`: this fixture's whole point is a Tier 1
+    // `INKENTRY_MODE=cloud_first`: this fixture's whole point is a Tier 1
     // index with real embeddings landed via the mock `server_url` above, not
     // exercising local-vs-remote routing. Under the default `local_first`
     // mode an explicit `server_url` with no loopback embedder configured is
@@ -368,7 +368,7 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
     // this must go through the env var.
     spelunk_bin_in(tmp.path())
         .current_dir(tmp.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
         .arg(&config_path)
         .arg("index")

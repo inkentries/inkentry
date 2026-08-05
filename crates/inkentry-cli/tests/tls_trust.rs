@@ -158,7 +158,7 @@ fn spawn_tls_server(cert_pem: String, key_pem: String) -> u16 {
 
 // ── project setup ────────────────────────────────────────────────────────────
 
-/// Build a minimal indexed project, entirely offline (`SPELUNK_NO_SERVER=1`),
+/// Build a minimal indexed project, entirely offline (`INKENTRY_NO_SERVER=1`),
 /// so the later `status` run only exercises the probe against our own TLS
 /// listener, not real embedding.
 fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -180,7 +180,7 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     .expect("write initial config");
 
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config_path)
         .arg("index")
@@ -252,7 +252,7 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env_remove("INKENTRY_NO_SERVER")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -297,7 +297,7 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env_remove("INKENTRY_NO_SERVER")
         .env("RUST_LOG", "spelunk=warn")
         .arg("--config")
         .arg(&config_path)
@@ -370,7 +370,7 @@ fn tls_server_with_expired_leaf_names_expired_cause() {
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env_remove("INKENTRY_NO_SERVER")
         .arg("--config")
         .arg(&config_path)
         .arg("status")
@@ -415,7 +415,7 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
 
     let output = spelunk_bin()
         .current_dir(&project_dir)
-        .env_remove("SPELUNK_NO_SERVER")
+        .env_remove("INKENTRY_NO_SERVER")
         .env("RUST_LOG", "spelunk=warn")
         .arg("--config")
         .arg(&config_path)

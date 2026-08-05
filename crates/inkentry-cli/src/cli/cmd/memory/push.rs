@@ -44,7 +44,7 @@ pub async fn memory_push(
     let project_id = cfg.project_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "`project_id` is not configured. Set it in `.inkentry/config.toml` \
-             or via `SPELUNK_PROJECT_ID`."
+             or via `INKENTRY_PROJECT_ID`."
         )
     })?;
 

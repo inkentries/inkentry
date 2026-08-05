@@ -8,7 +8,7 @@
 //! 3. Read-only guarantee on server.db (implementer opens it read-only).
 //! 4. Archived rows in server.db import as archived in memory.db.
 //! 5. --dry-run flag: report what would be imported without writing.
-//! 6. SPELUNK_NO_SERVER=1 path: reconcile exits cleanly without a running server.
+//! 6. INKENTRY_NO_SERVER=1 path: reconcile exits cleanly without a running server.
 //! 7. Mid-run rollback: if a row import fails mid-transaction, the whole
 //!    transaction rolls back (no partial import).
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
@@ -210,8 +210,8 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
         .expect("config_path must have a parent");
     let mut cmd = spelunk_bin();
     cmd.current_dir(tmp_dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env("SPELUNK_NO_RECONCILE_NUDGE", "1")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env("INKENTRY_NO_RECONCILE_NUDGE", "1")
         .arg("--config")
         .arg(config_path)
         .arg("memory")
@@ -269,11 +269,11 @@ fn noop_when_server_db_absent_json_output_is_valid() {
     );
 }
 
-// ── AC-6: SPELUNK_NO_SERVER=1 path ───────────────────────────────────────────
+// ── AC-6: INKENTRY_NO_SERVER=1 path ───────────────────────────────────────────
 
 #[test]
 fn spelunk_no_server_exits_cleanly_with_import() {
-    // Criteria #6: even with SPELUNK_NO_SERVER=1 (no embedding server),
+    // Criteria #6: even with INKENTRY_NO_SERVER=1 (no embedding server),
     // reconcile should complete successfully and import rows (without embeddings).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("spelunk.db");
@@ -296,7 +296,7 @@ fn spelunk_no_server_exits_cleanly_with_import() {
     );
     drop(conn);
 
-    // SPELUNK_NO_SERVER=1 is already set by reconcile_cmd.
+    // INKENTRY_NO_SERVER=1 is already set by reconcile_cmd.
     // Use --all-projects so the slug from server.db is used regardless of cwd.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
@@ -370,13 +370,13 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
     std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
 
     let output = reconcile_cmd(&config_path, &server_db)
-        .env_remove("SPELUNK_NO_SERVER")
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env_remove("INKENTRY_NO_SERVER")
+        .env("INKENTRY_STATE_DIR", &state_dir)
         // Deliberately unroutable: local_first must never fall back to this,
         // an accidental fallback surfaces as a connection error, not a
         // silent unembedded import.
-        .env("SPELUNK_SERVER_URL", "https://cloud.invalid.example:1")
-        .env("SPELUNK_PROJECT_ID", slug)
+        .env("INKENTRY_SERVER_URL", "https://cloud.invalid.example:1")
+        .env("INKENTRY_PROJECT_ID", slug)
         .arg("--all-projects")
         .arg("--format")
         .arg("json")
@@ -1451,8 +1451,8 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
         let mut boot_cmd = spelunk_bin();
         boot_cmd
             .current_dir(&boot_dir)
-            .env("SPELUNK_NO_SERVER", "1")
-            .env("SPELUNK_NO_RECONCILE_NUDGE", "1")
+            .env("INKENTRY_NO_SERVER", "1")
+            .env("INKENTRY_NO_RECONCILE_NUDGE", "1")
             .arg("--config")
             .arg(&boot_config_path)
             .arg("memory")
@@ -1779,14 +1779,14 @@ fn sql_injection_payload_in_body_does_not_break_import() {
     assert_eq!(body, injection_body, "body stored verbatim");
 }
 
-// ── Regression: default source path must honor SPELUNK_STATE_DIR ────────────
+// ── Regression: default source path must honor INKENTRY_STATE_DIR ────────────
 
 /// `spelunk server start` writes `server.db` through the shared
-/// `capability::spelunk_state_dir` resolver, which honors `SPELUNK_STATE_DIR`.
+/// `capability::spelunk_state_dir` resolver, which honors `INKENTRY_STATE_DIR`.
 /// Reconcile's default source path (used whenever `--source-db` is omitted)
 /// must resolve through that same function rather than reconstructing
 /// `~/.local/state/spelunk/` from `dirs::home_dir()` on its own. Otherwise a
-/// daemon run under a `SPELUNK_STATE_DIR` override is invisible to reconcile:
+/// daemon run under a `INKENTRY_STATE_DIR` override is invisible to reconcile:
 /// it hits the "server.db absent" no-op branch instead of importing.
 #[test]
 fn default_source_db_honors_state_dir_override() {
@@ -1829,9 +1829,9 @@ fn default_source_db_honors_state_dir_override() {
     // No --source-db: exercises default_server_db_path().
     let mut cmd = spelunk_bin_in(home.path());
     cmd.current_dir(project.path())
-        .env("SPELUNK_NO_SERVER", "1")
-        .env("SPELUNK_NO_RECONCILE_NUDGE", "1")
-        .env("SPELUNK_STATE_DIR", state_override.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .env("INKENTRY_NO_RECONCILE_NUDGE", "1")
+        .env("INKENTRY_STATE_DIR", state_override.path())
         .arg("--config")
         .arg(&config_path)
         .arg("memory")
@@ -1842,6 +1842,6 @@ fn default_source_db_honors_state_dir_override() {
     assert_eq!(
         count_memory_notes(&mem_path),
         1,
-        "reconcile must resolve server.db through SPELUNK_STATE_DIR when --source-db is omitted"
+        "reconcile must resolve server.db through INKENTRY_STATE_DIR when --source-db is omitted"
     );
 }

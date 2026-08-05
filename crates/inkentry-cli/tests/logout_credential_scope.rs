@@ -3,14 +3,14 @@
 //
 // The cloud token pair lives in the `[auth]` table of
 // `~/.config/spelunk/config.toml`; per-origin self-hosted server keys live in
-// the secret store (here the file store, pinned via `SPELUNK_SECRET_STORE=file`
+// the secret store (here the file store, pinned via `INKENTRY_SECRET_STORE=file`
 // by `spelunk_bin_in`). These tests seed BOTH stores, run one `logout` form,
 // and assert which store changed and which survived — the assertion the older
 // server-key-only logout tests never made, which let `--server`/`--servers`
 // silently wipe the cloud pair.
 //
 // Each assertion spawns the real binary against an isolated `HOME` /
-// `SPELUNK_CONFIG_DIR`, so nothing here reaches the developer's real config or
+// `INKENTRY_CONFIG_DIR`, so nothing here reaches the developer's real config or
 // the OS keychain.
 
 mod plumbing_helpers;
@@ -33,7 +33,7 @@ fn set_key(home: &std::path::Path, server: &str, key: &str) {
 }
 
 // Seed a complete cloud `[auth]` token pair into `config.toml` directly — the
-// same on-disk shape `spelunk login` writes. `SPELUNK_CONFIG_DIR` (set by
+// same on-disk shape `spelunk login` writes. `INKENTRY_CONFIG_DIR` (set by
 // `spelunk_bin_in`) resolves to `<home>/.config/spelunk`, so this is exactly
 // where the CLI reads and (on bare logout) rewrites it.
 fn seed_cloud_auth(home: &std::path::Path) {

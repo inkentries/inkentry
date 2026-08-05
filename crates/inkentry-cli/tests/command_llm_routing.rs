@@ -136,13 +136,13 @@ fn write_git_project(dir: &Path) {
 fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MODE")
-        .env_remove("SPELUNK_PROJECT_ID")
-        .env_remove("SPELUNK_NO_SERVER")
-        .env_remove("SPELUNK_STATE_DIR")
-        .env_remove("SPELUNK_LLM_URL")
-        .env_remove("SPELUNK_LLM_MODEL");
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env_remove("INKENTRY_PROJECT_ID")
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_STATE_DIR")
+        .env_remove("INKENTRY_LLM_URL")
+        .env_remove("INKENTRY_LLM_MODEL");
     cmd
 }
 
@@ -150,7 +150,7 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
 // db to work from. Offline, so it contacts nothing.
 fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
         .arg("--db")
         .arg(db)
@@ -220,7 +220,7 @@ async fn explore_sends_llm_calls_to_the_loopback_when_it_serves_an_llm() {
     // The reasoning loop's own outcome is not what is under test here, only
     // where its completions were sent, so the exit status is not asserted.
     let _ = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("explore")
         .arg("--db")
         .arg(&db)
@@ -257,7 +257,7 @@ async fn explore_splits_llm_to_the_remote_and_embedding_to_the_loopback() {
     write_loopback_state(&state_dir, &loopback.uri());
 
     let _ = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("explore")
         .arg("--db")
         .arg(&db)
@@ -292,8 +292,8 @@ async fn explore_stops_with_the_restart_message_when_the_local_llm_is_not_served
     write_loopback_state(&state_dir, &loopback.uri());
 
     let output = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
-        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
         .arg("explore")
         .arg("--db")
         .arg(&db)
@@ -337,7 +337,7 @@ async fn explore_stops_with_the_no_llm_message_when_none_is_available() {
     write_loopback_state(&state_dir, &loopback.uri());
 
     let output = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("explore")
         .arg("--db")
         .arg(&db)
@@ -366,7 +366,7 @@ async fn explore_stops_with_the_no_llm_message_when_none_is_available() {
 
 fn harvest_cmd(home: &Path, project: &Path, db: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
-    cmd.env("SPELUNK_STATE_DIR", state_dir)
+    cmd.env("INKENTRY_STATE_DIR", state_dir)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -460,7 +460,7 @@ async fn harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served
 
     let mem = project.path().join("memory.db");
     let output = harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
         .output()
         .expect("run harvest");
     let text = combined(&output);
@@ -535,7 +535,7 @@ async fn harvest_clamps_the_default_range_on_a_shallow_repo() {
 
     let mem = project.path().join("memory.db");
     let output = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -576,7 +576,7 @@ async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
 
     let mem = project.path().join("memory.db");
     let output = base_cmd(home.path(), project.path())
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -649,7 +649,7 @@ fn failures_harvest_cmd(
     state_dir: &Path,
 ) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
-    cmd.env("SPELUNK_STATE_DIR", state_dir)
+    cmd.env("INKENTRY_STATE_DIR", state_dir)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -714,7 +714,7 @@ async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_n
 
     let mem = project.path().join("memory.db");
     let output = failures_harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
         .output()
         .expect("run harvest");
     let text = combined(&output);
@@ -779,7 +779,7 @@ fn claude_harvest_cmd(
     history: &Path,
 ) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
-    cmd.env("SPELUNK_STATE_DIR", state_dir)
+    cmd.env("INKENTRY_STATE_DIR", state_dir)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -849,7 +849,7 @@ async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_i
 
     let mem = project.path().join("memory.db");
     let output = claude_harvest_cmd(home.path(), project.path(), &mem, &state_dir, &history)
-        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
         .output()
         .expect("run harvest");
     let text = combined(&output);

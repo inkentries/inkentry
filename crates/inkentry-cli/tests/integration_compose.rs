@@ -72,13 +72,13 @@ fn plumbing_knn_returns_valid_chunk_ids() {
     // (project-level, since `Config::load` never honors it from `--config`);
     // `.current_dir` must match for this second, separate invocation to see it.
     //
-    // `SPELUNK_MODE=cloud_first`: `plumbing embed` has no loopback
+    // `INKENTRY_MODE=cloud_first`: `plumbing embed` has no loopback
     // auto-discovery bridging (2026-07-23 ADR-004 revision), so with the
     // default `local_first` mode a bare `server_url` no longer resolves to
     // any inference target.
     let embed_output = spelunk_bin()
         .current_dir(_tmp.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
         .arg(&config_path)
         .arg("plumbing")

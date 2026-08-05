@@ -50,8 +50,8 @@ use super::org::{persist_tokens, switch_org};
 pub struct LoginArgs {
     /// Override the spelunk cloud API URL (default: https://api.spelunk.cloud).
     /// Also selects the WorkOS environment (prod host → prod client_id; any
-    /// other host → dev client_id) unless `SPELUNK_WORKOS_CLIENT_ID` is set.
-    #[arg(long, env = "SPELUNK_CLOUD_URL")]
+    /// other host → dev client_id) unless `INKENTRY_WORKOS_CLIENT_ID` is set.
+    #[arg(long, env = "INKENTRY_CLOUD_URL")]
     pub cloud_url: Option<String>,
 
     /// Organization to log into (slug). After the device login yields a token,

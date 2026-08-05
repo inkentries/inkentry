@@ -672,8 +672,8 @@ spelunk server stop
 
 | Flag | Notes |
 |------|-------|
-| `--llm-url <url>` | Chat-completions endpoint this daemon serves LLM features from. Overrides `SPELUNK_LLM_URL` and `llm_url` in the personal config, for this daemon only. |
-| `--llm-model <name>` | Model name this daemon sends to that endpoint. Overrides `SPELUNK_LLM_MODEL` and `llm_model`. Ignored without an endpoint. |
+| `--llm-url <url>` | Chat-completions endpoint this daemon serves LLM features from. Overrides `INKENTRY_LLM_URL` and `llm_url` in the personal config, for this daemon only. |
+| `--llm-model <name>` | Model name this daemon sends to that endpoint. Overrides `INKENTRY_LLM_MODEL` and `llm_model`. Ignored without an endpoint. |
 
 Set `llm_url` in the personal config instead if you want every daemon to get
 it; these flags are the per-launch override. A blank flag value (`--llm-url ""`)
@@ -683,7 +683,7 @@ applies.
 **There is no `--llm-key` flag here, deliberately.** Arguments are readable by
 any user on the machine through the process table, so the endpoint's credential
 is never accepted or emitted as one. Store it with
-[`spelunk auth set-key --llm`](#spelunk-auth) or set `SPELUNK_LLM_KEY`; the CLI
+[`spelunk auth set-key --llm`](#spelunk-auth) or set `INKENTRY_LLM_KEY`; the CLI
 resolves it at spawn time and passes it to the daemon in its environment. The
 daemon never reads the OS secret store itself.
 
@@ -709,7 +709,7 @@ spelunk login [--org <slug>] [--cloud-url <url>]
 | Flag | Notes |
 |------|-------|
 | `--org <slug>` | After the device login yields a token, silently re-scope the session to this org (login-then-switch). If you are already logged in with a stored refresh token, re-scopes without a new device login. Multi-org accounts choose their org on the browser-hosted approval page during the device flow itself. |
-| `--cloud-url <url>` | Override the cloud API URL (default `https://api.spelunk.cloud`; also settable via `SPELUNK_CLOUD_URL`). |
+| `--cloud-url <url>` | Override the cloud API URL (default `https://api.spelunk.cloud`; also settable via `INKENTRY_CLOUD_URL`). |
 
 ```bash
 spelunk login
@@ -730,8 +730,8 @@ resolves one for you instead of leaving a session that needs a follow-up
 
 Tokens are written to the `[auth]` table of `~/.config/spelunk/config.toml`
 (file mode `0600`). Existing setups that use a self-hosted server key (stored via
-`spelunk auth set-key`, or the `SPELUNK_SERVER_KEY` environment variable) keep
-working unchanged; `SPELUNK_SERVER_KEY` continues to take precedence, which is
+`spelunk auth set-key`, or the `INKENTRY_SERVER_KEY` environment variable) keep
+working unchanged; `INKENTRY_SERVER_KEY` continues to take precedence, which is
 handy for CI. See `spelunk auth` below for the self-hosted credential itself;
 `spelunk login` only ever manages the `[auth]` cloud token pair.
 
@@ -756,12 +756,12 @@ developer run `spelunk auth set-key --server <url>` instead.
 **Headless / CI / containers.** When no OS keychain backend is available, the
 credential never causes a hard failure:
 
-- `SPELUNK_SERVER_KEY` remains the non-interactive escape hatch and always takes
+- `INKENTRY_SERVER_KEY` remains the non-interactive escape hatch and always takes
   precedence: set it in CI and you never touch the keychain.
 - Otherwise spelunk falls back to an owner-only (`0600`) file at
   `~/.config/spelunk/secrets.toml`.
 
-`SPELUNK_SECRET_STORE` pins the backend explicitly:
+`INKENTRY_SECRET_STORE` pins the backend explicitly:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -806,14 +806,14 @@ spelunk auth set-key --llm                 # prompts
 echo "$LLM_KEY" | spelunk auth set-key --llm
 ```
 
-Resolution precedence for a given request's `server_url`: the `SPELUNK_SERVER_KEY`
+Resolution precedence for a given request's `server_url`: the `INKENTRY_SERVER_KEY`
 environment variable (if set, always wins, regardless of origin) takes priority
 over the per-origin store; a spelunk.cloud origin instead resolves through the
 `[auth]` token pair from `spelunk login`. This lets CI pin a single key for the
 one server it talks to without touching the keychain, while a developer's
 machine holds separate keys per self-hosted server.
 
-The LLM credential resolves as `SPELUNK_LLM_KEY` > this stored entry > unset,
+The LLM credential resolves as `INKENTRY_LLM_KEY` > this stored entry > unset,
 and only on the code path that starts a local daemon: no other command reads
 it, so none of them authorize against your keychain for it. The daemon receives
 it in its environment and never opens the secret store itself. See
@@ -1059,16 +1059,16 @@ and publish on your next push.
 |----------|--------|
 | `AGENT=true` | Force JSON output for commands that support it |
 | `NO_COLOR` | Any non-empty value disables colored output, overriding the `auto` default (`--color=always` still overrides `NO_COLOR`) |
-| `SPELUNK_NO_SERVER=1` | Never autostart or use a server (fully offline / no-server mode) |
-| `SPELUNK_SERVER_URL` | Point the CLI at a specific server URL |
-| `SPELUNK_CLOUD_URL` | Override the spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
-| `SPELUNK_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
-| `SPELUNK_SERVER_CA` | Path to a PEM CA bundle to trust for a `SPELUNK_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
-| `SPELUNK_LLM_URL` | Chat-completions endpoint a locally started daemon serves LLM features from; overrides `llm_url` in the personal config. Set but empty blanks the configured value rather than falling through to it. |
-| `SPELUNK_LLM_MODEL` | Model name sent to that endpoint; overrides `llm_model`. Same empty-value rule. |
-| `SPELUNK_LLM_KEY` | Credential for that endpoint; takes precedence over the entry stored by `spelunk auth set-key --llm`. Not a `config.toml` field. Blank reads as unset. |
-| `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
-| `SPELUNK_CONFIG_DIR` | Override the whole `~/.config/spelunk/` directory (not just the config file), same as `-c, --config` but for the entire directory |
-| `SPELUNK_STATE_DIR` | Override the runtime state directory (default `~/.local/state/spelunk/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
+| `INKENTRY_NO_SERVER=1` | Never autostart or use a server (fully offline / no-server mode) |
+| `INKENTRY_SERVER_URL` | Point the CLI at a specific server URL |
+| `INKENTRY_CLOUD_URL` | Override the spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
+| `INKENTRY_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
+| `INKENTRY_SERVER_CA` | Path to a PEM CA bundle to trust for a `INKENTRY_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
+| `INKENTRY_LLM_URL` | Chat-completions endpoint a locally started daemon serves LLM features from; overrides `llm_url` in the personal config. Set but empty blanks the configured value rather than falling through to it. |
+| `INKENTRY_LLM_MODEL` | Model name sent to that endpoint; overrides `llm_model`. Same empty-value rule. |
+| `INKENTRY_LLM_KEY` | Credential for that endpoint; takes precedence over the entry stored by `spelunk auth set-key --llm`. Not a `config.toml` field. Blank reads as unset. |
+| `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default — keychain, file fallback), `keychain` (require the OS keychain), or `file` (force `~/.config/spelunk/secrets.toml`) |
+| `INKENTRY_CONFIG_DIR` | Override the whole `~/.config/spelunk/` directory (not just the config file), same as `-c, --config` but for the entire directory |
+| `INKENTRY_STATE_DIR` | Override the runtime state directory (default `~/.local/state/spelunk/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `spelunk memory add` when `--body` is omitted |

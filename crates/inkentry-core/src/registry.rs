@@ -422,11 +422,11 @@ fn spelunk_only_remnant(path: &std::path::Path) -> bool {
 // ---------------------------------------------------------------------------
 
 fn registry_path() -> Result<PathBuf> {
-    // `SPELUNK_REGISTRY_DIR` overrides the registry location. This exists for
+    // `INKENTRY_REGISTRY_DIR` overrides the registry location. This exists for
     // test isolation: the default uses `dirs::config_dir()`, which on Windows
     // resolves via the Known Folder API (`%APPDATA%`) and is not redirectable by
     // `HOME`/env, so tests cannot otherwise point the CLI at a temp registry.
-    if let Ok(dir) = std::env::var("SPELUNK_REGISTRY_DIR")
+    if let Ok(dir) = std::env::var("INKENTRY_REGISTRY_DIR")
         && !dir.is_empty()
     {
         return Ok(PathBuf::from(dir).join("registry.db"));
@@ -464,16 +464,16 @@ mod tests {
 
     /// Point `registry_path()` at a fresh tempdir for the duration of the
     /// closure and open a `Registry` against it. `#[serial]` on each test
-    /// guards the shared `SPELUNK_REGISTRY_DIR` env var — these tests must
+    /// guards the shared `INKENTRY_REGISTRY_DIR` env var — these tests must
     /// not run concurrently with each other.
     fn with_test_registry<F: FnOnce(&Registry, &std::path::Path)>(f: F) {
         let tmp = TempDir::new().unwrap();
         // SAFETY: guarded by #[serial] — no other thread in this test binary
-        // reads/writes SPELUNK_REGISTRY_DIR concurrently.
-        unsafe { std::env::set_var("SPELUNK_REGISTRY_DIR", tmp.path()) };
+        // reads/writes INKENTRY_REGISTRY_DIR concurrently.
+        unsafe { std::env::set_var("INKENTRY_REGISTRY_DIR", tmp.path()) };
         let reg = Registry::open().expect("open test registry");
         f(&reg, tmp.path());
-        unsafe { std::env::remove_var("SPELUNK_REGISTRY_DIR") };
+        unsafe { std::env::remove_var("INKENTRY_REGISTRY_DIR") };
     }
 
     /// `autoclean` must refuse to `remove_dir_all` through a symlinked

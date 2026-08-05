@@ -330,7 +330,7 @@ fn read_memory_exit_codes() {
 
     spelunk_bin()
         .current_dir(tmp.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
         .arg("memory")
@@ -423,8 +423,8 @@ async fn embed_exit_codes() {
     std::fs::write(&bare_cfg, "llm_model = \"x\"\n").unwrap();
     let err = spelunk_bin()
         .current_dir(unreachable.path())
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(&bare_cfg)
         .args(["plumbing", "embed"])
@@ -458,7 +458,7 @@ fn publish_notes_exit_codes() {
     // branch push. That coupling is why the skip path is exit 0 and not 1.
     let skipped = spelunk_bin()
         .current_dir(&repo)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin"])
         .output()
         .unwrap();
@@ -472,7 +472,7 @@ fn publish_notes_exit_codes() {
     // without --best-effort it must surface as one.
     spelunk_bin()
         .current_dir(&repo)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .args([
             "memory",
             "add",
@@ -494,7 +494,7 @@ fn publish_notes_exit_codes() {
 
     let err = spelunk_bin()
         .current_dir(&repo)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin"])
         .output()
         .unwrap();
@@ -504,7 +504,7 @@ fn publish_notes_exit_codes() {
     // payload, so an installed pre-push hook never blocks a code push.
     let tolerated = spelunk_bin()
         .current_dir(&repo)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .args(["plumbing", "publish-notes", "origin", "--best-effort"])
         .output()
         .unwrap();

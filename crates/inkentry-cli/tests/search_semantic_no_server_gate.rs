@@ -26,7 +26,7 @@ const PROBE_SYMBOL: &str = "spelunk_gate_probe_marker";
 
 // Build a populated-but-unembedded project offline: `<proj>/.inkentry/index.db`
 // exists and holds chunks (chunk_count > 0), but zero embeddings — indexing
-// under `SPELUNK_NO_SERVER=1` parses source into chunks yet has no embedder, so
+// under `INKENTRY_NO_SERVER=1` parses source into chunks yet has no embedder, so
 // nothing is embedded. This is exactly the state the semantic/hybrid gate must
 // catch: a real index with no way to embed the query.
 fn init_populated_project_offline(home: &Path, proj: &Path) {
@@ -41,7 +41,7 @@ fn init_populated_project_offline(home: &Path, proj: &Path) {
     .expect("write source file");
 
     spelunk_bin_in(home)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj)
         .args(["index", "."])
         .assert()
@@ -79,7 +79,7 @@ fn search_mode_semantic_no_server_gates_with_locked_feature_error() {
     init_populated_project_offline(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "semantic"])
         .assert()
@@ -101,7 +101,7 @@ fn search_mode_hybrid_no_server_gates_with_locked_feature_error() {
     init_populated_project_offline(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", "anything", "--mode", "hybrid"])
         .assert()
@@ -123,7 +123,7 @@ fn search_mode_auto_no_server_still_degrades_and_exits_zero() {
     init_populated_project_offline(home.path(), proj.path());
 
     let assert = spelunk_bin_in(home.path())
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
         .args(["search", PROBE_SYMBOL, "--mode", "auto"])
         .assert()

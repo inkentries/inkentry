@@ -13,7 +13,7 @@ configuration and defaults, not new behaviour.
 
 The shapes we distinguish:
 
-| Shape | Where the agent runs | `SPELUNK_SERVER_URL` |
+| Shape | Where the agent runs | `INKENTRY_SERVER_URL` |
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
 | **Local Docker (R1)** | A container on your machine | `https://spelunk.your-domain` (portable) |
@@ -47,17 +47,17 @@ URL, not a host-loopback address:
 
 ```bash
 docker run --rm -it \
-  -e SPELUNK_SERVER_URL=https://spelunk.example.com \
-  -e SPELUNK_SERVER_KEY=your-shared-api-key \
+  -e INKENTRY_SERVER_URL=https://spelunk.example.com \
+  -e INKENTRY_SERVER_KEY=your-shared-api-key \
   -v "$PWD":/work \
   -v "$HOME/.config/spelunk":/root/.config/spelunk \
   -w /work \
   your-agent-image
 ```
 
-- `SPELUNK_SERVER_URL` points the in-container CLI at the team server's own
+- `INKENTRY_SERVER_URL` points the in-container CLI at the team server's own
   HTTPS endpoint, which the server serves directly.
-- `SPELUNK_SERVER_KEY` is the shared API key (required — a networked server is
+- `INKENTRY_SERVER_KEY` is the shared API key (required — a networked server is
   always keyed; see [Server setup](server-setup.md)).
 - `-v "$PWD":/work` bind-mounts the repository so file paths recorded in memory
   entries mean the same thing inside the container and on the host.
@@ -70,13 +70,13 @@ If the server's certificate chains to a publicly trusted CA, that is everything
 the container needs. If it is signed by a self-signed or internal CA (the usual
 case when you stand the server up yourself), the container must also be given
 the CA bundle, or the TLS handshake fails. Mount the bundle read-only and point
-`SPELUNK_SERVER_CA` at it:
+`INKENTRY_SERVER_CA` at it:
 
 ```bash
 docker run --rm -it \
-  -e SPELUNK_SERVER_URL=https://spelunk.example.com \
-  -e SPELUNK_SERVER_KEY=your-shared-api-key \
-  -e SPELUNK_SERVER_CA=/etc/spelunk/internal-ca.pem \
+  -e INKENTRY_SERVER_URL=https://spelunk.example.com \
+  -e INKENTRY_SERVER_KEY=your-shared-api-key \
+  -e INKENTRY_SERVER_CA=/etc/spelunk/internal-ca.pem \
   -v /etc/spelunk/internal-ca.pem:/etc/spelunk/internal-ca.pem:ro \
   -v "$PWD":/work \
   -v "$HOME/.config/spelunk":/root/.config/spelunk \
@@ -86,7 +86,7 @@ docker run --rm -it \
 
 The bundle is added as a trust anchor on top of the built-in roots, and
 certificate verification stays on. It must contain the issuing **CA**
-certificate, not the server's leaf. `SPELUNK_SERVER_CA` overrides the
+certificate, not the server's leaf. `INKENTRY_SERVER_CA` overrides the
 `server_ca` config key; see
 [Trusting the server's certificate](server-setup.md#trusting-the-servers-certificate-on-the-client)
 for how to generate the CA and issue the server a leaf from it.
@@ -120,7 +120,7 @@ the host's loopback.
 matches the literal host string and performs no DNS resolution: only `127.x`,
 `::1`, and `localhost` count as loopback. Docker's DNS special-casing therefore
 never enters into it, and both bridge addresses are rejected on every platform.
-Setting `SPELUNK_SERVER_URL=http://host.docker.internal:7777` (or
+Setting `INKENTRY_SERVER_URL=http://host.docker.internal:7777` (or
 `http://172.17.0.1:7777`) fails the moment the CLI needs the server:
 
 ```
@@ -142,5 +142,5 @@ container, and it does so the same way on every platform.
 ### Notes
 
 - **Project identity.** Bind-mounting `~/.config/spelunk/` is the simplest way
-  to share project identity. Alternatively set `SPELUNK_PROJECT_ID` explicitly
+  to share project identity. Alternatively set `INKENTRY_PROJECT_ID` explicitly
   in the container's environment.

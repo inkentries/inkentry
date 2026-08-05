@@ -206,14 +206,14 @@ fn summary_secret_is_not_persisted() {
     // Run the real `spelunk index` (no `--no-summaries`), same as production:
     // parse → embed → summary generation, all through `generate_summaries`.
     //
-    // `SPELUNK_MODE=cloud_first`: `generate_summaries` calls
+    // `INKENTRY_MODE=cloud_first`: `generate_summaries` calls
     // `ServerInferenceClient::from_config` directly on the loaded `Config`
     // with no loopback auto-discovery bridging (2026-07-23 ADR-004 revision),
     // so under the default `local_first` mode a bare
     // `server_url` no longer resolves to any inference target.
     plumbing_helpers::spelunk_bin_in(tmp.path())
         .current_dir(tmp.path())
-        .env("SPELUNK_MODE", "cloud_first")
+        .env("INKENTRY_MODE", "cloud_first")
         .arg("--config")
         .arg(&config_path)
         .arg("index")

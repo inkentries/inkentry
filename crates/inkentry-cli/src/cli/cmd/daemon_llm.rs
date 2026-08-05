@@ -53,7 +53,7 @@ impl LlmSpawn {
     /// Resolve from a loaded [`Config`] plus optional per-spawn CLI overrides,
     /// using an injected secret store.
     ///
-    /// `Config` has already folded `SPELUNK_LLM_URL` / `SPELUNK_LLM_MODEL`
+    /// `Config` has already folded `INKENTRY_LLM_URL` / `INKENTRY_LLM_MODEL`
     /// over the personal config file, so an override here is the top of the
     /// precedence chain.
     pub(super) fn resolve_with_store(
@@ -113,7 +113,7 @@ impl LlmSpawn {
     /// this process's environment, and `inkentry-server`'s `--llm-url` /
     /// `--llm-model` carry clap `env` attributes, so an inherited value the CLI
     /// deliberately resolved away would still reach the daemon behind its back:
-    /// an exported `SPELUNK_LLM_URL=""` arrives as a present-but-empty endpoint
+    /// an exported `INKENTRY_LLM_URL=""` arrives as a present-but-empty endpoint
     /// rather than as no endpoint. Naming all three makes the daemon's view
     /// exactly what this process resolved, whatever the parent exported.
     ///
@@ -138,9 +138,9 @@ mod tests {
 
     fn clear_env() {
         unsafe {
-            std::env::remove_var("SPELUNK_LLM_KEY");
-            std::env::remove_var("SPELUNK_LLM_URL");
-            std::env::remove_var("SPELUNK_LLM_MODEL");
+            std::env::remove_var("INKENTRY_LLM_KEY");
+            std::env::remove_var("INKENTRY_LLM_URL");
+            std::env::remove_var("INKENTRY_LLM_MODEL");
         }
     }
 
@@ -287,7 +287,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            env_entry(&spawn, "SPELUNK_LLM_KEY"),
+            env_entry(&spawn, "INKENTRY_LLM_KEY"),
             Some("sk-llm-secret".to_string())
         );
     }
@@ -305,12 +305,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_KEY"), None);
+        assert_eq!(env_entry(&spawn, "INKENTRY_LLM_KEY"), None);
     }
 
-    // The daemon reads SPELUNK_LLM_URL / SPELUNK_LLM_MODEL through clap `env`,
+    // The daemon reads INKENTRY_LLM_URL / INKENTRY_LLM_MODEL through clap `env`,
     // so anything this process resolved away has to be cleared on the child
-    // rather than merely left out of argv. An exported `SPELUNK_LLM_URL=""` is
+    // rather than merely left out of argv. An exported `INKENTRY_LLM_URL=""` is
     // the case that made this visible: it resolves to no endpoint here and used
     // to arrive at the daemon as a present-but-empty one.
     #[test]
@@ -327,19 +327,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            env_entry(&configured, "SPELUNK_LLM_URL"),
+            env_entry(&configured, "INKENTRY_LLM_URL"),
             Some("http://127.0.0.1:1234".to_string())
         );
         assert_eq!(
-            env_entry(&configured, "SPELUNK_LLM_MODEL"),
+            env_entry(&configured, "INKENTRY_LLM_MODEL"),
             Some("gpt-oss".to_string())
         );
 
         let blanked =
             LlmSpawn::resolve_with_store(&cfg_with(Some(""), Some("")), None, None, &store)
                 .unwrap();
-        assert_eq!(env_entry(&blanked, "SPELUNK_LLM_URL"), None);
-        assert_eq!(env_entry(&blanked, "SPELUNK_LLM_MODEL"), None);
+        assert_eq!(env_entry(&blanked, "INKENTRY_LLM_URL"), None);
+        assert_eq!(env_entry(&blanked, "INKENTRY_LLM_MODEL"), None);
     }
 
     // A model resolved without an endpoint emits no argv flag, so the child's
@@ -355,18 +355,18 @@ mod tests {
                 .unwrap();
 
         assert!(spawn.args().is_empty());
-        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_URL"), None);
-        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_MODEL"), None);
+        assert_eq!(env_entry(&spawn, "INKENTRY_LLM_URL"), None);
+        assert_eq!(env_entry(&spawn, "INKENTRY_LLM_MODEL"), None);
     }
 
-    // Config::load has already folded SPELUNK_LLM_URL over the config file, so
+    // Config::load has already folded INKENTRY_LLM_URL over the config file, so
     // the value the CLI resolved is authoritative and must be spelled out in
     // argv rather than left to the child's inherited environment.
     #[test]
     #[serial_test::serial]
     fn an_explicit_url_override_beats_the_inherited_env() {
         clear_env();
-        unsafe { std::env::set_var("SPELUNK_LLM_URL", "http://from-env:1234") };
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "http://from-env:1234") };
         let store = MemoryStore::default();
         let spawn = LlmSpawn::resolve_with_store(
             &cfg_with(Some("http://from-env:1234"), None),
@@ -386,7 +386,7 @@ mod tests {
     #[serial_test::serial]
     fn an_explicit_model_override_beats_the_inherited_env() {
         clear_env();
-        unsafe { std::env::set_var("SPELUNK_LLM_MODEL", "from-env") };
+        unsafe { std::env::set_var("INKENTRY_LLM_MODEL", "from-env") };
         let store = MemoryStore::default();
         let spawn = LlmSpawn::resolve_with_store(
             &cfg_with(Some("http://127.0.0.1:1234"), Some("from-env")),
@@ -407,7 +407,7 @@ mod tests {
         );
     }
 
-    // `SPELUNK_LLM_URL=""` reaches Config as `Some("")`, which is an override
+    // `INKENTRY_LLM_URL=""` reaches Config as `Some("")`, which is an override
     // that blanks the personal config rather than falling through to it. The
     // end state is no endpoint, not an `--llm-url ""` argument.
     #[test]
@@ -491,7 +491,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(spawn.key, None);
-        assert_eq!(env_entry(&spawn, "SPELUNK_LLM_KEY"), None);
+        assert_eq!(env_entry(&spawn, "INKENTRY_LLM_KEY"), None);
     }
 
     // Trimming is what makes a stray newline from a piped `auth set-key` behave,
@@ -516,7 +516,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            env_entry(&spawn, "SPELUNK_LLM_KEY"),
+            env_entry(&spawn, "INKENTRY_LLM_KEY"),
             Some("sk-llm-secret".to_string())
         );
     }
@@ -542,7 +542,7 @@ mod tests {
     }
 
     // The spawn path must resolve the credential from whichever backend
-    // SPELUNK_SECRET_STORE selects, never by reaching past it to the keychain.
+    // INKENTRY_SECRET_STORE selects, never by reaching past it to the keychain.
     #[test]
     #[serial_test::serial]
     fn resolves_from_a_file_backed_store_without_a_keychain() {

@@ -70,8 +70,8 @@ fn init_repo_with_commit(dir: &Path) {
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 
@@ -88,7 +88,7 @@ fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
     let out = spelunk_bin_in(dir)
         .current_dir(dir)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&cfg)
         .args(["init", "--no-index"])

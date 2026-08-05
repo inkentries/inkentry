@@ -50,17 +50,17 @@ fn spelunk_exe() -> PathBuf {
 //
 // `git push` runs the pre-push hook, which execs a spelunk child. That child
 // runs `Config::load`, which reads a config dir and resolves a secret store,
-// defaulting to the OS keychain when `SPELUNK_SECRET_STORE` is unset. git is
+// defaulting to the OS keychain when `INKENTRY_SECRET_STORE` is unset. git is
 // the only thing standing between a test and that child, so all of it has to be
 // pinned here: pinning it on the spelunk commands a test runs directly leaves
 // the hook's child ambient.
 //
 // `HOME` alone does not pin the config dir, because `spelunk_config_dir()`
-// returns `SPELUNK_CONFIG_DIR` before it consults `dirs::home_dir()`. Anything
+// returns `INKENTRY_CONFIG_DIR` before it consults `dirs::home_dir()`. Anything
 // this helper does not set is inherited from the test process, so a runner that
-// exports `SPELUNK_CONFIG_DIR` (the documented way to isolate the suite from a
+// exports `INKENTRY_CONFIG_DIR` (the documented way to isolate the suite from a
 // developer's own config) silently wins over `HOME` and points the hook's child
-// at a directory no test seeded. `SPELUNK_CONFIG_DIR` is therefore derived from
+// at a directory no test seeded. `INKENTRY_CONFIG_DIR` is therefore derived from
 // `home` and set explicitly, the same way `spelunk_bin_in` does it for the
 // direct-spawn path. That also makes the pin work on Windows, where
 // `dirs::home_dir()` reads no environment variable at all.
@@ -68,11 +68,11 @@ fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
-        .env("SPELUNK_SECRET_STORE", "file")
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_SECRET_STORE", "file")
         .env_remove("XDG_CONFIG_HOME")
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")
@@ -125,8 +125,8 @@ fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(cwd)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 
@@ -135,25 +135,25 @@ fn bin(home: &Path, cwd: &Path) -> Command {
 //
 // This cannot go through `spelunk_bin_in`, which always resolves the
 // cargo-built binary, so it repeats that helper's isolation by hand and has to
-// keep `SPELUNK_CONFIG_DIR` among it: without the pin this spawn inherits the
+// keep `INKENTRY_CONFIG_DIR` among it: without the pin this spawn inherits the
 // runner's ambient value, which wins over `HOME`.
 fn bin_at(exe: &Path, home: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(exe);
     cmd.current_dir(cwd)
-        .env("SPELUNK_SECRET_STORE", "file")
+        .env("INKENTRY_SECRET_STORE", "file")
         .env("HOME", home)
-        .env("SPELUNK_CONFIG_DIR", home.join(".config").join("inkentry"))
+        .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
         .env_remove("XDG_CONFIG_HOME")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL");
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
     cmd
 }
 
 /// The env var the nested notes push sets, mirrored from the command. A rename
 /// there must fail here rather than silently stop guarding anything.
-const NOTES_PUSH_SENTINEL: &str = "SPELUNK_NOTES_PUSH";
+const NOTES_PUSH_SENTINEL: &str = "INKENTRY_NOTES_PUSH";
 
 /// `plumbing publish-notes <remote>` in `repo`, parsed. The hook drops stdout,
 /// so the reported outcome is only reachable by running the command directly.
@@ -447,10 +447,10 @@ fn failed_notes_push_does_not_block_the_branch_push() {
 // The config loads before the command dispatch, so a broken one aborted the
 // push with a bare `?` before `--best-effort` was ever consulted. The failure
 // mode reaches users through the keychain, the default store when
-// `SPELUNK_SECRET_STORE` is unset, so no malformed file of their own is needed.
+// `INKENTRY_SECRET_STORE` is unset, so no malformed file of their own is needed.
 //
 // The seeded config has to be the *ambient* one, which is the case the hook's
-// child hits: it takes no `--config`. `git_cmd` pins `SPELUNK_CONFIG_DIR` at the
+// child hits: it takes no `--config`. `git_cmd` pins `INKENTRY_CONFIG_DIR` at the
 // seeded directory and `spelunk_config_dir()` returns that before it consults
 // `dirs::home_dir()`, so the premise holds on every platform. That pin is what
 // makes this reachable on Windows, where `dirs::home_dir()` calls

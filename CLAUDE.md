@@ -86,8 +86,8 @@ config/
   tls.rs         — custom CA trust-anchor application
   secret_store.rs — OS keychain / file secret-store backend
   server_keys.rs — per-origin server-key map + bearer_for() resolution (ADR-071)
-  llm_key.rs     — LLM endpoint credential: SPELUNK_LLM_KEY / secret-store resolution,
-                   plus the SPELUNK_LLM_URL / SPELUNK_LLM_MODEL variable names. Deliberately
+  llm_key.rs     — LLM endpoint credential: INKENTRY_LLM_KEY / secret-store resolution,
+                   plus the INKENTRY_LLM_URL / INKENTRY_LLM_MODEL variable names. Deliberately
                    not a Config field and never read by Config::load; only the daemon-spawn
                    path resolves it
 utils/
@@ -266,7 +266,7 @@ handlers/
     *_tests.rs     — one file per theme (notes, health, embed, search/explore, batch,
                      batch dedupe, sync, timeout, concurrency, liveness-under-embed)
 server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind `--llm-url`,
-                     plus resolve_llm_key (--llm-key / --llm-key-file / SPELUNK_LLM_KEY) and
+                     plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
                      travel in the clear
 embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by

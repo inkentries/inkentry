@@ -27,16 +27,16 @@ Load order (later overrides earlier):
 3. `.inkentry/config.toml`, discovered by walking up from the current
    directory (project-level, team-wide). Only `server_url`, `project_id`,
    `server_ca`, and `[index]` are read from this file.
-4. Environment variables: `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`,
-   `SPELUNK_PROJECT_ID`, `SPELUNK_SERVER_CA`, `SPELUNK_LLM_URL`,
-   `SPELUNK_LLM_MODEL`, `SPELUNK_MODE`.
+4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`,
+   `INKENTRY_PROJECT_ID`, `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`,
+   `INKENTRY_LLM_MODEL`, `INKENTRY_MODE`.
 
 A variable that is **set** overrides the file even when its value is empty:
-`SPELUNK_LLM_URL=""` blanks a configured `llm_url` rather than falling through
+`INKENTRY_LLM_URL=""` blanks a configured `llm_url` rather than falling through
 to it. Unset the variable to let the file value apply.
 
 Override the global config file path with `-c, --config <path>` on any command
-(also settable via `SPELUNK_CONFIG_DIR`, which overrides the whole
+(also settable via `INKENTRY_CONFIG_DIR`, which overrides the whole
 `~/.config/spelunk/` directory, not just the file).
 
 ---
@@ -60,7 +60,7 @@ live alongside it (`index.db`, `memory.db`).
 
 - **Type:** string, optional
 - **Default:** unset
-- **Env override:** `SPELUNK_LLM_MODEL`
+- **Env override:** `INKENTRY_LLM_MODEL`
 
 Two unrelated jobs, which is worth untangling before you set it.
 
@@ -82,7 +82,7 @@ model loaded), independent of this setting.
 
 - **Type:** string, optional
 - **Default:** unset
-- **Env override:** `SPELUNK_LLM_URL`
+- **Env override:** `INKENTRY_LLM_URL`
 
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
@@ -103,8 +103,8 @@ inference target there already. See
 [Third-party models → The local-LLM guarantee](third-party-models.md#the-local-llm-guarantee-and-where-it-stops).
 
 **Precedence**, highest first: `spelunk server start --llm-url` (for that
-daemon only) > `SPELUNK_LLM_URL` > `llm_url` here > unset. An empty value is
-handled differently in the two override positions: `SPELUNK_LLM_URL=""`
+daemon only) > `INKENTRY_LLM_URL` > `llm_url` here > unset. An empty value is
+handled differently in the two override positions: `INKENTRY_LLM_URL=""`
 overrides and blanks this field, leaving no endpoint at all, while
 `--llm-url ""` is discarded and leaves the environment or config value in
 place. A variable that is set wins even when empty; a flag has to carry a value
@@ -112,7 +112,7 @@ to win.
 
 **The credential for this endpoint is never a config field**, here or anywhere
 else. Store it with `spelunk auth set-key --llm`, which reads it from stdin or
-a prompt and keeps it in the OS secret store, or set `SPELUNK_LLM_KEY` (which
+a prompt and keeps it in the OS secret store, or set `INKENTRY_LLM_KEY` (which
 wins over the stored value). Two properties of that are deliberate:
 
 - The CLI reads the credential **only** on the code path that spawns a daemon.
@@ -159,13 +159,13 @@ opt out.
 
 - **Type:** string, optional
 - **Default:** unset
-- **Env override:** `SPELUNK_SERVER_URL`
+- **Env override:** `INKENTRY_SERVER_URL`
 
 URL of a team `inkentry-server` instance. When set, memory commands read and write
 against that shared server: this is the only configuration that moves memory off
 the local machine. A value in the **personal** config is always discarded on
 load; set it in `.inkentry/config.toml` (project-level) or via
-`SPELUNK_SERVER_URL` instead, since a team server is a shared, project-wide
+`INKENTRY_SERVER_URL` instead, since a team server is a shared, project-wide
 choice.
 
 `server_url` must be `https://` unless it points at loopback (`127.0.0.1`,
@@ -181,7 +181,7 @@ team server.
 
 - **Type:** string, optional (`offline` / `local_first` / `cloud_first`)
 - **Default:** unset (derived from `server_url`; see below)
-- **Env override:** `SPELUNK_MODE`
+- **Env override:** `INKENTRY_MODE`
 
 Controls where memory reads and writes go, and whether the CLI ever contacts a
 configured `server_url`.
@@ -193,7 +193,7 @@ configured `server_url`.
 | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 
 When unset, the effective mode is derived: no `server_url` means `offline`; a
-configured `server_url` means `local_first`. `SPELUNK_NO_SERVER=1` forces
+configured `server_url` means `local_first`. `INKENTRY_NO_SERVER=1` forces
 `offline` regardless of this setting, as a hard kill-switch. `mode` is only
 read from the personal config, not from `.inkentry/config.toml`. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
@@ -209,10 +209,10 @@ remote LLM. See
 
 - **Type:** string, optional
 - **Default:** unset
-- **Env override:** `SPELUNK_SERVER_KEY`
+- **Env override:** `INKENTRY_SERVER_KEY`
 
 This field only resolves the **cloud-kind** bearer, used for spelunk.cloud
-requests (`SPELUNK_SERVER_KEY` if set, otherwise the `[auth].access_token`
+requests (`INKENTRY_SERVER_KEY` if set, otherwise the `[auth].access_token`
 written by `spelunk login`). It is **not** the effective credential for a
 self-hosted team `inkentry-server`: since the per-origin key scoping in
 ADR-071, that bearer is resolved separately, keyed by the server's origin, so
@@ -232,7 +232,7 @@ Prefer one of these instead of hand-editing this field:
   flag, so it never lands in shell history or `ps` output).
 - `spelunk auth list-servers` lists which server origins have a stored key
   (never prints key material).
-- `SPELUNK_SERVER_KEY` works everywhere, including CI, and always takes
+- `INKENTRY_SERVER_KEY` works everywhere, including CI, and always takes
   precedence over both the per-origin store and `[auth]`.
 
 Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
@@ -245,7 +245,7 @@ there anyway is silently dropped and never resolves to a credential. See
 
 - **Type:** string, optional
 - **Default:** unset (derived at runtime if absent)
-- **Env override:** `SPELUNK_PROJECT_ID`
+- **Env override:** `INKENTRY_PROJECT_ID`
 
 Human-readable project slug used to route memory on a team `inkentry-server`. It
 is sent to the server exactly as configured, whether it is a slug or a UUID:
@@ -260,7 +260,7 @@ path if there is no remote. Normally set in `.inkentry/config.toml` alongside
 
 - **Type:** path, optional
 - **Default:** unset
-- **Env override:** `SPELUNK_SERVER_CA`
+- **Env override:** `INKENTRY_SERVER_CA`
 
 Path to a PEM CA bundle to trust in addition to the built-in roots, for a team
 `server_url` presenting a certificate signed by a self-signed or internal CA.
@@ -350,14 +350,14 @@ exclude = ["fixtures/**"]
 committed file stays in the repo's history forever and is readable by anyone
 with repo access, so the project config has no field for it at all: a stray
 `server_key` line is silently dropped, and the file's other keys still load
-normally. Use `spelunk auth set-key --server <url>` (or `SPELUNK_SERVER_KEY`
+normally. Use `spelunk auth set-key --server <url>` (or `INKENTRY_SERVER_KEY`
 in CI) to set a shared team credential per developer instead.
 
 **`llm_url` is not accepted here either**, for a related reason: it is the
 endpoint a credential is presented to, and it is a per-developer choice. A
 committed value would point every teammate's local daemon at whichever machine
 the author happened to be running an LLM on. Set it in the personal config or
-via `SPELUNK_LLM_URL`.
+via `INKENTRY_LLM_URL`.
 
 ## `~/.config/spelunk/config.toml` (personal)
 
@@ -401,23 +401,23 @@ TOML file.
 
 | Variable | Overrides / effect |
 |----------|--------------------|
-| `SPELUNK_SERVER_URL` | `server_url` |
-| `SPELUNK_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `spelunk login` tokens) |
-| `SPELUNK_PROJECT_ID` | `project_id` |
-| `SPELUNK_SERVER_CA` | `server_ca` |
-| `SPELUNK_LLM_URL` | `llm_url` |
-| `SPELUNK_LLM_MODEL` | `llm_model` |
-| `SPELUNK_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `spelunk auth set-key --llm`). Not a `config.toml` field. |
-| `SPELUNK_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
-| `SPELUNK_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
-| `SPELUNK_CLOUD_URL` | spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
-| `SPELUNK_SECRET_STORE` | Secret-store backend: `auto` (default), `keychain`, or `file` |
+| `INKENTRY_SERVER_URL` | `server_url` |
+| `INKENTRY_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `spelunk login` tokens) |
+| `INKENTRY_PROJECT_ID` | `project_id` |
+| `INKENTRY_SERVER_CA` | `server_ca` |
+| `INKENTRY_LLM_URL` | `llm_url` |
+| `INKENTRY_LLM_MODEL` | `llm_model` |
+| `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `spelunk auth set-key --llm`). Not a `config.toml` field. |
+| `INKENTRY_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
+| `INKENTRY_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
+| `INKENTRY_CLOUD_URL` | spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
+| `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default), `keychain`, or `file` |
 | `AGENT=true` | Forces JSON output for commands that support it (not a config field) |
 
 This table covers only the env vars that override a `config.toml` field.
 `commands.md`'s [Environment variables](commands.md#environment-variables)
-section lists the complete set, including `SPELUNK_CONFIG_DIR`,
-`SPELUNK_STATE_DIR`, `RUST_LOG`, and `EDITOR`/`VISUAL`, which don't map onto a
+section lists the complete set, including `INKENTRY_CONFIG_DIR`,
+`INKENTRY_STATE_DIR`, `RUST_LOG`, and `EDITOR`/`VISUAL`, which don't map onto a
 field here.
 
 ---

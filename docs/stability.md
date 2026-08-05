@@ -171,20 +171,20 @@ guess wrong about, and each restriction is part of the contract:
 - `server_url` is **ignored in the global personal config**
   (`~/.config/spelunk/config.toml`, including a file passed to `--config`). It
   may come only from the checked-in `.inkentry/config.toml` or from
-  `SPELUNK_SERVER_URL`. Everyone working on a project needs the same team
+  `INKENTRY_SERVER_URL`. Everyone working on a project needs the same team
   server, which a per-developer file cannot guarantee. A global config that
   still sets it loads fine; the value is discarded.
 - `server_key` is **ignored in the project config** (`.inkentry/config.toml`). A
   repository must never be able to hand a secret to whoever clones it. Use
   `spelunk auth set-key --server <url>`, `spelunk login`, or
-  `SPELUNK_SERVER_KEY`.
+  `INKENTRY_SERVER_KEY`.
 - `llm_url` is **ignored in the project config**, which follows from the
   allowlist below rather than being an exception to it, and is named here
   because it looks like `server_url` and is not. An LLM endpoint is a
   per-developer choice: a committed value points every teammate's local daemon
   at whichever machine the author was running a model on. Set it in the
-  personal config or via `SPELUNK_LLM_URL`. Its credential is not a config key
-  in either file (`spelunk auth set-key --llm` or `SPELUNK_LLM_KEY`), on the
+  personal config or via `INKENTRY_LLM_URL`. Its credential is not a config key
+  in either file (`spelunk auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
 
 Beyond those three:
@@ -197,9 +197,9 @@ Beyond those three:
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
   `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
   allowed; removing one is a breaking change.
-- Environment variable overrides (`SPELUNK_*`) are stable on the same terms as
+- Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:
-  `SPELUNK_SERVER_URL`, `SPELUNK_SERVER_KEY`, and `SPELUNK_LLM_URL` all take
+  `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, and `INKENTRY_LLM_URL` all take
   effect wherever they are set. What a variable set to an **empty** value does
   is documented in [Config reference](config-reference.md) but is not frozen
   here.
@@ -231,11 +231,11 @@ This is the precedent the policy is written from.
 1. **Alias.** `server_url` carried `#[serde(alias = "memory_server_url")]`, and
    `server_key` carried `#[serde(alias = "memory_server_key")]`, so an existing
    config kept working untouched. The environment variable
-   `SPELUNK_MEMORY_SERVER_URL` was accepted as a fallback for
-   `SPELUNK_SERVER_URL`.
+   `INKENTRY_MEMORY_SERVER_URL` was accepted as a fallback for
+   `INKENTRY_SERVER_URL`.
 2. **Warn.** Partially, and this is where the precedent falls short of the
    policy above rather than setting it. The environment fallback did warn:
-   `SPELUNK_MEMORY_SERVER_URL is deprecated; use SPELUNK_SERVER_URL instead`.
+   `INKENTRY_MEMORY_SERVER_URL is deprecated; use INKENTRY_SERVER_URL instead`.
    The two TOML aliases never warned at all. They were accepted silently for
    their whole deprecation window, so the only signal a user got was the
    changelog. Step 2 is written as a requirement for what comes next, not as a

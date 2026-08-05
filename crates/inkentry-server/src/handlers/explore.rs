@@ -98,7 +98,7 @@ pub async fn explore(
 
     let llm = state.llm.clone().ok_or_else(|| {
         AppError::ServiceUnavailable(
-            "This server has no LLM configured. Set SPELUNK_LLM_URL and SPELUNK_LLM_MODEL."
+            "This server has no LLM configured. Set INKENTRY_LLM_URL and INKENTRY_LLM_MODEL."
                 .to_string(),
         )
     })?;

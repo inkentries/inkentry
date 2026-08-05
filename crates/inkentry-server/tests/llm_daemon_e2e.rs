@@ -55,8 +55,8 @@ async fn start_daemon(
         cmd.args(["--llm-model", model]);
     }
     match llm_key {
-        Some(k) => cmd.env("SPELUNK_LLM_KEY", k),
-        None => cmd.env_remove("SPELUNK_LLM_KEY"),
+        Some(k) => cmd.env("INKENTRY_LLM_KEY", k),
+        None => cmd.env_remove("INKENTRY_LLM_KEY"),
     };
     let child = cmd
         .stdin(Stdio::null())
@@ -212,7 +212,7 @@ async fn the_key_never_reaches_the_daemon_log_even_at_trace_level() {
             "--llm-model",
             "test-model",
         ])
-        .env("SPELUNK_LLM_KEY", "sk-llm-secret")
+        .env("INKENTRY_LLM_KEY", "sk-llm-secret")
         .env("RUST_LOG", "trace")
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())

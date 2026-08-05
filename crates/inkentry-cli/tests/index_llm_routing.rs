@@ -7,7 +7,7 @@
 // LLM routing and embed routing are separate rules and can land on different
 // servers, so several tests assert on which mock received which route rather
 // than only on the outcome. The loopback mock is wired in through
-// `SPELUNK_STATE_DIR`/`server.port` (real auto-discovery), never `server_url`,
+// `INKENTRY_STATE_DIR`/`server.port` (real auto-discovery), never `server_url`,
 // so a routing regression shows up as a request landing on the wrong mock.
 
 mod plumbing_helpers;
@@ -104,19 +104,19 @@ async fn full_server(llm: bool, summary: &str) -> MockServer {
     server
 }
 
-// `spelunk index .`, scrubbed of every ambient `SPELUNK_*` these tests
+// `spelunk index .`, scrubbed of every ambient `INKENTRY_*` these tests
 // isolate: a value in the developer's shell must never change which server
 // gets probed.
 fn index_cmd(home: &Path, project: &Path, db: &Path) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MODE")
-        .env_remove("SPELUNK_PROJECT_ID")
-        .env_remove("SPELUNK_NO_SERVER")
-        .env_remove("SPELUNK_STATE_DIR")
-        .env_remove("SPELUNK_LLM_URL")
-        .env_remove("SPELUNK_LLM_MODEL")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env_remove("INKENTRY_PROJECT_ID")
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_STATE_DIR")
+        .env_remove("INKENTRY_LLM_URL")
+        .env_remove("INKENTRY_LLM_MODEL")
         .arg("index")
         .arg("--db")
         .arg(db)
@@ -192,7 +192,7 @@ async fn loopback_llm_with_no_server_url_generates_summaries() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -220,7 +220,7 @@ async fn local_first_with_server_url_summarises_via_loopback_not_the_remote() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -260,7 +260,7 @@ async fn loopback_without_an_llm_falls_back_to_the_llm_capable_remote() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
@@ -316,8 +316,8 @@ async fn configured_local_llm_not_served_skips_and_never_reaches_the_remote() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
-        .env("SPELUNK_LLM_URL", "http://127.0.0.1:1234")
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
         .assert()
         .success();
     let output = assert.get_output();
@@ -367,7 +367,7 @@ async fn no_llm_anywhere_skips_with_both_routes_and_the_opt_out_flag() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_STATE_DIR", &state_dir)
+        .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();
     let output = assert.get_output();
@@ -421,7 +421,7 @@ async fn offline_mode_skips_summaries_with_the_offline_message() {
 
     let db = project.path().join("index.db");
     let assert = index_cmd(home.path(), project.path(), &db)
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .assert()
         .success();
     let output = assert.get_output();
@@ -458,10 +458,10 @@ async fn no_summaries_flag_short_circuits_before_any_routing() {
 
         let db = project.path().join("index.db");
         let mut cmd = index_cmd(home.path(), project.path(), &db);
-        cmd.env("SPELUNK_STATE_DIR", &state_dir)
+        cmd.env("INKENTRY_STATE_DIR", &state_dir)
             .arg("--no-summaries");
         if let Some(url) = llm_url {
-            cmd.env("SPELUNK_LLM_URL", url);
+            cmd.env("INKENTRY_LLM_URL", url);
         }
         let assert = cmd.assert().success();
         let output = assert.get_output();

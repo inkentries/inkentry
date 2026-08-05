@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Point loopback auto-discovery (`SPELUNK_STATE_DIR`/`server.port`, step 3a of
+// Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, step 3a of
 // `capability::probe`) at `url`, so a mock `MockServer` on a random port stands
 // in for a locally-running `inkentry-server` the CLI discovers on its own —
 // exactly as `index_embed_tier_routing.rs` does.
@@ -33,7 +33,7 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
 }
 
 // Build a `spelunk plumbing embed` command that auto-discovers the loopback
-// server via `SPELUNK_STATE_DIR`, with every ambient `SPELUNK_*` var these
+// server via `INKENTRY_STATE_DIR`, with every ambient `INKENTRY_*` var these
 // tests isolate scrubbed so a developer/CI shell value can't change which tier
 // is probed.
 fn embed_loopback_cmd(
@@ -44,11 +44,11 @@ fn embed_loopback_cmd(
 ) -> assert_cmd::Command {
     let mut cmd = spelunk_bin_in(home);
     cmd.current_dir(project)
-        .env_remove("SPELUNK_SERVER_URL")
-        .env_remove("SPELUNK_MODE")
-        .env_remove("SPELUNK_PROJECT_ID")
-        .env_remove("SPELUNK_NO_SERVER")
-        .env("SPELUNK_STATE_DIR", state_dir)
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env_remove("INKENTRY_PROJECT_ID")
+        .env_remove("INKENTRY_NO_SERVER")
+        .env("INKENTRY_STATE_DIR", state_dir)
         .arg("--config")
         .arg(config)
         .arg("plumbing")
@@ -260,7 +260,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
 // ── happy path: auto-discovered loopback server (no server_url configured) ────
 
 // The reported bug: a healthy local `inkentry-server` discovered via loopback
-// auto-discovery (`SPELUNK_STATE_DIR`/`server.port`) — with NO explicit
+// auto-discovery (`INKENTRY_STATE_DIR`/`server.port`) — with NO explicit
 // `server_url` and the default `local_first` mode — must be found by `plumbing
 // embed`, exactly as `search --mode semantic` / `memory search` already find
 // it. Before the fix, `embed` skipped the capability-tier / `effective_config`
@@ -333,7 +333,7 @@ async fn embed_query_finds_auto_discovered_loopback_server() {
 // ── error path: no server reachable (gate preserved) ─────────────────────────
 
 // The locked-feature gate must survive the fix: with no server reachable
-// (here forced with `SPELUNK_NO_SERVER=1` so the result is deterministic
+// (here forced with `INKENTRY_NO_SERVER=1` so the result is deterministic
 // regardless of any real server on the default loopback port), `plumbing
 // embed` still fails with the actionable `requires inkentry-server` error.
 #[test]
@@ -343,7 +343,7 @@ fn embed_exits_nonzero_when_no_server_configured() {
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
     spelunk_bin()
-        .env("SPELUNK_NO_SERVER", "1")
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
         .arg(&config)
         .arg("plumbing")

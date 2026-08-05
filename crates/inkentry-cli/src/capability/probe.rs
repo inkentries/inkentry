@@ -12,7 +12,7 @@ use super::state::{Capabilities, EmbedderState, ServerLimits};
 use super::tier::Tier;
 
 /// The single state file directory resolver for the whole CLI:
-/// `~/.local/state/spelunk/`, or `SPELUNK_STATE_DIR` when set.
+/// `~/.local/state/spelunk/`, or `INKENTRY_STATE_DIR` when set.
 ///
 /// Every reader and writer of runtime state goes through this one function:
 /// `spelunk server start/stop/status/logs` (server pid/port/log/db-path
@@ -34,7 +34,7 @@ use super::tier::Tier;
 /// silently disabled loopback auto-discovery on the primary dev platform
 /// (spelunk#316).
 ///
-/// `SPELUNK_STATE_DIR` is a supported override of the entire path, not
+/// `INKENTRY_STATE_DIR` is a supported override of the entire path, not
 /// dev-only cruft: it is load-bearing on Windows CI, where `dirs::home_dir()`
 /// 6.x calls `SHGetKnownFolderPath` (a Windows Registry lookup) rather than
 /// reading `USERPROFILE`, making per-process environment overrides of `HOME`
@@ -44,7 +44,7 @@ use super::tier::Tier;
 /// Errors only when the home directory can't be resolved and no override is
 /// set.
 pub(crate) fn spelunk_state_dir() -> anyhow::Result<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os("SPELUNK_STATE_DIR") {
+    if let Some(p) = std::env::var_os("INKENTRY_STATE_DIR") {
         return Ok(std::path::PathBuf::from(p));
     }
     dirs::home_dir()
@@ -66,7 +66,7 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 ///
 /// On the first call, probes the server according to the following priority:
 ///
-/// 1. If `SPELUNK_NO_SERVER=1` is set → `Tier::Offline` immediately.
+/// 1. If `INKENTRY_NO_SERVER=1` is set → `Tier::Offline` immediately.
 /// 2. If `cfg.server_url` is set → probe that URL with a **2 s** timeout
 ///    (`auto_discovered = false`).
 /// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
@@ -83,7 +83,7 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 /// configs: they would always see the tier determined by the first call.
 pub async fn get_tier(cfg: &Config) -> &'static Tier {
     // An *explicit* offline mode (config `mode = "offline"`,
-    // `SPELUNK_MODE=offline`, or the `SPELUNK_NO_SERVER=1` kill-switch) skips all
+    // `INKENTRY_MODE=offline`, or the `INKENTRY_NO_SERVER=1` kill-switch) skips all
     // server probes: the user has asked for a provable no-cloud run.
     //
     // The *defaulted* offline (no `server_url` and no explicit `mode`) must NOT
@@ -138,12 +138,12 @@ const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 const DEFAULT_LOOPBACK_PORT: u16 = 7777;
 
 async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
-    // ── 1. SPELUNK_NO_SERVER short-circuit ───────────────────────────────────
+    // ── 1. INKENTRY_NO_SERVER short-circuit ───────────────────────────────────
     if matches!(
-        std::env::var("SPELUNK_NO_SERVER").as_deref(),
+        std::env::var("INKENTRY_NO_SERVER").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     ) {
-        tracing::debug!("SPELUNK_NO_SERVER set: skipping all server probes");
+        tracing::debug!("INKENTRY_NO_SERVER set: skipping all server probes");
         return Tier::Offline;
     }
 
@@ -217,7 +217,7 @@ async fn probe_loopback() -> Tier {
 /// too, in which case this reuses [`get_tier`]'s cached probe of that URL
 /// (unchanged behaviour for that mode).
 ///
-/// Explicit offline (`SPELUNK_NO_SERVER` / `mode = "offline"`) skips every
+/// Explicit offline (`INKENTRY_NO_SERVER` / `mode = "offline"`) skips every
 /// probe, mirroring `get_tier`.
 ///
 /// Not cached via a `OnceCell` like `get_tier`: `local_first` always runs a
@@ -320,7 +320,7 @@ async fn probe_url(
                             "inkentry-server at {url} serves {server_dim}-dim embeddings; \
                              this CLI expects {expected}-dim. Ignoring loopback server. \
                              Restart the server (`spelunk server start`) or set \
-                             SPELUNK_NO_SERVER=1 to suppress this probe."
+                             INKENTRY_NO_SERVER=1 to suppress this probe."
                         );
                         return Ok(Tier::Offline);
                     } else {
@@ -745,7 +745,7 @@ mod tests {
         let _ = read_server_port_file(); // must not panic
     }
 
-    // ── SPELUNK_NO_SERVER and loopback constants ──────────────────────────────
+    // ── INKENTRY_NO_SERVER and loopback constants ──────────────────────────────
 
     #[test]
     fn loopback_probe_timeout_is_250ms() {
@@ -762,9 +762,9 @@ mod tests {
         assert_eq!(DEFAULT_LOOPBACK_PORT, 7777);
     }
 
-    // ── SPELUNK_NO_SERVER short-circuit behaviour ─────────────────────────────
+    // ── INKENTRY_NO_SERVER short-circuit behaviour ─────────────────────────────
     //
-    // These tests mutate the process-global `SPELUNK_NO_SERVER` env var, so they
+    // These tests mutate the process-global `INKENTRY_NO_SERVER` env var, so they
     // are serialised against each other to avoid cross-test interference.
 
     #[tokio::test]
@@ -773,16 +773,16 @@ mod tests {
         // SAFETY: serialised via #[serial] so no other test reads/writes this
         // env var concurrently; restored before the guard scope ends.
         for val in ["1", "true", "yes"] {
-            unsafe { std::env::set_var("SPELUNK_NO_SERVER", val) };
+            unsafe { std::env::set_var("INKENTRY_NO_SERVER", val) };
             // server_url = None so that, absent the short-circuit, the probe would
             // attempt loopback auto-discovery; the short-circuit must win.
             let tier = probe(None, None).await;
             assert!(
                 matches!(tier, Tier::Offline),
-                "SPELUNK_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
+                "INKENTRY_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
             );
         }
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
     }
 
     // ── Embedding-dim pre-flight checks ──────────────────────────────────────
@@ -1366,11 +1366,11 @@ mod tests {
 
     // ── get_inference_tier (2026-07-23 founder decision) ───
     //
-    // These tests set `SPELUNK_STATE_DIR` / `SPELUNK_NO_SERVER`, both
+    // These tests set `INKENTRY_STATE_DIR` / `INKENTRY_NO_SERVER`, both
     // process-global. Reusing the `spelunk_no_server_env` serial group (rather
     // than a new name) keeps them mutually exclusive with
     // `spelunk_no_server_forces_offline` above too: `get_inference_tier` reads
-    // `SPELUNK_NO_SERVER` internally, so it must never run concurrently with a
+    // `INKENTRY_NO_SERVER` internally, so it must never run concurrently with a
     // test that transiently sets it.
 
     // `local_first` (the default reached once `server_url` is set, with no
@@ -1385,7 +1385,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
         let loopback = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1408,8 +1408,8 @@ mod tests {
         std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
 
-        let prev_state_dir = std::env::var_os("SPELUNK_STATE_DIR");
-        unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+        let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+        unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
 
         let cfg = Config {
             // Deliberately never mocked: any accidental fallback to this
@@ -1429,8 +1429,8 @@ mod tests {
 
         unsafe {
             match prev_state_dir {
-                Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                None => std::env::remove_var("INKENTRY_STATE_DIR"),
             }
         }
 
@@ -1448,7 +1448,7 @@ mod tests {
     // rather than silently returning `Offline` for the right reason.
     //
     // Uses `cfg.mode = Some(SyncMode::Offline)` rather than
-    // `SPELUNK_NO_SERVER=1` deliberately: that env var is process-global and
+    // `INKENTRY_NO_SERVER=1` deliberately: that env var is process-global and
     // read by every concurrently-running test's `probe()`/`get_tier()`
     // call (e.g. `get_tier_probes_at_most_once_and_caches_the_result`
     // above, which is not in this lock group), so mutating it here would
@@ -1490,7 +1490,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
         let server = MockServer::start().await;
         // First health check: embedder still loading, no index.embed.

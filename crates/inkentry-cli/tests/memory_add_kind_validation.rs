@@ -48,13 +48,13 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
 }
 
 // Build `spelunk --config <cfg> memory --db <mem_db> add …`. Callers append the
-// `--kind`/`--title`/`--body` args. SPELUNK_NO_SERVER keeps the embed phase
+// `--kind`/`--title`/`--body` args. INKENTRY_NO_SERVER keeps the embed phase
 // offline and deterministic (a note is still stored, just without a vector).
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     let mut cmd = spelunk_bin();
     cmd.current_dir(dir)
-        .env("SPELUNK_NO_SERVER", "1")
-        .env_remove("SPELUNK_SERVER_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
         .arg("--config")
         .arg(cfg)
         .arg("memory")

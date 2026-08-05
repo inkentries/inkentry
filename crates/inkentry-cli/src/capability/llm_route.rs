@@ -217,8 +217,8 @@ mod tests {
             std::fs::create_dir_all(&state_dir).expect("create state dir");
             std::fs::write(state_dir.join("server.port"), format!("{}\n", port_of(uri)))
                 .expect("write server.port");
-            let previous = std::env::var_os("SPELUNK_STATE_DIR");
-            unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+            let previous = std::env::var_os("INKENTRY_STATE_DIR");
+            unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
             Self {
                 _tmp: tmp,
                 previous,
@@ -232,8 +232,8 @@ mod tests {
             let tmp = tempfile::TempDir::new().expect("temp state dir");
             let state_dir = tmp.path().join("state");
             std::fs::create_dir_all(&state_dir).expect("create state dir");
-            let previous = std::env::var_os("SPELUNK_STATE_DIR");
-            unsafe { std::env::set_var("SPELUNK_STATE_DIR", &state_dir) };
+            let previous = std::env::var_os("INKENTRY_STATE_DIR");
+            unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
             Self {
                 _tmp: tmp,
                 previous,
@@ -245,8 +245,8 @@ mod tests {
         fn drop(&mut self) {
             unsafe {
                 match self.previous.take() {
-                    Some(v) => std::env::set_var("SPELUNK_STATE_DIR", v),
-                    None => std::env::remove_var("SPELUNK_STATE_DIR"),
+                    Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
+                    None => std::env::remove_var("INKENTRY_STATE_DIR"),
                 }
             }
         }
@@ -260,7 +260,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn offline_mode_routes_nowhere_and_probes_nothing() {
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
         let loopback = MockServer::start().await;
         Mock::given(method("GET"))
@@ -298,9 +298,9 @@ mod tests {
             .await;
         let _state = StateDirGuard::pointing_at(&loopback.uri());
 
-        unsafe { std::env::set_var("SPELUNK_NO_SERVER", "1") };
+        unsafe { std::env::set_var("INKENTRY_NO_SERVER", "1") };
         let route = resolve_llm_route(&Config::default(), root()).await;
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 
         assert_eq!(route.reason(), Some(NoLlmReason::Offline), "got {route:?}");
         assert_eq!(
@@ -317,7 +317,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn loopback_with_an_llm_and_no_server_url_routes_local() {
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_with_llm()).await;
         let _state = StateDirGuard::pointing_at(&loopback.uri());
 
@@ -332,7 +332,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn loopback_with_an_llm_wins_over_an_llm_capable_server_url() {
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_with_llm()).await;
         let remote = mock_server(health_with_llm()).await;
         let _state = StateDirGuard::pointing_at(&loopback.uri());
@@ -365,7 +365,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn configured_local_llm_not_served_stops_and_never_reaches_the_remote() {
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let loopback = mock_server(health_without_llm()).await;
         let remote = mock_server(health_with_llm()).await;
         let _state = StateDirGuard::pointing_at(&loopback.uri());
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(spelunk_no_server_env)]
     async fn nothing_configured_anywhere_reports_no_llm_not_offline() {
-        unsafe { std::env::remove_var("SPELUNK_NO_SERVER") };
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
         let _state = StateDirGuard::empty();
 
         let route = resolve_llm_route(&Config::default(), root()).await;

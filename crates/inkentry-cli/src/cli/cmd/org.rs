@@ -24,7 +24,7 @@ use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg};
 #[derive(Args, Debug)]
 pub struct OrgArgs {
     /// Override the spelunk cloud API URL (default: https://api.spelunk.cloud)
-    #[arg(long, env = "SPELUNK_CLOUD_URL", global = true)]
+    #[arg(long, env = "INKENTRY_CLOUD_URL", global = true)]
     pub cloud_url: Option<String>,
 
     #[command(subcommand)]

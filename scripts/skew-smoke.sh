@@ -42,17 +42,17 @@ SERVER_BIN="$(cd "$(dirname "$SERVER_BIN")" && pwd)/$(basename "$SERVER_BIN")"
 #
 # An allowlist rather than a list of known overrides, because the list has been
 # wrong every time it has been checked: three successive audits each found more
-# than the last, and the namespace moves on its own (SPELUNK_OLD_BINARY arrived
-# and SPELUNK_NO_SLUG_CACHE left while this branch was open). Scrubbing by the
-# SPELUNK_ prefix is not enough either: CREDENTIALS_DIRECTORY is read by
+# than the last, and the namespace moves on its own (INKENTRY_OLD_BINARY arrived
+# and INKENTRY_NO_SLUG_CACHE left while this branch was open). Scrubbing by the
+# INKENTRY_ prefix is not enough either: CREDENTIALS_DIRECTORY is read by
 # inkentry-server to resolve its API key from systemd LoadCredential=, and is a
 # secret path with no prefix at all. Anything not named below is gone, so a
 # variable added to the tree later is excluded by default rather than by
 # memory.
 #
-# Why this is not cosmetic: SPELUNK_SECRET_STORE=file below exists to keep old
+# Why this is not cosmetic: INKENTRY_SECRET_STORE=file below exists to keep old
 # released binaries off the OS keyring, but the file store is
-# <config_dir>/secrets.toml and spelunk_config_dir() honours SPELUNK_CONFIG_DIR
+# <config_dir>/secrets.toml and spelunk_config_dir() honours INKENTRY_CONFIG_DIR
 # first. With that variable inherited, the guard would have pointed those
 # binaries at the developer's real secrets.toml, to read and to write.
 
@@ -79,7 +79,7 @@ INHERITED_ENV_ALLOWLIST="PATH TMPDIR TMP TEMP LANG LC_ALL LC_CTYPE TERM USER LOG
 # it unconditionally, and filing it as inherited declared the invoking user's
 # real HOME permitted, which is the first version of the hole this allowlist
 # exists to close.
-OWNED_ENV="HOME SPELUNK_SECRET_STORE SPELUNK_SERVER_URL SPELUNK_STATE_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
+OWNED_ENV="HOME INKENTRY_SECRET_STORE INKENTRY_SERVER_URL INKENTRY_STATE_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME"
 
 # SKEW_* are this script's own knobs, read here and by nothing under test.
 env_is_allowed() {
@@ -121,7 +121,7 @@ assert_env_is_allowlisted() {
 # The released binaries pre-date the keychain fix and will block on a real
 # macOS Keychain prompt without this. It is exported rather than passed per
 # command so every child the CLI spawns inherits it too.
-export SPELUNK_SECRET_STORE=file
+export INKENTRY_SECRET_STORE=file
 
 WORK="$(mktemp -d)"
 SERVER_PID=""
@@ -158,11 +158,11 @@ export XDG_STATE_HOME="$WORK/home/.local/state"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
 # Set explicitly because the CLI does not read XDG_STATE_HOME: it resolves this
-# directory from SPELUNK_STATE_DIR or from `dirs::home_dir()`, which on Windows
+# directory from INKENTRY_STATE_DIR or from `dirs::home_dir()`, which on Windows
 # is a Registry lookup rather than $HOME. Naming it here keeps the port file
 # written below and the file the CLI reads the same path on every platform.
-export SPELUNK_STATE_DIR="$XDG_STATE_HOME/spelunk"
-mkdir -p "$SPELUNK_STATE_DIR"
+export INKENTRY_STATE_DIR="$XDG_STATE_HOME/spelunk"
+mkdir -p "$INKENTRY_STATE_DIR"
 
 # Set explicitly rather than left to the isolated HOME: an invoking user with
 # XDG_DATA_HOME already pointing at their real data dir would otherwise leak
@@ -175,7 +175,7 @@ mkdir -p "$XDG_DATA_HOME"
 # the server re-downloads the model every run and never reaches `ready` inside
 # the timeout. Nothing the isolation exists to protect lives here.
 #
-# Still a symlink, but not for the reason previously given here. SPELUNK_MODEL_DIR
+# Still a symlink, but not for the reason previously given here. INKENTRY_MODEL_DIR
 # does exist (`inkentry-server --model-dir`), so "offers no override of its own"
 # was simply false. It is the wrong override for this job: it selects a
 # *pre-provisioned* GGUF plus tokenizer for air-gapped installs and bypasses the
@@ -199,7 +199,7 @@ BASE="http://127.0.0.1:${PORT}"
 # auto-discovers some other server already listening on the default port. Set
 # here rather than after the launch below so one assertion can cover the whole
 # namespace at the moment the first binary under test starts.
-export SPELUNK_SERVER_URL="$BASE"
+export INKENTRY_SERVER_URL="$BASE"
 
 assert_env_is_allowlisted
 
@@ -223,7 +223,7 @@ done
 # either would silently push+ack these entries to the server ahead of the
 # explicit push/repush/sync assertions below, making them report "already
 # synced" for a reason that has nothing to do with version skew. Push/sync
-# only need `SPELUNK_SERVER_URL` (already exported above), so the port file is
+# only need `INKENTRY_SERVER_URL` (already exported above), so the port file is
 # written further down, right before the one step that actually needs it.
 
 SERVER_VERSION="$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
@@ -289,7 +289,7 @@ grep -q "already synced" "$WORK/repush.out" \
 run sync "$CLI_BIN" memory sync
 
 # Route inference at the peer as well, now that the explicit push/repush/sync
-# assertions above are done. SPELUNK_SERVER_URL does not do this: in the
+# assertions above are done. INKENTRY_SERVER_URL does not do this: in the
 # default local_first mode an explicit server_url is a memory sync replica
 # only, and inference resolves through loopback auto-discovery, which reads
 # this file (`capability/probe.rs` step 3a). Without it the search step below
@@ -297,7 +297,7 @@ run sync "$CLI_BIN" memory sync
 # falls through to the default port 7777, embeds against whatever
 # current-version server is listening there, and reports success having
 # crossed no skew boundary at all.
-printf '%s\n' "$PORT" >"$SPELUNK_STATE_DIR/server.port"
+printf '%s\n' "$PORT" >"$INKENTRY_STATE_DIR/server.port"
 
 # Search is the one step whose outcome depends on something other than the
 # wire contract: the server embeds the query, so it needs the model loaded.
