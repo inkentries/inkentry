@@ -84,12 +84,6 @@ visible, assignable, and closable. A `TODO` in source is an issue nobody filed.
 A `TODO` is solutionizing before you fully understand the problem. It robs the
 next engineer of agency to fix their problem. It also falls flat against YAGNI.
 
-### Em-dashes
-
-Prefer a colon, semicolon, comma, or a restructured sentence over an em-dash
-(`—`). This is a house preference for readability, not a gate: no PR is blocked
-over one, and there is no CI check. It **is** a hard rule for marketing-site and
-social copy, which lives in a different repository.
 
 ---
 
