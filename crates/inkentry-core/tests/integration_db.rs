@@ -6,8 +6,8 @@
 
 mod common;
 
-use serial_test::serial;
 use inkentry_core::indexer::graph::{Edge, EdgeKind};
+use serial_test::serial;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

@@ -13,10 +13,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use inkentry_core::registry::Registry;
 use inkentry_core::storage::{Database, GitNotesBackend, MemoryBackend, MemoryStore};
 use inkentry_core::test_support::git_command;
+use serde::Deserialize;
 
 // sqlite-vec is registered process-globally, before any connection is opened.
 // Without it every vec0 table in the corpus fails to load and the row-count
@@ -979,7 +979,11 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     std::fs::create_dir_all(home.join(".config").join("inkentry")).unwrap();
-    std::fs::write(home.join(".config").join("inkentry").join("config.toml"), "").unwrap();
+    std::fs::write(
+        home.join(".config").join("inkentry").join("config.toml"),
+        "",
+    )
+    .unwrap();
     let project = upgraded_project(tmp.path());
     let dot = project.join(".inkentry");
 
@@ -994,7 +998,10 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
             .env("INKENTRY_SECRET_STORE", "file")
             .env("HOME", &home)
             .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
-            .env("INKENTRY_REGISTRY_DIR", home.join(".config").join("inkentry"))
+            .env(
+                "INKENTRY_REGISTRY_DIR",
+                home.join(".config").join("inkentry"),
+            )
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap_or_else(|e| panic!("running the old binary with {args:?}: {e}"))

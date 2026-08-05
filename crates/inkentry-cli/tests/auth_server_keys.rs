@@ -98,7 +98,10 @@ fn bare_logout_does_not_clear_stored_server_keys() {
     let home = TempDir::new().unwrap();
     set_key(home.path(), "https://team.example:7777", "sk-team-secret");
 
-    inkentry_bin_in(home.path()).arg("logout").assert().success();
+    inkentry_bin_in(home.path())
+        .arg("logout")
+        .assert()
+        .success();
 
     // The server key must survive a bare logout: only the cloud [auth] pair
     // is an unconditional clear target.

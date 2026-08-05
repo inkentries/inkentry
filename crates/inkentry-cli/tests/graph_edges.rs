@@ -7,7 +7,7 @@
 // its assertions at all.
 
 mod plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, parse_jsonl, inkentry_bin, inkentry_cmd};
+use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
 
 use predicates::prelude::*;
 use serde_json::Value;

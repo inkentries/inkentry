@@ -20,7 +20,7 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, mount_health, inkentry_bin, write_project_server_config,
+    FIXTURE_PROJECT_ID, inkentry_bin, mount_health, write_project_server_config,
 };
 
 use assert_cmd::Command;
@@ -455,7 +455,9 @@ fn reindex_resumes_after_midrun_failure() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("2 of 4 done and durably stored"))
-        .stderr(predicates::str::contains("re-run 'inkentry memory reindex'"));
+        .stderr(predicates::str::contains(
+            "re-run 'inkentry memory reindex'",
+        ));
     assert_eq!(
         embedded_note_ids(&f.mem_path).len(),
         2,

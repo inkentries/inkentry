@@ -10,7 +10,7 @@
 // `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, inkentry_bin};
+use plumbing_helpers::{inkentry_bin, register_sqlite_vec};
 
 use std::path::{Path, PathBuf};
 use std::process::Output;

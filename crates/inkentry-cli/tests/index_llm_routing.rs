@@ -11,7 +11,9 @@
 // so a routing regression shows up as a request landing on the wrong mock.
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_index_embed, inkentry_bin_in, sse_token_response};
+use plumbing_helpers::{
+    FIXTURE_PROJECT_ID, inkentry_bin_in, mount_index_embed, sse_token_response,
+};
 
 use std::path::Path;
 use tempfile::TempDir;

@@ -59,7 +59,9 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
         ),
         llm: None,
         max_tokens_ceiling: 8192,
-        rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
+        rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
+            1000, 60,
+        )),
         instance_id,
         started_by: None,
         relay: inkentry_server::relay::RelayRegistry::new(),

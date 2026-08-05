@@ -62,8 +62,10 @@ fn seed_duplicate_group(mem_path: &Path) {
     ensure_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .inkentry dir");
     let conn = Connection::open(mem_path).expect("open memory.db");
-    conn.execute_batch(include_str!("../../inkentry-core/migrations/004_memory.sql"))
-        .expect("base memory schema");
+    conn.execute_batch(include_str!(
+        "../../inkentry-core/migrations/004_memory.sql"
+    ))
+    .expect("base memory schema");
     conn.execute_batch(
         "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
          ALTER TABLE notes ADD COLUMN superseded_by INTEGER REFERENCES notes(id);

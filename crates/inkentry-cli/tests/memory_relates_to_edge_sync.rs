@@ -12,7 +12,7 @@
 // harness, and `memory_relates_to_edge.rs` for the `memory add` driving.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in, write_project_server_config};
+use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec, write_project_server_config};
 
 use std::path::Path;
 use tempfile::TempDir;

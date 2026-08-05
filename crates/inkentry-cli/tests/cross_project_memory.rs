@@ -21,7 +21,7 @@
 //!      archived notes are excluded from list().
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in};
+use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
 
 use assert_cmd::Command;
 use rusqlite::Connection;

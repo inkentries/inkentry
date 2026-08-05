@@ -4,8 +4,8 @@ use tempfile::tempdir;
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in, write_config_with_server,
-    write_project_server_config,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in,
+    write_config_with_server, write_project_server_config,
 };
 
 #[test]

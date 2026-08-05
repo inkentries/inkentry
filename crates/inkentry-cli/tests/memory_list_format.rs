@@ -4,7 +4,7 @@
 //! colored text summary instead of emitting one JSON object per line.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, inkentry_bin, write_config};
+use plumbing_helpers::{inkentry_bin, parse_jsonl, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;

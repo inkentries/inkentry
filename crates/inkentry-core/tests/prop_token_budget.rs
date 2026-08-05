@@ -1,5 +1,5 @@
-use proptest::prelude::*;
 use inkentry_core::search::tokens::estimate_tokens;
+use proptest::prelude::*;
 
 proptest! {
     // estimate_tokens always returns >= 1

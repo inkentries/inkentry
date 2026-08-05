@@ -422,7 +422,11 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    let global_index = home.path().join(".config").join("inkentry").join("index.db");
+    let global_index = home
+        .path()
+        .join(".config")
+        .join("inkentry")
+        .join("index.db");
     std::fs::create_dir_all(global_index.parent().unwrap()).unwrap();
     let sentinel = b"pre-existing global index sentinel";
     std::fs::write(&global_index, sentinel).unwrap();

@@ -17,11 +17,11 @@
 
 mod common;
 
-use serial_test::serial;
 use inkentry_core::storage::GitNotesBackend;
 use inkentry_core::storage::MemoryBackend;
 use inkentry_core::storage::NoteId;
 use inkentry_core::storage::NoteInput;
+use serial_test::serial;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 //

@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use std::path::Path;
 use tokio::process::Command;
 
-use super::{NotesMergeOutcome, INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF, merge_tracking_notes};
+use super::{INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF, NotesMergeOutcome, merge_tracking_notes};
 
 /// Set on the nested notes push. `--no-verify` is the real recursion guard; a
 /// hook that re-enters despite it stops here.

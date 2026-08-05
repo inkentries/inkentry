@@ -375,8 +375,8 @@ mod tests {
         // The user-supplied `--batch-size` must land in `IndexArgs.batch_size`,
         // which `index()` then threads into `run_embed_phase`. Before this fix
         // the value was parsed but never passed through (silent no-op).
-        let cli =
-            TestCli::try_parse_from(["inkentry", "some/path", "--batch-size", "16"]).expect("parse");
+        let cli = TestCli::try_parse_from(["inkentry", "some/path", "--batch-size", "16"])
+            .expect("parse");
         assert_eq!(cli.index.batch_size, 16);
     }
 

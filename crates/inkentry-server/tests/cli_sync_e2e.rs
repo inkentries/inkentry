@@ -26,9 +26,9 @@ mod common;
 
 use std::net::SocketAddr;
 
-use serde::Deserialize;
 use inkentry_core::storage::{BatchPushItem, CloudSyncClient};
 use inkentry_server::router;
+use serde::Deserialize;
 
 /// Bind a real ephemeral loopback listener, serve `state`'s router on it, and
 /// return the base URL. Mirrors the bind/serve pattern in `tls_serve.rs` minus

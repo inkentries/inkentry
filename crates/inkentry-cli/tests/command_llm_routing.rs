@@ -10,7 +10,8 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, isolate_git_config, inkentry_bin_in, sse_token_response,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin_in, isolate_git_config,
+    sse_token_response,
 };
 
 use std::path::Path;

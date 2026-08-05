@@ -473,7 +473,9 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
         match classify_running_server(&state_dir, pid).await {
             RunningServer::Healthy { port } => return Ok((port, false)),
             RunningServer::HungOurs => {
-                tracing::warn!("reclaiming unresponsive inkentry-server (pid={pid}) before restart");
+                tracing::warn!(
+                    "reclaiming unresponsive inkentry-server (pid={pid}) before restart"
+                );
                 let _ = terminate_and_wait(pid).await;
                 cleanup_state_files(&state_dir);
             }

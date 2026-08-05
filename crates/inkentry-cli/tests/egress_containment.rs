@@ -40,7 +40,7 @@ mod egress_trap;
 mod plumbing_helpers;
 
 use egress_trap::{EgressTrap, write_loopback_state};
-use plumbing_helpers::{init_git_repo, mount_health, mount_index_embed, inkentry_bin_in};
+use plumbing_helpers::{init_git_repo, inkentry_bin_in, mount_health, mount_index_embed};
 use predicates::prelude::*;
 use std::path::Path;
 use std::time::Duration;
@@ -464,7 +464,11 @@ fn update_check_unimplemented_tripwire() {
     // very file's doc comment naming these identifiers.
     let crates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut hits = Vec::new();
-    for needle in ["INKENTRY_NO_UPDATE_CHECK", "releases/latest", "UpdateConfig"] {
+    for needle in [
+        "INKENTRY_NO_UPDATE_CHECK",
+        "releases/latest",
+        "UpdateConfig",
+    ] {
         for crate_dir in [
             "inkentry-cli",
             "inkentry-core",

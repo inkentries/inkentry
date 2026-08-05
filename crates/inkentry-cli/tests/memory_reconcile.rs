@@ -14,7 +14,7 @@
 //! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
 
 mod plumbing_helpers;
-use plumbing_helpers::{mount_health, mount_index_embed, inkentry_bin, inkentry_bin_in};
+use plumbing_helpers::{inkentry_bin, inkentry_bin_in, mount_health, mount_index_embed};
 
 use assert_cmd::Command;
 use rusqlite::Connection;

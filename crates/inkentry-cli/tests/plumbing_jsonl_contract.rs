@@ -11,8 +11,8 @@ mod plumbing_helpers;
 mod schema_contract;
 
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, parse_jsonl, inkentry_bin,
-    inkentry_cmd, write_config, write_project_server_config,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, inkentry_bin, inkentry_cmd,
+    parse_jsonl, write_config, write_project_server_config,
 };
 use schema_contract::{CommandSchema, assert_conforms, check_rows, load_golden};
 

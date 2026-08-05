@@ -286,14 +286,14 @@ async fn probe_url(
     // anything. No opt-out: the fix is always "use https, or loopback".
     inkentry_core::config::validate_transport_url(url)?;
 
-    let builder = match inkentry_core::config::apply_server_ca(reqwest::Client::builder(), server_ca)
-    {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("could not load custom CA for server probe: {e}");
-            return Ok(Tier::Offline);
-        }
-    };
+    let builder =
+        match inkentry_core::config::apply_server_ca(reqwest::Client::builder(), server_ca) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("could not load custom CA for server probe: {e}");
+                return Ok(Tier::Offline);
+            }
+        };
     let client = match builder.timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {

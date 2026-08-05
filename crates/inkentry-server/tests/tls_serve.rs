@@ -17,9 +17,9 @@ use std::path::Path;
 use std::process::Command;
 
 use axum_server::tls_rustls::RustlsConfig;
-use serial_test::serial;
 use inkentry_core::config::apply_server_ca;
 use inkentry_server::router;
+use serial_test::serial;
 
 /// Mint a throwaway self-signed leaf (CN=localhost, SAN IP 127.0.0.1) into
 /// `dir`, returning `(cert_pem, key_pem)` paths. Returns `None` when `openssl`

@@ -1,7 +1,7 @@
 //! Component tests for `inkentry plumbing read-memory`.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, inkentry_bin, inkentry_cmd, write_config};
+use plumbing_helpers::{inkentry_bin, inkentry_cmd, parse_jsonl, write_config};
 
 use predicates::prelude::*;
 use tempfile::TempDir;

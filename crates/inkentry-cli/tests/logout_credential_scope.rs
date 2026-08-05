@@ -109,7 +109,10 @@ fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
     set_key(home.path(), "https://a.example:7777", "sk-a");
     set_key(home.path(), "https://b.example:7777", "sk-b");
 
-    inkentry_bin_in(home.path()).arg("logout").assert().success();
+    inkentry_bin_in(home.path())
+        .arg("logout")
+        .assert()
+        .success();
 
     // Cloud pair removed.
     let cfg = config_toml(home.path());

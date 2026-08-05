@@ -1,6 +1,6 @@
-use proptest::prelude::*;
 use inkentry_core::indexer::chunker::{MAX_CHUNK_TOKENS, sliding_window};
 use inkentry_core::search::tokens::estimate_tokens;
+use proptest::prelude::*;
 
 proptest! {
     // Every chunk's content must be a substring of the original source.

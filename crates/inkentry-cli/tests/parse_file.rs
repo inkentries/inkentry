@@ -4,7 +4,7 @@
 //! on disk and emits JSONL chunks.
 
 mod plumbing_helpers;
-use plumbing_helpers::{parse_jsonl, inkentry_bin};
+use plumbing_helpers::{inkentry_bin, parse_jsonl};
 
 use predicates::prelude::*;
 use std::path::Path;

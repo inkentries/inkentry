@@ -16,7 +16,7 @@
 // real blake3 hash of an on-disk file), so no embed server is needed.
 
 mod plumbing_helpers;
-use plumbing_helpers::{register_sqlite_vec, inkentry_bin_in};
+use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
 
 use assert_cmd::Command;
 use predicates::prelude::*;

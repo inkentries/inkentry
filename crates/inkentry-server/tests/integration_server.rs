@@ -10,10 +10,10 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use serial_test::serial;
 use inkentry_server::auth::ApiKeyAuth;
 use inkentry_server::rate_limiter::RateLimiter;
 use inkentry_server::{AppState, router};
+use serial_test::serial;
 use std::sync::Arc;
 use tower::ServiceExt; // for `.oneshot()`
 

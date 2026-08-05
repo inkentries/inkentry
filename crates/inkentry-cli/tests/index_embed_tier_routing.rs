@@ -16,7 +16,7 @@
 // `server_url` rather than a silently-passing test.
 
 mod plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, mount_health, mount_index_embed, inkentry_bin_in};
+use plumbing_helpers::{FIXTURE_PROJECT_ID, inkentry_bin_in, mount_health, mount_index_embed};
 
 use std::path::Path;
 use std::time::{Duration, Instant};

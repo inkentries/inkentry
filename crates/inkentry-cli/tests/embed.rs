@@ -6,8 +6,8 @@
 
 mod plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, mount_health, mount_index_embed, inkentry_bin,
-    inkentry_bin_in,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in, mount_health,
+    mount_index_embed,
 };
 
 use predicates::prelude::*;

@@ -1,5 +1,5 @@
-use proptest::prelude::*;
 use inkentry_core::embeddings::{blob_to_vec, vec_to_blob};
+use proptest::prelude::*;
 
 proptest! {
     // Roundtrip: blob_to_vec(vec_to_blob(v)) == v

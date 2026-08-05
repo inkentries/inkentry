@@ -270,7 +270,8 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         }
     };
 
-    let llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url {
+    let llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url
+    {
         let model = if args.llm_model.is_empty() {
             "default".to_string()
         } else {
