@@ -25,6 +25,14 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk explore` is now listed in the top-level `spelunk --help` command
+  list.** The agentic-search command was hidden from `--help` whenever no chat
+  model was configured, so a user or agent enumerating capabilities from
+  `--help` never discovered it — even though `spelunk explore --help` and the
+  command itself always worked. It now always lists, like the other commands
+  that need infrastructure the user may not have (`sync`, `login`, `org`).
+  Running `spelunk explore` without an LLM still fails with the same
+  locked-feature message as before; only its visibility in `--help` changed.
 - **`spelunk init` now git-ignores the per-run index lock (`index.lock`) and its
   pid sidecar (`index.lock.pid`).** The generated `.spelunk/.gitignore` listed
   the SQLite files and logs but not the lock, so a `git add -A` staged and
