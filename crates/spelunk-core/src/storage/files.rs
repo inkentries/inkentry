@@ -162,14 +162,4 @@ impl Database {
         )?;
         Ok(())
     }
-
-    /// Return all indexed file paths and their stored hashes.
-    /// Used by `spelunk check` to detect stale files without re-embedding.
-    pub fn all_file_hashes(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare_cached("SELECT path, hash FROM files")?;
-        let map = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
-        Ok(map)
-    }
 }

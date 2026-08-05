@@ -25,6 +25,16 @@ spelunk uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`spelunk links check` / `spelunk links list` no longer report a freshly
+  indexed linked project as stale.** The cross-project freshness probe resolved
+  each linked index's stored (root-relative) file paths against the *linking*
+  project's working directory instead of the linked project's own root, so every
+  sampled file looked "changed" and the documented CI gate ("`links check` exits
+  non-zero if any linked index is stale or missing") false-failed on a clean
+  checkout. Both the cross-project probe and the in-project `spelunk check` now
+  run through one shared staleness function anchored at the correct project root,
+  so they agree: a freshly indexed linked project reports fresh, while a linked
+  project with a file modified since indexing still reports stale.
 - **A teammate's fetched memory now reaches the default `memory.db` read
   paths, not just the git ref.** Team memory lives on git notes
   (`refs/notes/spelunk`) and is queried through the project's SQLite
