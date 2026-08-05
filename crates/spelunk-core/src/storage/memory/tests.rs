@@ -250,6 +250,80 @@ fn add_edge_duplicate_silently_ignored() {
     );
 }
 
+// ── relates_to_edges_for_sync(): only fully-synced relates_to edges ───────────
+
+// The edge push enumerates only `relates_to` edges whose BOTH endpoints carry
+// a `remote_id` (so the cloud knows them by external_id) and a `uuid`. An edge
+// with an unsynced endpoint is withheld until a later sync lands it; the two
+// other edge kinds are never enumerated (supersedes rides its entry, and
+// contradicts is server-derived).
+#[test]
+fn relates_to_edges_for_sync_requires_both_endpoints_synced() {
+    let store = open_store();
+    let (a, _) = store
+        .add_note("note", "A", "", &[], &[], None, None)
+        .unwrap();
+    let (b, _) = store
+        .add_note("note", "B", "", &[], &[], None, None)
+        .unwrap();
+    // Mint uuids the way a push would, then wire a linker -> target edge.
+    store.ensure_uuid(a).unwrap();
+    store.ensure_uuid(b).unwrap();
+    store.add_edge(b, a, "relates_to").unwrap();
+
+    // Neither endpoint synced yet: nothing to push.
+    assert!(store.relates_to_edges_for_sync().unwrap().is_empty());
+
+    // Only one endpoint synced: still withheld.
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-0000000000a1")
+        .unwrap();
+    assert!(
+        store.relates_to_edges_for_sync().unwrap().is_empty(),
+        "an edge with one unsynced endpoint must not be pushable"
+    );
+
+    // Both synced: the edge is now pushable, keyed by each endpoint's uuid.
+    store
+        .set_remote_id(b, "01890000-0000-7000-8000-0000000000b2")
+        .unwrap();
+    let edges = store.relates_to_edges_for_sync().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].from_local_id, b);
+    assert_eq!(edges[0].to_local_id, a);
+    assert_eq!(
+        edges[0].from_external_id,
+        store.uuid_for(b).unwrap().unwrap()
+    );
+    assert_eq!(edges[0].to_external_id, store.uuid_for(a).unwrap().unwrap());
+}
+
+#[test]
+fn relates_to_edges_for_sync_ignores_supersedes_and_contradicts() {
+    let store = open_store();
+    let (a, _) = store
+        .add_note("note", "A", "", &[], &[], None, None)
+        .unwrap();
+    let (b, _) = store
+        .add_note("note", "B", "", &[], &[], None, None)
+        .unwrap();
+    store.ensure_uuid(a).unwrap();
+    store.ensure_uuid(b).unwrap();
+    store
+        .set_remote_id(a, "01890000-0000-7000-8000-0000000000a1")
+        .unwrap();
+    store
+        .set_remote_id(b, "01890000-0000-7000-8000-0000000000b2")
+        .unwrap();
+    store.add_edge(b, a, "supersedes").unwrap();
+    store.add_edge(b, a, "contradicts").unwrap();
+
+    assert!(
+        store.relates_to_edges_for_sync().unwrap().is_empty(),
+        "only relates_to edges are enumerated for push"
+    );
+}
+
 // ── UUID identity + cursor + idempotent apply ────────────────────────────────
 
 #[test]

@@ -61,6 +61,27 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
+// `spelunk --help` must list the first-class `explore` subcommand in its
+// top-level command list. `explore` is a documented feature ("Agentic search
+// loop"), so an agent or user enumerating capabilities from `--help` must be
+// able to discover it. It was previously hidden from `--help` whenever no chat
+// model was configured; it must now always list.
+//
+// The test HOME is an isolated temp dir with no `llm_model` set, so this pins
+// down the no-llm case specifically. Running `explore` without an LLM still
+// fails with the locked-feature message (unchanged) — only its visibility in
+// `--help` changes. "explore" appears in `--help` output only when the command
+// is listed (no other command's about text or the crate description contains
+// that substring), so asserting its presence is a faithful proxy.
+#[test]
+fn test_help_lists_explore() {
+    spelunk_bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("explore"));
+}
+
 /// regression: `spelunk search --as-of <sha>` (snapshot search) was removed
 /// outright — the flag no longer exists on the top-level `search` command.
 /// `spelunk search --help` must not mention `--as-of`.

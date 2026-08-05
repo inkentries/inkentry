@@ -293,6 +293,13 @@ self-hosted `server_url`, which resolves its own credential separately (see
 organization switching. The file is written with `0600` permissions. This
 table is not read from `.spelunk/config.toml`.
 
+Every field is optional: a partial table (for example a login without an org,
+which omits `org_id`, or a hand-trimmed file) is tolerated and never blocks
+commands that need no credentials. A missing or empty `access_token` is read as
+"not logged in" (no bearer is sent); a missing `expires_at` is treated as
+expired (forcing a refresh); a missing `org_id` applies no organization
+scoping.
+
 ### `[index]`
 
 - **Type:** table
