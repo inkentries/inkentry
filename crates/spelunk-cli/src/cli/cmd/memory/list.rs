@@ -27,8 +27,7 @@ pub(super) async fn memory_list(
 
     // A teammate's `git fetch` lands their notes on a tracking ref that nothing
     // else merges into `memory.db`, so without this they stay invisible on the
-    // default read path (ADR-077 D1). Gated on notes-ref OID movement, local
-    // only, no network; a no-op outside a git repo or with nothing fetched.
+    // default read path (ADR-077 D1).
     super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, effective_override).await;
 
     // Discovery nudge: warn once when unimported server.db notes exist.

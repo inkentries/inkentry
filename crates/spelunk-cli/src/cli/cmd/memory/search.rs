@@ -20,7 +20,7 @@ pub(super) async fn memory_search(
 
     // Fold in any fetched teammate notes before searching, so a teammate's
     // newly-published entry is searchable on the default path without a re-init
-    // (ADR-077 D1). Gated on notes-ref OID movement; local only, no network.
+    // (ADR-077 D1).
     super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, backend_override).await;
 
     // Discovery nudge: warn once when unimported server.db notes exist.

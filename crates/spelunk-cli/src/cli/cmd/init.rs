@@ -211,13 +211,10 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // 2 + 3. Best-effort fetch of the notes ref, then merge + import into the
     // project memory.db. Entries on `refs/notes/spelunk` (a teammate's, or a
     // pre-init write-through) are invisible to the SQLite-backed reads until
-    // imported. No enclosing git repo → nothing to do. Non-fatal throughout: a
-    // failure here (offline fetch included) must not sink init.
+    // imported. Non-fatal throughout: a failure here (offline fetch included)
+    // must not sink init.
     let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
         let mem_path = spelunk_dir.join("memory.db");
-        // Best-effort, bounded fetch: populates the tracking ref so the very
-        // first `init` after clone hydrates teammates' memory. Skipped without
-        // an `origin`; a failure (offline) is ignored.
         fetch_notes_best_effort(&project_root).await;
         // Fold anything on the tracking ref into the working ref before
         // hydrating, so teammates' entries import too (ADR-069 D5 / ADR-077 D3).
@@ -256,8 +253,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // D5 (ADR-077): `init` writes config.toml but takes no git action on it, so
     // it must tell the user to commit it — the slug travels with the repo only
     // once it is committed (a remote-less repo derives a per-clone slug, and a
-    // `--name` slug cannot be re-derived at all). A print informs; it never
-    // touches the index.
+    // `--name` slug cannot be re-derived at all).
     if wrote_slug {
         println!(
             "           wrote .spelunk/config.toml — commit it so your project slug \

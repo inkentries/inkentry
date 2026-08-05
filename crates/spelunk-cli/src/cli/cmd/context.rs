@@ -182,8 +182,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
     // A teammate's `git fetch` lands their notes on a tracking ref that nothing
     // else merges into `memory.db`, so without this they stay invisible on the
-    // default context path (ADR-077 D1). Gated on notes-ref OID movement; local
-    // only, no network; a no-op outside a git repo or with nothing fetched.
+    // default context path (ADR-077 D1).
     crate::cli::cmd::memory::reconcile::refresh_read_path_from_git_notes(&cfg, &mem_path, be).await;
 
     // Discovery nudge: warn once when unimported server.db notes exist.
