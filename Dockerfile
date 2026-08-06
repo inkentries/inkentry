@@ -12,8 +12,8 @@
 # publishing, Docker Desktop host-mode, or from a sibling container's DNS.
 # That's intentional, not a bug: inkentry-server refuses to bind a non-loopback
 # address over plaintext HTTP, unconditionally, keyed or not (see
-# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), and
-# this repo does not ship a proxy to pair with it.
+# docs/server-setup.md#non-loopback-plaintext-binds-are-refused-no-override),
+# and this repo does not ship a proxy to pair with it.
 #
 # Run (dev, no compose): the server binds loopback only (see above), so a
 # sibling container on its own network can't reach it: sibling-container DNS
@@ -31,9 +31,9 @@
 # For a team-reachable deployment, don't containerize this at all: run the
 # binary bare-metal/systemd on a host, with your own TLS terminator (nginx,
 # Caddy, ...) in front of the same loopback bind on that host. See
-# docs/self-hosting.md — that's the recommended path, since a container's
-# loopback can't be handed to a same-host proxy the way a bare-metal
-# process's can.
+# docs/server-setup.md#3-run-it-under-systemd — that's the recommended path,
+# since a container's loopback can't be handed to a same-host proxy the way a
+# bare-metal process's can.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 FROM rust:1.97.1-slim AS builder
@@ -110,10 +110,10 @@ ENTRYPOINT ["/usr/local/bin/inkentry-server"]
 # Bind loopback — the binary's own default, and the only bind this image
 # supports. inkentry-server refuses to bind a non-loopback address over
 # plaintext HTTP unconditionally, keyed or not (see
-# docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), so a
-# `--host 0.0.0.0` override here would just make the server refuse to start —
-# this image ships no proxy to pair with it. For a deployment that needs to be
-# reachable off-host, don't override this; run bare-metal/systemd instead (see
-# docs/self-hosting.md), where a same-host reverse proxy can front the
-# server's loopback bind directly.
+# docs/server-setup.md#non-loopback-plaintext-binds-are-refused-no-override),
+# so a `--host 0.0.0.0` override here would just make the server refuse to
+# start — this image ships no proxy to pair with it. For a deployment that
+# needs to be reachable off-host, don't override this; run bare-metal/systemd
+# instead (see docs/server-setup.md#3-run-it-under-systemd), where a same-host
+# reverse proxy can front the server's loopback bind directly.
 CMD ["--host", "127.0.0.1", "--db", "/data/inkentry.db"]
