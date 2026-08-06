@@ -1,8 +1,8 @@
 # Spec: parameterised SQL `IN (...)` clauses in storage
 
 **Status:** approved-for-implementation (straightforward security/robustness fix)
-**Area:** `crates/spelunk-core/src/storage/{chunks.rs,graph.rs}`
-**Issue:** spelunk#405
+**Area:** `crates/inkentry-core/src/storage/{chunks.rs,graph.rs}`
+**Issue:** spelunk-cloud/spelunk#405
 **Owner:** Architect → Implementer
 
 ---

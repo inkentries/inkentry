@@ -1,16 +1,16 @@
-# spelunk-server HTTP API Contract
+# inkentry-server HTTP API Contract
 
 **Issue:** #261  
 **Status:** Implemented. This is the current reference for the HTTP + SSE
-surface `spelunk-server` exposes. Sections below describe what the running
-server actually does, verified against `crates/spelunk-server/src/handlers.rs`.
+surface `inkentry-server` exposes. Sections below describe what the running
+server actually does, verified against `crates/inkentry-server/src/handlers.rs`.
 
 ---
 
 ## Overview
 
-This document specifies the HTTP API surface that `spelunk-cli` calls on
-`spelunk-server`: the `AuthProvider` trait, and every route the server exposes.
+This document specifies the HTTP API surface that `inkentry-cli` calls on
+`inkentry-server`: the `AuthProvider` trait, and every route the server exposes.
 
 1. The `AuthProvider` trait, which every route the server exposes goes through.
 2. Endpoints present from the server's first API-key auth implementation.
@@ -49,10 +49,10 @@ DB table is empty after `/v1/projects/{id}/index/embed` returns, and that
 ## Auth architecture
 
 Requests are authenticated through a pluggable `AuthProvider` trait
-(`crates/spelunk-server/src/auth.rs`), so an alternative auth strategy can be
+(`crates/inkentry-server/src/auth.rs`), so an alternative auth strategy can be
 added without changing any handler. The shipped implementation, `ApiKeyAuth`,
 checks the `Authorization: Bearer` header against a single configured key
-(`SPELUNK_SERVER_KEY`); with no key configured, every request is accepted,
+(`INKENTRY_SERVER_KEY`); with no key configured, every request is accepted,
 which is safe only when the server is bound to loopback (see [Trust
 model](../server-setup.md#trust-model)). No handler currently reads the
 authenticated principal.
@@ -163,7 +163,7 @@ running index, with a `Retry-After` (seconds) header:
 
 ### `POST /v1/projects/{project_id}/index/embed`
 
-Generate embeddings for code chunks. Called by the CLI during `spelunk index`'s
+Generate embeddings for code chunks. Called by the CLI during `inkentry index`'s
 embed phase. The server encodes each chunk and returns vectors. **The server
 does not store the vectors** (the CLI is the only persistent store for index
 data).
@@ -219,9 +219,9 @@ parking until the caller's own request timeout fires:
 { "error": "embedder busy, retry shortly", "state": "busy" }
 ```
 
-The CLI's `spelunk index` embed phase retries the same batch after the given
+The CLI's `inkentry index` embed phase retries the same batch after the given
 delay rather than shrinking it (queue depth says nothing about batch sizing);
-see [`spelunk index`](../commands.md#spelunk-index).
+see [`inkentry index`](../commands.md#inkentry-index).
 
 ### `POST /v1/projects/{project_id}/explore`
 
@@ -270,7 +270,7 @@ Event `kind` values: `thought`, `answer`, `done`, `error`.
 Run a single LLM completion over caller-supplied messages. This is the generic
 inference primitive (ADR-002): it is a 1:1 lift of the `LlmBackend::generate`
 trait. The server performs **no** orchestration, adds **no** system prompt, and
-stores **nothing**. The CLI owns all prompt assembly (this is how `spelunk
+stores **nothing**. The CLI owns all prompt assembly (this is how `inkentry
 memory harvest` runs after #260: ~2300 LoC of CLI-side orchestration calling
 this primitive for raw inference).
 
@@ -349,14 +349,14 @@ surface the warning. Configure the threshold with `--conflict-threshold`
 
 `GET /v1/projects/{project_id}/memory/since?t=<epoch>&limit=N` returns up to
 `N` entries (default 50) created after the given Unix timestamp, sorted
-ascending by creation time. The CLI calls this via `spelunk memory since`.
+ascending by creation time. The CLI calls this via `inkentry memory since`.
 
 ### Streaming entries
 
 `GET /v1/projects/{project_id}/memory/stream` (Server-Sent Events) subscribes
 to new entries as they arrive; each line is a JSON object for one newly-added
 entry, and the stream persists until the client disconnects. The CLI calls
-this via `spelunk memory watch`.
+this via `inkentry memory watch`.
 
 ---
 
@@ -374,7 +374,7 @@ first write.
 The server publishes its full contract at `GET /api-docs/openapi.json` (wired
 via `utoipa`). Every endpoint listed in this document appears there, with
 request/response schema components. The `utoipa::ApiDoc` type in
-`crates/spelunk-server/src/lib.rs` is the source of truth; extend it whenever
+`crates/inkentry-server/src/lib.rs` is the source of truth; extend it whenever
 an endpoint changes.
 
 CLI integration tests pull `openapi.json` and assert presence + shape of:
@@ -424,5 +424,5 @@ above, `memory/search` accepts `{"query": String}`, `index/embed` and
 `explore` are live, error responses use the `{"error": {"code", "message"}}`
 shape throughout, and the OpenAPI spec at `docs/openapi.json` is kept current
 by CI. See [Server setup](../server-setup.md) for deploying a server that
-exposes this API to a team, and `crates/spelunk-server/src/handlers.rs` for
+exposes this API to a team, and `crates/inkentry-server/src/handlers.rs` for
 the implementation this document is verified against.

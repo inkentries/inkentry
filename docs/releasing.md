@@ -1,16 +1,16 @@
-# Releasing spelunk
+# Releasing inkentry
 
-This document describes how to cut a release of spelunk.
+This document describes how to cut a release of inkentry.
 
 ## Overview
 
 Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 `.github/workflows/release.yml`, which:
 
-1. Builds `spelunk` and `spelunk-server` release binaries for all supported platforms.
+1. Builds `inkentry` and `inkentry-server` release binaries for all supported platforms.
 2. Strips binaries where possible to reduce download size.
 3. Packages each platform's binaries into a `.tar.gz` archive.
-4. Builds an `amd64` Debian package (`spelunk_<version>_amd64.deb`).
+4. Builds an `amd64` Debian package (`inkentry_<version>_amd64.deb`).
 5. Creates a GitHub Release and attaches all `.tar.gz` archives and the `.deb` as downloadable assets.
 6. Auto-generates release notes from merged pull requests and commits.
 
@@ -24,10 +24,10 @@ Two install paths live outside this workflow:
   same way.)
 - **Homebrew tap** lives in the separate `spelunk-cloud/homebrew-spelunk`
   repo. The `update-homebrew-formula` job in `.github/workflows/release.yml`
-  regenerates `Formula/spelunk.rb` with the new `url`/`sha256`/`version` and
+  regenerates `Formula/inkentry.rb` with the new `url`/`sha256`/`version` and
   pushes it to that repo's `main` branch directly, using the
   `HOMEBREW_TAP_TOKEN` secret (a token with `contents: write` on
-  `homebrew-spelunk` — `GITHUB_TOKEN` only has access to this repo).
+  `homebrew-inkentry` — `GITHUB_TOKEN` only has access to this repo).
 
 ## Supported platforms
 
@@ -59,7 +59,7 @@ pipeline locally, with Docker as the only prerequisite:
 scripts/release-dry-run.sh
 ```
 
-It builds `spelunk` + `spelunk-server` inside `debian:11` (the glibc 2.31
+It builds `inkentry` + `inkentry-server` inside `debian:11` (the glibc 2.31
 floor), runs the same glibc-ceiling check as CI, assembles and builds the
 `.deb` (with `Depends` derived inside `debian:11`, matching the workflow),
 and installs + smoke-tests the result in fresh `debian:11` / `ubuntu:20.04`
@@ -73,7 +73,7 @@ on the support floor.
 real GitHub Release, or the Homebrew/Scoop publish steps. Those are only
 exercised by `.github/workflows/release.yml` at real tag-push time. The
 script has no code path that can create a GitHub release, push to the
-`homebrew-spelunk` tap, or write `bucket/spelunk.json`.
+`homebrew-inkentry` tap, or write `bucket/inkentry.json`.
 
 Run it before tagging; a failure here is cheaper to fix than one discovered
 after a tag is already pushed.
@@ -84,7 +84,7 @@ Edit the `version` field in `Cargo.toml`:
 
 ```toml
 [package]
-name = "spelunk"
+name = "inkentry"
 version = "0.8.0"   # <-- update this
 ```
 
@@ -96,7 +96,7 @@ tarball and `.deb` downloads, so it normally needs no per-release edit. Still,
 sweep for stray hardcoded versions before tagging:
 
 ```bash
-grep -rn "spelunk-v[0-9]\|spelunk_[0-9]" docs/ README.md
+grep -rn "inkentry-v[0-9]\|inkentry_[0-9]" docs/ README.md
 ```
 
 Fix anything that pins a specific old version (use `<version>` or point at
@@ -143,32 +143,32 @@ segment is the full tag, e.g. `v0.8.0`):
 
 ```
 # Unix tarballs
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-<target>.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<version>-<target>.tar.gz
 
 # Windows zip
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk-<version>-x86_64-pc-windows-msvc.zip
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<version>-x86_64-pc-windows-msvc.zip
 
 # Debian package (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/spelunk_<version-no-v>_amd64.deb
+https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry_<version-no-v>_amd64.deb
 ```
 
 Examples for `v0.9.0`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-aarch64-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-aarch64-unknown-linux-gnu.tar.gz
 
 # Windows x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk-v0.9.0-x86_64-pc-windows-msvc.zip
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-x86_64-pc-windows-msvc.zip
 
 # Debian (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/spelunk_0.9.0_amd64.deb
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry_0.9.0_amd64.deb
 ```
 
 > `releases/latest/download/<asset>` also works when the asset name is exact,

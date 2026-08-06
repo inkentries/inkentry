@@ -1,5 +1,5 @@
 [package]
-name = "spelunk-fuzz"
+name = "inkentry-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -17,8 +17,8 @@ libfuzzer-sys = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-[dependencies.spelunk-core]
-path = "../crates/spelunk-core"
+[dependencies.inkentry-core]
+path = "../crates/inkentry-core"
 
 # Disable LTO for faster fuzzer builds.
 [profile.release]

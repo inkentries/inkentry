@@ -12,12 +12,12 @@
 **Please do not file public GitHub issues for security vulnerabilities.**
 
 Report security issues privately via GitHub's built-in private vulnerability reporting:
-**Security → Report a vulnerability** on the [spelunk repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
+**Security → Report a vulnerability** on the [inkentry repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
 
 ### What to include
 
 - Description of the vulnerability and its impact
-- Steps to reproduce (spelunk version, OS, minimal reproduction)
+- Steps to reproduce (inkentry version, OS, minimal reproduction)
 - Any suggested fix or relevant code references
 
 ### Response SLA
@@ -32,23 +32,23 @@ We will credit reporters in the release notes unless you prefer to remain anonym
 
 ## Scope
 
-spelunk is primarily a **local single-user CLI tool**. By default it runs a
-local `spelunk-server` bound to `127.0.0.1` for embeddings and inference; team
-deployments may run a shared, authenticated `spelunk-server` reachable over the
+inkentry is primarily a **local single-user CLI tool**. By default it runs a
+local `inkentry-server` bound to `127.0.0.1` for embeddings and inference; team
+deployments may run a shared, authenticated `inkentry-server` reachable over the
 network. The most relevant security concerns are:
 
 - **Credential leakage** — secrets present in indexed source files being stored
   in the vector index, written through to git notes, or sent to an inference
   backend
 - **Memory persistence** — memory entries are written through to
-  `refs/notes/spelunk` by default (`store_in_git_notes`), so they travel with
+  `refs/notes/inkentry` by default (`store_in_git_notes`), so they travel with
   the repository on push/clone
-- **Server exposure** — a `spelunk-server` bound beyond loopback, or run without
+- **Server exposure** — a `inkentry-server` bound beyond loopback, or run without
   an API key, exposes stored memory to anyone who can reach the port
 - **Dependency vulnerabilities** — transitive Rust crate advisories
 - **Data integrity** — corruption of the local SQLite index or memory database
 
-For the default local configuration spelunk makes no outbound connections except
+For the default local configuration inkentry makes no outbound connections except
 to `127.0.0.1` (a local server the user controls). When `server_url` points at a
 remote instance, treat the network path and the server's authentication as
 in-scope — see [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md)

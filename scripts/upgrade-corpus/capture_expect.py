@@ -172,7 +172,7 @@ def registry_expect(path):
 
 
 def git_notes_expect(path):
-    """Read the note titles straight off the bundle with git, never with spelunk."""
+    """Read the note titles straight off the bundle with git, never with inkentry."""
     with tempfile.TemporaryDirectory() as tmp:
         repo = os.path.join(tmp, "repo")
         subprocess.run(
@@ -186,13 +186,13 @@ def git_notes_expect(path):
                 "fetch",
                 "--quiet",
                 "origin",
-                "refs/notes/spelunk:refs/notes/spelunk",
+                "refs/notes/inkentry:refs/notes/inkentry",
             ],
             check=True,
             capture_output=True,
         )
         listing = subprocess.run(
-            ["git", "-C", repo, "notes", "--ref=spelunk", "list"],
+            ["git", "-C", repo, "notes", "--ref=inkentry", "list"],
             check=True,
             capture_output=True,
             text=True,

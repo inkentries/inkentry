@@ -12,20 +12,34 @@ name: Version skew
 # The `/v1/` schema half of the contract is covered elsewhere and is not
 # repeated here: `openapi-snapshot` in ci.yml regenerates the spec from the
 # running binary and diffs it against docs/openapi.json.
+#
+# TEMPORARILY MANUAL-ONLY. This job compares the current build against the
+# previous published release, and there is no published release to compare
+# against yet. Running it automatically can only ever produce a red that says
+# "no previous release", which is a fact about the release history rather than
+# anything about this branch.
+#
+# The definition is kept whole and the workflow can still be run by hand with
+# `workflow_dispatch`; only the automatic triggers are off. Restore them by
+# putting back the `push`/`pull_request` blocks below — which must happen
+# before the first release, since the release after that one is the first that
+# has a predecessor to be skewed against, and this is the only test in the repo
+# that puts two independently built artifacts on a socket together.
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  # Restore these two alongside the first release:
+  #   push:
+  #     branches: ["main"]
+  #   pull_request:
+  #     branches: ["main"]
+  workflow_dispatch:
 
 permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
-  # The OS keychain is unavailable in headless runners. Released binaries
-  # pre-date the fix that made this unnecessary, so it matters most here.
-  SPELUNK_SECRET_STORE: file
+  # The OS keychain is unavailable in headless runners.
+  INKENTRY_SECRET_STORE: file
 
 jobs:
   binary-skew:
@@ -80,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           current="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.name == "spelunk-cli") | .version')"
+            | jq -r '.packages[] | select(.name == "inkentry-cli") | .version')"
           echo "current version: $current"
 
           prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --json tagName \
@@ -99,7 +113,12 @@ jobs:
           TAG: ${{ steps.prev.outputs.tag }}
         run: |
           set -euo pipefail
-          asset="spelunk-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          # Named for what this repo's releases publish. Unlike the pinned 0.9.x
+          # assets in upgrade-corpus.yml, this is not a reference to a specific
+          # historical artifact: it resolves to whatever the previous release
+          # was, so it tracks the current naming rather than preserving an old
+          # one.
+          asset="inkentry-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir -p prev-release
 
           # This job downloads and then *executes* a binary, so the download is
@@ -123,15 +142,15 @@ jobs:
           echo "digest verified: $actual"
 
           tar -xzf "prev-release/${asset}" -C prev-release
-          chmod +x prev-release/spelunk prev-release/spelunk-server
+          chmod +x prev-release/inkentry prev-release/inkentry-server
           # Explicit on the command rather than relying on the job-level env,
-          # because these two binaries pre-date the file-store default and this
-          # runner has a dbus keyring installed for the build.
-          SPELUNK_SECRET_STORE=file ./prev-release/spelunk --version
-          SPELUNK_SECRET_STORE=file ./prev-release/spelunk-server --version
+          # because this runner has a dbus keyring installed for the build and
+          # a released binary must never be the one that finds it.
+          INKENTRY_SECRET_STORE=file ./prev-release/inkentry --version
+          INKENTRY_SECRET_STORE=file ./prev-release/inkentry-server --version
 
       - name: Build the current binaries
-        run: cargo build --release -p spelunk-cli -p spelunk-server --bins
+        run: cargo build --release -p inkentry-cli -p inkentry-server --bins
 
       - name: Cache the embedder model
         uses: actions/cache@v6
@@ -150,12 +169,12 @@ jobs:
           # Linked into place the same way the smoke script does it, so both
           # populate and read one directory.
           warm_data="$RUNNER_TEMP/warm-home/.local/share"
-          mkdir -p "$SKEW_MODEL_CACHE" "$warm_data/spelunk"
-          ln -sfn "$SKEW_MODEL_CACHE" "$warm_data/spelunk/models"
+          mkdir -p "$SKEW_MODEL_CACHE" "$warm_data/inkentry"
+          ln -sfn "$SKEW_MODEL_CACHE" "$warm_data/inkentry/models"
 
           HOME="$RUNNER_TEMP/warm-home" XDG_DATA_HOME="$warm_data" \
-            SPELUNK_SECRET_STORE=file \
-            target/release/spelunk-server --port 7999 --db "$RUNNER_TEMP/warm.db" \
+            INKENTRY_SECRET_STORE=file \
+            target/release/inkentry-server --port 7999 --db "$RUNNER_TEMP/warm.db" \
             >"$RUNNER_TEMP/warm.log" 2>&1 &
           warm_pid=$!
           trap 'kill "$warm_pid" 2>/dev/null || true' EXIT
@@ -181,11 +200,11 @@ jobs:
       - name: Current CLI against the previous released server
         run: |
           ./scripts/skew-smoke.sh \
-            target/release/spelunk \
-            prev-release/spelunk-server
+            target/release/inkentry \
+            prev-release/inkentry-server
 
       - name: Previous released CLI against the current server
         run: |
           ./scripts/skew-smoke.sh \
-            prev-release/spelunk \
-            target/release/spelunk-server
+            prev-release/inkentry \
+            target/release/inkentry-server

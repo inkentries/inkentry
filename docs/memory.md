@@ -1,32 +1,32 @@
 # Project Memory
 
-`spelunk memory` is a per-project knowledge store. Use it to capture decisions, context, requirements, questions, and handoff notes that would otherwise live only in chat history or someone's head.
+`inkentry memory` is a per-project knowledge store. Use it to capture decisions, context, requirements, questions, and handoff notes that would otherwise live only in chat history or someone's head.
 
 Memory entries are stored in a local SQLite database by default, and — with
 `store_in_git_notes` enabled (the default) — also written through to
-`refs/notes/spelunk` on `HEAD`, so they travel with the repository. No external
+`refs/notes/inkentry` on `HEAD`, so they travel with the repository. No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `spelunk-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
+`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
 To verify that memory really travels with the repository, inspect the notes by
-hand with stock git. They live on the `spelunk` ref, so you must name it: plain
+hand with stock git. They live on the `inkentry` ref, so you must name it: plain
 `git notes show HEAD` reads git's default `commits` ref and reports "no note
-found" even when spelunk has written entries.
+found" even when inkentry has written entries.
 
 ```bash
-git notes --ref=spelunk show HEAD    # notes on the current commit
-git notes --ref=spelunk list         # every commit carrying spelunk notes
+git notes --ref=inkentry show HEAD    # notes on the current commit
+git notes --ref=inkentry list         # every commit carrying inkentry notes
 # equivalently
-GIT_NOTES_REF=refs/notes/spelunk git notes show HEAD
+GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 ```
 
-**Carrier and index.** Think of `refs/notes/spelunk` as the durable *carrier*
-for memory and `.spelunk/memory.db` as the queryable *index* built over it. Every
+**Carrier and index.** Think of `refs/notes/inkentry` as the durable *carrier*
+for memory and `.inkentry/memory.db` as the queryable *index* built over it. Every
 `memory add` appends its entry to the carrier through one write-through path;
-`spelunk init` hydrates the index by importing those notes: `memory list` and
-text search see them immediately, and `spelunk memory reindex` adds the
+`inkentry init` hydrates the index by importing those notes: `memory list` and
+text search see them immediately, and `inkentry memory reindex` adds the
 embeddings semantic search needs. Both live in the repo, and the store of record stays local
 unless you configure a team `server_url` with `mode = "cloud_first"` (see [Team
 server and sync modes](#team-server-and-sync-modes)). The carrier reaches teammates only once
@@ -34,18 +34,18 @@ the notes ref is pushed and fetched (see [Sharing memory across clones via
 git-notes](#sharing-memory-across-clones-via-git-notes) below).
 
 **Entry identity.** An entry is identified by what it says, not by where or when
-it was recorded. spelunk derives a canonical identity for every entry as a
+it was recorded. inkentry derives a canonical identity for every entry as a
 SHA-256 over exactly its `kind`, `title`, and `body`. Two people who
 independently record the same decision in two clones arrive at the same
 identity, with no server and no coordination between them. Mutable metadata is
 deliberately excluded, so tagging, archiving, or superseding an entry never
 changes its identity. (The numeric `id` in `memory list` output is a local row
-number rather than an identity: `spelunk init` renumbers it, and each machine
+number rather than an identity: `inkentry init` renumbers it, and each machine
 assigns it independently.)
 
 Because identity is content-derived, two clones can carry their own copy of the
-same entry, and once the notes refs meet, both copies are there. `spelunk memory
-list` and `spelunk context` therefore fold copies by identity as they read, so a
+same entry, and once the notes refs meet, both copies are there. `inkentry memory
+list` and `inkentry context` therefore fold copies by identity as they read, so a
 decision two people recorded independently appears once rather than twice. The
 surviving entry carries the earliest recording time, and the union of the copies'
 `tags` and `linked_files` (values are added, never removed). An entry archived in
@@ -68,7 +68,7 @@ alongside it.
 carrier — archived status, invalidation time, and an edge naming the new
 entry's identity — rather than editing the old entry's line in place, so the
 edge survives a re-`init` renumbering `id` and reaches teammates once the notes
-ref is fetched and merged. This works identically before and after `spelunk
+ref is fetched and merged. This works identically before and after `inkentry
 init`: a clone that never received the new entry still renders the old one as
 archived, just without a name for what replaced it.
 
@@ -80,12 +80,12 @@ silently succeeding, on both storage paths (pre- and post-`init`). This
 prevents two different, conflicting supersede records from being written for
 the same old entry.
 
-**Before `spelunk init`**, `memory add` and `memory list` still work when you are
-inside a git repository: with no `.spelunk/` project, `add` rides the same
+**Before `inkentry init`**, `memory add` and `memory list` still work when you are
+inside a git repository: with no `.inkentry/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
-back from `refs/notes/spelunk`. Because it is the same write path pre- and
+back from `refs/notes/inkentry`. Because it is the same write path pre- and
 post-`init`, every note carries an identical record shape. `memory search` and
-`context` remain gated to projects with `.spelunk/` (they need the index to
+`context` remain gated to projects with `.inkentry/` (they need the index to
 search and embed).
 
 **Store priority** (unchanged from [ADR-004](adr/004-unified-memory-storage.md)):
@@ -96,9 +96,9 @@ search and embed).
    server; under the default `local_first` mode a configured `server_url` does
    *not* redirect reads or writes, see [Team server and sync
    modes](#team-server-and-sync-modes))
-4. A local `.spelunk/memory.db` (after `spelunk init`)
+4. A local `.inkentry/memory.db` (after `inkentry init`)
 5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
-6. Neither a project nor a git repo: error, *"no spelunk project here, and not inside a git repo. Run 'spelunk init' first, or run inside a git repository."*
+6. Neither a project nor a git repo: error, *"no inkentry project here, and not inside a git repo. Run 'inkentry init' first, or run inside a git repository."*
 
 **Concurrent `add` commands are serialized.** git-notes writes take a
 cross-process lock (one lock file in the git common dir, shared across
@@ -109,7 +109,7 @@ where git notes is the sole store, `memory add` fails with an error telling you
 to retry; post-`init` the entry is already in `memory.db`, and `memory add`
 warns on stderr that the carry to git notes failed. On the rare filesystem
 where the lock file cannot be created at all, the write proceeds unserialized
-and warns on stderr. Note also that notes under `refs/notes/spelunk` are
+and warns on stderr. Note also that notes under `refs/notes/inkentry` are
 **not** pushed or fetched by default, so pre-`init` entries stay on the machine
 that wrote them until the notes ref is pushed (see [Sharing memory across
 clones via git-notes](#sharing-memory-across-clones-via-git-notes) below, and
@@ -122,7 +122,7 @@ git-notes carrier rationale.
 ### Team server and sync modes
 
 Configuring a team `server_url` does not, by itself, redirect reads or writes
-to the server. The `mode` config field (or the `SPELUNK_MODE` environment
+to the server. The `mode` config field (or the `INKENTRY_MODE` environment
 variable) controls how the CLI reconciles the local store and the server:
 
 | `mode` | reads | writes | when the server is unreachable |
@@ -140,24 +140,24 @@ immediately, with no network call in the write's own path; it queues in a
 local outbox (the same
 `memory.db` rows, not a separate table) until a background reconciler drains
 it. From an interactive terminal session, the write opportunistically starts
-(or reuses) a local `spelunk-server` and hands it the outbox to push; that
+(or reuses) a local `inkentry-server` and hands it the outbox to push; that
 same background process also holds a live pull connection to the team server,
 so entries recorded elsewhere on the team tend to show up locally without any
 explicit step. Non-interactive invocations (CI, scripts, git hooks) never
 auto-start a server: the write still commits and stays durably queued, and
 drains the next time an interactive session or an explicit trigger runs.
 
-Because of this, **you normally don't need to run `spelunk sync` by hand** in
+Because of this, **you normally don't need to run `inkentry sync` by hand** in
 `local_first` mode; it now mostly matters for non-interactive contexts (a CI
 job that wants entries pushed before it exits) or when you want an immediate,
 synchronous push/pull rather than waiting on the background reconciler.
-`spelunk status` prints the active mode plus, when there's something to
+`inkentry status` prints the active mode plus, when there's something to
 report, a pending-entry count and how long ago the local store last synced
 (for example `mode  local_first  ·  2 pending, last synced 4m ago`); only a
 project that has never synced shows no extra clause. Once a project has
 synced at least once, the clause persists even after the outbox fully
 drains, for example `mode  local_first  ·  up to date, last synced 4m ago`.
-Use `spelunk sync` (or the one-way `spelunk memory push` / `spelunk memory
+Use `inkentry sync` (or the one-way `inkentry memory push` / `inkentry memory
 pull`) whenever you want to force a synchronous reconcile with the server
 instead of waiting on the background drain. Both commands also embed the entries
 they push into the local `memory.db` first, so a pushed entry stays findable by
@@ -166,17 +166,17 @@ sync](#repair-during-push-and-sync)).
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
-(for certificate trust, see `server_ca` / `SPELUNK_SERVER_CA`). The CLI never
-falls back to local data in this mode. Configure it in `.spelunk/config.toml`:
+(for certificate trust, see `server_ca` / `INKENTRY_SERVER_CA`). The CLI never
+falls back to local data in this mode. Configure it in `.inkentry/config.toml`:
 
 ```toml
-server_url = "https://spelunk.internal.example.com"
+server_url = "https://inkentry.internal.example.com"
 project_id = "my-awesome-app"
 mode = "cloud_first"
 ```
 
-`server_url` may point at a self-hosted `spelunk-server` or at the hosted API.
-The two expose different memory routes, so spelunk settles which to speak when
+`server_url` may point at a self-hosted `inkentry-server` or at the hosted API.
+The two expose different memory routes, so inkentry settles which to speak when
 the backend opens, by reading the capability list `/v1/health` already
 advertises. A peer advertising SSE memory streaming is the hosted API; anything
 else, including a probe that times out, is unreachable, or answers without a
@@ -184,36 +184,36 @@ capability list, is treated as a self-hosted server. The probe is
 unauthenticated and never sends your server key.
 
 `project_id` may be a slug or a UUID against either peer; every memory
-command, including `spelunk memory show` and `spelunk memory archive`, resolves
+command, including `inkentry memory show` and `inkentry memory archive`, resolves
 either form the same way.
 
-Against the hosted API, `spelunk memory harvest`'s duplicate check filters
+Against the hosted API, `inkentry memory harvest`'s duplicate check filters
 locally, because that API has no server-side commit filter. It stays correct,
 but its cost grows with the size of the project rather than staying an indexed
 lookup.
 
 **`offline`** guarantees no server contact at all, even with `server_url`
-set. `SPELUNK_NO_SERVER=1` forces it regardless of config.
+set. `INKENTRY_NO_SERVER=1` forces it regardless of config.
 
 ### Sharing memory across clones via git-notes
 
 Reading and publishing are not symmetric, and it is worth being precise about
 which is automatic:
 
-- **Reading teammates' memory is automatic.** `spelunk init` configures the
+- **Reading teammates' memory is automatic.** `inkentry init` configures the
   `origin` fetch refspec, so their notes arrive on your next `git fetch`, and
-  spelunk merges them on its own read paths.
+  inkentry merges them on its own read paths.
 - **Publishing your own memory is opt-in.** Your memory stays local until you
   install the pre-push hook (or push the notes ref by hand).
 
-When you run `spelunk init` inside a git repository with an `origin` remote,
-spelunk automatically configures the fetch refspec for `origin` so that
-teammates' `refs/notes/spelunk` travels on `git fetch`. The init command prints
+When you run `inkentry init` inside a git repository with an `origin` remote,
+inkentry automatically configures the fetch refspec for `origin` so that
+teammates' `refs/notes/inkentry` travels on `git fetch`. The init command prints
 the status:
 
 ```
 Memory:  configured notes fetch refspec on 'origin' (teammates' memory arrives on fetch)
-         your memory stays local until you install the pre-push hook: spelunk hooks install --pre-push
+         your memory stays local until you install the pre-push hook: inkentry hooks install --pre-push
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
 
@@ -226,12 +226,12 @@ sets it, so a re-run of `init` omits it.
 Install the hook once per clone:
 
 ```bash
-spelunk hooks install --pre-push
+inkentry hooks install --pre-push
 ```
 
 From then on, every `git push` to a named remote publishes your memory there:
-spelunk fetches the remote's notes, merges them into yours (a union, so nothing
-is dropped), and pushes `refs/notes/spelunk`. Once it is installed, `init`
+inkentry fetches the remote's notes, merges them into yours (a union, so nothing
+is dropped), and pushes `refs/notes/inkentry`. Once it is installed, `init`
 reports that in place of the opt-in line:
 
 ```
@@ -247,7 +247,7 @@ that reliably coincides with "this code is being shared", which is why the hook
 runs there rather than on each `memory add` or on a timer.
 
 **Publishing needs a named remote.** git tells the hook the *name* of the remote
-you are pushing to, and spelunk publishes to that name. So a push that spells out
+you are pushing to, and inkentry publishes to that name. So a push that spells out
 a URL or a path instead of a remote name publishes nothing:
 
 ```bash
@@ -272,20 +272,20 @@ unreachable remote costs you one timeout rather than three. It never
 force-pushes: the union already carries both sides, so forcing could only discard
 a teammate's memory.
 
-The one thing that does stop your push is spelunk itself being gone. The hook
+The one thing that does stop your push is inkentry itself being gone. The hook
 records the absolute path of the binary that installed it, rather than looking
-`spelunk` up on `PATH`, because GUI git clients on macOS take their environment
+`inkentry` up on `PATH`, because GUI git clients on macOS take their environment
 from launchd rather than your shell profile, and would otherwise publish nothing
-while appearing to work. If you move or reinstall spelunk, that path goes stale
-and the hook fails loudly; re-run `spelunk hooks install --pre-push` to
-re-resolve it. Remove it entirely with `spelunk hooks uninstall`.
+while appearing to work. If you move or reinstall inkentry, that path goes stale
+and the hook fails loudly; re-run `inkentry hooks install --pre-push` to
+re-resolve it. Remove it entirely with `inkentry hooks uninstall`.
 
 The hook is written to whatever directory `git rev-parse --git-path hooks`
 reports, so it honors `core.hooksPath` if you have one set (as husky, lefthook,
 and the pre-commit framework do) rather than assuming `.git/hooks`. If that
 directory turns out to be tracked and shared (a committed `core.hooksPath`
 target like `.husky/`), `install` refuses rather than writing there: a silent
-write there would commit spelunk's hook for every teammate on clone instead of
+write there would commit inkentry's hook for every teammate on clone instead of
 just this machine. Install it into that directory by hand in that case, or
 point `core.hooksPath` at an untracked location first.
 
@@ -297,10 +297,10 @@ installing it affects only your own clone.
 If you would rather not install a hook, push the notes ref yourself:
 
 ```bash
-git push origin refs/notes/spelunk
+git push origin refs/notes/inkentry
 ```
 
-Re-run this whenever you record memory: each `spelunk memory add` (or remove)
+Re-run this whenever you record memory: each `inkentry memory add` (or remove)
 creates a new notes commit that travels only once it is pushed. Push it **after**
 you have pushed the commits your entries are attached to, or those entries arrive
 orphaned (see above). The hook exists to get that ordering right for you.
@@ -309,39 +309,39 @@ The fetch refspec, by contrast, is configured once, so teammates' (and later
 clones') `git fetch` then pulls whatever notes you have already pushed.
 
 **How fetched notes become visible.** The refspec fetches into a *tracking* ref,
-`refs/notes/origin/spelunk`, rather than over your own `refs/notes/spelunk`.
+`refs/notes/origin/inkentry`, rather than over your own `refs/notes/inkentry`.
 Fetching straight onto your working ref would force-update it and silently
 replace a local note you had not pushed yet. So arrival is **fetch + merge**:
-`git fetch` populates the tracking ref, and `spelunk memory list`, `spelunk
-context`, and `spelunk init` merge it into `refs/notes/spelunk` (union, no
+`git fetch` populates the tracking ref, and `inkentry memory list`, `inkentry
+context`, and `inkentry init` merge it into `refs/notes/inkentry` (union, no
 conflicts, duplicates dropped). That merge is local-only and does no network: it
 folds in what your own `git fetch` already brought down, so it works with the
 remote unreachable, and it never picks up remote state on its own. Right after a
-fetch, `git notes --ref=spelunk` alone will not show a teammate's entry until one
-of those spelunk commands has run.
+fetch, `git notes --ref=inkentry` alone will not show a teammate's entry until one
+of those inkentry commands has run.
 
-The merge never delays or fails a read. If another spelunk command is writing
+The merge never delays or fails a read. If another inkentry command is writing
 notes at that moment, the merge is skipped and the read returns anyway; the union
 is idempotent, so the next read folds the entries in.
 
 **For teammates to receive the notes:**
 
 1. Clone the repository normally: `git clone <repo>`
-2. Run `spelunk init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'`)
+2. Run `inkentry init` in the clone (or manually add the refspec with `git config --add remote.origin.fetch '+refs/notes/inkentry*:refs/notes/origin/inkentry*'`)
 3. Fetch: `git fetch`
-4. Read: `spelunk memory list` (this is the step that merges the fetched notes in)
+4. Read: `inkentry memory list` (this is the step that merges the fetched notes in)
 
 A fresh clone does **not** inherit the source's local git config, so `git fetch`
-alone won't pull the notes. The teammate must either run `spelunk init` (which
+alone won't pull the notes. The teammate must either run `inkentry init` (which
 configures the refspec automatically) or add it manually, then fetch.
 
 **If there is no `origin` remote** (for example, in a local-only or detached
-repository), `spelunk init` prints the commands to run later:
+repository), `inkentry init` prints the commands to run later:
 
 ```
 Memory:  no 'origin' remote, so the notes refspec is not configured
-         run later: git config --add remote.origin.fetch '+refs/notes/spelunk*:refs/notes/origin/spelunk*'
-         your memory stays local until you install the pre-push hook: spelunk hooks install --pre-push
+         run later: git config --add remote.origin.fetch '+refs/notes/inkentry*:refs/notes/origin/inkentry*'
+         your memory stays local until you install the pre-push hook: inkentry hooks install --pre-push
          configured notes.rewriteRef (memory survives `git commit --amend` and `git rebase`)
 ```
 
@@ -349,15 +349,15 @@ Add the refspec when an `origin` is created, then publish as above. The
 `notes.rewriteRef` line appears here too: rewrites are purely local, so that
 setting is configured even in a repository with no remote.
 
-If the repository already carries memory on `refs/notes/spelunk` (for example a
-fresh clone of a project whose team records memory through git notes), `spelunk
+If the repository already carries memory on `refs/notes/inkentry` (for example a
+fresh clone of a project whose team records memory through git notes), `inkentry
 init` **hydrates** the new `memory.db` from those notes: every entry not already
-present is imported, and `spelunk memory list` then shows the repo's recorded
+present is imported, and `inkentry memory list` then shows the repo's recorded
 history. The import is idempotent (re-running `init` imports nothing) and copies
 entry content only, not embeddings, so imported entries appear in `memory list`
 and full-text search right away; semantic `memory search` finds them once they
 are embedded, which you can do with
-[`spelunk memory reindex`](#backfilling-missing-embeddings). This is a local import: the notes must already
+[`inkentry memory reindex`](#backfilling-missing-embeddings). This is a local import: the notes must already
 be present in your clone. Their cross-machine arrival still depends on your git
 notes refspec, since git does not fetch `refs/notes/*` by default (see above).
 git-notes is the durable carrier here and `memory.db` is a local index rebuilt
@@ -374,11 +374,11 @@ that carries memory orphans every entry on the dead sha. `memory list` never
 shows those entries again, because it lists notes that are reachable from `git
 log`, and the dead sha no longer is.
 
-spelunk therefore points `notes.rewriteRef` at `refs/notes/spelunk` for you. It
+inkentry therefore points `notes.rewriteRef` at `refs/notes/inkentry` for you. It
 is written to the repository's own config, never your global config, at whichever
 of these comes first:
 
-- `spelunk init`, alongside the fetch refspec. Independent of `origin`, since
+- `inkentry init`, alongside the fetch refspec. Independent of `origin`, since
   rewrites are purely local, so a repository with no remote is covered too.
 - The first `memory add` write-through, which reaches repositories where you
   never run `init`.
@@ -393,11 +393,11 @@ Configured git notes.rewriteRef in this repo, so memory now survives `git commit
 Later runs stay quiet, since the setting is already in place. `--add` composes
 with any value you set yourself rather than replacing it, and an existing value
 that already covers the ref (exactly, or via a glob that stays inside
-`refs/notes/`) is left alone. If the setting cannot be written, spelunk warns and
+`refs/notes/`) is left alone. If the setting cannot be written, inkentry warns and
 continues rather than failing the write, and names the command to run:
 
 ```
-Warning: could not set git notes.rewriteRef, so memory may not survive `git commit --amend` or `git rebase`. Set it with: git config --add notes.rewriteRef refs/notes/spelunk
+Warning: could not set git notes.rewriteRef, so memory may not survive `git commit --amend` or `git rebase`. Set it with: git config --add notes.rewriteRef refs/notes/inkentry
 ```
 
 `notes.rewriteMode` is deliberately left at its `concatenate` default, which
@@ -437,40 +437,40 @@ Examples of things worth storing:
 | `question` | Open questions that need an answer |
 | `answer` | Answers to previously stored questions |
 | `handoff` | State transfer between work sessions or agents |
-| `intent` | Active work signal; surfaced by `spelunk check` with file-overlap warnings |
-| `antipattern` | Things to avoid; list with `spelunk memory failures` |
+| `intent` | Active work signal; surfaced by `inkentry check` with file-overlap warnings |
+| `antipattern` | Things to avoid; list with `inkentry memory failures` |
 
 ## Storing a note
 
 ```bash
 # Quick note with body inline
-spelunk memory add --title "Chunker uses a token-aware sliding window as fallback" \
+inkentry memory add --title "Chunker uses a token-aware sliding window as fallback" \
               --body "Applies to unsupported file types and oversized semantic nodes: whole lines accumulate up to MAX_CHUNK_TOKENS (2048), with ~12.5% overlap between windows." \
               --kind context \
               --tags chunker,indexer
 
 # Open your $EDITOR for the body (omit --body)
-spelunk memory add --title "Decision: use blake3 for file hashing" --kind decision
+inkentry memory add --title "Decision: use blake3 for file hashing" --kind decision
 
 # Link to specific files
-spelunk memory add --title "Auth middleware refactored" \
+inkentry memory add --title "Auth middleware refactored" \
               --body "Moved session validation to src/auth/middleware.rs" \
               --files "src/auth/middleware.rs,src/auth/session.rs"
 
 # Record when a decision became valid (ISO 8601)
-spelunk memory add --title "Adopted monorepo layout" --kind decision \
+inkentry memory add --title "Adopted monorepo layout" --kind decision \
               --valid-at 2026-01-15
 
 # Supersede an old entry — archives it and records a supersedes edge
-spelunk memory add --title "New auth approach" --kind decision --body "..." \
+inkentry memory add --title "New auth approach" --kind decision --body "..." \
               --supersedes <old-id>
 
 # Mark two entries as related — creates a relates_to edge
-spelunk memory add --title "Follow-up note" --kind note --body "..." \
+inkentry memory add --title "Follow-up note" --kind note --body "..." \
               --relates-to <other-id>
 ```
 
-When `--body` is omitted, `spelunk` opens `$VISUAL` or `$EDITOR` (falling back to `vi`). Lines starting with `#` are stripped (comment convention).
+When `--body` is omitted, `inkentry` opens `$VISUAL` or `$EDITOR` (falling back to `vi`). Lines starting with `#` are stripped (comment convention).
 
 ## Pulling in context from a URL
 
@@ -478,106 +478,106 @@ When `--body` is omitted, `spelunk` opens `$VISUAL` or `$EDITOR` (falling back t
 
 ```bash
 # GitHub issue — uses `gh api` for clean structured content
-spelunk memory add --from-url https://github.com/owner/repo/issues/42
+inkentry memory add --from-url https://github.com/owner/repo/issues/42
 
 # Override the inferred title
-spelunk memory add --from-url https://github.com/owner/repo/issues/42 \
+inkentry memory add --from-url https://github.com/owner/repo/issues/42 \
               --title "Auth: session token storage compliance issue" \
               --kind requirement
 
 # Any URL — fetches page title and strips HTML
-spelunk memory add --from-url https://linear.app/myteam/issue/ENG-1234/... \
+inkentry memory add --from-url https://linear.app/myteam/issue/ENG-1234/... \
               --kind context
 
 # Combine with tags
-spelunk memory add --from-url https://github.com/owner/repo/issues/99 \
+inkentry memory add --from-url https://github.com/owner/repo/issues/99 \
               --tags auth,security --kind requirement
 ```
 
-For GitHub issues, `spelunk` calls `gh api` to get structured issue data (requires the [GitHub CLI](https://cli.github.com/) and `gh auth login`). For all other URLs it does an HTTP GET and extracts readable text.
+For GitHub issues, `inkentry` calls `gh api` to get structured issue data (requires the [GitHub CLI](https://cli.github.com/) and `gh auth login`). For all other URLs it does an HTTP GET and extracts readable text.
 
 ### Web-to-Markdown hook (opt-in) {#web-to-md-hook}
 
-For non-GitHub URLs, if a script exists at `~/.config/spelunk/scripts/web-to-md.ts`, `spelunk` runs it under `bun` (`bun ~/.config/spelunk/scripts/web-to-md.ts <url>`) and uses its stdout instead of the built-in HTML-stripping fallback — useful for sites that need JS rendering or custom extraction logic. The script's first line (`# Title`) becomes the entry title; the rest becomes the body.
+For non-GitHub URLs, if a script exists at `~/.config/inkentry/scripts/web-to-md.ts`, `inkentry` runs it under `bun` (`bun ~/.config/inkentry/scripts/web-to-md.ts <url>`) and uses its stdout instead of the built-in HTML-stripping fallback — useful for sites that need JS rendering or custom extraction logic. The script's first line (`# Title`) becomes the entry title; the rest becomes the body.
 
-This is opt-in by design: the script only runs if you've placed it at that exact, spelunk-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `spelunk` silently falls back to the built-in HTML extraction. Set `SPELUNK_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/spelunk/scripts`.
+This is opt-in by design: the script only runs if you've placed it at that exact, inkentry-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `inkentry` silently falls back to the built-in HTML extraction. Set `INKENTRY_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/inkentry/scripts`.
 
-> **Breaking change:** prior to this, `spelunk` looked for the hook script at
+> **Breaking change:** prior to this, `inkentry` looked for the hook script at
 > `~/scripts/web-to-md.ts`. That location is **no longer read** — any script
 > left there is silently ignored, and `memory add --from-url` falls back to
 > the built-in HTML extraction instead. If you were relying on the old hook,
-> move the script to `~/.config/spelunk/scripts/web-to-md.ts` (creating the
+> move the script to `~/.config/inkentry/scripts/web-to-md.ts` (creating the
 > directory if needed). The path moved because the old, undocumented
 > `~/scripts/` convention meant *any* script an attacker could plant there —
 > via an unrelated prior compromise, or on a shared/managed machine — would
 > get silently executed on every `--from-url` call; the new path is scoped to
-> a location you explicitly manage for spelunk.
+> a location you explicitly manage for inkentry.
 
 ## Searching memory
 
 ```bash
 # Semantic search — finds entries by meaning
-spelunk memory search "why did we choose sqlite"
-spelunk memory search "authentication decisions" --limit 5
+inkentry memory search "why did we choose sqlite"
+inkentry memory search "authentication decisions" --limit 5
 
 # Also surface 1-hop relates_to neighbours of each result
-spelunk memory search "authentication decisions" --expand-graph
+inkentry memory search "authentication decisions" --expand-graph
 
 # Search mode: hybrid (default), semantic, text
-spelunk memory search "auth" --mode semantic
-spelunk memory search "auth" --mode text
+inkentry memory search "auth" --mode semantic
+inkentry memory search "auth" --mode text
 
 # Point-in-time: only entries that were valid at this date
-spelunk memory search "auth decisions" --as-of 2026-01-01
+inkentry memory search "auth decisions" --as-of 2026-01-01
 ```
 
 ## Tracking topic evolution
 
-`spelunk memory timeline` returns all entries related to a topic, sorted by the time they became valid — useful for understanding how a decision or understanding evolved.
+`inkentry memory timeline` returns all entries related to a topic, sorted by the time they became valid — useful for understanding how a decision or understanding evolved.
 
 ```bash
-spelunk memory timeline "authentication strategy"
-spelunk memory timeline "database choice" --limit 30
-spelunk memory timeline "auth" --format json
+inkentry memory timeline "authentication strategy"
+inkentry memory timeline "database choice" --limit 30
+inkentry memory timeline "auth" --format json
 ```
 
 ## Listing entries
 
 ```bash
 # List recent entries (newest first)
-spelunk memory list
+inkentry memory list
 
 # Filter by kind
-spelunk memory list --kind decision
-spelunk memory list --kind question
+inkentry memory list --kind decision
+inkentry memory list --kind question
 
 # More entries
-spelunk memory list --limit 50
+inkentry memory list --limit 50
 
 # Point-in-time snapshot — only entries valid at a given date
-spelunk memory list --as-of 2026-01-01
+inkentry memory list --as-of 2026-01-01
 
 # Filter by commit SHA (exact or prefix)
-spelunk memory list --source-ref abc1234
+inkentry memory list --source-ref abc1234
 ```
 
 `--source-ref <sha>` returns every entry associated with that commit, matched
 two ways: harvested entries carry the commit SHA they were harvested from in
-their `source_ref` provenance field, and entries added with `spelunk memory add`
+their `source_ref` provenance field, and entries added with `inkentry memory add`
 are anchored to a commit by the git note that carries them (the same note you
-see under `git notes --ref=spelunk show <sha>`). Both are found; the SHA may be
+see under `git notes --ref=inkentry show <sha>`). Both are found; the SHA may be
 given in full or as a prefix.
 
-`question` and `answer` entries show titles only in list view to avoid context saturation. Use `spelunk memory show <id>` to read the full body.
+`question` and `answer` entries show titles only in list view to avoid context saturation. Use `inkentry memory show <id>` to read the full body.
 
 ## Cross-project visibility
 
-When projects are linked with `spelunk link`, `spelunk memory search`,
-`spelunk memory list`, and `spelunk context` automatically surface relevant
+When projects are linked with `inkentry link`, `inkentry memory search`,
+`inkentry memory list`, and `inkentry context` automatically surface relevant
 memory from linked projects alongside local results. This is how settled
 decisions recorded in one project (for example, a Cloud-only architecture
 constraint in `cloud-api`) remain visible to agents working in a sibling
-project (for example, `spelunk-oss`).
+project (for example, `inkentry-oss`).
 
 ### What crosses project boundaries
 
@@ -592,7 +592,7 @@ following criteria are surfaced from a linked project:
   not resurface after they are retracted in the source project.
 
 Decisions and requirements that do not carry `locked` or `cross-project` remain
-strictly project-local, regardless of which `spelunk link` edges are configured.
+strictly project-local, regardless of which `inkentry link` edges are configured.
 
 ### Source attribution
 
@@ -615,31 +615,31 @@ Pass `--local-only` to any of `memory search`, `memory list`, or `context` to
 query only the primary project's memory store:
 
 ```bash
-spelunk memory search "auth decisions" --local-only
-spelunk memory list --kind decision --local-only
-spelunk context --local-only
+inkentry memory search "auth decisions" --local-only
+inkentry memory list --kind decision --local-only
+inkentry context --local-only
 ```
 
 ### Tagging decisions for cross-project visibility
 
 ```bash
 # Tag a decision as locked so linked projects can see it
-spelunk memory add --kind decision \
+inkentry memory add --kind decision \
   --title "SSE memory stream is Cloud-only" \
-  --body "OSS spelunk-server must not expose SSE; Cloud API owns that surface." \
+  --body "OSS inkentry-server must not expose SSE; Cloud API owns that surface." \
   --tags v1,locked
 
 # Tag a requirement that applies across all linked projects
-spelunk memory add --kind requirement \
+inkentry memory add --kind requirement \
   --title "All writes validated for secrets before storage" \
-  --body "Applies to cloud-api and spelunk-oss alike." \
+  --body "Applies to cloud-api and inkentry-oss alike." \
   --tags security,cross-project
 ```
 
 ### Privacy boundary
 
 The dep pass reads each linked project's `memory.db` directly from disk (local
-SQLite only). It does not route through `spelunk-server` or any remote endpoint.
+SQLite only). It does not route through `inkentry-server` or any remote endpoint.
 A linked project's memory is only reachable if its `memory.db` file is
 accessible on the local filesystem (same machine, same user). Remote or
 server-backed linked projects whose memory lives exclusively on a remote server
@@ -648,8 +648,8 @@ are not queried by the dep pass in v1.
 ## Showing a single entry
 
 ```bash
-spelunk memory show 42
-spelunk memory show 42 --format json
+inkentry memory show 42
+inkentry memory show 42 --format json
 ```
 
 `memory show` displays the full body plus any incoming and outgoing relationship edges (supersedes, relates_to, contradicts) with linked entry titles.
@@ -658,23 +658,23 @@ spelunk memory show 42 --format json
 
 ```bash
 # Show all edges for an entry (text)
-spelunk memory graph 42
+inkentry memory graph 42
 
 # Machine-readable
-spelunk memory graph 42 --format json
+inkentry memory graph 42 --format json
 ```
 
 ## Harvesting from git history
 
-`spelunk memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `spelunk-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/spelunk/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
+`inkentry memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
 
 ```bash
 # Default: last 10 commits (fewer if the repo has fewer than 10)
-spelunk memory harvest
+inkentry memory harvest
 
 # Custom range
-spelunk memory harvest --git-range HEAD~30..HEAD
-spelunk memory harvest --git-range v1.0..HEAD
+inkentry memory harvest --git-range HEAD~30..HEAD
+inkentry memory harvest --git-range v1.0..HEAD
 ```
 
 The default range is clamped to the commits that actually exist, so harvest works on a brand-new repo with a single commit — it never fails with a raw `git` "bad revision" error just because the history is shorter than the range.
@@ -688,7 +688,7 @@ Already-harvested commits are skipped (tracked via a `git:<sha>` tag). Routine c
 Install the git hook and harvesting happens on every commit:
 
 ```bash
-spelunk hooks install
+inkentry hooks install
 ```
 
 To also publish memory to your remote on every `git push`, install the pre-push
@@ -696,13 +696,13 @@ hook (see [Sharing memory across
 clones](#sharing-memory-across-clones-via-git-notes)):
 
 ```bash
-spelunk hooks install --pre-push
+inkentry hooks install --pre-push
 ```
 
 ## Importing from a local server
 
-`spelunk memory reconcile` imports notes that were recorded by a running
-`spelunk-server` daemon into the project's local `memory.db`. This is useful
+`inkentry memory reconcile` imports notes that were recorded by a running
+`inkentry-server` daemon into the project's local `memory.db`. This is useful
 after a session where entries were written through `server_url` and need to be
 pulled into the project's local store, or when migrating from server-backed to
 local storage.
@@ -720,28 +720,28 @@ partition the source rows exactly:
 `candidates == already_present + collapsed_duplicates + imported`.
 
 ```bash
-# Import notes for the active project (default source: ~/.local/state/spelunk/server.db)
-spelunk memory reconcile
+# Import notes for the active project (default source: ~/.local/state/inkentry/server.db)
+inkentry memory reconcile
 
 # Preview what would be imported without writing anything
-spelunk memory reconcile --dry-run
+inkentry memory reconcile --dry-run
 
 # Import notes for all projects found in server.db
-spelunk memory reconcile --all-projects
+inkentry memory reconcile --all-projects
 
 # Override the source path
-spelunk memory reconcile --source-db /var/run/spelunk/server.db
+inkentry memory reconcile --source-db /var/run/inkentry/server.db
 
 # Machine-readable summary
-spelunk memory reconcile --format json
+inkentry memory reconcile --format json
 ```
 
 Exit codes: `0` on success or when there is nothing to import, non-zero on
 hard errors (unreadable source DB, write failure). When `server.db` does not
 exist the command is a no-op and exits 0.
 
-If reconcilable notes are detected at startup, spelunk prints a one-time nudge
-to stderr. Set `SPELUNK_NO_RECONCILE_NUDGE=1` to suppress it in CI or scripts.
+If reconcilable notes are detected at startup, inkentry prints a one-time nudge
+to stderr. Set `INKENTRY_NO_RECONCILE_NUDGE=1` to suppress it in CI or scripts.
 
 ### Security notes
 
@@ -759,20 +759,20 @@ only from `kind`, `title`, and `body`. A `memory.db` that predates this, or
 that picked up entries from more than one machine, can already contain rows
 that share that identity while differing in `created_at`, `tags`,
 `linked_files`, or `status`, for example the same decision recorded twice by
-a repeated `memory harvest` run. spelunk leaves those rows in place: they are
+a repeated `memory harvest` run. inkentry leaves those rows in place: they are
 harmless, and nothing reads or writes memory any differently because of them.
 
 Because collapsing existing rows means deleting some of them, it never
-happens automatically. If `spelunk` finds duplicate groups while opening a
+happens automatically. If `inkentry` finds duplicate groups while opening a
 project's `memory.db`, it logs an actionable one-line warning instead of
 touching anything:
 
 ```
-entity_id has 2 duplicate group(s); run `spelunk memory dedupe` to collapse
-them, then re-run spelunk to enforce uniqueness
+entity_id has 2 duplicate group(s); run `inkentry memory dedupe` to collapse
+them, then re-run inkentry to enforce uniqueness
 ```
 
-`spelunk memory dedupe` is the command that warning points at. It is a
+`inkentry memory dedupe` is the command that warning points at. It is a
 one-time backfill you run when you want to clean up, not a step in the normal
 workflow: `init`, `memory add`, and every other command keep working with
 duplicates present.
@@ -788,31 +788,31 @@ either ends up fully collapsed or is left exactly as it was.
 
 ```bash
 # Preview what would be collapsed, without writing anything
-spelunk memory dedupe --dry-run
+inkentry memory dedupe --dry-run
 
 # Collapse duplicate groups
-spelunk memory dedupe
+inkentry memory dedupe
 
 # Machine-readable summary
-spelunk memory dedupe --format json
+inkentry memory dedupe --format json
 ```
 
 Sample output, collapsing one group of two rows (the newer row's `cli`,
 `exit-codes` tags and its linked file merge into the survivor):
 
 ```
-$ spelunk memory dedupe --dry-run
-[spelunk] dedupe (dry-run): total_notes=2 duplicate_groups=1 rows_would_collapse=1
+$ inkentry memory dedupe --dry-run
+[inkentry] dedupe (dry-run): total_notes=2 duplicate_groups=1 rows_would_collapse=1
 
-$ spelunk memory dedupe
-[spelunk] dedupe: total_notes=2 duplicate_groups=1 rows_collapsed=1 tags_merged=2 linked_files_merged=1 supersede_edges_repointed=0 supersede_self_edges_dropped=0
+$ inkentry memory dedupe
+[inkentry] dedupe: total_notes=2 duplicate_groups=1 rows_collapsed=1 tags_merged=2 linked_files_merged=1 supersede_edges_repointed=0 supersede_self_edges_dropped=0
 
-$ spelunk memory dedupe --format json
+$ inkentry memory dedupe --format json
 {"total_notes":2,"duplicate_groups":1,"rows_collapsed":1,"tags_merged":2,"linked_files_merged":1,"supersede_edges_repointed":0,"supersede_self_edges_dropped":0}
 ```
 
 Once a store has zero duplicate groups, `dedupe` (dry-run or not) reports
-all-zero counts and makes no writes, and the next `spelunk` run promotes
+all-zero counts and makes no writes, and the next `inkentry` run promotes
 `memory.db`'s `entity_id` index to enforce uniqueness going forward; after
 that, a duplicate group can no longer occur.
 
@@ -822,9 +822,9 @@ existing entry (merging the new call's `tags` and `linked_files` into it,
 add-wins) and reports it instead of erroring:
 
 ```
-$ spelunk memory add --kind decision --title "dup entry" --body "same content"
+$ inkentry memory add --kind decision --title "dup entry" --body "same content"
 Stored [decision] #3: dup entry
-$ spelunk memory add --kind decision --title "dup entry" --body "same content"
+$ inkentry memory add --kind decision --title "dup entry" --body "same content"
 Already recorded as [decision] #3: dup entry
 ```
 
@@ -834,13 +834,13 @@ Already recorded as [decision] #3: dup entry
 contacts a server or an LLM. The collapse runs as a single transaction, so a
 failure partway through leaves the store exactly as it was rather than
 half-collapsed. Deleting the losing rows is destructive and not reversible by
-spelunk itself (back up `memory.db`, or your git-notes ref, first if you want
+inkentry itself (back up `memory.db`, or your git-notes ref, first if you want
 to be able to undo it).
 
 ## Backfilling missing embeddings
 
 A note's semantic vector is normally minted when the note is first added
-(`spelunk memory add`), and `spelunk memory push` / `spelunk sync` mint one for
+(`inkentry memory add`), and `inkentry memory push` / `inkentry sync` mint one for
 any entry in the set they are about to push that still lacks it (see [Repair
 during push and sync](#repair-during-push-and-sync)). A note that misses both
 moments, because no embedder was reachable, or because the store was upgraded
@@ -851,10 +851,10 @@ search (`--mode text`), `memory list`, `memory timeline`, and `context`; it is
 only missing from *semantic* `memory search`, because semantic ranking is a KNN
 over the embedding vectors and this note has none.
 
-`spelunk memory reindex` is the recovery command: it embeds the notes that have
+`inkentry memory reindex` is the recovery command: it embeds the notes that have
 no vector, using the same embedder `memory add` uses. In the default
 `local_first` mode (and `offline`), that is always the local, auto-discovered
-loopback `spelunk-server`, even when a team `server_url` is also configured:
+loopback `inkentry-server`, even when a team `server_url` is also configured:
 inference stays on-machine there regardless of the sync-mode replica setting.
 In `cloud_first` with a team `server_url` set, `reindex` is not applicable and
 exits with an actionable error, since `memory.db` isn't the store of record in
@@ -865,19 +865,19 @@ down.
 
 ```bash
 # Embed every active note that is missing a vector
-spelunk memory reindex
+inkentry memory reindex
 
 # Report how many notes would be embedded, without writing or contacting the embedder
-spelunk memory reindex --dry-run
+inkentry memory reindex --dry-run
 
 # Re-embed every active note, replacing existing vectors (e.g. after a model or dimension change)
-spelunk memory reindex --force
+inkentry memory reindex --force
 
 # Also backfill archived notes (default is active notes only)
-spelunk memory reindex --include-archived
+inkentry memory reindex --include-archived
 
 # Machine-readable summary
-spelunk memory reindex --format json
+inkentry memory reindex --format json
 ```
 
 Because embedding **is** the point of this command, it needs a reachable
@@ -891,21 +891,21 @@ json`) goes to stdout. Notes are embedded one at a time, so a large backlog
 takes a while; `--dry-run` tells you how many are pending first.
 
 `reindex` covers the **memory** store only. The code index has its own re-embed
-path (`spelunk index`, which re-embeds changed files' chunks); the two operate
+path (`inkentry index`, which re-embeds changed files' chunks); the two operate
 on separate stores and neither substitutes for the other.
 
 After the 768→896 upgrade drops the old vectors, the first memory command prints
-a one-line notice naming the count and pointing at `spelunk memory reindex`, so
+a one-line notice naming the count and pointing at `inkentry memory reindex`, so
 the recall gap is discoverable without `RUST_LOG`. The notice is a pointer, not
 an auto-repair: it embeds nothing itself. Running `reindex` is what restores
 semantic recall.
 
 ### Repair during push and sync
 
-`spelunk memory push` and `spelunk sync` embed what they are about to push.
+`inkentry memory push` and `inkentry sync` embed what they are about to push.
 Before the batch is built, every entry in the push set that has no usable local
 vector is embedded through the local loopback embedder, using the same document
-text and the same document-side embedding call `spelunk memory reindex` uses,
+text and the same document-side embedding call `inkentry memory reindex` uses,
 and each vector is committed to `memory.db` as it completes. A pushed entry is
 therefore findable by semantic `memory search` on your own machine afterwards,
 with no separate `reindex` step. Previously a push left `memory.db` exactly as
@@ -921,20 +921,20 @@ as-is instead of re-embedding it.
 Scope and limits:
 
 - Only the push set is repaired: entries that are active and not yet synced.
-  Entries already synced, and entries arriving through `spelunk memory pull`,
-  are outside it and still need `spelunk memory reindex`.
+  Entries already synced, and entries arriving through `inkentry memory pull`,
+  are outside it and still need `inkentry memory reindex`.
 - The embed always runs against the local loopback embedder, never against a
   configured team `server_url`. This is the same way `reindex` resolves its
   embedder.
 - Skipped entirely in `cloud_first` mode with a team `server_url` set, where
   `memory.db` is not the store of record. That is the same condition
-  `spelunk memory reindex` declines under, so the two commands agree about when
+  `inkentry memory reindex` declines under, so the two commands agree about when
   local embeddings are meaningful.
 - With no local embedder reachable, the push still runs to completion and exits
   exactly as it did before, every entry text-only. It prints one warning:
 
   ```
-  warning: 2 entries pushed without a local embedding, so `spelunk memory search` cannot surface them in this project until `spelunk memory reindex` is run.
+  warning: 2 entries pushed without a local embedding, so `inkentry memory search` cannot surface them in this project until `inkentry memory reindex` is run.
   ```
 
   A single entry's embed failure behaves the same way: that entry goes out
@@ -952,23 +952,23 @@ Scope and limits:
 
 ## Using memory as context
 
-`spelunk memory search` results are best consumed alongside `spelunk search` results — they answer the *why* while the code search answers the *how*. Pass both to your reasoning model for a complete picture.
+`inkentry memory search` results are best consumed alongside `inkentry search` results — they answer the *why* while the code search answers the *how*. Pass both to your reasoning model for a complete picture.
 
 ## Machine-readable output
 
 All memory commands support `--format json`, and setting `AGENT=true` forces JSON mode globally:
 
 ```bash
-AGENT=true spelunk memory list --kind question
-AGENT=true spelunk memory search "database decisions"
+AGENT=true inkentry memory list --kind question
+AGENT=true inkentry memory search "database decisions"
 ```
 
 ## Tips
 
 - **Store the "why", not just the "what"** — the code already captures what was built.
-- **Use `question` kind actively** — when you hit a decision point you're unsure about, store it. Come back with `spelunk memory list --kind question` at the start of the next session.
+- **Use `question` kind actively** — when you hit a decision point you're unsure about, store it. Come back with `inkentry memory list --kind question` at the start of the next session.
 - **Use `handoff` kind** at the end of a long session to summarise the current state for your next session (or for another agent).
-- **Tag entries** — tags like `auth`, `database`, `performance` make `spelunk memory list` more scannable and improve search relevance.
+- **Tag entries** — tags like `auth`, `database`, `performance` make `inkentry memory list` more scannable and improve search relevance.
 - **Use `--supersedes` when updating a decision** — it archives the old entry, sets its invalidation time, and creates a traceable edge so you can always follow the chain of reasoning.
 - **Use `--relates-to` for non-superseding connections** — linking a follow-up note or a contradicting observation lets `memory graph` and `--expand-graph` surface related context automatically.
-- **Use `--as-of` for archaeology** — `spelunk memory list --as-of 2026-01-01` shows the knowledge state at that date, which is useful for post-mortems or understanding old decisions in context.
+- **Use `--as-of` for archaeology** — `inkentry memory list --as-of 2026-01-01` shows the knowledge state at that date, which is useful for post-mortems or understanding old decisions in context.

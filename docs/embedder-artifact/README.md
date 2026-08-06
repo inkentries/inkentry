@@ -13,7 +13,7 @@ library_name: gguf
 
 Q8_0-quantized GGUF build of [`codefuse-ai/F2LLM-v2-330M`](https://huggingface.co/codefuse-ai/F2LLM-v2-330M),
 plus its tokenizer, distributed for use as the bundled embedding model in
-[Spelunk](https://github.com/spelunk-cloud/spelunk).
+[Inkentry](https://github.com/spelunk-cloud/spelunk).
 
 ## What this is
 
@@ -22,8 +22,8 @@ plus its tokenizer, distributed for use as the bundled embedding model in
   - Projection matmul weights and the token-embedding table → **Q8_0**
   - RMSNorm weights → **F32** (kept full precision; negligible size)
 - The **unmodified** upstream `tokenizer.json`, redistributed as-is (same
-  Apache-2.0 terms) so Spelunk has no runtime dependency on the third-party
-  upstream repo. (`config.json` is small enough that Spelunk embeds it
+  Apache-2.0 terms) so Inkentry has no runtime dependency on the third-party
+  upstream repo. (`config.json` is small enough that Inkentry embeds it
   directly in the binary instead of fetching it from here.)
 
 Distributing the GGUF pre-quantized keeps the first-run download and
@@ -52,8 +52,8 @@ The GGUF is a **modified** copy of `codefuse-ai/F2LLM-v2-330M`: the weights
 have been quantized to Q8_0 from the original BF16 weights. `tokenizer.json`
 is redistributed **unmodified**. No other modifications were made.
 
-## Usage in Spelunk
+## Usage in Inkentry
 
-`spelunk-server` downloads the GGUF and tokenizer directly from here by
-default. Set `SPELUNK_EMBEDDER_GGUF_REPO` to a different repo to fetch both
+`inkentry-server` downloads the GGUF and tokenizer directly from here by
+default. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a different repo to fetch both
 from there instead (it must host both files).

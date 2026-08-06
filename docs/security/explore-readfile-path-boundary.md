@@ -2,7 +2,7 @@
 
 **Status:** Approved for implementation
 **Author:** Architect
-**Affected code:** `crates/spelunk-core/src/search/explore.rs` (`ToolCall::ReadFile` branch), `crates/spelunk-core/src/search/tools.rs`
+**Affected code:** `crates/inkentry-core/src/search/explore.rs` (`ToolCall::ReadFile` branch), `crates/inkentry-core/src/search/tools.rs`
 **Related:** `docs/security/THREAT-MODEL.md` (Prompt Injection), issue #403
 
 ---
@@ -39,7 +39,7 @@ exfiltration flaw driven by untrusted content.
 - The **user's question** and **indexed file content** are untrusted input. The
   LLM's tool calls derived from them are therefore untrusted.
 - The **index itself** (the `files` table in the project DB) is trusted: it was
-  produced by `spelunk index`, which already applies `.gitignore` rules and the
+  produced by `inkentry index`, which already applies `.gitignore` rules and the
   unconditional sensitive-file overrides (`.env*`, `*.pem`, etc.) and the secret
   scanner. Anything in the `files` table is content the user already chose to
   index and is willing to expose to retrieval.
@@ -49,7 +49,7 @@ This gives a clean, already-vetted allow-list to anchor the boundary on.
 ## Key facts about the current code
 
 - `Explorer` is constructed with `db_path: PathBuf` only. The CLI caller
-  (`crates/spelunk-cli/src/cli/cmd/explore.rs`) already derives
+  (`crates/inkentry-cli/src/cli/cmd/explore.rs`) already derives
   `project_root = db_path.parent()`, but the Explorer does not receive it.
 - Indexed file paths are stored **relative to the project root**. The indexer
   writes `path.strip_prefix(root)` (see `index/parse_phase.rs`), so a stored row

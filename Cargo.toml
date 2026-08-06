@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/spelunk-core",
-    "crates/spelunk-cli",
-    "crates/spelunk-embed",
-    "crates/spelunk-server",
+    "crates/inkentry-core",
+    "crates/inkentry-cli",
+    "crates/inkentry-embed",
+    "crates/inkentry-server",
 ]
 resolver = "2"
 
@@ -20,12 +20,12 @@ thiserror   = "2"
 rusqlite    = { version = "0.40", features = ["bundled"] }
 sqlite-vec  = "0.1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-# In-process HTTPS for spelunk-server (ADR-066). `tls-rustls-no-provider` avoids
+# In-process HTTPS for inkentry-server (ADR-066). `tls-rustls-no-provider` avoids
 # rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
 # startup instead — already the resolved provider via reqwest/hf-hub.
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 # Named directly (not just pulled in transitively via reqwest/axum-server) so
-# spelunk-cli can match on `rustls::Error`/`CertificateError` variants when
+# inkentry-cli can match on `rustls::Error`/`CertificateError` variants when
 # classifying a probe failure. default-features off keeps aws-lc-rs out of the
 # tree; `ring`/`tls12` match the provider already resolved via reqwest.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -36,9 +36,9 @@ serial_test = "4"
 wiremock    = "0.6"
 dirs        = "6"
 # Native embedder stack (F2LLM-v2-330M via candle). Optional deps of the
-# `spelunk-embed` crate, gated behind its default-on `native` feature; versions
+# `inkentry-embed` crate, gated behind its default-on `native` feature; versions
 # pinned here so the candle pair stays on one runtime line. No candle-transformers:
-# see the `Config`/`repeat_kv` doc comment in spelunk-embed/src/embedder_native.rs.
+# see the `Config`/`repeat_kv` doc comment in inkentry-embed/src/embedder_native.rs.
 candle-core = "0.11.0"
 candle-nn   = "0.11.0"
 tokenizers  = "0.23"

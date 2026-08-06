@@ -8,6 +8,12 @@
 # Entries exist per host triple, because the corpus can be regenerated on any
 # machine that can run the old binaries. Add the triple you need after checking
 # the downloaded file against the digest GitHub reports for it.
+#
+# Every filename below spells the project's former name, and must keep spelling
+# it. These are 0.9.x-and-earlier assets that were published under that name;
+# the bytes and the filename both shipped years-worth of installs ago and no
+# rename can reach back and change them. A filename here that has been
+# modernised is simply a filename that resolves to nothing.
 
 # aarch64-apple-darwin
 5bee62a2820b1de394b7c14385d097b23ec11fdafe26180c61f8d79b21b903a1  spelunk-v0.7.1-aarch64-apple-darwin.tar.gz

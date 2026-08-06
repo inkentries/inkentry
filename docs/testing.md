@@ -9,7 +9,7 @@ server-handler tests, CLI end-to-end tests, property-based tests, an upgrade
 corpus of artifacts written by real released binaries, and a scheduled fuzzing
 job.
 
-The embedder stack is the native candle F2LLM path (`spelunk-embed`, gated by
+The embedder stack is the native candle F2LLM path (`inkentry-embed`, gated by
 the `embed-native` feature), not an external OpenAI-compatible endpoint. See
 `CLAUDE.md` for the full inference-backend picture.
 
@@ -37,7 +37,7 @@ For a tighter loop while iterating on one file:
 
 ```bash
 # One test file
-cargo nextest run -p spelunk-core --test integration_db
+cargo nextest run -p inkentry-core --test integration_db
 
 # Doctests: nextest does not run them, so they're a separate pass
 cargo test --doc
@@ -57,15 +57,15 @@ under test in `src/`. Broad categories, not an exhaustive file list (a file
 inventory is the kind of thing that goes stale the next time a test file is
 added or renamed):
 
-- **`crates/spelunk-core/tests/`**: chunker, embeddings, graph-edge, and
+- **`crates/inkentry-core/tests/`**: chunker, embeddings, graph-edge, and
   summariser unit logic; adversarial/coverage-gap hardening for the chunker
   (`adversarial_chunker.rs`); real-SQLite integration tests against
   `Database` (CRUD, KNN search, graph edges, conventions, LIKE-metacharacter
   escaping); git-notes integration tests; a worktree-resolution integration
   test over a real `git worktree`; language-parsing coverage; property-based
   tests (`prop_*.rs`, using `proptest`).
-- **`crates/spelunk-cli/tests/`**: CLI end-to-end tests that invoke the
-  compiled `spelunk` binary via `assert_cmd`; plumbing-subcommand tests
+- **`crates/inkentry-cli/tests/`**: CLI end-to-end tests that invoke the
+  compiled `inkentry` binary via `assert_cmd`; plumbing-subcommand tests
   (`cat_chunks`, `graph_edges`, `knn`, `ls_files`, `parse_file`, `hash_file`)
   and porcelain/plumbing consistency checks; memory workflow tests (add,
   dedupe, reconcile, reindex, push/sync, cross-project visibility); auth,
@@ -75,17 +75,17 @@ added or renamed):
   (secret-scanner bypass, harvest argument-injection, ANSI leaking onto
   non-tty stdout); and UX-guidance tests for index/search/inference-server
   messaging.
-- **`crates/spelunk-server/tests/`**: Axum handler integration tests
+- **`crates/inkentry-server/tests/`**: Axum handler integration tests
   (in-process request/response, no socket bound); a real-TLS serve test
   (`tls_serve.rs`) that binds an actual loopback socket; and a real-socket
   plaintext CLI-to-server sync end-to-end test (`cli_sync_e2e.rs`) that
-  drives the actual `spelunk memory push`/`spelunk sync` client code against
+  drives the actual `inkentry memory push`/`inkentry sync` client code against
   a bound server instance.
 - **`#[cfg(test)]` blocks in `src/`**: pure-logic unit tests colocated with
   the function they cover, across all crates (e.g. ANSI stripping, secret
   pattern detection, token estimation, memory dedupe logic).
 
-Cross-crate HTTP boundaries (spelunk-server's own endpoints, sync/relay, auth)
+Cross-crate HTTP boundaries (inkentry-server's own endpoints, sync/relay, auth)
 are mocked with `wiremock` where a test needs an HTTP server without a real
 network dependency.
 
@@ -95,12 +95,12 @@ network dependency.
 
 Every other migration test in this repo builds an old database shape by hand.
 That tests what we *believe* the old format was. The upgrade corpus tests what
-it **is**: artifacts written by real, downloaded, released spelunk binaries,
+it **is**: artifacts written by real, downloaded, released inkentry binaries,
 checked in and opened with the current build on every relevant change.
 
 ```
-crates/spelunk-cli/tests/upgrade_corpus.rs                the suite
-crates/spelunk-cli/tests/fixtures/upgrade-corpus/         MANIFEST.json + gzipped wings
+crates/inkentry-cli/tests/upgrade_corpus.rs                the suite
+crates/inkentry-cli/tests/fixtures/upgrade-corpus/         MANIFEST.json + gzipped wings
 scripts/upgrade-corpus/                                   the generator
 .github/workflows/upgrade-corpus.yml                      CI job
 ```
@@ -111,13 +111,13 @@ Six wings, all produced by actual releases, covering the pre-`user_version`
 a registry with a dependency link, and all three git-notes eras on one ref.
 
 ```sh
-SPELUNK_SECRET_STORE=file cargo test -p spelunk-cli --test upgrade_corpus
+INKENTRY_SECRET_STORE=file cargo test -p inkentry-cli --test upgrade_corpus
 ```
 
 It needs no network and no server: the fixtures are checked in, and the suite
 expands each gzipped wing into a temp dir, since opening a database migrates it
 and would otherwise destroy the fixture on first run. One test is `#[ignore]`d
-because it needs a downloaded release binary in `SPELUNK_OLD_BINARY`; CI runs
+because it needs a downloaded release binary in `INKENTRY_OLD_BINARY`; CI runs
 that leg separately.
 
 This suite is what enforces the on-disk half of the
@@ -146,7 +146,7 @@ wing you mean to change, with `generate.sh --only <wing-id>`.
 ## sqlite-vec in tests
 
 `sqlite3_auto_extension` is process-global and must only be registered once
-per process. `crates/spelunk-core/tests/common/mod.rs` guards this with a
+per process. `crates/inkentry-core/tests/common/mod.rs` guards this with a
 `OnceLock`:
 
 ```rust
@@ -161,9 +161,9 @@ pub fn register_sqlite_vec() {
     });
 }
 
-pub fn open_test_db() -> spelunk_core::storage::Database {
+pub fn open_test_db() -> inkentry_core::storage::Database {
     register_sqlite_vec();
-    spelunk_core::storage::Database::open(std::path::Path::new(":memory:"))
+    inkentry_core::storage::Database::open(std::path::Path::new(":memory:"))
         .expect("failed to open in-memory database")
 }
 ```
@@ -172,10 +172,10 @@ Tests that open a `Database` call `common::open_test_db()`. They are still
 annotated `#[serial_test::serial]`, but see the next section for what that
 annotation actually buys under the test runner CI uses.
 
-`spelunk-cli` integration tests reach the same guard through
+`inkentry-cli` integration tests reach the same guard through
 `tests/plumbing_helpers.rs::register_sqlite_vec`, alongside the other shared
 fixtures in that module. They need it whenever they open a `rusqlite`
-connection of their own against a DB a spawned `spelunk` binary wrote:
+connection of their own against a DB a spawned `inkentry` binary wrote:
 registration is per-process, so the child's does not carry over.
 
 ### `#[serial]` does not mean what it used to under nextest
@@ -197,7 +197,7 @@ synchronisation there, in either direction:
   retry/skip on port-in-use, an OS-level advisory lock), not through
   `#[serial]`.
 
-`crates/spelunk-core/tests/integration_git_notes.rs` is the concrete example
+`crates/inkentry-core/tests/integration_git_notes.rs` is the concrete example
 already in this codebase: its concurrent-write tests are correct not because
 of `#[serial]`, but because ADR-069 puts a real lock in the git common dir
 that every writer, in every process, takes before a read-modify-write. That
@@ -230,36 +230,36 @@ it is safe to call from every test. The isolation must be process-wide, not
 scoped to one `Command`: a helper that only sets env on the `Command` it
 builds itself never reaches git that the code under test spawns for itself.
 
-For `spelunk-core` integration tests, prefer `common::git_command(cwd)` over
+For `inkentry-core` integration tests, prefer `common::git_command(cwd)` over
 calling `isolate_git_config()` and `std::process::Command::new("git")`
 separately: it bakes the isolation call into the `Command` it returns, so a
 new test file cannot construct an un-isolated one by forgetting the setup
 step.
 
 `isolate_git_config`/`git_command` have exactly two definitions, both in
-`spelunk-core`, one per side of the `src`/`tests` compilation boundary:
+`inkentry-core`, one per side of the `src`/`tests` compilation boundary:
 
 | Location | Covers |
 |------|---------------|
-| `crates/spelunk-core/src/test_support.rs` (module gated `#[cfg(any(test, feature = "test-support"))]`) | `spelunk-core`'s own `#[cfg(test)]` unit tests, and any downstream crate that enables the `test-support` feature |
-| `crates/spelunk-core/tests/common/mod.rs` (also exports `git_command`) | `spelunk-core`'s `tests/` integration binaries |
+| `crates/inkentry-core/src/test_support.rs` (module gated `#[cfg(any(test, feature = "test-support"))]`) | `inkentry-core`'s own `#[cfg(test)]` unit tests, and any downstream crate that enables the `test-support` feature |
+| `crates/inkentry-core/tests/common/mod.rs` (also exports `git_command`) | `inkentry-core`'s `tests/` integration binaries |
 
-`spelunk-cli` has no independent copy: `src/cli/cmd/test_support.rs` and
-`tests/plumbing_helpers.rs` both `pub use spelunk_core::test_support::isolate_git_config`,
-reaching it via a `spelunk-core = { path = "../spelunk-core", features =
+`inkentry-cli` has no independent copy: `src/cli/cmd/test_support.rs` and
+`tests/plumbing_helpers.rs` both `pub use inkentry_core::test_support::isolate_git_config`,
+reaching it via a `inkentry-core = { path = "../inkentry-core", features =
 ["test-support"] }` dev-dependency (the same pattern
 `config::secret_store::MemoryStore` already used for a src/tests-shared test
 double before this).
 
-Two, not one, because `spelunk-core`'s own `tests/` integration binaries link
+Two, not one, because `inkentry-core`'s own `tests/` integration binaries link
 the crate externally and can't reach a `#[cfg(test)]`-gated `src/` item
 without a *self-referencing* dev-dependency
-(`spelunk-core = { path = ".", features = ["test-support"] }` inside
-`spelunk-core`'s own `Cargo.toml`). That was tried: it compiles and passes
+(`inkentry-core = { path = ".", features = ["test-support"] }` inside
+`inkentry-core`'s own `Cargo.toml`). That was tried: it compiles and passes
 against an isolated target dir, but this repo's pre-commit hook points
 `CARGO_TARGET_DIR` at the shared `target/` used by every worktree, and
 building against that shared dir (last built from a different `Cargo.lock`)
-fails with `unresolved import spelunk_core::test_support`. The
+fails with `unresolved import inkentry_core::test_support`. The
 `tests/common/mod.rs` duplicate is the real floor given that constraint, not
 an oversight.
 
@@ -315,18 +315,18 @@ file itself stays accurate.
   succeeds, but it adds several minutes.
 
 - **State-dir isolation.** E2E tests that set `.env("HOME", tmp)` to redirect
-  spelunk's runtime state directory (`~/.local/state/spelunk/`) do not achieve
+  inkentry's runtime state directory (`~/.local/state/inkentry/`) do not achieve
   full isolation on Windows because `dirs::home_dir()` uses the Windows Shell
   API (`SHGetKnownFolderPath`) rather than the `HOME` environment variable.
-  Tests that need deterministic isolation should set `SPELUNK_STATE_DIR`
+  Tests that need deterministic isolation should set `INKENTRY_STATE_DIR`
   directly instead of relying on `HOME`: it is a supported override of the
   entire state directory, read by the single resolver
-  (`capability::spelunk_state_dir`) every reader and writer of runtime state
+  (`capability::inkentry_state_dir`) every reader and writer of runtime state
   goes through, so it bypasses the Windows `HOME` gap entirely.
 
 - **`pid_is_alive` on Windows.** The Windows implementation uses
   `OpenProcess` + `GetExitCodeProcess` to check whether a process with a given
-  PID is still running. This backs the `spelunk server status/stop` live-PID
+  PID is still running. This backs the `inkentry server status/stop` live-PID
   check on Windows.
 
 - **Model download.** The `embed-native` feature bundles the candle F2LLM
@@ -348,7 +348,7 @@ file itself stays accurate.
 
 Both used to be "planned additions" here; both now exist and run in CI:
 
-- **Property-based tests** (`proptest`) live in `crates/spelunk-core/tests/prop_*.rs`:
+- **Property-based tests** (`proptest`) live in `crates/inkentry-core/tests/prop_*.rs`:
   `prop_chunker.rs`, `prop_token_budget.rs`, and `prop_embeddings.rs` (the
   `vec_to_blob`/`blob_to_vec` roundtrip plus blob-length invariants).
 - **Fuzzing** targets live under `fuzz/fuzz_targets/` (parser, chunker, secret

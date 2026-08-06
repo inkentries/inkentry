@@ -1,6 +1,6 @@
 # v1.0 Server Security Audit Checklist
 
-**Scope:** `spelunk-server` (`crates/spelunk-server/`), the HTTP attack surface not covered by the CLI security program.  
+**Scope:** `inkentry-server` (`crates/inkentry-server/`), the HTTP attack surface not covered by the CLI security program.  
 **Gate:** Must be completed before v1.0 GA. Blocks the v1.0 tag.  
 **Date drafted:** 2026-05-17  
 **Retargeted:** 2026-07-03 to the OSS server as-built (single-trust-domain tenancy per [ADR-056](../adr/056-oss-server-tenancy-model.md)).
@@ -9,7 +9,7 @@ The CLI threat model ([`THREAT-MODEL.md`](THREAT-MODEL.md)) remains valid for th
 
 **On this retarget.** The original draft was written against a cloud-shaped server
 (Postgres, `org_id` row-level security, `JWT_SECRET`, `sk-sp-` prefixed keys). The
-OSS `spelunk-server` is a single-file SQLite service with one shared bearer key and
+OSS `inkentry-server` is a single-file SQLite service with one shared bearer key and
 no identity, org, or role model. Items that assume the cloud shape are relabelled
 below as **N/A (cloud-only)** or **N/A by design (ADR-056)**; they are not
 unmet requirements. Boxes are ticked only where the sibling fix has merged and the
@@ -22,7 +22,7 @@ implements it. Applicable-but-unmet boxes stay unchecked with the owning task na
 
 ## 1. Injection scanning
 
-The module is `crates/spelunk-server/src/security.rs` (`scan_for_injection`), not the
+The module is `crates/inkentry-server/src/security.rs` (`scan_for_injection`), not the
 originally-drafted `src/security/injection.rs` path. It carries 12 patterns, not 8.
 
 | Check | Status |
@@ -37,7 +37,7 @@ originally-drafted `src/security/injection.rs` path. It carries 12 patterns, not
 ## 2. Bearer-key authentication
 
 The OSS server authenticates with **one shared bearer key** (`ApiKeyAuth`,
-`crates/spelunk-server/src/auth.rs`). There is no per-key database record, no key
+`crates/inkentry-server/src/auth.rs`). There is no per-key database record, no key
 prefix format, and no per-project key scope. The shared key is the tenancy
 boundary ([ADR-056](../adr/056-oss-server-tenancy-model.md)). The rows that assume a
 keys-table / scoped-key model are relabelled accordingly.
@@ -92,7 +92,7 @@ UUIDs, so the "malformed UUID" row is reframed as a slug length/sanity cap.
 | Title field: max 500 characters enforced at route handler | ☑ `handlers.rs` `MAX_TITLE_LEN = 500`, returns 400 on violation |
 | Body field: max 50 000 characters enforced at route handler | ☑ `handlers.rs` `MAX_BODY_LEN = 50_000`, returns 400 on violation |
 | Path param (project slug) validated; an over-long slug returns 400, not 500 | ☑ `handlers.rs` `MAX_SLUG_LEN = 200`, enforced in `require_project` and the handlers that bypass it (add_note / index_embed / project_search / explore / llm_complete) |
-| All SQL uses parameterised queries, no string concatenation | ☑ verified: `db.rs` uses `params!` throughout (no `format!`/concatenation into SQL across `crates/spelunk-server/src/`); FTS5 terms are quoted as literals via `fts5_quote_literal` |
+| All SQL uses parameterised queries, no string concatenation | ☑ verified: `db.rs` uses `params!` throughout (no `format!`/concatenation into SQL across `crates/inkentry-server/src/`); FTS5 terms are quoted as literals via `fts5_quote_literal` |
 
 Beyond this table, the input-validation hardening also added a `tower_http` middleware stack (see §DoS in
 [`THREAT-MODEL.md`](THREAT-MODEL.md#d--denial-of-service)): `RequestBodyLimitLayer`
@@ -136,7 +136,7 @@ and PR to `main` plus a weekly schedule.
 
 | Check | Status |
 |---|---|
-| `cargo audit` passes clean (workspace, includes spelunk-server) | ☑ `security.yml` runs `cargo audit`; it fails the job on any unignored advisory |
+| `cargo audit` passes clean (workspace, includes inkentry-server) | ☑ `security.yml` runs `cargo audit`; it fails the job on any unignored advisory |
 | `cargo deny` passes (advisories + licenses + bans + sources) | ☑ `security.yml` runs `cargo deny check advisories licenses bans`; `deny.toml` also defines `[sources]` |
 | No yanked dependencies in Cargo.lock | ☑ `Cargo.lock` is committed and `cargo audit` reports yanked crates by default, gating the same CI job |
 
@@ -147,9 +147,9 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
 
 | Check | Status |
 |---|---|
-| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `SPELUNK_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface. Neither refusal has an opt-out. |
+| Server refuses to start if `JWT_SECRET` is absent or < 32 bytes | N/A (cloud-only). The OSS server has no JWT; auth is the shared `INKENTRY_SERVER_KEY`. The applicable startup guard is `main.rs::check_bind_safety`, ☑ implemented: it refuses a non-loopback plaintext bind **unconditionally** in both the keyless case (open server) and the keyed case (bearer key in cleartext), naming the interface. Neither refusal has an opt-out. |
 | `DATABASE_URL` never logged | N/A (cloud-only). No `DATABASE_URL`; the DB is a local SQLite file path. The applicable rule, that the bearer key is never logged, holds: ☑ `auth.rs` never logs the key or its hash. |
-| No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `SPELUNK_SERVER_KEY` is supplied by the operator at runtime |
+| No secrets in default config files or committed `.env` files | ☑ verified: no committed `.env` and no secrets in the server's default config; `INKENTRY_SERVER_KEY` is supplied by the operator at runtime |
 | `.env*` excluded from any server-side file operations | N/A. The server does not walk the filesystem or index files; only the CLI indexer reads project trees (where `.env*` exclusion applies, and is documented in the CLI program). |
 
 ## 8. Error responses
@@ -164,26 +164,26 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
      Display text for substrings like "mismatch"/"required"; that was the leak. The one
      legitimately safe case (per-project embedding dimension mismatch) is now a typed
      DimensionMismatch error mapped to a 400 with a fixed safe message
-     (crates/spelunk-server/src/db.rs, lib.rs); every other Internal error returns a fixed generic
+     (crates/inkentry-server/src/db.rs, lib.rs); every other Internal error returns a fixed generic
      "Internal server error" 500. The same PR also quoted FTS5 MATCH terms as literals
-     (crates/spelunk-core/src/utils/mod.rs fts5_quote_literal, applied in storage/search.rs +
+     (crates/inkentry-core/src/utils/mod.rs fts5_quote_literal, applied in storage/search.rs +
      storage/memory/search.rs), with an embedded-NUL-byte edge case tracked as a separate
      follow-up, and added a uniform MAX_FILE_BYTES gate in
-     crates/spelunk-cli/src/cli/cmd/index/parse_phase.rs. -->
+     crates/inkentry-cli/src/cli/cmd/index/parse_phase.rs. -->
 
 ---
 
 ## Running the checks
 
 ```bash
-# From the workspace root. Export SPELUNK_SECRET_STORE=file on macOS to avoid
+# From the workspace root. Export INKENTRY_SECRET_STORE=file on macOS to avoid
 # Keychain prompts during tests.
 cargo audit
 cargo deny check advisories licenses bans
-cargo clippy -p spelunk-server -- -W clippy::all -D warnings
+cargo clippy -p inkentry-server -- -W clippy::all -D warnings
 
 # Server unit + handler tests (SQLite; no external services required)
-SPELUNK_SECRET_STORE=file cargo test -p spelunk-server
+INKENTRY_SECRET_STORE=file cargo test -p inkentry-server
 
 # Auth, injection-scan, input-cap, and error-mapping tests live in-crate:
 #   auth.rs (constant-time key compare), security.rs (injection patterns),

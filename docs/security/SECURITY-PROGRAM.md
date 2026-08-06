@@ -1,4 +1,4 @@
-# spelunk Security Program
+# inkentry Security Program
 
 **Framework:** OWASP SAMM v2  
 **Target maturity:** Level 1 across all 15 practices (pre-launch baseline)  
@@ -9,15 +9,15 @@
 
 ## Architecture in scope
 
-spelunk ships in two operational modes, and the security program covers both:
+inkentry ships in two operational modes, and the security program covers both:
 
 - **Local CLI (default).** A single-user developer CLI that indexes source
   trees, stores chunks and memory notes in local SQLite, and reaches an
   inference backend for embeddings and LLM calls. From v0.9 the default backend
-  is an auto-discovered `spelunk-server` bound to loopback (`127.0.0.1`); it is
+  is an auto-discovered `inkentry-server` bound to loopback (`127.0.0.1`); it is
   an inference backend only and never a memory store of record.
-- **Optional shared `spelunk-server`.** An axum HTTP listener
-  (`crates/spelunk-server/`) that holds a team's memory when a developer sets an
+- **Optional shared `inkentry-server`.** An axum HTTP listener
+  (`crates/inkentry-server/`) that holds a team's memory when a developer sets an
   explicit `server_url`. It exposes memory CRUD and semantic search over the
   network, authenticates callers with a single shared bearer key (`ApiKeyAuth`),
   and routes requests by a project-slug path segment.
@@ -100,15 +100,15 @@ server-specific pre-v1.0 checklist is
 | Angle-bracket escaping in RAG context    | `cli/cmd/ask.rs` (issue #137)    |
 | Atomic transactions for memory state     | `storage/memory.rs`              |
 
-### Server controls (shared `spelunk-server`)
+### Server controls (shared `inkentry-server`)
 
 | Control                                          | Where                                         |
 | ------------------------------------------------ | --------------------------------------------- |
-| Bearer-key auth; key hashed (BLAKE3), constant-time compare | `crates/spelunk-server/src/auth.rs`  |
-| Refuse a non-loopback bind without a key         | `crates/spelunk-server/src/main.rs`           |
-| Request-body cap, per-route timeout, concurrency and rate limits | `crates/spelunk-server/src/lib.rs`, `handlers.rs` |
-| Title / body length caps and project-slug caps at the handler | `crates/spelunk-server/src/handlers.rs`  |
-| Generic 5xx (no internal detail leak); safe error mapping | `crates/spelunk-server/src/lib.rs`, `db.rs` |
+| Bearer-key auth; key hashed (BLAKE3), constant-time compare | `crates/inkentry-server/src/auth.rs`  |
+| Refuse a non-loopback bind without a key         | `crates/inkentry-server/src/main.rs`           |
+| Request-body cap, per-route timeout, concurrency and rate limits | `crates/inkentry-server/src/lib.rs`, `handlers.rs` |
+| Title / body length caps and project-slug caps at the handler | `crates/inkentry-server/src/handlers.rs`  |
+| Generic 5xx (no internal detail leak); safe error mapping | `crates/inkentry-server/src/lib.rs`, `db.rs` |
 
 ### Operational controls
 

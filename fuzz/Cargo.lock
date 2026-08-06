@@ -3146,7 +3146,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-core"
+name = "inkentry-core"
 version = "0.9.6"
 dependencies = [
  "anyhow",
@@ -3172,7 +3172,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "spelunk-embed",
+ "inkentry-embed",
  "sqlite-vec",
  "thiserror",
  "tokio",
@@ -3186,7 +3186,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-embed"
+name = "inkentry-embed"
 version = "0.9.6"
 dependencies = [
  "anyhow",
@@ -3195,13 +3195,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "spelunk-fuzz"
+name = "inkentry-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "serde",
  "serde_json",
- "spelunk-core",
+ "inkentry-core",
 ]
 
 [[package]]

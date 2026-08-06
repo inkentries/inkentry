@@ -3,7 +3,7 @@
 # scripts/upgrade-corpus/generate.sh
 #
 # Build the upgrade corpus ("DB museum"): artifacts written by real, released
-# spelunk binaries, kept so that every future build can be tested against what
+# inkentry binaries, kept so that every future build can be tested against what
 # users actually have on disk rather than against an old shape reconstructed by
 # hand. A synthetic fixture encodes what we believe the old format was; only a
 # real one encodes what it is.
@@ -23,8 +23,19 @@
 #   * gh (authenticated) to download release assets
 #   * python3 and sqlite3
 #   * git
-# No spelunk-server or model download is needed: the pre-1.0 embedding wire is
+# No inkentry-server or model download is needed: the pre-1.0 embedding wire is
 # served by embed_stub.py. See that file for what is and is not real.
+#
+# A NOTE ON NAMES. This script runs binaries that were released under the
+# project's former name, so it is written in two vocabularies at once and they
+# must not be merged. Anything describing where an artifact goes in this tree
+# uses the current name. Anything the OLD BINARY reads or writes — the release
+# asset filenames, the binary inside the tarball, its environment variables, its
+# config directory, its project directory, its git notes ref, and the text it
+# records into the fixtures — keeps the old name, because that is what those
+# releases actually do. Each such reference is marked below. Sweeping them into
+# the current name breaks regeneration in ways that surface much later, as a
+# corpus that no longer matches MANIFEST.json.
 #
 # The CI job that consumes the corpus needs none of this. It reads the
 # checked-in fixtures only.
@@ -39,16 +50,17 @@ set -euo pipefail
 REPO_SLUG="spelunk-cloud/spelunk"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CORPUS_DIR="$REPO_ROOT/crates/spelunk-cli/tests/fixtures/upgrade-corpus"
+CORPUS_DIR="$REPO_ROOT/crates/inkentry-cli/tests/fixtures/upgrade-corpus"
 WINGS_DIR="$CORPUS_DIR/wings"
 MANIFEST="$CORPUS_DIR/MANIFEST.json"
 CHECKSUMS="$SCRIPT_DIR/checksums.txt"
-CACHE_DIR="${SPELUNK_CORPUS_CACHE:-${TMPDIR:-/tmp}/spelunk-upgrade-corpus-cache}"
+CACHE_DIR="${INKENTRY_CORPUS_CACHE:-${TMPDIR:-/tmp}/inkentry-upgrade-corpus-cache}"
 STUB="$SCRIPT_DIR/embed_stub.py"
-STUB_PORT="${SPELUNK_CORPUS_STUB_PORT:-7799}"
+STUB_PORT="${INKENTRY_CORPUS_STUB_PORT:-7799}"
 
 # An old binary predates the file secret-store default and would otherwise
-# reach the OS keychain and block on an interactive prompt.
+# reach the OS keychain and block on an interactive prompt. Old name: this is
+# the variable those releases read.
 export SPELUNK_SECRET_STORE=file
 
 # Pinned so git-level metadata is not a source of churn between regeneration
@@ -56,8 +68,8 @@ export SPELUNK_SECRET_STORE=file
 # and created_at is wall-clock, both captured by the released binary itself and
 # outside this script's control. Compare wings by the MANIFEST sha256, never by
 # expecting two runs to produce identical bytes.
-export GIT_AUTHOR_NAME="spelunk corpus"
-export GIT_AUTHOR_EMAIL="corpus@spelunk.invalid"
+export GIT_AUTHOR_NAME="inkentry corpus"
+export GIT_AUTHOR_EMAIL="corpus@inkentry.invalid"
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 export GIT_AUTHOR_DATE="2026-01-01T00:00:00+00:00"
@@ -115,6 +127,7 @@ log() { echo "==> $*"; }
 fetch_release() {
   local tag="$1" triple asset dest actual expected
   triple="$(host_triple)"
+  # Old name: the published filename of an already-shipped release.
   asset="spelunk-${tag}-${triple}.tar.gz"
   dest="$CACHE_DIR/$asset"
 
@@ -141,12 +154,13 @@ EOF
   [[ "$actual" == "$expected" ]] \
     || die "$asset checksum mismatch: expected $expected, got $actual"
 
+  # Old name: the executable inside an already-shipped tarball.
   local unpacked="$CACHE_DIR/$tag"
   if [[ ! -x "$unpacked/spelunk" ]]; then
     mkdir -p "$unpacked"
     tar xzf "$dest" -C "$unpacked"
   fi
-  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no spelunk binary"
+  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no CLI binary"
   echo "$unpacked/spelunk"
 }
 
@@ -169,7 +183,7 @@ EOF
   cat > "$dir/README.md" <<'EOF'
 # corpus-sample
 
-A tiny project used to produce the spelunk upgrade corpus.
+A tiny project used to produce the inkentry upgrade corpus.
 EOF
   git -C "$dir" init -q
   git -C "$dir" add -A
@@ -208,6 +222,10 @@ trap stop_stub EXIT
 # `server_url` is only written when the wing needs vectors. Setting it makes the
 # binary demand a project_id for any memory write, which the git-notes wing does
 # not have and does not need: note records are plain JSON, no embedding involved.
+#
+# Old names throughout: the config directory and the two overrides are the ones
+# the released binaries resolve. Pointing them at the current name would leave
+# the old binary reading the real HOME this function exists to isolate it from.
 sandbox_env() {
   local home="$1" want_server="${2:-server}"
   mkdir -p "$home/.config/spelunk"
@@ -249,6 +267,7 @@ build_index_wing() {
   ( sandbox_env "$home"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
   stop_stub
 
+  # Old name: the project directory the released binary writes into.
   [[ -f "$repo/.spelunk/index.db" ]] || die "$tag produced no index.db"
   stage_db "$repo/.spelunk/index.db" "$out/index.db.gz"
 }
@@ -322,6 +341,7 @@ build_registry_wing() {
   )
   stop_stub
 
+  # Old name, matching sandbox_env above.
   local reg="$home/.config/spelunk/registry.db"
   [[ -f "$reg" ]] || die "$tag produced no registry.db"
   stage_db "$reg" "$out/registry.db.gz"
@@ -370,6 +390,8 @@ build_git_notes_wing() {
     )
   done
 
+  # Old names: the ref the released binaries write, and the body text they
+  # record, both of which MANIFEST.json asserts against verbatim.
   git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/spelunk
 }
 

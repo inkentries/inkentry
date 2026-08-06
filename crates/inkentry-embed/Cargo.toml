@@ -1,0 +1,65 @@
+[package]
+name = "inkentry-embed"
+version = "0.9.7"
+edition = "2024"
+description = "Native F2LLM-v2-330M embedder (candle) for inkentry"
+license = "MIT"
+repository = "https://github.com/spelunk-cloud/spelunk"
+
+[lib]
+name = "inkentry_embed"
+path = "src/lib.rs"
+
+[features]
+default = ["native"]
+# native: the candle-based NativeEmbedder (F2LLM-v2-330M, Qwen3 decoder). A
+# consumer that only needs the EmbeddingBackend trait + MODEL_ID (inkentry-core,
+# so its downstream inkentry-cli isn't statically linking candle/tokenizers for
+# an embedder it only ever calls over HTTP) depends on this crate with
+# `default-features = false`. inkentry-server keeps the default on: it's the
+# one binary that actually constructs a NativeEmbedder.
+native = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:tokenizers",
+    "dep:tokio",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:libc",
+]
+# metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
+metal = ["native", "candle-core/metal", "candle-nn/metal"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+# No candle-transformers dep: the only two items inkentry-embed ever needed from
+# it (Qwen3's `Config` struct, `repeat_kv`) are copied directly into
+# embedder_native.rs. That crate bundles ~125 unrelated model architectures
+# with no per-model feature gating, so depending on it for two small items
+# cost real compile time and `target/` disk space (the unused models are only
+# eliminated from the final *linked binary* by LTO, not from the build itself).
+tokenizers = { workspace = true, optional = true }
+
+# macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
+# /proc/meminfo, no FFI). Not in [workspace.dependencies] since inkentry-embed
+# is the only consumer; a bare version here keeps the cfg gate unambiguous
+# (Cargo has no way to gate workspace.dependencies itself by target).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }
+serial_test = { workspace = true }
+# Only for the embed_bench example (surfaces the loader's device-selection log
+# line without requiring the caller to export RUST_LOG themselves).
+tracing-subscriber = { workspace = true }

@@ -31,7 +31,7 @@ The tokenizer is redistributed as-is, byte-for-byte identical to upstream:
     tokenizer.json
 
 `config.json` is not hosted in this repo; it is small enough (~1 KB) that
-Spelunk vendors it directly into the spelunk-server binary instead.
+Inkentry vendors it directly into the inkentry-server binary instead.
 
 License
 -------
@@ -44,5 +44,5 @@ Original work is Copyright its respective authors (codefuse-ai). This NOTICE
 file is provided to satisfy Apache-2.0 Section 4(d); it does not modify the
 license terms.
 
-Redistributed by the Spelunk project (https://github.com/spelunk-cloud/spelunk)
-for use as the bundled embedding model in spelunk-server.
+Redistributed by the Inkentry project (https://github.com/spelunk-cloud/spelunk)
+for use as the bundled embedding model in inkentry-server.

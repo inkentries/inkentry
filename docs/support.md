@@ -1,6 +1,6 @@
 # Supported platforms & requirements
 
-What spelunk v1 runs on, what it needs from the host system, and which
+What inkentry v1 runs on, what it needs from the host system, and which
 versions receive fixes.
 
 ## Prebuilt binaries
@@ -20,7 +20,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 
 ## Host requirements
 
-- **git** — spelunk shells out to `git` for memory (git-notes), worktree
+- **git** — inkentry shells out to `git` for memory (git-notes), worktree
   handling, and hooks. Any maintained git 2.x works; there is no exotic
   feature floor. Memory features require the project to be a git repository.
 - **SQLite** — none required. SQLite and the `sqlite-vec` extension are
@@ -29,7 +29,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
   model (~339 MB) is downloaded once on first server start; after that,
   semantic search runs entirely on-machine. Full-text search, the code graph,
   and memory work with no server and no network at all.
-- **Disk** — the index lives in `.spelunk/` inside your project; expect it to
+- **Disk** — the index lives in `.inkentry/` inside your project; expect it to
   be a fraction of the source tree's size, plus the one-time model download in
   the model cache directory.
 
@@ -42,7 +42,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 
 See [SECURITY.md](../SECURITY.md) for how to report vulnerabilities privately.
 
-Compatibility between the CLI and a team `spelunk-server` of a different
+Compatibility between the CLI and a team `inkentry-server` of a different
 version: within the v1 line the server API under `/v1/` evolves additively.
 Run matching versions where you can; adjacent versions are expected to
 interoperate for the memory workflows.

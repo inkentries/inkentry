@@ -29,7 +29,7 @@ jobs:
       - name: Align fuzz lockfile with the workspace
         run: cp Cargo.lock fuzz/Cargo.lock
 
-      # The fuzz targets link spelunk-core, which pulls keyring's
+      # The fuzz targets link inkentry-core, which pulls keyring's
       # sync-secret-service backend (libdbus-sys); without this its build script
       # fails when pkg-config can't find dbus-1. Every Linux job in ci.yml
       # installs the same package for this reason.

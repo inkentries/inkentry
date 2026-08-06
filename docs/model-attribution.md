@@ -1,6 +1,6 @@
 # Model attribution
 
-spelunk-server bundles a native embedding model rather than calling an external
+inkentry-server bundles a native embedding model rather than calling an external
 embedding endpoint. `cargo-about` (see `about.toml`) covers Rust dependency
 licenses, but it does not cover the model weights downloaded at runtime, so they
 are attributed here.
@@ -19,25 +19,25 @@ See [Third-party models](third-party-models.md).
 - **License:** Apache License 2.0 (declared via the upstream Hugging Face
   model-card license tag). Full text:
   https://www.apache.org/licenses/LICENSE-2.0
-- **Use in spelunk:** loaded by `spelunk-server` as the 896-dim semantic
+- **Use in inkentry:** loaded by `inkentry-server` as the 896-dim semantic
   embedding backend (Qwen3 decoder architecture, candle runtime).
 
 ### Modification notice (Apache-2.0 §4)
 
-spelunk redistributes a **modified** copy of these weights: the original BF16
+inkentry redistributes a **modified** copy of these weights: the original BF16
 safetensors are **quantized to Q8_0** (projection matmuls and the token-embedding
 table are stored Q8_0; RMSNorm weights are kept F32) and packaged as a single
 GGUF file. No other changes are made to the weights.
 
-spelunk fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
+inkentry fetches this pre-quantized Q8_0 GGUF, plus the unmodified upstream
 `tokenizer.json`, from a Hugging Face repository it owns
 (`spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`); that artifact carries its own
 `LICENSE`, `NOTICE`, and model card reproducing this attribution. `config.json`
-(unmodified, ~1 KB) is vendored directly into the `spelunk-server` binary
-(`crates/spelunk-server/assets/f2llm-v2-330m-config.json`) rather than fetched.
+(unmodified, ~1 KB) is vendored directly into the `inkentry-server` binary
+(`crates/inkentry-server/assets/f2llm-v2-330m-config.json`) rather than fetched.
 **None of the three artifacts (GGUF, tokenizer, config) are fetched from the
 third-party upstream repo at runtime** (everything comes from our own
-first-party repo or is embedded in the binary). Set `SPELUNK_EMBEDDER_GGUF_REPO`
+first-party repo or is embedded in the binary). Set `INKENTRY_EMBEDDER_GGUF_REPO`
 to a different repo to fetch the GGUF and tokenizer from there instead (it must
 host both files). See `docs/embedder-artifact/` for the text that accompanies
 the distributed artifact.

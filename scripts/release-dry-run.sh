@@ -17,8 +17,8 @@
 # What this does NOT prove: macOS or Windows builds, the arm64 Linux leg,
 # the actual GitHub Release, or the Homebrew/Scoop publish steps. Those are
 # only exercised by release.yml at real tag-push time. This script has no
-# code path that can create a GitHub release, push to homebrew-spelunk, or
-# write bucket/spelunk.json -- see the "explicitly does not touch" note
+# code path that can create a GitHub release, push to homebrew-inkentry, or
+# write bucket/inkentry.json -- see the "explicitly does not touch" note
 # below the stage functions.
 #
 # Usage:
@@ -57,10 +57,10 @@ DEB_LAYOUT="${WORKDIR}/BUILD"
 CACHE_CARGO="${WORKDIR}/cache/cargo"
 CACHE_RUSTUP="${WORKDIR}/cache/rustup"
 
-VERSION="$(grep -m1 '^version' crates/spelunk-cli/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')-dryrun"
+VERSION="$(grep -m1 '^version' crates/inkentry-cli/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')-dryrun"
 DEB_VERSION="${VERSION}"
 
-CONTAINER_PREFIX="spelunk-release-dry-run-$$"
+CONTAINER_PREFIX="inkentry-release-dry-run-$$"
 STAGE="init"
 
 # --- diagnostics -------------------------------------------------------
@@ -123,11 +123,11 @@ build_in_floor_container() {
       fi
       export PATH="$HOME/.cargo/bin:$PATH"
       cargo build --release --target '"${TARGET}"' --features '"${FEATURES}"'
-      strip "target/'"${TARGET}"'/release/spelunk"
-      strip "target/'"${TARGET}"'/release/spelunk-server"
+      strip "target/'"${TARGET}"'/release/inkentry"
+      strip "target/'"${TARGET}"'/release/inkentry-server"
     ' || die "container build failed (see docker output above)"
 
-  for bin in spelunk spelunk-server; do
+  for bin in inkentry inkentry-server; do
     [ -x "target/${TARGET}/release/${bin}" ] || die "expected binary target/${TARGET}/release/${bin} not found after build"
   done
 }
@@ -146,7 +146,7 @@ enforce_glibc_ceiling() {
       set -euo pipefail
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends binutils >/dev/null
-      for bin in spelunk spelunk-server; do
+      for bin in inkentry inkentry-server; do
         path="target/'"${TARGET}"'/release/${bin}"
         raw="$(objdump -T "$path")"
         ceiling="$(printf "%s\n" "$raw" | grep -o "GLIBC_[0-9.]*" | sort -Vu | tail -1 || true)"
@@ -177,9 +177,9 @@ assemble_deb() {
   log_stage "assemble .deb layout + derive Depends (${BUILD_IMAGE})"
 
   mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user"
-  install -m 755 "target/${TARGET}/release/spelunk" "${DEB_LAYOUT}/usr/bin/spelunk"
-  install -m 755 "target/${TARGET}/release/spelunk-server" "${DEB_LAYOUT}/usr/bin/spelunk-server"
-  install -m 644 packaging/spelunk-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/spelunk-server.service"
+  install -m 755 "target/${TARGET}/release/inkentry" "${DEB_LAYOUT}/usr/bin/inkentry"
+  install -m 755 "target/${TARGET}/release/inkentry-server" "${DEB_LAYOUT}/usr/bin/inkentry-server"
+  install -m 644 packaging/inkentry-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/inkentry-server.service"
 
   local deb_depends
   deb_depends="$(docker run --rm --name "${CONTAINER_PREFIX}-shlibdeps" \
@@ -189,9 +189,9 @@ assemble_deb() {
       apt-get update -qq >/dev/null
       apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
       mkdir -p /tmp/sd/debian
-      printf "Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
+      printf "Source: inkentry\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
-      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/spelunk" "/w/'"${DEB_LAYOUT}"'/usr/bin/spelunk-server"
+      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
     ')" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
   echo "Derived ${deb_depends}"
 
@@ -211,7 +211,7 @@ assemble_deb() {
 # package install is needed here.
 build_deb() {
   log_stage "build .deb (-Zxz)"
-  DEB_PATH="${WORKDIR}/spelunk_${DEB_VERSION}_amd64.deb"
+  DEB_PATH="${WORKDIR}/inkentry_${DEB_VERSION}_amd64.deb"
   docker run --rm --name "${CONTAINER_PREFIX}-dpkg-deb" \
     --platform "${DOCKER_PLATFORM}" \
     -v "${REPO_ROOT}:/w" -w /w \
@@ -226,7 +226,7 @@ build_deb() {
 # apt-get install succeeds on a .deb whose Depends omits a linked library;
 # only executing real subcommands (a git-backed memory round trip included)
 # surfaces that gap and proves the installed binary runs, not just links.
-# SPELUNK_SECRET_STORE=file keeps the smoke test from touching a keychain
+# INKENTRY_SECRET_STORE=file keeps the smoke test from touching a keychain
 # inside the container. The scratch git repo lives in the container's own
 # filesystem, never in this checkout.
 smoke_test_deb() {
@@ -234,16 +234,16 @@ smoke_test_deb() {
     log_stage "install + smoke-test .deb (${image})"
     docker run --rm --name "${CONTAINER_PREFIX}-smoke" \
       --platform "${DOCKER_PLATFORM}" \
-      -v "${REPO_ROOT}/${DEB_PATH}:/pkg/spelunk_${DEB_VERSION}_amd64.deb:ro" \
-      -e SPELUNK_SECRET_STORE=file \
+      -v "${REPO_ROOT}/${DEB_PATH}:/pkg/inkentry_${DEB_VERSION}_amd64.deb:ro" \
+      -e INKENTRY_SECRET_STORE=file \
       "${image}" bash -euc '
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y -qq "/pkg/spelunk_'"${DEB_VERSION}"'_amd64.deb"
+        apt-get install -y -qq "/pkg/inkentry_'"${DEB_VERSION}"'_amd64.deb"
         apt-get install -y -qq --no-install-recommends git ca-certificates
-        test -n "$(spelunk --version)"
-        test -n "$(spelunk-server --version)"
+        test -n "$(inkentry --version)"
+        test -n "$(inkentry-server --version)"
 
         mkdir -p /w && cd /w
         git init -q .
@@ -252,16 +252,16 @@ smoke_test_deb() {
         echo "fn main() {}" > main.rs
         git add . && git commit -qm init
 
-        spelunk status
-        spelunk init --no-index
-        spelunk memory add --kind note --title "deb smoke" --body "runs on this image"
-        spelunk memory list | grep -q "deb smoke"
+        inkentry status
+        inkentry init --no-index
+        inkentry memory add --kind note --title "deb smoke" --body "runs on this image"
+        inkentry memory list | grep -q "deb smoke"
       ' || die "install/smoke-test failed on ${image}"
   done
 }
 
 # Explicitly does not touch: `gh release create`, any push to the
-# `homebrew-spelunk` tap, or a write to `bucket/spelunk.json`. Grep this
+# `homebrew-inkentry` tap, or a write to `bucket/inkentry.json`. Grep this
 # file -- there is no code path above that invokes any of the three.
 
 main() {

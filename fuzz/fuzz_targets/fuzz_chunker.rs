@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use spelunk_core::indexer::chunker::sliding_window;
+use inkentry_core::indexer::chunker::sliding_window;
 
 // Fuzz the sliding-window chunker with arbitrary text input.
 //

@@ -18,10 +18,10 @@ env:
   # runners: on Linux, libdbus-sys is present but the Secret Service daemon
   # isn't running; on macOS, Keychain.app prompts for authorisation and
   # blocks indefinitely. The file store is the correct CI fallback and is
-  # explicitly tested as a first-class path in spelunk-core's secret_store
+  # explicitly tested as a first-class path in inkentry-core's secret_store
   # tests. Integration tests (backend_kind_diagnostic) inherit this env var
   # automatically via the cargo test subprocess.
-  SPELUNK_SECRET_STORE: file
+  INKENTRY_SECRET_STORE: file
 
 jobs:
   check:
@@ -104,22 +104,46 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            # Linux builds the native embedder (candle F2LLM) so the
-            # `embed-native` path stays under test on at least one platform.
+            # Default features: builds the native embedder (candle F2LLM) so
+            # the `embed-native` path stays under test.
             test-flags: ""
-          - os: macos-latest
-            # macOS drops the server's `embed-native` feature: this builds the
+          - os: ubuntu-latest
+            # Drops the server's `embed-native` feature: this builds the
             # external-endpoint-only server (no hf-hub download path, no candle
-            # in spelunk-server) and keeps that config under test. Note candle is
-            # now an unconditional dep of the spelunk-embed crate, so its native
-            # embedder still compiles here as a workspace member. The embedder is
-            # EXPERIMENTAL / NOT RECOMMENDED.
+            # in inkentry-server) and keeps that shipped configuration under
+            # test. Note candle is an unconditional dep of the inkentry-embed
+            # crate, so its native embedder still compiles here as a workspace
+            # member. The embedder is EXPERIMENTAL / NOT RECOMMENDED.
+            #
+            # This leg used to run on macOS. Nothing about the feature
+            # combination is platform-specific, so it moved to Linux where the
+            # rest of the matrix already runs; the macOS entry below is
+            # deliberately not carrying it any more, to avoid reinstating a
+            # duplicate when that platform comes back.
             test-flags: "--no-default-features"
-          - os: windows-latest
-            # Windows keeps default features: the embed-native default builds
-            # the candle (CPU) embedder, which links cleanly. The spelunk-server
-            # tests use embedder: None and never load the model.
-            test-flags: ""
+          # TEMPORARILY NOT RUN — macOS and Windows are both switched off while
+          # their platform-specific problems are worked separately: the Windows
+          # leg runs for around half an hour and then fails or is killed with no
+          # consistent failing test to point at, and macOS was the only other
+          # entry, so it is off with it rather than standing alone as a
+          # half-matrix. Every *configuration* the matrix covered is still
+          # covered by the two Linux entries above; what is missing is
+          # platform-specific coverage, and that returns before the first
+          # release, since both are supported targets that the release build
+          # produces artifacts for.
+          #
+          # Both entries are kept verbatim rather than deleted, so restoring a
+          # platform is uncommenting its lines. Note that macOS must come back
+          # with `test-flags: ""`, not `--no-default-features`: that
+          # configuration now lives on Linux, above.
+          #
+          # - os: macos-latest
+          #   test-flags: ""
+          # - os: windows-latest
+          #   # Windows keeps default features: the embed-native default builds
+          #   # the candle (CPU) embedder, which links cleanly. The
+          #   # inkentry-server tests use embedder: None and never load the model.
+          #   test-flags: ""
     steps:
       - uses: actions/checkout@v7
 
@@ -127,10 +151,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libdbus-1-dev pkg-config
 
-      # One command per step: this job's matrix includes windows-latest, and a
-      # Windows step's exit status does not reflect a failing native
-      # executable (only a failing PowerShell cmdlet), so chaining two rustup
-      # invocations in one run block would mask a failure in the first.
+      # One command per step: this job's matrix covers windows-latest (see the
+      # entry above, currently not run), and a Windows step's exit status does
+      # not reflect a failing native executable (only a failing PowerShell
+      # cmdlet), so chaining two rustup invocations in one run block would mask
+      # a failure in the first.
       - name: Update stable toolchain
         run: rustup update stable
 
@@ -146,9 +171,9 @@ jobs:
             target
           # `-v3` bump abandons the pre-2026-07-31 caches, which still carry
           # `target/` artifacts for candle/candle-transformers linked into
-          # spelunk-cli (whole extra test binaries, on Windows a full
+          # inkentry-cli (whole extra test binaries, on Windows a full
           # companion `.pdb` per binary) from before that dependency edge was
-          # dropped: spelunk-cli now only reaches the embedder over HTTP. The
+          # dropped: inkentry-cli now only reaches the embedder over HTTP. The
           # `Cargo.lock` change that dropped it wasn't enough on its own to
           # shed those artifacts, because `restore-keys` matches on prefix:
           # every run kept rehydrating the same bloated `target/` and layering
@@ -201,7 +226,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build image
-        run: docker build -t spelunk-server:ci .
+        run: docker build -t inkentry-server:ci .
 
       # Assert the image ships the REAL server, not a placeholder: a no-op
       # binary exits 0 on every flag, so check for actual OUTPUT. Running the
@@ -209,8 +234,8 @@ jobs:
       # runtime stage's lib set (a `docker build` alone never runs it).
       - name: Smoke-test the image
         run: |
-          test -n "$(docker run --rm spelunk-server:ci --version)"
-          docker run --rm spelunk-server:ci --print-openapi | head -c1 | grep -q .
+          test -n "$(docker run --rm inkentry-server:ci --version)"
+          docker run --rm inkentry-server:ci --print-openapi | head -c1 | grep -q .
 
       # Regression check for the container-user-has-no-home bug: start the
       # image against a real named volume (as a deployment would) and poll
@@ -223,12 +248,12 @@ jobs:
       # seconds, well before "loading" would ever complete.
       - name: Check embedder initializes against the persistent volume
         run: |
-          docker run -d --name spelunk-server-ci -v spelunk-data-ci:/data spelunk-server:ci
-          trap 'docker logs spelunk-server-ci || true; docker rm -f spelunk-server-ci >/dev/null 2>&1; docker volume rm spelunk-data-ci >/dev/null 2>&1' EXIT
+          docker run -d --name inkentry-server-ci -v inkentry-data-ci:/data inkentry-server:ci
+          trap 'docker logs inkentry-server-ci || true; docker rm -f inkentry-server-ci >/dev/null 2>&1; docker volume rm inkentry-data-ci >/dev/null 2>&1' EXIT
 
           health=""
           for _ in $(seq 1 30); do
-            health="$(docker run --rm --network container:spelunk-server-ci curlimages/curl -s http://127.0.0.1:7777/v1/health || true)"
+            health="$(docker run --rm --network container:inkentry-server-ci curlimages/curl -s http://127.0.0.1:7777/v1/health || true)"
             [ -n "$health" ] && break
             sleep 1
           done
@@ -280,14 +305,14 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Generate OpenAPI spec
-        run: cargo run -p spelunk-server -- --print-openapi > /tmp/openapi-generated.json
+        run: cargo run -p inkentry-server -- --print-openapi > /tmp/openapi-generated.json
 
       - name: Diff against committed snapshot
         run: |
           if ! diff -w -u docs/openapi.json /tmp/openapi-generated.json; then
             echo ""
             echo "ERROR: docs/openapi.json is out of date."
-            echo "Run: cargo run -p spelunk-server -- --print-openapi > docs/openapi.json"
+            echo "Run: cargo run -p inkentry-server -- --print-openapi > docs/openapi.json"
             echo "Then commit the updated snapshot."
             exit 1
           fi

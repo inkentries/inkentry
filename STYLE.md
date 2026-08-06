@@ -1,4 +1,4 @@
-# spelunk style guide
+# inkentry style guide
 
 How we write code and prose in this repository.
 
@@ -52,7 +52,7 @@ if batch.len() > MAX_BATCH { return Err(AppError::PayloadTooLarge); }
 More examples of comments that earn their place, all from this codebase:
 
 ```rust
-// Refuse to recursively delete through a symlink: a symlinked `.spelunk`
+// Refuse to recursively delete through a symlink: a symlinked `.inkentry`
 // (attacker-controlled or a poisoned registry row) could otherwise point
 // `remove_dir_all` at an arbitrary directory outside the project root.
 
@@ -99,7 +99,7 @@ the whole of their justification.
 
 Every `pub` item that forms real external surface carries a `///`. State what it
 does, what it returns, and any precondition or panic. Current coverage in
-`spelunk-core` is around 90% of `pub fn` and 80% of `pub struct`; treat that as
+`inkentry-core` is around 90% of `pub fn` and 80% of `pub struct`; treat that as
 the floor, not the target.
 
 ### Module docs on module roots
@@ -108,7 +108,7 @@ Every `mod.rs` and `lib.rs` should open with a `//!` explaining what the module
 is for and how its pieces relate. This is the single highest-value doc-comment
 in the tree and the one most often missing. The exception is test modules.
 
-**Changing.** `spelunk-core/src/lib.rs` and `spelunk-server/src/lib.rs`, the two
+**Changing.** `inkentry-core/src/lib.rs` and `inkentry-server/src/lib.rs`, the two
 crate roots, currently have none. Adding module docs to a file you are already
 touching is always in scope.
 
@@ -159,7 +159,7 @@ other.
 
 | Location               | Audience                       | Contains                                                                                                  |
 | ---------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `docs/*.md`            | **End users** of spelunk       | Install, commands, config, memory model, server setup. Task-oriented. Assumes no knowledge of the source. |
+| `docs/*.md`            | **End users** of inkentry       | Install, commands, config, memory model, server setup. Task-oriented. Assumes no knowledge of the source. |
 | `docs/adr/`            | **Maintainers and architects** | Why the architecture is what it is. Immutable once merged.                                                |
 | `docs/architecture/`   | **Contributors**               | Living notes on how subsystems work. Mutable; keep current or delete.                                     |
 | `CONTRIBUTING.md`      | **Contributors**               | Process: setup, PRs, commits, tests, ADRs.                                                                |
@@ -222,7 +222,7 @@ into `anyhow::Error` immediately and recovered with `downcast_ref` at the one
 site that cares.
 
 ```rust
-/// Kept distinct from a bare `anyhow::Error` so a caller (e.g. `spelunk-server`'s
+/// Kept distinct from a bare `anyhow::Error` so a caller (e.g. `inkentry-server`'s
 /// HTTP handlers) can match on the failure kind instead of string-matching a message.
 #[derive(Error, Debug)]
 pub enum EmbedError { ... }
@@ -232,7 +232,7 @@ That doc-comment is the test: if you cannot name the caller that will match on
 it, use `anyhow::bail!` instead. Use `thiserror` for these, never a hand-written
 `Display` + `Error` impl.
 
-**Changing.** `spelunk-server/src/db.rs` hand-rolls `DimensionMismatch` and
+**Changing.** `inkentry-server/src/db.rs` hand-rolls `DimensionMismatch` and
 `ModelMismatch`; these should move to `thiserror`.
 
 ### Message style
@@ -247,7 +247,7 @@ it happens to land last.
 // Good
 .context("initialising registry schema")?
 .with_context(|| format!("creating registry directory {}", parent.display()))?
-anyhow::bail!("no spelunk project here; run `spelunk init` first")
+anyhow::bail!("no inkentry project here; run `inkentry init` first")
 
 // Bad
 anyhow::bail!("A project cannot depend on itself.")
@@ -263,7 +263,7 @@ uses lowercase.
 
 ### Never leak internals to a remote caller
 
-`spelunk-server` surfaces a message to an HTTP client only when the error is a
+`inkentry-server` surfaces a message to an HTTP client only when the error is a
 known, explicitly-typed, user-facing variant. Everything else becomes a generic
 500 and is logged server-side. Match on the type; never sniff the message
 string.
@@ -275,7 +275,7 @@ The CLI has three deliberate failure tiers. They are not interchangeable:
 | Command shape                          | Exit | Output                                                 |
 | -------------------------------------- | ---- | ------------------------------------------------------ |
 | Normal user command                    | 1    | `Error: {:?}` (full anyhow chain)                      |
-| `spelunk plumbing <sub>`               | 2    | `error: {:#}` on stderr (single line, script-friendly) |
+| `inkentry plumbing <sub>`               | 2    | `error: {:#}` on stderr (single line, script-friendly) |
 | `plumbing publish-notes --best-effort` | 0    | warning on stderr only                                 |
 
 The third exists because it runs from a git pre-push hook and must never block a
@@ -352,7 +352,7 @@ pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use db::Database;
 ```
 
-`spelunk-embed/src/lib.rs` is the cleanest example in the tree: private modules,
+`inkentry-embed/src/lib.rs` is the cleanest example in the tree: private modules,
 explicit re-exports, nothing else public.
 
 ### Visibility is a statement of intent
@@ -430,7 +430,7 @@ source file hard to navigate.
 ### Reusable fixtures
 
 Shared helpers go in that crate's `tests/common/mod.rs`. Helpers that downstream
-crates need go behind `spelunk-core`'s `test-support` feature, not copied.
+crates need go behind `inkentry-core`'s `test-support` feature, not copied.
 
 Use `TempDir` for filesystem isolation and `:memory:` for hermetic SQLite. Use
 `wiremock` to stub the server's HTTP surface rather than spawning a real one.

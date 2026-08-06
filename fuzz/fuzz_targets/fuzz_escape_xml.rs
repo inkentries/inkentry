@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-/// Fuzz the XML-escaping transformation used in `spelunk ask` prompt building.
+/// Fuzz the XML-escaping transformation used in `inkentry ask` prompt building.
 ///
 /// Run with:
 ///   cargo +nightly fuzz run fuzz_escape_xml -- -max_total_time=600

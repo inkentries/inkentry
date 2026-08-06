@@ -1,16 +1,16 @@
-# spelunk-server — minimal local-scaffold image
+# inkentry-server — minimal local-scaffold image
 #
 # Multi-stage build: compile in a Rust builder, copy the binary into a slim
 # Debian image. The result is a ~50 MB image with no Rust toolchain overhead.
 #
 # Build:
-#   docker build -t spelunk-server .
+#   docker build -t inkentry-server .
 #
-# This image binds spelunk-server to 127.0.0.1 *inside its own container* by
+# This image binds inkentry-server to 127.0.0.1 *inside its own container* by
 # default (see CMD below) — that loopback lives in the container's private
 # network namespace, so it is NOT reachable via `docker run -p ...` port
 # publishing, Docker Desktop host-mode, or from a sibling container's DNS.
-# That's intentional, not a bug: spelunk-server refuses to bind a non-loopback
+# That's intentional, not a bug: inkentry-server refuses to bind a non-loopback
 # address over plaintext HTTP, unconditionally, keyed or not (see
 # docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), and
 # this repo does not ship a proxy to pair with it.
@@ -19,13 +19,13 @@
 # sibling container on its own network can't reach it: sibling-container DNS
 # resolves to the bridge IP, and nothing listens there. A sidecar has to share
 # the server's network namespace instead, then reach it at 127.0.0.1:
-#   docker run -d --name spelunk-server -v spelunk-data:/data spelunk-server
-#   docker run --rm --network container:spelunk-server curlimages/curl \
+#   docker run -d --name inkentry-server -v inkentry-data:/data inkentry-server
+#   docker run --rm --network container:inkentry-server curlimages/curl \
 #     curl http://127.0.0.1:7777/v1/health
 #
 # Run (local scaffold, with API key): see docker-compose.yml. It runs this
 # image with a persistent volume, wired up with the same
-# `--network container:spelunk-server` + 127.0.0.1 pattern above. Nothing
+# `--network container:inkentry-server` + 127.0.0.1 pattern above. Nothing
 # more; it does not publish a host-reachable port.
 #
 # For a team-reachable deployment, don't containerize this at all: run the
@@ -57,18 +57,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # its declared target source must exist, or cargo refuses to load the
 # workspace — even members the server bin doesn't depend on.
 COPY Cargo.toml Cargo.lock ./
-COPY crates/spelunk-core/Cargo.toml   crates/spelunk-core/Cargo.toml
-COPY crates/spelunk-cli/Cargo.toml    crates/spelunk-cli/Cargo.toml
-COPY crates/spelunk-embed/Cargo.toml  crates/spelunk-embed/Cargo.toml
-COPY crates/spelunk-server/Cargo.toml crates/spelunk-server/Cargo.toml
-RUN mkdir -p crates/spelunk-core/src crates/spelunk-cli/src \
-             crates/spelunk-embed/src crates/spelunk-server/src && \
-    : > crates/spelunk-core/src/lib.rs && \
-    : > crates/spelunk-embed/src/lib.rs && \
-    : > crates/spelunk-server/src/lib.rs && \
-    echo 'fn main(){}' > crates/spelunk-cli/src/main.rs && \
-    echo 'fn main(){}' > crates/spelunk-server/src/main.rs && \
-    cargo build --release --bin spelunk-server && \
+COPY crates/inkentry-core/Cargo.toml   crates/inkentry-core/Cargo.toml
+COPY crates/inkentry-cli/Cargo.toml    crates/inkentry-cli/Cargo.toml
+COPY crates/inkentry-embed/Cargo.toml  crates/inkentry-embed/Cargo.toml
+COPY crates/inkentry-server/Cargo.toml crates/inkentry-server/Cargo.toml
+RUN mkdir -p crates/inkentry-core/src crates/inkentry-cli/src \
+             crates/inkentry-embed/src crates/inkentry-server/src && \
+    : > crates/inkentry-core/src/lib.rs && \
+    : > crates/inkentry-embed/src/lib.rs && \
+    : > crates/inkentry-server/src/lib.rs && \
+    echo 'fn main(){}' > crates/inkentry-cli/src/main.rs && \
+    echo 'fn main(){}' > crates/inkentry-server/src/main.rs && \
+    cargo build --release --bin inkentry-server && \
     rm -rf crates/*/src
 
 # Now copy the real source and build properly. BuildKit normalizes COPY mtimes
@@ -77,7 +77,7 @@ RUN mkdir -p crates/spelunk-core/src crates/spelunk-cli/src \
 # source so the real build supersedes the cache.
 COPY . .
 RUN find crates -name '*.rs' -exec touch {} + && \
-    cargo build --release --bin spelunk-server
+    cargo build --release --bin inkentry-server
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:trixie-slim
@@ -88,12 +88,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # `-m -d /data` gives the service user a real home at the same path the
 # volume is mounted, so any `$HOME`-relative path a dependency resolves stays
-# writable; `useradd -m` also creates /data pre-owned by spelunk, so no
+# writable; `useradd -m` also creates /data pre-owned by inkentry, so no
 # separate chown is needed. WORKDIR after useradd picks up that existing dir.
-RUN useradd -r -m -d /data -s /bin/false spelunk
+RUN useradd -r -m -d /data -s /bin/false inkentry
 WORKDIR /data
 
-COPY --from=builder /build/target/release/spelunk-server /usr/local/bin/spelunk-server
+COPY --from=builder /build/target/release/inkentry-server /usr/local/bin/inkentry-server
 
 # Primary fix: point the embedder's model cache at the persistent /data
 # volume instead of the default $HOME/.local/share resolution. Without this,
@@ -102,13 +102,13 @@ COPY --from=builder /build/target/release/spelunk-server /usr/local/bin/spelunk-
 # useradd above).
 ENV XDG_DATA_HOME=/data
 
-USER spelunk
+USER inkentry
 
 EXPOSE 7777
 
-ENTRYPOINT ["/usr/local/bin/spelunk-server"]
+ENTRYPOINT ["/usr/local/bin/inkentry-server"]
 # Bind loopback — the binary's own default, and the only bind this image
-# supports. spelunk-server refuses to bind a non-loopback address over
+# supports. inkentry-server refuses to bind a non-loopback address over
 # plaintext HTTP unconditionally, keyed or not (see
 # docs/server.md#non-loopback-plaintext-binds-are-refused-no-override), so a
 # `--host 0.0.0.0` override here would just make the server refuse to start —
@@ -116,4 +116,4 @@ ENTRYPOINT ["/usr/local/bin/spelunk-server"]
 # reachable off-host, don't override this; run bare-metal/systemd instead (see
 # docs/self-hosting.md), where a same-host reverse proxy can front the
 # server's loopback bind directly.
-CMD ["--host", "127.0.0.1", "--db", "/data/spelunk.db"]
+CMD ["--host", "127.0.0.1", "--db", "/data/inkentry.db"]

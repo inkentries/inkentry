@@ -1,7 +1,7 @@
 # Architecture: Convention Extraction (#268)
 
 Auto-detect project coding conventions from indexed chunks (heuristic, no LLM)
-and surface them in `spelunk context`.
+and surface them in `inkentry context`.
 
 ---
 
@@ -10,29 +10,29 @@ and surface them in `spelunk context`.
 This spec covers OSS v1.0 work only:
 
 - Heuristic extraction from stored chunks (post-index, no LLM, no API keys)
-- `conventions` table in the local `spelunk.db`
-- Integration into `spelunk context` (new section, both text + JSON)
+- `conventions` table in the local `inkentry.db`
+- Integration into `inkentry context` (new section, both text + JSON)
 - Tests for Rust and TypeScript fixtures
 
 **Out of scope** (tracked in cloud-api):
 - LLM-driven summarisation of raw convention evidence
 - Team-shared conventions via the remote memory server
-- A standalone `spelunk conventions` porcelain command
+- A standalone `inkentry conventions` porcelain command
 
 ---
 
 ## Data Flow
 
 ```
-spelunk index .
+inkentry index .
   └─ parse phase       (chunker + ts_walker — unchanged)
   └─ embed phase       (embeddings — unchanged)
   └─ convention phase  ← NEW
-       ├─ reads all chunks from spelunk.db for this project
+       ├─ reads all chunks from inkentry.db for this project
        ├─ runs ConventionExtractor per language
        └─ writes results to conventions table (replaces prior rows)
 
-spelunk context
+inkentry context
   └─ reads memory sections (unchanged)
   └─ reads conventions table  ← NEW
   └─ prints/emits combined output
@@ -42,7 +42,7 @@ spelunk context
 
 ## Module Map
 
-### New: `crates/spelunk-core/src/conventions/`
+### New: `crates/inkentry-core/src/conventions/`
 
 ```
 conventions/
@@ -59,17 +59,17 @@ conventions/
 
 | File | Change |
 |------|--------|
-| `crates/spelunk-core/src/storage/db.rs` | expose `conventions` table methods |
-| `crates/spelunk-core/src/storage/mod.rs` | re-export `ConventionRecord`, `insert_conventions`, `list_conventions` |
-| `crates/spelunk-cli/src/cli/cmd/index/mod.rs` | call `run_extraction()` after embed phase |
-| `crates/spelunk-cli/src/cli/cmd/context.rs` | add conventions section to output |
+| `crates/inkentry-core/src/storage/db.rs` | expose `conventions` table methods |
+| `crates/inkentry-core/src/storage/mod.rs` | re-export `ConventionRecord`, `insert_conventions`, `list_conventions` |
+| `crates/inkentry-cli/src/cli/cmd/index/mod.rs` | call `run_extraction()` after embed phase |
+| `crates/inkentry-cli/src/cli/cmd/context.rs` | add conventions section to output |
 
 ---
 
 ## DB Schema — Migration 019
 
 ```sql
--- crates/spelunk-core/migrations/019_conventions.sql
+-- crates/inkentry-core/migrations/019_conventions.sql
 
 CREATE TABLE IF NOT EXISTS conventions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +93,7 @@ Convention rows are **fully replaced** after each index run:
 ## Core Types
 
 ```rust
-// crates/spelunk-core/src/conventions/mod.rs
+// crates/inkentry-core/src/conventions/mod.rs
 
 pub struct ConventionRecord {
     pub language: String,
@@ -107,7 +107,7 @@ pub struct ConventionRecord {
 pub fn run_extraction(db: &Database) -> Result<Vec<ConventionRecord>>;
 ```
 
-`run_extraction` reads all chunks from `spelunk.db`, dispatches to per-language
+`run_extraction` reads all chunks from `inkentry.db`, dispatches to per-language
 extractors, collects `ConventionRecord`s with `confidence >= 0.5`, then writes
 them to the `conventions` table (delete-all + insert).
 
@@ -178,7 +178,7 @@ Only emit when `evidence_count >= 5` (prevents false positives on near-empty pro
 
 ---
 
-## `spelunk context` Integration
+## `inkentry context` Integration
 
 ### Text output (existing format extended)
 
@@ -227,7 +227,7 @@ Acceptable at v1.0 pre-release; no downstream consumers are pinned to the curren
 
 ## Plumbing Command: not implemented
 
-A `spelunk plumbing read-conventions` JSONL dump was scoped alongside this
+A `inkentry plumbing read-conventions` JSONL dump was scoped alongside this
 feature but was never wired up and has since been dropped from v1.0: no
 demand signal for an agent-facing conventions dump, and the backing library
 (`conventions::list_conventions`, `run_extraction`) already serves `index`
@@ -239,11 +239,11 @@ shape as `ls_files`).
 
 ## Index Phase Integration
 
-In `crates/spelunk-cli/src/cli/cmd/index/mod.rs`, after the embed phase completes:
+In `crates/inkentry-cli/src/cli/cmd/index/mod.rs`, after the embed phase completes:
 
 ```rust
 // post-embed: extract and store conventions
-if let Err(e) = spelunk_core::conventions::run_extraction(&db) {
+if let Err(e) = inkentry_core::conventions::run_extraction(&db) {
     eprintln!("warning: convention extraction failed: {e}");
     // non-fatal — index proceeds normally
 }
@@ -267,9 +267,9 @@ Convention extraction failure must **never fail the index**. Log to stderr and c
 | Criterion | How met |
 |-----------|---------|
 | AST pass walks chunks, emits candidates (naming, layout, error-handling) | `ConventionExtractor` reads stored chunks; rules cover naming, error handling, async, testing, docs |
-| Output integrated into `spelunk context` | New "Conventions" section in both text and JSON output |
+| Output integrated into `inkentry context` | New "Conventions" section in both text and JSON output |
 | No external dependencies | Pure heuristics, no LLM calls, no network |
-| Tests for Rust + TypeScript fixtures | Unit tests in `crates/spelunk-core/src/conventions/` + integration fixture files |
+| Tests for Rust + TypeScript fixtures | Unit tests in `crates/inkentry-core/src/conventions/` + integration fixture files |
 
 ---
 
@@ -277,4 +277,4 @@ Convention extraction failure must **never fail the index**. Log to stderr and c
 
 None blocking implementation. One deferred decision:
 
-- Should `spelunk conventions refresh` be added as a standalone porcelain command in v1.0, or is triggering via `spelunk index .` sufficient? The issue scopes to `spelunk context` integration only — defer unless founder adds it to acceptance criteria.
+- Should `inkentry conventions refresh` be added as a standalone porcelain command in v1.0, or is triggering via `inkentry index .` sufficient? The issue scopes to `inkentry context` integration only — defer unless founder adds it to acceptance criteria.

@@ -1,6 +1,6 @@
 # Upgrade corpus (the "DB museum")
 
-Artifacts written by real, released spelunk binaries, kept so every future build
+Artifacts written by real, released inkentry binaries, kept so every future build
 can be tested against what users actually have on disk.
 
 Every other migration test in this repo builds an old shape by hand. That tests
@@ -17,7 +17,7 @@ scripts/upgrade-corpus/
   embed_stub.py       stand-in for the pre-1.0 embedding wire
   checksums.txt       pinned sha256 per release asset
 
-crates/spelunk-cli/tests/
+crates/inkentry-cli/tests/
   fixtures/upgrade-corpus/
     MANIFEST.json     one entry per wing: producer, artifact, digest, expected content
     wings/<id>/       the artifact itself, gzipped
@@ -33,7 +33,7 @@ crates/spelunk-cli/tests/
 | `memory-v0.9.3-pre-entity-id` | 0.9.3 | the last release before memory entries grew a content-addressed `entity_id` |
 | `memory-v0.9.5` | 0.9.5 | entity-id era, with a supersede chain and a separately archived entry |
 | `registry-v0.9.5` | 0.9.5 | two registered projects and a dependency link |
-| `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one `refs/notes/spelunk` |
+| `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one `refs/notes/inkentry` |
 
 The note eras were established by running the binaries, not by reading history:
 releases up to and including **0.9.2 replace** a commit's note blob on every
@@ -49,7 +49,7 @@ pinned by the sha256 GitHub records for them. Every database file, its schema,
 its `vec0` table declarations and every row in it were written by that binary.
 
 Not real, and deliberately so: the **values** inside the embedding vectors.
-Pre-1.0 releases embed by calling a `spelunk-server` that shipped an embedder
+Pre-1.0 releases embed by calling a `inkentry-server` that shipped an embedder
 which no longer exists, and a current server answers on a wire shape those
 binaries cannot parse, so neither can produce these wings. `embed_stub.py`
 serves that era's `/v1/health` and embedding endpoints so the real old binary
@@ -61,15 +61,15 @@ up on disk are two different lists, so both are spelled out:
 
 | wing | stub runs during capture | synthetic vector values in the artifact |
 | --- | --- | --- |
-| `index-v0.8.3-float768` | yes, for `spelunk index` | yes, the chunk embeddings |
-| `index-v0.9.2-pre-user-version` | yes, for `spelunk index` | yes, the chunk embeddings |
-| `memory-v0.9.3-pre-entity-id` | yes, for `spelunk memory add` | yes, the note embeddings |
-| `memory-v0.9.5` | yes, for `spelunk memory add` | yes, the note embeddings |
+| `index-v0.8.3-float768` | yes, for `inkentry index` | yes, the chunk embeddings |
+| `index-v0.9.2-pre-user-version` | yes, for `inkentry index` | yes, the chunk embeddings |
+| `memory-v0.9.3-pre-entity-id` | yes, for `inkentry memory add` | yes, the note embeddings |
+| `memory-v0.9.5` | yes, for `inkentry memory add` | yes, the note embeddings |
 | `registry-v0.9.5` | yes: the capture indexes two repos in order to register and link them | none, `registry.db` stores no vectors |
 | `git-notes-eras` | no, notes are written without embedding | none |
 
 Note that the memory wings reach the stub through `memory add`, not through
-`spelunk index`, so "every wing that runs `spelunk index`" is not the right
+`inkentry index`, so "every wing that runs `inkentry index`" is not the right
 rule for which wings are affected. The list above is.
 
 Vector values are irrelevant to a migration test: what is asserted is that the
@@ -117,7 +117,7 @@ another's.
 
 ## Regenerating
 
-Needs `gh` (authenticated), `python3`, `sqlite3`, and `git`. No spelunk-server
+Needs `gh` (authenticated), `python3`, `sqlite3`, and `git`. No inkentry-server
 and no model download.
 
 ```sh
@@ -138,7 +138,7 @@ churn the others.
    `capture_expect.py` over the whole corpus, which is what records the new
    wing's expectations and its `sha256` pin in `MANIFEST.json`. Untouched wings
    come back byte-identical, so the diff should be the new wing only.
-4. Run `cargo test -p spelunk-cli --test upgrade_corpus`.
+4. Run `cargo test -p inkentry-cli --test upgrade_corpus`.
 5. Check the old-binary leg against
    [When this contract flips](#when-this-contract-flips). A release carrying the
    `memory.db` version guard is expected to *refuse* a newer memory store rather
@@ -198,7 +198,7 @@ deliberate. `MemoryStore::open` **refuses** a store whose `user_version` is
 above the build's own `MEMORY_SCHEMA_VERSION`, with an upgrade message, rather
 than opening it and rewinding it. Memory is not derived data and cannot be
 rebuilt, so a refusal is the designed outcome. That is the promise recorded for
-`.spelunk/memory.db` in [the stability contract](../../docs/stability.md#on-disk-formats).
+`.inkentry/memory.db` in [the stability contract](../../docs/stability.md#on-disk-formats).
 
 Every 0.9.x release predates that guard, which is the only reason the clean-read
 result above covers `memory.db` at all. The guard is in the current build and
