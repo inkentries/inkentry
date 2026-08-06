@@ -3,7 +3,7 @@
 //! Tier 0 (Offline): no server_url configured, or server unreachable.
 //! Tier 1 (Server):  server_url set and GET /v1/health succeeds.
 //!
-//! ## Loopback auto-discovery (inkentry#316 / 0.8.0)
+//! ## Loopback auto-discovery (spelunk-cloud/spelunk#316 / 0.8.0)
 //!
 //! When `cfg.server_url` is `None` **and** `INKENTRY_NO_SERVER` is not set, the probe
 //! attempts to reach a locally-running inkentry-server before falling through to

@@ -1357,7 +1357,7 @@ fn test_init_non_tty_prints_skip_notice() {
 }
 
 /// Init a git repo at `dir` with a committer identity so `inkentry init` finds a
-/// project root. (inkentry#141 init tests only need the repo, not any commits.)
+/// project root. (spelunk-cloud/spelunk#141 init tests only need the repo, not any commits.)
 fn git_init_repo(dir: &std::path::Path) {
     for args in [
         &["init", "-q"][..],
@@ -1440,7 +1440,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // resolve to the same local `memory.db`, and the server is consulted only to
 // embed the query — never to fetch memory rows.
 //
-// Historical context: IMP-3 / inkentry#316 / PR #349 first taught these commands
+// Historical context: IMP-3 / spelunk-cloud/spelunk#316 / PR spelunk-cloud/spelunk#349 first taught these commands
 // to honour an auto-discovered server (so they no longer errored "requires
 // inkentry-server"), but routed BOTH inference and memory storage to the server
 // via a synthesised `server_url`. That produced the split-brain Johan flagged

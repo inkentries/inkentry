@@ -167,7 +167,7 @@ impl MemoryBackend for RemoteMemoryBackend {
     /// pre-computed `query_blob` is what local backends use for KNN; the
     /// remote backend ignores it and sends the raw query text instead, or the
     /// server's required `query: String` field is missing and axum rejects
-    /// the request with 422 before the handler ever runs (inkentry#359).
+    /// the request with 422 before the handler ever runs (spelunk-cloud/spelunk#359).
     async fn search(
         &self,
         _query_blob: &[u8],

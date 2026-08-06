@@ -617,7 +617,7 @@ impl Config {
     ///
     /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
     /// `project_id` is allowed to be absent — it will be derived at runtime by
-    /// `Config::resolve_project_id()` (see inkentry#307 / section D of #303).
+    /// `Config::resolve_project_id()` (see spelunk-cloud/spelunk#307 / section D of spelunk-cloud/spelunk#303).
     pub fn validate(&self) -> Result<()> {
         self.validate_with_project(self.project_id.is_some())
     }
@@ -988,7 +988,7 @@ memory_server_key = "old-token"
         assert!(cfg.validate().is_ok());
     }
 
-    // ── validate() loopback exemption (inkentry#316) ──────────────────────────
+    // ── validate() loopback exemption (spelunk-cloud/spelunk#316) ──────────────────────────
 
     #[test]
     fn validate_passes_for_loopback_url_without_project_id() {

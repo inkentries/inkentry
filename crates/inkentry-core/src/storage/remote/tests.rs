@@ -117,7 +117,7 @@ async fn search_sends_query_text_not_precomputed_embedding() {
     // `MemoryBackend::search` takes both a pre-computed query embedding
     // blob (used by local backends for KNN) *and* the raw query text
     // (used by the remote backend, which has no local embedder and must
-    // let the server embed server-side — see inkentry#359). The remote
+    // let the server embed server-side — see spelunk-cloud/spelunk#359). The remote
     // backend ignores `query_blob` and sends `query` on the wire.
     let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
     let result = backend.search(&query_blob, "timezone", 3, None).await;

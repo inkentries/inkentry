@@ -153,7 +153,7 @@ impl Tier {
     /// assumption is exactly what routed `local_first` embed requests to a
     /// cloud `server_url`'s nonexistent `/index/embed` route.
     ///
-    /// `project_id` is derived (mirroring `embed_phase`, see inkentry#307) so the
+    /// `project_id` is derived (mirroring `embed_phase`, see spelunk-cloud/spelunk#307) so the
     /// inference client can address the project on the server.
     pub fn effective_config(&self, cfg: &Config, project_root: &std::path::Path) -> Config {
         let mut out = cfg.clone();

@@ -136,7 +136,7 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
     // Show server status line (text mode only).
     //
     // We probe the tier and key off `tier.is_server()` rather than
-    // `cfg.server_url.is_some()`: with loopback auto-discovery (inkentry#316) a
+    // `cfg.server_url.is_some()`: with loopback auto-discovery (spelunk-cloud/spelunk#316) a
     // server can be reachable even when no `server_url` is configured, and the
     // old guard silently omitted that auto-discovered server from the output.
     // When offline we still want a status line iff a URL was explicitly set

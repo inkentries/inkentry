@@ -2,7 +2,7 @@
 
 **Status:** approved-for-implementation (straightforward security/robustness fix)
 **Area:** `crates/inkentry-core/src/storage/{chunks.rs,graph.rs}`
-**Issue:** inkentry#405
+**Issue:** spelunk-cloud/spelunk#405
 **Owner:** Architect → Implementer
 
 ---

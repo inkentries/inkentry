@@ -54,7 +54,7 @@ pub async fn explore(args: ExploreArgs, cfg: Config) -> Result<()> {
 
     // Honor the capability tier: when the server was auto-discovered via the
     // loopback probe, `cfg.server_url` is unset; fill it in from the tier so the
-    // inference client can be built (IMP-3 / inkentry#316).
+    // inference client can be built (IMP-3 / spelunk-cloud/spelunk#316).
     //
     // `get_inference_tier` (not `tier`/`get_tier` above, which governs the
     // `require_tier1` feature gate): local_first always prefers the local

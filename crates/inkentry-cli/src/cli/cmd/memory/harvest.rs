@@ -96,7 +96,7 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // Honor the auto-discovered server tier (IMP-3 / inkentry#316): loopback
+    // Honor the auto-discovered server tier (IMP-3 / spelunk-cloud/spelunk#316): loopback
     // auto-discovery sets the capability tier without populating
     // `cfg.server_url`. Build an effective config that fills in the inference
     // URL / `project_id` from the tier (mirrors `explore`) and use it for the

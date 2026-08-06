@@ -32,7 +32,7 @@ use super::tier::Tier;
 /// It also sidesteps a concrete portability bug: `dirs::state_dir()` returns
 /// `None` on macOS (dirs v6 has no XDG_STATE_HOME equivalent there), which
 /// silently disabled loopback auto-discovery on the primary dev platform
-/// (inkentry#316).
+/// (spelunk-cloud/spelunk#316).
 ///
 /// `INKENTRY_STATE_DIR` is a supported override of the entire path, not
 /// dev-only cruft: it is load-bearing on Windows CI, where `dirs::home_dir()`

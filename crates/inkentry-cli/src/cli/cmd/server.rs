@@ -18,7 +18,7 @@
 //! - `server.log`  — stdout + stderr of the daemon process
 //!
 //! The port file is read by `capability/probe.rs` for loopback auto-discovery
-//! (inkentry#316).  The writer here **must** use the same path, enforced by
+//! (spelunk-cloud/spelunk#316).  The writer here **must** use the same path, enforced by
 //! both going through the shared resolver rather than each defining their own.
 //!
 //! ## Spawned-binary resolution (PATH vs. sibling/absolute)

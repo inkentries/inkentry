@@ -120,7 +120,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // Honor the capability tier: when the server was auto-discovered via the
     // loopback probe, `cfg.server_url` is unset; fill it in from the tier so
     // the inference client can be built (mirrors explore.rs / memory/search.rs,
-    // see inkentry#316).
+    // see spelunk-cloud/spelunk#316).
     let project_root = db_path.parent().unwrap_or(&db_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder, even with an explicit server_url set
