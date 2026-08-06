@@ -113,24 +113,22 @@ Describe **what** changed and **why**: the invariant, the bug, the behaviour. Ne
 ticket** prompted it. Cross-references to real GitHub issues *in this repo* are fine; that is what
 the grep is for: reading the hits, not deleting them blindly.
 
-### 5.2 No em-dashes
+### 5.2 Keep internal conventions out of public text
 
-```bash
-git diff <base>...HEAD | grep -n '^+.*—'
-```
+**This is a public repository, and a PR body, a commit message and a branch name are all public
+text.** Never name an internal style convention in any of them, never justify one, and never claim
+to have complied with one. Do not name a branch after one either.
 
-A repo convention, and it covers **committed docs as well as code**: comments, doc-comments,
-Markdown, all of it. Use a colon, comma, semicolon, or period, or restructure the sentence.
+Note that this file is committed, so the rule applies to it: the conventions themselves are not
+restated here, and should not be added.
 
-```rust
-// Bad
-/// `server_limits` mirrors `/v1/health`'s `limits` object — `None` when absent — a server
-/// that pre-dates the field.
+Stating that a convention was followed is worse than breaking it. It tells a reader the convention
+exists and that we police it, which makes every future artifact readable as the output of that
+policing. The convention then signals the exact thing it was adopted to avoid, and no amount of
+later compliance undoes it.
 
-// Good
-/// `server_limits` mirrors `/v1/health`'s `limits` object: `None` when absent means a server
-/// that pre-dates the field.
-```
+Describe **what changed and why**: the behaviour, the bug, the invariant. If a change exists only to
+satisfy an internal convention, say what it did to the text, not which rule prompted it.
 
 ### 5.3 Comments explain WHY, not WHAT
 

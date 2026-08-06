@@ -475,20 +475,6 @@ Default to no comment. Add one only when it earns its place.
   plain `//` comment if a note is genuinely needed, but prefer a descriptive
   test name and clear assertions over a comment at all.
 
-- **No em-dashes (`—`).** Use a colon, comma, semicolon, period, or
-  restructure the sentence instead. This applies to comments, doc-comments,
-  and committed docs alike.
-
-  ```rust
-  // Bad
-  /// `server_limits` mirrors `/v1/health`'s `limits` object — `None` when
-  /// absent — a server that pre-dates the field.
-
-  // Good
-  /// `server_limits` mirrors `/v1/health`'s `limits` object: `None` when
-  /// absent means a server that pre-dates the field.
-  ```
-
 - **Even a real comment should be terse.** State the invariant or constraint
   directly; cut the surrounding narration, the "here's why we're telling you
   this" preamble, and any restated history. A comment that takes three
