@@ -113,31 +113,14 @@ Describe **what** changed and **why**: the invariant, the bug, the behaviour. Ne
 ticket** prompted it. Cross-references to real GitHub issues *in this repo* are fine; that is what
 the grep is for: reading the hits, not deleting them blindly.
 
-### 5.2 Keep internal conventions out of public text
-
-**This is a public repository, and a PR body, a commit message and a branch name are all public
-text.** Never name an internal style convention in any of them, never justify one, and never claim
-to have complied with one. Do not name a branch after one either.
-
-Note that this file is committed, so the rule applies to it: the conventions themselves are not
-restated here, and should not be added.
-
-Stating that a convention was followed is worse than breaking it. It tells a reader the convention
-exists and that we police it, which makes every future artifact readable as the output of that
-policing. The convention then signals the exact thing it was adopted to avoid, and no amount of
-later compliance undoes it.
-
-Describe **what changed and why**: the behaviour, the bug, the invariant. If a change exists only to
-satisfy an internal convention, say what it did to the text, not which rule prompted it.
-
-### 5.3 Comments explain WHY, not WHAT
+### 5.2 Comments explain WHY, not WHAT
 
 A comment earns its place by carrying something the code cannot: a hidden constraint, an
 invariant, a workaround and the reason for it. A comment restating what the next line plainly does
 is noise, so delete it. Trim these as a matter of course when you touch a file, not only when
 someone flags them.
 
-### 5.4 No doc-comment syntax in tests
+### 5.3 No doc-comment syntax in tests
 
 ```bash
 git diff <base>...HEAD -- '*/tests/*' 'tests/*' | grep -nE '^\+\s*(///|//!)'
@@ -146,7 +129,7 @@ git diff <base>...HEAD -- '*/tests/*' 'tests/*' | grep -nE '^\+\s*(///|//!)'
 No rustdoc is generated for tests, so `///` and `//!` there are dead weight. Use plain `//`, or
 delete and let the test name carry it.
 
-### 5.5 Content assets are not dead code
+### 5.4 Content assets are not dead code
 
 Never delete a committed image, video or other binary asset because nothing in the code references
 it. Retention can be an intentional content, brand or archival decision that a reference grep
