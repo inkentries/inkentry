@@ -43,23 +43,51 @@ we match it. Promoting it is a smaller change than introducing it.
 
 ### The constraint that shapes the decision
 
-The direct reading of "UUIDv7 everywhere" is to retype `notes.id` as TEXT.
-SQLite forbids it, for three independent reasons.
+The direct reading of "UUIDv7 everywhere" is to retype `notes.id` as TEXT and
+be done with it. That is not possible here, and the reason is worth stating
+plainly because it is easy to read the outcome as timidity about changing a
+column type.
+
+**The integer is not a second identity. It is a join key that two virtual
+tables require, and neither can key on TEXT.**
 
 1. `memory_fts` is an FTS5 external-content table declared `content=notes,
-   content_rowid=id`. FTS5 rowids are 64-bit integers by definition, so a
-   TEXT key cannot back the table.
+   content_rowid=id`. External-content FTS5 does not store the indexed text: it
+   reaches back into `notes` by rowid on every match. FTS5 rowids are 64-bit
+   integers by definition, so there is no TEXT form of this relationship.
 2. `note_embeddings` is a sqlite-vec `vec0` table keyed
-   `note_id INTEGER PRIMARY KEY`, joined as an integer by every nearest
-   neighbour query.
-3. SQLite rejects `TEXT PRIMARY KEY AUTOINCREMENT` outright, and the column
-   is declared `INTEGER PRIMARY KEY AUTOINCREMENT`.
+   `note_id INTEGER PRIMARY KEY`, and every nearest-neighbour query joins back
+   to `notes` on that integer.
+
+Both tables therefore hold **stored references** to the integer, which forces a
+third property that is easy to miss:
+
+3. The integer must be a **declared `INTEGER PRIMARY KEY`**, not an implicit
+   rowid. SQLite may renumber an implicit rowid during `VACUUM`, and may reuse
+   one after a delete. Either would silently break the references above:
+   renumbering desynchronises the index and the vectors from their rows, and
+   reuse attaches a deleted note's embedding to a new one. An `INTEGER PRIMARY
+   KEY` is a stable rowid alias, and `AUTOINCREMENT` additionally prevents
+   reuse. Nothing in this codebase runs `VACUUM`, but the database is the
+   user's file and they may.
 
 Converting regardless would mean rebuilding the full-text index as a
-contentless or standard FTS5 table, duplicating every title, body and tag
-into it; converting the vector table to its TEXT-key variant; and rewriting
-all three synchronisation triggers and every join. It is a large change with
-no effect a user can observe.
+contentless or standard FTS5 table, duplicating every title, body and tag into
+it; converting the vector table to its TEXT-key variant; and rewriting all
+three synchronisation triggers and every join. It is a large change with no
+effect a user can observe.
+
+### The risk this leaves, stated rather than hidden
+
+Two columns that could each be called an id is an invitation to drift: code
+reaches for `notes.id` because it is called `id`, and the two gradually come to
+mean the same thing in different places. The containment rule below is the
+answer, and a rule expressed only in prose is the weakest form of it. Two
+stronger measures are available and are recommended to whoever implements this:
+give the integer a name that reads as plumbing rather than identity, so that
+reaching for it is a deliberate act; and enforce the containment with a test
+that fails when it is referenced outside the memory storage module, rather than
+trusting this document to be read.
 
 ## Decision
 
