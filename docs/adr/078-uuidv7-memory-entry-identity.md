@@ -2,25 +2,25 @@
 
 **Date:** 2026-08-06
 **Deciders:** founder (Johan); architect
-**Relationship to prior ADRs:** applies cloud-api's ADR-032 (UUIDv7 for new
-identifiers) to this repository, which its item 2 named but which was never
-actioned here beyond the two generator fixes. It answers a question ADR-032
-did not reach: what "UUIDv7 everywhere" means for a codebase whose primary
-keys are SQLite integers rather than UUIDs of any version. It respects
+**Relationship to prior ADRs:** it respects
 [ADR-059](059-git-notes-v1-format-freeze.md), which freezes the git-notes v1
 record format, and therefore changes nothing in the carrier. It completes the
 identity half of [ADR-076](076-memory-wire-contract-ownership.md) by making
-the CLI, the team server and cloud agree on id shape rather than only on id
-version. ADR numbering is a single sequence shared with cloud-api, so 078 is
-the next free number across both repositories rather than in this listing
-alone.
+the CLI, the team server and the hosted API agree on id shape rather than only
+on id version.
+
+A standing decision already selects UUIDv7 for newly generated identifiers
+across the product. That decision was applied to the hosted service and never
+actioned here beyond two generator fixes, and it did not reach the question
+this record answers: what "UUIDv7 everywhere" means for a codebase whose
+primary keys are SQLite integers rather than UUIDs of any version.
 
 ## Context
 
 Memory entries have been keyed by a SQLite integer rowid since the first
-schema. cloud-api keys the same entities by UUID. The gap is one of shape,
-not of version, and it has been papered over at the boundary rather than
-closed.
+schema. The hosted API keys the same entities by UUID. The gap is one of
+shape, not of version, and it has been papered over at the boundary rather
+than closed.
 
 The `NoteId` newtype was introduced to let a local integer and a remote UUID
 coexist behind one trait. It is an opaque string newtype that can carry
