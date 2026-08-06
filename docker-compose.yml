@@ -1,14 +1,14 @@
-# spelunk-server – two shapes in one file.
+# inkentry-server – two shapes in one file.
 #
-#   spelunk-server (default) – a minimal LOCAL SCAFFOLD. It binds 127.0.0.1
+#   inkentry-server (default) – a minimal LOCAL SCAFFOLD. It binds 127.0.0.1
 #     inside the container's own network namespace and publishes no port, so it
 #     is reachable only from inside that namespace (e.g. a sidecar started with
-#     `--network container:spelunk-server`; the runtime image has no curl/wget to
+#     `--network container:inkentry-server`; the runtime image has no curl/wget to
 #     test from a bare `docker compose exec` shell). Use it to poke at the API
 #     locally. See docs/server-setup.md#4-docker-a-team-server-or-a-local-scaffold.
-#     Start with:  SPELUNK_SERVER_KEY=your-key docker compose up -d
+#     Start with:  INKENTRY_SERVER_KEY=your-key docker compose up -d
 #
-#   team-server (profile) – a TEAM-REACHABLE deployment. spelunk-server binds a
+#   team-server (profile) – a TEAM-REACHABLE deployment. inkentry-server binds a
 #     routable interface and terminates HTTPS in-process (ADR-066): it serves TLS
 #     itself with an operator-provided PEM cert + key, with nothing in front of
 #     it. A non-loopback bind is refused unless BOTH the TLS cert/key AND an API
@@ -16,28 +16,28 @@
 #     docs/server-setup.md#non-loopback-plaintext-binds-are-refused-no-override).
 #     Bring your own certificate (internal CA / certbot / cloud); the server does
 #     not renew it, so you do. Start with:
-#       SPELUNK_SERVER_KEY=your-key \
-#       SPELUNK_TLS_CERT=/etc/spelunk/tls-cert SPELUNK_TLS_KEY=/etc/spelunk/tls-key \
+#       INKENTRY_SERVER_KEY=your-key \
+#       INKENTRY_TLS_CERT=/etc/inkentry/tls-cert INKENTRY_TLS_KEY=/etc/inkentry/tls-key \
 #       docker compose --profile team-server up -d
 #
 # The bare-metal/systemd path in docs/server-setup.md is the same shape without a
 # container, and is the recommended single-host deployment.
 
 services:
-  spelunk-server:
+  inkentry-server:
     build: .
-    image: spelunk-server:latest
+    image: inkentry-server:latest
     # Build locally; never fall back to a registry pull (the tag isn't published).
     pull_policy: build
     restart: unless-stopped
     volumes:
-      - spelunk-data:/data
+      - inkentry-data:/data
     environment:
-      SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
+      INKENTRY_SERVER_KEY: ${INKENTRY_SERVER_KEY:-}
     healthcheck:
       # Self-probe: the runtime image ships no curl/wget, so the binary hits its
       # own /v1/health and exits 0/non-0. Pass --port here too if you change it.
-      test: ["CMD", "/usr/local/bin/spelunk-server", "--health-check"]
+      test: ["CMD", "/usr/local/bin/inkentry-server", "--health-check"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -46,7 +46,7 @@ services:
   # Only started with `--profile team-server`.
   team-server:
     build: .
-    image: spelunk-server:latest
+    image: inkentry-server:latest
     pull_policy: build
     profiles: ["team-server"]
     restart: unless-stopped
@@ -55,23 +55,23 @@ services:
       # Publish the container's routable TLS port on the host's 443.
       - "443:7777"
     volumes:
-      - spelunk-data:/data
+      - inkentry-data:/data
       # Operator-provided PEM. The cert chain is public; the key is a secret,
       # so keep the source file 0600 root-owned on the host.
-      - ${SPELUNK_TLS_CERT:-/etc/spelunk/tls-cert}:/tls/cert:ro
-      - ${SPELUNK_TLS_KEY:-/etc/spelunk/tls-key}:/tls/key:ro
+      - ${INKENTRY_TLS_CERT:-/etc/inkentry/tls-cert}:/tls/cert:ro
+      - ${INKENTRY_TLS_KEY:-/etc/inkentry/tls-key}:/tls/key:ro
     environment:
       # A routable bind is refused without a key; set a real one. Left unset by
       # default (not `:?`) so a bare `docker compose up` — which parses every
       # service before profile filtering — doesn't abort on this profiled one.
       # The binary still refuses a non-loopback bind without a key (ADR-066).
-      SPELUNK_SERVER_KEY: ${SPELUNK_SERVER_KEY:-}
-      SPELUNK_SERVER_TLS_CERT: /tls/cert
-      SPELUNK_SERVER_TLS_KEY: /tls/key
+      INKENTRY_SERVER_KEY: ${INKENTRY_SERVER_KEY:-}
+      INKENTRY_SERVER_TLS_CERT: /tls/cert
+      INKENTRY_SERVER_TLS_KEY: /tls/key
     # No container healthcheck here: the binary's built-in `--health-check` probe
     # speaks plaintext HTTP only, so it cannot validate this in-process TLS
     # listener (it would report unhealthy forever). Health-check the published
     # https:// endpoint from outside the container instead.
 
 volumes:
-  spelunk-data:
+  inkentry-data:

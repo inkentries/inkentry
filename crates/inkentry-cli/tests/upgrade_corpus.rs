@@ -980,14 +980,29 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
     let bin = old_binary();
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
-    std::fs::create_dir_all(home.join(".config").join("inkentry")).unwrap();
-    std::fs::write(
-        home.join(".config").join("inkentry").join("config.toml"),
-        "",
-    )
-    .unwrap();
+
+    // Every identifier below spells the name the PINNED RELEASE shipped under,
+    // not the current one, and none of them may be swept into the current
+    // spelling: this test drives a real 0.9.x binary, and that binary reads the
+    // environment variables, the config directory and the project directory
+    // that existed when it was built. Renaming any of them does not make the
+    // test more consistent, it makes the old binary miss its config, fall back
+    // to the OS keychain, and fail to find the databases the assertions are
+    // about — a failure that reads like a migration bug and is not one.
+    let legacy_config = home.join(".config").join("spelunk");
+    std::fs::create_dir_all(&legacy_config).unwrap();
+    std::fs::write(legacy_config.join("config.toml"), "").unwrap();
+
     let project = upgraded_project(tmp.path());
     let dot = project.join(".inkentry");
+
+    // The pinned release looks for its databases in the project directory it
+    // knew. Linked rather than copied, so the assertions below read the exact
+    // files the old binary opened.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&dot, project.join(".spelunk")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&dot, project.join(".spelunk")).unwrap();
 
     let before = table_counts(&dot);
 
@@ -997,13 +1012,10 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
             .args(args)
             // An old binary predates the file secret-store default and would
             // otherwise reach the OS keychain and block on a prompt.
-            .env("INKENTRY_SECRET_STORE", "file")
+            .env("SPELUNK_SECRET_STORE", "file")
             .env("HOME", &home)
-            .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))
-            .env(
-                "INKENTRY_REGISTRY_DIR",
-                home.join(".config").join("inkentry"),
-            )
+            .env("SPELUNK_CONFIG_DIR", &legacy_config)
+            .env("SPELUNK_REGISTRY_DIR", &legacy_config)
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap_or_else(|e| panic!("running the old binary with {args:?}: {e}"))

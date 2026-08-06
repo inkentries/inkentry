@@ -26,6 +26,17 @@
 # No inkentry-server or model download is needed: the pre-1.0 embedding wire is
 # served by embed_stub.py. See that file for what is and is not real.
 #
+# A NOTE ON NAMES. This script runs binaries that were released under the
+# project's former name, so it is written in two vocabularies at once and they
+# must not be merged. Anything describing where an artifact goes in this tree
+# uses the current name. Anything the OLD BINARY reads or writes — the release
+# asset filenames, the binary inside the tarball, its environment variables, its
+# config directory, its project directory, its git notes ref, and the text it
+# records into the fixtures — keeps the old name, because that is what those
+# releases actually do. Each such reference is marked below. Sweeping them into
+# the current name breaks regeneration in ways that surface much later, as a
+# corpus that no longer matches MANIFEST.json.
+#
 # The CI job that consumes the corpus needs none of this. It reads the
 # checked-in fixtures only.
 #
@@ -48,8 +59,9 @@ STUB="$SCRIPT_DIR/embed_stub.py"
 STUB_PORT="${INKENTRY_CORPUS_STUB_PORT:-7799}"
 
 # An old binary predates the file secret-store default and would otherwise
-# reach the OS keychain and block on an interactive prompt.
-export INKENTRY_SECRET_STORE=file
+# reach the OS keychain and block on an interactive prompt. Old name: this is
+# the variable those releases read.
+export SPELUNK_SECRET_STORE=file
 
 # Pinned so git-level metadata is not a source of churn between regeneration
 # runs. This does not make a wing byte-reproducible: note ids are epoch millis
@@ -115,7 +127,8 @@ log() { echo "==> $*"; }
 fetch_release() {
   local tag="$1" triple asset dest actual expected
   triple="$(host_triple)"
-  asset="inkentry-${tag}-${triple}.tar.gz"
+  # Old name: the published filename of an already-shipped release.
+  asset="spelunk-${tag}-${triple}.tar.gz"
   dest="$CACHE_DIR/$asset"
 
   if [[ ! -f "$dest" ]]; then
@@ -141,13 +154,14 @@ EOF
   [[ "$actual" == "$expected" ]] \
     || die "$asset checksum mismatch: expected $expected, got $actual"
 
+  # Old name: the executable inside an already-shipped tarball.
   local unpacked="$CACHE_DIR/$tag"
-  if [[ ! -x "$unpacked/inkentry" ]]; then
+  if [[ ! -x "$unpacked/spelunk" ]]; then
     mkdir -p "$unpacked"
     tar xzf "$dest" -C "$unpacked"
   fi
-  [[ -x "$unpacked/inkentry" ]] || die "$asset contains no inkentry binary"
-  echo "$unpacked/inkentry"
+  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no CLI binary"
+  echo "$unpacked/spelunk"
 }
 
 # ── sample repo ─────────────────────────────────────────────────────────────
@@ -208,17 +222,21 @@ trap stop_stub EXIT
 # `server_url` is only written when the wing needs vectors. Setting it makes the
 # binary demand a project_id for any memory write, which the git-notes wing does
 # not have and does not need: note records are plain JSON, no embedding involved.
+#
+# Old names throughout: the config directory and the two overrides are the ones
+# the released binaries resolve. Pointing them at the current name would leave
+# the old binary reading the real HOME this function exists to isolate it from.
 sandbox_env() {
   local home="$1" want_server="${2:-server}"
-  mkdir -p "$home/.config/inkentry"
+  mkdir -p "$home/.config/spelunk"
   if [[ "$want_server" == "server" ]]; then
-    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/inkentry/config.toml"
+    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/spelunk/config.toml"
   else
-    : > "$home/.config/inkentry/config.toml"
+    : > "$home/.config/spelunk/config.toml"
   fi
   export HOME="$home"
-  export INKENTRY_CONFIG_DIR="$home/.config/inkentry"
-  export INKENTRY_REGISTRY_DIR="$home/.config/inkentry"
+  export SPELUNK_CONFIG_DIR="$home/.config/spelunk"
+  export SPELUNK_REGISTRY_DIR="$home/.config/spelunk"
 }
 
 # Fold the write-ahead log back into the main file and store the result gzipped.
@@ -249,8 +267,9 @@ build_index_wing() {
   ( sandbox_env "$home"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
   stop_stub
 
-  [[ -f "$repo/.inkentry/index.db" ]] || die "$tag produced no index.db"
-  stage_db "$repo/.inkentry/index.db" "$out/index.db.gz"
+  # Old name: the project directory the released binary writes into.
+  [[ -f "$repo/.spelunk/index.db" ]] || die "$tag produced no index.db"
+  stage_db "$repo/.spelunk/index.db" "$out/index.db.gz"
 }
 
 # Add one entry and echo the id the binary assigned it, parsed from the
@@ -322,12 +341,13 @@ build_registry_wing() {
   )
   stop_stub
 
-  local reg="$home/.config/inkentry/registry.db"
+  # Old name, matching sandbox_env above.
+  local reg="$home/.config/spelunk/registry.db"
   [[ -f "$reg" ]] || die "$tag produced no registry.db"
   stage_db "$reg" "$out/registry.db.gz"
 }
 
-# One repository carrying all three note-writing eras on refs/notes/inkentry.
+# One repository carrying all three note-writing eras on refs/notes/spelunk.
 #
 # Each era gets its own commit, which is not a convenience: releases up to and
 # including 0.9.2 replace a commit's note blob instead of appending to it, so
@@ -365,12 +385,14 @@ build_git_notes_wing() {
       for n in $(seq 1 "$era_entries"); do
         "$bin" memory add --backend git-notes --kind decision \
           --title "$era_title $n" \
-          --body "Recorded by inkentry $era_tag." >/dev/null
+          --body "Recorded by spelunk $era_tag." >/dev/null
       done
     )
   done
 
-  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/inkentry
+  # Old names: the ref the released binaries write, and the body text they
+  # record, both of which MANIFEST.json asserts against verbatim.
+  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/spelunk
 }
 
 # ── driver ──────────────────────────────────────────────────────────────────

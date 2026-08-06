@@ -22,7 +22,7 @@ env:
   CARGO_TERM_COLOR: always
   # The OS keychain is unavailable in headless runners and blocks on macOS.
   # Every spawned CLI under test inherits this, so none of them reach for it.
-  SPELUNK_SECRET_STORE: file
+  INKENTRY_SECRET_STORE: file
 
 jobs:
   plumbing-contract:
@@ -60,10 +60,10 @@ jobs:
       # Runs first: if the checker itself stopped rejecting anything, the two
       # jobs below would pass while guaranteeing nothing.
       - name: Schema checker accepts additions and rejects removals
-        run: cargo test -p spelunk-cli --test schema_contract_checker
+        run: cargo test -p inkentry-cli --test schema_contract_checker
 
       - name: Plumbing JSONL output matches the committed schema
-        run: cargo test -p spelunk-cli --test plumbing_jsonl_contract
+        run: cargo test -p inkentry-cli --test plumbing_jsonl_contract
 
       - name: Plumbing exit codes follow the 0/1/2 convention
-        run: cargo test -p spelunk-cli --test plumbing_exit_codes
+        run: cargo test -p inkentry-cli --test plumbing_exit_codes
