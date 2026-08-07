@@ -93,6 +93,7 @@ Pass flags to the binary (verified against `inkentry-server --help`, v0.9.5):
 |---|---|---|
 | `--llm-url` | `INKENTRY_LLM_URL` | Base URL of an OpenAI-compatible chat-completions server (e.g. LM Studio, Ollama, vLLM). |
 | `--llm-model` | `INKENTRY_LLM_MODEL` | Model name to send to that endpoint (e.g. `google/gemma-3n-e4b`). |
+| `--llm-reasoning-effort` | `INKENTRY_LLM_REASONING_EFFORT` | `reasoning_effort` sent on every request. Defaults to `none`, so reasoning models answer instead of spending the token budget on chain-of-thought. Use `minimal`/`low`/`medium`/`high` to allow reasoning, or `default` to omit the field for endpoints that reject it. |
 | `--llm-key` | | Credential for that endpoint, passed inline. Visible in the process table, so prefer the alternatives. |
 | `--llm-key-file` | | File whose whole trimmed contents are the credential. An unreadable path is fatal, never a fall-through to another source. |
 
