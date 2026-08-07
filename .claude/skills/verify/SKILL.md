@@ -32,6 +32,39 @@ you're on. Put it in the command.
 > this before retrying. Waiting it out costs the whole session; a hung keyring prompt never
 > resolves on its own.
 
+## 0a. `docker` has the same trap, one layer down
+
+**On macOS, `docker` can block on the login keychain in exactly the same way** — and it is easier to
+misread, because a slow first pull is a perfectly normal thing for Docker to be doing.
+
+The symptom: the command sits at
+
+```
+Unable to find image 'debian:11' locally
+```
+
+and stays there indefinitely without transferring a byte. `docker ps -a` shows **nothing**, because
+no container was ever created. Underneath it, the credential helper is waiting on a keychain prompt
+nobody can dismiss. It never resolves on its own.
+
+This affects anything that pulls an image, including `scripts/release-dry-run.sh`, whose whole
+purpose is building inside `debian:11`.
+
+The fix is a throwaway config with no credential store, so anonymous Docker Hub pulls skip the
+helper entirely:
+
+```bash
+export DOCKER_CONFIG=$(mktemp -d) && printf '{"auths":{}}' > "$DOCKER_CONFIG/config.json"
+```
+
+Then run the command as normal. This changes nothing about your real Docker login; it only removes
+the helper from the path for that shell.
+
+> **Same 20-second rule as above, with one adjustment: judge it by bytes, not by time.** A genuine
+> pull shows visible layer progress within seconds. A pull that has printed `Unable to find image`
+> and nothing since is not slow, it is hung — and an emulated build on Apple silicon is slow enough
+> afterwards that "it's probably just slow" is a very easy and very expensive thing to believe.
+
 ## 1. Format
 
 ```bash
