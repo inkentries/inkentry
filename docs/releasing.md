@@ -17,7 +17,7 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 Two install paths live outside this workflow:
 
 - **`install.sh`** is fetched directly from the canonical copy on `main`
-  (`https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh`),
+  (`https://raw.githubusercontent.com/inkentries/inkentry/refs/heads/main/install.sh`),
   so the documented command always matches the committed script. It resolves the
   latest release tag via the GitHub API and downloads the matching tarball — it
   does not need updating per release. (The Windows `install.ps1` is fetched the
@@ -156,10 +156,10 @@ That's it. The release workflow triggers automatically on the pushed tag.
 ### 3. Monitor the workflow
 
 Watch progress at:
-`https://github.com/spelunk-cloud/spelunk/actions/workflows/release.yml`
+`https://github.com/inkentries/inkentry/actions/workflows/release.yml`
 
 Once all jobs pass, the release appears at:
-`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.9.8`
+`https://github.com/inkentries/inkentry/releases/tag/v0.9.8`
 
 ## Pre-releases
 
@@ -179,37 +179,38 @@ segment is the full tag, e.g. `v0.9.8`):
 
 ```
 # Unix tarballs
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<version>-<target>.tar.gz
+https://github.com/inkentries/inkentry/releases/download/<version>/inkentry-<version>-<target>.tar.gz
 
 # Windows zip
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<version>-x86_64-pc-windows-msvc.zip
+https://github.com/inkentries/inkentry/releases/download/<version>/inkentry-<version>-x86_64-pc-windows-msvc.zip
 
 # Debian package (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry_<version-no-v>_amd64.deb
+https://github.com/inkentries/inkentry/releases/download/<version>/inkentry_<version-no-v>_amd64.deb
 ```
 
 Examples for `v0.9.8`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-apple-darwin.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-unknown-linux-gnu.tar.gz
 
 # Windows x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-pc-windows-msvc.zip
+https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-pc-windows-msvc.zip
 
 # Debian (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry_0.9.8_amd64.deb
+https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry_0.9.8_amd64.deb
 ```
 
 > `releases/latest/download/<asset>` also works when the asset name is exact,
 > but the tag-pinned `releases/download/<version>/<asset>` form is unambiguous
-> and avoids the stale-filename 404s tracked in #340.
+> and avoids the 404s you get when an asset filename changes between releases
+> and a `latest` URL still names the old one.
 
 ## Deleting a bad release
 
