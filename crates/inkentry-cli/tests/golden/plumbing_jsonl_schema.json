@@ -130,6 +130,25 @@
         "skipped": "string",
         "error": "string"
       }
+    },
+    "push": {
+      "$comment": "One report object per completed run (exit 0 or 1); drawn from PushSummary. A run that did not complete exits 2 with no report. `interrupted` is therefore always false in an emitted report; it is declared so the field stays part of the contract.",
+      "required": {
+        "attempted": "integer",
+        "created": "integer",
+        "skipped": "integer",
+        "failed": "integer",
+        "already_synced": "integer",
+        "edges_pushed": "integer",
+        "without_local_vector": "integer",
+        "embedded_locally": "integer",
+        "interrupted": "boolean"
+      }
+    },
+    "pull": {
+      "required": {
+        "applied": "integer"
+      }
     }
   }
 }

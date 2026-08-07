@@ -224,14 +224,11 @@ cli/
       harvest.rs      — memory harvest (LLM extraction) entry point
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
       list.rs         — memory list subcommand
-      push.rs         — memory push subcommand
       reconcile.rs    — memory reconcile subcommand (import from server.db)
       search.rs       — memory search subcommand
       show.rs         — memory show subcommand
-      since.rs        — `inkentry memory since` handler
       supersede.rs    — memory supersede subcommand
       timeline.rs     — memory timeline subcommand
-      watch.rs        — `inkentry memory watch`: SSE stream from inkentry-server
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
       cat_chunks.rs        — emit indexed chunks for a file as JSONL
@@ -241,6 +238,8 @@ cli/
       knn.rs               — KNN vector search, JSONL output
       ls_files.rs          — list indexed files as JSONL; exit 1 if no results
       parse_file.rs        — parse a file and emit chunks as JSONL (no DB write)
+      pull.rs              — one-way server->local memory pull; JSONL report
+      push.rs              — one-way local->server memory push; JSONL report
       read_memory.rs       — emit memory entries as JSONL
 ```
 
@@ -503,7 +502,7 @@ cargo run -p inkentry-cli -- graph <symbol>
 cargo run -p inkentry-cli -- chunks src/some/file.rs
 cargo run -p inkentry-cli -- languages
 cargo run -p inkentry-cli -- sync              # two-way: push local memory to server, pull teammates' entries down
-cargo run -p inkentry-cli -- memory push       # one-way: seed the server from local memory only
+cargo run -p inkentry-cli -- plumbing push     # one-way: seed the server from local memory only
 
 # Run the server
 cargo run -p inkentry-server -- --port 7777

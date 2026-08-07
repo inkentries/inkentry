@@ -393,3 +393,93 @@ pub fn parse_jsonl(stdout: &[u8]) -> Vec<serde_json::Value> {
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("invalid JSON line {l:?}: {e}")))
         .collect()
 }
+
+// ── Team-server (push/pull) scaffolding ──────────────────────────────────────
+//
+// `inkentry plumbing push`/`pull` speak to an explicit team `server_url` over
+// `POST /memory/batch` and `GET /memory/since`. These helpers stand up a mock of
+// that server and a local project seeded with real notes, so the transfer
+// commands can be driven end to end through the compiled binary. They mirror the
+// proven setup in `memory_push_sync_total_failure.rs`.
+
+// Cloud project slug for the push/pull mock tests. Chosen so
+// `encode_project_id` percent-encodes none of it, letting the mocked route
+// paths be matched literally.
+pub const TEAM_PROJECT_SLUG: &str = "acme-widget";
+
+// Mount `GET /v1/health` advertising a minimal Tier 1 memory server.
+// `require_tier1` only checks `tier.is_server()`, so a bare `memory` capability
+// is enough to unlock push/pull; omitting `accepts_pushed_vectors` keeps the
+// push text-only (no local embedder needed in the test).
+pub async fn mount_team_health(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/health"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok",
+                "capabilities": ["memory"],
+            })),
+        )
+        .mount(server)
+        .await;
+}
+
+// Mount `POST /v1/projects/{TEAM_PROJECT_SLUG}/memory/batch` with a fixed
+// `BatchPushResult` body.
+pub async fn mount_memory_batch(server: &wiremock::MockServer, body: serde_json::Value) {
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(format!(
+            "/v1/projects/{TEAM_PROJECT_SLUG}/memory/batch"
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(207).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+// Mount `GET /v1/projects/{TEAM_PROJECT_SLUG}/memory/since` (the `?since_id=`
+// cursor mode `pull_since` uses) returning a fixed `{entries: [...]}` envelope.
+pub async fn mount_memory_since(server: &wiremock::MockServer, body: serde_json::Value) {
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            r"^/v1/projects/{TEAM_PROJECT_SLUG}/memory/since$"
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+// Write a global config (db_path + a placeholder llm_model) plus a project-level
+// `.inkentry/config.toml` carrying `server_url` + `TEAM_PROJECT_SLUG`. The
+// caller's `Command` must run with `.current_dir(dir)` so project discovery
+// finds the `.inkentry/config.toml`. Returns the global config path.
+pub fn write_team_config(dir: &Path, server_url: &str) -> PathBuf {
+    let db_path = dir.join(".inkentry").join("index.db");
+    let config_path = dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!("db_path = {db_path:?}\nllm_model = \"test-chat\"\n"),
+    )
+    .expect("write config.toml");
+    write_project_server_config(dir, server_url, TEAM_PROJECT_SLUG);
+    config_path
+}
+
+// Create the `.inkentry/` marker so the fail-closed project gate resolves `dir`
+// as a real local project.
+pub fn init_local_project(dir: &Path) {
+    std::fs::create_dir_all(dir.join(".inkentry")).expect("create .inkentry");
+}
+
+// Seed one local memory entry via a real `inkentry memory add` subprocess, so a
+// subsequent push/pull has something to operate on.
+pub fn seed_memory_note(home: &Path, proj: &Path, config_path: &Path, title: &str) {
+    inkentry_bin_in(home)
+        .current_dir(proj)
+        .arg("--config")
+        .arg(config_path)
+        .args([
+            "memory", "add", "--kind", "note", "--title", title, "--body", "seeded",
+        ])
+        .assert()
+        .success();
+}

@@ -22,7 +22,7 @@ use crate::{
 ///
 /// Constructed by the command layer via [`LocalEmbedPolicy::for_push`] so
 /// `inkentry sync` and `inkentry memory push` decide it identically.
-pub(in crate::cli::cmd::memory) enum LocalEmbedPolicy<'a> {
+pub(in crate::cli::cmd) enum LocalEmbedPolicy<'a> {
     /// Embed every push-set row that lacks a usable local vector, through the
     /// loopback embedder, and commit the result to `memory.db`.
     Repair {
@@ -40,10 +40,7 @@ impl<'a> LocalEmbedPolicy<'a> {
     /// `memory.db`, so there is nothing local to repair. This is the exact
     /// condition `memory reindex` refuses under, and the two commands must not
     /// disagree about when local embeddings are meaningful.
-    pub(in crate::cli::cmd::memory) fn for_push(
-        cfg: &'a Config,
-        mem_path: &std::path::Path,
-    ) -> Self {
+    pub(in crate::cli::cmd) fn for_push(cfg: &'a Config, mem_path: &std::path::Path) -> Self {
         if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
             return Self::Skip;
         }

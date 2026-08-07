@@ -1,17 +1,17 @@
-//! Subprocess-level regression coverage: a total-failure `inkentry memory push`
-//! / `inkentry sync` batch must exit non-zero and never print success framing.
-//!
-//! `memory_push`/`memory_sync` (`crates/inkentry-cli/src/cli/cmd/memory/{push,sync}.rs`)
-//! treat `attempted > 0 && created == 0 && skipped == 0` as a hard failure:
-//! the message leads with "Push failed"/"Sync failed" and the command returns
-//! `Err`, which `main`'s `#[tokio::main] fn -> Result<()>` maps to a non-zero
-//! exit. A prior version of this coverage exercised that predicate as a
-//! tautology, or called `push_local` (a function this behaviour doesn't live
-//! in) directly: neither would fail if the `bail!` blocks driving the actual
-//! exit code were reverted. These tests spawn the real compiled `inkentry`
-//! binary (`assert_cmd`, following `fail_closed_no_project.rs`'s pattern)
-//! against a mock team server that returns an all-failed batch result, so a
-//! regression in the command-layer `bail!` itself is what fails here.
+// Subprocess-level regression coverage: a total-failure `inkentry sync` batch
+// must exit non-zero and never print success framing.
+//
+// `memory_sync` (`crates/inkentry-cli/src/cli/cmd/memory/sync/mod.rs`) treats
+// `attempted > 0 && created == 0 && skipped == 0` as a hard failure: the message
+// leads with "Sync failed" and the command returns `Err`, which `main`'s
+// `#[tokio::main] fn -> Result<()>` maps to a non-zero exit. A prior version of
+// this coverage exercised that predicate as a tautology, or called `push_local`
+// (a function this behaviour doesn't live in) directly: neither would fail if
+// the `bail!` blocks driving the actual exit code were reverted. These tests
+// spawn the real compiled `inkentry` binary (`assert_cmd`, following
+// `fail_closed_no_project.rs`'s pattern) against a mock team server that returns
+// an all-failed batch result, so a regression in the command-layer `bail!`
+// itself is what fails here.
 
 mod plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -26,9 +26,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// so the mocked route paths below can be matched literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
-/// Mount `GET /v1/health` advertising a minimal Tier 1 server. `require_tier1`
-/// only checks `tier.is_server()` (any 200 response), so a bare `memory`
-/// capability is enough to unlock `memory push`/`sync`.
+// Mount `GET /v1/health` advertising a minimal Tier 1 server. `require_tier1`
+// only checks `tier.is_server()` (any 200 response), so a bare `memory`
+// capability is enough to unlock `sync`.
 async fn mount_health(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/v1/health"))
@@ -111,39 +111,6 @@ fn seed_one_note(home: &Path, proj: &Path, config_path: &Path) {
         ])
         .assert()
         .success();
-}
-
-#[tokio::test]
-async fn memory_push_total_failure_exits_nonzero_and_does_not_print_done() {
-    let server = MockServer::start().await;
-    mount_health(&server).await;
-    mount_batch_total_failure(&server, 1).await;
-
-    let home = TempDir::new().unwrap();
-    let proj = TempDir::new().unwrap();
-    init_project(proj.path());
-    let config_path = write_config(proj.path(), &server.uri());
-    seed_one_note(home.path(), proj.path(), &config_path);
-
-    let assert = inkentry_bin_in(home.path())
-        .current_dir(proj.path())
-        .arg("--config")
-        .arg(&config_path)
-        .args(["memory", "push"])
-        .assert()
-        .failure();
-
-    let out = assert.get_output();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Push failed"),
-        "must surface the failure message; stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        !stdout.contains("Done.") && !stderr.contains("Done."),
-        "a total-failure push must never read as success; stdout={stdout:?} stderr={stderr:?}"
-    );
 }
 
 #[tokio::test]
@@ -239,12 +206,12 @@ async fn memory_sync_total_failure_reports_the_full_two_pass_pull_count() {
     );
 }
 
-/// Regression guard for the fix's OTHER side: a real success must still exit
-/// zero and print the "Done." success framing. Without this, a broken change
-/// that made every push exit non-zero unconditionally would still pass the
-/// two tests above.
+// Regression guard for the fix's OTHER side: a real success must still exit
+// zero and print the "Sync complete." success framing. Without this, a broken
+// change that made every sync exit non-zero unconditionally would still pass
+// the total-failure tests above.
 #[tokio::test]
-async fn memory_push_success_still_exits_zero_and_prints_done() {
+async fn memory_sync_success_still_exits_zero_and_prints_sync_complete() {
     let server = MockServer::start().await;
     mount_health(&server).await;
     Mock::given(method("POST"))
@@ -254,6 +221,7 @@ async fn memory_push_success_still_exits_zero_and_prints_done() {
         })))
         .mount(&server)
         .await;
+    mount_since_empty(&server).await;
 
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
@@ -265,8 +233,8 @@ async fn memory_push_success_still_exits_zero_and_prints_done() {
         .current_dir(proj.path())
         .arg("--config")
         .arg(&config_path)
-        .args(["memory", "push"])
+        .arg("sync")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Done."));
+        .stdout(predicate::str::contains("Sync complete."));
 }

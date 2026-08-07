@@ -36,6 +36,29 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `--backend`) and resolves the memory store identically. The post-commit hook
   and the `--ci` workflow snippet now install `inkentry harvest`.
 
+- **`inkentry plumbing push` and `inkentry plumbing pull`** — one-way memory
+  transfer as plumbing, for seeding a team server or running in CI. Each emits a
+  single JSONL report object and follows the plumbing exit-code contract, with
+  one deliberate exception documented in the stability contract: an empty delta
+  (nothing new to push, or nothing new to pull) exits `1` **and still emits the
+  report**, so a machine consumer can read the outcome of an empty run; only a
+  run that did not complete exits `2` with stdout empty. Both require an
+  explicitly-configured team `server_url` — never the inference loopback — and
+  reuse the same egress guards as `inkentry sync`. `plumbing push` accepts
+  `--source <path>` and `--include-archived`. Both report shapes are covered by
+  the plumbing golden schema.
+
+### Changed
+
+- **Team memory sharing now has a single everyday verb: `inkentry sync`**
+  (two-way convergence). This is a **surface change only.** `inkentry sync`'s
+  behaviour, the sync-mode table (`offline` / `local_first` / `cloud_first`), the
+  wire protocol, and every server route are **unchanged** — the command surface
+  was trimmed, the semantics were not. `memory reconcile` and the `login` /
+  `logout` / `org` / `auth` commands are untouched. The one-way moves demote to
+  the plumbing forms above; the pre-cloud streaming/poll commands are removed
+  (below).
+
 ### Deprecated
 
 - **`inkentry memory harvest` is now a deprecated alias of `inkentry harvest`.**
@@ -66,6 +89,18 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   - `inkentry status` and `inkentry check` no longer show an `explore` line, and
     `inkentry status --format json` drops the `explore` key from its `usage_7d`
     object — a shape change in the status payload.
+
+- **`inkentry memory push`, `inkentry memory pull`, `inkentry memory watch`, and
+  `inkentry memory since` are removed.** The capability they carried has a new
+  home: one-way transfer is now `inkentry plumbing push` / `inkentry plumbing
+  pull` (above), and two-way convergence stays `inkentry sync`. Live streaming
+  and point-in-time queries return with the cloud product; with no consumer in
+  this release, the SSE/reconnect and timestamp-query machinery is deleted rather
+  than carried compiled-in-waiting. The commands are gone outright — no aliases,
+  no stubs — so invoking one now yields the standard unrecognized-subcommand
+  error. The server's `/memory/since` and `/memory/stream` routes are
+  **unchanged**: they still back `inkentry sync`'s pull half and the server-side
+  relay; only the CLI commands were removed.
 
 ## [0.9.8] — 2026-08-07
 

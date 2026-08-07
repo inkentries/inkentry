@@ -37,6 +37,12 @@ These codes, and the JSONL field names and types below, are covered by the
 only, and are enforced by tests rather than by convention. `hash-file`, `embed`,
 and `publish-notes` cannot return `1`; the contract explains why.
 
+`push` and `pull` are the exception to "exit 1 means stdout is empty": they
+always emit their one report object on a completed run, so exit `1` there means
+the run completed with an **empty delta** (nothing new pushed, or nothing new
+pulled) and the report is still on stdout. Only their exit `2` (the run did not
+complete) leaves stdout empty. Everything else about the codes is unchanged.
+
 ## Output format
 
 All plumbing commands write **one JSON object per line** (JSONL) to **stdout**. Errors and warnings go to **stderr** only — stdout is always machine-parseable. There are no progress bars, no ANSI escape codes, and no trailing commas or array wrappers.
@@ -77,11 +83,13 @@ inkentry plumbing ls-files --stale --root . \
 
 `ls-files --stale` exits `1` if nothing is stale (safe to check `$?` before proceeding). Each emitted object's `.path` field is the project-relative path stored in the index.
 
-## All 9 plumbing commands
+## All 11 plumbing commands
 
-Every command below emits JSONL. All but `publish-notes` are read-only: it is the
-one that writes and talks to a remote, so treating the namespace as
-safe-by-construction for scripting or sandboxing no longer holds.
+Every command below emits JSONL. All but `publish-notes`, `push`, and `pull` are
+read-only: those three write or talk to a remote, so treating the namespace as
+safe-by-construction for scripting or sandboxing no longer holds. `push` and
+`pull` additionally require an explicitly-configured team `server_url` (never the
+inference loopback), the same guard the two-way `inkentry sync` uses.
 
 | Command | Synopsis | Description |
 |---------|----------|-------------|
@@ -94,6 +102,8 @@ safe-by-construction for scripting or sandboxing no longer holds.
 | `graph-edges` | `inkentry plumbing graph-edges --file <f> \| --symbol <s>` | Emit code graph edges (imports, calls, extends) for a file or symbol as JSONL. At least one of `--file` or `--symbol` is required. Exits `1` if no edges found. |
 | `read-memory` | `inkentry plumbing read-memory [--kind <k>] [--id <n>] [--limit N]` | Emit memory entries as JSONL. Filter by kind (`decision`, `question`, `note`, etc.) or fetch a single entry by id. |
 | `publish-notes` | `inkentry plumbing publish-notes [remote] [--best-effort]` | Publish memory notes (`refs/notes/inkentry`) to `remote` (default `origin`): fetch onto the tracking ref, union-merge with `cat_sort_uniq`, push. Never force-pushes. **Writes and performs network I/O.** `remote` must be a configured remote *name*; a URL is not resolved but reported as `{"published":false,…,"skipped":"no_such_remote"}` at exit `0`. If another process holds the notes lock the publish is skipped rather than run unmerged, reported as `{"published":false,…,"skipped":"lock_unavailable"}` on stdout and as a warning on stderr, at exit `0` with or without `--best-effort`: nothing is lost, and the records publish on your next push. `--best-effort` warns on stderr and exits `0` instead of failing, which is what the pre-push hook uses. Reach for `inkentry hooks install --pre-push` rather than calling this directly. |
+| `push` | `inkentry plumbing push [--source <path>] [--include-archived]` | One-way local→server memory push for seeding or CI. **Writes to the team server.** Emits one report object: `{attempted, created, skipped, failed, already_synced, edges_pushed, without_local_vector, embedded_locally, interrupted}`. Exit `0` when ≥1 entry was created; exit `1` on an empty delta (nothing local to push, or everything already present) — the report is still emitted; exit `2` when the run did not complete (no `server_url`/`project_id`, unreachable/auth, a total failure where nothing landed, or an interruption), with stdout empty and a diagnostic on stderr. `--source` pushes from a specific `memory.db`; `--include-archived` propagates tombstones. For everyday two-way convergence use `inkentry sync`. |
+| `pull` | `inkentry plumbing pull` | One-way server→local memory delta pull (cursored on the last-synced remote id). **Reads from the team server, writes locally.** Emits one report object: `{applied}`. Exit `0` when ≥1 entry was applied; exit `1` on an empty delta (nothing new) — the report is still emitted; exit `2` on a setup/network/auth error, with stdout empty and a diagnostic on stderr. For everyday two-way convergence use `inkentry sync`. |
 
 ---
 
