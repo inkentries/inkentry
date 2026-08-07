@@ -82,6 +82,14 @@ contract rather than an oversight:
 | `embed` | Empty stdin is an empty *input*, not an empty result set. It exits `0` having emitted nothing. |
 | `publish-notes` | It runs from a `pre-push` hook, where a non-zero exit aborts the user's branch push. Both "nothing to publish" and, under `--best-effort`, a publish failure exit `0` and report the outcome in the JSON payload. |
 
+`push` and `pull` reach exit `1`, but with one deliberate difference from the
+rule above: they emit their one report object on every completed run, so their
+exit `1` means the run completed with an **empty delta** (nothing new pushed, or
+nothing new pulled) and stdout still carries the report. Only their exit `2` —
+the run did not complete — leaves stdout empty. This keeps a machine consumer
+able to read the outcome of an empty run instead of guessing from a bare exit
+code, while the "stdout empty on `2`" guarantee that scripts rely on is intact.
+
 Porcelain commands use `0`/`1` with their own documented meanings (`check`
 exits `1` when the index is stale, for example) and do not follow the plumbing
 convention.
@@ -90,10 +98,16 @@ convention.
 
 Most porcelain commands take a `--format` flag that switches stdout from the
 human-readable text above to a machine-readable shape: `json` everywhere,
-plus `jsonl` on `search`, `graph`, `memory list`, and `memory since`, and
+plus `jsonl` on `search`, `graph`, and `memory list`, and
 `porcelain` on `check`. This is a **different surface** from the text output,
 and a different one again from plumbing JSONL: none of it is covered by the
 plumbing golden schema.
+
+(`memory since` and `memory watch` were removed from the CLI; `memory since`'s
+`--format jsonl` therefore left this list. One-way transfer moved to the
+test-enforced plumbing surface — `inkentry plumbing push`/`pull` — and the
+former `memory push`/`pull` were removed outright with no alias. The server
+routes those commands used are unchanged — see the changelog.)
 
 In `--format porcelain`, stdout carries **only** the stable `key=value` lines
 (and, with `--files`, the stale paths). Human diagnostics that `check` also

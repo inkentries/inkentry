@@ -79,8 +79,8 @@ added or renamed):
   (in-process request/response, no socket bound); a real-TLS serve test
   (`tls_serve.rs`) that binds an actual loopback socket; and a real-socket
   plaintext CLI-to-server sync end-to-end test (`cli_sync_e2e.rs`) that
-  drives the actual `inkentry memory push`/`inkentry sync` client code against
-  a bound server instance.
+  drives the actual `inkentry sync` / `inkentry plumbing push` client code
+  against a bound server instance.
 - **`#[cfg(test)]` blocks in `src/`**: pure-logic unit tests colocated with
   the function they cover, across all crates (e.g. ANSI stripping, secret
   pattern detection, token estimation, memory dedupe logic).

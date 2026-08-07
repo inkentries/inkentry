@@ -15,7 +15,10 @@ use crate::storage::{CloudSyncClient, MemoryStore};
 /// one-way `memory pull`; `sync_round` below instead calls
 /// [`pull_and_apply_since`] directly so it can pin an explicit cursor across
 /// its two pull passes.
-pub(super) async fn pull_and_apply(local: &MemoryStore, client: &CloudSyncClient) -> Result<usize> {
+pub(in crate::cli::cmd) async fn pull_and_apply(
+    local: &MemoryStore,
+    client: &CloudSyncClient,
+) -> Result<usize> {
     let cursor = local.max_remote_id()?;
     pull_and_apply_since(local, client, cursor.as_deref()).await
 }

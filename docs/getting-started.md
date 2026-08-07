@@ -528,7 +528,7 @@ After setup, all `inkentry memory` commands transparently use the server. Seed i
 with your existing local memory, then keep recording decisions as usual:
 
 ```bash
-inkentry memory push    # one-way: seed the server with your existing local entries
+inkentry plumbing push  # one-way: seed the server with your existing local entries
 inkentry sync           # force a synchronous two-way reconcile (usually not needed; see below)
 ```
 

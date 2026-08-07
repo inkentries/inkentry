@@ -1,16 +1,17 @@
 // Subprocess-level coverage for a mid-push (partial) failure: a multi-chunk
-// `inkentry memory push` / `inkentry sync` whose later chunk fails must exit
-// non-zero, print honest partial progress (`Pushed X of Y`) plus a resume hint,
-// and never print success framing (`Done.` / `Sync complete.`).
+// `inkentry sync` whose later chunk fails must exit non-zero, print honest
+// partial progress (`Pushed X of Y`) plus a resume hint, and never print success
+// framing (`Sync complete.`).
 //
-// `push_local` (`crates/inkentry-cli/src/cli/cmd/memory/sync.rs`) stops at the
-// first failed chunk, keeps the chunks that already landed durably stamped, and
-// returns a summary marked `interrupted` rather than `?`-propagating; the
-// command layer (`push.rs` / `sync.rs`) turns that into the partial-progress
-// message and a non-zero exit via `bail!`. These tests spawn the real compiled
-// `inkentry` binary (`assert_cmd`, following `memory_push_sync_total_failure.rs`)
-// against a mock team server that serves the first chunk then 500s, so a
-// regression in the command-layer framing or exit code is what fails here.
+// `push_local` (`crates/inkentry-cli/src/cli/cmd/memory/sync/push/mod.rs`) stops
+// at the first failed chunk, keeps the chunks that already landed durably
+// stamped, and returns a summary marked `interrupted` rather than
+// `?`-propagating; the command layer (`sync/mod.rs`) turns that into the
+// partial-progress message and a non-zero exit via `bail!`. This test spawns the
+// real compiled `inkentry` binary (`assert_cmd`, following
+// `memory_push_sync_total_failure.rs`) against a mock team server that serves the
+// first chunk then 500s, so a regression in the command-layer framing or exit
+// code is what fails here.
 
 mod plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
@@ -118,45 +119,6 @@ fn seed_source_store(mem_path: &Path) {
             .add_note("note", &format!("T{i}"), "body", &[], &[], None, None)
             .expect("seed note");
     }
-}
-
-#[tokio::test]
-async fn memory_push_mid_chunk_failure_exits_nonzero_with_resume_hint() {
-    let server = MockServer::start().await;
-    mount_health(&server).await;
-    mount_batch_first_ok_then_fail(&server).await;
-
-    let home = TempDir::new().unwrap();
-    let proj = TempDir::new().unwrap();
-    init_project(proj.path());
-    let config_path = write_config(proj.path(), &server.uri());
-    let mem_path = proj.path().join("seed-memory.db");
-    seed_source_store(&mem_path);
-
-    let assert = inkentry_bin_in(home.path())
-        .current_dir(proj.path())
-        .arg("--config")
-        .arg(&config_path)
-        .args(["memory", "push", "--source"])
-        .arg(&mem_path)
-        .assert()
-        .failure();
-
-    let out = assert.get_output();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains(&format!("Pushed 50 of {SEED_COUNT}")),
-        "must report honest partial progress; stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        stderr.contains("Re-run to resume"),
-        "must give a resume hint; stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        !stdout.contains("Done.") && !stderr.contains("Done."),
-        "an interrupted push must never read as success; stdout={stdout:?} stderr={stderr:?}"
-    );
 }
 
 #[tokio::test]

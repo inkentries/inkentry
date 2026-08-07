@@ -157,12 +157,13 @@ report, a pending-entry count and how long ago the local store last synced
 project that has never synced shows no extra clause. Once a project has
 synced at least once, the clause persists even after the outbox fully
 drains, for example `mode  local_first  ·  up to date, last synced 4m ago`.
-Use `inkentry sync` (or the one-way `inkentry memory push` / `inkentry memory
-pull`) whenever you want to force a synchronous reconcile with the server
-instead of waiting on the background drain. Both commands also embed the entries
-they push into the local `memory.db` first, so a pushed entry stays findable by
-semantic `memory search` on your own machine (see [Repair during push and
-sync](#repair-during-push-and-sync)).
+Use `inkentry sync` (two-way) whenever you want to force a synchronous reconcile
+with the server instead of waiting on the background drain; for a one-way
+transfer (seeding, CI) reach for the plumbing forms `inkentry plumbing push`
+(local → server) and `inkentry plumbing pull` (server → local). Both the sync
+and push paths also embed the entries they push into the local `memory.db`
+first, so a pushed entry stays findable by semantic `memory search` on your own
+machine (see [Repair during push and sync](#repair-during-push-and-sync)).
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
@@ -840,7 +841,7 @@ to be able to undo it).
 ## Backfilling missing embeddings
 
 A note's semantic vector is normally minted when the note is first added
-(`inkentry memory add`), and `inkentry memory push` / `inkentry sync` mint one for
+(`inkentry memory add`), and `inkentry plumbing push` / `inkentry sync` mint one for
 any entry in the set they are about to push that still lacks it (see [Repair
 during push and sync](#repair-during-push-and-sync)). A note that misses both
 moments, because no embedder was reachable, or because the store was upgraded
@@ -902,7 +903,7 @@ semantic recall.
 
 ### Repair during push and sync
 
-`inkentry memory push` and `inkentry sync` embed what they are about to push.
+`inkentry plumbing push` and `inkentry sync` embed what they are about to push.
 Before the batch is built, every entry in the push set that has no usable local
 vector is embedded through the local loopback embedder, using the same document
 text and the same document-side embedding call `inkentry memory reindex` uses,
@@ -921,8 +922,8 @@ as-is instead of re-embedding it.
 Scope and limits:
 
 - Only the push set is repaired: entries that are active and not yet synced.
-  Entries already synced, and entries arriving through `inkentry memory pull`,
-  are outside it and still need `inkentry memory reindex`.
+  Entries already synced, and entries arriving through a pull, are outside it and
+  still need `inkentry memory reindex`.
 - The embed always runs against the local loopback embedder, never against a
   configured team `server_url`. This is the same way `reindex` resolves its
   embedder.

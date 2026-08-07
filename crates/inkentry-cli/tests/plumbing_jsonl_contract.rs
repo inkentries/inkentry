@@ -571,6 +571,92 @@ fn every_declared_publish_notes_field_is_emitted_by_some_outcome() {
     }
 }
 
+// ── push / pull (team-server transfer) ───────────────────────────────────────
+//
+// Both emit exactly one report object on a completed run. Driven against a mock
+// team server and a real seeded project, then checked against the golden schema
+// like every other command.
+
+#[tokio::test]
+async fn push_output_matches_the_contract() {
+    use plumbing_helpers::{
+        init_local_project, inkentry_bin_in, mount_memory_batch, mount_team_health,
+        seed_memory_note, write_team_config,
+    };
+    use wiremock::MockServer;
+
+    let server = MockServer::start().await;
+    mount_team_health(&server).await;
+    mount_memory_batch(
+        &server,
+        serde_json::json!({
+            "created": 0, "skipped": 0, "failed": 0,
+            "results": [{"status": "created", "external_id": "e", "id": "cloud-1"}]
+        }),
+    )
+    .await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    init_local_project(proj.path());
+    let cfg = write_team_config(proj.path(), &server.uri());
+    seed_memory_note(home.path(), proj.path(), &cfg, "one");
+
+    let out = inkentry_bin_in(home.path())
+        .current_dir(proj.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["plumbing", "push"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    check("push", &out);
+}
+
+#[tokio::test]
+async fn pull_output_matches_the_contract() {
+    use plumbing_helpers::{
+        init_local_project, inkentry_bin_in, mount_memory_since, mount_team_health,
+        write_team_config,
+    };
+    use wiremock::MockServer;
+
+    let server = MockServer::start().await;
+    mount_team_health(&server).await;
+    mount_memory_since(
+        &server,
+        serde_json::json!({"entries": [{
+            "id": "01890000-0000-7000-8000-000000000abc",
+            "kind": "decision",
+            "title": "Teammate",
+            "body": "from the server",
+            "created_at": "2026-06-19T01:00:00Z"
+        }]}),
+    )
+    .await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    init_local_project(proj.path());
+    let cfg = write_team_config(proj.path(), &server.uri());
+
+    let out = inkentry_bin_in(home.path())
+        .current_dir(proj.path())
+        .arg("--config")
+        .arg(&cfg)
+        .args(["plumbing", "pull"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    check("pull", &out);
+}
+
 fn init_bare_remote(path: &Path) {
     plumbing_helpers::isolate_git_config();
     let status = std::process::Command::new("git")

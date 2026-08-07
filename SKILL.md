@@ -171,8 +171,6 @@ inkentry memory list --as-of 2026-01-01   # point-in-time snapshot
 inkentry memory show <id>                  # full entry + relationships
 inkentry memory graph <id>                 # relationship graph for an entry
 inkentry memory timeline "<topic>"         # topic evolution across all entries (ASC time)
-inkentry memory since <epoch>              # poll for entries newer than Unix timestamp
-inkentry memory watch                      # stream new entries as they arrive (SSE; requires a configured server_url)
 inkentry memory search "<q>" --format json
 inkentry memory failures                   # list all antipatterns (shortcut for list --kind antipattern)
 inkentry memory failures --limit 30

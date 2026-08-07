@@ -17,7 +17,7 @@ used; the binary is the same in both tiers.
 | **Search** | ast-grep + BM25 text | + semantic KNN (server encodes query, CLI does local KNN) |
 | **Index** | Parse + AST chunk + graph (no embeddings) | + embedding phase: server generates vectors, CLI stores in local DB |
 | **Memory add/list/show/archive** | sqlite (local) | Same |
-| **Memory push/pull** | Not available | Sync git-notes entries to/from server DB |
+| **Memory transfer** (`plumbing push`/`pull`, `sync`) | Not available | Push/pull entries to/from the server DB |
 | **Memory search** | Not available | Server encodes query, does KNN over server-side memory DB |
 | **Memory harvest** | Not available | LLM extraction via server |
 
@@ -237,8 +237,8 @@ When a Tier 1 feature is invoked but no server is reachable, the command exits
 1. Two deliberate message formats are used, selected by which command was run;
 both are written to stderr with `eprintln!` (never a panic).
 
-The `require_tier1` commands (`memory push`, `memory pull`, `sync`,
-`memory watch`) point the user at `server_url`:
+The `require_tier1` commands (`sync`, `plumbing push`, `plumbing pull`) point
+the user at `server_url`:
 
 ```
 Error: 'inkentry memory watch' requires inkentry-server.

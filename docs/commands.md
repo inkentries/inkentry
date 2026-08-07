@@ -929,11 +929,7 @@ inkentry memory archive <id>
 inkentry memory supersede <id> --title "..." # archive old, add replacement
 inkentry memory timeline <topic>
 inkentry memory graph <id>
-inkentry memory since <unix-ts>
-inkentry memory push                         # one-way: push local entries to the configured server
-inkentry memory pull                         # one-way: pull new server entries into local memory.db
 inkentry memory sync                         # two-way: push local + pull remote (see `inkentry sync`)
-inkentry memory watch                        # stream new entries from the server (SSE)
 inkentry memory reconcile [--dry-run] [--all-projects] [--source-db <path>]
 inkentry memory dedupe [--dry-run] [--format text|json]
 inkentry memory reindex [--force] [--include-archived] [--dry-run] [--format text|json]
@@ -983,7 +979,7 @@ automatically; use `inkentry memory dedupe` to do that explicitly (see
 Once a store's duplicates are cleared and its `entity_id` index is promoted to
 UNIQUE, a plain `memory add` for byte-identical content no longer errors: it
 reuses the existing entry and prints `Already recorded as ...` instead of
-`Stored ...`. The same reuse applies to `inkentry sync` / `inkentry memory pull`:
+`Stored ...`. The same reuse applies to `inkentry sync` / `inkentry plumbing pull`:
 a pulled entry matching an existing local row's identity merges into that row
 (adopting the remote id, archiving it if the pulled entry is archived) instead
 of adding a duplicate, so the printed pull count reflects only genuinely new
@@ -991,8 +987,8 @@ rows. Pre-promotion, a pull can still add a distinct row alongside matching
 local content, same as `memory add`.
 
 **Backfilling missing embeddings:** a note's semantic vector is minted at
-`memory add` time, and again by `memory push` / `sync` for any entry in the set
-they are about to push that still lacks one. A note that misses both, added
+`memory add` time, and again by `inkentry sync` / `inkentry plumbing push` for
+any entry in the set they are about to push that still lacks one. A note that misses both, added
 while the embedder was down and never pushed, or carried
 through the 768→896 embedding-dimension upgrade (which drops the old vectors),
 stays present-but-unembedded: still found by text search, `list`, `timeline`,
@@ -1033,11 +1029,14 @@ inkentry sync [--project <slug>] [--source <path>] [--include-archived]
 | `--source <path>` | Local `memory.db` to sync (default: the auto-detected project `memory.db`). |
 | `--include-archived` | Include archived entries in the push, propagating tombstones. |
 
-For a one-directional transfer, use `inkentry memory push` (local → server) or
-`inkentry memory pull` (server → local).
+For a one-directional transfer (seeding, CI), use the plumbing forms
+`inkentry plumbing push` (local → server) or `inkentry plumbing pull`
+(server → local); each emits a single JSONL report. The former porcelain
+`inkentry memory push` / `inkentry memory pull` have been removed; there is no
+alias, so invoking them errors as an unknown subcommand.
 
 **The push embeds what it pushes.** Before the batch is built, both `inkentry
-sync` and `inkentry memory push` embed every entry in the push set that has no
+sync` and `inkentry plumbing push` embed every entry in the push set that has no
 usable local vector, through the local loopback embedder and using the same
 document text `inkentry memory reindex` uses, and commit each vector to
 `memory.db`. A pushed entry is then findable by semantic `memory search` locally
@@ -1051,7 +1050,7 @@ without a local embedding and that `inkentry memory reindex` is the cure. The
 summary line reports the local embed count separately from `created` /
 `skipped` / `failed`, for example `Sync complete. Pushed 4 entries (created 4,
 skipped 0), applied 1 new remote entries. Embedded 2 locally.` Entries already
-synced, and entries arriving via `memory pull`, are outside the push set and are
+synced, and entries arriving via a pull, are outside the push set and are
 not embedded by this step. See [Backfilling missing
 embeddings](memory.md#backfilling-missing-embeddings).
 
@@ -1076,7 +1075,18 @@ inkentry plumbing embed                 # read stdin lines, emit vectors
 inkentry plumbing graph-edges           # code graph edges
 inkentry plumbing read-memory           # memory entries as JSONL
 inkentry plumbing publish-notes [remote]  # publish memory notes to a remote
+inkentry plumbing push [--source <path>] [--include-archived]  # one-way local -> team server
+inkentry plumbing pull                  # one-way team server -> local
 ```
+
+`push` and `pull` are the one-way memory transfers, for seeding a server or
+running in CI; for everyday two-way convergence use `inkentry sync`. Both emit a
+single JSONL report and, like `publish-notes`, **write** and perform **network
+I/O** — and they require an explicitly-configured team `server_url` (never the
+inference loopback). Their exit `1` means an empty delta (nothing new pushed, or
+nothing new pulled) and still emits the report; only exit `2` (the run did not
+complete: setup, network, auth, a total failure, or an interruption) leaves
+stdout empty.
 
 `publish-notes` fetches the remote's `refs/notes/inkentry` onto the tracking ref,
 merges it into yours with `cat_sort_uniq`, and pushes the result (defaulting to

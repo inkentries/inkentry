@@ -485,7 +485,7 @@ If team members have existing local `memory.db` entries, push them to the server
 
 ```bash
 # Make sure .inkentry/config.toml is set up first, then:
-inkentry memory push
+inkentry plumbing push
 ```
 
 This reads your local `memory.db` and sends all active entries to the server.

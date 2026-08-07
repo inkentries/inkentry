@@ -31,6 +31,10 @@ pub enum PlumbingCommand {
     ReadMemory(PlumbingReadMemoryArgs),
     /// Publish memory notes (refs/notes/inkentry) to a remote
     PublishNotes(PlumbingPublishNotesArgs),
+    /// Push local memory to the configured team server (one-way; emits a JSONL report)
+    Push(PlumbingPushArgs),
+    /// Pull new memory from the configured team server (one-way; emits a JSONL report)
+    Pull(PlumbingPullArgs),
 }
 
 #[derive(Args, Debug)]
@@ -115,6 +119,20 @@ pub struct PlumbingReadMemoryArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct PlumbingPushArgs {
+    /// Local memory.db to push from (default: the project's memory store)
+    #[arg(long)]
+    pub source: Option<std::path::PathBuf>,
+
+    /// Push archived entries too (propagates tombstones)
+    #[arg(long)]
+    pub include_archived: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PlumbingPullArgs {}
+
+#[derive(Args, Debug)]
 pub struct PlumbingPublishNotesArgs {
     /// Remote to publish to (default: origin)
     pub remote: Option<String>,
@@ -138,6 +156,8 @@ mod knn;
 mod ls_files;
 mod parse_file;
 mod publish_notes;
+mod pull;
+mod push;
 mod read_memory;
 
 pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
@@ -155,6 +175,19 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         // Notes are the pre-`init` store (ADR-068), so publishing must not
         // require an index.
         PlumbingCommand::PublishNotes(a) => return publish_notes::publish_notes(a).await,
+        // Memory transfer targets memory.db (sibling of the index db), not the
+        // index, so it must not require an index either.
+        PlumbingCommand::Push(a) => {
+            let mem_path = a
+                .source
+                .clone()
+                .unwrap_or_else(|| db_path.with_file_name("memory.db"));
+            return push::push(a, &mem_path, &cfg).await;
+        }
+        PlumbingCommand::Pull(_) => {
+            let mem_path = db_path.with_file_name("memory.db");
+            return pull::pull(&mem_path, &cfg).await;
+        }
         _ => {}
     }
 
@@ -180,6 +213,8 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         // Already handled above but Rust requires exhaustive match.
         PlumbingCommand::ParseFile(_)
         | PlumbingCommand::Embed(_)
-        | PlumbingCommand::PublishNotes(_) => unreachable!(),
+        | PlumbingCommand::PublishNotes(_)
+        | PlumbingCommand::Push(_)
+        | PlumbingCommand::Pull(_) => unreachable!(),
     }
 }

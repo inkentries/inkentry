@@ -35,7 +35,7 @@
 
 use anyhow::{Context, Result};
 
-use super::{MemoryPullArgs, MemorySyncArgs};
+use super::MemorySyncArgs;
 use crate::{
     capability,
     cli::cmd::auth_api,
@@ -50,10 +50,9 @@ mod round;
 mod test_support;
 
 pub(super) use pull::parse_iso_to_secs;
-use pull::pull_and_apply;
-pub(super) use push::{
-    LocalEmbedPolicy, local_embed_summary, push_local_oneway, unembedded_warning,
-};
+pub(in crate::cli::cmd) use pull::pull_and_apply;
+pub(in crate::cli::cmd) use push::{LocalEmbedPolicy, push_local_oneway};
+pub(super) use push::{local_embed_summary, unembedded_warning};
 use round::{SyncRoundOutcome, sync_round};
 
 /// Resolve the project slug to sync into, or halt with actionable guidance.
@@ -83,12 +82,13 @@ fn resolve_sync_project(cli_project: Option<&str>, cfg: &Config) -> Result<Strin
 ///
 /// Sync always speaks to an explicit `server_url`, not the inference loopback.
 /// Errors with actionable guidance when the server is missing (via
-/// [`capability::require_explicit_server_url`], the same guard `memory push` uses),
-/// or when no project slug is available (see [`resolve_sync_project`]).
+/// [`capability::require_explicit_server_url`], the same guard the plumbing
+/// transfers use), or when no project slug is available (see
+/// [`resolve_sync_project`]).
 ///
-/// `feature` names the calling command (`"sync"` or `"memory pull"`) for the
-/// error message. `cli_project` is the optional `--project <slug>` override;
-/// when `None` the configured `project_id` is used.
+/// `feature` names the calling command (`"sync"`) for the error message.
+/// `cli_project` is the optional `--project <slug>` override; when `None` the
+/// configured `project_id` is used.
 ///
 /// The bearer key is resolved through [`auth_api::ensure_fresh_server_key`] so a
 /// WorkOS access token that has expired since `inkentry login` is refreshed (and
@@ -104,31 +104,7 @@ async fn sync_target(
     Ok((base_url, project_id, key))
 }
 
-/// `inkentry memory pull` — one-way delta pull + apply.
-pub async fn memory_pull(
-    _args: MemoryPullArgs,
-    mem_path: &std::path::Path,
-    cfg: &Config,
-) -> Result<()> {
-    let tier = capability::get_tier(cfg).await;
-    capability::require_tier1("memory pull", tier, cfg.server_url.as_deref())?;
-    let (base_url, project_id, key) = sync_target("memory pull", cfg, None).await?;
-
-    let local = MemoryStore::open(mem_path)
-        .with_context(|| format!("opening local memory at {}", mem_path.display()))?;
-    let client = CloudSyncClient::new(
-        &base_url,
-        &project_id,
-        key.as_deref(),
-        cfg.server_ca.as_deref().map(std::path::Path::new),
-    )?;
-
-    let pulled = pull_and_apply(&local, &client).await?;
-    println!("Pull complete. Applied {pulled} new remote entries.");
-    Ok(())
-}
-
-/// `inkentry sync` (and `inkentry memory push`'s successor) — two-way sync.
+/// `inkentry sync` — two-way sync.
 pub async fn memory_sync(
     args: MemorySyncArgs,
     mem_path: &std::path::Path,

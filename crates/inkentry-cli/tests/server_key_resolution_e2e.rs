@@ -22,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const PROJECT_ID: &str = "test-org/test-project";
 
-async fn mount_health_and_since(server: &MockServer) {
+async fn mount_health_and_pull(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(r"^/v1/health$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -32,9 +32,11 @@ async fn mount_health_and_since(server: &MockServer) {
         })))
         .mount(server)
         .await;
+    // `plumbing pull` cursors on `?since_id=`, whose response is the
+    // `{entries, count}` envelope (not the legacy `?t=` bare array).
     Mock::given(method("GET"))
         .and(path_regex(r"^/v1/projects/.+/memory/since$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"entries": []})))
         .mount(server)
         .await;
 }
@@ -62,19 +64,19 @@ fn set_key(home: &Path, server: &str, key: &str) {
         .success();
 }
 
-/// The multi-server acceptance case, driven for real: two `server_url`s
-/// under the *same* HOME (so they share one secret-store map, D1's whole
-/// point), each with its own key set via the real `auth set-key` command,
-/// then two separate `inkentry memory since` invocations, one per origin,
-/// each inspected for the literal `Authorization` header wiremock received.
-/// Each origin must get exactly its own key, never the other's, and never
-/// an env var (none is set at any point in this test).
+// The multi-server acceptance case, driven for real: two `server_url`s
+// under the *same* HOME (so they share one secret-store map, D1's whole
+// point), each with its own key set via the real `auth set-key` command,
+// then two separate `inkentry plumbing pull` invocations, one per origin,
+// each inspected for the literal `Authorization` header wiremock received.
+// Each origin must get exactly its own key, never the other's, and never
+// an env var (none is set at any point in this test).
 #[tokio::test]
 async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     let server_a = MockServer::start().await;
     let server_b = MockServer::start().await;
-    mount_health_and_since(&server_a).await;
-    mount_health_and_since(&server_b).await;
+    mount_health_and_pull(&server_a).await;
+    mount_health_and_pull(&server_b).await;
 
     let home = TempDir::new().unwrap();
     let cfg_dir = TempDir::new().unwrap();
@@ -85,7 +87,10 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     let config_a = write_server_config(cfg_dir.path(), "a");
     let config_b = write_server_config(cfg_dir.path(), "b");
 
-    let mem_db = cfg_dir.path().join("memory.db");
+    // `plumbing pull` derives the memory store from `--db`'s sibling; an empty
+    // pull exits 1 (empty delta), so this inspects the request, not the exit
+    // code. What matters here is the bearer on the wire, one origin at a time.
+    let index_db = cfg_dir.path().join("index.db");
 
     inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
@@ -93,13 +98,12 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_a)
-        .arg("memory")
+        .arg("plumbing")
         .arg("--db")
-        .arg(&mem_db)
-        .arg("since")
-        .arg("0")
-        .assert()
-        .success();
+        .arg(&index_db)
+        .arg("pull")
+        .output()
+        .unwrap();
 
     inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
@@ -107,13 +111,12 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_b)
-        .arg("memory")
+        .arg("plumbing")
         .arg("--db")
-        .arg(&mem_db)
-        .arg("since")
-        .arg("0")
-        .assert()
-        .success();
+        .arg(&index_db)
+        .arg("pull")
+        .output()
+        .unwrap();
 
     let requests_a = server_a.received_requests().await.unwrap();
     let since_req_a = requests_a
@@ -156,7 +159,7 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
 #[tokio::test]
 async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     let server = MockServer::start().await;
-    mount_health_and_since(&server).await;
+    mount_health_and_pull(&server).await;
 
     let home = TempDir::new().unwrap();
     let cfg_dir = TempDir::new().unwrap();
@@ -178,21 +181,22 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     .unwrap();
 
     let config_path = write_server_config(cfg_dir.path(), "legacy");
-    let mem_db = cfg_dir.path().join("memory.db");
+    let index_db = cfg_dir.path().join("index.db");
 
+    // Empty pull exits 1 (empty delta); the wire request, not the exit code, is
+    // what this test inspects.
     inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
         .env("INKENTRY_SERVER_URL", server.uri())
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
         .arg("--config")
         .arg(&config_path)
-        .arg("memory")
+        .arg("plumbing")
         .arg("--db")
-        .arg(&mem_db)
-        .arg("since")
-        .arg("0")
-        .assert()
-        .success();
+        .arg(&index_db)
+        .arg("pull")
+        .output()
+        .unwrap();
 
     let requests = server.received_requests().await.unwrap();
     let since_req = requests

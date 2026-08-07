@@ -286,15 +286,16 @@ inkentry context
 
 ## Multi-agent coordination
 
-When using a shared memory server (`server_url` in config), agents can coordinate without stepping on each other's toes:
+When using a shared memory server (`server_url` in config), agents converge on
+one shared memory by syncing:
 
 ```bash
-# Poll for new entries since a given timestamp
-inkentry memory since <epoch>
+# Two-way: push your local entries and pull teammates' entries down
+inkentry sync
 
-# Stream entries as they arrive (requires an explicit `server_url`; an
-# auto-discovered loopback server does not satisfy this)
-inkentry memory watch
+# One-way transfer for seeding or CI (emits a JSONL report):
+inkentry plumbing pull        # server -> local
+inkentry plumbing push        # local -> server
 ```
 
 Conflict detection: If you write an entry semantically similar to an existing one (cosine ≥ 0.92), the server returns HTTP 409 (advisory). The entry is stored with a `contradicts` edge linking to the conflicting entry. Check `inkentry memory show <id>` to review related entries before proceeding.

@@ -9,9 +9,8 @@ use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, SyncEdgePush};
 
 mod local_embed;
 
-pub(in crate::cli::cmd::memory) use local_embed::{
-    LocalEmbedPolicy, local_embed_summary, unembedded_warning,
-};
+pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
+pub(in crate::cli::cmd::memory) use local_embed::{local_embed_summary, unembedded_warning};
 use local_embed::{repair_local_embeddings, usable_vector};
 
 /// How many entries go in each `POST /memory/batch` request. Kept small so even
@@ -27,7 +26,7 @@ const PUSH_BATCH_CHUNK_SIZE: usize = 50;
 
 /// Outcome of a push pass (shared by `sync` and the one-way `memory push`).
 #[derive(Debug)]
-pub(in crate::cli::cmd::memory) struct PushSummary {
+pub(in crate::cli::cmd) struct PushSummary {
     /// Rows actually sent to `push_batch` (the `live` set) — not the raw
     /// pre-filter row count, which would over-report when rows are already
     /// synced (`remote_id` already set) and no request is made at all.
@@ -77,7 +76,7 @@ pub(in crate::cli::cmd::memory) struct PushSummary {
 /// capability: when true, each entry that has a local embedding
 /// carries its fp32/896 vector so the server stores it as-is; when false the
 /// push is text-only and the server re-embeds.
-pub(in crate::cli::cmd::memory) async fn push_local_oneway(
+pub(in crate::cli::cmd) async fn push_local_oneway(
     local: &MemoryStore,
     client: &CloudSyncClient,
     include_archived: bool,

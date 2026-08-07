@@ -304,14 +304,17 @@ surface the warning. Configure the threshold with `--conflict-threshold`
 
 `GET /v1/projects/{project_id}/memory/since?t=<epoch>&limit=N` returns up to
 `N` entries (default 50) created after the given Unix timestamp, sorted
-ascending by creation time. The CLI calls this via `inkentry memory since`.
+ascending by creation time. This legacy timestamp mode is retained for wire
+parity with cloud-api; no CLI command targets it (the delta-pull `?since_id=`
+mode backs `inkentry sync`'s pull half).
 
 ### Streaming entries
 
 `GET /v1/projects/{project_id}/memory/stream` (Server-Sent Events) subscribes
 to new entries as they arrive; each line is a JSON object for one newly-added
-entry, and the stream persists until the client disconnects. The CLI calls
-this via `inkentry memory watch`.
+entry, and the stream persists until the client disconnects. It is consumed by
+the server-side outbound relay (as a wake-up to re-pull via `?since_id=`); no
+CLI command consumes it directly.
 
 ---
 

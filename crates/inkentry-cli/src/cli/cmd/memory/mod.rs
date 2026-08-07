@@ -37,20 +37,12 @@ pub enum MemoryCommand {
     Archive(MemoryArchiveArgs),
     /// Archive an entry and mark it as superseded by a newer entry
     Supersede(MemorySupersededArgs),
-    /// Push all local memory entries to the configured memory server (one-way)
-    Push(MemoryPushArgs),
-    /// Pull new memory entries from the configured server into local memory.db
-    Pull(MemoryPullArgs),
     /// Two-way sync: push local entries to the server and pull remote entries to local
     Sync(MemorySyncArgs),
     /// Show how the team's understanding of a topic evolved over time
     Timeline(MemoryTimelineArgs),
     /// Show the relationship graph for a memory entry
     Graph(MemoryGraphArgs),
-    /// List memory entries created after a given Unix timestamp
-    Since(MemorySinceArgs),
-    /// Stream new memory entries from the server in real time (requires server_url)
-    Watch(MemoryWatchArgs),
     /// List all stored antipatterns (shortcut for `list --kind antipattern`)
     Failures(MemoryFailuresArgs),
     /// Import unique notes from server.db into the local memory.db (recovery / migration tool)
@@ -246,24 +238,6 @@ pub struct MemoryHarvestArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct MemoryPushArgs {
-    /// Local memory.db to push from (default: same as --db)
-    #[arg(long)]
-    pub source: Option<std::path::PathBuf>,
-    /// Push archived entries too (propagates tombstones)
-    #[arg(long)]
-    pub include_archived: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct MemoryPullArgs {
-    /// Reserved for future filters; pull currently fetches all entries after the
-    /// UUID cursor (`MAX(remote_id)` of locally-synced rows; decision #183).
-    #[arg(long, hide = true)]
-    pub all: bool,
-}
-
-#[derive(Args, Debug)]
 pub struct MemorySyncArgs {
     /// Local memory.db to sync (default: auto-detected memory.db)
     #[arg(long)]
@@ -291,44 +265,6 @@ pub struct MemorySupersededArgs {
     pub old_id: NoteId,
     /// ID of the entry that replaces it (the new one)
     pub new_id: NoteId,
-}
-
-#[derive(Args, Debug)]
-pub struct MemorySinceArgs {
-    /// Unix epoch seconds (exclusive lower bound for `created_at`)
-    pub since: i64,
-
-    /// Maximum number of results to return
-    #[arg(short, long, default_value_t = 100)]
-    pub limit: usize,
-
-    /// Output format: text, json, or jsonl
-    #[arg(long, default_value = "text")]
-    pub format: String,
-}
-
-#[derive(Args, Debug)]
-pub struct MemoryWatchArgs {
-    /// Output format: text or json
-    #[arg(long, default_value = "text")]
-    pub format: String,
-
-    /// Comma-separated kind filter, e.g. `intent,decision`.
-    /// When absent all event kinds are streamed.
-    #[arg(long)]
-    pub kind: Option<String>,
-
-    /// Resume from a specific sequence ID (seq-NNNNNNN or plain integer).
-    /// When set, the server replays missed events before switching to live.
-    /// In the default mode the CLI tracks the last-seen ID automatically and
-    /// reconnects on transient errors.
-    #[arg(long, value_name = "SEQ")]
-    pub since_seq: Option<String>,
-
-    /// Maximum number of automatic reconnect attempts on connection error.
-    /// Set to 0 to disable reconnection (one-shot mode).
-    #[arg(long, default_value_t = 10)]
-    pub reconnect_limit: u32,
 }
 
 #[derive(Args, Debug)]
@@ -408,16 +344,13 @@ mod harvest;
 mod harvest_claude;
 mod list;
 pub(crate) mod outbox;
-pub mod push;
 pub(crate) mod reconcile;
 mod reindex;
 mod search;
 mod show;
-mod since;
 mod supersede;
 pub mod sync;
 mod timeline;
-mod watch;
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
@@ -446,13 +379,9 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         }
         MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg, be).await,
         MemoryCommand::Supersede(a) => supersede::memory_supersede(a, &mem_path, &cfg, be).await,
-        MemoryCommand::Push(a) => push::memory_push(a, &mem_path, &cfg, be).await,
-        MemoryCommand::Pull(a) => sync::memory_pull(a, &mem_path, &cfg).await,
         MemoryCommand::Sync(a) => sync::memory_sync(a, &mem_path, &cfg).await,
         MemoryCommand::Timeline(a) => timeline::memory_timeline(a, &mem_path, &cfg, be).await,
         MemoryCommand::Graph(a) => graph_cmd::memory_graph(a, &mem_path, &cfg, be).await,
-        MemoryCommand::Since(a) => since::memory_since(a, &mem_path, &cfg, be).await,
-        MemoryCommand::Watch(a) => watch::memory_watch(a, &cfg).await,
         MemoryCommand::Failures(a) => failures::memory_failures(a, &mem_path, &cfg, be).await,
         MemoryCommand::Reconcile(a) => reconcile::memory_reconcile(a, &mem_path, &cfg).await,
         MemoryCommand::Reindex(a) => reindex::memory_reindex(a, &mem_path, &cfg, be).await,
