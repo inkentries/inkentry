@@ -428,7 +428,7 @@ pub fn default_conflict_threshold() -> f32 {
         version = "0.1.0",
         description = "Shared memory server for inkentry. Stores decisions, requirements, \
                         and context for a team and serves them over HTTP.",
-        contact(name = "inkentry", url = "https://github.com/spelunk-cloud/spelunk"),
+        contact(name = "inkentry", url = "https://github.com/inkentries/inkentry"),
         license(name = "MIT"),
     ),
     paths(
