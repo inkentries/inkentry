@@ -52,9 +52,9 @@ Two technical facts make the removal clean rather than delicate:
 
 ## Decision
 
-1. **Remove the `inkentry explore` command** and **remove the `POST
-   /v1/projects/{project_id}/explore` route** (handler, request schemas, router
-   registration, and OpenAPI entry).
+1. **Remove the `inkentry explore` command outright** — immediately, with no
+   deprecation stub — and **remove the `POST /v1/projects/{project_id}/explore`
+   route** (handler, request schemas, router registration, and OpenAPI entry).
 2. **Replace the workflow with a skill**, documented in `SKILL.md`: the caller's
    own agent runs the search → graph → read → answer loop using inkentry's
    existing primitives (`inkentry search`, `inkentry graph`, `inkentry chunks`,
@@ -67,25 +67,19 @@ Two technical facts make the removal clean rather than delicate:
    answer. The generic `/llm/complete` primitive stays as the route behind
    harvest.
 
-### Deprecation path
+### Removal
 
-The command is removed behind a **one-release deprecation stub**: a hidden
-subcommand that prints a pointer to the explore skill and **exits with code 2**,
-carrying no server probe, no LLM call, and no capability behind it. A follow-up
-change deletes the stub one release later.
-
-This is chosen over deleting the command outright. Explore was recently promoted
-into the top-level `--help` listing, so it is discoverable and may live in users'
-and agents' muscle memory and scripts; a bare "unrecognized subcommand" is a
-poor exit for a surface we advertised. Exiting non-zero with an actionable
-pointer matches the precedent set for other removed surfaces (removed server
-flags fail with a message naming the removal), while still keeping the surface
-out of `--help` and off every code path.
+The command is removed **outright — no deprecation stub**. After removal,
+invoking `inkentry explore` falls through to clap's standard unknown-subcommand
+error, the same way the earlier `ask` command was removed. The replacement is
+the explore skill (above); there is no in-CLI grace period to build, ship, and
+later delete.
 
 ## What breaks
 
-- `inkentry explore …` no longer runs; for one release it prints a pointer to
-  the skill and exits `2`, then is gone entirely.
+- `inkentry explore …` no longer runs and is gone from `--help`; invoking it
+  produces clap's unknown-subcommand error. The explore skill in `SKILL.md` is
+  the replacement path.
 - `POST /v1/projects/{id}/explore` returns `404`; its request schemas leave the
   OpenAPI document. `/llm/complete` is unchanged.
 - An LLM-configured server no longer advertises the `explore` capability in
@@ -102,9 +96,11 @@ out of `--help` and off every code path.
 
 - **Keep explore.** Rejected: it is the standing violation of the "you reason
   over it" boundary and an unpaid carrying cost with no confirmed consumer.
-- **Delete the command outright, no stub.** Viable and matches how the earlier
-  `ask` command was removed. Rejected in favour of the one-release stub only
-  because explore is currently `--help`-visible and worth a soft landing.
+- **One-release deprecation stub** (a hidden subcommand that errors with a
+  pointer to the skill). Rejected: an unnecessary in-CLI grace period — build,
+  ship, and later delete a stub — for a surface that has a clear skill
+  replacement. Outright removal matches how the earlier `ask` command was
+  removed.
 - **Keep the route, remove only the command.** Rejected: the route has no
   first-party caller, so keeping it is pure carrying cost.
 - **Preserve the exploration step-trace as-is.** The old `--verbose` step trace
