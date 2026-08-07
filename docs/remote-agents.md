@@ -94,7 +94,7 @@ for how to generate the CA and issue the server a leaf from it.
 Inside the container, the CLI behaves exactly as it would on the host:
 
 ```bash
-inkentry check                 # should report the server reachable over TLS
+inkentry status                # should report the Server capability tier (server reachable over TLS)
 inkentry search "auth tokens"  # semantic search via the server
 ```
 

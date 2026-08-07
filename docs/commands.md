@@ -413,28 +413,6 @@ inkentry status --all --format json
 
 ---
 
-## inkentry check
-
-Check whether the index is in sync with the source tree. Exits with code 1 if
-the index is stale.
-
-```
-inkentry check [options]
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--format text\|json\|porcelain` | text | Output format |
-| `--files` | false | Also list the stale file paths (one per line) |
-| `-d, --db <path>` | auto | Override database path |
-
-```bash
-inkentry check || echo "Index is stale — run inkentry index"
-inkentry check --format porcelain --files
-```
-
----
-
 ## inkentry context
 
 Print agent session context: active agent sessions and file-overlap warnings,

@@ -57,7 +57,6 @@ async fn main() -> Result<()> {
         }
         Command::Search(args) => cli::cmd::search(args, cfg).await,
         Command::Status(args) => cli::cmd::status(args, cfg).await,
-        Command::Check(args) => cli::cmd::check(args, cfg).await,
         Command::Context(args) => cli::cmd::context(args, cfg).await,
         Command::Languages => cli::cmd::languages(),
         Command::Graph(args) => cli::cmd::graph(args, cfg),

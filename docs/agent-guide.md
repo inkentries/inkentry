@@ -14,7 +14,7 @@
 
 A productive agentic session with `inkentry` looks like this:
 
-1. **Orient** — read memory and check index health (`inkentry context`, `inkentry check`)
+1. **Orient** — read memory and bring the index up to date (`inkentry context`, then `inkentry index .` — idempotent and blake3-gated, so it is a no-op when nothing changed)
 2. **Search** — find the relevant code before reading or editing it
 3. **Execute** — make code changes, delegating sub-tasks as needed
 4. **Verify** — re-check the call graph and re-index after changes
@@ -66,10 +66,9 @@ every session.  If the daemon is already running and healthy it exits 0
 immediately.  If the PID is stale (process dead), it starts a fresh instance.
 
 **When to use `status` vs probing `/v1/health` directly:** use
-`inkentry server status` for human-readable output during debugging.  For
-programmatic checks inside an agent loop, `inkentry check` already probes the
-server as part of its index-freshness check — you rarely need to poll
-`/v1/health` directly.
+`inkentry server status` for the daemon's health (running state, PID, port,
+version, and reachability) — it is the human-readable probe you want during
+debugging, so you rarely need to poll `/v1/health` directly.
 
 **Port walk:** `start` tries ports 7777–7787 in order.  If all are taken it
 exits with a clear error.  Use `--port <n>` to override the starting port.
@@ -82,8 +81,8 @@ At the start of a session, orient yourself:
 # Agent session entry point — pulls context from previous sessions
 inkentry context
 
-# If you've indexed: verify the index is up to date
-inkentry check
+# If you've indexed: bring the index up to date (idempotent — a no-op when nothing changed)
+inkentry index .
 ```
 
 `inkentry context` is designed as the single agent entry point. At session start it first surfaces active agent sessions — other live `intent` entries, plus a warning for any file you have already changed that another active intent claims — then retrieves the most agent-relevant memory sections (handoffs, open questions, decisions, requirements) sorted newest-first, giving the agent a full picture of both in-flight and prior work.
@@ -334,8 +333,14 @@ Now `inkentry search` queries all three indexes and merges results by distance.
 ## CI integration
 
 ```bash
-# Fail the build if the index is stale
-inkentry check || { echo "Run inkentry index"; exit 1; }
+# Fail the build if the index is stale, without re-indexing.
+# `plumbing ls-files --stale` emits one JSONL row per out-of-date file and follows
+# the plumbing exit-code convention, so it exits 0 when stale files exist and 1
+# when the index is fresh — the inverse of a "fresh = success" check. Gate on
+# whether it produced any rows:
+if inkentry plumbing ls-files --stale | grep -q .; then
+  echo "Index is stale — run inkentry index"; exit 1
+fi
 
 # Print a GitHub Actions workflow hook
 inkentry hooks install --ci

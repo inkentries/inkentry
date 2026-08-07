@@ -11,7 +11,7 @@ This project is indexed with inkentry. Use it — don't just use Read/Grep/Glob.
 **At the start of every session:**
 ```bash
 inkentry context                                   # pull prior decisions, handoffs, questions, requirements (compact by default; --budget <N> caps output tokens)
-inkentry check                                     # verify index is fresh (only if indexed)
+inkentry index .                                   # bring the index up to date (idempotent, blake3-gated; only if indexed)
 ```
 
 **Before reading any file, search first:**
@@ -45,7 +45,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 `inkentry` is a Rust CLI and context retrieval engine for AI agents.
 
-**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `inkentry graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, `check`, memory, and `graph` on a file path) need `inkentry init` first.
+**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `inkentry graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, memory, and `graph` on a file path) need `inkentry init` first.
 
 **Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry explore`, `inkentry harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
@@ -191,7 +191,6 @@ cli/
     mod.rs       — re-exports one pub fn per subcommand
     auth.rs      — `inkentry auth set-key/list-servers` handlers (ADR-071); `--llm` stores
                    the LLM endpoint credential
-    check.rs     — `inkentry check` handler
     context.rs   — `inkentry context` handler (agent session entry point)
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all

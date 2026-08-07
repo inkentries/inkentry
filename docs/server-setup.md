@@ -356,7 +356,7 @@ On the remote host (or in its container), the configuration is identical to
 export INKENTRY_SERVER_URL=https://inkentry.example.com
 export INKENTRY_SERVER_KEY=your-shared-api-key
 
-inkentry check                 # should report the server reachable over TLS
+inkentry status                # should report the Server capability tier (server reachable over TLS)
 inkentry search "auth tokens"
 ```
 

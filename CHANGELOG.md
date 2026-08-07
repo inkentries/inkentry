@@ -25,8 +25,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   decisions, requirements or handoffs; the overlap warnings are budget-exempt,
   always emitted (even at `--budget 0`), and not counted against the token
   budget, because a collision-avoidance signal you can silently lose defeats
-  its purpose. Intents stay scoped to the local project. The same information
-  remains available from `inkentry check` for now.
+  its purpose. Intents stay scoped to the local project.
 
 - **`inkentry harvest` is now a top-level command.** Harvesting memory from git
   history and session logs is a core capability, so it gets a first-class verb
@@ -72,6 +71,23 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- **`inkentry check` has been removed.** Its three jobs are served better
+  elsewhere, so the command no longer carried a unique one: index freshness by
+  running the idempotent `inkentry index` directly (blake3-gated, so an
+  unconditional re-index is a no-op when nothing changed), server health by
+  `inkentry server status` (the local daemon) and `inkentry status` (the
+  configured server's capability tier), and active-intent plus file-overlap
+  surfacing by `inkentry context`. `inkentry check` now falls through to clap's
+  unknown-subcommand error, the same way the removed `explore` and one-way
+  `memory` verbs do. Its `--format json` object and the `--format porcelain`
+  `stale=/total=/last_indexed=` summary line are gone with it. Migration for
+  anyone who parsed them: the file counts and the `last_indexed_at` /
+  `memory_backend` fields are on `inkentry status --format json`, and the
+  stale-file list is `inkentry plumbing ls-files --stale`. Note the plumbing
+  form's inverted exit-code polarity — it exits `0` when stale files exist and
+  `1` when the index is fresh — so a "fail if stale" gate must test for output
+  presence rather than a non-zero exit.
+
 - **`inkentry explore` and the `POST /v1/projects/{project_id}/explore` server
   route have been removed** (ADR-079). inkentry retrieves context; your own
   agent reasons over it, so the multi-hop "explore" workflow is now a skill the
@@ -86,7 +102,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
     `/v1/health`; it advertises `llm.complete` only. A newer CLI talking to an
     older server that still lists `explore` ignores it and, as before, treats
     that server as LLM-capable only if it also lists `llm.complete`.
-  - `inkentry status` and `inkentry check` no longer show an `explore` line, and
+  - `inkentry status` no longer shows an `explore` line, and
     `inkentry status --format json` drops the `explore` key from its `usage_7d`
     object — a shape change in the status payload.
 

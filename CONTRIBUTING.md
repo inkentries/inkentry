@@ -61,8 +61,9 @@ the same bar either way: focused, tested, documented.
 ## Reporting bugs
 
 Use the bug report template — it asks for `inkentry --version`, your platform,
-install method, and `inkentry status` / `inkentry check` output, which is
-usually the difference between a same-day fix and a week of back-and-forth.
+install method, and `inkentry status` output (plus `inkentry server status` if a
+server is involved), which is usually the difference between a same-day fix and a
+week of back-and-forth.
 For anything security-sensitive, **do not open a public issue** — see
 [SECURITY.md](SECURITY.md) for private reporting.
 

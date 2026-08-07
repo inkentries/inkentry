@@ -54,10 +54,7 @@ argument order, and exit codes, for every command listed in `inkentry --help`.
   collision with a new long flag may force a reassignment.
 - Hidden flags (clap `hide = true`, for example `publish-notes`' positional
   remote URL) are **internal**, present only for compatibility with the callers
-  that pass them. The exception is a hidden flag kept as a deprecated alias of a
-  stable one: `check --porcelain` is hidden but still honoured, and means
-  `check --format porcelain`. Those follow the deprecation policy below rather
-  than the internal rule.
+  that pass them.
 
 ### Exit codes
 
@@ -90,18 +87,16 @@ the run did not complete — leaves stdout empty. This keeps a machine consumer
 able to read the outcome of an empty run instead of guessing from a bare exit
 code, while the "stdout empty on `2`" guarantee that scripts rely on is intact.
 
-Porcelain commands use `0`/`1` with their own documented meanings (`check`
-exits `1` when the index is stale, for example) and do not follow the plumbing
-convention.
+Porcelain commands use `0`/`1` with their own documented meanings and do not
+follow the plumbing convention.
 
 ### Structured output from porcelain commands
 
 Most porcelain commands take a `--format` flag that switches stdout from the
 human-readable text above to a machine-readable shape: `json` everywhere,
-plus `jsonl` on `search`, `graph`, and `memory list`, and
-`porcelain` on `check`. This is a **different surface** from the text output,
-and a different one again from plumbing JSONL: none of it is covered by the
-plumbing golden schema.
+plus `jsonl` on `search`, `graph`, and `memory list`. This is a **different
+surface** from the text output, and a different one again from plumbing JSONL:
+none of it is covered by the plumbing golden schema.
 
 (`memory since` and `memory watch` were removed from the CLI; `memory since`'s
 `--format jsonl` therefore left this list. One-way transfer moved to the
@@ -109,17 +104,10 @@ test-enforced plumbing surface — `inkentry plumbing push`/`pull` — and the
 former `memory push`/`pull` were removed outright with no alias. The server
 routes those commands used are unchanged — see the changelog.)
 
-In `--format porcelain`, stdout carries **only** the stable `key=value` lines
-(and, with `--files`, the stale paths). Human diagnostics that `check` also
-computes — the server-reachability line, the active-intent list, and the
-file-overlap warning — are written to **stderr** in this mode, so a pipe over
-stdout stays machine-parseable while a human at the terminal still sees them.
-In text mode those diagnostics remain on stdout.
-
 | Surface | Level |
 |---|---|
 | `inkentry status --format json` | **Stable** for its core fields, on the same additive-only terms as plumbing JSONL: new optional fields may appear, existing ones are not renamed or removed, and consumers must tolerate unknown fields. The field list is documented on the `status` handler in `crates/inkentry-cli/src/cli/cmd/status.rs`. |
-| Every other `--format json`, `--format jsonl`, or `--format porcelain` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
+| Every other `--format json` or `--format jsonl` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
 
 `status --format json` also emits a set of richer fields for tooling (`tier`,
 `mode`, `sync_pending`, `sync_last_synced_at`, `server_url`, `capabilities`,

@@ -86,8 +86,7 @@ All plumbing commands emit JSONL. Exit 0 = results, 1 = no results, 2 = error.
 inkentry indexes are incremental. Re-run after significant changes:
 
 ```bash
-inkentry index .            # index the current directory
-inkentry check              # verify the index is fresh
+inkentry index .            # index the current directory (idempotent — also refreshes a stale index)
 ```
 
 A post-commit hook can do this automatically; see `inkentry hooks install`.

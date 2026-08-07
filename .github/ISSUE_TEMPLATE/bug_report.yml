@@ -74,7 +74,7 @@ body:
     attributes:
       label: Diagnostics
       description: >
-        Paste the output of `inkentry status` and `inkentry check`. If a server is
+        Paste the output of `inkentry status`. If a server is
         involved, add `inkentry server status` and any relevant lines from
         `inkentry server logs`. Re-running the failing command with
         `RUST_LOG=debug` often captures the useful detail. Please redact

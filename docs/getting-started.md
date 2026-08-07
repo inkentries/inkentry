@@ -454,8 +454,8 @@ inkentry search "database migrations" --format json
 
 ```bash
 inkentry status                              # index statistics
-inkentry check                               # verify index is up to date
-inkentry check --format porcelain --files    # list files that need re-indexing
+inkentry index .                             # bring the index up to date (idempotent, blake3-gated)
+inkentry plumbing ls-files --stale           # list files that need re-indexing (JSONL; no rows = fresh)
 ```
 
 ---

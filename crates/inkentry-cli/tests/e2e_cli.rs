@@ -129,6 +129,42 @@ fn test_explore_subcommand_is_gone() {
         .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
+// The `check` command was removed outright. Its three jobs are served
+// elsewhere: index freshness by running the idempotent `index` directly (or, for
+// a non-mutating gate, `plumbing ls-files --stale`), server health by `server
+// status`, and active intents/overlap by `context`. Invoking `check` must fall
+// through to clap's unknown-subcommand error, and it must not appear in help.
+#[test]
+fn test_help_does_not_list_check() {
+    inkentry_bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("check").not());
+}
+
+#[test]
+fn test_check_subcommand_is_gone() {
+    inkentry_bin()
+        .args(["check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"))
+        .stderr(predicate::str::contains("check"));
+}
+
+// The old porcelain machine surface (`check --format porcelain`, `--files`) is
+// gone with the command, not merely hidden: it too yields the unknown-subcommand
+// error rather than parsing.
+#[test]
+fn test_check_porcelain_flags_are_gone() {
+    inkentry_bin()
+        .args(["check", "--format", "porcelain", "--files"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+}
+
 /// regression: `inkentry search --as-of <sha>` (snapshot search) was removed
 /// outright — the flag no longer exists on the top-level `search` command.
 /// `inkentry search --help` must not mention `--as-of`.
@@ -864,251 +900,6 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
          intentional additive field, add it to `want` here and to the doc \
          comment on `status()`"
     );
-}
-
-#[tokio::test]
-async fn test_check_reports_server_reachable() {
-    let mock_server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v1/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": "ok",
-            "version": "test",
-            "capabilities": ["memory", "search.semantic"]
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
-        .respond_with(IndexEmbedResponder)
-        .mount(&mock_server)
-        .await;
-
-    let temp = tempdir().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
-
-    let db_path = temp.path().join("index.db");
-    let config_path = write_config_with_server(
-        temp.path(),
-        &db_path,
-        &mock_server.uri(),
-        &mock_server.uri(),
-        &project_dir,
-    );
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Server:"))
-        .stdout(predicate::str::contains("semantic search"))
-        .stdout(predicate::str::contains("explore").not());
-}
-
-#[tokio::test]
-async fn test_check_reports_server_unreachable() {
-    let temp = tempdir().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
-
-    let db_path = temp.path().join("index.db");
-    let config_path = temp.path().join("config.toml");
-    let bad_url = "http://127.0.0.1:19999";
-    fs::write(
-        &config_path,
-        format!(
-            "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test\"\n",
-            db_path, bad_url
-        ),
-    )
-    .unwrap();
-    write_project_server_config(&project_dir, bad_url, FIXTURE_PROJECT_ID);
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Server:"))
-        .stdout(predicate::str::contains("unreachable"));
-}
-
-// Porcelain mode must keep stdout a pure, machine-parseable `key=value` stream:
-// the server-reachability line (and its Unicode ✓/✗ glyphs) is a human
-// diagnostic and belongs on stderr, never mixed into the stdout a script reads
-// with `while read -r line`. The signal itself must not be dropped — it still
-// has to reach a human on stderr.
-#[tokio::test]
-async fn test_check_porcelain_routes_server_line_to_stderr() {
-    let mock_server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v1/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": "ok",
-            "version": "test",
-            "capabilities": ["memory", "search.semantic"]
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
-        .respond_with(IndexEmbedResponder)
-        .mount(&mock_server)
-        .await;
-
-    let temp = tempdir().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
-
-    let db_path = temp.path().join("index.db");
-    let config_path = write_config_with_server(
-        temp.path(),
-        &db_path,
-        &mock_server.uri(),
-        &mock_server.uri(),
-        &project_dir,
-    );
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .arg("--format")
-        .arg("porcelain")
-        .assert()
-        // Fresh index → exit 0, exactly as in text mode.
-        .success()
-        // stdout carries ONLY the stable key=value summary …
-        .stdout(predicate::str::contains("stale="))
-        .stdout(predicate::str::contains("total="))
-        .stdout(predicate::str::contains("last_indexed="))
-        // … and none of the human diagnostics or their glyphs.
-        .stdout(predicate::str::contains("Server:").not())
-        .stdout(predicate::str::contains("Active agent sessions").not())
-        .stdout(predicate::str::contains('·').not())
-        .stdout(predicate::str::contains('⚠').not())
-        .stdout(predicate::str::contains('✓').not())
-        .stdout(predicate::str::contains('✗').not())
-        // The reachability signal is preserved for a human — on stderr.
-        .stderr(predicate::str::contains("Server:"))
-        .stderr(predicate::str::contains("semantic search"));
-}
-
-// Exit code contract holds in BOTH modes: a stale index exits 1. Porcelain
-// stdout stays key=value even when stale, and the server line is still routed
-// to stderr rather than stdout.
-#[tokio::test]
-async fn test_check_exit_1_when_stale_in_both_modes() {
-    let mock_server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/v1/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": "ok",
-            "version": "test",
-            "capabilities": ["memory", "search.semantic"]
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
-        .respond_with(IndexEmbedResponder)
-        .mount(&mock_server)
-        .await;
-
-    let temp = tempdir().unwrap();
-    let project_dir = temp.path().join("project");
-    fs::create_dir(&project_dir).unwrap();
-    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
-
-    let db_path = temp.path().join("index.db");
-    let config_path = write_config_with_server(
-        temp.path(),
-        &db_path,
-        &mock_server.uri(),
-        &mock_server.uri(),
-        &project_dir,
-    );
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    // Mutate the indexed file so its on-disk hash no longer matches the index.
-    fs::write(project_dir.join("main.rs"), "fn main() { /* changed */ }").unwrap();
-
-    // Porcelain mode: exit 1, stdout still pure key=value, server line on stderr.
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .arg("--format")
-        .arg("porcelain")
-        .assert()
-        .failure()
-        .code(1)
-        .stdout(predicate::str::contains("stale=1"))
-        .stdout(predicate::str::contains("Server:").not())
-        .stderr(predicate::str::contains("Server:"));
-
-    // Text (human) mode: same exit code, and the server line stays on stdout.
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .assert()
-        .failure()
-        .code(1)
-        .stdout(predicate::str::contains("Server:"));
 }
 
 // Investigation found no shared server/port/filesystem state this test could
