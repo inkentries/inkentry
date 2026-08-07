@@ -453,9 +453,10 @@ inkentry check --format porcelain --files
 
 ## inkentry context
 
-Print agent session context: handoffs, open questions, decisions, requirements,
-and (when an index is available) extracted conventions. This is the recommended
-entry point for an agent starting a session.
+Print agent session context: active agent sessions and file-overlap warnings,
+then handoffs, open questions, decisions, requirements, and (when an index is
+available) extracted conventions. This is the recommended entry point for an
+agent starting a session.
 
 ```
 inkentry context [options]
@@ -482,6 +483,18 @@ When projects are linked with `inkentry link`, `context` also surfaces `locked`
 or `cross-project`-tagged `decision` and `requirement` entries from linked
 projects' memory stores, each labelled with its source project. Pass
 `--local-only` to suppress this behaviour. See [Memory](memory.md#cross-project-visibility).
+
+`context` opens with an **Active agent sessions** section: the active `intent`
+entries other sessions have recorded, and above them a warning
+(`⚠  Overlap: <file> is listed in an active intent`) for every file the current
+worktree has already modified that one of those intents claims. The section is
+shown only when there is a roster or a warning to display. Under `--budget` the
+roster packs last (it never displaces decisions, requirements or handoffs) while
+the overlap warnings are always emitted and are not counted against the token
+budget. Intents are local to the project and are never surfaced across linked
+projects. In `--format json` (and under `AGENT=true`) the roster is the
+`["intent", …]` entry in `sections` and the warnings are a top-level `overlaps`
+array of file-path strings.
 
 **Example:**
 

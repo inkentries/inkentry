@@ -79,6 +79,13 @@ struct Section {
 }
 
 const SECTIONS: &[Section] = &[
+    // The roster of other live sessions is the only time-sensitive item at
+    // session start, so it is displayed first. `default_limit` matches the cap
+    // the staleness utility used, so overlap coverage does not regress.
+    Section {
+        kind: "intent",
+        default_limit: 20,
+    },
     Section {
         kind: "handoff",
         default_limit: 3,
@@ -122,9 +129,11 @@ fn cap_sections(sections: &mut [(String, Vec<Note>)], limit_override: Option<usi
 }
 
 /// Order in which sections compete for `--budget`: durable "why"
-/// (decision, requirement) survives first, ephemeral `question` drops first.
+/// (decision, requirement) survives first, then the caller's own handoffs, then
+/// ephemeral questions, and the `intent` roster of *other* sessions drops first
+/// — so intents can never crowd out handoffs/decisions under a tight budget.
 /// Display/emission order is independent of this (see `SECTIONS`).
-const PACK_PRIORITY: &[&str] = &["decision", "requirement", "handoff", "question"];
+const PACK_PRIORITY: &[&str] = &["decision", "requirement", "handoff", "question", "intent"];
 
 /// Greedily drop notes then conventions that don't fit `budget`. Notes are
 /// packed in `PACK_PRIORITY` order so durable memory wins a tight budget, but
@@ -238,6 +247,14 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     // Cap each section (incl. cross-project appends) to its per-section limit.
     cap_sections(&mut sections, args.limit);
 
+    // Collision-avoidance signal: files this worktree has already touched that
+    // another live session claims via an intent. Derived from the fetched
+    // (post-`--path`, post-cap) intent set and computed BEFORE `--budget`
+    // packing, so budget-dropping the roster can never drop a warning. Local by
+    // construction: `worktree_modified_files()` is this worktree, and intents
+    // never cross projects (not in DEP_PASS_KINDS).
+    let overlaps = compute_overlaps(&sections);
+
     // Load conventions from the index DB (best-effort; skip if unavailable).
     let mut conventions: Vec<crate::conventions::ConventionRecord> =
         if !args.no_conventions && args.kind.is_none() {
@@ -256,6 +273,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             let mut output = serde_json::json!({
                 "sections": sections,
                 "conventions": conventions,
+                "overlaps": overlaps,
             });
             if let (Some(budget), Some(used)) = (args.budget, budget_used) {
                 output["token_budget"] = budget.into();
@@ -266,6 +284,21 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         }
         _ => {
             for (kind, notes) in &sections {
+                if kind == "intent" {
+                    // Show the section iff there is a warning to raise or a
+                    // roster to list; overlap warnings come before the roster.
+                    if overlaps.is_empty() && notes.is_empty() {
+                        continue;
+                    }
+                    print_section_header(kind);
+                    for file in &overlaps {
+                        print_overlap_warning(file);
+                    }
+                    for n in notes {
+                        print_note_summary(n);
+                    }
+                    continue;
+                }
                 if notes.is_empty() {
                     continue;
                 }
@@ -337,6 +370,7 @@ async fn collect_sections(
 
 fn print_section_header(kind: &str) {
     let label = match kind {
+        "intent" => "Active agent sessions",
         "handoff" => "Handoffs",
         "question" => "Open questions",
         "decision" => "Decisions",
@@ -345,6 +379,40 @@ fn print_section_header(kind: &str) {
     };
     cprintln!("\x1b[1;34m── {label} \x1b[0m");
     println!();
+}
+
+/// Files this worktree has modified that an active intent also claims. Returns
+/// a sorted, de-duplicated list of paths (the set intersection of the intent
+/// roster's `linked_files` and `worktree_modified_files()`). Skips the git
+/// discovery entirely when no intent lists any file, so a solo dev pays nothing.
+fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {
+    let intent_files: std::collections::HashSet<&str> = sections
+        .iter()
+        .find(|(k, _)| k == "intent")
+        .map(|(_, notes)| {
+            notes
+                .iter()
+                .flat_map(|n| n.linked_files.iter().map(String::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    if intent_files.is_empty() {
+        return Vec::new();
+    }
+    let mut overlaps: Vec<String> = crate::utils::worktree_modified_files()
+        .into_iter()
+        .filter(|f| intent_files.contains(f.as_str()))
+        .collect();
+    overlaps.sort();
+    overlaps.dedup();
+    overlaps
+}
+
+/// One collision-avoidance line per overlapping file. The wording is kept stable
+/// so anything keying on the string (docs, agents) stays valid; it is emitted
+/// plain (no ANSI) so that match holds regardless of the color policy.
+fn print_overlap_warning(file: &str) {
+    println!("⚠  Overlap: {file} is listed in an active intent");
 }
 
 fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
@@ -432,6 +500,8 @@ mod tests {
         assert_eq!(section_limit("question", None), 10);
         assert_eq!(section_limit("decision", None), 10);
         assert_eq!(section_limit("requirement", None), 10);
+        // The intent roster caps at 20, matching prior overlap coverage.
+        assert_eq!(section_limit("intent", None), 20);
         // Unknown kind falls back to the shared default.
         assert_eq!(section_limit("mystery", None), DEFAULT_UNKNOWN_KIND_LIMIT);
     }
@@ -680,6 +750,52 @@ mod tests {
         assert_eq!(sections[2].1.len(), 2, "every decision survives");
         assert_eq!(sections[3].1.len(), 2, "every requirement survives");
         assert_eq!(used, 505);
+    }
+
+    #[test]
+    fn budget_drops_intent_roster_before_any_other_kind() {
+        // The intent roster of *other* sessions is the most ephemeral content, so
+        // it packs LAST: a budget that fits every other kind but not everything
+        // must starve intent first, never handoff/question/decision/requirement.
+        let body = "x".repeat(400); // title(1)+body(100) = 101 tokens each
+        let mut sections = vec![
+            ("intent".to_string(), vec![note(0, "intent", "ti", &body)]),
+            ("handoff".to_string(), vec![note(1, "handoff", "ti", &body)]),
+            (
+                "question".to_string(),
+                vec![note(2, "question", "ti", &body)],
+            ),
+            (
+                "decision".to_string(),
+                vec![note(3, "decision", "ti", &body)],
+            ),
+            (
+                "requirement".to_string(),
+                vec![note(4, "requirement", "ti", &body)],
+            ),
+        ];
+        let mut conv: Vec<ConventionRecord> = vec![];
+        // 404 tokens = 4 * 101: fits handoff + question + decision + requirement,
+        // leaving nothing for the intent roster.
+        let used = apply_budget(&mut sections, &mut conv, 404);
+        assert!(sections[0].1.is_empty(), "intent roster drops first");
+        assert_eq!(sections[1].1.len(), 1, "handoff survives");
+        assert_eq!(sections[2].1.len(), 1, "question survives over intent");
+        assert_eq!(sections[3].1.len(), 1, "decision survives");
+        assert_eq!(sections[4].1.len(), 1, "requirement survives");
+        assert_eq!(used, 404, "roster tokens are not charged when dropped");
+    }
+
+    #[test]
+    fn compute_overlaps_returns_empty_without_any_intent_files() {
+        // No intent section, or intents with no linked_files, means no worktree
+        // discovery and no overlaps — the solo-dev fast path.
+        assert!(compute_overlaps(&[]).is_empty());
+        let sections = vec![("intent".to_string(), vec![note(0, "intent", "ti", "body")])];
+        assert!(
+            compute_overlaps(&sections).is_empty(),
+            "an intent with no linked_files yields no overlaps"
+        );
     }
 
     #[test]

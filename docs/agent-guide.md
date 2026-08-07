@@ -86,7 +86,7 @@ inkentry context
 inkentry check
 ```
 
-`inkentry context` is designed as the single agent entry point. It retrieves the four most agent-relevant memory sections (handoffs, open questions, decisions, requirements) sorted newest-first, giving the agent a full picture of prior work.
+`inkentry context` is designed as the single agent entry point. At session start it first surfaces active agent sessions — other live `intent` entries, plus a warning for any file you have already changed that another active intent claims — then retrieves the most agent-relevant memory sections (handoffs, open questions, decisions, requirements) sorted newest-first, giving the agent a full picture of both in-flight and prior work.
 
 Flags:
 - `--format json` — machine-readable output
@@ -250,7 +250,7 @@ inkentry memory add \
 
 ## Signalling intent
 
-Use the `intent` kind to broadcast to teammates (human or agent) that you are actively working on a given area. Active intents are surfaced by `inkentry check` along with file overlap warnings, so collaborators see ongoing work before starting overlapping changes.
+Use the `intent` kind to broadcast to teammates (human or agent) that you are actively working on a given area. Active intents are surfaced at session start by `inkentry context`, in an "Active agent sessions" section, along with a warning for any file you have already modified that another active intent claims — so collaborators see ongoing work before starting overlapping changes.
 
 ```bash
 inkentry memory add \

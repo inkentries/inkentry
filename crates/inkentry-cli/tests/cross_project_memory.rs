@@ -1040,6 +1040,45 @@ fn context_never_pulls_dep_handoffs() {
     );
 }
 
+// `context` must NOT pull `intent` entries from dep projects, even if tagged
+// `locked`/`cross-project`. The roster of who is working where is inherently
+// session/project-scoped, in the same locality class as handoff/question.
+#[test]
+fn context_never_pulls_dep_intents() {
+    let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
+        setup_linked_projects();
+    let primary_mem = primary_index.with_file_name("memory.db");
+
+    let dep_conn = open_memory_db(&dep_mem);
+    seed_note(
+        &dep_conn,
+        "intent",
+        "Dep intent: working on shared util",
+        "Only relevant within the dep project.",
+        &["locked", "cross-project"], // neither tag makes an intent cross-project
+        "active",
+    );
+
+    let stdout = context_cmd(
+        &home,
+        &primary_root,
+        &primary_config,
+        &primary_mem,
+        &primary_index,
+    )
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+
+    let text = String::from_utf8_lossy(&stdout);
+    assert!(
+        !text.contains("Dep intent: working on shared util"),
+        "dep intent must never cross project boundaries; got:\n{text}"
+    );
+}
+
 /// `memory list` must NOT pull a `question` from a dep project.
 #[test]
 fn dep_question_is_never_surfaced_cross_project() {
