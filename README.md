@@ -1,6 +1,6 @@
 # inkentry
 
-[![CI](https://github.com/spelunk-cloud/spelunk/actions/workflows/ci.yml/badge.svg)](https://github.com/spelunk-cloud/spelunk/actions/workflows/ci.yml)
+[![CI](https://github.com/inkentries/inkentry/actions/workflows/ci.yml/badge.svg)](https://github.com/inkentries/inkentry/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition 2024](https://img.shields.io/badge/rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
