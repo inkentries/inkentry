@@ -9,7 +9,7 @@
 
 ## Context retrieval with inkentry
 
-This project uses [inkentry](https://github.com/spelunk-cloud/spelunk) for code graph traversal, memory, and search.
+This project uses [inkentry](https://github.com/inkentries/inkentry) for code graph traversal, memory, and search.
 
 ```bash
 # Trace a symbol's callers and callees (no server needed)

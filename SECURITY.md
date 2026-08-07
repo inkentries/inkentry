@@ -12,7 +12,7 @@
 **Please do not file public GitHub issues for security vulnerabilities.**
 
 Report security issues privately via GitHub's built-in private vulnerability reporting:
-**Security → Report a vulnerability** on the [inkentry repository](https://github.com/spelunk-cloud/spelunk/security/advisories/new).
+**Security → Report a vulnerability** on the [inkentry repository](https://github.com/inkentries/inkentry/security/advisories/new).
 
 ### What to include
 

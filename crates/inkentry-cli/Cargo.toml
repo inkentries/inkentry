@@ -4,8 +4,8 @@ version = "0.9.8"
 edition = "2024"
 description = "inkentry — AI agent context retrieval CLI"
 license = "MIT"
-repository = "https://github.com/spelunk-cloud/spelunk"
-homepage = "https://github.com/spelunk-cloud/spelunk"
+repository = "https://github.com/inkentries/inkentry"
+homepage = "https://github.com/inkentries/inkentry"
 keywords = [
     "code-search",
     "semantic-search",

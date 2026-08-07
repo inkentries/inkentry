@@ -35,7 +35,7 @@ This is a Cargo workspace with three crates: `inkentry-core` (library),
 Build them all together:
 
 ```bash
-git clone https://github.com/spelunk-cloud/spelunk
+git clone https://github.com/inkentries/inkentry
 cd inkentry
 
 # Debug build (faster compile, slower runtime)
