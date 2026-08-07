@@ -18,7 +18,7 @@ pub(super) async fn memory_failures(
     if notes.is_empty() {
         println!("No antipatterns stored yet.");
         println!(
-            "Run `inkentry memory harvest --source failures` to extract them from git history,\n\
+            "Run `inkentry harvest --source failures` to extract them from git history,\n\
              or add one manually with `inkentry memory add --kind antipattern --title \"...\" --body \"...\"`"
         );
         return Ok(());

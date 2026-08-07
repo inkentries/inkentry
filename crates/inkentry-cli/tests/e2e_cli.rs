@@ -61,6 +61,52 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
+// The harvest promotion surface: `harvest` is a first-class top-level command
+// listed in `--help` with full flag parity, while the old `memory harvest`
+// spelling is hidden from `memory --help` yet still fully documented and
+// runnable via its own `--help` (the still-working deprecated alias).
+#[test]
+fn harvest_is_a_top_level_command_with_a_hidden_working_alias() {
+    // `inkentry --help` lists the top-level `harvest` command. "backfill"
+    // appears only in that command's about, so it is a faithful proxy for the
+    // command being listed.
+    inkentry_bin()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backfill"));
+
+    // `inkentry harvest --help` documents every source value and the store
+    // overrides, with no internal references leaking into user-facing help.
+    inkentry_bin()
+        .args(["harvest", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("git"))
+        .stdout(predicate::str::contains("claude-code"))
+        .stdout(predicate::str::contains("failures"))
+        .stdout(predicate::str::contains("--source"))
+        .stdout(predicate::str::contains("--db"))
+        .stdout(predicate::str::contains("--backend"))
+        .stdout(predicate::str::contains("ADR-").not());
+
+    // The deprecated alias is hidden from `inkentry memory --help` …
+    inkentry_bin()
+        .args(["memory", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("harvest").not());
+
+    // … but still fully documented and runnable via `memory harvest --help`,
+    // still listing `failures` and still free of internal references.
+    inkentry_bin()
+        .args(["memory", "harvest", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("failures"))
+        .stdout(predicate::str::contains("ADR-").not());
+}
+
 // The `explore` command was removed outright (ADR-079). It must no longer
 // appear in `inkentry --help`, and invoking it must fall through to clap's
 // unknown-subcommand error with a non-zero exit — no LLM plumbing, no server

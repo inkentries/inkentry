@@ -714,7 +714,7 @@ fn server_inference_error(
 /// See `capability::inference_server_required_message`.
 pub fn harvest_requires_server() -> anyhow::Error {
     anyhow::anyhow!(crate::capability::inference_server_required_message(
-        "memory harvest"
+        "harvest"
     ))
 }
 

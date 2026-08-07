@@ -9,7 +9,7 @@ unset). The flags and defaults below match the installed binary; run
 A local `inkentry-server` is autostarted on demand and provides embeddings
 (native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
 configured, LLM inference. Commands that need semantic search or an LLM (`search`
-in semantic/auto mode, `memory harvest`) use that server; the
+in semantic/auto mode, `harvest`) use that server; the
 always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
 `context`) work with no server.
 
@@ -597,7 +597,7 @@ inkentry hooks uninstall
 ```
 
 `install` writes a post-commit hook that runs `inkentry index` and
-`inkentry memory harvest` after each commit (both `--detach` so git is not
+`inkentry harvest` after each commit (both `--detach` so git is not
 blocked). Developers without `inkentry` installed are unaffected. `--ci` prints a
 GitHub Actions workflow step instead of writing a hook.
 
@@ -862,6 +862,56 @@ inkentry logout --servers
 
 ---
 
+## inkentry harvest
+
+Capture memory from git history and session logs. Harvest is two things wearing
+one command: a one-time **backfill** over a range of history, and the
+**continuous** capture the post-commit hook runs after every commit. It sends
+commit messages (or session logs) to the LLM, extracts significant entries, and
+stores them in the project's memory, skipping near-duplicates.
+
+```
+inkentry harvest [--git-range HEAD~10..HEAD | --branch <ref>]
+                 [--source git|claude-code|failures]
+                 [--batch-size 3] [--history-file <path>] [--since <date>]
+                 [--confirm] [--detach]
+                 [--db <path>] [--backend sqlite|git-notes]
+```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--git-range <REV>` | `HEAD~10..HEAD` | conflicts with `--branch`; the default `HEAD~N..HEAD` shape clamps to the commits that exist, so a shallow repo never errors |
+| `--branch <REF>` | — | conflicts with `--git-range`; walks the full history of the ref |
+| `--source <S>` | `git` | one of `git`, `claude-code`, `failures` |
+| `--batch-size <N>` | `3` | commits/sessions per LLM request (min 1) |
+| `--history-file <PATH>` | `~/.claude/history.jsonl` | `claude-code` source only |
+| `--since <DATE>` | — | `claude-code` source only |
+| `--confirm` | false | required to read the history file (`claude-code`) |
+| `--detach` | false | re-exec in the background and return immediately (used by the git hook) |
+| `--db <PATH>` | auto-detect | memory-store override |
+| `--backend <sqlite\|git-notes>` | `sqlite` | storage backend |
+
+```bash
+inkentry harvest                                   # backfill HEAD~10..HEAD
+inkentry harvest --git-range v0.1.0..HEAD          # a custom range
+inkentry harvest --branch main                     # full branch history
+inkentry harvest --source claude-code --confirm    # from ~/.claude/history.jsonl
+inkentry harvest --source failures                 # antipatterns from revert/bugfix commits
+```
+
+**Harvest needs an LLM.** All three sources use it for extraction, and the
+command fails with a message naming the reason and what to do when none is
+reachable. See
+[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
+Extraction and the dedup embedding resolve independently and can land on
+different servers.
+
+`inkentry memory harvest` is a deprecated, still-working alias of this command
+for one release: it prints a deprecation warning on stderr and otherwise behaves
+identically.
+
+---
+
 ## inkentry memory
 
 Store and query project context, decisions, and requirements. See
@@ -873,7 +923,7 @@ inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
 inkentry memory search <query> [--limit 10] [--format text|json] [--local-only]
 inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]
-inkentry memory harvest [--git-range HEAD~10..HEAD] [--source git|claude-code|failures]
+inkentry memory harvest [...]                # deprecated alias of `inkentry harvest`
 inkentry memory failures                    # list all antipatterns
 inkentry memory archive <id>
 inkentry memory supersede <id> --title "..." # archive old, add replacement
@@ -897,13 +947,10 @@ cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-v
 Results from linked projects carry a `[from: <project>]` badge in text output
 and `source_project` / `source_project_path` fields in JSON.
 
-**`memory harvest` needs an LLM.** All three sources (`--source git`,
-`--source claude-code`, `--source failures`) use it for extraction, and the
-command fails with a message naming the reason and what to do when none is
-reachable. See
-[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
-Extraction and the dedup embedding resolve independently and can land on
-different servers.
+**Harvest is now the top-level [`inkentry harvest`](#inkentry-harvest).**
+`inkentry memory harvest` remains as a deprecated, still-working alias for one
+release; it prints a deprecation warning on stderr and points you at
+`inkentry harvest`. See that section for the full flag reference.
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`

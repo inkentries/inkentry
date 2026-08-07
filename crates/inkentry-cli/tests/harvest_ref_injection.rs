@@ -86,6 +86,40 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     );
 }
 
+// The same option-injection guard protects the promoted top-level
+// `inkentry harvest` command, which shares the handler.
+#[test]
+fn toplevel_harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
+    let temp = tempdir().unwrap();
+    init_repo(temp.path());
+
+    let victim_dir = tempdir().unwrap();
+    let victim_path = victim_dir.path().join("victim_toplevel.txt");
+    assert!(!victim_path.exists());
+
+    let config_path = write_harvest_config(temp.path());
+
+    let malicious_branch_arg = format!("--branch=--output={}", victim_path.display());
+
+    let mut cmd = inkentry_bin();
+    cmd.current_dir(temp.path())
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_LLM_URL")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("harvest")
+        .arg(&malicious_branch_arg);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
+
+    assert!(
+        !victim_path.exists(),
+        "option-injection via --branch must not create the victim file under the top-level command"
+    );
+}
+
 #[test]
 fn harvest_rejects_option_like_git_range() {
     let temp = tempdir().unwrap();

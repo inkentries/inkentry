@@ -28,6 +28,25 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   its purpose. Intents stay scoped to the local project. The same information
   remains available from `inkentry check` for now.
 
+- **`inkentry harvest` is now a top-level command.** Harvesting memory from git
+  history and session logs is a core capability, so it gets a first-class verb
+  instead of living under `memory`. It has full flag and source parity with the
+  old spelling (`--git-range`, `--branch`, `--source git|claude-code|failures`,
+  `--batch-size`, `--history-file`, `--since`, `--confirm`, `--detach`, `--db`,
+  `--backend`) and resolves the memory store identically. The post-commit hook
+  and the `--ci` workflow snippet now install `inkentry harvest`.
+
+### Deprecated
+
+- **`inkentry memory harvest` is now a deprecated alias of `inkentry harvest`.**
+  It keeps working and produces identical results for one release, printing a
+  one-line deprecation warning on stderr that points at the new command. The
+  alias is retained deliberately: a post-commit hook body is a script already on
+  disk that a release cannot rewrite, so removing the subcommand would break
+  every hook installed before this change on its next commit — the alias carries
+  those hooks (and any existing scripts) across the transition until they are
+  re-installed. Removal will be a separate change in a later release.
+
 ### Removed
 
 - **`inkentry explore` and the `POST /v1/projects/{project_id}/explore` server
@@ -36,7 +55,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   caller's agent runs against inkentry's existing primitives (`search`, `graph`,
   `chunks`) — see the "Exploring: multi-hop retrieval" section of `SKILL.md`.
   `inkentry explore` now falls through to clap's unknown-subcommand error, the
-  same way the earlier `ask` command was removed. `memory harvest` becomes the
+  same way the earlier `ask` command was removed. `inkentry harvest` becomes the
   sole LLM-backed feature; the generic `/llm/complete` inference route is
   unchanged. Two consequences for anyone reading capabilities or status:
 

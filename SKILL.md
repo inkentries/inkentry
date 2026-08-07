@@ -181,13 +181,16 @@ inkentry memory failures --limit 30
 ### Harvest from git history or Claude Code history
 
 ```bash
-inkentry memory harvest                    # analyse HEAD~10..HEAD
-inkentry memory harvest --git-range v0.1.0..HEAD
-inkentry memory harvest --branch main      # full branch history
-inkentry memory harvest --source claude-code --confirm  # extract from ~/.claude/history.jsonl
-inkentry memory harvest --source failures  # extract antipatterns from revert/bugfix commits
-inkentry memory harvest --source failures --git-range v0.4.0..HEAD
+inkentry harvest                    # analyse HEAD~10..HEAD
+inkentry harvest --git-range v0.1.0..HEAD
+inkentry harvest --branch main      # full branch history
+inkentry harvest --source claude-code --confirm  # extract from ~/.claude/history.jsonl
+inkentry harvest --source failures  # extract antipatterns from revert/bugfix commits
+inkentry harvest --source failures --git-range v0.4.0..HEAD
 ```
+
+(`inkentry memory harvest` still works as a deprecated alias for one release; it
+prints a warning and points you at `inkentry harvest`.)
 
 Extracts decisions, requirements, and non-obvious notes. From git, analyzes commit messages.
 From `claude-code`, reads agent session transcripts from `~/.claude/history.jsonl`.
@@ -305,5 +308,5 @@ inkentry index .   # only if project is indexed
 - Memory and code graph commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
 - `inkentry search --mode text` and `--mode ast-grep` are always available. Semantic `inkentry search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
-- `inkentry memory harvest` and LLM summaries require a server with an LLM backend configured.
+- `inkentry harvest` and LLM summaries require a server with an LLM backend configured.
 - After changing the embedding model, run `inkentry index <path> --force` to rebuild the index.

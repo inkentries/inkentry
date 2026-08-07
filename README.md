@@ -85,7 +85,7 @@ inkentry memory add --kind decision --title "Chose sqlite-vec over pgvector" \
   --body "Must run without a Postgres server. Revisit if we need filtering + ANN."
 inkentry memory list --kind decision --limit 10
 inkentry memory search "why did we choose this database"
-inkentry memory harvest   # auto-extract decisions from recent commits (server with LLM backend)
+inkentry harvest          # auto-extract decisions from recent commits (server with LLM backend)
 inkentry sync             # two-way sync of local memory with the configured server (push + pull)
 ```
 

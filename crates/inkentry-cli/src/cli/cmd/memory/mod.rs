@@ -28,7 +28,10 @@ pub enum MemoryCommand {
     List(MemoryListArgs),
     /// Show the full content of a memory entry
     Show(MemoryShowArgs),
-    /// Auto-harvest memory entries from git commit messages using the LLM
+    /// Deprecated: use `inkentry harvest`. Auto-harvest memory entries from git
+    /// commit messages using the LLM. Kept as a still-working alias so hooks and
+    /// scripts installed before the promotion keep running.
+    #[command(hide = true)]
     Harvest(MemoryHarvestArgs),
     /// Archive a memory entry (hidden from search and ask, but preserved)
     Archive(MemoryArchiveArgs),
@@ -432,7 +435,15 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg, be).await,
         MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg, be).await,
-        MemoryCommand::Harvest(a) => harvest::memory_harvest(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Harvest(a) => {
+            // The alias path is the only one that warns; the top-level
+            // `inkentry harvest` command shares this handler but emits nothing.
+            // Lives with the alias and is removed when the alias is.
+            eprintln!(
+                "warning: 'inkentry memory harvest' is deprecated; use 'inkentry harvest' instead."
+            );
+            harvest::memory_harvest(a, &mem_path, &cfg, be).await
+        }
         MemoryCommand::Archive(a) => archive::memory_archive(a, &mem_path, &cfg, be).await,
         MemoryCommand::Supersede(a) => supersede::memory_supersede(a, &mem_path, &cfg, be).await,
         MemoryCommand::Push(a) => push::memory_push(a, &mem_path, &cfg, be).await,
@@ -504,18 +515,35 @@ async fn resolve_memory_store(
     cfg: &crate::config::Config,
     be: Option<&'static str>,
 ) -> Result<(PathBuf, bool)> {
+    // Only `add`/`list` narrow the fail-closed bail (ADR-068 D3); every other
+    // subcommand — harvest included — fails closed without a local project.
+    let allow_pre_init_carrier =
+        matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_));
+    resolve_store_path(args.db.clone(), allow_pre_init_carrier, cfg, be).await
+}
+
+/// The store-resolution core shared by the `memory` dispatch and the top-level
+/// `inkentry harvest` command, so both select the memory store identically
+/// (ADR-004/067/068). `allow_pre_init_carrier` is the ADR-068 D3 narrowing:
+/// `true` only for `add`/`list`, which ride the git-notes carrier pre-`init`
+/// instead of failing closed. Harvest passes `false` and keeps failing closed.
+pub(super) async fn resolve_store_path(
+    db: Option<PathBuf>,
+    allow_pre_init_carrier: bool,
+    cfg: &crate::config::Config,
+    be: Option<&'static str>,
+) -> Result<(PathBuf, bool)> {
     use crate::config::SyncMode;
 
     // `--db` is an explicit override; always honored.
-    if let Some(p) = args.db.clone() {
+    if let Some(p) = db {
         return Ok((p, false));
     }
     // A resolvable local `.inkentry/` DB is the normal case.
     match crate::config::require_project_db(&cfg.db_path, false) {
         Ok(p) => return Ok((p.with_file_name("memory.db"), false)),
         Err(e) => {
-            // Only `add`/`list` narrow the fail-closed bail (ADR-068 D3).
-            if !matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_)) {
+            if !allow_pre_init_carrier {
                 return Err(e);
             }
         }
@@ -538,6 +566,24 @@ async fn resolve_memory_store(
         "no inkentry project here, and not inside a git repo. \
          Run 'inkentry init' first, or run inside a git repository."
     )
+}
+
+/// Run a harvest with an explicit `--db`/`--backend`, resolving the memory store
+/// exactly as the `memory` dispatch does. Shared by the top-level
+/// `inkentry harvest` command and the deprecated `memory harvest` alias so the
+/// two produce identical results; the alias adds only a stderr warning at its
+/// own dispatch site.
+pub(super) async fn run_harvest(
+    args: MemoryHarvestArgs,
+    db: Option<PathBuf>,
+    backend: &str,
+    cfg: &crate::config::Config,
+) -> Result<()> {
+    cfg.validate()?;
+    let be = backend_override(backend);
+    let (mem_path, pre_init_notes) = resolve_store_path(db, false, cfg, be).await?;
+    maybe_emit_reembed_notice(&mem_path, pre_init_notes, be);
+    harvest::memory_harvest(args, &mem_path, cfg, be).await
 }
 
 /// Whether CWD is inside a git repo with a resolvable HEAD. An empty repo with

@@ -105,7 +105,7 @@ pub struct Config {
     #[serde(default = "Config::default_db_path")]
     pub db_path: PathBuf,
 
-    /// Chat model id, resolved by inkentry-server, for `ask` and `memory harvest`.
+    /// Chat model id, resolved by inkentry-server, for `ask` and `harvest`.
     /// When unset, commands that require a chat model are unavailable.
     /// `INKENTRY_LLM_MODEL` overrides this.
     #[serde(default)]
@@ -181,7 +181,7 @@ pub struct Config {
     #[serde(skip)]
     pub inference_url: Option<String>,
 
-    /// Context-window size (tokens) of the LLM used for `memory harvest` and `ask`.
+    /// Context-window size (tokens) of the LLM used for `harvest` and `ask`.
     /// inkentry uses this to split harvest batches that would overflow the model's window.
     /// Set to match the `n_ctx` / context-length of the model you have loaded.
     /// Default: 8192

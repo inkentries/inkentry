@@ -72,7 +72,7 @@ configuration.
 **Not a request parameter.** The value is not attached to any inference request
 the CLI makes, so it does not choose the model on a server the CLI merely
 reaches, such as a team `server_url`; that server's own configuration decides.
-`inkentry memory harvest` does not consult this field at all. Whether a chat
+`inkentry harvest` does not consult this field at all. Whether a chat
 model is actually available depends on the capability tier (a reachable
 inference server with a model loaded), independent of this setting.
 
@@ -85,7 +85,7 @@ inference server with a model loaded), independent of this setting.
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
 `inkentry-server` is started against it and gains LLM capability, which is what
-`inkentry memory harvest` and index-time summaries need.
+`inkentry harvest` and index-time summaries need.
 When unset, the daemon runs without an LLM.
 
 Personal config only. A value in a checked-in `.inkentry/config.toml` is
@@ -197,7 +197,7 @@ read from the personal config, not from `.inkentry/config.toml`. See
 full picture.
 
 `mode` also decides which server answers LLM calls for
-`inkentry memory harvest` and index-time summaries, and it is the one setting
+`inkentry harvest` and index-time summaries, and it is the one setting
 that changes whether a configured [`llm_url`](#llm_url) keeps your code off a
 remote LLM. See
 [Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
