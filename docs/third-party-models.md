@@ -154,7 +154,7 @@ rather than left to be inferred:
 
 ### What this unlocks
 
-- **`inkentry memory harvest`**: LLM-based decision extraction. All three sources
+- **`inkentry harvest`**: LLM-based decision extraction. All three sources
   need an LLM: `--source git` (commits), `--source claude-code` (agent session
   history), and `--source failures`.
 - **`inkentry index` chunk summaries**: LLM-written summaries of each indexed
@@ -223,8 +223,8 @@ Skipping chunk summaries: offline mode is on, so no inference will run.
 Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your inkentry config.
 ```
 
-`inkentry memory harvest` uses the same three messages with its own opening line
-(`'inkentry memory harvest' cannot run: ...`), and it **fails** rather than
+`inkentry harvest` uses the same three messages with its own opening line
+(`'inkentry harvest' cannot run: ...`), and it **fails** rather than
 skipping, because it cannot do its job without an LLM. One difference is worth
 knowing: in offline mode it never reaches the LLM rule at all. It stops earlier,
 on the embedding requirement, with the pre-existing `requires inkentry-server`
@@ -309,7 +309,7 @@ Or override them for a single daemon without changing either:
 inkentry server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-`inkentry memory harvest` and index-time summaries now
+`inkentry harvest` and index-time summaries now
 work against the auto-discovered loopback server, no `config.toml` change
 needed: they fill in the loopback URL for you when no explicit `server_url` is
 set.
@@ -332,7 +332,7 @@ plaintext `http://` endpoint on any host but loopback is refused at startup
 (see [Security properties](#security-properties)).
 
 Every client already sets an explicit `server_url` to reach a team server, so
-`memory harvest` and index-time summaries are all unlocked with no
+`harvest` and index-time summaries are all unlocked with no
 extra client-side configuration.
 
 ## Native embedder artifact source

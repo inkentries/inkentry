@@ -4,7 +4,7 @@
 use super::tier::Tier;
 
 /// Guidance for an *inference*-backed feature (semantic `memory search`,
-/// `memory timeline`, `memory harvest`) that has no reachable server.
+/// `memory timeline`, `harvest`) that has no reachable server.
 ///
 /// Emitted at client construction, where reachability is unknown: when
 /// `server_url` is set, construction always succeeds, so this message only ever
@@ -102,10 +102,12 @@ mod tests {
 
     /// Feature name is interpolated (harvest reuses this via
     /// `harvest_requires_server`, preserving its Tier-0 substring contract).
+    /// The subject is the top-level command, so the Tier-0 line names
+    /// `inkentry harvest`, not the deprecated `inkentry memory harvest` spelling.
     #[test]
     fn inference_msg_interpolates_feature_and_keeps_harvest_substring() {
-        let msg = inference_server_required_message("memory harvest");
-        assert!(msg.contains("'inkentry memory harvest' requires inkentry-server"));
+        let msg = inference_server_required_message("harvest");
+        assert!(msg.contains("'inkentry harvest' requires inkentry-server"));
     }
 
     // ── require_tier1 ────────────────────────────────────────────────────────

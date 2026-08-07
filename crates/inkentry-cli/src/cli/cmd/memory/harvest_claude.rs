@@ -1,4 +1,4 @@
-//! `inkentry memory harvest --source claude-code`
+//! `inkentry harvest --source claude-code`
 //!
 //! Mines `~/.claude/history.jsonl` for memory entries by sending each
 //! unprocessed Claude Code session through the LLM and storing the extracted

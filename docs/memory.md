@@ -187,7 +187,7 @@ unauthenticated and never sends your server key.
 command, including `inkentry memory show` and `inkentry memory archive`, resolves
 either form the same way.
 
-Against the hosted API, `inkentry memory harvest`'s duplicate check filters
+Against the hosted API, `inkentry harvest`'s duplicate check filters
 locally, because that API has no server-side commit filter. It stays correct,
 but its cost grows with the size of the project rather than staying an indexed
 lookup.
@@ -666,15 +666,15 @@ inkentry memory graph 42 --format json
 
 ## Harvesting from git history
 
-`inkentry memory harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
+`inkentry harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)). (`inkentry memory harvest` is a deprecated, still-working alias for one release.)
 
 ```bash
 # Default: last 10 commits (fewer if the repo has fewer than 10)
-inkentry memory harvest
+inkentry harvest
 
 # Custom range
-inkentry memory harvest --git-range HEAD~30..HEAD
-inkentry memory harvest --git-range v1.0..HEAD
+inkentry harvest --git-range HEAD~30..HEAD
+inkentry harvest --git-range v1.0..HEAD
 ```
 
 The default range is clamped to the commits that actually exist, so harvest works on a brand-new repo with a single commit — it never fails with a raw `git` "bad revision" error just because the history is shorter than the range.
@@ -759,7 +759,7 @@ only from `kind`, `title`, and `body`. A `memory.db` that predates this, or
 that picked up entries from more than one machine, can already contain rows
 that share that identity while differing in `created_at`, `tags`,
 `linked_files`, or `status`, for example the same decision recorded twice by
-a repeated `memory harvest` run. inkentry leaves those rows in place: they are
+a repeated `harvest` run. inkentry leaves those rows in place: they are
 harmless, and nothing reads or writes memory any differently because of them.
 
 Because collapsing existing rows means deleting some of them, it never

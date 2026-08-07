@@ -47,7 +47,7 @@ fi
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
 inkentry index "$PROJECT_ROOT" --detach
-inkentry memory harvest --git-range HEAD~1..HEAD --detach
+inkentry harvest --git-range HEAD~1..HEAD --detach
 "#;
 
 /// The pre-push shim. `{inkentry}` is substituted with the shell-quoted absolute
@@ -77,7 +77,7 @@ const CI_STEP: &str = r#"# Add to your .github/workflows/ file:
   run: |
     if command -v inkentry >/dev/null 2>&1; then
       inkentry index . --detach
-      inkentry memory harvest --git-range HEAD~1..HEAD --detach
+      inkentry harvest --git-range HEAD~1..HEAD --detach
     fi
 "#;
 
@@ -206,6 +206,7 @@ fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
 }
 
 /// What [`write_hook`] did.
+#[derive(Debug)]
 pub(crate) enum Installed {
     Wrote(std::path::PathBuf),
     /// Ours, but the body changed: a moved binary re-resolves through here.
@@ -368,6 +369,93 @@ fn hooks_uninstall() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The post-commit hook runs the promoted top-level `inkentry harvest`, not
+    /// the deprecated `inkentry memory harvest` spelling.
+    #[test]
+    fn post_commit_hook_runs_the_top_level_harvest_command() {
+        assert!(
+            POST_COMMIT_HOOK.contains("inkentry harvest --git-range HEAD~1..HEAD --detach"),
+            "post-commit hook must call the top-level harvest command"
+        );
+        assert!(
+            !POST_COMMIT_HOOK.contains("inkentry memory harvest"),
+            "post-commit hook must not use the deprecated subcommand spelling"
+        );
+    }
+
+    /// The `--ci` workflow snippet runs the same top-level command.
+    #[test]
+    fn ci_step_runs_the_top_level_harvest_command() {
+        assert!(
+            CI_STEP.contains("inkentry harvest --git-range HEAD~1..HEAD --detach"),
+            "the CI snippet must call the top-level harvest command"
+        );
+        assert!(
+            !CI_STEP.contains("inkentry memory harvest"),
+            "the CI snippet must not use the deprecated subcommand spelling"
+        );
+    }
+
+    /// Re-running install over a pre-upgrade hook this tool wrote (marker
+    /// present, old `memory harvest` body) rewrites it to the new command. This
+    /// is how an installed hook migrates across the promotion once the user
+    /// re-runs `hooks install` / `init --hook`.
+    #[test]
+    fn reinstalling_over_a_pre_upgrade_hook_rewrites_it_to_the_new_command() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join(POST_COMMIT.name);
+        let pre_upgrade = "#!/bin/sh\n# inkentry post-commit hook\n\
+             inkentry index \"$PROJECT_ROOT\" --detach\n\
+             inkentry memory harvest --git-range HEAD~1..HEAD --detach\n";
+        std::fs::write(&hook_path, pre_upgrade).unwrap();
+
+        assert!(
+            matches!(
+                install_post_commit_hook(&dir).unwrap(),
+                Installed::Updated(_)
+            ),
+            "re-running install over our own pre-upgrade hook must report an update"
+        );
+        let body = std::fs::read_to_string(&hook_path).unwrap();
+        assert!(
+            body.contains("inkentry harvest --git-range HEAD~1..HEAD --detach"),
+            "the rewritten hook must call the top-level command: {body}"
+        );
+        assert!(
+            !body.contains("memory harvest"),
+            "the rewritten hook must drop the deprecated spelling: {body}"
+        );
+    }
+
+    /// A foreign post-commit hook (no inkentry marker) is never clobbered by a
+    /// re-install: it errors and leaves the foreign body byte-for-byte intact.
+    #[test]
+    fn reinstalling_leaves_a_foreign_post_commit_hook_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let hooks_dir = resolve_hooks_dir(&dir).unwrap();
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join(POST_COMMIT.name);
+        let foreign = "#!/bin/sh\necho someone else's hook\n";
+        std::fs::write(&hook_path, foreign).unwrap();
+
+        let err = install_post_commit_hook(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "a foreign hook must not be overwritten: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&hook_path).unwrap(),
+            foreign,
+            "the foreign hook body must be left untouched"
+        );
+    }
 
     /// A backslash reaches Git Bash intact through single quotes, so a Windows
     /// path embedded raw would resolve to nothing and every push would fail.

@@ -365,7 +365,7 @@ but loopback is refused at startup rather than sending the credential in the
 clear: use `https://` for a remote endpoint. A keyless endpoint is unaffected,
 so an existing LM Studio or Ollama box on your LAN keeps working.
 
-`memory harvest` and index-time chunk summaries both pick up an
+`harvest` and index-time chunk summaries both pick up an
 LLM-configured local daemon automatically, and fall back to a `server_url` that
 provides an LLM when your local one does not.
 
@@ -379,14 +379,14 @@ Two things are worth knowing before you hit them:
   already.
 - **`inkentry index` never fails over a missing LLM.** It prints why summaries
   were skipped and exits 0. Pass `--no-summaries` to skip the step silently.
-  `memory harvest` does fail, since it cannot run without an LLM.
+  `harvest` does fail, since it cannot run without an LLM.
 
 See [Third-party models](third-party-models.md#how-inkentry-finds-an-llm) for the
 routing rule, the exact messages, the full precedence and security details, and
 the team-server equivalent.
 
 This is an advanced override; most users never set it: summaries and
-`memory harvest` are simply unavailable without an LLM configured, and
+`harvest` are simply unavailable without an LLM configured, and
 semantic search works regardless since the native embedder needs no
 configuration at all.
 

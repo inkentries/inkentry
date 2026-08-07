@@ -21,14 +21,14 @@ pub enum NoLlmReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFeature {
     Summaries,
-    MemoryHarvest,
+    Harvest,
 }
 
 impl LlmFeature {
     fn subject(self) -> &'static str {
         match self {
             LlmFeature::Summaries => "Skipping chunk summaries",
-            LlmFeature::MemoryHarvest => "'inkentry memory harvest' cannot run",
+            LlmFeature::Harvest => "'inkentry harvest' cannot run",
         }
     }
 }
@@ -83,7 +83,7 @@ mod tests {
         NoLlmReason::LocalConfiguredButNotServed,
         NoLlmReason::NoLlmAnywhere,
     ];
-    const FEATURES: [LlmFeature; 2] = [LlmFeature::Summaries, LlmFeature::MemoryHarvest];
+    const FEATURES: [LlmFeature; 2] = [LlmFeature::Summaries, LlmFeature::Harvest];
 
     // The jargon in the message this task replaces is what created the task.
     // No message may name an internal type, adapter or field; a reader can
@@ -143,7 +143,7 @@ mod tests {
     fn local_configured_but_not_served_message_names_llm_url_and_the_restart() {
         let msg = no_llm_message(
             NoLlmReason::LocalConfiguredButNotServed,
-            LlmFeature::MemoryHarvest,
+            LlmFeature::Harvest,
         );
         assert!(msg.contains("llm_url"), "{msg}");
         assert!(msg.contains("inkentry server stop"), "{msg}");
@@ -156,9 +156,20 @@ mod tests {
 
     #[test]
     fn no_llm_anywhere_message_offers_both_routes_to_an_llm() {
-        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::MemoryHarvest);
+        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest);
         assert!(msg.contains("llm_url"), "local route missing: {msg}");
         assert!(msg.contains("server_url"), "remote route missing: {msg}");
+    }
+
+    // Harvest is a top-level command; its no-LLM subject must name
+    // `inkentry harvest`, not the deprecated `inkentry memory harvest` spelling.
+    #[test]
+    fn harvest_subject_names_the_top_level_command() {
+        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest);
+        assert!(
+            msg.starts_with("'inkentry harvest' cannot run"),
+            "harvest no-LLM message must name the top-level command: {msg}"
+        );
     }
 
     // `--no-summaries` is only an instruction for `index`; offering it to
@@ -170,9 +181,9 @@ mod tests {
                 .contains("--no-summaries")
         );
         assert!(
-            !no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::MemoryHarvest)
+            !no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest)
                 .contains("--no-summaries"),
-            "memory harvest has no such flag"
+            "harvest has no such flag"
         );
     }
 

@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
         Command::Unlink(args) => cli::cmd::unlink(args, cfg),
         Command::Autoclean => cli::cmd::autoclean(cfg),
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
+        Command::Harvest(args) => cli::cmd::harvest(args, cfg).await,
         Command::Hooks(args) => cli::cmd::hooks(args),
         Command::Links(args) => cli::cmd::links(args, cfg).await,
         Command::Plumbing(args) => {

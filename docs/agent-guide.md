@@ -6,7 +6,7 @@
 
 **What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`inkentry search --mode auto|semantic|hybrid`) and `inkentry memory harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+**What's server-backed:** semantic/hybrid search (`inkentry search --mode auto|semantic|hybrid`) and `inkentry harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
 
 **Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
@@ -203,7 +203,7 @@ Install the git hook once:
 inkentry hooks install
 ```
 
-The post-commit hook then runs `inkentry memory harvest` after every commit,
+The post-commit hook then runs `inkentry harvest` after every commit,
 using the LLM to extract decisions, requirements, and context from the commit
 messages your agent already writes. Teammates without inkentry installed are
 unaffected (the hook is a no-op when `inkentry` is not on `PATH`).
@@ -212,8 +212,8 @@ You can also harvest on demand, over a range of history or straight from an
 agent's own session log:
 
 ```bash
-inkentry memory harvest --git-range HEAD~20..HEAD    # from commit messages (default source)
-inkentry memory harvest --source claude-code --confirm   # from Claude Code session history (reads ~/.claude/history.jsonl)
+inkentry harvest --git-range HEAD~20..HEAD    # from commit messages (default source)
+inkentry harvest --source claude-code --confirm   # from Claude Code session history (reads ~/.claude/history.jsonl)
 ```
 
 Harvesting needs a server with an LLM backend (the local one autostarts). The

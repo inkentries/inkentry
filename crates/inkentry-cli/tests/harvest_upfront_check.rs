@@ -14,7 +14,8 @@ use std::fs;
 use tempfile::tempdir;
 
 // Substring that appears in the Tier-0 error from `harvest_requires_server()`.
-const SERVER_REQUIRED: &str = "'inkentry memory harvest' requires inkentry-server";
+// Both invocation paths name the canonical top-level command.
+const SERVER_REQUIRED: &str = "'inkentry harvest' requires inkentry-server";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,22 @@ fn harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command 
     cmd
 }
 
+// Build the top-level `inkentry --config <cfg> harvest --git-range HEAD~1..HEAD`
+// command (the promoted spelling of the same feature).
+fn toplevel_harvest_cmd(config_path: &std::path::Path, dir: &std::path::Path) -> Command {
+    let mut cmd = inkentry_bin();
+    cmd.current_dir(dir)
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_LLM_URL")
+        .env("INKENTRY_NO_SERVER", "1")
+        .arg("--config")
+        .arg(config_path)
+        .arg("harvest")
+        .arg("--git-range")
+        .arg("HEAD~1..HEAD");
+    cmd
+}
+
 // ── (a) no server_url → server-required error ─────────────────────────────────
 
 #[test]
@@ -67,6 +84,23 @@ fn harvest_fails_with_actionable_error_when_no_server_and_no_model() {
         // must NOT tell a solo user to configure a team `server_url`.
         .stderr(predicate::str::contains("inkentry server start"))
         .stderr(predicate::str::contains("server_url").not());
+}
+
+// ── (a2) top-level `inkentry harvest` shares the same Tier-0 gate ──────────────
+
+#[test]
+fn toplevel_harvest_fails_with_actionable_error_when_no_server() {
+    let temp = tempdir().unwrap();
+    let config_path = write_harvest_config(temp.path(), "");
+
+    toplevel_harvest_cmd(&config_path, temp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(SERVER_REQUIRED))
+        .stderr(predicate::str::contains("inkentry server start"))
+        .stderr(predicate::str::contains("server_url").not())
+        // The promoted path must never emit the alias's deprecation warning.
+        .stderr(predicate::str::contains("deprecated").not());
 }
 
 // ── (b) server_url set → gate passes (fails later for another reason) ─────────

@@ -159,7 +159,7 @@ pub(super) async fn harvest_clients(
                 route
                     .reason()
                     .unwrap_or(capability::NoLlmReason::NoLlmAnywhere),
-                capability::LlmFeature::MemoryHarvest,
+                capability::LlmFeature::Harvest,
             )
         );
     };

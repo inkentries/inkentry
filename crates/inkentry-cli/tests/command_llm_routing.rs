@@ -436,6 +436,99 @@ async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
     assert_no_internal_names(&text);
 }
 
+// ── top-level `inkentry harvest` promotion ────────────────────────────────
+//
+// The promoted top-level command shares the handler and the memory-store
+// resolution with the deprecated `memory harvest` alias. These pin the two
+// promotion-specific guarantees the shared handler alone cannot: results
+// identical to the alias, and the alias-only stderr deprecation warning.
+
+fn toplevel_harvest_cmd(
+    home: &Path,
+    project: &Path,
+    db: &Path,
+    state_dir: &Path,
+) -> assert_cmd::Command {
+    let mut cmd = base_cmd(home, project);
+    cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .arg("harvest")
+        .arg("--db")
+        .arg(db)
+        .arg("--branch")
+        .arg("HEAD");
+    cmd
+}
+
+#[tokio::test]
+async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
+    let loopback = server_mock(Some(harvest_payload())).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_git_project(project.path());
+    let db = project.path().join("index.db");
+    seed_index(home.path(), project.path(), &db);
+    let state_dir = home.path().join("state");
+    write_loopback_state(&state_dir, &loopback.uri());
+
+    // Two fresh memory stores so neither run sees the other's entries; both
+    // start empty and harvest the same single commit, so stdout must match.
+    let mem_top = project.path().join("memory_top.db");
+    let top = toplevel_harvest_cmd(home.path(), project.path(), &mem_top, &state_dir)
+        .output()
+        .expect("run top-level harvest");
+
+    let mem_alias = project.path().join("memory_alias.db");
+    let alias = harvest_cmd(home.path(), project.path(), &mem_alias, &state_dir)
+        .output()
+        .expect("run memory harvest alias");
+
+    let top_out = String::from_utf8_lossy(&top.stdout).to_string();
+    let alias_out = String::from_utf8_lossy(&alias.stdout).to_string();
+    let top_err = String::from_utf8_lossy(&top.stderr).to_string();
+    let alias_err = String::from_utf8_lossy(&alias.stderr).to_string();
+
+    assert!(
+        top.status.success(),
+        "top-level harvest failed:\n{top_out}\n{top_err}"
+    );
+    assert!(
+        alias.status.success(),
+        "alias harvest failed:\n{alias_out}\n{alias_err}"
+    );
+
+    // Both spellings store the harvested decision.
+    assert!(
+        top_out.contains("Stored 1 memory entries"),
+        "top-level harvest must store the extracted entry:\n{top_out}"
+    );
+
+    // Identical stdout: the promotion is a rename, not a behaviour change.
+    assert_eq!(
+        top_out, alias_out,
+        "the two spellings must produce byte-identical stdout"
+    );
+
+    // Exactly one deprecation line, on the alias's stderr only, naming the
+    // canonical command; the top-level command must never warn.
+    let alias_warnings = alias_err
+        .lines()
+        .filter(|l| l.contains("deprecated"))
+        .count();
+    assert_eq!(
+        alias_warnings, 1,
+        "the alias must emit exactly one deprecation warning:\n{alias_err}"
+    );
+    assert!(
+        alias_err.contains("inkentry harvest"),
+        "the deprecation warning must name the replacement command:\n{alias_err}"
+    );
+    assert!(
+        !top_err.contains("deprecated"),
+        "the top-level command must not emit a deprecation warning:\n{top_err}"
+    );
+}
+
 // ── memory harvest --source failures ──────────────────────────────────────
 //
 // The third harvest source. It builds its clients at its own call site, so the
