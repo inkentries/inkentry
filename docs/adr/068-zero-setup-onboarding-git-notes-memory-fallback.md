@@ -34,6 +34,11 @@ claim before `init` as well.
 
 ### What actually runs before `init` (on `main`, after the global-store fix)
 
+> **`explore` since removed (2026-08-07) — [ADR-079](079-deprecate-explore-command-and-route.md).**
+> `explore` is named here and below as a live index-backed command; it no longer
+> exists. These references record the pre-`init` behaviour as it stood when
+> written. Kept unedited as provenance.
+
 A merged fix closed the ADR-067 global-store residual: `graph`, `chunks`,
 `check`, and `explore` now route through `require_project_db` and no longer fall
 back to the machine-global `~/.config/spelunk/index.db`. Nothing reads that

@@ -28,6 +28,12 @@ No new embed route. `memory add`/`search`/`timeline` obtain query vectors by cal
 
 ### 3. Keep `/explore` and `/plan` as scoped, server-owned SSE routes
 
+> **Overtaken (2026-08-07) by [ADR-079](079-deprecate-explore-command-and-route.md).**
+> `/explore` is removed: reasoning over retrieved context moves to a skill the
+> caller's own agent runs, and `/llm/complete` is the single generic inference
+> primitive. `/plan` was never implemented as a route. No scoped, server-owned
+> porcelain inference route remains. Kept as the original record of the reasoning.
+
 These already exist in #261 and stay. Their multi-turn reasoning loop and retrieval policy are genuinely server-side concerns; collapsing them into `llm/complete` would push agentic loop logic into the CLI — the opposite of what #259 wants and the opposite of the BFF intent.
 
 **Net surface:** 2 generic primitives (`llm/complete`, `index/embed`) + a fixed semantic set (`memory` CRUD/search, `explore`, `plan`). Not "N bespoke endpoints," and deliberately not literally "two endpoints total."
@@ -157,6 +163,12 @@ The server echoes `chunk_id` back with the vector (it is opaque to the server, p
 - **Cost/abuse risk** is accepted in exchange for a stable O(1) inference surface, gated behind auth + rate limiting + a server-side token ceiling.
 
 ## Boundary test
+
+> **Exemplar overtaken (2026-08-07) by [ADR-079](079-deprecate-explore-command-and-route.md).**
+> The test still holds, but `/explore` and `/plan` are no longer live examples:
+> `/explore` is removed and `/plan` was never built. With no scoped inference
+> route remaining, `llm/complete` is now the default for any CLI command needing
+> inference. Kept as the original record.
 
 If a proposed new CLI command needs LLM inference and its prompt/orchestration can live in the CLI, it routes through `llm/complete` — do **not** add a new endpoint. Add a scoped route **only** when the multi-turn orchestration or retrieval policy must live server-side (as `/explore` and `/plan` do).
 

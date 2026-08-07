@@ -10,6 +10,13 @@ spelunk is a **context retrieval engine** for AI agents. The following boundarie
 
 ### 1. Context retrieval, not code generation
 
+> **Illustration overtaken (2026-08-07) by [ADR-079](079-deprecate-explore-command-and-route.md).**
+> The boundary below still holds, but both example commands are gone: `ask` was
+> removed earlier, and `explore` is removed by ADR-079. Synthesising an answer
+> *about* code is now the caller's own agent running a skill over inkentry's
+> retrieval primitives, not a command inkentry ships. Kept as the original
+> record of the reasoning.
+
 spelunk retrieves and ranks code context. It does not generate, modify, or refactor code.
 
 The `ask` and `explore` commands use an LLM to synthesise answers *about* code, but the output is explanatory text, never a code patch or file modification. Code generation is the agent's job. spelunk feeds the agent; the agent acts.

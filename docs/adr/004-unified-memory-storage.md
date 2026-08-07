@@ -27,6 +27,11 @@ Crucially, this function only knows about `cfg.server_url` — the explicit **te
 
 The split is in **which commands call `effective_config()` before `open_memory_backend()`**:
 
+> **`explore` since removed (2026-08-07) — [ADR-079](079-deprecate-explore-command-and-route.md).**
+> The `explore` command referenced in the table and prose of this section no
+> longer exists; its row records the historical routing being analysed here.
+> Kept unedited as provenance.
+
 | Command | Calls `effective_config()`? | Where memory goes when a local server is up and no team `server_url` is set |
 | --- | --- | --- |
 | `memory search` | **yes** (`memory/search.rs:24`) | **server.db** (via Remote backend) |
