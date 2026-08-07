@@ -5,7 +5,7 @@
     "description": "Shared memory server for inkentry. Stores decisions, requirements, and context for a team and serves them over HTTP.",
     "contact": {
       "name": "inkentry",
-      "url": "https://github.com/spelunk-cloud/spelunk"
+      "url": "https://github.com/inkentries/inkentry"
     },
     "license": {
       "name": "MIT"

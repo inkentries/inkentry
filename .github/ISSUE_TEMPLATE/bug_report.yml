@@ -6,13 +6,13 @@ body:
     attributes:
       value: |
         Thanks for the report. **Security issues do not belong here** — please use
-        [private vulnerability reporting](https://github.com/spelunk-cloud/spelunk/security/advisories/new) instead.
+        [private vulnerability reporting](https://github.com/inkentries/inkentry/security/advisories/new) instead.
   - type: input
     id: version
     attributes:
-      label: spelunk version
-      description: Output of `spelunk --version`
-      placeholder: spelunk 1.0.0
+      label: inkentry version
+      description: Output of `inkentry --version`
+      placeholder: inkentry 0.9.8
     validations:
       required: true
   - type: dropdown
@@ -31,7 +31,7 @@ body:
   - type: dropdown
     id: install
     attributes:
-      label: How did you install spelunk?
+      label: How did you install inkentry?
       options:
         - Release tarball / zip
         - Debian package (.deb)
@@ -64,8 +64,8 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. spelunk init
-        2. spelunk index .
+        1. inkentry init
+        2. inkentry index .
         3. ...
     validations:
       required: true
@@ -74,9 +74,9 @@ body:
     attributes:
       label: Diagnostics
       description: >
-        Paste the output of `spelunk status` and `spelunk check`. If a server is
-        involved, add `spelunk server status` and any relevant lines from
-        `spelunk server logs`. Re-running the failing command with
+        Paste the output of `inkentry status` and `inkentry check`. If a server is
+        involved, add `inkentry server status` and any relevant lines from
+        `inkentry server logs`. Re-running the failing command with
         `RUST_LOG=debug` often captures the useful detail. Please redact
         anything sensitive — file paths and repo names are fine to keep.
       render: text

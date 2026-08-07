@@ -13,7 +13,7 @@ library_name: gguf
 
 Q8_0-quantized GGUF build of [`codefuse-ai/F2LLM-v2-330M`](https://huggingface.co/codefuse-ai/F2LLM-v2-330M),
 plus its tokenizer, distributed for use as the bundled embedding model in
-[Inkentry](https://github.com/spelunk-cloud/spelunk).
+[Inkentry](https://github.com/inkentries/inkentry).
 
 ## What this is
 

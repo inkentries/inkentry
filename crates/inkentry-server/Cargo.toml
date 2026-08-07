@@ -4,7 +4,7 @@ version = "0.9.8"
 edition = "2024"
 description = "inkentry shared memory server"
 license = "MIT"
-repository = "https://github.com/spelunk-cloud/spelunk"
+repository = "https://github.com/inkentries/inkentry"
 
 [[bin]]
 name = "inkentry-server"

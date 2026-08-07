@@ -267,7 +267,7 @@ readers not using Compose.
 ### Recommended: `docker compose --profile team-server`
 
 ```bash
-git clone https://github.com/spelunk-cloud/spelunk
+git clone https://github.com/inkentries/inkentry
 cd inkentry
 
 INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
@@ -289,7 +289,7 @@ bind/TLS refusal.
 ### Manual alternative: bare `docker run`
 
 ```bash
-git clone https://github.com/spelunk-cloud/spelunk
+git clone https://github.com/inkentries/inkentry
 cd inkentry
 
 # Build the image first: there is no published registry tag to pull from,
