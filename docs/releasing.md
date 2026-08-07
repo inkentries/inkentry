@@ -81,14 +81,47 @@ script has no code path that can create a GitHub release, push to the
 Run it before tagging; a failure here is cheaper to fix than one discovered
 after a tag is already pushed.
 
-### 1. Bump the version in `Cargo.toml`
+### 1. Bump the version in the four crate manifests
 
-Edit the `version` field in `Cargo.toml`:
+**The root `Cargo.toml` has no version to bump.** It is a virtual workspace
+manifest — `[workspace]`, `members`, `[workspace.dependencies]` — with no
+`[package]` section, no `version` field, and no `[workspace.package]` for the
+crates to inherit from. Editing it changes nothing, and a tag pushed on that
+basis ships binaries still reporting the previous version.
+
+The version lives in each crate's own manifest, and all four move together:
+
+- `crates/inkentry-cli/Cargo.toml`
+- `crates/inkentry-core/Cargo.toml`
+- `crates/inkentry-embed/Cargo.toml`
+- `crates/inkentry-server/Cargo.toml`
 
 ```toml
 [package]
-name = "inkentry"
-version = "0.8.0"   # <-- update this
+name = "inkentry-cli"
+version = "0.9.8"   # <-- update this, in all four manifests
+```
+
+Then regenerate `Cargo.lock` with cargo — never hand-edit it. The workspace
+members are path dependencies, so their recorded versions have to move too:
+
+```bash
+INKENTRY_SECRET_STORE=file cargo update --workspace --offline
+```
+
+That should touch exactly the four `inkentry-*` entries and nothing else.
+
+Promote the changelog next: move the accumulated `## [Unreleased]` notes in
+`CHANGELOG.md` into a new `## [<version>] — <date>` section, leaving
+`## [Unreleased]` in place and empty. Anything user-facing that landed without
+an entry gets written now, based on `git log` since the previous bump.
+
+Finally, confirm the bump actually reached the binary rather than assuming it
+did:
+
+```bash
+INKENTRY_SECRET_STORE=file cargo build -p inkentry-cli
+./target/debug/inkentry --version
 ```
 
 ### 1a. Check for hardcoded version references in docs
@@ -106,16 +139,16 @@ Fix anything that pins a specific old version (use `<version>` or point at
 `install.sh`). Commit everything together:
 
 ```bash
-git add Cargo.toml Cargo.lock docs/
-git commit -m "chore: bump version to 0.8.0"
+git add crates/*/Cargo.toml Cargo.lock CHANGELOG.md docs/
+git commit -m "chore: bump version to 0.9.8"
 git push origin main
 ```
 
 ### 2. Tag and push
 
 ```bash
-git tag v0.8.0
-git push origin v0.8.0
+git tag v0.9.8
+git push origin v0.9.8
 ```
 
 That's it. The release workflow triggers automatically on the pushed tag.
@@ -126,7 +159,7 @@ Watch progress at:
 `https://github.com/spelunk-cloud/spelunk/actions/workflows/release.yml`
 
 Once all jobs pass, the release appears at:
-`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.8.0`
+`https://github.com/spelunk-cloud/spelunk/releases/tag/v0.9.8`
 
 ## Pre-releases
 
@@ -135,14 +168,14 @@ GitHub Release as a pre-release when the tag contains `-rc`, `-beta`, or
 `-alpha`:
 
 ```bash
-git tag v0.8.0-rc.1
-git push origin v0.8.0-rc.1
+git tag v0.9.8-rc.1
+git push origin v0.9.8-rc.1
 ```
 
 ## Download URLs
 
 After a release is published, assets follow these patterns (the `<version>`
-segment is the full tag, e.g. `v0.8.0`):
+segment is the full tag, e.g. `v0.9.8`):
 
 ```
 # Unix tarballs
@@ -155,23 +188,23 @@ https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<v
 https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry_<version-no-v>_amd64.deb
 ```
 
-Examples for `v0.9.0`:
+Examples for `v0.9.8`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-aarch64-apple-darwin.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-unknown-linux-gnu.tar.gz
 
 # Windows x86_64
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry-v0.9.0-x86_64-pc-windows-msvc.zip
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-pc-windows-msvc.zip
 
 # Debian (amd64)
-https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.0/inkentry_0.9.0_amd64.deb
+https://github.com/spelunk-cloud/spelunk/releases/download/v0.9.8/inkentry_0.9.8_amd64.deb
 ```
 
 > `releases/latest/download/<asset>` also works when the asset name is exact,
@@ -184,11 +217,11 @@ If a release needs to be pulled:
 
 ```bash
 # Delete the tag locally and on remote
-git tag -d v0.8.0
-git push origin :refs/tags/v0.8.0
+git tag -d v0.9.8
+git push origin :refs/tags/v0.9.8
 
 # Delete the GitHub Release (requires gh CLI)
-gh release delete v0.8.0 --yes
+gh release delete v0.9.8 --yes
 ```
 
 Then fix the issue, re-commit, and re-tag.

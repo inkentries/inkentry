@@ -1,13 +1,64 @@
 # Changelog
 
-All notable changes to spelunk are documented here.
+All notable changes to inkentry are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-spelunk uses [Semantic Versioning](https://semver.org/).
+inkentry uses [Semantic Versioning](https://semver.org/).
 
 ---
 
 ## [Unreleased]
+
+## [0.9.8] — 2026-08-07
+
+### Changed
+
+- **The project is now called inkentry: the command you type, the binaries, the
+  environment variables and the on-disk locations have all been renamed.** The
+  CLI command is `inkentry` (was `spelunk`), and the two binaries ship as
+  `inkentry` and `inkentry-server`. Every environment variable the tool reads
+  moves from the `SPELUNK_` prefix to `INKENTRY_` — `INKENTRY_LLM_URL`,
+  `INKENTRY_LLM_MODEL`, `INKENTRY_LLM_KEY`, `INKENTRY_CONFIG_DIR`,
+  `INKENTRY_SECRET_STORE` and the rest.
+
+  On-disk locations move with the name: the config directory is
+  `~/.config/inkentry`, the per-project directory is `.inkentry/` with its
+  `.inkentryignore` companion, memory is written to the `refs/notes/inkentry`
+  git ref, and the per-user state, registry, model-cache and OS-keychain
+  entries all follow.
+
+  **This release migrates none of that for you.** An 0.9.8 binary does not read
+  the old paths and does not fall back to them, so an existing install comes up
+  with a default configuration and an unindexed project until you move your
+  state across by hand (or re-run `inkentry init` and re-index). Memory already
+  pushed to a git remote under the old notes ref is not visible under the new
+  one; re-push it after moving. Rename your `SPELUNK_*` variables in shell
+  profiles and CI, and re-add credentials to the keychain under the new service
+  name.
+
+  Distribution surfaces are deliberately unchanged in this release: release
+  archive names, the Homebrew tap and formula, the install-script URLs, the
+  Docker and Debian packaging paths, the model repo and the hosted API host all
+  still serve under their existing names.
+
+### Fixed
+
+- **`inkentry memory harvest` no longer fails with `EOF while parsing a value`
+  against a reasoning model.** Reasoning models stream their chain-of-thought as
+  `reasoning_content`, a sibling of `content`, and emit all of it before the
+  first content token. The SSE parser only read `delta.content`, so under
+  harvest's tight per-batch `max_tokens` the entire budget was spent thinking
+  and the stream ended with no content at all — surfacing as a parse error with
+  nothing pointing at the real cause.
+
+  Chat requests now send `reasoning_effort: "none"` by default, configurable
+  with `--llm-reasoning-effort` / `INKENTRY_LLM_REASONING_EFFORT`. The values
+  `default`, `model` and blank omit the field entirely, so endpoints that reject
+  an unknown key keep working. `reasoning_content` is now parsed and discarded,
+  so a model that reasons anyway cannot prepend its thinking to a
+  JSON-schema-constrained completion, and a stream that carried reasoning but no
+  content warns about the exhausted budget instead of failing opaquely
+  downstream.
 
 ## [0.9.7] — 2026-08-05
 
