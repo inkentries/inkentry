@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// Regenerates bucket/spelunk.json from a template.
+// Regenerates bucket/inkentry.json from a template.
 //
 // The manifest is always written from scratch. Given a version and the Windows
 // x86_64 release-asset sha256 digest, this script produces the exact file
@@ -14,7 +14,7 @@
 //   node update-scoop-manifest.js \
 //     --version 0.8.1 \
 //     --sha-x86_64-windows <hex> \
-//     [--out bucket/spelunk.json]
+//     [--out bucket/inkentry.json]
 //
 // --sha-x86_64-windows may also be supplied via SHA_X86_64_WINDOWS, and
 // --version via VERSION. Flags win when both are present.
@@ -63,7 +63,7 @@ function assertSha256(name, value) {
 }
 
 function buildManifest({ version, shaX86_64Windows }) {
-  const base = "https://github.com/spelunk-cloud/spelunk";
+  const base = "https://github.com/inkentries/inkentry";
   const manifest = {
     version,
     description:
@@ -72,18 +72,18 @@ function buildManifest({ version, shaX86_64Windows }) {
     license: "MIT",
     architecture: {
       "64bit": {
-        url: `${base}/releases/download/v${version}/spelunk-v${version}-x86_64-pc-windows-msvc.zip`,
+        url: `${base}/releases/download/v${version}/inkentry-v${version}-x86_64-pc-windows-msvc.zip`,
         hash: shaX86_64Windows,
       },
     },
-    bin: ["spelunk.exe", "spelunk-server.exe"],
+    bin: ["inkentry.exe", "inkentry-server.exe"],
     checkver: {
       github: base,
     },
     autoupdate: {
       architecture: {
         "64bit": {
-          url: `${base}/releases/download/v$version/spelunk-v$version-x86_64-pc-windows-msvc.zip`,
+          url: `${base}/releases/download/v$version/inkentry-v$version-x86_64-pc-windows-msvc.zip`,
         },
       },
     },
@@ -110,7 +110,7 @@ function main() {
   );
 
   const outPath = path.resolve(
-    requireValue("--out", args.out, "bucket/spelunk.json")
+    requireValue("--out", args.out, "bucket/inkentry.json")
   );
 
   const manifest = buildManifest({ version, shaX86_64Windows });

@@ -1,0 +1,27 @@
+# systemd user unit for inkentry-server
+#
+# To enable and start at login:
+#   systemctl --user enable --now inkentry-server
+#
+# To view logs:
+#   journalctl --user -u inkentry-server -f
+#
+# To stop:
+#   systemctl --user stop inkentry-server
+#
+# Install path: ~/.config/systemd/user/inkentry-server.service
+# Or system-wide: /usr/lib/systemd/user/inkentry-server.service
+
+[Unit]
+Description=inkentry-server — code intelligence server for AI agents
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/inkentry-server --port 7777
+Restart=on-failure
+RestartSec=5s
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

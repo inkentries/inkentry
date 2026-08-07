@@ -119,7 +119,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in spelunk spelunk-server; do
+          for bin in inkentry inkentry-server; do
             path="target/${{ matrix.target }}/release/${bin}"
             raw="$(objdump -T "$path")"
             ceiling="$(printf '%s\n' "$raw" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
@@ -142,10 +142,10 @@ jobs:
           set -euo pipefail
           VERSION="${{ github.ref_name }}"
           TARGET="${{ matrix.target }}"
-          ARCHIVE="spelunk-${VERSION}-${TARGET}.tar.gz"
+          ARCHIVE="inkentry-${VERSION}-${TARGET}.tar.gz"
           tar -czf "${ARCHIVE}" \
             -C "target/${TARGET}/release" \
-            spelunk spelunk-server
+            inkentry inkentry-server
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Package zip (Windows)
@@ -154,10 +154,10 @@ jobs:
         run: |
           $VERSION  = "${{ github.ref_name }}"
           $TARGET   = "${{ matrix.target }}"
-          $ARCHIVE  = "spelunk-${VERSION}-${TARGET}.zip"
+          $ARCHIVE  = "inkentry-${VERSION}-${TARGET}.zip"
           $binaries = @(
-            "target\${TARGET}\release\spelunk.exe",
-            "target\${TARGET}\release\spelunk-server.exe"
+            "target\${TARGET}\release\inkentry.exe",
+            "target\${TARGET}\release\inkentry-server.exe"
           )
           Compress-Archive -Path $binaries -DestinationPath $ARCHIVE
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -165,7 +165,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: spelunk-${{ github.ref_name }}-${{ matrix.target }}
+          name: inkentry-${{ github.ref_name }}-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
 
   deb:
@@ -181,12 +181,12 @@ jobs:
       - name: Download x86_64 Linux artifact
         uses: actions/download-artifact@v8
         with:
-          name: spelunk-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+          name: inkentry-${{ github.ref_name }}-x86_64-unknown-linux-gnu
           path: linux-amd64
 
       - name: Extract tarball
         run: |
-          tar -xzf linux-amd64/spelunk-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz \
+          tar -xzf linux-amd64/inkentry-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz \
             -C linux-amd64
 
       # dpkg-shlibdeps can only map a linked library to its owning package if
@@ -210,12 +210,12 @@ jobs:
           mkdir -p BUILD/usr/lib/systemd/user
 
           # Binaries
-          install -m 755 linux-amd64/spelunk        BUILD/usr/bin/spelunk
-          install -m 755 linux-amd64/spelunk-server BUILD/usr/bin/spelunk-server
+          install -m 755 linux-amd64/inkentry        BUILD/usr/bin/inkentry
+          install -m 755 linux-amd64/inkentry-server BUILD/usr/bin/inkentry-server
 
           # systemd user unit
-          install -m 644 packaging/spelunk-server.service \
-            BUILD/usr/lib/systemd/user/spelunk-server.service
+          install -m 644 packaging/inkentry-server.service \
+            BUILD/usr/lib/systemd/user/inkentry-server.service
 
           # Depends is derived from the packaged binaries, never hardcoded, and
           # derived INSIDE debian:11 (the build floor), not on the ubuntu runner.
@@ -231,9 +231,9 @@ jobs:
             apt-get update -qq >/dev/null
             apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
             mkdir -p /tmp/sd/debian
-            printf "Source: spelunk\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: spelunk\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
+            printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
             cd /tmp/sd
-            dpkg-shlibdeps -O /w/BUILD/usr/bin/spelunk /w/BUILD/usr/bin/spelunk-server
+            dpkg-shlibdeps -O /w/BUILD/usr/bin/inkentry /w/BUILD/usr/bin/inkentry-server
           ')"
           echo "Derived ${DEB_DEPENDS}"
 
@@ -252,7 +252,7 @@ jobs:
           # zstd members, so a default-built .deb fails to install on the
           # glibc-2.31 floor with "unknown compression for member 'control.tar.zst'".
           # xz members install everywhere from the floor up.
-          dpkg-deb --build -Zxz BUILD "spelunk_${{ env.DEB_VERSION }}_amd64.deb"
+          dpkg-deb --build -Zxz BUILD "inkentry_${{ env.DEB_VERSION }}_amd64.deb"
 
       # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
       # only executing real subcommands (a git-backed memory round trip
@@ -266,14 +266,14 @@ jobs:
           set -euo pipefail
           for image in debian:11 ubuntu:20.04 ubuntu:24.04; do
             echo "=== ${image} ==="
-            docker run --rm -v "$PWD:/pkg:ro" -e SPELUNK_SECRET_STORE=file "$image" bash -euc '
+            docker run --rm -v "$PWD:/pkg:ro" -e INKENTRY_SECRET_STORE=file "$image" bash -euc '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              apt-get install -y -qq /pkg/spelunk_${{ env.DEB_VERSION }}_amd64.deb
+              apt-get install -y -qq /pkg/inkentry_${{ env.DEB_VERSION }}_amd64.deb
               apt-get install -y -qq --no-install-recommends git ca-certificates
-              test -n "$(spelunk --version)"
-              test -n "$(spelunk-server --version)"
+              test -n "$(inkentry --version)"
+              test -n "$(inkentry-server --version)"
 
               mkdir -p /w && cd /w
               git init -q .
@@ -282,18 +282,18 @@ jobs:
               echo "fn main() {}" > main.rs
               git add . && git commit -qm init
 
-              spelunk status
-              spelunk init --no-index
-              spelunk memory add --kind note --title "deb smoke" --body "runs on this image"
-              spelunk memory list | grep -q "deb smoke"
+              inkentry status
+              inkentry init --no-index
+              inkentry memory add --kind note --title "deb smoke" --body "runs on this image"
+              inkentry memory list | grep -q "deb smoke"
             '
           done
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v7
         with:
-          name: spelunk-${{ github.ref_name }}-amd64-deb
-          path: spelunk_${{ env.DEB_VERSION }}_amd64.deb
+          name: inkentry-${{ github.ref_name }}-amd64-deb
+          path: inkentry_${{ env.DEB_VERSION }}_amd64.deb
 
   # The .deb is only one packaging of the Linux binaries; the raw tarballs
   # (served by install.sh and the Homebrew formula) ship the same files and
@@ -317,12 +317,12 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v8
         with:
-          name: spelunk-${{ github.ref_name }}-${{ matrix.target }}
+          name: inkentry-${{ github.ref_name }}-${{ matrix.target }}
           path: tarball
 
       - name: Extract tarball
         run: |
-          tar -xzf tarball/spelunk-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
+          tar -xzf tarball/inkentry-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             -C tarball
 
       # Install-success proves nothing: apt is happy with a package whose
@@ -333,13 +333,13 @@ jobs:
           set -euo pipefail
           for image in debian:11 ubuntu:20.04 ubuntu:24.04 debian:12; do
             echo "=== ${image} ==="
-            docker run --rm -v "$PWD/tarball:/t:ro" -e SPELUNK_SECRET_STORE=file "$image" bash -euc '
+            docker run --rm -v "$PWD/tarball:/t:ro" -e INKENTRY_SECRET_STORE=file "$image" bash -euc '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
               apt-get install -y -qq --no-install-recommends libdbus-1-3 git ca-certificates
-              test -n "$(/t/spelunk --version)"
-              test -n "$(/t/spelunk-server --version)"
+              test -n "$(/t/inkentry --version)"
+              test -n "$(/t/inkentry-server --version)"
 
               mkdir -p /w && cd /w
               git init -q .
@@ -348,10 +348,10 @@ jobs:
               echo "fn main() {}" > main.rs
               git add . && git commit -qm init
 
-              /t/spelunk status
-              /t/spelunk init --no-index
-              /t/spelunk memory add --kind note --title "tarball smoke" --body "runs on this image"
-              /t/spelunk memory list | grep -q "tarball smoke"
+              /t/inkentry status
+              /t/inkentry init --no-index
+              /t/inkentry memory add --kind note --title "tarball smoke" --body "runs on this image"
+              /t/inkentry memory list | grep -q "tarball smoke"
             '
           done
 
@@ -388,7 +388,7 @@ jobs:
             artifacts/*.deb
 
   update-homebrew-formula:
-    name: Update Homebrew tap (spelunk-cloud/homebrew-spelunk)
+    name: Update Homebrew tap (inkentries/homebrew-inkentry)
     needs: release
     # Skip pre-release tags (rc/beta/alpha) — formula only tracks stable releases.
     if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
@@ -410,7 +410,7 @@ jobs:
 
           release_digest() {
             local target="$1"
-            local asset="spelunk-${VERSION}-${target}.tar.gz"
+            local asset="inkentry-${VERSION}-${target}.tar.gz"
             # Each release asset carries a `digest` field shaped "sha256:<hex>" —
             # no need to download the tarball and hash it ourselves.
             gh release view "${VERSION}" --json assets \
@@ -427,42 +427,51 @@ jobs:
           echo "SHA_X86_64_LINUX=${SHA_X86_64_LINUX}"     >> "$GITHUB_ENV"
           echo "VER=${VER}"                                >> "$GITHUB_ENV"
 
-      - name: Checkout homebrew-spelunk tap
+      # The tap repo does not exist yet, and no HOMEBREW_TAP_TOKEN is set: this
+      # step fails until both are in place. Pointing it back at the old
+      # organisation's tap is not the fix — that tap serves the pre-rename
+      # binary names and would publish this repo's checksums under URLs it
+      # does not own.
+      - name: Checkout homebrew-inkentry tap
         uses: actions/checkout@v7
         with:
-          repository: spelunk-cloud/homebrew-spelunk
+          repository: inkentries/homebrew-inkentry
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-      - name: Regenerate Formula/spelunk.rb
+      - name: Regenerate Formula/inkentry.rb
         run: |
           node .github/scripts/update-homebrew-formula.js \
             --version "$VER" \
             --sha-aarch64-darwin "$SHA_AARCH64_DARWIN" \
             --sha-aarch64-linux "$SHA_AARCH64_LINUX" \
             --sha-x86_64-linux "$SHA_X86_64_LINUX" \
-            --out tap/Formula/spelunk.rb
+            --out tap/Formula/inkentry.rb
 
-          cat tap/Formula/spelunk.rb
+          cat tap/Formula/inkentry.rb
 
-      - name: Commit and push to homebrew-spelunk
+      - name: Commit and push to homebrew-inkentry
         working-directory: tap
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- Formula/spelunk.rb; then
-            echo "No changes to Formula/spelunk.rb — skipping push."
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Staged, not worktree, comparison: the first release into an empty
+          # tap writes a file git has never tracked, and `git diff` reports no
+          # change for one of those — which would silently skip the push that
+          # creates the formula.
+          git add Formula/inkentry.rb
+          if git diff --cached --quiet -- Formula/inkentry.rb; then
+            echo "No changes to Formula/inkentry.rb — skipping push."
             exit 0
           fi
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/spelunk.rb
-          git commit -m "spelunk ${{ github.ref_name }}"
+          git commit -m "inkentry ${{ github.ref_name }}"
           git push origin main
 
   update-scoop-manifest:
-    name: Update Scoop bucket (bucket/spelunk.json)
+    name: Update Scoop bucket (bucket/inkentry.json)
     needs: release
     # Skip pre-release tags (rc/beta/alpha) — the bucket only tracks stable releases.
     if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
@@ -491,7 +500,7 @@ jobs:
           set -euo pipefail
           VERSION="${{ github.ref_name }}"
           VER="${VERSION#v}"
-          ASSET="spelunk-${VERSION}-x86_64-pc-windows-msvc.zip"
+          ASSET="inkentry-${VERSION}-x86_64-pc-windows-msvc.zip"
           # The release asset's `digest` field is "sha256:<hex>".
           SHA_X86_64_WINDOWS="$(gh release view "${VERSION}" --json assets \
             --jq ".assets[] | select(.name == \"${ASSET}\") | .digest" \
@@ -499,31 +508,31 @@ jobs:
           echo "SHA_X86_64_WINDOWS=${SHA_X86_64_WINDOWS}" >> "$GITHUB_ENV"
           echo "VER=${VER}"                               >> "$GITHUB_ENV"
 
-      - name: Regenerate bucket/spelunk.json
+      - name: Regenerate bucket/inkentry.json
         run: |
           node .github/scripts/update-scoop-manifest.js \
             --version "$VER" \
             --sha-x86_64-windows "$SHA_X86_64_WINDOWS" \
-            --out bucket/spelunk.json
+            --out bucket/inkentry.json
 
-          cat bucket/spelunk.json
+          cat bucket/inkentry.json
 
       # This repo doubles as the Scoop bucket (unlike the separate,
-      # unprotected homebrew-spelunk tap repo above), so main's ruleset
+      # unprotected homebrew-inkentry tap repo above), so main's ruleset
       # applies: a direct `git push origin main` is rejected with GH013
       # (pull_request rule violation). That ruleset's
       # required_approving_review_count is 0 and it has no required status
       # checks, so opening a PR and merging it immediately in this same job
       # satisfies the rule with no human in the loop and no extra token:
       # just the default GITHUB_TOKEN with pull-requests: write added above.
-      - name: Open and merge a PR updating bucket/spelunk.json
+      - name: Open and merge a PR updating bucket/inkentry.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- bucket/spelunk.json; then
-            echo "No changes to bucket/spelunk.json — skipping PR."
+          if git diff --quiet -- bucket/inkentry.json; then
+            echo "No changes to bucket/inkentry.json — skipping PR."
             exit 0
           fi
 
@@ -532,14 +541,14 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add bucket/spelunk.json
-          git commit -m "scoop: spelunk ${{ github.ref_name }}"
+          git add bucket/inkentry.json
+          git commit -m "scoop: inkentry ${{ github.ref_name }}"
           # -f: a retried run of this workflow (same tag) reuses the branch name.
           git push -f origin "$BRANCH"
 
           if ! gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
             gh pr create \
-              --title "scoop: spelunk ${{ github.ref_name }}" \
+              --title "scoop: inkentry ${{ github.ref_name }}" \
               --body "Automated Scoop bucket update for ${{ github.ref_name }}." \
               --base main \
               --head "$BRANCH"

@@ -1,32 +1,32 @@
-# spelunk-server — TEAM MEMORY server, static-user system unit (recommended)
+# inkentry-server — TEAM MEMORY server, static-user system unit (recommended)
 #
-# This is the first-party unit for a deployed, shared spelunk-server (a team
+# This is the first-party unit for a deployed, shared inkentry-server (a team
 # memory store), NOT the local per-developer inference server — for that see the
-# user unit `spelunk-server.service` in this directory. Do not confuse the two.
+# user unit `inkentry-server.service` in this directory. Do not confuse the two.
 #
 # The server terminates HTTPS in-process (ADR-066): it binds a routable address
 # and serves TLS itself, with the shared API key required. Nothing sits in front
 # of it. See docs/self-hosting.md.
 #
 # Install:
-#   sudo useradd --system --home-dir /var/lib/spelunk --shell /usr/sbin/nologin spelunk
-#   sudo install -d -o spelunk -g spelunk -m 0750 /var/lib/spelunk
-#   sudo install -d -m 0755 /etc/spelunk
-#   openssl rand -hex 32 | sudo tee /etc/spelunk/server-key >/dev/null
-#   sudo chmod 0600 /etc/spelunk/server-key   # root:root
+#   sudo useradd --system --home-dir /var/lib/inkentry --shell /usr/sbin/nologin inkentry
+#   sudo install -d -o inkentry -g inkentry -m 0750 /var/lib/inkentry
+#   sudo install -d -m 0755 /etc/inkentry
+#   openssl rand -hex 32 | sudo tee /etc/inkentry/server-key >/dev/null
+#   sudo chmod 0600 /etc/inkentry/server-key   # root:root
 #   # Bring your own TLS cert chain + private key (internal CA, certbot, cloud):
-#   sudo install -m 0644 fullchain.pem /etc/spelunk/tls-cert   # public chain
-#   sudo install -m 0600 privkey.pem   /etc/spelunk/tls-key    # root:root, private
-#   sudo install -m 0644 packaging/spelunk-server-team.service \
-#        /etc/systemd/system/spelunk-server.service
+#   sudo install -m 0644 fullchain.pem /etc/inkentry/tls-cert   # public chain
+#   sudo install -m 0600 privkey.pem   /etc/inkentry/tls-key    # root:root, private
+#   sudo install -m 0644 packaging/inkentry-server-team.service \
+#        /etc/systemd/system/inkentry-server.service
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now spelunk-server
+#   sudo systemctl enable --now inkentry-server
 #
 # A DynamicUser= variant (no manual user/dir setup) is in
-# spelunk-server-team-dynamicuser.service.
+# inkentry-server-team-dynamicuser.service.
 
 [Unit]
-Description=spelunk-server (team memory)
+Description=inkentry-server (team memory)
 After=network-online.target
 Wants=network-online.target
 
@@ -36,8 +36,8 @@ Type=simple
 # Dedicated, unprivileged identity. A static user (rather than DynamicUser=)
 # keeps a fixed owner on the persistent SQLite data dir for operator
 # backup/inspection and a stable started_by UID.
-User=spelunk
-Group=spelunk
+User=inkentry
+Group=inkentry
 
 # Two secrets, both as systemd credentials rather than Environment= lines (which
 # are world-readable via `systemctl show` / /proc):
@@ -46,17 +46,17 @@ Group=spelunk
 #   • tls-key    — the TLS private key, exposed at $CREDENTIALS_DIRECTORY/tls-key
 #     and passed to --tls-key below (%d = $CREDENTIALS_DIRECTORY).
 # Both source files are 0600 root-only; systemd reads them as root before the
-# sandbox applies. SPELUNK_SERVER_KEY as an Environment=/EnvironmentFile= value is
+# sandbox applies. INKENTRY_SERVER_KEY as an Environment=/EnvironmentFile= value is
 # equally supported for the bearer key (use a 0600 root-owned EnvironmentFile,
 # never an inline Environment=).
-LoadCredential=server-key:/etc/spelunk/server-key
-LoadCredential=tls-key:/etc/spelunk/tls-key
+LoadCredential=server-key:/etc/inkentry/server-key
+LoadCredential=tls-key:/etc/inkentry/tls-key
 # The TLS certificate chain is public; it stays a plain readable path (readable
 # under ProtectSystem=strict, which makes /etc read-only, not hidden).
-ExecStart=/usr/local/bin/spelunk-server \
+ExecStart=/usr/local/bin/inkentry-server \
   --host 0.0.0.0 --port 7777 \
-  --db /var/lib/spelunk/spelunk.db \
-  --tls-cert /etc/spelunk/tls-cert \
+  --db /var/lib/inkentry/inkentry.db \
+  --tls-cert /etc/inkentry/tls-cert \
   --tls-key %d/tls-key
 
 Restart=on-failure
@@ -67,7 +67,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/spelunk
+ReadWritePaths=/var/lib/inkentry
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
