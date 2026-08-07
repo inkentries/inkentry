@@ -189,7 +189,7 @@ assemble_deb() {
       apt-get update -qq >/dev/null
       apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
       mkdir -p /tmp/sd/debian
-      printf "Source: inkentry\nMaintainer: spelunk-cloud <hello@spelunk.cloud>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
+      printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
       dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
     ')" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"

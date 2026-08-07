@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  macOS LaunchAgent for spelunk-server.
+  macOS LaunchAgent for inkentry-server.
 
   To install and load:
-    cp packaging/spelunk-server.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/spelunk-server.plist
+    cp packaging/inkentry-server.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/inkentry-server.plist
 
   To unload:
-    launchctl unload ~/Library/LaunchAgents/spelunk-server.plist
-    rm ~/Library/LaunchAgents/spelunk-server.plist
+    launchctl unload ~/Library/LaunchAgents/inkentry-server.plist
+    rm ~/Library/LaunchAgents/inkentry-server.plist
 -->
 <plist version="1.0">
 <dict>
@@ -18,7 +18,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/spelunk-server</string>
+        <string>/usr/local/bin/inkentry-server</string>
         <string>--port</string>
         <string>7777</string>
     </array>
@@ -30,10 +30,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/spelunk-server.log</string>
+    <string>/tmp/inkentry-server.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/spelunk-server.err</string>
+    <string>/tmp/inkentry-server.err</string>
 
     <key>EnvironmentVariables</key>
     <dict>

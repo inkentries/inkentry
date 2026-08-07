@@ -69,15 +69,15 @@ function buildControl(debVersion, depends) {
   // Leading whitespace matters for dpkg: field names must start at column 0.
   // The long-description line must be preceded by a single space and exactly
   // one blank line after the short description.
-  return `Package: spelunk
+  return `Package: inkentry
 Version: ${debVersion}
 Architecture: amd64
-Maintainer: spelunk-cloud <hello@spelunk.cloud>
+Maintainer: inkentries <hello@inkentry.com>
 Depends: ${depends}
 Description: Code intelligence for AI agents
- spelunk provides persistent memory, a code graph, and semantic search
- for AI coding agents. Includes the spelunk CLI and spelunk-server.
-Homepage: https://spelunk.cloud
+ inkentry provides persistent memory, a code graph, and semantic search
+ for AI coding agents. Includes the inkentry CLI and inkentry-server.
+Homepage: https://github.com/inkentries/inkentry
 `;
 }
 

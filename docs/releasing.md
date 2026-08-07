@@ -22,8 +22,11 @@ Two install paths live outside this workflow:
   latest release tag via the GitHub API and downloads the matching tarball — it
   does not need updating per release. (The Windows `install.ps1` is fetched the
   same way.)
-- **Homebrew tap** lives in the separate `spelunk-cloud/homebrew-spelunk`
-  repo. The `update-homebrew-formula` job in `.github/workflows/release.yml`
+- **Homebrew tap** lives in the separate `inkentries/homebrew-inkentry`
+  repo, whose `Formula/` is still empty. The `HOMEBREW_TAP_TOKEN` secret is not
+  set yet, so the job fails at checkout until it is; the workflow points at the
+  new tap rather than the old organisation's, which serves the pre-rename binary
+  names. The `update-homebrew-formula` job in `.github/workflows/release.yml`
   regenerates `Formula/inkentry.rb` with the new `url`/`sha256`/`version` and
   pushes it to that repo's `main` branch directly, using the
   `HOMEBREW_TAP_TOKEN` secret (a token with `contents: write` on
