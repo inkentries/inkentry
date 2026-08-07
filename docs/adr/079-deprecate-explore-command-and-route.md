@@ -1,8 +1,7 @@
 # ADR-079: Deprecate `inkentry explore` — reasoning belongs to the caller's agent
 
-**Status:** Proposed (awaiting founder review)
 **Date:** 2026-08-07
-**Deciders:** founder (Johan) — pending; architect (proposing)
+**Deciders:** founder (Johan); architect
 **Relationship to prior ADRs:** overtakes the "keep `/explore` as a scoped,
 server-owned route" half of [ADR-002](002-server-ai-endpoint-contract.md) §3;
 updates the illustrations in [ADR-001](001-scope-boundaries.md) §1,
