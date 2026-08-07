@@ -9,6 +9,25 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `inkentry context` now surfaces active `intent` entries and file-overlap
+  warnings at session start, in an "Active agent sessions" section shown ahead
+  of handoffs — session start is when an agent most needs to know who else is
+  working where. The section lists the roster of other live sessions and, above
+  it, one warning per file the current worktree has already modified that an
+  active intent also claims (`⚠  Overlap: <file> is listed in an active
+  intent`). JSON output (and `AGENT=true`) gains the `intent` section plus a new
+  top-level `overlaps` array of file paths — coverage the machine-readable path
+  did not previously have.
+
+  Under `--budget`, the intent roster packs last, so it can never crowd out
+  decisions, requirements or handoffs; the overlap warnings are budget-exempt,
+  always emitted (even at `--budget 0`), and not counted against the token
+  budget, because a collision-avoidance signal you can silently lose defeats
+  its purpose. Intents stay scoped to the local project. The same information
+  remains available from `inkentry check` for now.
+
 ## [0.9.8] — 2026-08-07
 
 ### Changed
