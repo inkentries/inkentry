@@ -17,7 +17,7 @@ AGENT=true inkentry search "HTTP middleware handler" --mode text --format json
 
 # With server: richer search + agentic exploration
 # AGENT=true inkentry search "HTTP middleware handler" --graph --format json
-# AGENT=true inkentry explore "How is the HTTP layer structured? Where would middleware be added?" --format json
+# AGENT=true inkentry graph <handler-symbol> --kind calls --format json   # trace the HTTP layer yourself
 ```
 
 The agent writes a plan as a plain markdown checklist (e.g. in `docs/plans/`):
@@ -105,8 +105,8 @@ AGENT=true inkentry memory search "rate limiting decisions" --limit 5
 AGENT=true inkentry search "unit test tokio test mock" --mode text --format json
 AGENT=true inkentry graph RateLimiter --kind calls   # find what already calls into it
 
-# With server: ask for a synthesis
-# AGENT=true inkentry explore "What testing patterns are used in this codebase? How are middleware components tested?"
+# With server: loop search + graph + chunks yourself to synthesise
+# AGENT=true inkentry search "testing patterns; how middleware components are tested" --graph
 ```
 
 The agent writes tests, updates docs, marks remaining checklist items complete.

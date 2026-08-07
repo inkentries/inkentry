@@ -4,7 +4,7 @@
 // semantic` (and `--mode hybrid`) silently fell back to FTS text search and, on
 // an empty match, printed "No results found." + exit 0. To an agent or a script
 // that reads as "no such code exists" rather than "the feature is unavailable" —
-// unlike every other inference-gated command (`memory search`, `explore`,
+// unlike every other inference-gated command (`memory search`,
 // `memory timeline`), which fail closed with the actionable
 // "requires inkentry-server" locked-feature error.
 //

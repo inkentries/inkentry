@@ -68,77 +68,6 @@
         ]
       }
     },
-    "/v1/projects/{project_id}/explore": {
-      "post": {
-        "tags": [
-          "inference"
-        ],
-        "summary": "Run an LLM reasoning loop over caller-supplied context chunks.\nThe CLI retrieves relevant chunks from its local index and sends them alongside\nthe question. **The server does not store context chunks.**",
-        "description": "Returns an SSE stream with events: `thought`, `answer`, `done`, `error`.\nReturns 503 if no LLM is configured.",
-        "operationId": "explore",
-        "parameters": [
-          {
-            "name": "project_id",
-            "in": "path",
-            "description": "Project slug",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExploreRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "SSE stream: thought/answer/done/error events"
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "No LLM configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
     "/v1/projects/{project_id}/index/embed": {
       "post": {
         "tags": [
@@ -1687,56 +1616,6 @@
           }
         }
       },
-      "ExploreContextChunk": {
-        "type": "object",
-        "description": "A single context chunk supplied by the CLI for `/explore`.",
-        "required": [
-          "file",
-          "start_line",
-          "end_line",
-          "content"
-        ],
-        "properties": {
-          "content": {
-            "type": "string"
-          },
-          "end_line": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
-          "file": {
-            "type": "string"
-          },
-          "start_line": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          }
-        }
-      },
-      "ExploreRequest": {
-        "type": "object",
-        "description": "Request body for `POST /v1/projects/{project_id}/explore`.",
-        "required": [
-          "question"
-        ],
-        "properties": {
-          "context_chunks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ExploreContextChunk"
-            }
-          },
-          "max_turns": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "question": {
-            "type": "string"
-          }
-        }
-      },
       "HarvestedShasResponse": {
         "type": "object",
         "description": "Object envelope for the harvested-SHAs read endpoint.\n\nA JSON response root must be an object, never a bare array of primitives\n(ADR-076: the memory wire contract).",
@@ -2213,7 +2092,7 @@
     },
     {
       "name": "inference",
-      "description": "LLM-powered code exploration and raw completion"
+      "description": "Raw LLM completion"
     }
   ]
 }

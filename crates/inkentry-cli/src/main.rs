@@ -67,7 +67,6 @@ async fn main() -> Result<()> {
         Command::Autoclean => cli::cmd::autoclean(cfg),
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
         Command::Hooks(args) => cli::cmd::hooks(args),
-        Command::Explore(args) => cli::cmd::explore(args, cfg).await,
         Command::Links(args) => cli::cmd::links(args, cfg).await,
         Command::Plumbing(args) => {
             if let Err(e) = cli::cmd::plumbing(args, cfg).await {

@@ -41,7 +41,7 @@ mode = "local_first"
 # --- Optional: point at your own LLM endpoint ---------------------------------
 # Embeddings have no config here: the model and its compute path are pinned
 # product-wide to spelunk-server's bundled native embedder. LLM features
-# (explore, summaries, harvest) are different: the server has no LLM of its
+# (summaries, harvest) are different: the server has no LLM of its
 # own, so set this only if you run a shared OpenAI-compatible chat-completions
 # endpoint (LM Studio, Ollama, vLLM, ...) for the server to use.
 # llm_model = "google/gemma-3n-e4b"

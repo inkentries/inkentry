@@ -11,7 +11,7 @@ use super::support::{spawn_test_server, spawn_test_server_with_embed};
 // proving the layer is enforced on the wire, not merely configured.
 //
 // Uses `add_note` (a synchronous handler awaiting the DB lock) rather than
-// `/explore`/`/llm/complete`, which return their SSE `Response` immediately
+// `/llm/complete`, which returns its SSE `Response` immediately
 // and so can't be bound by `TimeoutLayer`. Its DB mutex is held externally
 // so `state.db.lock().await` blocks past the injected budget.
 // ── TimeoutLayer / SSE exemption ──────────────────────────────────────
@@ -59,10 +59,10 @@ async fn normal_route_exceeding_timeout_returns_408() {
     release_task.await.expect("release task panicked");
 }
 
-// ── Generation-side timeout on `/explore` and `/llm/complete` ─────────────
+// ── Generation-side timeout on `/llm/complete` ─────────────
 //
 // `normal_route_exceeding_timeout_returns_408` proves the router's
-// `TimeoutLayer` can't bound these two endpoints. This is the other half:
+// `TimeoutLayer` can't bound this endpoint. This is the other half:
 // proving `llm_generate_with_timeout` actually cuts a hung backend off
 // within budget: without it, deleting the `tokio::time::timeout(...)`
 // wrapper would compile and pass every other test.
@@ -94,7 +94,7 @@ impl inkentry_core::llm::LlmBackend for HangingLlm {
     }
 }
 
-// `/explore` backed by a `HangingLlm` must still have its connection cut
+// `/llm/complete` backed by a `HangingLlm` must still have its connection cut
 // off within the generation budget: proving `llm_generate_with_timeout`
 // bounds a hung backend, not just that the code compiles.
 //
@@ -102,7 +102,7 @@ impl inkentry_core::llm::LlmBackend for HangingLlm {
 // the CI timeout rather than failing fast: a worse failure mode, but
 // accepted since the alternative doesn't exercise the wrapper.
 #[tokio::test]
-async fn explore_cuts_off_hanging_llm_backend() {
+async fn llm_complete_cuts_off_hanging_llm_backend() {
     // Millisecond-scale budget via the test-only override. The override is
     // process-wide, so guard with a lock: this test must not run
     // concurrently with anything else spawning `llm_generate_with_timeout`
@@ -124,15 +124,15 @@ async fn explore_cuts_off_hanging_llm_backend() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{base}/v1/projects/timeout-test/explore"))
-        .json(&json!({"question": "q", "context_chunks": [], "max_turns": 1}))
+        .post(format!("{base}/v1/projects/timeout-test/llm/complete"))
+        .json(&json!({"messages": [{"role": "user", "content": "q"}], "max_tokens": 16}))
         .send()
         .await
         .expect("SSE connection should open");
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "/explore returns its SSE Response immediately regardless of backend \
+        "/llm/complete returns its SSE Response immediately regardless of backend \
              state: 200 here is expected and is exactly why the router-level \
              TimeoutLayer can't bound this endpoint (see normal_route_exceeding_timeout_returns_408)"
     );
@@ -171,7 +171,7 @@ async fn explore_cuts_off_hanging_llm_backend() {
         Err(_elapsed) => panic!(
             "the SSE connection was still open {overall_deadline:?} after a HangingLlm \
                  backend started generating: llm_generate_with_timeout did not cut it off \
-                 within its {generation_budget:?} budget. /explore's TimeoutLayer can't see \
+                 within its {generation_budget:?} budget. /llm/complete's TimeoutLayer can't see \
                  spawned generation work, so a hung backend would otherwise hold the \
                  connection open indefinitely."
         ),

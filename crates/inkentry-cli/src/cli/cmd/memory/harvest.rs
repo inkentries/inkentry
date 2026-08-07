@@ -99,7 +99,7 @@ pub(super) async fn memory_harvest(
     // Honor the auto-discovered server tier (IMP-3 / spelunk-cloud/spelunk#316): loopback
     // auto-discovery sets the capability tier without populating
     // `cfg.server_url`. Build an effective config that fills in the inference
-    // URL / `project_id` from the tier (mirrors `explore`) and use it for the
+    // URL / `project_id` from the tier (mirrors `memory search`) and use it for the
     // remainder of this call tree, including the git/failures/claude-code
     // sub-harvesters and `ServerInferenceClient::from_config`.
     //
@@ -180,10 +180,10 @@ async fn memory_harvest_git(
         .unwrap_or_else(|| args.git_range.clone());
     reject_option_like_ref(&user_ref)?;
 
-    // LLM capability precheck, BEFORE the git range is resolved (mirrors
-    // `explore`). With no LLM available the user must see the actionable
-    // locked-feature message, not a raw `git log` error from an unresolvable
-    // range on a shallow repo — the message must not depend on repo size.
+    // LLM capability precheck, BEFORE the git range is resolved. With no LLM
+    // available the user must see the actionable locked-feature message, not a
+    // raw `git log` error from an unresolvable range on a shallow repo — the
+    // message must not depend on repo size.
     let (embed_server, llm_server) = harvest_clients(cfg, mem_path).await?;
 
     // Resolve the revisions to walk: `--branch` means the full history of that

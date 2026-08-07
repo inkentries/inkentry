@@ -1,51 +1,34 @@
 use axum::body::Body;
 use axum::http::{self, Request};
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
 
-use super::support::{make_app, make_app_with_llm_and_limit, post_explore, post_note};
+use super::support::{make_app, make_app_with_llm_and_limit, post_llm_complete};
 
-// POST /v1/projects/{slug}/memory/search with no embedder should return 400.
+// POST /v1/projects/{slug}/llm/complete with no LLM configured should return 503.
 #[tokio::test]
-async fn search_without_embedder_returns_400() {
+async fn llm_complete_without_llm_returns_503() {
     let (app, _) = make_app(0.92);
-    // First create the project.
-    let _ = post_note(
-        app.clone(),
-        "search-proj",
-        "seed note",
-        vec![1.0, 0.0, 0.0, 0.0],
-    )
-    .await;
-
-    let body = json!({"query": "test query", "limit": 5});
+    let body = json!({"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16});
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/projects/search-proj/memory/search")
+        .uri("/v1/projects/proj/llm/complete")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
-        http::StatusCode::BAD_REQUEST,
-        "search without embedder must return 400"
-    );
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    assert_eq!(
-        json["error"]["code"],
-        json!("bad_request"),
-        "error code must be bad_request"
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        "llm/complete without an LLM backend must return 503"
     );
 }
 
-// POST /v1/projects/{slug}/explore with no LLM should return 503.
+// The explore route was removed (ADR-079). A POST to the old path must fall
+// through to the router's 404, not answer.
 #[tokio::test]
-async fn explore_without_llm_returns_503() {
-    let (app, _) = make_app(0.92);
+async fn explore_route_removed_returns_404() {
+    let app = make_app_with_llm_and_limit(1000);
     let body = json!({"question": "what does foo do?", "context_chunks": []});
     let req = Request::builder()
         .method("POST")
@@ -56,22 +39,27 @@ async fn explore_without_llm_returns_503() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
-        http::StatusCode::SERVICE_UNAVAILABLE,
-        "explore without LLM must return 503"
+        http::StatusCode::NOT_FOUND,
+        "the removed explore route must return 404"
     );
 }
 
-// ── /explore rate limiting ─────────────────────────────────────────────
+// ── /llm/complete rate limiting ─────────────────────────────────────────
+//
+// The generic inference primitive shares one rate-limit seam
+// (`rate_limit_key` + `state.rate_limiter`) with every other inference route.
+// These pin that shared behaviour now that it is the sole SSE generation
+// endpoint.
 
-// `/explore` must be rate-limited like `/llm/complete`: once the per-bucket
-// budget is exhausted, further calls get 429, not a normal (SSE 200) response.
+// Once the per-bucket budget is exhausted, further calls get 429, not a normal
+// (SSE 200) response.
 #[tokio::test]
-async fn explore_returns_429_past_rate_limit() {
+async fn llm_complete_returns_429_past_rate_limit() {
     let app = make_app_with_llm_and_limit(2);
 
-    let status1 = post_explore(&app, "q1").await;
-    let status2 = post_explore(&app, "q2").await;
-    let status3 = post_explore(&app, "q3").await;
+    let status1 = post_llm_complete(&app, "q1").await;
+    let status2 = post_llm_complete(&app, "q2").await;
+    let status3 = post_llm_complete(&app, "q3").await;
 
     assert_eq!(status1, http::StatusCode::OK, "1st call within budget");
     assert_eq!(status2, http::StatusCode::OK, "2nd call within budget");
@@ -83,17 +71,17 @@ async fn explore_returns_429_past_rate_limit() {
 }
 
 // Two different client IPs (via `X-Forwarded-For`) must not share one
-// rate-limit bucket: each gets its own budget, so a shared key can't
-// collapse every caller onto one global bucket.
+// rate-limit bucket: each gets its own budget, so a shared key can't collapse
+// every caller onto one global bucket.
 #[tokio::test]
-async fn explore_rate_limit_keyed_per_client_ip() {
+async fn llm_complete_rate_limit_keyed_per_client_ip() {
     let app = make_app_with_llm_and_limit(1);
 
-    let body = json!({"question": "q", "context_chunks": [], "max_turns": 1});
+    let body = json!({"messages": [{"role": "user", "content": "q"}], "max_tokens": 16});
     let req_from = |ip: &str| {
         Request::builder()
             .method("POST")
-            .uri("/v1/projects/explore-test/explore")
+            .uri("/v1/projects/llm-test/llm/complete")
             .header("content-type", "application/json")
             .header("x-forwarded-for", ip)
             .body(Body::from(serde_json::to_vec(&body).unwrap()))

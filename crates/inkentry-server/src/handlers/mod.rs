@@ -10,7 +10,6 @@ use crate::auth::AuthContext;
 use crate::{AppError, AppState, EmbedderState};
 
 mod batch;
-mod explore;
 mod health;
 mod index;
 mod llm;
@@ -20,7 +19,6 @@ mod search;
 mod sync;
 
 pub use batch::*;
-pub use explore::*;
 pub use health::*;
 pub use index::*;
 pub use llm::*;
@@ -159,10 +157,10 @@ fn generation_timeout() -> Duration {
 /// backend can't hold the spawned generation task (and the SSE connection it
 /// feeds) open forever.
 ///
-/// `/explore` and `/llm/complete` return their SSE `Response` as soon as the
-/// stream is built and hand generation to a detached `tokio::spawn`, so the
-/// router-level `TimeoutLayer` never sees this work. This wraps the generation
-/// call with the same budget to close that gap without changing the SSE framing.
+/// `/llm/complete` returns its SSE `Response` as soon as the stream is built
+/// and hands generation to a detached `tokio::spawn`, so the router-level
+/// `TimeoutLayer` never sees this work. This wraps the generation call with the
+/// same budget to close that gap without changing the SSE framing.
 async fn llm_generate_with_timeout(
     llm: Arc<dyn inkentry_core::llm::LlmBackend>,
     messages: Vec<inkentry_core::llm::Message>,

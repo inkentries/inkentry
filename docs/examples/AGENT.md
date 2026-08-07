@@ -21,8 +21,8 @@ inkentry search "error handling" --mode text
 # Semantic search: finds code by meaning (requires embedding server + index)
 inkentry search "how does authentication work"
 
-# Answer an open question by iterating search + graph (requires server + LLM)
-inkentry explore "what does the retry logic do when the upstream times out?"
+# Answer an open question by looping search + graph + chunks yourself (no explore command)
+inkentry search "what does the retry logic do when the upstream times out?" --graph
 ```
 
 **Rule:** run `inkentry graph <symbol>` and `inkentry search "<topic>" --mode text` before opening files you haven't read this session. Fall back to `Read`/`Grep`/`Glob` when these return nothing useful.
@@ -109,5 +109,5 @@ A post-commit hook can do this automatically; see `inkentry hooks install`.
 
 - It cannot run your tests or build the project; use shell commands for that
 - Semantic search results are only as fresh as the last `inkentry index` run
-- `inkentry explore` requires a running `inkentry-server` with an LLM backend configured
+- `inkentry memory harvest` requires a running `inkentry-server` with an LLM backend configured
 - `inkentry search` (semantic) requires an embedding server and a built index; use `--mode text` for full-text search without either

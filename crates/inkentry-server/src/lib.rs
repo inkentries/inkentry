@@ -33,10 +33,10 @@ use rate_limiter::RateLimiter;
 /// `408`. `/memory/stream` (SSE) and `/index/embed` (see
 /// [`EMBED_REQUEST_TIMEOUT`]) are exempt.
 ///
-/// Does NOT bound `/explore` or `/llm/complete`: both return their SSE
-/// `Response` immediately and run generation in a detached `tokio::spawn`, which
-/// this layer can't see. Those handlers bound the spawned generation directly
-/// with this same constant (see `handlers::llm_generate_with_timeout`).
+/// Does NOT bound `/llm/complete`: it returns its SSE `Response` immediately
+/// and runs generation in a detached `tokio::spawn`, which this layer can't
+/// see. That handler bounds the spawned generation directly with this same
+/// constant (see `handlers::llm_generate_with_timeout`).
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Wall-clock budget for a single `/index/embed` request before `408`. Much
@@ -395,7 +395,7 @@ pub struct AppState {
     /// embed-consuming handler (`/index/embed`, `/search`,
     /// `/memory/search`). See [`EmbedAdmission`].
     pub embed_admission: EmbedAdmission,
-    /// Optional LLM backend for `/explore` and `/llm/complete`.
+    /// Optional LLM backend for `/llm/complete`.
     pub llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
     /// Client-supplied values are clamped down to this. Default: 8192.
@@ -448,7 +448,6 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::memory_stream,
         handlers::index_embed,
         handlers::project_search,
-        handlers::explore,
         handlers::llm_complete,
     ),
     components(schemas(
@@ -480,8 +479,6 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::EmbedChunkOut,
         handlers::CodeSearchRequest,
         handlers::CodeSearchResponse,
-        handlers::ExploreRequest,
-        handlers::ExploreContextChunk,
         handlers::LlmCompleteRequest,
         handlers::LlmCompleteMessage,
         ErrorBody,
@@ -496,7 +493,7 @@ pub fn default_conflict_threshold() -> f32 {
         (name = "memory", description = "Memory CRUD and semantic search"),
         (name = "index", description = "Code index / embedding"),
         (name = "search", description = "Server-side code search (query embedding proxy)"),
-        (name = "inference", description = "LLM-powered code exploration and raw completion"),
+        (name = "inference", description = "Raw LLM completion"),
     ),
     security(
         ("bearer_auth" = [])
@@ -654,7 +651,6 @@ pub fn router_with_limits(
             "/v1/projects/{project_id}/search",
             post(handlers::project_search),
         )
-        .route("/v1/projects/{project_id}/explore", post(handlers::explore))
         .route(
             "/v1/projects/{project_id}/llm/complete",
             post(handlers::llm_complete),

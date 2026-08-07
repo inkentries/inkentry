@@ -174,7 +174,7 @@ impl inkentry_core::llm::LlmBackend for NoopLlm {
 }
 
 // Build an app with a configured LLM backend and a tight rate limit, for
-// exercising `/explore` and `/llm/complete` rate limiting.
+// exercising `/llm/complete` rate limiting.
 pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
     register_sqlite_vec();
     let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
@@ -199,11 +199,14 @@ pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
     router(state)
 }
 
-pub(super) async fn post_explore(app: &axum::Router, question: &str) -> http::StatusCode {
-    let body = json!({"question": question, "context_chunks": [], "max_turns": 1});
+pub(super) async fn post_llm_complete(app: &axum::Router, content: &str) -> http::StatusCode {
+    let body = json!({
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 16,
+    });
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/projects/explore-test/explore")
+        .uri("/v1/projects/llm-test/llm/complete")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();

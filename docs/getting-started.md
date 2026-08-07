@@ -287,7 +287,7 @@ the managed spelunk.cloud.
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
 | **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
-| **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search`, `explore`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
+| **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
 | **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
 | **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
 
@@ -365,7 +365,7 @@ but loopback is refused at startup rather than sending the credential in the
 clear: use `https://` for a remote endpoint. A keyless endpoint is unaffected,
 so an existing LM Studio or Ollama box on your LAN keeps working.
 
-`explore`, `memory harvest` and index-time chunk summaries all pick up an
+`memory harvest` and index-time chunk summaries both pick up an
 LLM-configured local daemon automatically, and fall back to a `server_url` that
 provides an LLM when your local one does not.
 
@@ -379,14 +379,14 @@ Two things are worth knowing before you hit them:
   already.
 - **`inkentry index` never fails over a missing LLM.** It prints why summaries
   were skipped and exits 0. Pass `--no-summaries` to skip the step silently.
-  `explore` and `memory harvest` do fail, since neither can run without an LLM.
+  `memory harvest` does fail, since it cannot run without an LLM.
 
 See [Third-party models](third-party-models.md#how-inkentry-finds-an-llm) for the
 routing rule, the exact messages, the full precedence and security details, and
 the team-server equivalent.
 
-This is an advanced override; most users never set it: `explore`, summaries,
-and `memory harvest` are simply unavailable without an LLM configured, and
+This is an advanced override; most users never set it: summaries and
+`memory harvest` are simply unavailable without an LLM configured, and
 semantic search works regardless since the native embedder needs no
 configuration at all.
 

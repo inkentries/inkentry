@@ -20,7 +20,6 @@ used; the binary is the same in both tiers.
 | **Memory push/pull** | Not available | Sync git-notes entries to/from server DB |
 | **Memory search** | Not available | Server encodes query, does KNN over server-side memory DB |
 | **Memory harvest** | Not available | LLM extraction via server |
-| **Explore** | Not available | CLI pre-fetches context chunks locally, sends to server LLM loop |
 
 **The CLI never calls embedding or LLM APIs directly, regardless of
 configuration.** All inference routes through `inkentry-server`.
@@ -107,8 +106,8 @@ newer endpoints.
 
 In v0.8.0 the common case is no `server_url` at all: the CLI discovers (or
 starts) a **local** server on the loopback address. This is what makes Tier 1
-the default for a fresh single-user install — semantic search and `explore`
-work out of the box without the user configuring or managing a server.
+the default for a fresh single-user install — semantic search works out of the
+box without the user configuring or managing a server.
 
 Discovery runs before the configured-`server_url` probe and only on loopback:
 
@@ -174,7 +173,6 @@ User-facing behaviour for these tiers is documented in
 Capability tier:  Offline
   search          ast-grep + text  [set server_url to enable semantic search]
   memory          sqlite (local)
-  explore         unavailable  [set server_url to enable]
 ```
 
 The `memory` line reflects the resolved backend (`sqlite` / `git-notes` /
@@ -189,7 +187,6 @@ Capability tier:  Server  (https://inkentry.internal.example.com)
   search          ast-grep + text + semantic
   embedder        ready
   memory          sqlite (local)
-  explore         available
 ```
 
 The `embedder` line reports the server's `embedder.state` from `/v1/health`; it
@@ -203,7 +200,6 @@ is omitted when the server does not report that field.
   "tier": "server",
   "server_url": "https://inkentry.internal.example.com",
   "capabilities": {
-    "explore": true,
     "index_embed": true,
     "memory_harvest": true,
     "memory_pull": true,
@@ -223,7 +219,7 @@ is omitted when the server does not report that field.
 
 ```
 Index is up to date. (412 files indexed)
-Server:  https://inkentry.internal.example.com  ✓  (semantic search, explore available)
+Server:  https://inkentry.internal.example.com  ✓  (semantic search available)
 ```
 
 Or on failure:
@@ -241,11 +237,11 @@ When a Tier 1 feature is invoked but no server is reachable, the command exits
 1. Two deliberate message formats are used, selected by which command was run;
 both are written to stderr with `eprintln!` (never a panic).
 
-The `require_tier1` commands (`explore`, `memory push`, `memory pull`, `sync`,
+The `require_tier1` commands (`memory push`, `memory pull`, `sync`,
 `memory watch`) point the user at `server_url`:
 
 ```
-Error: 'inkentry explore' requires inkentry-server.
+Error: 'inkentry memory watch' requires inkentry-server.
 Set server_url in ~/.config/inkentry/config.toml to enable this feature.
        (Tried: https://inkentry.internal.example.com — connection refused)
 ```
@@ -254,7 +250,7 @@ The `(Tried: ...)` line is appended only when a `server_url` is configured but
 unreachable. If `server_url` is not set at all it is omitted:
 
 ```
-Error: 'inkentry explore' requires inkentry-server.
+Error: 'inkentry memory watch' requires inkentry-server.
 Set server_url in ~/.config/inkentry/config.toml to enable this feature.
 ```
 
@@ -319,23 +315,3 @@ Embedding chunks via server... 1 024 / 3 812  [====>     ] 27%
 server encodes the text and runs KNN over its memory DB. The raw-vector
 interface (`SearchRequest.embedding`) is deprecated; see server-api.md for the
 updated `SearchRequest` schema.
-
----
-
-## Explore — context assembly
-
-For `inkentry explore`, the CLI is responsible for context
-retrieval from the local index before calling the server. This preserves data
-ownership: chunk content is never pushed to the server for storage.
-
-Flow:
-
-1. CLI runs local text + (if available) semantic search to assemble
-   `context_chunks`.
-2. CLI sends `{query, context_chunks}` to `POST /v1/projects/{id}/explore`
-   (SSE).
-3. Server runs LLM reasoning loop over the provided context.
-4. Server does not store the context chunks.
-
-`context_chunks` are ephemeral — they exist only for the duration of the
-request.

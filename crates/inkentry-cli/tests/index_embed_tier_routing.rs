@@ -3,7 +3,7 @@
 // the `--detach-embed` worker it can hand off to.
 //
 // Mirrors the loopback-vs-explicit-`server_url` routing bug already fixed
-// for `inkentry explore` / `memory add` / `memory reindex` et al: under the
+// for `memory search` / `memory add` / `memory reindex` et al: under the
 // default `local_first` mode, inference must always prefer the local
 // loopback embedder, even when an explicit (here, deliberately unroutable)
 // `server_url` is configured. `cloud_first` is the one mode where an

@@ -14,7 +14,7 @@ This document specifies the HTTP API surface that `inkentry-cli` calls on
 
 1. The `AuthProvider` trait, which every route the server exposes goes through.
 2. Endpoints present from the server's first API-key auth implementation.
-3. Endpoints added for CLI integration (embedding proxy, explore, LLM completion).
+3. Endpoints added for CLI integration (embedding proxy, LLM completion).
 4. The server's **data promise** to the CLI.
 
 ---
@@ -29,7 +29,6 @@ constrained as follows.
 | Chunk content (text) for embedding | yes | **no** | yes (eviction within session) |
 | Embedding vectors generated for the CLI | n/a (server emits) | **no** | yes (request-scoped) |
 | Search queries (text) | yes | **no** (logs may carry metadata only — never the query body in plaintext) | yes (LRU for rate limiting) |
-| `context_chunks` sent with `/explore` | yes | **no** | request-scoped only |
 | Memory entries (notes) | yes | **yes** (this IS the server's persistence role) | n/a |
 | Project metadata (id, slug, stats) | yes | yes | n/a |
 | Auth principals (api keys, user ids) | yes | hash/identifier only — never the raw bearer | yes |
@@ -41,8 +40,7 @@ Persisting embeddings server-side would also force the OSS deployment into a
 data-residency conversation we do not want before cloud.
 
 This promise is testable: server integration tests assert that the embedding
-DB table is empty after `/v1/projects/{id}/index/embed` returns, and that
-`/explore` writes nothing to memory.
+DB table is empty after `/v1/projects/{id}/index/embed` returns.
 
 ---
 
@@ -95,7 +93,6 @@ Returns `200` JSON (unauthenticated: no bearer token required or attached):
     "memory",
     "index.embed",
     "search.semantic",
-    "explore",
     "llm.complete"
   ],
   "limits": {
@@ -222,48 +219,6 @@ parking until the caller's own request timeout fires:
 The CLI's `inkentry index` embed phase retries the same batch after the given
 delay rather than shrinking it (queue depth says nothing about batch sizing);
 see [`inkentry index`](../commands.md#inkentry-index).
-
-### `POST /v1/projects/{project_id}/explore`
-
-Run an LLM reasoning loop over caller-supplied context. The CLI retrieves
-relevant chunks from its local index and sends them alongside the question.
-**The server does not store context chunks.**
-
-**Request:**
-
-```json
-{
-  "question": "Why does the auth middleware bypass token check when api_key is None?",
-  "context_chunks": [
-    {
-      "file": "src/server/mod.rs",
-      "start_line": 140,
-      "end_line": 165,
-      "content": "async fn auth_middleware(...) { ... }"
-    }
-  ],
-  "max_turns": 5
-}
-```
-
-`context_chunks` is the pre-assembled retrieval context. The CLI is responsible
-for fetching this from its local index before calling this endpoint.
-
-**Response:** SSE stream, one JSON event per line:
-
-```
-data: {"kind":"thought","content":"The bypass exists to allow unauthenticated local use..."}
-
-data: {"kind":"answer","content":"When no key is configured the server trusts all local callers..."}
-
-data: {"kind":"done"}
-```
-
-Event `kind` values: `thought`, `answer`, `done`, `error`.
-
-**Response `503`:** no LLM configured on this server.
-
----
 
 ### `POST /v1/projects/{project_id}/llm/complete`
 
@@ -411,7 +366,6 @@ any endpoint change.
 | `GET` | `/v1/projects/{id}/stats` | Bearer | 1 | |
 | `POST` | `/v1/projects/{id}/index/embed` | Bearer | 1 | Embedding proxy (`application/octet-stream`); also serves memory query-embed via synthetic chunk |
 | `POST` | `/v1/projects/{id}/search` | Bearer | 1 | Query-embedding proxy for CLI KNN |
-| `POST` | `/v1/projects/{id}/explore` | Bearer | 1 | SSE — LLM reasoning loop |
 | `POST` | `/v1/projects/{id}/llm/complete` | Bearer | 1 | SSE — generic inference primitive (ADR-002) |
 
 ---
@@ -420,8 +374,8 @@ any endpoint change.
 
 Every endpoint and the `AuthProvider` trait above are implemented and tested:
 `AppState.auth: Arc<dyn AuthProvider>`, `GET /v1/health` returns the JSON shown
-above, `memory/search` accepts `{"query": String}`, `index/embed` and
-`explore` are live, error responses use the `{"error": {"code", "message"}}`
+above, `memory/search` accepts `{"query": String}`, `index/embed` is live, error
+responses use the `{"error": {"code", "message"}}`
 shape throughout, and the OpenAPI spec at `docs/openapi.json` is kept current
 by CI. See [Server setup](../server-setup.md) for deploying a server that
 exposes this API to a team, and `crates/inkentry-server/src/handlers.rs` for

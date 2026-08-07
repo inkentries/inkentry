@@ -248,11 +248,10 @@ pub async fn mount_health(server: &wiremock::MockServer) {
             wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "status": "ok",
                 "version": "test",
-                // `llm.complete` is what LLM routing keys on. `explore` cannot
-                // stand in for it: it predates both that capability and the
-                // route behind it.
+                // `llm.complete` is what LLM routing keys on; a legacy
+                // capability must never stand in for it.
                 "capabilities": [
-                    "memory", "index.embed", "search.semantic", "explore", "plan", "llm.complete"
+                    "memory", "index.embed", "search.semantic", "plan", "llm.complete"
                 ],
             })),
         )
@@ -316,11 +315,10 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "status": "ok",
                 "version": "test",
-                // `llm.complete` is what LLM routing keys on. `explore` cannot
-                // stand in for it: it predates both that capability and the
-                // route behind it.
+                // `llm.complete` is what LLM routing keys on; a legacy
+                // capability must never stand in for it.
                 "capabilities": [
-                    "memory", "index.embed", "search.semantic", "explore", "plan", "llm.complete"
+                    "memory", "index.embed", "search.semantic", "plan", "llm.complete"
                 ],
             })))
             .mount(&server)

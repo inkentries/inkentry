@@ -28,6 +28,26 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   its purpose. Intents stay scoped to the local project. The same information
   remains available from `inkentry check` for now.
 
+### Removed
+
+- **`inkentry explore` and the `POST /v1/projects/{project_id}/explore` server
+  route have been removed** (ADR-079). inkentry retrieves context; your own
+  agent reasons over it, so the multi-hop "explore" workflow is now a skill the
+  caller's agent runs against inkentry's existing primitives (`search`, `graph`,
+  `chunks`) — see the "Exploring: multi-hop retrieval" section of `SKILL.md`.
+  `inkentry explore` now falls through to clap's unknown-subcommand error, the
+  same way the earlier `ask` command was removed. `memory harvest` becomes the
+  sole LLM-backed feature; the generic `/llm/complete` inference route is
+  unchanged. Two consequences for anyone reading capabilities or status:
+
+  - An LLM-configured server no longer advertises an `explore` capability in
+    `/v1/health`; it advertises `llm.complete` only. A newer CLI talking to an
+    older server that still lists `explore` ignores it and, as before, treats
+    that server as LLM-capable only if it also lists `llm.complete`.
+  - `inkentry status` and `inkentry check` no longer show an `explore` line, and
+    `inkentry status --format json` drops the `explore` key from its `usage_7d`
+    object — a shape change in the status payload.
+
 ## [0.9.8] — 2026-08-07
 
 ### Changed

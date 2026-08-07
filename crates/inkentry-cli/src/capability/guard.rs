@@ -28,7 +28,7 @@ pub fn inference_server_required_message(feature: &str) -> String {
 ///
 /// Callers append `?` to propagate the error:
 /// ```ignore
-/// require_tier1("explore", tier, cfg.server_url.as_deref())?;
+/// require_tier1("memory search", tier, cfg.server_url.as_deref())?;
 /// ```
 pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> anyhow::Result<()> {
     if tier.is_server() {
@@ -119,15 +119,15 @@ mod tests {
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
-        assert!(require_tier1("explore", &tier, Some("http://example.com")).is_ok());
+        assert!(require_tier1("memory search", &tier, Some("http://example.com")).is_ok());
     }
 
     #[test]
     fn require_tier1_err_for_offline_no_url() {
         let tier = Tier::Offline;
-        let err = require_tier1("explore", &tier, None).unwrap_err();
+        let err = require_tier1("memory search", &tier, None).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'inkentry explore'"));
+        assert!(msg.contains("'inkentry memory search'"));
         assert!(msg.contains("requires inkentry-server"));
         assert!(msg.contains("Set server_url"));
     }

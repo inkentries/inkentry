@@ -1,12 +1,12 @@
-// LLM routing for `inkentry explore` and `inkentry memory harvest`.
+// LLM routing for `inkentry memory harvest`.
 //
-// Both commands used one inference client for two concerns: LLM completion and
-// the embedding they need for search context / dedup vectors. Once LLM and
-// embed can resolve to different servers, one client is wrong, so these tests
-// assert on which mock received which route, not only on the outcome.
+// Harvest uses one inference client for two concerns: LLM completion and the
+// embedding it needs for dedup vectors. Once LLM and embed can resolve to
+// different servers, one client is wrong, so these tests assert on which mock
+// received which route, not only on the outcome.
 //
-// Unlike `index` summaries, these commands cannot do their job without an LLM,
-// so an unavailable LLM is an error with a non-zero exit here.
+// Unlike `index` summaries, harvest cannot do its job without an LLM, so an
+// unavailable LLM is an error with a non-zero exit here.
 
 mod plumbing_helpers;
 use plumbing_helpers::{
@@ -22,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // ── mocks ─────────────────────────────────────────────────────────────────
 
 fn health_body(llm: bool) -> serde_json::Value {
-    let mut caps = vec!["memory", "index.embed", "search.semantic", "explore"];
+    let mut caps = vec!["memory", "index.embed", "search.semantic"];
     if llm {
         caps.push("llm.complete");
     }
@@ -99,7 +99,7 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
 }
 
 // A git project with one substantive commit, so harvest has something to
-// extract and explore has something to index.
+// extract.
 fn write_git_project(dir: &Path) {
     isolate_git_config();
     let run = |args: &[&str]| {
@@ -198,169 +198,6 @@ fn harvest_payload() -> String {
         }]
     })
     .to_string()
-}
-
-// ── inkentry explore ───────────────────────────────────────────────────────
-
-// The loopback serves the LLM, so explore's completions go there. The remote
-// is LLM-capable too and must still see nothing.
-#[tokio::test]
-async fn explore_sends_llm_calls_to_the_loopback_when_it_serves_an_llm() {
-    let loopback = server_mock(Some("done".to_string())).await;
-    let remote = server_mock(Some("SHOULD NOT BE USED".to_string())).await;
-
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    write_git_project(project.path());
-    let db = project.path().join("index.db");
-    seed_index(home.path(), project.path(), &db);
-    write_server_config(project.path(), &remote.uri());
-    let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
-
-    // The reasoning loop's own outcome is not what is under test here, only
-    // where its completions were sent, so the exit status is not asserted.
-    let _ = base_cmd(home.path(), project.path())
-        .env("INKENTRY_STATE_DIR", &state_dir)
-        .arg("explore")
-        .arg("--db")
-        .arg(&db)
-        .arg("what does greet do")
-        .output()
-        .expect("run explore");
-
-    assert!(
-        count_path(&loopback, "/llm/complete").await > 0,
-        "explore must reason through the local LLM"
-    );
-    assert_eq!(
-        count_path(&remote, "/llm/complete").await,
-        0,
-        "a usable local LLM must not send code to the remote"
-    );
-}
-
-// Loopback without an LLM and no `llm_url`: the remote is the only LLM, so
-// completions go there while embedding stays local. This is the two-client
-// split being observable.
-#[tokio::test]
-async fn explore_splits_llm_to_the_remote_and_embedding_to_the_loopback() {
-    let loopback = server_mock(None).await;
-    let remote = server_mock(Some("done".to_string())).await;
-
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    write_git_project(project.path());
-    let db = project.path().join("index.db");
-    seed_index(home.path(), project.path(), &db);
-    write_server_config(project.path(), &remote.uri());
-    let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
-
-    let _ = base_cmd(home.path(), project.path())
-        .env("INKENTRY_STATE_DIR", &state_dir)
-        .arg("explore")
-        .arg("--db")
-        .arg(&db)
-        .arg("what does greet do")
-        .output()
-        .expect("run explore");
-
-    assert!(
-        count_path(&remote, "/llm/complete").await > 0,
-        "the remote is the only LLM available and must serve the reasoning loop"
-    );
-    assert_eq!(
-        count_path(&remote, "/index/embed").await,
-        0,
-        "routing the LLM to the remote must not divert embedding there"
-    );
-}
-
-// The privacy guard on a command that errors rather than skipping.
-#[tokio::test]
-async fn explore_stops_with_the_restart_message_when_the_local_llm_is_not_served() {
-    let loopback = server_mock(None).await;
-    let remote = server_mock(Some("SHOULD NOT BE USED".to_string())).await;
-
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    write_git_project(project.path());
-    let db = project.path().join("index.db");
-    seed_index(home.path(), project.path(), &db);
-    write_server_config(project.path(), &remote.uri());
-    let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
-
-    let output = base_cmd(home.path(), project.path())
-        .env("INKENTRY_STATE_DIR", &state_dir)
-        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
-        .arg("explore")
-        .arg("--db")
-        .arg(&db)
-        .arg("what does greet do")
-        .output()
-        .expect("run explore");
-    let text = combined(&output);
-
-    assert!(
-        !output.status.success(),
-        "explore cannot do its job without an LLM:\n{text}"
-    );
-    assert!(
-        text.contains("inkentry server stop") && text.contains("inkentry server start"),
-        "the restart is the only useful instruction here:\n{text}"
-    );
-    // The privacy guard rendered as prose: never nudge a user who asked for a
-    // local LLM toward the remote this run deliberately avoided.
-    assert!(
-        !text.contains("server_url"),
-        "the message must not offer the remote as a way out:\n{text}"
-    );
-    assert_eq!(
-        count_path(&remote, "/llm/complete").await,
-        0,
-        "code must never reach a remote LLM the user did not choose:\n{text}"
-    );
-    assert_no_internal_names(&text);
-}
-
-#[tokio::test]
-async fn explore_stops_with_the_no_llm_message_when_none_is_available() {
-    let loopback = server_mock(None).await;
-
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    write_git_project(project.path());
-    let db = project.path().join("index.db");
-    seed_index(home.path(), project.path(), &db);
-    let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
-
-    let output = base_cmd(home.path(), project.path())
-        .env("INKENTRY_STATE_DIR", &state_dir)
-        .arg("explore")
-        .arg("--db")
-        .arg(&db)
-        .arg("what does greet do")
-        .output()
-        .expect("run explore");
-    let text = combined(&output);
-
-    assert!(!output.status.success(), "{text}");
-    assert!(
-        text.contains("llm_url"),
-        "must offer the local route:\n{text}"
-    );
-    assert!(
-        text.contains("server_url"),
-        "must offer the remote route:\n{text}"
-    );
-    assert!(
-        !text.contains("--no-summaries"),
-        "explore has no such flag:\n{text}"
-    );
-    assert_no_internal_names(&text);
 }
 
 // ── inkentry memory harvest ────────────────────────────────────────────────
