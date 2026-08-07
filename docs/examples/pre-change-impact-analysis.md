@@ -35,10 +35,11 @@ inkentry search "validate_token" --mode text --limit 20
 inkentry memory search "validate_token authentication"
 ```
 
-With a server that has an LLM backend, you can also ask for a synthesis:
+To trace the blast radius across the codebase, follow the call graph and read the sites yourself:
 
 ```bash
-inkentry explore "If I add a required 'scope' parameter to validate_token, what would I need to update across the codebase?"
+inkentry graph validate_token --kind calls
+inkentry search "validate_token callers scope parameter" --graph
 ```
 
 ## Step 4: Find the tests

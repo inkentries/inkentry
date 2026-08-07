@@ -61,7 +61,7 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
 }
 
 fn health_body(llm: bool) -> serde_json::Value {
-    let mut caps = vec!["memory", "index.embed", "search.semantic", "explore"];
+    let mut caps = vec!["memory", "index.embed", "search.semantic"];
     if llm {
         caps.push("llm.complete");
     }

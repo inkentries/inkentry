@@ -111,14 +111,13 @@ inkentry search "auth middleware" --graph         # expand with 1-hop callers/ca
 inkentry search "request handling" --budget 4000  # fit results within a token budget
 ```
 
-### Agentic exploration
+### Multi-hop exploration (run the loop yourself)
 
-```bash
-inkentry explore "how does incremental indexing work?"   # LLM iterates search + graph to answer
-inkentry explore "what guards the context window?" --verbose
-```
-
-`explore` requires a server with an LLM backend configured.
+There is no `explore` command. inkentry retrieves context; your agent reasons over
+it. For a question that needs tracing across files, loop over the primitives
+yourself — `search` (add `--graph`), `graph <symbol>`, `chunks <file>` — refining
+the query each pass. See the "Exploring: multi-hop retrieval" section of
+[`SKILL.md`](SKILL.md).
 
 ### Multi-project search
 

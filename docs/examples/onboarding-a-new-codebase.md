@@ -78,9 +78,13 @@ With a server running and a built index, these commands give richer results:
 
 ```bash
 inkentry search "core interfaces abstractions domain objects" --graph
-inkentry explore "Give me a high-level overview of this codebase. What does it do and how is it structured?"
-inkentry explore "What is the error handling strategy? How are errors propagated and surfaced to users?"
-inkentry explore "How is this project built and deployed?"
+inkentry search "high-level overview: what it does and how it is structured" --graph
+inkentry search "error handling strategy: how errors are propagated and surfaced" --graph
+inkentry search "how the project is built and deployed" --graph
 ```
+
+For a synthesised answer, loop these primitives yourself — search, trace with
+`inkentry graph <symbol>`, read with `inkentry chunks <file>`, then refine the
+query and repeat. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
 
 After this session you'll have a solid mental model and a set of memory entries that make every future session faster.

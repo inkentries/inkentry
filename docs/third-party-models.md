@@ -154,7 +154,6 @@ rather than left to be inferred:
 
 ### What this unlocks
 
-- **`inkentry explore`**: the interactive LLM reasoning loop (`/explore`).
 - **`inkentry memory harvest`**: LLM-based decision extraction. All three sources
   need an LLM: `--source git` (commits), `--source claude-code` (agent session
   history), and `--source failures`.
@@ -185,9 +184,10 @@ its `/v1/health` capabilities, not by what your config file says. A setting
 cannot tell you whether the running daemon ever picked it up, which is the whole
 point of step 3.
 
-A server built before LLM support existed advertises `explore` without being
-able to answer LLM calls. That case is detected and treated as "no LLM here",
-so an older team server does not turn into a broken route.
+A server built before LLM support existed advertises a legacy capability without
+being able to answer LLM calls. That case is detected — availability is keyed on
+`llm.complete` alone — and treated as "no LLM here", so an older team server does
+not turn into a broken route.
 
 ### Why your summaries were skipped
 
@@ -223,13 +223,12 @@ Skipping chunk summaries: offline mode is on, so no inference will run.
 Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your inkentry config.
 ```
 
-`inkentry explore` and `inkentry memory harvest` use the same three messages with
-their own opening line (`'inkentry explore' cannot run: ...`), and they **fail**
-rather than skipping, because neither can do its job without an LLM. One
-difference is worth knowing: in offline mode those two commands never reach the
-LLM rule at all. They stop earlier, on the embedding requirement, with the
-pre-existing `requires inkentry-server` error. The offline notice above is
-something only `inkentry index` prints.
+`inkentry memory harvest` uses the same three messages with its own opening line
+(`'inkentry memory harvest' cannot run: ...`), and it **fails** rather than
+skipping, because it cannot do its job without an LLM. One difference is worth
+knowing: in offline mode it never reaches the LLM rule at all. It stops earlier,
+on the embedding requirement, with the pre-existing `requires inkentry-server`
+error. The offline notice above is something only `inkentry index` prints.
 
 If summaries do run but a batch fails (the endpoint is up but returns an error,
 say), the run reports how many batches produced nothing and points you at
@@ -261,7 +260,7 @@ from a checked-in `.inkentry/config.toml`.
 
 ### If the server itself has no LLM
 
-The server's own `/explore` and `/llm/complete` routes return `503` with
+The server's own `/llm/complete` route returns `503` with
 `"This server has no LLM configured. Set INKENTRY_LLM_URL and INKENTRY_LLM_MODEL."`
 
 ### Loopback (local dev) setup
@@ -310,7 +309,7 @@ Or override them for a single daemon without changing either:
 inkentry server start --llm-url http://127.0.0.1:1234 --llm-model your-chat-model-id
 ```
 
-`inkentry explore`, `inkentry memory harvest` and index-time summaries now all
+`inkentry memory harvest` and index-time summaries now
 work against the auto-discovered loopback server, no `config.toml` change
 needed: they fill in the loopback URL for you when no explicit `server_url` is
 set.
@@ -333,7 +332,7 @@ plaintext `http://` endpoint on any host but loopback is refused at startup
 (see [Security properties](#security-properties)).
 
 Every client already sets an explicit `server_url` to reach a team server, so
-`explore`, `memory harvest`, and index-time summaries are all unlocked with no
+`memory harvest` and index-time summaries are all unlocked with no
 extra client-side configuration.
 
 ## Native embedder artifact source

@@ -69,14 +69,12 @@ the CLI starts sends to that endpoint, passed as the daemon's `--llm-model`. It
 is ignored without an `llm_url`: a model with no endpoint is not a
 configuration.
 
-**A local presence flag.** When unset, `inkentry explore` is hidden from
-`--help` (it still runs if invoked directly). This is cosmetic. The value is
-not attached to any inference request the CLI makes, so it does not choose the
-model on a server the CLI merely reaches, such as a team `server_url`; that
-server's own configuration decides. `inkentry memory harvest` does not consult
-this field at all. For both commands, whether a chat model is actually
-available depends on the capability tier (a reachable inference server with a
-model loaded), independent of this setting.
+**Not a request parameter.** The value is not attached to any inference request
+the CLI makes, so it does not choose the model on a server the CLI merely
+reaches, such as a team `server_url`; that server's own configuration decides.
+`inkentry memory harvest` does not consult this field at all. Whether a chat
+model is actually available depends on the capability tier (a reachable
+inference server with a model loaded), independent of this setting.
 
 ### `llm_url`
 
@@ -87,7 +85,7 @@ model loaded), independent of this setting.
 Base URL of an OpenAI-compatible chat-completions endpoint (a local LM Studio
 or Ollama, a self-hosted gateway). When set, the auto-spawned local
 `inkentry-server` is started against it and gains LLM capability, which is what
-`inkentry explore`, `inkentry memory harvest`, and index-time summaries need.
+`inkentry memory harvest` and index-time summaries need.
 When unset, the daemon runs without an LLM.
 
 Personal config only. A value in a checked-in `.inkentry/config.toml` is
@@ -140,8 +138,7 @@ it with `inkentry server stop && inkentry server start` after changing `llm_url`
 
 Context-window size (tokens) of the configured LLM, used by `inkentry memory
 harvest` (including its `--source claude-code` variant) to split harvest
-batches that would overflow the model's window. Not consulted by `inkentry
-explore`, which has its own `--max-steps` bound instead. Set this to match the
+batches that would overflow the model's window. Set this to match the
 context length of the model you have loaded.
 
 ### `store_in_git_notes`
@@ -199,7 +196,7 @@ read from the personal config, not from `.inkentry/config.toml`. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.
 
-`mode` also decides which server answers LLM calls for `inkentry explore`,
+`mode` also decides which server answers LLM calls for
 `inkentry memory harvest` and index-time summaries, and it is the one setting
 that changes whether a configured [`llm_url`](#llm_url) keeps your code off a
 remote LLM. See

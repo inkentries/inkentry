@@ -101,7 +101,6 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         let _ = backend; // dim read below
     }
     if state.llm.is_some() {
-        capabilities.push("explore".to_string());
         capabilities.push("llm.complete".to_string());
     }
     let embedding_dim = ready_backend.as_ref().map_or(0, |e| e.dimension());

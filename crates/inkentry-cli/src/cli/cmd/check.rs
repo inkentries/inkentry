@@ -148,13 +148,10 @@ pub async fn check(args: CheckArgs, cfg: Config) -> Result<()> {
         if tier.is_server() || cfg.server_url.is_some() {
             let line = match tier {
                 capability::Tier::Server { url, caps, .. } => {
-                    let features: Vec<&str> = [
-                        caps.search_semantic.then_some("semantic search"),
-                        caps.explore.then_some("explore"),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                    let features: Vec<&str> = [caps.search_semantic.then_some("semantic search")]
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     let feature_str = if features.is_empty() {
                         "memory sync".to_string()
                     } else {

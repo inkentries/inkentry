@@ -95,7 +95,7 @@ struct Args {
     model_dir: Option<PathBuf>,
 
     /// Base URL of an OpenAI-compatible chat completions server for LLM features
-    /// (`/explore`). Overrides `INKENTRY_LLM_URL`.
+    /// (`/llm/complete`). Overrides `INKENTRY_LLM_URL`.
     #[arg(long, env = "INKENTRY_LLM_URL")]
     llm_url: Option<String>,
 
@@ -105,7 +105,7 @@ struct Args {
 
     /// `reasoning_effort` sent on every LLM request, to suppress chain-of-thought
     /// on reasoning models. Defaults to `none` (reasoning off), because
-    /// harvest/explore want the answer, not the model's thinking, and an
+    /// harvest wants the answer, not the model's thinking, and an
     /// unbounded reasoning pass exhausts the token budget before any content is
     /// emitted. Set `minimal`/`low`/`medium`/`high` to allow it, or `default` to
     /// omit the field entirely for endpoints that reject it.
@@ -757,7 +757,7 @@ mod arg_tests {
     use super::{Args, normalize_reasoning_effort};
     use clap::Parser;
 
-    // Reasoning is off by default: harvest/explore want the answer, and an
+    // Reasoning is off by default: harvest wants the answer, and an
     // unbounded reasoning pass exhausts the token budget before any content
     // arrives. The default must send `none`.
     #[test]

@@ -75,7 +75,7 @@ Three tiers, and it helps to understand why each one exists.
 
 Everything works with just the binary. The **local server** is a convenience on
 top of that: it keeps the embedding model loaded and running in the background,
-so each semantic `search` or `explore` is fast instead of reloading a few hundred
+so each semantic `search` is fast instead of reloading a few hundred
 megabytes of model on every command, and your context is ready every time rather
 than being rebuilt on each invocation. That is all it does. It stores no memory
 of its own, and it listens only on your own machine (loopback), so it is not
@@ -91,7 +91,7 @@ the hosted spelunk.cloud service is the managed alternative.
 | Tier | What it adds | Where memory lives |
 |---|---|---|
 | Built-in (zero infra) | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
-| Local semantic server (auto-started on loopback) | faster semantic search, `explore`, summaries | still local `memory.db`: inference only, never a memory store |
+| Local semantic server (auto-started on loopback) | faster semantic search, summaries | still local `memory.db`: inference only, never a memory store |
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 
 Everyone on a team sets an explicit `server_url` (plus a shared server key)

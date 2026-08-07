@@ -126,7 +126,7 @@ pub struct Config {
     /// URL of the inkentry-server instance, e.g. `https://inkentry.internal.example.com`
     /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
-    /// semantic search, embedding, and explore.
+    /// semantic search and embedding.
     /// Set in `.inkentry/config.toml` (project-level) or via `INKENTRY_SERVER_URL` only:
     /// [`Config::load_with_store`] discards any value from the global personal
     /// config, since a team server is a project-wide choice, not a

@@ -446,7 +446,7 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     );
 }
 
-// ── display commands: graph / chunks / explore / check ─────────────────────────
+// ── display commands: graph / chunks / check ─────────────────────────
 //
 // These read-only commands previously resolved their DB via the legacy
 // `open_project_db`/`resolve_db` path, which fell back to the machine-global
@@ -556,31 +556,6 @@ fn chunks_refuses_without_local_project() {
         std::fs::read(&global).unwrap(),
         sentinel,
         "refused chunks must not open or mutate the pre-existing global index"
-    );
-}
-
-#[test]
-fn explore_refuses_without_local_project() {
-    let home = TempDir::new().unwrap();
-    let proj = TempDir::new().unwrap();
-
-    let global = global_index_db(home.path());
-    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-    let sentinel = b"pre-existing global index sentinel";
-    std::fs::write(&global, sentinel).unwrap();
-
-    // The project gate fires before any server probe, so an un-init'd dir refuses
-    // with the ADR-067 message rather than reading the global index.
-    bin(home.path(), proj.path())
-        .args(["explore", "how does auth work"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
-
-    assert_eq!(
-        std::fs::read(&global).unwrap(),
-        sentinel,
-        "refused explore must not open or mutate the pre-existing global index"
     );
 }
 

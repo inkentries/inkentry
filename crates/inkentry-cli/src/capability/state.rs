@@ -87,13 +87,12 @@ pub struct Capabilities {
     pub memory_pull: bool,
     pub memory_search: bool,
     pub memory_harvest: bool,
-    pub explore: bool,
     /// The server serves `POST /llm/complete`, advertised as `llm.complete`.
     ///
-    /// The only trustworthy "this server has an LLM" signal. `explore` cannot
-    /// stand in for it: `explore` predates both this capability and the
-    /// `/llm/complete` route, so a server old enough to advertise `explore`
-    /// alone has no LLM route at all.
+    /// The only trustworthy "this server has an LLM" signal. An older
+    /// capability must never stand in for it: a server can advertise a legacy
+    /// feature capability while serving no `/llm/complete` route at all, so
+    /// only this flag establishes LLM availability across version skew.
     ///
     /// Kept out of `inkentry status --format json` (which serializes this
     /// struct wholesale) so that payload's shape is unchanged.
@@ -125,7 +124,6 @@ impl Capabilities {
             memory_pull: memory,
             memory_search: memory,
             memory_harvest: memory,
-            explore: has("explore"),
             llm_complete: has("llm.complete"),
             plan: has("plan"),
             // Not derivable from the `capabilities` array: it is a separate
@@ -144,7 +142,6 @@ impl Capabilities {
             memory_pull: true,
             memory_search: true,
             memory_harvest: false,
-            explore: false,
             llm_complete: false,
             plan: false,
             // A legacy plain-text server pre-dates the pushed-vector accept side.
@@ -162,7 +159,6 @@ impl Capabilities {
             memory_pull: true,
             memory_search: true,
             memory_harvest: true,
-            explore: true,
             llm_complete: true,
             plan: true,
             accepts_pushed_vectors: true,
@@ -185,26 +181,19 @@ mod tests {
         assert!(!caps.memory_pull);
         assert!(!caps.memory_search);
         assert!(!caps.memory_harvest);
-        assert!(!caps.explore);
         assert!(!caps.plan);
     }
 
     #[test]
     fn from_server_caps_full_set() {
-        let caps = Capabilities::from_server_caps(&[
-            "search.semantic",
-            "index.embed",
-            "memory",
-            "explore",
-            "plan",
-        ]);
+        let caps =
+            Capabilities::from_server_caps(&["search.semantic", "index.embed", "memory", "plan"]);
         assert!(caps.search_semantic);
         assert!(caps.index_embed);
         assert!(caps.memory_push);
         assert!(caps.memory_pull);
         assert!(caps.memory_search);
         assert!(caps.memory_harvest);
-        assert!(caps.explore);
         assert!(caps.plan);
     }
 
@@ -213,7 +202,6 @@ mod tests {
         let caps = Capabilities::from_server_caps(&["memory"]);
         assert!(!caps.search_semantic);
         assert!(!caps.index_embed);
-        assert!(!caps.explore);
         assert!(!caps.plan);
         assert!(caps.memory_push);
         assert!(caps.memory_pull);
@@ -226,7 +214,6 @@ mod tests {
         let caps = Capabilities::from_server_caps(&["search.semantic", "plan"]);
         assert!(caps.search_semantic);
         assert!(!caps.index_embed);
-        assert!(!caps.explore);
         assert!(caps.plan);
         assert!(!caps.memory_push);
         assert!(!caps.memory_pull);
@@ -238,25 +225,34 @@ mod tests {
 
     #[test]
     fn from_server_caps_llm_complete_sets_the_flag() {
-        let caps = Capabilities::from_server_caps(&["memory", "explore", "llm.complete"]);
+        let caps = Capabilities::from_server_caps(&["memory", "llm.complete"]);
         assert!(caps.llm_complete);
     }
 
     // Version skew: `llm.complete` and the `/llm/complete` route landed
-    // together, while `explore` predates both. A server advertising only
-    // `explore` has no LLM route at all, so `explore` must never stand in for
-    // the LLM signal.
+    // together. A server can advertise a legacy feature capability while
+    // serving no `/llm/complete` route, so an older capability must never
+    // stand in for the LLM signal.
     #[test]
-    fn from_server_caps_explore_without_llm_complete_is_not_llm_capable() {
-        let caps = Capabilities::from_server_caps(&["memory", "index.embed", "explore", "plan"]);
-        assert!(caps.explore);
+    fn from_server_caps_legacy_cap_without_llm_complete_is_not_llm_capable() {
+        let caps =
+            Capabilities::from_server_caps(&["memory", "index.embed", "legacy.feature", "plan"]);
         assert!(!caps.llm_complete);
     }
 
+    // A newer CLI talking to an older server that still lists the removed
+    // `explore` capability must parse it without error and treat that server as
+    // not LLM-capable: the unknown cap is ignored, never mistaken for an LLM.
     #[test]
-    fn from_server_caps_without_explore_or_llm_complete_is_not_llm_capable() {
+    fn from_server_caps_still_lists_removed_explore_cap_is_ignored_and_not_llm_capable() {
+        let caps = Capabilities::from_server_caps(&["memory", "index.embed", "explore"]);
+        assert!(!caps.llm_complete);
+        assert!(caps.memory_push);
+    }
+
+    #[test]
+    fn from_server_caps_without_llm_complete_is_not_llm_capable() {
         let caps = Capabilities::from_server_caps(&["memory", "index.embed"]);
-        assert!(!caps.explore);
         assert!(!caps.llm_complete);
     }
 
@@ -301,7 +297,6 @@ mod tests {
         let caps = Capabilities::legacy_memory_only();
         assert!(!caps.search_semantic);
         assert!(!caps.index_embed);
-        assert!(!caps.explore);
         assert!(!caps.plan);
         assert!(caps.memory_push);
         assert!(caps.memory_pull);
@@ -320,7 +315,6 @@ mod tests {
         assert!(caps.memory_pull);
         assert!(caps.memory_search);
         assert!(caps.memory_harvest);
-        assert!(caps.explore);
         assert!(caps.plan);
     }
 

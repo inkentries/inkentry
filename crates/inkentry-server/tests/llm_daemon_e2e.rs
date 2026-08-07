@@ -110,7 +110,10 @@ async fn a_daemon_given_an_llm_url_advertises_llm_capability() {
 
     let caps = capabilities(daemon.port).await;
 
-    assert!(caps.contains(&"explore".to_string()), "got {caps:?}");
+    assert!(
+        !caps.contains(&"explore".to_string()),
+        "an LLM-configured server must no longer advertise the removed explore capability: got {caps:?}"
+    );
     assert!(caps.contains(&"llm.complete".to_string()), "got {caps:?}");
 }
 

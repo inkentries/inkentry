@@ -23,7 +23,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// The capability that separates the two peers.
 ///
 /// The OSS team server builds its `/v1/health` capability list from `memory`,
-/// `index.embed`/`search.semantic` and `explore`/`llm.complete`, and never
+/// `index.embed`/`search.semantic` and `llm.complete`, and never
 /// advertises SSE streaming; the hosted API does. Keying on an already-shipped
 /// capability avoids adding a field to either peer just to tell them apart.
 const CLOUD_ONLY_CAPABILITY: &str = "memory.stream";

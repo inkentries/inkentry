@@ -61,25 +61,26 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
-// `inkentry --help` must list the first-class `explore` subcommand in its
-// top-level command list. `explore` is a documented feature ("Agentic search
-// loop"), so an agent or user enumerating capabilities from `--help` must be
-// able to discover it. It was previously hidden from `--help` whenever no chat
-// model was configured; it must now always list.
-//
-// The test HOME is an isolated temp dir with no `llm_model` set, so this pins
-// down the no-llm case specifically. Running `explore` without an LLM still
-// fails with the locked-feature message (unchanged) — only its visibility in
-// `--help` changes. "explore" appears in `--help` output only when the command
-// is listed (no other command's about text or the crate description contains
-// that substring), so asserting its presence is a faithful proxy.
+// The `explore` command was removed outright (ADR-079). It must no longer
+// appear in `inkentry --help`, and invoking it must fall through to clap's
+// unknown-subcommand error with a non-zero exit — no LLM plumbing, no server
+// probe, just the standard "unrecognized subcommand" failure.
 #[test]
-fn test_help_lists_explore() {
+fn test_help_does_not_list_explore() {
     inkentry_bin()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("explore"));
+        .stdout(predicate::str::contains("explore").not());
+}
+
+#[test]
+fn test_explore_subcommand_is_gone() {
+    inkentry_bin()
+        .args(["explore", "how does auth work"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 /// regression: `inkentry search --as-of <sha>` (snapshot search) was removed
@@ -172,7 +173,7 @@ async fn test_index_and_status() {
         .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
-            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"],
+            "capabilities": ["memory", "index.embed", "search.semantic", "plan"],
         })))
         .mount(&mock_server)
         .await;
@@ -293,7 +294,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
             .and(path("/v1/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "status": "ok",
-                "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"],
+                "capabilities": ["memory", "index.embed", "search.semantic", "plan"],
             })))
             .mount(&mock_server)
             .await;
@@ -466,7 +467,7 @@ async fn test_status_shows_server_tier() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"]
+            "capabilities": ["memory", "index.embed", "search.semantic", "plan"]
         })))
         .mount(&mock_server)
         .await;
@@ -585,7 +586,9 @@ async fn test_status_json_includes_tier_fields() {
     // command yet: even though this mock server advertises "plan", it must
     // never surface in user-facing status JSON.
     assert!(body["capabilities"]["plan"].is_null());
-    assert!(!body["capabilities"]["explore"].as_bool().unwrap());
+    // `explore` was removed (ADR-079); the capability field is gone, so it never
+    // appears in status JSON.
+    assert!(body["capabilities"]["explore"].is_null());
     // With an explicit server_url and no `mode` override, the default is
     // local_first even though the tier probe found the server
     // reachable: tier and sync mode are independent axes.
@@ -826,7 +829,7 @@ async fn test_check_reports_server_reachable() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "search.semantic", "explore"]
+            "capabilities": ["memory", "search.semantic"]
         })))
         .mount(&mock_server)
         .await;
@@ -869,7 +872,7 @@ async fn test_check_reports_server_reachable() {
         .success()
         .stdout(predicate::str::contains("Server:"))
         .stdout(predicate::str::contains("semantic search"))
-        .stdout(predicate::str::contains("explore"));
+        .stdout(predicate::str::contains("explore").not());
 }
 
 #[tokio::test]
@@ -926,7 +929,7 @@ async fn test_check_porcelain_routes_server_line_to_stderr() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "search.semantic", "explore"]
+            "capabilities": ["memory", "search.semantic"]
         })))
         .mount(&mock_server)
         .await;
@@ -998,7 +1001,7 @@ async fn test_check_exit_1_when_stale_in_both_modes() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "search.semantic", "explore"]
+            "capabilities": ["memory", "search.semantic"]
         })))
         .mount(&mock_server)
         .await;
@@ -1458,13 +1461,12 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // real default port 7777 (which may be occupied — or unoccupied — on the test
 // host) and without touching the developer's real `~/.local/state`.
 //
-// Coverage note: `memory harvest` and `explore` route through the same
-// `effective_config` bridging code, but harvesting requires mocking `git log`
-// plus a streaming `/llm/complete` SSE extraction round-trip, and `explore`
-// requires mocking a multi-step tool-calling `Explorer` loop over
-// `/llm/complete` SSE — both disproportionately heavy relative to what's under
-// test (the auto-discovery → inference-vs-storage split). Left uncovered here;
-// flagged honestly rather than thrashing on heavyweight SSE mocks.
+// Coverage note: `memory harvest` routes through the same `effective_config`
+// bridging code, but harvesting requires mocking `git log` plus a streaming
+// `/llm/complete` SSE extraction round-trip — disproportionately heavy relative
+// to what's under test (the auto-discovery → inference-vs-storage split). Left
+// uncovered here; flagged honestly rather than thrashing on heavyweight SSE
+// mocks.
 
 /// Write `<home>/.local/state/inkentry/server.port` so `capability::get_tier`'s
 /// loopback auto-discovery (step 3a) finds our mock server deterministically.
@@ -1512,7 +1514,7 @@ async fn mount_auto_discovery_inference_endpoints(server: &wiremock::MockServer)
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "plan"]
+            "capabilities": ["memory", "index.embed", "search.semantic", "plan"]
         })))
         .mount(server)
         .await;

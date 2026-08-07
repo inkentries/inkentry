@@ -168,18 +168,19 @@ mod tests {
         serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "index.embed", "search.semantic", "explore", "llm.complete"],
+            "capabilities": ["memory", "index.embed", "search.semantic", "llm.complete"],
             "embedding_dim": inkentry_core::embeddings::EMBEDDING_DIM,
         })
     }
 
-    // Health body from a server with an embedder but no LLM: `explore` is
-    // present, which is exactly the version-skew trap keying on it would hit.
+    // Health body from a server with an embedder but no LLM. It still lists a
+    // legacy feature capability, which is exactly the version-skew trap that
+    // keying on anything other than `llm.complete` would fall into.
     fn health_without_llm() -> serde_json::Value {
         serde_json::json!({
             "status": "ok",
             "version": "test",
-            "capabilities": ["memory", "index.embed", "search.semantic", "explore"],
+            "capabilities": ["memory", "index.embed", "search.semantic", "legacy.feature"],
             "embedding_dim": inkentry_core::embeddings::EMBEDDING_DIM,
         })
     }
@@ -422,13 +423,13 @@ mod tests {
         assert_eq!(route.target_url(), Some("http://127.0.0.1:7777"));
     }
 
-    // The version-skew guard at the decision layer: a tier advertising
-    // `explore` but not `llm.complete` has no LLM route behind it.
+    // The version-skew guard at the decision layer: a tier that advertises an
+    // embedder and other capabilities but not `llm.complete` has no LLM route
+    // behind it, so a legacy capability can never stand in for the LLM signal.
     #[test]
-    fn local_route_declines_a_tier_that_advertises_explore_but_no_llm() {
+    fn local_route_declines_a_tier_without_llm_complete() {
         let mut caps = Capabilities::all();
         caps.llm_complete = false;
-        assert!(caps.explore);
         let tier = Tier::Server {
             url: "http://127.0.0.1:7777".to_string(),
             caps,
@@ -438,7 +439,7 @@ mod tests {
         };
         assert!(
             local_route(&Config::default(), root(), &tier).is_none(),
-            "explore must never stand in for an LLM"
+            "a tier without llm.complete must never yield a local LLM route"
         );
     }
 

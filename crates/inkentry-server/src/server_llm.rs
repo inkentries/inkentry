@@ -65,8 +65,8 @@ pub fn check_llm_transport(llm_url: &str, has_key: bool) -> Result<()> {
 /// reject unexpected headers keep working.
 ///
 /// `reasoning_effort` is sent on every request when `Some` (default `"none"`)
-/// to suppress chain-of-thought on reasoning models: our uses (memory harvest,
-/// explore) want the JSON answer, not the model's thinking, and an unbounded
+/// to suppress chain-of-thought on reasoning models: our use (memory harvest)
+/// wants the JSON answer, not the model's thinking, and an unbounded
 /// reasoning pass burns the whole `max_tokens` budget before any `content`
 /// arrives. `None` omits the field for endpoints that reject it.
 pub struct ServerLlm {

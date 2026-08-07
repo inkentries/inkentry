@@ -91,13 +91,13 @@ UUIDs, so the "malformed UUID" row is reframed as a slug length/sanity cap.
 |---|---|
 | Title field: max 500 characters enforced at route handler | ☑ `handlers.rs` `MAX_TITLE_LEN = 500`, returns 400 on violation |
 | Body field: max 50 000 characters enforced at route handler | ☑ `handlers.rs` `MAX_BODY_LEN = 50_000`, returns 400 on violation |
-| Path param (project slug) validated; an over-long slug returns 400, not 500 | ☑ `handlers.rs` `MAX_SLUG_LEN = 200`, enforced in `require_project` and the handlers that bypass it (add_note / index_embed / project_search / explore / llm_complete) |
+| Path param (project slug) validated; an over-long slug returns 400, not 500 | ☑ `handlers.rs` `MAX_SLUG_LEN = 200`, enforced in `require_project` and the handlers that bypass it (add_note / index_embed / project_search / llm_complete) |
 | All SQL uses parameterised queries, no string concatenation | ☑ verified: `db.rs` uses `params!` throughout (no `format!`/concatenation into SQL across `crates/inkentry-server/src/`); FTS5 terms are quoted as literals via `fts5_quote_literal` |
 
 Beyond this table, the input-validation hardening also added a `tower_http` middleware stack (see §DoS in
 [`THREAT-MODEL.md`](THREAT-MODEL.md#d--denial-of-service)): `RequestBodyLimitLayer`
 (2 MiB), `TimeoutLayer` (30s, exempting `/memory/stream`), `ConcurrencyLimitLayer`
-(256), plus IP-keyed rate limiting on `/explore` and `/llm/complete`, and an
+(256), plus IP-keyed rate limiting on `/llm/complete`, and an
 embedding-vector-length check against the configured dim.
 
 **`/index/embed` timeout carve-out (PR #513 field-failure

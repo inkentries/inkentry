@@ -220,7 +220,6 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "drift_candidates": drift,
                 "usage_7d": {
                     "search": usage_map.get("search").copied().unwrap_or(0),
-                    "explore": usage_map.get("explore").copied().unwrap_or(0),
                     "memory_search": usage_map.get("memory search").copied().unwrap_or(0),
                 }
             }))?
@@ -410,7 +409,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let usage = db.usage_last_7_days().unwrap_or_default();
     let total: i64 = usage.iter().map(|(_, n)| n).sum();
     if total > 0 {
-        const COMMANDS: &[&str] = &["search", "explore", "memory search"];
+        const COMMANDS: &[&str] = &["search", "memory search"];
         println!("\nUsage (last 7 days)");
         for cmd in COMMANDS {
             let count = usage
@@ -453,10 +452,6 @@ async fn print_tier_section(
             }
             println!("  search          ast-grep + text{server_hint}");
             println!("  memory          {mem_label}");
-            println!(
-                "  explore         unavailable{}",
-                explore_offline_hint(cfg.server_url.is_some())
-            );
         }
         Tier::Server {
             url,
@@ -490,12 +485,6 @@ async fn print_tier_section(
                 cprintln!("{line}");
             }
             println!("  memory          {mem_label}");
-            let explore_label = if caps.explore {
-                "available"
-            } else {
-                "unavailable"
-            };
-            println!("  explore         {explore_label}");
         }
     }
     println!();
@@ -567,17 +556,6 @@ async fn sync_status_suffix(cfg: &Config, mem_path: &std::path::Path) -> Option<
         clause.push_str(&format!(", sync error: {truncated}"));
     }
     Some(format!("  \u{b7}  {clause}"))
-}
-
-/// Hint for the `explore` line when the tier is Offline. With a configured
-/// `server_url` the fix is never "set server_url" (it already is); the truthful
-/// hint is that the configured server could not be reached.
-fn explore_offline_hint(server_url_configured: bool) -> &'static str {
-    if server_url_configured {
-        "  [configured server unreachable]"
-    } else {
-        "  [set server_url to enable]"
-    }
 }
 
 /// Human-readable label for a resolved memory `backend_kind()` (ADR-067 D3).
@@ -798,22 +776,6 @@ mod tests {
         // confusing "unknown".
         assert!(embedder_status_line(&EmbedderState::Unknown, None).is_none());
         assert!(embedder_status_line(&EmbedderState::Unknown, Some("https://t:1")).is_none());
-    }
-
-    // ── explore_offline_hint: truthful in both offline states ───────────────────
-
-    #[test]
-    fn explore_hint_without_server_url_suggests_setting_it() {
-        assert!(explore_offline_hint(false).contains("set server_url"));
-    }
-
-    #[test]
-    fn explore_hint_with_server_url_says_unreachable_not_set_it() {
-        // server_url is already set; telling the operator to set it implies the
-        // config is missing and hides the real problem (server unreachable).
-        let hint = explore_offline_hint(true);
-        assert!(hint.contains("unreachable"), "got: {hint}");
-        assert!(!hint.contains("set server_url"), "got: {hint}");
     }
 
     // ── sync_mode_line: "local by design" vs "local because broken" ─────────────

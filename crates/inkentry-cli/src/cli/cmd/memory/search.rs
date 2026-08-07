@@ -30,7 +30,7 @@ pub(super) async fn memory_search(
     // Honor the auto-discovered server tier: loopback auto-discovery sets the
     // capability tier without populating `cfg.server_url`, so build an
     // effective config that fills in `server_url`/`project_id` from the tier
-    // (mirrors `explore` — IMP-3 / spelunk-cloud/spelunk#316). Falls back to `cfg` unchanged
+    // (mirrors `memory harvest`). Falls back to `cfg` unchanged
     // when the tier isn't `Server` or `server_url` is already configured.
     let project_root = mem_path.parent().unwrap_or(mem_path);
     // `get_inference_tier` (not `get_tier`): local_first always prefers the

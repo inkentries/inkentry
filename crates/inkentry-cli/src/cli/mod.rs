@@ -8,7 +8,6 @@ pub mod cmd;
 pub use cmd::auth::AuthArgs;
 pub use cmd::check::CheckArgs;
 pub use cmd::context::ContextArgs;
-pub use cmd::explore::ExploreArgs;
 pub use cmd::graph::GraphArgs;
 pub use cmd::hooks::HooksArgs;
 pub use cmd::index::IndexArgs;
@@ -79,8 +78,6 @@ pub enum Command {
     Memory(MemoryArgs),
     /// Manage git hooks (post-commit auto-index and harvest)
     Hooks(HooksArgs),
-    /// Agentic search loop: explore the codebase with iterative tool calls
-    Explore(ExploreArgs),
     /// Manage and inspect cross-project links
     Links(LinksArgs),
     /// Low-level plumbing commands for agents and scripts (JSONL output)

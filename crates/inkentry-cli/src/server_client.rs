@@ -2,9 +2,9 @@
 //!
 //! `ServerInferenceClient` calls both `POST /v1/projects/{id}/llm/complete`
 //! (SSE) and `POST /v1/projects/{id}/index/embed` (JSON); `ServerLlmAdapter`
-//! and `ServerEmbedAdapter` expose those two over inkentry-core's backend
-//! traits. LLM and embed routing resolve independently, so a command that needs
-//! both builds two clients rather than sharing one.
+//! exposes the completion side over inkentry-core's `LlmBackend` trait. LLM and
+//! embed routing resolve independently, so a command that needs both builds two
+//! clients rather than sharing one.
 //!
 //! This is the ONLY place in inkentry-cli that calls AI inference routes.
 //! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
@@ -625,32 +625,10 @@ impl ServerInferenceClient {
     }
 }
 
-// ── EmbeddingBackend adapter ──────────────────────────────────────────────────
-
-/// Wraps `ServerInferenceClient` and implements the inkentry-core `EmbeddingBackend`
-/// trait so that explorer / memory code can embed via inkentry-server without
-/// touching `ActiveEmbedder` / reqwest directly.
-pub struct ServerEmbedAdapter(pub Arc<ServerInferenceClient>);
-
-#[async_trait]
-impl inkentry_core::embeddings::EmbeddingBackend for ServerEmbedAdapter {
-    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let mut results = Vec::with_capacity(texts.len());
-        for text in texts {
-            results.push(self.0.embed_text(text).await?);
-        }
-        Ok(results)
-    }
-
-    fn dimension(&self) -> usize {
-        inkentry_core::embeddings::EMBEDDING_DIM
-    }
-}
-
 // ── LlmBackend adapter ────────────────────────────────────────────────────────
 
 /// Wraps `ServerInferenceClient` and implements the inkentry-core `LlmBackend`
-/// trait so that explorer / summariser code can call the LLM via inkentry-server.
+/// trait so that summariser / harvest code can call the LLM via inkentry-server.
 pub struct ServerLlmAdapter(pub Arc<ServerInferenceClient>);
 
 #[async_trait]

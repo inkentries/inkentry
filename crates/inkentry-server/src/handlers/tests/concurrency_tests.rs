@@ -568,11 +568,10 @@ fn embed_abandon_guard_drop_is_idempotent_when_flag_already_set() {
 // requests beyond its cap under real concurrent load, not just that the
 // layer is attached.
 //
-// Deliberately does NOT route through `/explore` or `/llm/complete`: those
-// release the concurrency permit as soon as the SSE stream is constructed
-// (generation is a detached `tokio::spawn`), so they sit outside what
-// `ConcurrencyLimitLayer` can bound: the same gap `llm_generate_with_timeout`
-// closes for `TimeoutLayer`.
+// Deliberately does NOT route through `/llm/complete`: it releases the
+// concurrency permit as soon as the SSE stream is constructed (generation is a
+// detached `tokio::spawn`), so it sits outside what `ConcurrencyLimitLayer` can
+// bound: the same gap `llm_generate_with_timeout` closes for `TimeoutLayer`.
 #[tokio::test]
 async fn concurrency_limit_layer_queues_requests_beyond_the_cap() {
     use axum::{Router, routing::get};

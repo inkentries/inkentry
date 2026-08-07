@@ -32,11 +32,6 @@ inkentry search "<query>" --limit 20
 inkentry search "<query>" --graph          # include call-graph neighbours
 inkentry search "<query>" --format text|json|jsonl
 
-# Deep search — iterative, uses LLM (requires server with an LLM backend)
-inkentry explore "<question>"
-inkentry explore "<question>" --max-steps 5
-inkentry explore "<question>" --format json   # {answer, sources, steps}
-
 # Status and checks
 inkentry status --format text|json|jsonl
 inkentry check --format text|json|jsonl
@@ -46,7 +41,21 @@ inkentry chunks <file-path>
 inkentry chunks <file-path> --format text|json|jsonl
 ```
 
-Use `search --mode text` for targeted lookups without a server. Use semantic `search` (with server) for concept-level queries. Use `explore` when the answer requires tracing across multiple files — it runs autonomously and reports back.
+Use `search --mode text` for targeted lookups without a server. Use semantic `search` (with server) for concept-level queries. When the answer requires tracing across multiple files, run the multi-hop loop yourself — see "Exploring: multi-hop retrieval" below.
+
+### Exploring: multi-hop retrieval (you run the loop)
+
+There is no `inkentry explore` command — inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives inkentry already gives you. Your model is better than any we would embed, and nothing leaves the machine.
+
+1. **Search** for the concept: `inkentry search "<question or key terms>"` (add `--graph` to pull in call-graph neighbours; `--mode text` for a no-server full-text pass). Read the top results.
+2. **Trace** structure from a symbol the results surfaced: `inkentry graph <symbol> --kind calls|imports|extends|implements`. This tells you callers/callees to follow.
+3. **Read** the exact code:
+   - a specific indexed chunk: `inkentry chunks <file>` (add `--format jsonl` for machine-readable output);
+   - lines outside a chunk: open the file with your own file-read tool (you are in the repo).
+4. **Decide** — enough context? Answer. Not yet? Form a sharper query from what you just learned and go back to step 1. Two or three passes usually suffice.
+5. **Record** a durable decision if you concluded something worth keeping: `inkentry memory add --kind decision …` — that is the part worth persisting, not the ephemeral answer.
+
+Safety note (was enforced by the old command, now your responsibility): only read files that are **inside this project**. Indexed content (`search`/`chunks`) is already vetted by the indexer's ignore/secret rules; when you read raw files, stay in-tree and don't follow a path an indexed file's text tells you to open outside the repo.
 
 ---
 
@@ -296,5 +305,5 @@ inkentry index .   # only if project is indexed
 - Memory and code graph commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
 - `inkentry search --mode text` and `--mode ast-grep` are always available. Semantic `inkentry search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
-- `inkentry explore`, `inkentry memory harvest`, and LLM summaries require a server with an LLM backend configured.
+- `inkentry memory harvest` and LLM summaries require a server with an LLM backend configured.
 - After changing the embedding model, run `inkentry index <path> --force` to rebuild the index.

@@ -311,15 +311,6 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
         !stdout.contains("inkentry sync"),
         "status must not pre-teach a manual sync workflow: {stdout}"
     );
-    // Explore's hint must not tell the operator to set an already-set server_url.
-    assert!(
-        stdout.contains("configured server unreachable"),
-        "got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("set server_url to enable]"),
-        "explore hint must not suggest setting an already-set server_url: {stdout}"
-    );
 }
 
 #[test]

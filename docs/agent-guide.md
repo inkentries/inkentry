@@ -6,7 +6,7 @@
 
 **What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`inkentry search --mode auto|semantic|hybrid`), `inkentry explore`, and `inkentry memory harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+**What's server-backed:** semantic/hybrid search (`inkentry search --mode auto|semantic|hybrid`) and `inkentry memory harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
 
 **Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
@@ -133,14 +133,15 @@ AGENT=true inkentry search "request lifecycle middleware" --mode text --limit 20
 AGENT=true inkentry search "embedding format storage" --graph --format json
 ```
 
-For open-ended questions that require synthesis across multiple code paths, use `inkentry explore` (requires embedding server and optionally a chat model). It runs an iterative search-and-reason loop:
+For open-ended questions that require synthesis across multiple code paths, run the multi-hop retrieval loop yourself — inkentry retrieves context; you reason over it. There is no `explore` command; loop over the primitives, refining the query each pass:
 
 ```bash
-AGENT=true inkentry explore "how does incremental indexing decide which files to skip?"
-AGENT=true inkentry explore "where is the embedding model loaded?" --max-steps 3
+AGENT=true inkentry search "how does incremental indexing decide which files to skip?" --graph
+inkentry graph <symbol> --kind calls        # follow callers/callees the results surfaced
+inkentry chunks <file>                       # read the exact indexed code
 ```
 
-`explore` is slower than `search` (multiple LLM calls) — use it only when `search` alone isn't enough.
+Two or three passes usually suffice: search, trace with `graph`, read with `chunks` (or your own file-read tool for lines outside a chunk), then decide whether you have enough context or need a sharper query. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
 
 ## After making changes
 
@@ -594,7 +595,7 @@ AGENT=true inkentry memory search "<topic>"                   # search prior dec
 
 # Optional: If your project is indexed
 inkentry search "<topic>" --budget 4000                        # fit within token limit
-inkentry explore "question about code"                        # LLM-powered synthesis
+# For multi-hop questions, loop search + graph + chunks yourself (see SKILL.md)
 
 # After changes — verify call graph integrity
 inkentry graph <symbol> --kind calls

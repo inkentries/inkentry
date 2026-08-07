@@ -21,7 +21,6 @@ pub enum NoLlmReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFeature {
     Summaries,
-    Explore,
     MemoryHarvest,
 }
 
@@ -29,7 +28,6 @@ impl LlmFeature {
     fn subject(self) -> &'static str {
         match self {
             LlmFeature::Summaries => "Skipping chunk summaries",
-            LlmFeature::Explore => "'inkentry explore' cannot run",
             LlmFeature::MemoryHarvest => "'inkentry memory harvest' cannot run",
         }
     }
@@ -85,11 +83,7 @@ mod tests {
         NoLlmReason::LocalConfiguredButNotServed,
         NoLlmReason::NoLlmAnywhere,
     ];
-    const FEATURES: [LlmFeature; 3] = [
-        LlmFeature::Summaries,
-        LlmFeature::Explore,
-        LlmFeature::MemoryHarvest,
-    ];
+    const FEATURES: [LlmFeature; 2] = [LlmFeature::Summaries, LlmFeature::MemoryHarvest];
 
     // The jargon in the message this task replaces is what created the task.
     // No message may name an internal type, adapter or field; a reader can
@@ -149,7 +143,7 @@ mod tests {
     fn local_configured_but_not_served_message_names_llm_url_and_the_restart() {
         let msg = no_llm_message(
             NoLlmReason::LocalConfiguredButNotServed,
-            LlmFeature::Explore,
+            LlmFeature::MemoryHarvest,
         );
         assert!(msg.contains("llm_url"), "{msg}");
         assert!(msg.contains("inkentry server stop"), "{msg}");
@@ -168,19 +162,18 @@ mod tests {
     }
 
     // `--no-summaries` is only an instruction for `index`; offering it to
-    // `explore` or `harvest` would be noise pointing at a flag they lack.
+    // `harvest` would be noise pointing at a flag it lacks.
     #[test]
     fn no_summaries_flag_is_offered_to_summaries_only() {
         assert!(
             no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Summaries)
                 .contains("--no-summaries")
         );
-        for feature in [LlmFeature::Explore, LlmFeature::MemoryHarvest] {
-            assert!(
-                !no_llm_message(NoLlmReason::NoLlmAnywhere, feature).contains("--no-summaries"),
-                "{feature:?} has no such flag"
-            );
-        }
+        assert!(
+            !no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::MemoryHarvest)
+                .contains("--no-summaries"),
+            "memory harvest has no such flag"
+        );
     }
 
     #[test]
