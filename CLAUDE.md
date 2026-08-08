@@ -47,7 +47,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `inkentry graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, memory, and `graph` on a file path) need `inkentry init` first.
 
-**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry explore`, `inkentry harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
 **Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted inkentry-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
 
@@ -155,10 +155,10 @@ storage/
 
 search/
   mod.rs         — SearchResult struct
-  rag.rs         — RagPipeline<E,L>: search + ask (dead code, kept for future)
-  explore.rs     — interactive exploration pipeline
+  live.rs        — in-process structural-search fallback (ast-grep-core)
+  rag.rs         — linearrag_search: LinearRAG two-stage retrieval (entity
+                   activation + personalised PageRank)
   tokens.rs      — token-budget helpers
-  tools.rs       — tool-call helpers for LLM search
 
 migrations/  (crates/inkentry-core/migrations/)
   001_initial.sql – 018_graph_edges_compound_idx.sql — incremental DB schema
@@ -179,11 +179,12 @@ capability/      — Tier 0/1 capability detection (server reachable probe, cach
                    explicit server_url / nowhere-with-a-reason). Separate from embed
                    routing; never consults Config::resolve_inference_url
   llm_message.rs:  no_llm_message: the user-facing text over (NoLlmReason x LlmFeature),
-                   shared by index summaries, explore and memory harvest
+                   shared by index summaries and harvest
 server_client.rs:  ServerInferenceClient, the single HTTP client for inkentry-server's
-                   inference endpoints, plus ServerEmbedAdapter / ServerLlmAdapter, two
-                   thin trait adapters over the same Arc. Embedding and LLM can resolve
-                   to different base URLs, so a caller needing both builds two clients
+                   inference endpoints, plus ServerLlmAdapter, a thin LlmBackend trait
+                   adapter over an Arc of it (embedding is issued directly via embed_text,
+                   with no adapter). Embedding and LLM can resolve to different base URLs,
+                   so a caller needing both builds two clients
 
 cli/
   mod.rs         — clap structs (Cli, Command, *Args)
@@ -195,8 +196,10 @@ cli/
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
                    three, pinned so nothing is left to inheritance)
-    explore.rs   — `inkentry explore` handler
     graph.rs     — `inkentry graph` handler
+    harvest.rs   — `inkentry harvest` handler (top-level; capture memory from
+                   git history + session logs). Shares its implementation and
+                   memory-store resolution with the deprecated `memory harvest`
     helpers.rs   — shared output / progress helpers
     hooks.rs     — `inkentry hooks` handler
     init.rs      — `inkentry init` handler
@@ -220,7 +223,9 @@ cli/
       archive.rs      — memory archive subcommand
       failures.rs     — `inkentry memory failures` handler
       graph_cmd.rs    — memory graph subcommand
-      harvest.rs      — memory harvest (LLM extraction) entry point
+      harvest.rs      — deprecated `memory harvest` alias + shared harvest
+                        implementation (harvest_clients), reused by the top-level
+                        `inkentry harvest`
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
       list.rs         — memory list subcommand
       reconcile.rs    — memory reconcile subcommand (import from server.db)
@@ -257,12 +262,12 @@ handlers/
   sync.rs          — harvested_shas, GET /memory/since, GET /memory/stream (SSE)
   index.rs         — POST /index/embed (server-side embedding, not stored)
   search.rs        — POST /search (query-embedding proxy for CLI-side KNN)
-  explore.rs       — POST /explore (LLM reasoning loop, SSE)
   llm.rs           — POST /llm/complete (generic streaming completion primitive)
   tests/           — #[cfg(test)] suite, split by theme; see mod.rs for the file list
     support.rs     — shared app/router builders + HTTP helpers used by every theme
-    *_tests.rs     — one file per theme (notes, health, embed, search/explore, batch,
-                     batch dedupe, sync, timeout, concurrency, liveness-under-embed)
+    *_tests.rs     — one file per theme (notes, health, embed, search, llm, batch,
+                     batch dedupe, sync, timeout, concurrency, liveness-under-embed,
+                     wire shape)
 server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind `--llm-url`,
                      plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
@@ -308,10 +313,11 @@ embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal
 
 All AI inference goes through **inkentry-server**. The CLI calls the server via
 `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`: the only
-place in inkentry-cli that issues AI inference requests. `ServerEmbedAdapter` and
-`ServerLlmAdapter` in the same file are thin trait adapters over one `Arc` of
-that client, not separate clients. (There is no `ServerLlmClient` or
-`ServerEmbedClient`; those names are long gone.)
+place in inkentry-cli that issues AI inference requests. `ServerLlmAdapter` in
+the same file is a thin `LlmBackend` trait adapter over an `Arc` of that client;
+embedding is issued directly through the client's `embed_text`, so there is no
+embed adapter. (There is no `ServerLlmClient` or `ServerEmbedClient` either;
+those names are long gone.)
 
 `inkentry-core` defines the `EmbeddingBackend` and `LlmBackend` traits
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
@@ -342,9 +348,10 @@ through to the remote (the privacy guard, which by construction does not apply
 in `cloud_first`, where the inference tier already is `server_url`); otherwise an
 LLM-capable `server_url`; otherwise nothing. `Capabilities.llm_complete`
 (`capability/state.rs`) is the availability signal, parsed from `/v1/health`.
-Keying on `explore` instead would misfire across version skew, since `explore`
-predates the `/llm/complete` route. A call site needing both concerns builds two
-clients: see `cli/cmd/memory/harvest.rs::harvest_clients` for the shape. The
+Keying on a coarser capability would misfire across version skew, since a server
+can advertise legacy capabilities without serving `/llm/complete`. A call site
+needing both concerns builds two clients: see
+`cli/cmd/memory/harvest.rs::harvest_clients` for the shape. The
 user-facing text for every no-LLM outcome comes from
 `capability::no_llm_message`, never from an ad-hoc string at the call site.
 
@@ -419,19 +426,6 @@ the chance of a credential being embedded/stored (and, on that explicit-server p
 by accident. That boundary is enforced by `crates/inkentry-cli/tests/egress_containment.rs`, which
 traps every outbound connection across local-tier CLI flows (`init`, `index`, `search`, `memory`,
 `graph --live`, plumbing) and fails loudly, naming the destination, on any escape past loopback.
-
-### Prompt structure
-The ask prompt uses XML-style delimiters to separate untrusted RAG context
-from the user's question, mitigating prompt injection:
-```xml
-<code_context>
-{retrieved chunks}
-</code_context>
-
-<question>
-{user question}
-</question>
-```
 
 ---
 

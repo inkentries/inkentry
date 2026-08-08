@@ -3,7 +3,7 @@
 //! This is the test that has never existed: it drives a real bound
 //! `inkentry-server` instance (plaintext loopback) through the **actual CLI
 //! client code**: `inkentry_core::storage::{CloudSyncClient, BatchPushItem}`,
-//! the same types `inkentry memory push` / `inkentry sync` use, instead of a
+//! the same types `inkentry plumbing push` / `inkentry sync` use, instead of a
 //! hand-rolled request. It exists so a future wire-contract drift between the
 //! CLI and this server fails a test instead of shipping silently (as the
 //! `POST /memory/batch` 405 did).
@@ -12,7 +12,7 @@
 //! - push a batch of local-shaped memories → stored, per-entry "created".
 //! - re-push the same batch → idempotent on `external_id` (server-side
 //!   `remote_id`): all "skipped", zero duplicates.
-//! - since roundtrip (`?t=`, `inkentry memory since`'s contract): the pushed
+//! - since roundtrip (`?t=`, the legacy timestamp contract): the pushed
 //!   entries are retrievable via `GET /memory/since`, proving the
 //!   `/memory/batch` literal route did not shadow (or get shadowed by) the
 //!   pre-existing `/memory/since` route.
@@ -52,9 +52,8 @@ async fn spawn_plaintext_server(state: inkentry_server::AppState) -> String {
 }
 
 /// Minimal mirror of the server's `ServerNote` wire shape: just the fields
-/// this test asserts on. Matches what `inkentry memory since` (the CLI command
-/// that actually targets this endpoint's real `t=`/`Vec<ServerNote>`
-/// contract) deserializes.
+/// this test asserts on. Matches the endpoint's legacy `t=`/`Vec<ServerNote>`
+/// bare-array contract (the `?t=` timestamp mode).
 #[derive(Debug, Deserialize)]
 struct SinceNote {
     title: String,
@@ -97,7 +96,7 @@ async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
     // URL by hand and don't go through the CLI's percent-encoding helper.
     let project = "acme-widget";
 
-    // Real CLI client code path: the exact type `inkentry memory push` and
+    // Real CLI client code path: the exact type `inkentry plumbing push` and
     // `inkentry sync` construct.
     let client = CloudSyncClient::new(&base_url, project, None, None)
         .expect("CloudSyncClient::new against a keyless plaintext loopback server");

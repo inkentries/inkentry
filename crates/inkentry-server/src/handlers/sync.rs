@@ -109,8 +109,9 @@ pub struct StreamQuery {
 /// - `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;
 ///   `CloudSyncClient::pull_since`/`inkentry sync` targets this). Returns
 ///   `{entries, count}`, entries ordered by arrival at this server.
-/// - `?t=<unix_secs>`: legacy timestamp mode (`inkentry memory since`
-///   targets this). Returns a bare array, ordered `created_at ASC`.
+/// - `?t=<unix_secs>`: legacy timestamp mode, retained for wire parity with
+///   older clients that predate the `since_id` cursor. Returns a bare array,
+///   ordered `created_at ASC`.
 ///
 /// `since_id` takes precedence when both are supplied. Archived entries are
 /// excluded in both modes.
