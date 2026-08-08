@@ -48,9 +48,10 @@ use crate::{
 ///
 /// Additional fields (`tier`, `mode`, `sync_pending`, `sync_last_synced_at`,
 /// `server_url`, `capabilities`, `embedder_state`, `embedding_count`,
-/// `embedding_pending`, `embed_worker_alive`, `embed_tokens`,
-/// `drift_candidates`, `usage_7d`) are present for backward compatibility and
-/// richer tooling; treat them as unstable extensions.
+/// `embedding_pending`, `embedding_refresh_pending`, `summary_scheme`,
+/// `embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`) are
+/// present for backward compatibility and richer tooling; treat them as unstable
+/// extensions.
 ///
 /// `sync_pending`/`sync_last_synced_at` (ADR-037 P2) are `null` unless `mode`
 /// is `"local_first"`: the outbox pending count and the local relay's last
@@ -59,10 +60,16 @@ use crate::{
 /// `embedder_state` mirrors the server's `/v1/health` readiness
 /// (`"loading"`/`"ready"`/`"unavailable"`/`"disabled"`); it is `null` when
 /// offline or when the reachable server pre-dates the readiness field.
-/// `embedding_pending` is the chunk count still awaiting an embedding;
+/// `embedding_pending` is the chunk count still awaiting a first embedding
+/// (coverage). `embedding_refresh_pending` is the distinct freshness signal: the
+/// count of chunks that have a vector whose input changed and await an in-place
+/// re-embed (`null` when none, or no index); coverage can read 100% while this
+/// is non-zero, and "same query, same answer" is guaranteed only once it reaches
+/// zero. `summary_scheme` is the embedding-input composition scheme the index's
+/// vectors were built under (provenance), or `null`.
 /// `embed_worker_alive` and `embed_tokens` describe the recorded embed
 /// worker's liveness and token-weighted progress and are `null` when no embed
-/// work is pending.
+/// work (first-embed or refresh) is pending.
 pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let fmt = crate::utils::effective_format(&args.format);
 
@@ -164,18 +171,39 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         // Embed-state extensions: worker liveness is read from the recorded
         // pid (never inferred from counts) and only meaningful while work is
         // pending; token sums carry their own denominators.
+        //
+        // Freshness is a second, orthogonal signal to coverage: `pending_chunks`
+        // counts chunks with no vector at all (coverage), `refresh_pending`
+        // counts chunks that have a vector whose input changed and await an
+        // in-place re-embed (freshness). A tier-3 drain or a post-migration
+        // re-embed can be live while coverage reads 100%, so worker liveness
+        // must consider both — otherwise `status` would say "not running" during
+        // a real refresh drain.
         let pending_chunks = stats.chunk_count - stats.embedding_count;
-        let (embed_worker_alive_json, embed_tokens_json) = if pending_chunks > 0 {
-            let alive = super::embed_worker::worker_liveness(&db_path)
-                == super::embed_worker::WorkerLiveness::Alive;
-            let tokens = db
-                .embed_token_stats()
-                .ok()
-                .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
-                .unwrap_or(serde_json::Value::Null);
-            (serde_json::json!(alive), tokens)
+        let refresh_pending = db.refresh_pending_count().unwrap_or(0);
+        let (embed_worker_alive_json, embed_tokens_json) =
+            if pending_chunks > 0 || refresh_pending > 0 {
+                let alive = super::embed_worker::worker_liveness(&db_path)
+                    == super::embed_worker::WorkerLiveness::Alive;
+                let tokens = db
+                    .embed_token_stats()
+                    .ok()
+                    .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+                    .unwrap_or(serde_json::Value::Null);
+                (serde_json::json!(alive), tokens)
+            } else {
+                (serde_json::Value::Null, serde_json::Value::Null)
+            };
+        // `null` when nothing awaits re-embed (or no index), always carrying its
+        // own count when non-zero.
+        let embedding_refresh_pending_json = if refresh_pending > 0 {
+            serde_json::json!(refresh_pending)
         } else {
-            (serde_json::Value::Null, serde_json::Value::Null)
+            serde_json::Value::Null
+        };
+        let summary_scheme_json = match db.summary_scheme() {
+            Ok(Some(s)) => serde_json::Value::String(s),
+            _ => serde_json::Value::Null,
         };
 
         // Serialize languages as [{name, file_count}, ...]
@@ -215,6 +243,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "embedder_state": embedder_state_json,
                 "embedding_count": stats.embedding_count,
                 "embedding_pending": pending_chunks,
+                "embedding_refresh_pending": embedding_refresh_pending_json,
+                "summary_scheme": summary_scheme_json,
                 "embed_worker_alive": embed_worker_alive_json,
                 "embed_tokens": embed_tokens_json,
                 "drift_candidates": drift,

@@ -1,19 +1,16 @@
 //! Thin HTTP client for inkentry-server inference endpoints.
 //!
 //! `ServerInferenceClient` calls both `POST /v1/projects/{id}/llm/complete`
-//! (SSE) and `POST /v1/projects/{id}/index/embed` (JSON); `ServerLlmAdapter`
-//! exposes the completion side over inkentry-core's `LlmBackend` trait. LLM and
-//! embed routing resolve independently, so a command that needs both builds two
-//! clients rather than sharing one.
+//! (SSE) and `POST /v1/projects/{id}/index/embed` (JSON). LLM and embed routing
+//! resolve independently, so a command that needs both builds two clients rather
+//! than sharing one.
 //!
 //! This is the ONLY place in inkentry-cli that calls AI inference routes.
 //! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
 
-use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::Serialize;
 use uuid::Uuid;
@@ -622,39 +619,6 @@ impl ServerInferenceClient {
             .context("parsing /search response")?;
 
         Ok(resp.query_vector)
-    }
-}
-
-// ── LlmBackend adapter ────────────────────────────────────────────────────────
-
-/// Wraps `ServerInferenceClient` and implements the inkentry-core `LlmBackend`
-/// trait so that summariser / harvest code can call the LLM via inkentry-server.
-pub struct ServerLlmAdapter(pub Arc<ServerInferenceClient>);
-
-#[async_trait]
-impl inkentry_core::llm::LlmBackend for ServerLlmAdapter {
-    async fn generate(
-        &self,
-        messages: &[inkentry_core::llm::Message],
-        max_tokens: usize,
-        tx: tokio::sync::mpsc::Sender<inkentry_core::llm::Token>,
-        json_schema: Option<serde_json::Value>,
-    ) -> Result<()> {
-        let server_msgs: Vec<LlmMessage> = messages
-            .iter()
-            .map(|m| LlmMessage {
-                role: m.role.clone(),
-                content: m.content.clone(),
-            })
-            .collect();
-        let text = self
-            .0
-            .llm_complete(&server_msgs, max_tokens, json_schema)
-            .await?;
-        // Send the entire response as a single token (server already collected
-        // the SSE stream and returned the completed string).
-        let _ = tx.send(text).await;
-        Ok(())
     }
 }
 

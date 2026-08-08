@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 
 use super::Database;
 
@@ -54,12 +55,12 @@ impl Database {
         Ok(count)
     }
 
-    /// Return chunks that have **no** matching row in the `embeddings` vec0
-    /// table, i.e. chunks that were parsed/stored but never embedded (e.g. an
-    /// `init`/`index` run where the embedder wasn't ready yet, so the embed
-    /// phase was skipped). Returns the raw fields needed to reconstruct the
-    /// exact `Chunk::embedding_text()` document format plus the stored token
-    /// estimate: `(chunk_id, name, metadata_json, summary, content,
+    /// Return chunks the embed queue must (re-)process: those with **no** vector
+    /// yet (never embedded) and those flagged `embed_pending = 1` (a stored
+    /// vector that no longer reflects the chunk's current `embedding_text()` and
+    /// must be re-embedded in place). Returns the raw fields needed to
+    /// reconstruct the exact `Chunk::embedding_text()` document format plus the
+    /// stored token estimate: `(chunk_id, name, metadata_json, summary, content,
     /// token_count)`. `token_count` may be 0 on a pre-backfill index.
     ///
     /// A plain re-`index` skips unchanged files by file-hash, so those chunks
@@ -79,24 +80,25 @@ impl Database {
             usize,
         )>,
     > {
-        // Ordering is data-driven, no cold/warm branching (see inkentry-oss
-        // onboarding embed-queue work):
-        //   - graph_rank DESC leads. On a cold first index every chunk's rank is
-        //     the 0.0 default (rank is written in phase 3, after embed), so this
-        //     key is inert and the order collapses to the next keys. On a warm
-        //     re-index the prior run's ranks put hot code first; newly-added
-        //     chunks (rank 0) naturally sort after under DESC.
-        //   - f.mtime DESC then orders by file recency (most-recently-modified
-        //     first) — the recency signal for a cold index. Legacy/pre-migration
-        //     rows carry mtime 0 and deterministically sort last.
+        // Priority bands within the one queue, data-driven, no cold/warm
+        // branching:
+        //   - (e.chunk_id IS NOT NULL) ASC leads, so never-embedded chunks (no
+        //     vector, key 0) always sort ahead of pending re-embeds (have a
+        //     vector, key 1): coverage is bought before refinement.
+        //   - graph_rank DESC then puts PageRank-central code first. PageRank now
+        //     runs before the embed phase, so this is honest on a cold first
+        //     index too; a repo with no edges leaves every rank at the 0.0
+        //     default and this key is inert.
+        //   - f.mtime DESC orders by file recency; legacy/pre-migration rows
+        //     carry mtime 0 and deterministically sort last.
         //   - c.id is the final deterministic tiebreak.
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.id, c.name, c.metadata, c.summary, c.content, c.token_count
              FROM chunks c
              LEFT JOIN embeddings e ON e.chunk_id = c.id
              JOIN files f ON f.id = c.file_id
-             WHERE e.chunk_id IS NULL
-             ORDER BY c.graph_rank DESC, f.mtime DESC, c.id",
+             WHERE e.chunk_id IS NULL OR c.embed_pending = 1
+             ORDER BY (e.chunk_id IS NOT NULL) ASC, c.graph_rank DESC, f.mtime DESC, c.id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -207,24 +209,28 @@ impl Database {
             .map_err(Into::into)
     }
 
-    /// Fetch chunks that have no summary yet, up to `limit` rows.
-    /// Returns `(id, name, kind, content)`.
-    pub fn chunks_without_summaries(
+    /// Named chunks that have not yet had a structural summary composed
+    /// (`summary IS NULL`). Returns `(id, name, metadata_json, content)`, ordered
+    /// by id for a deterministic pass. A stored `""` (composed but suppressed for
+    /// a secret hit, or genuinely empty) is not `NULL`, so it is never
+    /// recomputed on a plain re-index — matching the existing refill guard.
+    /// Title-less chunks are excluded here; their slot is built by tier-3 MMR
+    /// selection, not structural composition.
+    #[allow(clippy::type_complexity)]
+    pub fn named_chunks_needing_summary(
         &self,
-        limit: usize,
-    ) -> Result<Vec<(i64, String, String, String)>> {
+    ) -> Result<Vec<(i64, String, Option<String>, String)>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, COALESCE(name, ''), node_type, content
+            "SELECT id, name, metadata, content
              FROM chunks
-             WHERE summary IS NULL
-             ORDER BY id
-             LIMIT ?1",
+             WHERE name IS NOT NULL AND summary IS NULL
+             ORDER BY id",
         )?;
-        let rows = stmt.query_map(rusqlite::params![limit as i64], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
                 row.get::<_, String>(3)?,
             ))
         })?;
@@ -232,12 +238,81 @@ impl Database {
             .map_err(Into::into)
     }
 
-    /// Update the LLM-generated summary for a single chunk.
+    /// Title-less chunks (`name IS NULL`) that already have a primary vector but
+    /// no summary yet — the tier-3 MMR selection candidates. The primary vector
+    /// is required because it is reused as the MMR centroid (no whole-chunk
+    /// re-embed). Returns `(id, node_type, content)`, ordered by id.
+    pub fn titleless_chunks_needing_selection(&self) -> Result<Vec<(i64, String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT c.id, c.node_type, c.content
+             FROM chunks c
+             JOIN embeddings e ON e.chunk_id = c.id
+             WHERE c.name IS NULL AND c.summary IS NULL
+             ORDER BY c.id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// The stored primary embedding for a chunk, dequantised back to f32, or
+    /// `None` if the chunk has no vector. Used as the MMR centroid in tier 3.
+    pub fn embedding_for_chunk(&self, chunk_id: i64) -> Result<Option<Vec<f32>>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT embedding FROM embeddings WHERE chunk_id = ?1",
+                rusqlite::params![chunk_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?;
+        Ok(blob.map(|b| crate::embeddings::int8_blob_to_vec(&b)))
+    }
+
+    /// Callee target names for a symbol, in the graph's deterministic SQL order
+    /// (`ORDER BY target_name`). Used as the split-callees ingredient of a
+    /// structural summary; the fixed order keeps the composed summary
+    /// byte-identical across runs regardless of edge insertion order.
+    pub fn callees_for_symbol(&self, name: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT target_name FROM graph_edges
+             WHERE source_name = ?1 AND kind = 'calls'
+             ORDER BY target_name",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![name], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Set the composed summary for a single chunk. `""` marks a slot that was
+    /// composed but suppressed (a secret hit) or genuinely empty, so it is not
+    /// recomputed on a plain re-index.
     pub fn update_chunk_summary(&self, chunk_id: i64, summary: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE chunks SET summary = ?1 WHERE id = ?2",
             rusqlite::params![summary, chunk_id],
         )?;
+        Ok(())
+    }
+
+    /// Write a tier-3 chunk's MMR-selected summary slot and flag it for in-place
+    /// re-embed, atomically. The flag is set only after the summary is durably
+    /// written, so a worker killed between the two never leaves a chunk that
+    /// would re-embed without its selected slot; a kill before both recomputes
+    /// the identical selection on resume (determinism).
+    pub fn set_summary_and_mark_pending(&self, chunk_id: i64, summary: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE chunks SET summary = ?1, embed_pending = 1 WHERE id = ?2",
+            rusqlite::params![summary, chunk_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -535,6 +610,157 @@ mod tests {
             .map(|(id, ..)| id)
             .collect();
         assert_eq!(still_missing, vec![b], "embedded chunk drops out");
+    }
+
+    /// The tiered queue puts never-embedded chunks (no vector) ahead of pending
+    /// re-embeds (a vector present, `embed_pending = 1`) via the leading
+    /// `(e.chunk_id IS NOT NULL) ASC` key, and excludes fully-current chunks.
+    #[test]
+    fn chunks_missing_embeddings_never_embedded_sort_before_pending_reembeds() {
+        let db = open_db();
+        let ids = seed_file_chunks(&db, "a.rs", 100, &["a", "b", "c"]);
+        // a: embedded then flagged for re-embed; b: embedded and current; c: never embedded.
+        db.insert_embedding(ids[0], &[0.1f32; 896]).unwrap();
+        db.insert_embedding(ids[1], &[0.1f32; 896]).unwrap();
+        db.conn
+            .execute(
+                "UPDATE chunks SET embed_pending = 1 WHERE id = ?1",
+                rusqlite::params![ids[0]],
+            )
+            .unwrap();
+
+        assert_eq!(
+            missing_ids(&db),
+            vec![ids[2], ids[0]],
+            "never-embedded chunk first, then the pending re-embed; the current chunk is excluded"
+        );
+    }
+
+    /// `named_chunks_needing_summary` returns only named chunks whose summary is
+    /// still NULL — a title-less chunk (tier-3's domain) and an already-composed
+    /// (or suppressed `\"\"`) summary are both excluded, so a plain re-index never
+    /// recomputes them.
+    #[test]
+    fn named_chunks_needing_summary_excludes_titleless_and_already_composed() {
+        let db = open_db();
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let named_todo = db
+            .insert_chunk(
+                file_id,
+                "function",
+                Some("todo"),
+                1,
+                2,
+                "fn todo(){}",
+                None,
+                4,
+            )
+            .unwrap();
+        let named_done = db
+            .insert_chunk(
+                file_id,
+                "function",
+                Some("done"),
+                3,
+                4,
+                "fn done(){}",
+                None,
+                4,
+            )
+            .unwrap();
+        let titleless = db
+            .insert_chunk(file_id, "verbatim", None, 5, 9, "some prose", None, 4)
+            .unwrap();
+        db.update_chunk_summary(named_done, "already composed")
+            .unwrap();
+
+        let got: Vec<i64> = db
+            .named_chunks_needing_summary()
+            .unwrap()
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert_eq!(got, vec![named_todo]);
+        assert!(!got.contains(&named_done));
+        assert!(!got.contains(&titleless));
+    }
+
+    /// Callees are returned in the graph's deterministic `ORDER BY target_name`,
+    /// regardless of edge insertion order — the invariant that keeps a composed
+    /// summary byte-identical across runs.
+    #[test]
+    fn callees_for_symbol_are_ordered_deterministically() {
+        use crate::indexer::graph::{Edge, EdgeKind};
+        let db = open_db();
+        db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        // Insert in a deliberately unsorted order.
+        let edge = |target: &str| Edge {
+            source_file: "a.rs".to_string(),
+            source_name: Some("caller".to_string()),
+            target_name: target.to_string(),
+            kind: EdgeKind::Calls,
+            line: 1,
+        };
+        db.replace_edges("a.rs", &[edge("zeta"), edge("alpha"), edge("mu")])
+            .unwrap();
+        assert_eq!(
+            db.callees_for_symbol("caller").unwrap(),
+            vec!["alpha", "mu", "zeta"]
+        );
+    }
+
+    /// The tier-3 writer sets the summary slot and the re-embed flag together;
+    /// the selection candidate query returns only title-less chunks that already
+    /// have a primary vector and no summary yet.
+    #[test]
+    fn titleless_selection_candidates_and_pending_writer() {
+        let db = open_db();
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let titleless = db
+            .insert_chunk(file_id, "verbatim", None, 1, 4, "prose here", None, 4)
+            .unwrap();
+        let titleless_no_vec = db
+            .insert_chunk(file_id, "verbatim", None, 5, 8, "more prose", None, 4)
+            .unwrap();
+        let named = db
+            .insert_chunk(file_id, "function", Some("f"), 9, 10, "fn f(){}", None, 4)
+            .unwrap();
+        db.insert_embedding(titleless, &[0.2f32; 896]).unwrap();
+        db.insert_embedding(named, &[0.2f32; 896]).unwrap();
+
+        let candidates: Vec<i64> = db
+            .titleless_chunks_needing_selection()
+            .unwrap()
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert_eq!(
+            candidates,
+            vec![titleless],
+            "only a title-less chunk with a primary vector and no summary is a candidate"
+        );
+        assert!(!candidates.contains(&titleless_no_vec));
+        assert!(!candidates.contains(&named));
+
+        // The stored primary vector is retrievable as the MMR centroid.
+        assert!(db.embedding_for_chunk(titleless).unwrap().is_some());
+        assert!(db.embedding_for_chunk(titleless_no_vec).unwrap().is_none());
+
+        db.set_summary_and_mark_pending(titleless, "selected units")
+            .unwrap();
+        let (summary, pending): (Option<String>, i64) = db
+            .conn
+            .query_row(
+                "SELECT summary, embed_pending FROM chunks WHERE id = ?1",
+                rusqlite::params![titleless],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary.as_deref(), Some("selected units"));
+        assert_eq!(
+            pending, 1,
+            "the writer flags the chunk for in-place re-embed"
+        );
     }
 
     #[test]
