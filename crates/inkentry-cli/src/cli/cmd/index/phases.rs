@@ -1,11 +1,15 @@
 //! Phase-runner entry points for `inkentry index`, plus the embedder-readiness
 //! wait and the notices printed when embedding is skipped.
 //!
-//! `run_phases_3_to_5` (graph rank, summaries, convention extraction) is
-//! shared between the inline foreground path and `run_background_phases`
-//! (the `--_background-phases` child). `run_embed_phases` is the entry point
-//! for the `--_embed-phases` child: it rebuilds the embed queue from the DB,
-//! waits for the embedder via `wait_for_embedder`, then runs phases 3–5 too.
+//! `run_pre_embed_phases` (PageRank, structural summaries) runs after parse and
+//! before the first embed, so the embed queue is PageRank-ordered on a cold
+//! index and the first vector already carries its structural summary — both are
+//! offline. `run_post_embed_phases` (tier-3 MMR refinement, convention
+//! extraction) runs after the primary embed; it is shared between the inline
+//! foreground path and `run_background_phases` (the `--_background-phases`
+//! child). `run_embed_phases` is the entry point for the `--_embed-phases`
+//! child: it rebuilds the embed queue from the DB, waits for the embedder via
+//! `wait_for_embedder`, then runs the post-embed phases too.
 
 use anyhow::Result;
 use indicatif::MultiProgress;
@@ -14,7 +18,7 @@ use super::IndexArgs;
 use crate::cli::cmd::embed_worker::EmbedWorkerGuard;
 use crate::{capability, config::Config, registry::Registry, storage::Database};
 
-use super::{embed_phase, parse_phase, summaries};
+use super::{embed_phase, parse_phase, summaries, tier3};
 
 /// First delay of the embed worker's readiness-wait backoff.
 const EMBED_WAIT_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -122,7 +126,7 @@ pub(super) async fn run_embed_phases(
     }
     drop(worker_guard);
 
-    run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
+    run_post_embed_phases(args, cfg, db, project_root, root_canonical, db_path).await
 }
 
 /// Build the differentiated notice lines shown when the embedding phase is
@@ -227,17 +231,14 @@ pub(super) fn eprint_embed_skipped_notice(tier: &capability::Tier, cfg: &Config)
     }
 }
 
-// ── Phases 3–5 (shared between inline and background-phases mode) ─────────────
+// ── Pre-embed phases (PageRank + structural summaries) ───────────────────────
 
-pub(super) async fn run_phases_3_to_5(
-    args: &IndexArgs,
-    cfg: &Config,
-    db: &Database,
-    root_canonical: &std::path::Path,
-    db_path: &std::path::Path,
-) -> Result<()> {
-    // Phase 3: PageRank
-    eprintln!("Computing graph rank…");
+/// Offline work that must precede the first embed: PageRank (so the embed queue
+/// is central-first on a cold index) and structural summaries (so the first
+/// vector carries its summary). Both need only stored chunks and graph edges,
+/// present once parse completes; neither touches the embedder or the network.
+pub(super) fn run_pre_embed_phases(args: &IndexArgs, db: &Database) -> Result<()> {
+    eprintln!("Computing graph rank\u{2026}");
     let edges = db.graph_edges_all()?;
     if !edges.is_empty() {
         let pr_scores = crate::indexer::pagerank::compute_pagerank(&edges, 20, 0.85);
@@ -251,22 +252,61 @@ pub(super) async fn run_phases_3_to_5(
         }
     }
 
-    // Phase 4: LLM summaries. Must finish before the process exits: an in-flight
-    // summary is silently lost. Backgrounding here is process-level
-    // (--detach, --detach-embed, the phases-3-5 spawn), never a thread.
-    if let Err(e) = summaries::generate_summaries(
-        args.no_summaries,
-        args.summary_batch_size,
-        cfg,
-        db,
-        root_canonical,
-    )
-    .await
-    {
-        eprintln!("Warning: summary generation failed: {e:#}");
+    if !args.no_summaries {
+        summaries::generate_structural_summaries(db)?;
+    }
+    Ok(())
+}
+
+// ── Post-embed phases (tier-3 MMR + conventions) ─────────────────────────────
+
+/// Runs after the primary embed. Refines title-less chunks with tier-3 MMR
+/// selection (when the embedder is available), drains the re-embeds that
+/// produces, then extracts conventions. Shared between the inline foreground
+/// path and the `--_background-phases` / `--_embed-phases` children.
+pub(super) async fn run_post_embed_phases(
+    args: &IndexArgs,
+    cfg: &Config,
+    db: &Database,
+    project_root: &std::path::Path,
+    root_canonical: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<()> {
+    // Tier 3: MMR selection + in-place re-embed for title-less chunks. Needs a
+    // ready embedder (it embeds short units and reuses the chunk's stored
+    // primary vector as the centroid). When unavailable it is skipped and the
+    // candidates — still `summary IS NULL` — are retried on the next index.
+    if !args.no_summaries {
+        let tier = capability::get_inference_tier(cfg).await;
+        if tier.is_server() && matches!(tier.caps(), Some(c) if c.index_embed) {
+            match tier3::run_tier3_selection(cfg, db).await {
+                Ok(refined) if refined > 0 => {
+                    // Drain the re-embeds tier-3 just queued (only the refined
+                    // title-less subset is pending now).
+                    let pending = parse_phase::missing_embedding_texts(db)?;
+                    if !pending.is_empty() {
+                        let mp = MultiProgress::new();
+                        let worker_guard = EmbedWorkerGuard::acquire(db, db_path);
+                        embed_phase::run_embed_phase(
+                            pending,
+                            db,
+                            cfg,
+                            &tier,
+                            project_root,
+                            args.batch_size,
+                            &mp,
+                        )
+                        .await?;
+                        drop(worker_guard);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("Warning: tier-3 refinement failed: {e:#}"),
+            }
+        }
     }
 
-    // Phase 5: convention extraction (heuristic, no LLM).
+    // Convention extraction (heuristic, no LLM).
     eprintln!("Extracting conventions\u{2026}");
     match crate::conventions::run_extraction(db) {
         Ok(records) => {
@@ -291,10 +331,11 @@ pub(super) async fn run_background_phases(
     args: &IndexArgs,
     cfg: &Config,
     db: &Database,
+    project_root: &std::path::Path,
     root_canonical: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<()> {
-    run_phases_3_to_5(args, cfg, db, root_canonical, db_path).await
+    run_post_embed_phases(args, cfg, db, project_root, root_canonical, db_path).await
 }
 
 #[cfg(test)]

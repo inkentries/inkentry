@@ -888,6 +888,10 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "embedder_state",
         "embedding_count",
         "embedding_pending",
+        // Freshness signal (distinct from coverage) + composition-scheme
+        // provenance: additive-only status fields.
+        "embedding_refresh_pending",
+        "summary_scheme",
         "embed_worker_alive",
         "embed_tokens",
         "drift_candidates",
@@ -937,11 +941,11 @@ async fn test_index_prints_note_when_no_server_configured() {
         .arg(&project_dir)
         .assert()
         .success()
-        // Offline is the reason here, so that is what the notice must name.
-        // Summaries no longer key off `server_url`, so a notice mentioning it
-        // would be the old bug rather than a passing assertion.
-        .stderr(predicate::str::contains("Skipping chunk summaries"))
-        .stderr(predicate::str::contains("offline mode is on"));
+        // Structural summaries are offline and always run, so there is no
+        // "skipping summaries" notice any more. Offline, the actionable note is
+        // that semantic search needs a local server; the index still succeeds
+        // (chunks are stored for text/ast-grep search).
+        .stderr(predicate::str::contains("inkentry server start"));
 }
 
 #[test]

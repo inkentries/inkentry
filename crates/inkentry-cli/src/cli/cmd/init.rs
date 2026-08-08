@@ -169,8 +169,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             batch_size: 32,
             force: false,
             recount: false,
-            no_summaries: true,
-            summary_batch_size: 10,
+            // Structural summaries are deterministic and offline, so `init` runs
+            // them (unlike the retired LLM pass, which init skipped).
+            no_summaries: false,
             background_phases: false,
             embed_phases: false,
             detach: false,

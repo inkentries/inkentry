@@ -1,5 +1,7 @@
 //! User-facing text for "no LLM is available", shared by every command that
-//! needs one so they read as one product rather than three dialects.
+//! needs one so they read as one product rather than several dialects. Since
+//! chunk summaries moved to the deterministic built-in tier, `harvest` is the
+//! only feature that reaches for an LLM.
 
 /// Why LLM routing found nothing to run against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,30 +18,13 @@ pub enum NoLlmReason {
     NoLlmAnywhere,
 }
 
-/// The command asking for an LLM. Selects the subject of the message and
-/// whether the opt-out flag is worth mentioning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LlmFeature {
-    Summaries,
-    Harvest,
-}
-
-impl LlmFeature {
-    fn subject(self) -> &'static str {
-        match self {
-            LlmFeature::Summaries => "Skipping chunk summaries",
-            LlmFeature::Harvest => "'inkentry harvest' cannot run",
-        }
-    }
-}
-
-/// Render the no-LLM notice for `feature`.
+/// Render the no-LLM notice for `harvest`, the sole LLM-backed feature.
 ///
 /// Every branch names the cause and the next step, and none of them names a
 /// type, module or internal field: `llm_url` and `server_url` appear only
 /// because they are config keys the reader can actually edit.
-pub fn no_llm_message(reason: NoLlmReason, feature: LlmFeature) -> String {
-    let subject = feature.subject();
+pub fn no_llm_message(reason: NoLlmReason) -> String {
+    let subject = "'inkentry harvest' cannot run";
     let body = match reason {
         NoLlmReason::Offline => "offline mode is on, so no inference will run.\n\
              Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove \
@@ -54,22 +39,13 @@ pub fn no_llm_message(reason: NoLlmReason, feature: LlmFeature) -> String {
              inkentry server start"
                 .to_string()
         }
-        NoLlmReason::NoLlmAnywhere => {
-            let mut msg = "no LLM is available.\n\
-                 There are two ways to get one:\n  \
-                 set `llm_url` in ~/.config/inkentry/config.toml to your own \
-                 chat-completions endpoint, then run `inkentry server stop` and \
-                 `inkentry server start`;\n  \
-                 or set `server_url` to a inkentry server that already provides one."
-                .to_string();
-            if feature == LlmFeature::Summaries {
-                msg.push_str(
-                    "\nPass `--no-summaries` to `inkentry index` to skip this step without \
-                     the notice.",
-                );
-            }
-            msg
-        }
+        NoLlmReason::NoLlmAnywhere => "no LLM is available.\n\
+             There are two ways to get one:\n  \
+             set `llm_url` in ~/.config/inkentry/config.toml to your own \
+             chat-completions endpoint, then run `inkentry server stop` and \
+             `inkentry server start`;\n  \
+             or set `server_url` to a inkentry server that already provides one."
+            .to_string(),
     };
     format!("{subject}: {body}")
 }
@@ -83,7 +59,6 @@ mod tests {
         NoLlmReason::LocalConfiguredButNotServed,
         NoLlmReason::NoLlmAnywhere,
     ];
-    const FEATURES: [LlmFeature; 2] = [LlmFeature::Summaries, LlmFeature::Harvest];
 
     // The jargon in the message this task replaces is what created the task.
     // No message may name an internal type, adapter or field; a reader can
@@ -91,23 +66,21 @@ mod tests {
     #[test]
     fn no_message_leaks_an_internal_type_or_field() {
         for reason in REASONS {
-            for feature in FEATURES {
-                let msg = no_llm_message(reason, feature);
-                for jargon in [
-                    "ServerInferenceClient",
-                    "ServerLlmClient",
-                    "ServerLlmAdapter",
-                    "ServerEmbedAdapter",
-                    "Capabilities",
-                    "inference_url",
-                    "llm.complete",
-                    "Tier",
-                ] {
-                    assert!(
-                        !msg.contains(jargon),
-                        "{reason:?}/{feature:?} message leaks {jargon:?}: {msg}"
-                    );
-                }
+            let msg = no_llm_message(reason);
+            for jargon in [
+                "ServerInferenceClient",
+                "ServerLlmClient",
+                "ServerLlmAdapter",
+                "ServerEmbedAdapter",
+                "Capabilities",
+                "inference_url",
+                "llm.complete",
+                "Tier",
+            ] {
+                assert!(
+                    !msg.contains(jargon),
+                    "{reason:?} message leaks {jargon:?}: {msg}"
+                );
             }
         }
     }
@@ -115,23 +88,21 @@ mod tests {
     #[test]
     fn every_message_names_the_command_and_a_next_step() {
         for reason in REASONS {
-            for feature in FEATURES {
-                let msg = no_llm_message(reason, feature);
-                assert!(
-                    msg.starts_with(feature.subject()),
-                    "{reason:?}/{feature:?} must lead with the command it concerns: {msg}"
-                );
-                assert!(
-                    msg.contains("inkentry ") || msg.contains("INKENTRY_"),
-                    "{reason:?}/{feature:?} must give a command or setting to act on: {msg}"
-                );
-            }
+            let msg = no_llm_message(reason);
+            assert!(
+                msg.starts_with("'inkentry harvest' cannot run"),
+                "{reason:?} must lead with the command it concerns: {msg}"
+            );
+            assert!(
+                msg.contains("inkentry ") || msg.contains("INKENTRY_"),
+                "{reason:?} must give a command or setting to act on: {msg}"
+            );
         }
     }
 
     #[test]
     fn offline_message_names_offline_mode_and_how_to_leave_it() {
-        let msg = no_llm_message(NoLlmReason::Offline, LlmFeature::Summaries);
+        let msg = no_llm_message(NoLlmReason::Offline);
         assert!(msg.contains("offline mode is on"), "{msg}");
         assert!(msg.contains("INKENTRY_NO_SERVER"), "{msg}");
         assert!(msg.contains("mode = \"offline\""), "{msg}");
@@ -141,10 +112,7 @@ mod tests {
     // older than it. The only useful instruction is the restart.
     #[test]
     fn local_configured_but_not_served_message_names_llm_url_and_the_restart() {
-        let msg = no_llm_message(
-            NoLlmReason::LocalConfiguredButNotServed,
-            LlmFeature::Harvest,
-        );
+        let msg = no_llm_message(NoLlmReason::LocalConfiguredButNotServed);
         assert!(msg.contains("llm_url"), "{msg}");
         assert!(msg.contains("inkentry server stop"), "{msg}");
         assert!(msg.contains("inkentry server start"), "{msg}");
@@ -156,7 +124,7 @@ mod tests {
 
     #[test]
     fn no_llm_anywhere_message_offers_both_routes_to_an_llm() {
-        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest);
+        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere);
         assert!(msg.contains("llm_url"), "local route missing: {msg}");
         assert!(msg.contains("server_url"), "remote route missing: {msg}");
     }
@@ -165,34 +133,16 @@ mod tests {
     // `inkentry harvest`, not the deprecated `inkentry memory harvest` spelling.
     #[test]
     fn harvest_subject_names_the_top_level_command() {
-        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest);
+        let msg = no_llm_message(NoLlmReason::NoLlmAnywhere);
         assert!(
             msg.starts_with("'inkentry harvest' cannot run"),
             "harvest no-LLM message must name the top-level command: {msg}"
         );
     }
 
-    // `--no-summaries` is only an instruction for `index`; offering it to
-    // `harvest` would be noise pointing at a flag it lacks.
-    #[test]
-    fn no_summaries_flag_is_offered_to_summaries_only() {
-        assert!(
-            no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Summaries)
-                .contains("--no-summaries")
-        );
-        assert!(
-            !no_llm_message(NoLlmReason::NoLlmAnywhere, LlmFeature::Harvest)
-                .contains("--no-summaries"),
-            "harvest has no such flag"
-        );
-    }
-
     #[test]
     fn each_reason_renders_a_distinct_message() {
-        let rendered: Vec<String> = REASONS
-            .iter()
-            .map(|r| no_llm_message(*r, LlmFeature::Summaries))
-            .collect();
+        let rendered: Vec<String> = REASONS.iter().map(|r| no_llm_message(*r)).collect();
         for (i, a) in rendered.iter().enumerate() {
             for b in rendered.iter().skip(i + 1) {
                 assert_ne!(a, b, "two reasons render identically, so one is unusable");
