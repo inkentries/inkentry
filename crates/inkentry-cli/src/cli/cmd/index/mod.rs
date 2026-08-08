@@ -28,15 +28,13 @@ pub struct IndexArgs {
     #[arg(long)]
     pub recount: bool,
 
-    /// Skip LLM summary generation even when server_url is configured
+    /// Skip structural summary generation (the deterministic, offline pass that
+    /// composes each chunk's `summary:` slot and, for title-less chunks, its
+    /// tier-3 MMR slot)
     #[arg(long)]
     pub no_summaries: bool,
 
-    /// Number of chunks to send to the LLM per summary request (default: 10)
-    #[arg(long, default_value = "10")]
-    pub summary_batch_size: usize,
-
-    /// Internal: run only phases 3-5 (graph rank, summaries).
+    /// Internal: run only the post-embed phases (tier-3 refinement, conventions).
     /// Used by the background process spawned after a large foreground index.
     #[arg(long = "_background-phases", hide = true, default_value_t = false)]
     pub background_phases: bool,
@@ -78,6 +76,7 @@ mod parse_phase;
 mod phases;
 mod run_lock;
 mod summaries;
+mod tier3;
 mod worktree;
 
 pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
@@ -168,7 +167,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // When spawned as a background process (--_background-phases), skip phases
     // 1 & 2 (walk, parse, embed) which are already done, and run only phases 3–5.
     if args.background_phases {
-        phases::run_background_phases(&args, &cfg, &db, &root_canonical, &db_path).await?;
+        phases::run_background_phases(&args, &cfg, &db, &project_root, &root_canonical, &db_path)
+            .await?;
         return Ok(());
     }
 
@@ -190,7 +190,14 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         eprintln!("Removed {} stale file(s) from index.", result.removed);
     }
 
-    // ── Phase 2: embed chunks (Tier 1 only) ─────────────────────────────────
+    // ── Pre-embed phases: PageRank + structural summaries ────────────────────
+    // Offline, and run before the first embed so the embed queue is
+    // PageRank-central on a cold index and each chunk's first vector already
+    // carries its structural summary. The queue is then rebuilt from the DB
+    // below so it reflects the ranks and summaries just written.
+    phases::run_pre_embed_phases(&args, &db)?;
+
+    // ── Phase 2: embed chunks ────────────────────────────────────────────────
     //
     // `get_inference_tier` (not `get_tier`): local_first always prefers the
     // local loopback embedder for inference, even with an explicit
@@ -199,7 +206,11 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // straight to the batch-calibrated embed request loop below.
     let tier = capability::get_inference_tier(&cfg).await;
 
-    if result.chunk_ids_and_texts.is_empty() {
+    // Rebuild the embed queue from the DB now that PageRank and structural
+    // summaries are written: the parse-time queue predates both, and this also
+    // picks up pending re-embeds (the summary-scheme migration, tier-3).
+    let queue = parse_phase::missing_embedding_texts(&db)?;
+    if queue.is_empty() {
         let stats = db.stats()?;
         println!(
             "Index: {} files, {} chunks, {} embeddings (nothing new to process)",
@@ -286,16 +297,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         // Liveness marker so `inkentry status` from another terminal reports a
         // foreground embed as running rather than telling the user to resume.
         let worker_guard = super::embed_worker::EmbedWorkerGuard::acquire(&db, &db_path);
-        embed_phase::run_embed_phase(
-            result.chunk_ids_and_texts,
-            &db,
-            &cfg,
-            &tier,
-            &project_root,
-            args.batch_size,
-            &mp,
-        )
-        .await?;
+        embed_phase::run_embed_phase(queue, &db, &cfg, &tier, &project_root, args.batch_size, &mp)
+            .await?;
         drop(worker_guard);
     } else {
         phases::eprint_embed_skipped_notice(&tier, &cfg);
@@ -311,7 +314,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     // When more than 100 files were newly indexed, detach phases 3-5 into a
     // background process so the user regains the prompt immediately.
     if result.indexed > 100 {
-        eprintln!("Spawning background job for graph rank, spec discovery, and summaries\u{2026}");
+        eprintln!("Spawning background job for title-less refinement and conventions\u{2026}");
         let log = continuation::background_log_path(&db_path);
         let mut cmd = continuation::build_detached_child_command(
             &std::env::current_exe()?,
@@ -339,8 +342,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
                 }
                 eprintln!(
                     "Warning: another `inkentry index` run claimed this project's lock before \
-                     the background job could take over; graph rank, spec discovery, and \
-                     summaries were not completed. Run `inkentry index` again once the other run \
+                     the background job could take over; title-less refinement and convention \
+                     extraction were not completed. Run `inkentry index` again once the other run \
                      finishes."
                 );
                 return Ok(());
@@ -354,7 +357,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    phases::run_phases_3_to_5(&args, &cfg, &db, &root_canonical, &db_path).await
+    phases::run_post_embed_phases(&args, &cfg, &db, &project_root, &root_canonical, &db_path).await
 }
 
 #[cfg(test)]

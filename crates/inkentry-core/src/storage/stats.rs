@@ -104,6 +104,23 @@ impl Database {
         })
     }
 
+    /// Number of chunks that have a vector but whose input changed and await
+    /// re-embed (`embed_pending = 1`). This is the **freshness** signal, distinct
+    /// from coverage: coverage answers "what can search see at all" (any vector
+    /// present), freshness answers "does what it sees reflect the current input".
+    /// A re-embedded chunk keeps its old vector until the new one lands, so
+    /// coverage can read 100% while this is still non-zero; "same query, same
+    /// answer" is guaranteed only once this reaches zero.
+    pub fn refresh_pending_count(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks WHERE embed_pending = 1",
+                [],
+                |r| r.get(0),
+            )
+            .context("counting refresh-pending chunks")
+    }
+
     /// Return per-language file counts, ordered by count descending.
     ///
     /// Files with a NULL language column are grouped under `"unknown"`.

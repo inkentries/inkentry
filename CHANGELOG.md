@@ -11,6 +11,64 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Deterministic structural chunk summaries, in the built-in tier.** The
+  `summary:` slot folded into each chunk's embedding input is now composed
+  offline from signals already present after parse — docstring first sentence,
+  the split symbol name, split callee names (in the graph's fixed order), and
+  salient string literals — with no model, no key, and no network. The
+  composition is byte-identical for the same chunk and edges on every run, which
+  is what makes an interrupted re-embed resumable and underwrites "same query,
+  same answer." A hard token cap (`SUMMARY_TOKEN_CAP`) bounds the slot with a
+  stated ingredient priority: when ingredients would overflow, whole
+  lower-priority ones are dropped rather than truncating the code tail. The
+  composed summary is secret-scanned before storage. See ADR-080.
+
+- **Title-less chunks (Markdown sections, oversized windows) get an MMR-selected
+  summary.** For a chunk with no symbol name, the index splits it into short
+  units, embeds the units, and picks a representative subset by
+  maximal-marginal-relevance against the chunk's already-stored primary vector
+  as the centroid — so no whole-chunk re-embed runs. Selection is deterministic
+  (fixed `λ`, ties broken by unit index) and drained last.
+
+- **`status --format json` gains `embedding_refresh_pending` and
+  `summary_scheme`.** `embedding_refresh_pending` is a freshness signal distinct
+  from coverage: the count of chunks that have a vector whose input changed and
+  await an in-place re-embed (`null` when none). Coverage answers "what can
+  search see"; freshness answers "does what it sees reflect the current input."
+  `search` names the same signal on stderr while a refresh is draining, and does
+  not print an unqualified "No results found." over a still-refreshing index.
+  `summary_scheme` records the composition scheme the index's vectors were built
+  under.
+
+### Changed
+
+- **PageRank now runs before the embed phase**, so a cold first index embeds
+  PageRank-central code first (previously the rank was computed after embedding,
+  so the first index fell back to modification-time order). Structural summaries
+  are composed in the same pre-embed pass, so a chunk's first vector already
+  carries its summary — no re-embed on the fresh path.
+
+- **Changing what text is embedded is now an in-place, flag-driven re-embed
+  that preserves coverage.** A new `chunks.embed_pending` flag and a
+  `summary_scheme` marker drive a one-time re-embed of existing indexes onto the
+  structural-summary composition. Every existing vector is kept until its
+  replacement lands (delete-then-insert per chunk, in the batch transaction), so
+  semantic search coverage never drops to zero while the change rolls through —
+  deliberately unlike the earlier vector-space upgrade, which dropped the table.
+  Existing users pay one full re-embed, in PageRank order, plus a small
+  refinement of the title-less subset. An older binary opening a new-scheme index
+  warns and continues rather than erroring, since the vector space is unchanged.
+
+### Removed
+
+- **LLM-generated chunk summaries.** `inkentry index` no longer calls an LLM for
+  summaries (the built-in structural summary above replaces it), and the
+  `--summary-batch-size` flag is gone. `--no-summaries` now skips the structural
+  pass. For abstractive (prose) summaries, run your own agent over
+  `inkentry plumbing cat-chunks` output — see
+  `docs/examples/abstractive-summaries.md`. `memory harvest` is now the only
+  feature that calls an LLM.
+
 - `inkentry context` now surfaces active `intent` entries and file-overlap
   warnings at session start, in an "Active agent sessions" section shown ahead
   of handoffs — session start is when an agent most needs to know who else is

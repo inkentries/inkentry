@@ -195,6 +195,20 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         }
     }
     let coverage_partial = matches!(coverage, Some((e, t)) if e < t);
+    // Freshness is orthogonal to coverage: even at full coverage some vectors
+    // may be stale — the summary-scheme re-embed or tier-3 refinement still
+    // draining. Name it so the surface never implies rankings are settled while a
+    // refresh is pending; "same query, same answer" holds only once it clears.
+    let refresh_pending: i64 = if mode == "text" {
+        0
+    } else {
+        Database::open(&db_path)
+            .and_then(|db| db.refresh_pending_count())
+            .unwrap_or(0)
+    };
+    if refresh_pending > 0 {
+        eprintln!("{}", refresh_pending_notice(refresh_pending));
+    }
     // Set when an empty semantic result over a partial corpus was re-run as
     // text search: the FTS corpus is complete, so the plain empty-result line
     // becomes truthful again.
@@ -309,6 +323,14 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             println!(
                 "No results found in the embedded portion of the index \
                  (searchable {e}/{t} chunks; the rest is not embedded yet)."
+            );
+        } else if refresh_pending > 0 && !fell_back_to_text {
+            // Full coverage but a refresh is still draining: the corpus is
+            // complete, but its vectors do not all reflect the current input
+            // yet, so the absence claim is qualified rather than unconditional.
+            println!(
+                "No results found (all chunks are embedded, but {refresh_pending} \
+                 await re-embedding, so rankings may still shift)."
             );
         } else {
             println!("No results found.");
@@ -681,6 +703,19 @@ fn warmup_notice_partial(embedded: i64, total: i64) -> String {
         "[warmup: searchable {embedded}/{total} chunks ({pct}%), front-loaded by importance \
          and recency; a missing result may mean \"not embedded yet\", not \"not in the \
          codebase\" (check `inkentry status`)]"
+    )
+}
+
+/// One-line freshness notice: the corpus is fully searchable (coverage), but
+/// `pending` chunks have a vector whose input changed and await an in-place
+/// re-embed, so rankings may still shift. Distinct from the coverage warmup
+/// notice — that names what search cannot see; this names what it sees but has
+/// not yet refreshed. "Same query, same answer" holds once this reaches zero.
+fn refresh_pending_notice(pending: i64) -> String {
+    format!(
+        "[refresh: {pending} chunk(s) awaiting re-embedding after an indexing-scheme change; \
+         they still return their previous vector, so rankings may shift until the refresh \
+         finishes (check `inkentry status`)]"
     )
 }
 

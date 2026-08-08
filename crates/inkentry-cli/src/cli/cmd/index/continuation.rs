@@ -64,8 +64,8 @@ pub(super) enum EmbedSpawn<'a> {
 /// a child process: the child parses its own fresh `IndexArgs`/`Config` from
 /// this argv rather than inheriting the parent's already-parsed values, so
 /// anything the parent resolved that isn't a plain pass-through of `args`
-/// itself (the global `--config` override) or on this list (`--no-summaries`,
-/// `--summary-batch-size`) would otherwise silently reset to its default in
+/// itself (the global `--config` override) or on this list (`--no-summaries`)
+/// would otherwise silently reset to its default in
 /// the child. `mode_flag` selects which internal phase-only mode the child
 /// runs (`--_background-phases` or `--_embed-phases`); callers append any
 /// mode-specific flags (e.g. `--batch-size` for the embed phase) afterwards.
@@ -91,7 +91,6 @@ pub(super) fn build_detached_child_command(
     if args.no_summaries {
         cmd.arg("--no-summaries");
     }
-    cmd.args(["--summary-batch-size", &args.summary_batch_size.to_string()]);
     cmd.stdin(std::process::Stdio::null());
     cmd
 }
@@ -242,30 +241,6 @@ mod tests {
                 argv.iter().any(|a| *a == "--no-summaries"),
                 "--no-summaries must reach the {mode_flag} child"
             );
-        }
-    }
-
-    #[test]
-    fn detached_child_command_forwards_configured_summary_batch_size_to_both_spawn_sites() {
-        // Before the fix neither spawn forwarded `--summary-batch-size`, so a
-        // custom value silently reset to the default (10) in whichever child
-        // ran phase 4.
-        let args = TestCli::try_parse_from(["inkentry", "some/path", "--summary-batch-size", "42"])
-            .expect("parse")
-            .index;
-        assert_eq!(args.summary_batch_size, 42);
-        for mode_flag in ["--_background-phases", "--_embed-phases"] {
-            let cmd = build_detached_child_command(
-                std::path::Path::new("/usr/bin/inkentry"),
-                mode_flag,
-                &args,
-            );
-            let argv: Vec<_> = cmd.get_args().collect();
-            let pos = argv
-                .iter()
-                .position(|a| *a == "--summary-batch-size")
-                .expect("--summary-batch-size must be forwarded");
-            assert_eq!(argv[pos + 1], "42");
         }
     }
 

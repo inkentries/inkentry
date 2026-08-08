@@ -3,6 +3,7 @@ pub mod chunker;
 pub mod docparser;
 pub mod filter;
 pub mod graph;
+pub mod mmr;
 pub mod pagerank;
 pub mod parser;
 #[cfg(feature = "rich-formats")]

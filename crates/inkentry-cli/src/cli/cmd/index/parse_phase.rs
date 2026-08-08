@@ -63,9 +63,6 @@ fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
 }
 
 pub(super) struct ParseResult {
-    /// (chunk_id, embedding_text, token_count) tuples awaiting embedding.
-    /// `token_count` mirrors the stored `chunks.token_count` (never 0 here).
-    pub chunk_ids_and_texts: Vec<(i64, String, usize)>,
     pub indexed: u64,
     pub removed: u64,
     /// Count of files skipped by the built-in index filter (generated/vendored/
@@ -87,7 +84,6 @@ fn filtered_notice(filtered: u64) -> String {
 /// Mutable accumulators shared across per-file processor functions.
 /// Bundled into one struct so processor signatures stay under 7 arguments.
 struct ParseAcc {
-    out: Vec<(i64, String, usize)>,
     indexed: u64,
     skipped: u64,
 }
@@ -114,7 +110,6 @@ pub(super) fn run_parse_phase(
         }
         println!("No supported source files found in {}", root.display());
         return Ok(ParseResult {
-            chunk_ids_and_texts: vec![],
             indexed: 0,
             removed: 0,
             filtered,
@@ -130,7 +125,6 @@ pub(super) fn run_parse_phase(
     };
 
     let mut acc = ParseAcc {
-        out: Vec::new(),
         indexed: 0,
         skipped: 0,
     };
@@ -178,35 +172,15 @@ pub(super) fn run_parse_phase(
     }
 
     let removed = cleanup_stale(&files, root, db)?;
-    let ParseAcc {
-        out: mut chunk_ids_and_texts,
-        indexed,
-        ..
-    } = acc;
+    let ParseAcc { indexed, .. } = acc;
 
-    // Backfill: pick up any chunks that exist in the index but have no
-    // embedding row yet (e.g. a prior `init`/`index` parsed & chunked while
-    // the embedder was still loading, so the embed phase was skipped). These
-    // belong to unchanged files that the hash-based skip above never re-emits,
-    // so without this union a plain `inkentry index` would report "nothing to
-    // do" and leave them permanently unembedded.
-    //
-    // Freshly-parsed chunks from this run also lack an embedding row, so they
-    // appear here too; dedupe against the ids we already queued to avoid
-    // embedding them twice.
-    let already: std::collections::HashSet<i64> =
-        chunk_ids_and_texts.iter().map(|(id, ..)| *id).collect();
-    for (chunk_id, name, metadata, summary, content, token_count) in
-        db.chunks_missing_embeddings()?
-    {
-        if already.contains(&chunk_id) {
-            continue;
-        }
-        let tokens = effective_token_count(token_count, &content);
-        let text =
-            reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
-        chunk_ids_and_texts.push((chunk_id, text, tokens));
-    }
+    // The embed queue is not built here: it is rebuilt from the DB
+    // (`missing_embedding_texts`) after the pre-embed structural-summary pass, so
+    // it reflects the summaries and PageRank scores written between parse and
+    // embed, and picks up any chunk still missing a current vector (a prior
+    // parse-only run that skipped embedding, a pending re-embed from the
+    // summary-scheme migration or tier-3). That query is also what the detached
+    // embed worker uses, so both paths share one queue definition.
 
     // `--force` bypasses the hash-skip for every file processed above, so
     // once this loop is done every stored chunk was cut under the current
@@ -219,7 +193,6 @@ pub(super) fn run_parse_phase(
     }
 
     Ok(ParseResult {
-        chunk_ids_and_texts,
         indexed,
         removed,
         filtered,
@@ -440,7 +413,7 @@ fn process_doc_file(
     let file_id = db.upsert_file(path_str, Some(doc_lang), &hash, stat_mtime(path))?;
     db.delete_embeddings_for_file(file_id)?;
     db.delete_chunks_for_file(file_id)?;
-    store_chunks(&chunks, path_str, file_id, db, acc)?;
+    store_chunks(&chunks, path_str, file_id, db)?;
     acc.indexed += 1;
     Ok(true)
 }
@@ -477,7 +450,7 @@ fn process_pdf_file(
             db.delete_embeddings_for_file(file_id)?;
             db.delete_chunks_for_file(file_id)?;
             let chunks = pages_to_chunks(pages, path_str);
-            store_chunks(&chunks, path_str, file_id, db, acc)?;
+            store_chunks(&chunks, path_str, file_id, db)?;
             acc.indexed += 1;
         }
         Err(e) => {
@@ -593,18 +566,19 @@ fn process_text_file(
         tracing::warn!("mention edge storage failed for {path_str}: {e}");
     }
 
-    store_chunks(&chunks, path_str, file_id, db, acc)?;
+    store_chunks(&chunks, path_str, file_id, db)?;
     acc.indexed += 1;
     Ok(())
 }
 
-/// Insert a slice of parsed chunks into the DB and record their embedding texts.
+/// Insert a slice of parsed chunks into the DB. The embed queue is rebuilt from
+/// the DB (`missing_embedding_texts`) after the pre-embed structural-summary
+/// pass, so nothing is accumulated here.
 fn store_chunks(
     chunks: &[crate::indexer::Chunk],
     path_str: &str,
     file_id: i64,
     db: &Database,
-    acc: &mut ParseAcc,
 ) -> Result<()> {
     for chunk in chunks {
         // Scan the full text that will be persisted/embedded (docstring + content;
@@ -623,7 +597,7 @@ fn store_chunks(
         let metadata =
             serde_json::json!({ "docstring": chunk.docstring, "parent_scope": chunk.parent_scope });
         let tc = estimate_tokens(&chunk.content);
-        let chunk_id = db.insert_chunk(
+        db.insert_chunk(
             file_id,
             &chunk.kind.to_string(),
             chunk.name.as_deref(),
@@ -633,7 +607,6 @@ fn store_chunks(
             Some(&metadata.to_string()),
             tc,
         )?;
-        acc.out.push((chunk_id, chunk.embedding_text(), tc.max(1)));
     }
     Ok(())
 }
@@ -696,7 +669,6 @@ mod tests {
             force: false,
             recount: false,
             no_summaries: false,
-            summary_batch_size: 10,
             background_phases: false,
             embed_phases: false,
             detach: false,
@@ -824,14 +796,16 @@ mod tests {
     /// `run_parse_phase` stores chunks but never writes embeddings — that is the
     /// embed phase's job. So a single parse run models the real bug: an
     /// `init`/`index` that chunked while the embedder was still loading, leaving
-    /// the `embeddings` table empty. This test drives the full parse path over a
-    /// real fixture repo twice (no `--force`) and asserts:
-    ///   (a) after run 1, every stored chunk is unembedded (embeddings empty);
+    /// the `embeddings` table empty. The embed queue is rebuilt from the DB via
+    /// `missing_embedding_texts`, so this test drives the parse path twice (no
+    /// `--force`) and asserts:
+    ///   (a) after run 1, every stored chunk is unembedded and surfaced by the
+    ///       DB-driven queue;
     ///   (b) run 2 reparses nothing (`indexed == 0`, all files hash-skipped);
-    ///   (c) yet run 2 still returns a NON-EMPTY `chunk_ids_and_texts` — the
-    ///       missing-embedding chunks are unioned in for the embed phase;
-    ///   (d) the backfilled ids are exactly the chunk ids stored in run 1
-    ///       (same ids ⇒ no delete+reinsert ⇒ no unchanged file was reparsed).
+    ///   (c) yet the DB-driven queue still surfaces those same unembedded chunks
+    ///       — the missing-embedding backfill lives in the query, not the parse;
+    ///   (d) with the same ids across runs (same ids ⇒ no delete+reinsert ⇒ no
+    ///       unchanged file was reparsed) and byte-identical reconstructed text.
     #[test]
     fn reindex_backfills_unembedded_chunks_without_reparsing() {
         use indicatif::MultiProgress;
@@ -859,32 +833,17 @@ mod tests {
             first.indexed >= 2,
             "both fixture files must be indexed on the first run"
         );
+
+        // The DB-driven queue must surface every stored chunk (all unembedded).
+        let queue_run1 = missing_embedding_texts(&db).expect("queue after run 1");
         assert!(
-            !first.chunk_ids_and_texts.is_empty(),
-            "the first run must queue freshly-parsed chunks for embedding"
+            !queue_run1.is_empty(),
+            "a parse-only run must leave chunks for the embed phase to pick up"
         );
-
-        // Every chunk stored in run 1 is currently unembedded (embeddings empty):
-        // the set of missing-embedding chunk ids must equal the run-1 queued ids.
-        let mut queued_run1: Vec<i64> = first
-            .chunk_ids_and_texts
-            .iter()
-            .map(|(id, ..)| *id)
-            .collect();
+        let mut queued_run1: Vec<i64> = queue_run1.iter().map(|(id, ..)| *id).collect();
         queued_run1.sort();
-        let mut missing_after_run1: Vec<i64> = db
-            .chunks_missing_embeddings()
-            .expect("missing after run 1")
-            .into_iter()
-            .map(|(id, ..)| id)
-            .collect();
-        missing_after_run1.sort();
-        assert_eq!(
-            missing_after_run1, queued_run1,
-            "after a parse-only run the embeddings table is empty — every stored chunk is missing its embedding"
-        );
 
-        // ── Run 2: no file changed, so nothing is reparsed. The backfill union
+        // ── Run 2: no file changed, so nothing is reparsed. The DB-driven queue
         //    must still surface the unembedded chunks for the embed phase. ──────
         let second =
             run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("second parse phase");
@@ -892,35 +851,30 @@ mod tests {
             second.indexed, 0,
             "no file changed — the hash-based skip must reparse nothing on the second run"
         );
+        let queue_run2 = missing_embedding_texts(&db).expect("queue after run 2");
         assert!(
-            !second.chunk_ids_and_texts.is_empty(),
-            "the fix must union the missing-embedding chunks into the embed batch even though indexed == 0"
+            !queue_run2.is_empty(),
+            "the DB-driven queue must still surface the missing-embedding chunks even though indexed == 0"
         );
 
-        // (d) The backfilled ids are exactly the run-1 chunk ids: identical ids
-        // prove the chunks were NOT deleted and reinserted (a reparse would mint
-        // fresh rowids), i.e. no unchanged file was reparsed — only its missing
-        // embeddings were queued.
-        let mut backfilled: Vec<i64> = second
-            .chunk_ids_and_texts
-            .iter()
-            .map(|(id, ..)| *id)
-            .collect();
+        // (d) Same chunk ids across runs: identical ids prove the chunks were NOT
+        // deleted and reinserted (a reparse would mint fresh rowids), i.e. no
+        // unchanged file was reparsed — the queue is a pure DB read.
+        let mut backfilled: Vec<i64> = queue_run2.iter().map(|(id, ..)| *id).collect();
         backfilled.sort();
         assert_eq!(
             backfilled, queued_run1,
-            "backfill must queue the same chunk ids stored in run 1 (no reparse / re-chunk)"
+            "the DB-driven queue must surface the same chunk ids across runs (no reparse / re-chunk)"
         );
 
-        // The reconstructed embedding texts must also be byte-identical to what
-        // the first (parse-time) run produced for those same chunks.
-        let mut texts_run1: Vec<(i64, String, usize)> = first.chunk_ids_and_texts.clone();
+        // The reconstructed embedding text must be byte-identical across runs.
+        let mut texts_run1 = queue_run1.clone();
         texts_run1.sort_by_key(|(id, ..)| *id);
-        let mut texts_run2: Vec<(i64, String, usize)> = second.chunk_ids_and_texts.clone();
+        let mut texts_run2 = queue_run2.clone();
         texts_run2.sort_by_key(|(id, ..)| *id);
         assert_eq!(
             texts_run2, texts_run1,
-            "backfilled embedding text must match the parse-time embedding text byte-for-byte"
+            "reconstructed embedding text must be byte-identical across runs"
         );
     }
 
@@ -1318,7 +1272,6 @@ mod tests {
         }
         let args = default_args(dir.path().to_path_buf());
         let mut acc = ParseAcc {
-            out: Vec::new(),
             indexed: 0,
             skipped: 0,
         };

@@ -42,7 +42,7 @@ mod tier;
 
 pub use diagnostics::{ConnFailure, explicit_probe_failure};
 pub use guard::{inference_server_required_message, require_explicit_server_url, require_tier1};
-pub use llm_message::{LlmFeature, NoLlmReason, no_llm_message};
+pub use llm_message::{NoLlmReason, no_llm_message};
 // `LlmRoute` is named only inside `llm_route` and its tests; callers work
 // through the methods on the value `resolve_llm_route` hands back.
 #[allow(unused_imports)]

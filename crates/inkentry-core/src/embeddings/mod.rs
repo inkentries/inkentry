@@ -41,3 +41,11 @@ pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
+
+/// Dequantise an `int8[N]` blob (as stored in the `embeddings` table by
+/// [`vec_to_int8_blob`]) back to a float vector, rescaled by `1/127`. Cosine
+/// similarity is scale-invariant, so this is exact enough to reuse a stored
+/// primary vector as an MMR centroid without a fresh embed.
+pub fn int8_blob_to_vec(b: &[u8]) -> Vec<f32> {
+    b.iter().map(|&x| (x as i8) as f32 / INT8_SCALE).collect()
+}
