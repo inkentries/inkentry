@@ -32,9 +32,8 @@ inkentry search "<query>" --limit 20
 inkentry search "<query>" --graph          # include call-graph neighbours
 inkentry search "<query>" --format text|json|jsonl
 
-# Status and checks
+# Status
 inkentry status --format text|json|jsonl
-inkentry check --format text|json|jsonl
 
 # Inspect what was indexed for a file
 inkentry chunks <file-path>
@@ -68,7 +67,7 @@ only need full-text/ast-grep search, memory, or the code graph.
 ```bash
 inkentry index <path>           # index (subsequent runs are incremental, blake3-gated)
 inkentry index <path> --force   # full re-index (after changing embedding model)
-inkentry check                  # verify the index is fresh before starting work
+inkentry index .                # idempotent refresh — run at session start to self-heal a stale index
 ```
 
 Add a `.inkentryignore` file (same syntax as `.gitignore`) to exclude paths from indexing. Takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, self-declared `@generated`); override it with the `[index]` table in config.
@@ -205,9 +204,6 @@ inkentry status --all           # all registered projects
 inkentry status --list          # one-line table
 inkentry status --format json   # machine-readable output
 
-inkentry check                  # verify index is fresh; shows active intents and file-overlap warnings
-inkentry check --format json    # machine-readable output
-
 inkentry autoclean              # remove stale registry entries (deleted/moved projects)
 inkentry link <path>            # include another project's index in searches
 inkentry unlink <path>
@@ -217,7 +213,7 @@ inkentry unlink <path>
 
 ## Git worktrees
 
-Read/query commands (`context`, `check`, `search`, `memory list`,
+Read/query commands (`context`, `search`, `memory list`,
 `memory search`, `graph`, `status`) run from a linked worktree resolve to the
 main worktree's shared index automatically, with no setup step. Nothing is
 written into the worktree:
@@ -267,8 +263,8 @@ AGENT=true inkentry context
 # Or filter to a specific memory kind
 AGENT=true inkentry context --kind decision
 
-# If you've indexed the project: verify the index is fresh
-AGENT=true inkentry check
+# If you've indexed the project: bring the index up to date (idempotent, blake3-gated)
+inkentry index .
 ```
 
 `inkentry context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call. The default output is compact; pass `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens.

@@ -446,7 +446,7 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     );
 }
 
-// ── display commands: graph / chunks / check ─────────────────────────
+// ── display commands: graph / chunks ─────────────────────────
 //
 // These read-only commands previously resolved their DB via the legacy
 // `open_project_db`/`resolve_db` path, which fell back to the machine-global
@@ -559,30 +559,7 @@ fn chunks_refuses_without_local_project() {
     );
 }
 
-#[test]
-fn check_refuses_without_local_project() {
-    let home = TempDir::new().unwrap();
-    let proj = TempDir::new().unwrap();
-
-    let global = global_index_db(home.path());
-    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-    let sentinel = b"pre-existing global index sentinel";
-    std::fs::write(&global, sentinel).unwrap();
-
-    bin(home.path(), proj.path())
-        .args(["check"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(NO_PROJECT_ERR));
-
-    assert_eq!(
-        std::fs::read(&global).unwrap(),
-        sentinel,
-        "refused check must not open or mutate the pre-existing global index"
-    );
-}
-
-// ── happy path: an init'd project still resolves graph/chunks/check locally ────
+// ── happy path: an init'd project still resolves graph/chunks locally ────
 //
 // The fail-closed rework must not break the normal case: with a real local
 // `.inkentry/index.db`, the display commands resolve LOCAL (not global) and work.
@@ -627,12 +604,6 @@ fn display_commands_resolve_local_index_in_initd_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("local_target"));
-
-    // check: resolves the LOCAL index and reports on it rather than refusing.
-    bin(home.path(), proj.path())
-        .args(["check"])
-        .assert()
-        .success();
 
     assert_eq!(
         std::fs::read(&global).unwrap(),

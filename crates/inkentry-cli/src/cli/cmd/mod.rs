@@ -1,6 +1,5 @@
 pub mod auth;
 pub mod auth_api;
-pub mod check;
 pub(crate) mod color;
 pub mod context;
 mod daemon_llm;
@@ -27,7 +26,6 @@ pub(crate) mod test_support;
 mod ui;
 
 pub use auth::auth;
-pub use check::check;
 pub(crate) use color::{ColorChoice, set_color_choice};
 pub use context::context;
 pub use graph::graph;

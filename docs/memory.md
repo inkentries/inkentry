@@ -438,7 +438,7 @@ Examples of things worth storing:
 | `question` | Open questions that need an answer |
 | `answer` | Answers to previously stored questions |
 | `handoff` | State transfer between work sessions or agents |
-| `intent` | Active work signal; surfaced by `inkentry check` with file-overlap warnings |
+| `intent` | Active work signal; surfaced by `inkentry context` with file-overlap warnings |
 | `antipattern` | Things to avoid; list with `inkentry memory failures` |
 
 ## Storing a note

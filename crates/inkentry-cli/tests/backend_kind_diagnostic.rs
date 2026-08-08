@@ -1,5 +1,5 @@
-//! Integration tests for issue #308: `memory_backend` field in
-//! `inkentry status --format json` and `inkentry check --format json`.
+// Integration tests for issue #308: `memory_backend` field in
+// `inkentry status --format json`.
 
 mod plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
@@ -93,51 +93,6 @@ fn status_json_includes_memory_backend_field() {
     assert!(!kind.is_empty(), "`memory_backend` must not be empty");
 
     // Value must be one of the known backend identifiers.
-    const KNOWN: &[&str] = &["sqlite", "git-meta", "git-notes", "remote"];
-    assert!(
-        KNOWN.contains(&kind),
-        "`memory_backend` must be one of {KNOWN:?}, got: {kind:?}"
-    );
-}
-
-// ── `inkentry check --format json` ────────────────────────────────────────────
-
-/// `inkentry check --format json` must include a top-level `memory_backend`
-/// field with the same semantics as in `inkentry status` (issue #308).
-#[test]
-fn check_json_includes_memory_backend_field() {
-    let (_temp, project_dir, config_path) = setup_offline_project();
-
-    let output = inkentry_bin()
-        .current_dir(&project_dir)
-        .env_remove("INKENTRY_SERVER_URL")
-        .env("INKENTRY_NO_SERVER", "1")
-        .arg("--config")
-        .arg(&config_path)
-        .arg("check")
-        .arg("--format")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    // `inkentry check` exits 1 when stale files exist; that is fine here because
-    // we only care about the JSON shape on stdout.
-    let body: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("output must be valid JSON");
-
-    // Field must be present.
-    assert!(
-        body.get("memory_backend").is_some(),
-        "expected a `memory_backend` key in check JSON, got: {}",
-        serde_json::to_string_pretty(&body).unwrap_or_default()
-    );
-
-    // Value must be a non-empty string in the known set.
-    let kind = body["memory_backend"]
-        .as_str()
-        .expect("`memory_backend` must be a string");
-    assert!(!kind.is_empty(), "`memory_backend` must not be empty");
-
     const KNOWN: &[&str] = &["sqlite", "git-meta", "git-notes", "remote"];
     assert!(
         KNOWN.contains(&kind),

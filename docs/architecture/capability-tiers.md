@@ -212,25 +212,6 @@ is omitted when the server does not report that field.
 
 ---
 
-## inkentry check — server probe addition
-
-`inkentry check` (text mode only) appends a server status line when
-`server_url` is configured:
-
-```
-Index is up to date. (412 files indexed)
-Server:  https://inkentry.internal.example.com  ✓  (semantic search available)
-```
-
-Or on failure:
-
-```
-Index is up to date. (412 files indexed)
-Server:  https://inkentry.internal.example.com  ✗  unreachable — offline mode
-```
-
----
-
 ## Error messages for locked features
 
 When a Tier 1 feature is invoked but no server is reachable, the command exits

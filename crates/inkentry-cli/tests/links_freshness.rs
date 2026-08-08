@@ -9,8 +9,8 @@
 // stale or missing") false-failed on a clean checkout.
 //
 // Expected: `links check` / `links list` agree with the linked project's own
-// `inkentry check`. A freshly-indexed dep is FRESH; a dep with a file modified
-// since indexing is STALE.
+// non-mutating freshness probe (`plumbing ls-files --stale`). A freshly-indexed
+// dep is FRESH; a dep with a file modified since indexing is STALE.
 //
 // These tests seed a linked project's index.db directly (relative path + the
 // real blake3 hash of an on-disk file), so no embed server is needed.
@@ -258,20 +258,25 @@ fn links_check_reports_modified_dep_as_stale() {
 }
 
 // The cross-project probe (`links check`, from the linking project) and the
-// linked project's own in-project probe (`inkentry check`, from its own root)
-// must agree: both FRESH for the same freshly-indexed state.
+// linked project's own non-mutating freshness probe (`plumbing ls-files
+// --stale`, from its own root) must agree: both see the freshly-indexed dep as
+// FRESH.
 #[test]
-fn links_check_and_in_project_check_agree_on_fresh_dep() {
+fn links_check_and_in_project_freshness_agree_on_fresh_dep() {
     let env = setup();
 
-    // In-project: the dep's own `check` says fresh.
+    // In-project: the dep's own non-mutating probe finds nothing stale. Per the
+    // plumbing exit-code convention a fresh tree emits no rows and exits 1 (no
+    // results) — the inverse polarity of a "fresh = success" check.
     cmd(&env, &env.dep_root, &env.dep_config)
-        .arg("check")
+        .args(["plumbing", "ls-files", "--stale"])
         .arg("--db")
         .arg(&env.dep_index)
+        .arg("--root")
+        .arg(&env.dep_root)
         .assert()
-        .success()
-        .stdout(predicate::str::contains("up to date"));
+        .code(1)
+        .stdout(predicate::str::is_empty());
 
     // Cross-project: `links check` from the primary agrees.
     cmd(&env, &env.primary_root, &env.primary_config)
