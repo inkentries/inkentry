@@ -415,8 +415,11 @@ impl Database {
     }
 
     /// Add the `chunks.embed_pending` dirty flag and, on the one-time transition
-    /// to the structural-summary composition, mark every already-embedded chunk
-    /// for in-place re-embedding.
+    /// to the structural-summary composition, null the stale (LLM-scheme) summary
+    /// on every already-embedded chunk and mark it for in-place re-embedding.
+    /// Nulling the summary is what lets the structural recompose and tier-3
+    /// selection — both gated on `summary IS NULL` — actually run; otherwise the
+    /// chunk would re-embed from its old summary yet be stamped as the new scheme.
     ///
     /// This deliberately departs from the FLOAT→INT8 precedent
     /// ([`apply_dim_upgrade_migration`](Self::apply_dim_upgrade_migration)),
@@ -445,6 +448,17 @@ impl Database {
 
         if self.summary_scheme()?.is_none() {
             let tx = self.conn.unchecked_transaction()?;
+            // Invalidate any old-scheme summary (LLM prose, or `""` from a
+            // failed LLM batch) on already-embedded chunks. The structural
+            // recompose and tier-3 selection are both gated on `summary IS NULL`,
+            // so without this an existing LLM-summary index would re-embed from
+            // its stale summary and get mislabelled `structural_v1`. Named chunks
+            // then recompose structurally; title-less ones re-enter tier-3.
+            tx.execute(
+                "UPDATE chunks SET summary = NULL \
+                 WHERE id IN (SELECT chunk_id FROM embeddings)",
+                [],
+            )?;
             tx.execute(
                 "UPDATE chunks SET embed_pending = 1 \
                  WHERE id IN (SELECT chunk_id FROM embeddings)",
@@ -1175,6 +1189,125 @@ mod tests {
             db.refresh_pending_count().unwrap(),
             0,
             "the marker is stamped, so a re-run marks nothing (idempotent)"
+        );
+    }
+
+    /// The transition off an LLM-summary index must NULL each embedded chunk's
+    /// stale summary, not just flag it. The structural recompose is gated on
+    /// `summary IS NULL`; if the migration left the old LLM prose in place, the
+    /// chunk would re-embed from that stale, non-deterministic summary yet be
+    /// stamped `structural_v1`. After the migration the chunk must (a) have a
+    /// NULL summary, (b) re-appear as a recompose candidate, and (c) recompose
+    /// to a deterministic structural summary that is not the old prose.
+    #[test]
+    fn embed_pending_migration_nulls_stale_llm_summaries_so_they_recompose() {
+        use crate::indexer::graph::{Edge, EdgeKind};
+        use crate::indexer::summariser::compose_structural_summary;
+
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let content = "pub fn parse_config(path: &str) { open(path); read(path); }";
+        let metadata = r#"{"docstring":"Parses the config file.","parent_scope":null}"#;
+        let chunk = db
+            .insert_chunk(
+                file_id,
+                "function",
+                Some("parse_config"),
+                1,
+                2,
+                content,
+                Some(metadata),
+                12,
+            )
+            .unwrap();
+        db.replace_edges(
+            "a.rs",
+            &[
+                Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("parse_config".to_string()),
+                    target_name: "open".to_string(),
+                    kind: EdgeKind::Calls,
+                    line: 1,
+                },
+                Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("parse_config".to_string()),
+                    target_name: "read".to_string(),
+                    kind: EdgeKind::Calls,
+                    line: 1,
+                },
+            ],
+        )
+        .unwrap();
+        db.insert_embedding(chunk, &vec![0.1f32; dim]).unwrap();
+
+        // Model a pre-scheme LLM-summary index: a non-NULL prose summary the old
+        // path wrote, and no scheme marker yet.
+        let stale_prose = "This function does some configuration parsing, probably.";
+        db.update_chunk_summary(chunk, stale_prose).unwrap();
+        db.conn
+            .execute("DELETE FROM index_meta WHERE key = 'summary_scheme'", [])
+            .unwrap();
+        db.conn
+            .execute("UPDATE chunks SET embed_pending = 0", [])
+            .unwrap();
+
+        db.apply_embed_pending_migration().unwrap();
+
+        // (a) the stale summary is nulled, and the chunk is flagged for re-embed.
+        let summary_after: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM chunks WHERE id = ?1",
+                rusqlite::params![chunk],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            summary_after, None,
+            "the migration must NULL the stale LLM summary, not leave it in place"
+        );
+        assert_eq!(chunk_pending(&db, chunk), 1);
+
+        // (b) it re-enters the structural recompose queue.
+        let candidates: Vec<i64> = db
+            .named_chunks_needing_summary()
+            .unwrap()
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert!(
+            candidates.contains(&chunk),
+            "a nulled summary must make the chunk a recompose candidate again"
+        );
+
+        // (c) it recomposes to the deterministic structural form, not the prose,
+        // and that form is byte-identical across runs.
+        let callees = db.callees_for_symbol("parse_config").unwrap();
+        let recomposed = compose_structural_summary(
+            "parse_config",
+            Some("Parses the config file."),
+            &callees,
+            content,
+        );
+        assert_ne!(
+            recomposed, stale_prose,
+            "the recomposed summary must be the structural form, not the old prose"
+        );
+        assert!(recomposed.contains("Parses the config file."));
+        assert!(recomposed.contains("parse config"));
+        assert_eq!(
+            recomposed,
+            compose_structural_summary(
+                "parse_config",
+                Some("Parses the config file."),
+                &callees,
+                content
+            ),
+            "the structural recompose must be byte-identical across runs"
         );
     }
 
