@@ -59,7 +59,6 @@ async fn main() -> Result<()> {
         Command::Status(args) => cli::cmd::status(args, cfg).await,
         Command::Context(args) => cli::cmd::context(args, cfg).await,
         Command::Languages => cli::cmd::languages(),
-        Command::Graph(args) => cli::cmd::graph(args, cfg),
         Command::Chunks(args) => cli::cmd::chunks(args, cfg),
         Command::Link(args) => cli::cmd::link(args, cfg),
         Command::Unlink(args) => cli::cmd::unlink(args, cfg),

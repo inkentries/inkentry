@@ -1,8 +1,22 @@
-pub mod live;
 pub mod rag;
 pub mod tokens;
 
 use serde::{Deserialize, Serialize};
+
+/// The single reciprocal-rank-fusion constant for the whole retrieval system.
+///
+/// Both within-corpus hybrid fusions (code `storage::search::search_hybrid`,
+/// memory `storage::memory::search::search_hybrid`) and the cross-corpus fusion
+/// that interleaves code and memory into one ranked list read this one value, so
+/// the system has exactly one fusion constant to reason about and, later, to
+/// tune. 60 is the original-paper default (Cormack, Clarke & Büttcher, 2009).
+///
+/// Within a corpus, where the FTS and vector lists overlap, `k` materially
+/// shapes the fused order. Across the two disjoint corpora with equal weights it
+/// is an additive constant that cancels from every pairwise comparison, so the
+/// cross-corpus merge degenerates to a pure rank interleave; it would regain a
+/// cross-corpus effect only under a per-corpus weight, which v1 does not ship.
+pub const RRF_K: f64 = 60.0;
 
 /// A single search result returned to the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]

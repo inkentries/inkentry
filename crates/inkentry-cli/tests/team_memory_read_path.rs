@@ -173,6 +173,24 @@ fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
     cmd.output().expect("spawn inkentry memory")
 }
 
+// Run unified `inkentry search` on the DEFAULT backend in `dir`. Memory-corpus
+// reads resolve the memory.db as the index.db's sibling, so no explicit --db.
+fn search_default(dir: &Path, sub_args: &[&str]) -> Output {
+    let cfg = write_config(dir, false);
+    let mut cmd = inkentry_bin();
+    cmd.current_dir(dir)
+        .env("HOME", dir)
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL")
+        .arg("--config")
+        .arg(&cfg)
+        .arg("search");
+    for a in sub_args {
+        cmd.arg(a);
+    }
+    cmd.output().expect("spawn inkentry search")
+}
+
 // Run `inkentry context` on the DEFAULT backend in `dir`.
 fn read_context(dir: &Path) -> Output {
     let cfg = write_config(dir, false);
@@ -294,14 +312,15 @@ fn search_surfaces_fetched_teammate_note_on_default_path() {
     let team = setup_team();
     one_note_reaches_reader(&team);
 
-    // Text mode needs no embedder (no server here).
-    let out = read_memory(
+    // --only-text needs no embedder (no server here); --only-memory keeps this
+    // to the memory corpus the fold-in of `memory search` covers.
+    let out = search_default(
         &team.reader,
-        &["search", MARKER, "--mode", "text", "--local-only"],
+        &[MARKER, "--only-memory", "--only-text", "--local-only"],
     );
     assert!(
         stdout_of(&out).contains(MARKER),
-        "memory search --mode text on the DEFAULT backend must surface the fetched note"
+        "search --only-memory --only-text on the DEFAULT backend must surface the fetched note"
     );
 }
 

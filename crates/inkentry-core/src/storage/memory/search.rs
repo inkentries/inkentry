@@ -94,7 +94,7 @@ impl MemoryStore {
 
     /// Hybrid search: fuses FTS5 BM25 ranking with vector KNN via Reciprocal Rank Fusion.
     ///
-    /// RRF score: `Σ 1 / (k + rank_i)` where `k = 60` (standard default).
+    /// RRF score: `Σ 1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
     /// Candidates from both lists are merged by note ID, scores summed, then the top
     /// `limit` are returned in descending RRF score order.
     /// When `as_of` is `Some(ts)`, only entries valid at that timestamp are considered.
@@ -114,7 +114,7 @@ impl MemoryStore {
             .search_text(query, candidates, as_of)
             .unwrap_or_default();
 
-        const K: f64 = 60.0;
+        const K: f64 = crate::search::RRF_K;
 
         let mut scores: HashMap<NoteId, f64> = HashMap::new();
         let mut by_id: HashMap<NoteId, Note> = HashMap::new();

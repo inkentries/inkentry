@@ -7,7 +7,6 @@ pub mod cmd;
 // their owning modules (e.g. `crate::cli::cmd::memory::MemoryAddArgs`) when needed.
 pub use cmd::auth::AuthArgs;
 pub use cmd::context::ContextArgs;
-pub use cmd::graph::GraphArgs;
 pub use cmd::harvest::HarvestArgs;
 pub use cmd::hooks::HooksArgs;
 pub use cmd::index::IndexArgs;
@@ -54,7 +53,7 @@ pub enum Command {
     Init(InitArgs),
     /// Index a codebase directory
     Index(IndexArgs),
-    /// Semantic search over the index
+    /// Unified search over code and memory (interleaved, best-available ranking)
     Search(SearchArgs),
     /// Show index statistics (for current project or all registered projects)
     Status(StatusArgs),
@@ -62,8 +61,6 @@ pub enum Command {
     Context(ContextArgs),
     /// List supported languages
     Languages,
-    /// Query the code graph (imports, calls, extends/implements)
-    Graph(GraphArgs),
     /// Show the raw indexed chunks for a file (useful for debugging/agent use)
     Chunks(ChunksArgs),
     /// Add a dependency: current project also searches another project's index

@@ -131,7 +131,7 @@ impl Database {
 
     /// Hybrid search: fuses FTS5 BM25 ranking with vector KNN via Reciprocal Rank Fusion.
     ///
-    /// RRF score: `Σ 1 / (k + rank_i)` where `k = 60`.
+    /// RRF score: `Σ 1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
     pub fn search_hybrid(
         &self,
         query: &str,
@@ -144,7 +144,7 @@ impl Database {
         let vec_results = self.search_similar(embedding, candidates)?;
         let text_results = self.search_text(query, candidates).unwrap_or_default();
 
-        const K: f64 = 60.0;
+        const K: f64 = crate::search::RRF_K;
 
         let mut scores: HashMap<i64, f64> = HashMap::new();
         let mut by_id: HashMap<i64, crate::search::SearchResult> = HashMap::new();

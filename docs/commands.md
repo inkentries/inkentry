@@ -8,10 +8,10 @@ unset). The flags and defaults below match the installed binary; run
 
 A local `inkentry-server` is autostarted on demand and provides embeddings
 (native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
-configured, LLM inference. Commands that need semantic search or an LLM (`search`
-in semantic/auto mode, `harvest`) use that server; the
-always-available commands (`graph`, text/ast-grep `search`, `memory add/list`,
-`context`) work with no server.
+configured, LLM inference. Commands that need semantic search or an LLM (`search`,
+`harvest`) use that server; the
+always-available commands (`search --only-text`, `plumbing graph-edges`,
+`memory add/list`, `context`) work with no server.
 
 ---
 
@@ -57,7 +57,7 @@ slug.
 `refs/notes/origin/inkentry`, and does a one-time best-effort fetch of that ref
 so a **single** `init` after a clone hydrates teammates' memory (the fetch is
 non-fatal, so `init` still succeeds offline). Thereafter every default read path
-— `memory list`, `memory search`, `memory show`, and `context` — folds the
+— `memory list`, `search`, `memory show`, and `context` — folds the
 tracking ref into your own notes and imports it into `memory.db` when the notes
 ref has moved since the last import, so *reading* a teammate's newly-fetched
 memory needs no re-`init` and no extra step. *Publishing* yours is opt-in: your
@@ -171,8 +171,8 @@ the server's own `Retry-After` instead of the fixed backoff schedule; see
 
 `inkentry init` always hands the embedding pass to a detached background worker,
 and `--detach-embed` opts a manual `inkentry index` run into the same behaviour:
-parsing finishes in the foreground (the index is immediately usable for text and
-ast-grep search) and the long embedding pass continues in the background, with
+parsing finishes in the foreground (the index is immediately usable for
+full-text search) and the long embedding pass continues in the background, with
 the worker waiting out a still-loading embedder rather than skipping. A plain
 `inkentry index` without the flag embeds in the foreground. Run `inkentry status`
 to check a background pass; it shows an "Embedding in progress" line with
@@ -293,12 +293,17 @@ inkentry index ./myproject --force --batch-size 16
 
 ## inkentry search
 
-Search the index. In `auto` mode (the default) inkentry uses semantic/hybrid
-search when an index and server are available. During embeddings warmup, a
-coverage notice is printed to stderr naming the percentage and shape of
-embedded chunks; on zero coverage `auto` falls back to ast-grep. Explicit
-`semantic`/`hybrid` on a warming index returns an actionable error naming the
-resume command instead of an absence claim.
+One unified search over **both** the code corpus and the memory corpus,
+interleaved into a single ranked list. inkentry picks the best available
+ranking — there is no mode to choose. When an index and server are available it
+ranks by meaning (semantic/hybrid); full-text results are available immediately
+after `inkentry init` parses the tree, while semantic ranking builds in the
+background. During embeddings warmup a coverage notice is printed to stderr
+naming the percentage and shape of embedded chunks.
+
+`search` **requires an index.** Run in an uninitialised directory, it funnels
+you to `inkentry init` rather than returning results; once `init` has parsed the
+source tree, full-text search works right away.
 
 ```
 inkentry search <query> [options]
@@ -309,42 +314,53 @@ inkentry search <query> [options]
 | `-l, --limit <n>` | 10 | Number of results (max 100); mutually exclusive with `--budget` |
 | `--budget <n>` | — | Return best chunks fitting within this token budget |
 | `--format text\|json\|jsonl` | text | Output format |
-| `-g, --graph` | false | Enrich results with 1-hop call-graph neighbours |
+| `-g, --graph` | false | Append the queried symbol's chunk plus its 1-hop call-graph neighbours after the ranked results |
 | `--graph-limit <n>` | 10 | Max graph-expanded results to add (with `--graph`) |
-| `--mode <mode>` | auto | `auto`, `text` (FTS only), `semantic`/`hybrid` (LinearRAG), or `ast-grep` |
+| `--only-code` | false | Code corpus only — the escape hatch when interleaved memory results are unwanted |
+| `--only-memory` | false | Memory corpus only |
+| `--only-text` | false | Full-text over the in-scope corpora, no embedding, no server needed |
+| `--as-of <date>` | — | Memory-only: only entries valid at this date (point-in-time) |
+| `--expand-graph` | false | Memory-only: also surface each memory result's 1-hop `relates_to` neighbours |
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
-| `--local-only` | false | Search only the primary index, skip linked projects |
+| `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
 
-`semantic`/`hybrid` uses LinearRAG: a two-stage entity-activation + personalised
-PageRank pipeline that improves multi-hop recall over raw KNN. `text` and
-`ast-grep` need no embedding model or server. `text` does run over the FTS
-index, so it needs `inkentry index` first; `ast-grep` and the `auto` default
-work with no index at all.
+`--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
+LinearRAG: a two-stage entity-activation + personalised PageRank pipeline that
+improves multi-hop recall over raw KNN. `--only-text` needs no embedding model
+or server; it still runs over the full-text index, so it needs `inkentry init`
+first like every `search`.
 
-`text` mode scores the query's words as **independent terms** (BM25): a
+`--only-text` scores the query's words as **independent terms** (BM25): a
 multi-word query ranks chunks that contain the terms in **any order** — a chunk
 containing more of the terms ranks above one containing fewer — rather than
 requiring them to appear as one contiguous phrase. Matching is case-insensitive
 and not stemmed (`bursts` matches `bursts`, not `burst`), following the FTS
 tokenizer.
 
-In `ast-grep` mode (and the `auto` fallback used when there is no index or
-server), a plain-string query matches case-insensitively as a substring of
-identifiers and file text, so `Billing` finds `BillingEntity`. A query
-containing a metavariable (`$X`, `$$$ARGS`) is instead compiled as a structural
-ast-grep pattern. Neither needs an index. This is literal substring matching,
-not semantic search (that needs the server).
+`--graph` is the porcelain call-graph view: it appends the queried symbol's own
+chunk and its 1-hop callers/callees after the ranked results. For exact edges as
+JSONL (for scripts and agents), use `inkentry plumbing graph-edges --symbol
+<name>` (or `--file <path>`).
+
+**JSON output shape.** With `--format json`/`jsonl`, each result is a nested
+envelope naming the corpus it came from — exactly one of `code`/`memory`,
+matching `type`:
+
+```json
+{"type":"code","fused_rank":1,"fused_score":0.91,"corpus_rank":1,"code":{"chunk_id":42,"file_path":"src/auth/middleware.rs","name":"validate_token","start_line":18,"end_line":54,"content":"...","score":0.88}}
+{"type":"memory","fused_rank":2,"fused_score":0.87,"corpus_rank":1,"memory":{"id":17,"kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"...","score":0.84}}
+```
 
 **Example:**
 
 ```bash
 inkentry search "where is the JWT token validated"
 inkentry search "database schema migration" --limit 5 --format json
-inkentry search "authentication middleware" --graph
-inkentry search "TODO fix me" --mode text         # FTS only, no server needed
-inkentry search "Billing" --mode ast-grep         # case-insensitive substring, no index
-inkentry search "$X.unwrap()" --mode ast-grep     # structural pattern (metavariable)
+inkentry search "validate_token" --graph            # ranked results + the symbol's call-graph neighbours
+inkentry search "TODO fix me" --only-text           # full-text only, no server needed
+inkentry search "authentication" --only-code        # code corpus only, no interleaved memory
+inkentry search "why did we choose sqlite" --only-memory --as-of 2026-01-01
 ```
 
 ---
@@ -355,10 +371,10 @@ There is no `inkentry explore` command. inkentry retrieves context; your own
 agent reasons over it. For an open-ended question that needs tracing across
 files, loop over the primitives yourself, refining the query each pass:
 
-1. `inkentry search "<terms>"` (add `--graph` for call-graph neighbours; `--mode
-   text` for a no-server pass) — read the top results.
-2. `inkentry graph <symbol> --kind calls|imports|extends|implements` — follow
-   the callers/callees the results surfaced.
+1. `inkentry search "<terms>"` (add `--graph` for call-graph neighbours;
+   `--only-text` for a no-server pass) — read the top results.
+2. `inkentry plumbing graph-edges --symbol <symbol>` (or `--file <path>`) —
+   follow the callers/callees the results surfaced, as exact JSONL edges.
 3. `inkentry chunks <file>` — read the exact indexed code (or your own file-read
    tool for lines outside a chunk).
 4. Decide: enough context, or form a sharper query and go back to step 1.
@@ -469,34 +485,26 @@ AGENT=true inkentry context        # JSON for machine processing
 
 ---
 
-## inkentry graph
+## Graph queries (moved)
 
-Query the code graph: imports, function calls, class inheritance.
+The top-level `inkentry graph <symbol>` command has been removed; invoking it
+errors as an unknown subcommand. The code-graph capability now lives in two
+places:
 
-```
-inkentry graph <symbol> [options]
-```
+- **Porcelain:** `inkentry search <symbol> --graph` appends the symbol's chunk
+  and its 1-hop call-graph neighbours (imports, calls, extends/implements) after
+  the ranked results.
+- **Plumbing:** `inkentry plumbing graph-edges --symbol <name>` (or
+  `--file <path>`) emits exact edges as JSONL for scripts and agents.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--kind <type>` | all | Filter: `imports`, `calls`, `extends`, `implements` |
-| `--format text\|json\|jsonl` | text | Output format |
-| `-d, --db <path>` | auto | Override database path |
-| `--no-stale-check` | false | Suppress the stale-index warning |
-| `--live` | false | Skip the index and scan live files directly |
-
-The live scan is structural and matches only call-site `symbol(...)`
-invocations, so a zero result means "no bare calls", not "unused". Class,
-constant, association, and receiver-method references never take that form. Run
-`inkentry init` to build the full graph, which adds imports/extends/implements
-edges alongside call edges.
+Both read the graph built by `inkentry init`; there is no `--live` scan.
 
 **Example:**
 
 ```bash
-inkentry graph RagPipeline
-inkentry graph src/storage/db.rs --kind imports
-inkentry graph validate_token --live
+inkentry search RagPipeline --graph
+inkentry plumbing graph-edges --file src/storage/db.rs
+inkentry plumbing graph-edges --symbol validate_token
 ```
 
 ---
@@ -535,9 +543,9 @@ inkentry languages
 ## inkentry link / inkentry unlink / inkentry links
 
 Add or remove a project dependency. When linked, `inkentry search` also queries
-the linked project's index, and `inkentry memory search|list|context` surfaces
-`locked`/`cross-project`-tagged decisions and requirements from the linked
-project's memory store. `inkentry links` inspects existing links.
+the linked project's index, and `inkentry search`, `memory list`, and `context`
+surface `locked`/`cross-project`-tagged decisions and requirements from the
+linked project's memory store. `inkentry links` inspects existing links.
 
 ```
 inkentry link <path>
@@ -897,7 +905,6 @@ Store and query project context, decisions, and requirements. See
 ```
 inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs]
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
-inkentry memory search <query> [--limit 10] [--format text|json] [--local-only]
 inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]
 inkentry memory harvest [...]                # deprecated alias of `inkentry harvest`
@@ -915,7 +922,7 @@ inkentry memory reindex [--force] [--include-archived] [--dry-run] [--format tex
 All `memory` subcommands accept `--backend sqlite|git-notes` (default `sqlite`)
 and `--db <path>`.
 
-`memory search` and `memory list` accept `--local-only` to skip the
+`inkentry search` and `memory list` accept `--local-only` to skip the
 cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-visibility)).
 Results from linked projects carry a `[from: <project>]` badge in text output
 and `source_project` / `source_project_path` fields in JSON.
@@ -968,9 +975,10 @@ local content, same as `memory add`.
 any entry in the set they are about to push that still lacks one. A note that misses both, added
 while the embedder was down and never pushed, or carried
 through the 768→896 embedding-dimension upgrade (which drops the old vectors),
-stays present-but-unembedded: still found by text search, `list`, `timeline`,
-and `context`, but absent from semantic `memory search`. `inkentry memory
-reindex` re-embeds those notes against the local embedder (the same path
+stays present-but-unembedded: still found by full-text `search`, `list`,
+`timeline`, and `context`, but absent from the semantic ranking of `inkentry
+search`. `inkentry memory reindex` re-embeds those notes against the local
+embedder (the same path
 `memory add` uses), so it needs a reachable embedder and exits non-zero if none
 is; it commits each vector as it goes, so an interrupted run resumes on re-run.
 `--force` re-embeds every active note (replacing existing vectors), `--include-archived`
@@ -1016,7 +1024,7 @@ alias, so invoking them errors as an unknown subcommand.
 sync` and `inkentry plumbing push` embed every entry in the push set that has no
 usable local vector, through the local loopback embedder and using the same
 document text `inkentry memory reindex` uses, and commit each vector to
-`memory.db`. A pushed entry is then findable by semantic `memory search` locally
+`memory.db`. A pushed entry is then findable by semantic `search` locally
 without a separate `reindex`. This changes what is stored locally, not what is
 sent: `kind`, `title`, and `body` are serialised on every push and always were,
 and the vector fields are additive. The step is skipped in `cloud_first` mode

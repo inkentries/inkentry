@@ -33,8 +33,9 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
         .arg("--format")
         .arg("jsonl")
         .arg("--no-stale-check")
-        .arg("--mode")
-        .arg("text") // text mode: no embedding call needed
+        // Code corpus, full-text only: no embedding call needed.
+        .arg("--only-code")
+        .arg("--only-text")
         .assert()
         .success()
         .get_output()
@@ -47,17 +48,25 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
         "inkentry search --format jsonl should return at least one result"
     );
     for row in &rows {
+        // The unified envelope nests the SearchResult under `code` with a type
+        // discriminator; the chunk fields live there, not at the top level.
+        assert_eq!(
+            row.get("type").and_then(|v| v.as_str()),
+            Some("code"),
+            "code result must carry type=code: {row}"
+        );
+        let code = row.get("code").expect("code payload present");
         assert!(
-            row.get("chunk_id").is_some(),
-            "search result missing 'chunk_id': {row}"
+            code.get("chunk_id").is_some(),
+            "search result missing 'code.chunk_id': {row}"
         );
         assert!(
-            row.get("file_path").is_some(),
-            "search result missing 'file_path': {row}"
+            code.get("file_path").is_some(),
+            "search result missing 'code.file_path': {row}"
         );
         assert!(
-            row.get("content").is_some(),
-            "search result missing 'content': {row}"
+            code.get("content").is_some(),
+            "search result missing 'code.content': {row}"
         );
     }
 }

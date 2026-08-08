@@ -4,7 +4,7 @@
 fast: trace how a symbol connects across files, find the code behind a concept,
 and assemble the context around a change, all from the CLI with no infrastructure
 to stand up. Install it, run `inkentry init` inside a git repository, and the first
-`graph` / `search` / `context` already tell you how the code fits together.
+`search` and `context` already tell you how the code fits together.
 
 That is the starting point. As you keep working, `inkentry` also remembers the
 decisions behind the code, so a later session (yours or a teammate's) does not
@@ -159,8 +159,8 @@ inkentry init
 That's the whole setup. `inkentry init` registers the project, starts the bundled
 `inkentry-server` in the background when run interactively (if one isn't already running),
 parses and chunks every source file, and hands the embedding pass to a detached background
-worker so the prompt returns after parsing rather than after the full embed pass. Embeddings build in the background; full-text and ast-grep search
-work immediately, and semantic search becomes available as embeddings land.
+worker so the prompt returns after parsing rather than after the full embed pass. Embeddings build in the background; full-text search
+works immediately, and semantic search becomes available as embeddings land.
 
 ```bash
 # Search by meaning, not just text
@@ -212,19 +212,21 @@ search there, or set `INKENTRY_NO_SERVER=1` to stay fully offline.
 
 ## 3. Start using it inside your project
 
-`graph` and `search --mode ast-grep` need no index and run in any repository.
-Memory and `context` operate on the local project you created with `inkentry init`
-(step 2); in an un-initialized directory they fail closed with a `no inkentry
-project here` error instead of using a machine-global store. From inside your
-project you can:
+`search` requires an index: run `inkentry init` first — an uninitialised
+directory funnels you there. Full-text results are available as soon as `init`
+parses the tree; semantic ranking builds in the background. Memory and `context`
+also operate on the local project you created with `inkentry init` (step 2); in
+an un-initialized directory they fail closed with a `no inkentry project here`
+error instead of using a machine-global store. From inside your project you can:
 
 ```bash
 # Find the code behind a concept: search takes any phrase, no symbol name needed
-inkentry search "error handling" --mode text
+inkentry search "error handling" --only-text
 
-# Trace how a symbol connects. graph resolves an exact identifier (a real symbol
-# name, e.g. one you just saw in the search results above), not a concept phrase
-inkentry graph validate_token
+# Trace how a symbol connects: --graph appends the symbol's chunk and its 1-hop
+# call-graph neighbours after the ranked results (use a real symbol name, e.g.
+# one you just saw in the results above)
+inkentry search validate_token --graph
 
 # Store a decision for your team
 inkentry memory add --kind decision \
@@ -286,7 +288,7 @@ the managed spelunk.cloud.
 
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
-| **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
+| **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text search, code graph | local `memory.db` |
 | **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
 | **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
 | **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
@@ -434,13 +436,13 @@ inkentry index /path/to/your/project --force
 ### Use semantic search
 
 ```bash
-# Finds code by concept, not just text
+# Finds code by concept, not just text (unified over code + memory, best available)
 inkentry search "error handling in the HTTP layer"
 
-# Hybrid search (semantic + full-text)
-inkentry search "authentication" --mode hybrid
+# Code corpus only (skip interleaved memory results)
+inkentry search "authentication" --only-code
 
-# Expand with 1-hop call graph
+# Append the symbol's 1-hop call-graph neighbours after the ranked results
 inkentry search "authentication" --graph
 
 # Fit results within a token budget for agents
