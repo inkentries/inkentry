@@ -102,7 +102,7 @@ User filesystem
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
 ```
-(*) `inkentry memory harvest` (harvest_claude.rs) does run `contains_secret` on
+(*) `inkentry harvest` (harvest_claude.rs) does run `contains_secret` on
 harvested text before storing. Direct `inkentry memory add` does **not** — the
 note body comes from the user's own command line or `$EDITOR` and is written to
 git notes verbatim.
@@ -207,7 +207,7 @@ unauthenticated (no bearer required or sent).
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
-| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `inkentry memory harvest` sends memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
+| **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `inkentry harvest` sends memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
 | Server memory accessible without auth | B | Medium | High | No `--key` / `INKENTRY_SERVER_KEY` by default; any process that can reach the port reads all notes |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `INKENTRY_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
@@ -224,7 +224,7 @@ unauthenticated (no bearer required or sent).
 |--------|------|-----------|--------|-----------|
 | Path traversal via project_id or note body to read arbitrary server files | B | Low | High | The `project_id` is a slug used only as a database key (capped in length at the handler), never as a filesystem path; the note body is stored as-is but never executed. No file reads derive from user-supplied request fields. |
 | Keyholder reads or deletes another project's memory on a shared instance | B | n/a | n/a | **Intended behaviour, not a defect (ADR-056).** A server instance is a single trust domain; the shared key grants full access to every project. Teams that must be isolated run separate instances. This is not an elevation of privilege because there is no lower privilege level to elevate from: one key is one trust domain. |
-| Git argument injection via `inkentry memory harvest --branch`/`--git-range` (e.g. `--branch=--output=<path>`) forwarded to `git log` with no `--` separator, letting an option-shaped value be parsed as a git flag instead of a ref (arbitrary local file clobber) | A | Low | Medium | Fixed: `reject_option_like_ref()` rejects any ref, or either endpoint of an `A..B` range, starting with `-` before the subprocess spawns; both `git log` invocations also append a trailing `--` separator as defense-in-depth. Same review applied to the git-notes write path (`git_notes/mod.rs`): all `<object>` args to `notes show`/`add` are `--`-guarded, and note bodies are written via stdin (`-F -`) instead of `-m <arg>`, so a body can't be argv-parsed as an option or exposed on `ps`. |
+| Git argument injection via `inkentry harvest --branch`/`--git-range` (e.g. `--branch=--output=<path>`) forwarded to `git log` with no `--` separator, letting an option-shaped value be parsed as a git flag instead of a ref (arbitrary local file clobber) | A | Low | Medium | Fixed: `reject_option_like_ref()` rejects any ref, or either endpoint of an `A..B` range, starting with `-` before the subprocess spawns; both `git log` invocations also append a trailing `--` separator as defense-in-depth. Same review applied to the git-notes write path (`git_notes/mod.rs`): all `<object>` args to `notes show`/`add` are `--`-guarded, and note bodies are written via stdin (`-F -`) instead of `-m <arg>`, so a body can't be argv-parsed as an option or exposed on `ps`. |
 
 ### D — Denial of Service
 
@@ -254,7 +254,7 @@ unauthenticated (no bearer required or sent).
 ## Generic inference endpoint — `POST /v1/projects/{id}/llm/complete` (Mode B, ADR-002)
 
 ADR-002 adds a generic LLM completion primitive to `inkentry-server` so the CLI
-can route `inkentry memory harvest` (and future inference-needing commands)
+can route `inkentry harvest` (and future inference-needing commands)
 through one stable route instead of a bespoke endpoint per command. This
 introduces a **new trust boundary**: a network-facing, free-form inference
 endpoint that runs arbitrary caller-supplied prompts against the server's
@@ -335,7 +335,7 @@ push configuration.
 | Code path | Scanner called? | Notes |
 |-----------|:-:|-------|
 | `inkentry index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
-| `inkentry memory harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
+| `inkentry harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
 | `inkentry memory add` → git-notes write-through | **No** | Body is user-supplied text written verbatim to `refs/notes/inkentry`. No call to `contains_secret()` exists in `add.rs` before `append_to_git_notes()`. |
 
 **Risk:** A user who types `inkentry memory add --title "DB creds" --body "password=s3cr3t"` will
@@ -370,8 +370,8 @@ cross to that server), or a `inkentry-server` operator has set an external
 |-----------|---------|------|
 | Source code chunk content (post-secret-scan) | `inkentry index` against a remote team `server_url` | Code exfiltration to that server |
 | User query text | `inkentry search` against a remote team `server_url` | Query logging by that server |
-| Code context + memory notes | `inkentry memory harvest`, via a remote team `server_url` and/or a server-side `--llm-url` LLM shim | Combined context exfiltration |
-| Memory note bodies | `inkentry memory harvest`, via a remote team `server_url` and/or a server-side `--llm-url` LLM shim | Decision/requirement exfiltration |
+| Code context + memory notes | `inkentry harvest`, via a remote team `server_url` and/or a server-side `--llm-url` LLM shim | Combined context exfiltration |
+| Memory note bodies | `inkentry harvest`, via a remote team `server_url` and/or a server-side `--llm-url` LLM shim | Decision/requirement exfiltration |
 
 **Mitigations (documentation, not code):**
 - Document the data-egress implications prominently in `docs/getting-started.md` and the `config.toml` comments

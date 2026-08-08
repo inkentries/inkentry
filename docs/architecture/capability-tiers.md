@@ -222,7 +222,7 @@ The `require_tier1` commands (`sync`, `plumbing push`, `plumbing pull`) point
 the user at `server_url`:
 
 ```
-Error: 'inkentry memory watch' requires inkentry-server.
+Error: 'inkentry sync' requires inkentry-server.
 Set server_url in ~/.config/inkentry/config.toml to enable this feature.
        (Tried: https://inkentry.internal.example.com — connection refused)
 ```
@@ -231,11 +231,11 @@ The `(Tried: ...)` line is appended only when a `server_url` is configured but
 unreachable. If `server_url` is not set at all it is omitted:
 
 ```
-Error: 'inkentry memory watch' requires inkentry-server.
+Error: 'inkentry sync' requires inkentry-server.
 Set server_url in ~/.config/inkentry/config.toml to enable this feature.
 ```
 
-The inference-only commands (`memory search`, `memory harvest`) point the user
+The inference-only commands (`memory search`, `harvest`) point the user
 at the local server instead, and also exit 1:
 
 ```

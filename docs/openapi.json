@@ -416,7 +416,7 @@
           "memory"
         ],
         "summary": "Batch-create memory entries. Idempotent on `external_id`: a live note\nalready carrying the given `external_id` is skipped, not duplicated.",
-        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry memory push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written.",
+        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written.",
         "operationId": "push_memory_batch",
         "parameters": [
           {
@@ -632,7 +632,7 @@
           "memory"
         ],
         "summary": "Return notes newer than a cursor, in one of two modes:",
-        "description": "- `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;\n  `CloudSyncClient::pull_since`/`inkentry sync` targets this). Returns\n  `{entries, count}`, entries ordered by arrival at this server.\n- `?t=<unix_secs>`: legacy timestamp mode (`inkentry memory since`\n  targets this). Returns a bare array, ordered `created_at ASC`.\n\n`since_id` takes precedence when both are supplied. Archived entries are\nexcluded in both modes.",
+        "description": "- `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;\n  `CloudSyncClient::pull_since`/`inkentry sync` targets this). Returns\n  `{entries, count}`, entries ordered by arrival at this server.\n- `?t=<unix_secs>`: legacy timestamp mode, retained for wire parity with\n  older clients that predate the `since_id` cursor. Returns a bare array,\n  ordered `created_at ASC`.\n\n`since_id` takes precedence when both are supplied. Archived entries are\nexcluded in both modes.",
         "operationId": "memory_since",
         "parameters": [
           {
