@@ -166,7 +166,7 @@ Emit memory entries from the local store.
 
 ```json
 {
-  "id": 7,
+  "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33",
   "kind": "decision",
   "title": "Use sqlite-vec for KNN",
   "body": "…",
@@ -176,8 +176,8 @@ Emit memory entries from the local store.
 }
 ```
 
-`--id` fetches a single entry by id. `--kind` filters by kind. Exit `1` if
-no entries match.
+`--id` fetches a single entry by its UUID. `--kind` filters by kind. Exit `1`
+if no entries match.
 
 ---
 
@@ -211,7 +211,7 @@ inkentry plumbing hash-file src/auth.rs \
 
 # Pull all decision-type memory entries
 inkentry plumbing read-memory --kind decision \
-  | jq -r '"#\(.id)  \(.title)"'
+  | jq -r '"\(.id)  \(.title)"'
 ```
 
 ---
