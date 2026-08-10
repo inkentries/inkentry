@@ -1301,6 +1301,35 @@ mod tests {
         );
     }
 
+    /// Uniqueness is unconditional, not the `WHERE sync_id IS NOT NULL`
+    /// partial index an additive nullable column needed. Two entries sharing
+    /// an identity would make `{note_id}` ambiguous on every route.
+    #[test]
+    fn two_entries_cannot_share_an_exported_identity() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+        let (_rowid, note_id) = db
+            .add_note(project.id, "note", "t", "b", &[], &[], None, None)
+            .expect("add note");
+
+        let err = db
+            .conn
+            .execute(
+                "INSERT INTO notes (project_id, kind, title, body, sync_id)
+                 VALUES (?1, 'note', 't2', 'b', ?2)",
+                rusqlite::params![project.id, note_id],
+            )
+            .expect_err("a duplicate identity must be refused");
+        assert!(
+            err.to_string().contains("UNIQUE"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// The exported identity cannot be null: a write path that skipped
     /// minting one would store a note the HTTP API has no way to name.
     #[test]
