@@ -75,9 +75,8 @@ fn default_since_limit() -> i64 {
     100
 }
 
-/// One entry in the `since_id`-cursor response of `/memory/since`. `id` is
-/// the note's server-minted `sync_id` (arrival-ordered), never its integer
-/// `id`, which has no meaning to a puller on a different machine.
+/// One entry in the `since_id`-cursor response of `/memory/since`. `id` is the
+/// note's identity, the same UUIDv7 every other route carries.
 #[derive(Serialize, ToSchema)]
 pub struct SinceIdEntry {
     pub id: String,
