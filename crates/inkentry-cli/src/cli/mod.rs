@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod cmd;
+mod removed;
 
 // Re-export top-level Args types so callers can use `crate::cli::XxxArgs`.
 // Sub-command Args types (Memory*Args, Plumbing*Args, etc.) are accessed via
@@ -91,4 +92,26 @@ pub enum Command {
     Org(OrgArgs),
     /// Manage per-server bearer credentials (`set-key`, `list-servers`)
     Auth(AuthArgs),
+}
+
+impl Cli {
+    /// Parse argv, substituting a migration hint for clap's error when the
+    /// invocation names a surface this release removed (ADR-082). Diverges on
+    /// any parse failure, exactly as `Cli::parse` does, so `--help` and
+    /// `--version` keep clap's own exit path.
+    pub fn parse_or_exit() -> Self {
+        match Self::try_parse() {
+            Ok(cli) => cli,
+            Err(err) => {
+                let argv: Vec<String> = std::env::args().collect();
+                match removed::hint(&argv) {
+                    Some(msg) => {
+                        eprintln!("{msg}");
+                        std::process::exit(2);
+                    }
+                    None => err.exit(),
+                }
+            }
+        }
+    }
 }

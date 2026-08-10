@@ -98,17 +98,37 @@ pub(crate) fn fuse(code: Vec<SearchResult>, memory: Vec<Note>, limit: usize) -> 
 /// `code`, `from_graph` already set by the caller, and every fusion-metadata
 /// field `null`.
 pub(crate) fn graph_appendix(neighbours: Vec<SearchResult>) -> Vec<UnifiedResult> {
-    neighbours
-        .into_iter()
-        .map(|r| UnifiedResult {
-            kind: "code",
-            fused_rank: None,
-            fused_score: None,
-            corpus_rank: None,
-            code: Some(r),
-            memory: None,
-        })
-        .collect()
+    neighbours.into_iter().map(unranked_code).collect()
+}
+
+/// The memory side of the same rule: `--expand-graph` neighbours and
+/// cross-project entries were reached from a hit or picked by tag, never ranked
+/// against the query, so they get null fusion metadata rather than a
+/// `corpus_rank` that would let them displace a ranked result.
+pub(crate) fn memory_appendix(attachments: Vec<Note>) -> Vec<UnifiedResult> {
+    attachments.into_iter().map(unranked_memory).collect()
+}
+
+fn unranked_code(r: SearchResult) -> UnifiedResult {
+    UnifiedResult {
+        kind: "code",
+        fused_rank: None,
+        fused_score: None,
+        corpus_rank: None,
+        code: Some(r),
+        memory: None,
+    }
+}
+
+fn unranked_memory(n: Note) -> UnifiedResult {
+    UnifiedResult {
+        kind: "memory",
+        fused_rank: None,
+        fused_score: None,
+        corpus_rank: None,
+        code: None,
+        memory: Some(n),
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +278,19 @@ mod tests {
             let ty = v.get("type").unwrap().as_str().unwrap();
             assert_eq!(has_code, ty == "code");
         }
+    }
+
+    // A memory attachment must carry the same null fusion metadata as a code
+    // graph neighbour: no corpus_rank, so it cannot displace a ranked result.
+    #[test]
+    fn memory_appendix_members_are_unranked_memory() {
+        let out = memory_appendix(vec![note(7, 1.0)]);
+        let v = serde_json::to_value(&out[0]).unwrap();
+        assert_eq!(v.get("type").unwrap(), "memory");
+        assert!(v.get("fused_rank").unwrap().is_null());
+        assert!(v.get("fused_score").unwrap().is_null());
+        assert!(v.get("corpus_rank").unwrap().is_null());
+        assert!(v.get("memory").is_some());
     }
 
     // Graph-appendix members append after the ranked list with null fusion

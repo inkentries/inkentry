@@ -480,7 +480,7 @@ async fn print_tier_section(
             if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");
             }
-            println!("  search          ast-grep + text{server_hint}");
+            println!("  search          text{server_hint}");
             println!("  memory          {mem_label}");
         }
         Tier::Server {
@@ -500,9 +500,9 @@ async fn print_tier_section(
                 println!("{line}");
             }
             let search_label = if caps.search_semantic {
-                "ast-grep + text + semantic"
+                "text + semantic"
             } else {
-                "ast-grep + text"
+                "text"
             };
             println!("  search          {search_label}");
             // Embedder readiness: explain *why* semantic search isn't in the

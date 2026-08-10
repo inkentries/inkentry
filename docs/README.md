@@ -91,7 +91,7 @@ the hosted spelunk.cloud service is the managed alternative.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|
-| Built-in (zero infra) | git-notes memory, full-text and ast-grep search, code graph | local `memory.db` |
+| Built-in (zero infra) | git-notes memory, full-text search, code graph | local `memory.db` |
 | Local semantic server (auto-started on loopback) | faster semantic search, summaries | still local `memory.db`: inference only, never a memory store |
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 

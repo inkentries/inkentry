@@ -506,7 +506,7 @@ async fn test_status_shows_offline_tier() {
         .success()
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Offline"))
-        .stdout(predicate::str::contains("ast-grep + text"))
+        .stdout(predicate::str::contains("search          text"))
         // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
         // default), not a tier-derived git-notes label.
         .stdout(predicate::str::contains("sqlite (local)"))
@@ -917,7 +917,7 @@ async fn test_index_prints_note_when_no_server_configured() {
         // Structural summaries are offline and always run, so there is no
         // "skipping summaries" notice any more. Offline, the actionable note is
         // that semantic search needs a local server; the index still succeeds
-        // (chunks are stored for text/ast-grep search).
+        // (chunks are stored for full-text search).
         .stderr(predicate::str::contains("inkentry server start"));
 }
 

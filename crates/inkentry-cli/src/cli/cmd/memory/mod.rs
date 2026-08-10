@@ -320,7 +320,7 @@ mod supersede;
 pub mod sync;
 mod timeline;
 
-pub(crate) use corpus::memory_corpus_search;
+pub(crate) use corpus::{MemoryCorpus, memory_corpus_search};
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;

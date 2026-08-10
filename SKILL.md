@@ -9,28 +9,33 @@ code and prior decisions, then reason over the results yourself.
 
 - `inkentry` (and `inkentry-server`) in PATH
 
-Core features (memory, full-text and ast-grep search, code graph, conventions) work without any inference server.
+Core features (memory, full-text search, code graph, conventions) work without any inference server.
 
-**Semantic search and AI features** go through `inkentry-server`, which is autostarted locally on demand from v0.8.0. It bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); the embedding model and its compute path are both pinned product-wide, with no external embedding endpoint or config option. Manage it with `inkentry server start|stop|status|logs`. Commands that need the server are marked **(requires server)** below; with `INKENTRY_NO_SERVER=1` they fall back to text/ast-grep search or error clearly.
+**Semantic search and AI features** go through `inkentry-server`, which is autostarted locally on demand from v0.8.0. It bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); the embedding model and its compute path are both pinned product-wide, with no external embedding endpoint or config option. Manage it with `inkentry server start|stop|status|logs`. Commands that need the server are marked **(requires server)** below; with `INKENTRY_NO_SERVER=1` they fall back to full-text search or error clearly.
 
 ---
 
 ## Code search
 
+One `search` command over both corpora — code chunks and memory entries interleaved into a single ranked list. There is no mode to choose; inkentry uses the best ranking available.
+
 ```bash
-# Full-text search — no server needed
-inkentry search "<query>" --mode text
-
-# Call/import graph — no server needed
-inkentry graph <symbol-or-file>
-inkentry graph <symbol> --kind calls       # calls | imports | extends | implements
-inkentry graph <file> --format text|json|jsonl
-
-# Semantic search — (requires server + index)
+# Unified search — semantic/hybrid ranking (requires server); full-text otherwise
 inkentry search "<query>"
 inkentry search "<query>" --limit 20
-inkentry search "<query>" --graph          # include call-graph neighbours
 inkentry search "<query>" --format text|json|jsonl
+
+# Full-text only — no embedding, no server needed
+inkentry search "<query>" --only-text
+
+# Corpus filters — mutually exclusive with each other; both compose with --only-text
+inkentry search "<query>" --only-code      # code chunks only
+inkentry search "<query>" --only-memory    # memory entries only
+
+# Call/import graph
+inkentry search "<symbol>" --graph                  # the symbol's chunk + its 1-hop neighbours
+inkentry plumbing graph-edges --symbol <symbol>     # exact edges as JSONL
+inkentry plumbing graph-edges --file <file-path>
 
 # Status
 inkentry status --format text|json|jsonl
@@ -40,14 +45,18 @@ inkentry chunks <file-path>
 inkentry chunks <file-path> --format text|json|jsonl
 ```
 
-Use `search --mode text` for targeted lookups without a server. Use semantic `search` (with server) for concept-level queries. When the answer requires tracing across multiple files, run the multi-hop loop yourself — see "Exploring: multi-hop retrieval" below.
+`search` requires an index: an uninitialised directory funnels you to `inkentry init`. Full-text results are available as soon as `init` has parsed the tree, while semantic ranking builds in the background.
+
+Use `--only-text` for targeted lookups without a server. Use plain `search` for concept-level queries. When the answer requires tracing across multiple files, run the multi-hop loop yourself — see "Exploring: multi-hop retrieval" below.
+
+With `--format json`/`jsonl`, each result is a nested envelope naming the corpus it came from — `{type, fused_rank, fused_score, corpus_rank, code|memory: {…}}` — not a flat array of results. `--graph` neighbours are appended after the ranked members with the fusion fields `null`.
 
 ### Exploring: multi-hop retrieval (you run the loop)
 
 There is no `inkentry explore` command — inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives inkentry already gives you. Your model is better than any we would embed, and nothing leaves the machine.
 
-1. **Search** for the concept: `inkentry search "<question or key terms>"` (add `--graph` to pull in call-graph neighbours; `--mode text` for a no-server full-text pass). Read the top results.
-2. **Trace** structure from a symbol the results surfaced: `inkentry graph <symbol> --kind calls|imports|extends|implements`. This tells you callers/callees to follow.
+1. **Search** for the concept: `inkentry search "<question or key terms>"` (add `--graph` to pull in call-graph neighbours; `--only-text` for a no-server full-text pass). Results interleave code chunks and memory entries, so a prior decision on the topic surfaces alongside the code. Read the top results.
+2. **Trace** structure from a symbol the results surfaced: `inkentry plumbing graph-edges --symbol <symbol>` (or `--file <path>`) emits the call, import, and extends/implements edges as JSONL. This tells you callers/callees to follow.
 3. **Read** the exact code:
    - a specific indexed chunk: `inkentry chunks <file>` (add `--format jsonl` for machine-readable output);
    - lines outside a chunk: open the file with your own file-read tool (you are in the repo).
@@ -62,7 +71,7 @@ Safety note (was enforced by the old command, now your responsibility): only rea
 
 Indexing parses and chunks the source tree (no server needed) and embeds chunks
 for semantic search (the embed phase uses the server). Skip embeddings if you
-only need full-text/ast-grep search, memory, or the code graph.
+only need full-text search, memory, or the code graph.
 
 ```bash
 inkentry index <path>           # index (subsequent runs are incremental, blake3-gated)
@@ -160,9 +169,15 @@ GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 
 ### Query
 
+Stored entries are searched through the unified `search` command: a plain
+`inkentry search "<q>"` returns them interleaved with code, and `--only-memory`
+restricts the search to the memory corpus.
+
 ```bash
-inkentry memory search "<question>"        # semantic search over stored entries
-inkentry memory search "<q>" --expand-graph  # also include 1-hop relates_to neighbours
+inkentry search "<question>" --only-memory              # memory corpus only
+inkentry search "<q>" --only-memory --expand-graph      # also include 1-hop relates_to neighbours
+inkentry search "<q>" --only-memory --as-of 2026-01-01  # point-in-time view
+inkentry search "<q>" --only-memory --format json
 inkentry memory list                       # recent entries
 inkentry memory list --kind decision       # filter by kind
 inkentry memory list --kind decision --limit 10
@@ -170,7 +185,6 @@ inkentry memory list --as-of 2026-01-01   # point-in-time snapshot
 inkentry memory show <id>                  # full entry + relationships
 inkentry memory graph <id>                 # relationship graph for an entry
 inkentry memory timeline "<topic>"         # topic evolution across all entries (ASC time)
-inkentry memory search "<q>" --format json
 inkentry memory failures                   # list all antipatterns (shortcut for list --kind antipattern)
 inkentry memory failures --limit 30
 ```
@@ -214,7 +228,7 @@ inkentry unlink <path>
 ## Git worktrees
 
 Read/query commands (`context`, `search`, `memory list`,
-`memory search`, `graph`, `status`) run from a linked worktree resolve to the
+`memory show`, `plumbing graph-edges`, `status`) run from a linked worktree resolve to the
 main worktree's shared index automatically, with no setup step. Nothing is
 written into the worktree:
 
@@ -247,8 +261,8 @@ Set `AGENT=true` for clean machine-readable output on all commands:
 
 ```bash
 AGENT=true inkentry search "authentication flow"
-AGENT=true inkentry memory search "storage decisions"
-AGENT=true inkentry graph src/storage/db.rs
+AGENT=true inkentry search "storage decisions" --only-memory
+AGENT=true inkentry plumbing graph-edges --file src/storage/db.rs
 ```
 
 ---
@@ -270,11 +284,11 @@ inkentry index .
 `inkentry context` replaces the multi-command sequence. It retrieves handoffs, open questions, decisions, and requirements in one call. The default output is compact; pass `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens.
 
 **Understanding code:**
-1. `AGENT=true inkentry search "<topic>" --mode text` — full-text search, no server needed
-2. `AGENT=true inkentry search "<topic>"` — semantic search (requires server + index)
+1. `AGENT=true inkentry search "<topic>"` — code and memory in one ranked list (semantic ranking requires server + index)
+2. `AGENT=true inkentry search "<topic>" --only-text` — full-text only, no server needed
 3. Read reported file/line ranges
-4. `AGENT=true inkentry graph <symbol>` — trace call chains
-5. `AGENT=true inkentry memory search "<topic>"` — check recorded context for *why*
+4. `AGENT=true inkentry plumbing graph-edges --symbol <symbol>` — trace call chains
+5. `AGENT=true inkentry search "<topic>" --only-memory` — check recorded context for *why*
 
 **Making changes:**
 1. Search and read before changing
@@ -299,8 +313,8 @@ inkentry index .   # only if project is indexed
 
 ## Tips
 
-- Memory and code graph commands work from any subdirectory — no server or index needed.
+- Memory commands work from any subdirectory — no server or index needed.
 - All indexed-project commands can be run from any subdirectory — the index is found automatically.
-- `inkentry search --mode text` and `--mode ast-grep` are always available. Semantic `inkentry search` (the `auto` default when an index + server exist) requires the server and a built index. In `ast-grep` mode (and the `auto` fallback with no index) a plain-string query is a case-insensitive substring match (so `Billing` finds `BillingEntity`); a query with a metavariable (`$X`, `$$$ARGS`) matches structurally.
+- `inkentry search --only-text` needs no server: it runs BM25 over the full-text index, scoring the query's words as independent terms (any order, case-insensitive, not stemmed). The default ranking adds semantic/hybrid retrieval and requires the server plus embedded chunks. Both read the index built by `inkentry init`; there is no working-tree scan.
 - `inkentry harvest` and LLM summaries require a server with an LLM backend configured.
 - After changing the embedding model, run `inkentry index <path> --force` to rebuild the index.

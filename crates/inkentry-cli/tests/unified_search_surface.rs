@@ -1,9 +1,10 @@
 // Unified `search` surface + behaviour (ADR-081 rank fusion, ADR-082 surface
-// collapse): the removed surfaces are bare clap errors, the corpus filters are
-// mutually constrained, results come back as the nested code/memory envelope
-// interleaved in fused order, the second query embed is elided when a filter
-// makes it redundant, --budget packs the fused typed list, and the memory-only
-// modifiers (--as-of, --expand-graph) plus --graph enrichment carry over.
+// collapse): the removed surfaces exit 2 naming their replacement, the corpus
+// filters are mutually constrained, results come back as the nested code/memory
+// envelope interleaved in fused order, the second query embed is elided when a
+// filter makes it redundant, --budget packs the fused typed list, and the
+// memory-only modifiers (--as-of, --expand-graph) plus --graph enrichment carry
+// over.
 
 mod plumbing_helpers;
 
@@ -15,9 +16,9 @@ use wiremock::MockServer;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
-// ── removed surfaces are bare clap errors (ADR-082, no stubs) ──────────────────
+// ── removed surfaces: no stub, but the error names the replacement ─────────────
 
-fn assert_clap_error(args: &[&str], needle: &str) {
+fn assert_usage_error(args: &[&str], needles: &[&str]) {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     let out = inkentry_bin_in(home.path())
@@ -29,7 +30,7 @@ fn assert_clap_error(args: &[&str], needle: &str) {
     assert_eq!(
         out.status.code(),
         Some(2),
-        "`inkentry {}` must be a clap usage error (exit 2); stderr={:?}",
+        "`inkentry {}` must be a usage error (exit 2); stderr={:?}",
         args.join(" "),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -39,35 +40,75 @@ fn assert_clap_error(args: &[&str], needle: &str) {
         String::from_utf8_lossy(&out.stdout)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
+    for needle in needles {
+        assert!(
+            stderr.contains(needle),
+            "expected error containing {needle:?}; stderr={stderr:?}"
+        );
+    }
+}
+
+#[test]
+fn removed_search_mode_flag_names_the_corpus_filters() {
+    for value in ["text", "ast-grep", "semantic"] {
+        assert_usage_error(
+            &["search", "anything", "--mode", value],
+            &["--mode", "--only-text"],
+        );
+    }
+}
+
+#[test]
+fn removed_top_level_graph_names_the_graph_replacements() {
+    assert_usage_error(
+        &["graph", "some_symbol"],
+        &["--graph", "plumbing graph-edges"],
+    );
+}
+
+// The replacement has to be named because clap's own did-you-mean points at
+// `memory archive`, one edit away and completely unrelated.
+#[test]
+fn removed_memory_search_names_only_memory_and_not_archive() {
+    assert_usage_error(&["memory", "search", "anything"], &["--only-memory"]);
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args(["memory", "search", "anything"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains(needle),
-        "expected clap error containing {needle:?}; stderr={stderr:?}"
+        !stderr.contains("archive"),
+        "must not misdirect to `memory archive`; stderr={stderr:?}"
+    );
+}
+
+// `memory graph` survives the removal of the top-level `graph` porcelain, so it
+// must not be swept up by the migration hint.
+#[test]
+fn memory_graph_still_runs() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args(["memory", "graph", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "`memory graph --help` must still work"
     );
 }
 
 #[test]
-fn removed_search_mode_flag_is_a_clap_error() {
-    // Any --mode value: the flag no longer exists, so clap rejects the argument.
-    assert_clap_error(&["search", "anything", "--mode", "text"], "--mode");
-    assert_clap_error(&["search", "anything", "--mode", "ast-grep"], "--mode");
-    assert_clap_error(&["search", "anything", "--mode", "semantic"], "--mode");
-}
-
-#[test]
-fn removed_top_level_graph_is_a_clap_error() {
-    assert_clap_error(&["graph", "some_symbol"], "unrecognized subcommand");
-}
-
-#[test]
-fn removed_memory_search_is_a_clap_error() {
-    assert_clap_error(&["memory", "search", "anything"], "unrecognized subcommand");
-}
-
-#[test]
 fn only_code_and_only_memory_are_mutually_exclusive() {
-    assert_clap_error(
+    assert_usage_error(
         &["search", "anything", "--only-code", "--only-memory"],
-        "cannot be used with",
+        &["cannot be used with"],
     );
 }
 
@@ -169,6 +210,131 @@ fn only_text_interleaves_code_and_memory_in_fused_order() {
     assert_eq!(code["code"]["file_path"], "auth.rs");
     let mem = results.iter().find(|r| r["type"] == "memory").unwrap();
     assert_eq!(mem["memory"]["title"], "Authentication decision");
+}
+
+// A corpus pair deep enough for the fused order to distinguish ordering rules:
+// three code chunks and three memory entries all matching "reticulation". The
+// memory bodies repeat the term and the code chunks mention it once, so the two
+// corpora's raw relevance magnitudes are separated and ordered memory-first —
+// the opposite of the rank-fused order, which leads with code.
+fn project_with_three_of_each(home: &Path, proj: &Path) {
+    for i in 1..=3 {
+        std::fs::write(
+            proj.join(format!("mod{i}.rs")),
+            format!("pub fn stage{i}() {{\n    // reticulation step {i}\n    let _ = {i};\n}}\n"),
+        )
+        .unwrap();
+    }
+    inkentry_bin_in(home)
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj)
+        .args(["index", "."])
+        .assert()
+        .success();
+    for i in 1..=3 {
+        inkentry_bin_in(home)
+            .env("INKENTRY_NO_SERVER", "1")
+            .current_dir(proj)
+            .args([
+                "memory",
+                "add",
+                "--kind",
+                "decision",
+                "--title",
+                &format!("Reticulation decision {i}"),
+                "--body",
+                "reticulation reticulation reticulation reticulation reticulation",
+            ])
+            .assert()
+            .success();
+    }
+}
+
+// The load-bearing ranking property, asserted end to end: the fused order is
+// the two corpora's *rank positions* interleaved, never their raw relevance
+// magnitudes merged. Swapping `fuse`'s rank sort for a cross-corpus distance
+// sort groups each corpus together instead — corpus_rank comes back as
+// 1,2,3,1,2,3 rather than 1,1,2,2,3,3 — so this fails on the whole shape, not
+// on one position that could coincide.
+#[test]
+fn fused_order_interleaves_rank_positions_not_raw_distances() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    project_with_three_of_each(home.path(), proj.path());
+
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args([
+            "search",
+            "reticulation",
+            "--only-text",
+            "--limit",
+            "6",
+            "--format",
+            "json",
+            "--no-stale-check",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let results: Vec<serde_json::Value> =
+        serde_json::from_slice(&out).expect("stdout must be a JSON array");
+    let shape: Vec<(String, u64)> = results
+        .iter()
+        .map(|r| {
+            (
+                r["type"].as_str().unwrap().to_string(),
+                r["corpus_rank"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+
+    let expected: Vec<(String, u64)> = [
+        ("code", 1),
+        ("memory", 1),
+        ("code", 2),
+        ("memory", 2),
+        ("code", 3),
+        ("memory", 3),
+    ]
+    .iter()
+    .map(|(t, r)| (t.to_string(), *r))
+    .collect();
+    assert_eq!(
+        shape,
+        expected,
+        "fused order must pair the corpora rank-for-rank, code first at each \
+         rank; got {shape:?} from {}",
+        String::from_utf8_lossy(&out)
+    );
+
+    // Guard the guard: the interleave above only rules out a magnitude sort
+    // while the two corpora's raw distances stay in separate bands, because a
+    // sort on them then groups each corpus instead of pairing them. If a scale
+    // change ever overlaps the bands, this fires and the test needs a new
+    // fixture rather than quietly ceasing to test anything.
+    let band = |kind: &str, key: &str| -> (f64, f64) {
+        let v: Vec<f64> = results
+            .iter()
+            .filter(|r| r["type"] == kind)
+            .map(|r| r[key]["distance"].as_f64().unwrap())
+            .collect();
+        (
+            v.iter().cloned().fold(f64::INFINITY, f64::min),
+            v.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    let (code_lo, code_hi) = band("code", "code");
+    let (mem_lo, mem_hi) = band("memory", "memory");
+    assert!(
+        code_hi < mem_lo || mem_hi < code_lo,
+        "fixture no longer separates the corpora's raw distances, so a distance \
+         sort would not group: code={code_lo}..{code_hi} memory={mem_lo}..{mem_hi}"
+    );
 }
 
 #[test]
@@ -679,4 +845,39 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
         expanded.contains("Beta unrelated sidenote"),
         "--expand-graph surfaces the related note: {expanded}"
     );
+
+    // B was reached from A, not ranked against the query, so it is an
+    // attachment: null fusion metadata, exactly like a --graph code neighbour.
+    // With a corpus_rank it would take a ranked position and displace a
+    // genuinely matched result (ADR-081).
+    let json = search_memory_stdout(
+        home.path(),
+        proj.path(),
+        &["frobnicator", "--expand-graph", "--format", "json"],
+    );
+    let results: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    let a = results
+        .iter()
+        .find(|r| r["memory"]["title"] == "Alpha about frobnicators")
+        .unwrap();
+    let b = results
+        .iter()
+        .find(|r| r["memory"]["title"] == "Beta unrelated sidenote")
+        .unwrap();
+    assert_eq!(a["corpus_rank"], 1, "the matched note is ranked: {a}");
+    assert!(
+        b["fused_rank"].is_null() && b["fused_score"].is_null() && b["corpus_rank"].is_null(),
+        "an expand-graph neighbour must carry no fusion metadata: {b}"
+    );
+    let ranked_last = results
+        .iter()
+        .position(|r| r["fused_rank"].is_number())
+        .zip(results.iter().rposition(|r| r["fused_rank"].is_number()));
+    let attached_first = results.iter().position(|r| r["fused_rank"].is_null());
+    if let (Some((_, last)), Some(first)) = (ranked_last, attached_first) {
+        assert!(
+            last < first,
+            "attachments follow every ranked member: {json}"
+        );
+    }
 }

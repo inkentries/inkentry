@@ -207,7 +207,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         vec![]
     };
 
-    let memory_list = if want_memory {
+    let memory = if want_memory {
         super::memory::memory_corpus_search(
             &cfg,
             &db_path,
@@ -221,7 +221,10 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         )
         .await?
     } else {
-        vec![]
+        super::memory::MemoryCorpus {
+            ranked: vec![],
+            attachments: vec![],
+        }
     };
 
     // ── Cross-corpus rank fusion (ADR-081) ────────────────────────────────────
@@ -230,10 +233,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     } else {
         args.limit
     };
-    let fused = fusion::fuse(code_list, memory_list, fuse_cap);
+    let fused = fusion::fuse(code_list, memory.ranked, fuse_cap);
 
-    // ── --graph enrichment: append 1-hop neighbours of the fused code members ──
-    // Code-graph enrichment only applies when the code corpus is in scope.
+    // ── Unranked appendix: attachments, never fusion members ──────────────────
+    // Memory attachments (relates-to neighbours, cross-project entries) join the
+    // `--graph` code neighbours here rather than in `fuse`, so neither corpus
+    // can put an unranked item in a ranked position (ADR-081).
     let mut appendix: Vec<UnifiedResult> = vec![];
     if args.graph
         && want_code
@@ -267,6 +272,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             }
         }
     }
+
+    // Bounded like the code appendix is by --graph-limit: a store with hundreds
+    // of locked cross-project entries must not swamp the ranked list it follows.
+    let mut mem_attachments = memory.attachments;
+    mem_attachments.truncate(args.limit);
+    appendix.extend(fusion::memory_appendix(mem_attachments));
 
     if fused.is_empty() && appendix.is_empty() {
         return print_empty(
@@ -400,8 +411,13 @@ fn print_unified_text(results: &[UnifiedResult]) {
                 .as_deref()
                 .map(|p| format!("  \x1b[36m[from: {p}]\x1b[0m"))
                 .unwrap_or_default();
+            let label = if u.fused_rank.is_none() {
+                "memory · attached"
+            } else {
+                "memory"
+            };
             cprintln!(
-                "\x1b[2m[memory]\x1b[0m \x1b[33m[{}]\x1b[0m #{}  \x1b[1m{}\x1b[0m{source}",
+                "\x1b[2m[{label}]\x1b[0m \x1b[33m[{}]\x1b[0m #{}  \x1b[1m{}\x1b[0m{source}",
                 m.kind,
                 m.id,
                 m.title,
