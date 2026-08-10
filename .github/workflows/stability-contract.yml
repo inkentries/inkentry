@@ -13,8 +13,9 @@ name: Stability contract
 on:
   push:
     branches: ["main"]
+  # No base-branch filter, so a PR stacked on another PR's branch is held to
+  # the contract too. See the longer note in ci.yml.
   pull_request:
-    branches: ["main"]
 
 permissions: {}
 

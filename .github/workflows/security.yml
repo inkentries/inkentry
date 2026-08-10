@@ -3,8 +3,9 @@ name: Security
 on:
   push:
     branches: [main]
+  # No base-branch filter, so a PR stacked on another PR's branch is audited
+  # too. See the longer note in ci.yml.
   pull_request:
-    branches: [main]
   schedule:
     # Run weekly on Monday at 08:00 UTC to catch newly-disclosed advisories.
     - cron: "0 8 * * 1"

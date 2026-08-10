@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: ["main"]
+  # No base-branch filter. A pull request stacked on another PR's branch has a
+  # base that is not `main`, and a `branches:` filter here would give it no CI
+  # at all — the dangerous shape, since the PR still looks mergeable. The
+  # `push` trigger above stays pinned to `main`: it guards the merged trunk,
+  # and broadening it would run the whole suite on every branch push.
   pull_request:
-    branches: ["main"]
 
 # Deny by default; every job below grants only what it needs. None of these
 # jobs push commits, comment on PRs, or create releases, so `contents: read`
