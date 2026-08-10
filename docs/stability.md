@@ -266,6 +266,7 @@ recorded memory. The promise is *not* that the SQL schema stays fixed.
 | `~/.config/inkentry/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
 | git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
+| [portable dump](dump-format.md) | `format_version` in the header record | **Stable**. Version 1 stays readable for the life of the major version; change within a version is additive only, and anything a version 1 reader could not handle is a version bump. A dump is refused whole rather than partially read, so an unreadable one never turns into a partial import. |
 
 Migrations are **forward-only**. Downgrading inkentry after an upgrade has
 migrated a store is not supported.
