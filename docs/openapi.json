@@ -816,11 +816,10 @@
           {
             "name": "note_id",
             "in": "path",
-            "description": "Note ID",
+            "description": "Note identity (UUIDv7)",
             "required": true,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           }
         ],
@@ -881,11 +880,10 @@
           {
             "name": "note_id",
             "in": "path",
-            "description": "Note ID",
+            "description": "Note identity (UUIDv7)",
             "required": true,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           }
         ],
@@ -948,11 +946,10 @@
           {
             "name": "note_id",
             "in": "path",
-            "description": "Note ID",
+            "description": "Note identity (UUIDv7)",
             "required": true,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           }
         ],
@@ -1015,11 +1012,10 @@
           {
             "name": "note_id",
             "in": "path",
-            "description": "Note ID to supersede",
+            "description": "Identity of the note to supersede (UUIDv7)",
             "required": true,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           }
         ],
@@ -1269,9 +1265,8 @@
             "description": "Conflicting entries (only present on 409)."
           },
           "id": {
-            "type": "integer",
-            "format": "int64",
-            "description": "ID of the created note."
+            "type": "string",
+            "description": "Identity of the created note: a UUIDv7 minted by this server."
           },
           "stored": {
             "type": "boolean",
@@ -1295,7 +1290,7 @@
               "string",
               "null"
             ],
-            "description": "The note's `sync_id` (the same id `GET /memory/since` returns and\ncursors on, never the raw row id). Present for `\"created\"` and also\nfor a `\"skipped\"` dedupe-hit (the already-existing id), so a caller\nthat lost track of an earlier create can still recover the id from a\nplain re-push, and a caller that stamps this as its pull cursor gets\nan id that actually orders against `/memory/since`."
+            "description": "The note's identity, the same UUIDv7 every other route carries.\nPresent for `\"created\"` and also for a `\"skipped\"` dedupe-hit (the\nalready-existing id), so a caller that lost track of an earlier create\ncan still recover the id from a plain re-push."
           },
           "status": {
             "type": "string",
@@ -1463,8 +1458,7 @@
         ],
         "properties": {
           "id": {
-            "type": "integer",
-            "format": "int64"
+            "type": "string"
           },
           "similarity": {
             "type": "number",
@@ -1904,8 +1898,8 @@
             "description": "Cosine distance from query (only present in search results)."
           },
           "id": {
-            "type": "integer",
-            "format": "int64"
+            "type": "string",
+            "description": "The entry's identity: a UUIDv7 minted by this server."
           },
           "kind": {
             "type": "string",
@@ -1930,10 +1924,10 @@
           },
           "superseded_by": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64"
+            "description": "Identity of the entry that superseded this one, or absent."
           },
           "tags": {
             "type": "array",
@@ -1948,7 +1942,7 @@
       },
       "SinceIdEntry": {
         "type": "object",
-        "description": "One entry in the `since_id`-cursor response of `/memory/since`. `id` is\nthe note's server-minted `sync_id` (arrival-ordered), never its integer\n`id`, which has no meaning to a puller on a different machine.",
+        "description": "One entry in the `since_id`-cursor response of `/memory/since`. `id` is the\nnote's identity, the same UUIDv7 every other route carries.",
         "required": [
           "id",
           "kind",
@@ -2048,9 +2042,8 @@
         ],
         "properties": {
           "new_id": {
-            "type": "integer",
-            "format": "int64",
-            "description": "ID of the new note that replaces the superseded one."
+            "type": "string",
+            "description": "Identity of the new note that replaces the superseded one."
           }
         }
       }

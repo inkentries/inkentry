@@ -50,12 +50,10 @@ pub struct BatchItemResult {
     /// `"created"` or `"skipped"` (idempotent re-push).
     pub status: &'static str,
     pub external_id: String,
-    /// The note's `sync_id` (the same id `GET /memory/since` returns and
-    /// cursors on, never the raw row id). Present for `"created"` and also
-    /// for a `"skipped"` dedupe-hit (the already-existing id), so a caller
-    /// that lost track of an earlier create can still recover the id from a
-    /// plain re-push, and a caller that stamps this as its pull cursor gets
-    /// an id that actually orders against `/memory/since`.
+    /// The note's identity, the same UUIDv7 every other route carries.
+    /// Present for `"created"` and also for a `"skipped"` dedupe-hit (the
+    /// already-existing id), so a caller that lost track of an earlier create
+    /// can still recover the id from a plain re-push.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
@@ -168,18 +166,16 @@ pub async fn push_memory_batch(
     let mut skipped = 0u32;
 
     for entry in &body.entries {
-        if let Some(existing_sync_id) = existing.get(&entry.external_id) {
+        if let Some(existing_id) = existing.get(&entry.external_id) {
             // Carry the already-assigned id even on a dedupe-skip: a caller
             // that lost track of a prior "created" ack (e.g. a local write
             // failure between receiving the ack and stamping it) must be able
             // to recover the id from a plain re-push, not just the original
-            // create. This must be `sync_id`, the same id `/memory/since`
-            // returns: a caller that stamps this onto its own pull cursor
-            // needs an id that actually orders against that endpoint's rows.
+            // create.
             results.push(BatchItemResult {
                 status: "skipped",
                 external_id: entry.external_id.clone(),
-                id: Some(existing_sync_id.clone()),
+                id: Some(existing_id.clone()),
             });
             skipped += 1;
             continue;
@@ -218,7 +214,7 @@ pub async fn push_memory_batch(
             .map(|sha| vec![format!("git:{sha}")])
             .unwrap_or_default();
 
-        let (_note_id, sync_id) = db.add_note(
+        let (_rowid, note_id) = db.add_note(
             project.id,
             &entry.kind,
             &entry.title,
@@ -231,11 +227,11 @@ pub async fn push_memory_batch(
         // Record it immediately so a later entry in this same batch sharing
         // the external_id is skipped instead of re-inserted (see the `mut`
         // comment on `existing` above).
-        existing.insert(entry.external_id.clone(), sync_id.clone());
+        existing.insert(entry.external_id.clone(), note_id.clone());
         results.push(BatchItemResult {
             status: "created",
             external_id: entry.external_id.clone(),
-            id: Some(sync_id),
+            id: Some(note_id),
         });
         created += 1;
     }

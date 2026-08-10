@@ -164,12 +164,17 @@ impl MemoryBackend for CloudApiMemoryBackend {
     /// `external_id` is minted on every add, not only when a supersede is
     /// anticipated: it is the sole key the batch edge route accepts, and it
     /// cannot be assigned retroactively.
+    ///
+    /// v7, not v4: every identifier this product mints is time-ordered
+    /// (ADR-078), and the hosted API's own schema states the same intent for
+    /// this field. Minting from the wall clock is right here — the entry is
+    /// created at the moment of the push.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
         let body = CreateEntryBody {
             kind: input.kind,
             title: input.title,
             body: Some(input.body),
-            external_id: uuid::Uuid::new_v4().to_string(),
+            external_id: uuid::Uuid::now_v7().to_string(),
             source_commit: input.source_ref,
         };
         let resp = self

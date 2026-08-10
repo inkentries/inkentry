@@ -205,15 +205,12 @@ async fn delete_memory_batch_is_not_500() {
 // Regression guard for the routing invariant this story's fix depends
 // on: the pre-existing `{note_id}` GET/DELETE/archive/supersede routes
 // must still resolve correctly now that `/memory/batch` is a literal
-// sibling registered in the same router.
+// sibling registered in the same router. Both now speak the same
+// identity, so the batch route's id is directly usable against them.
 #[tokio::test]
 async fn note_id_routes_still_work_alongside_batch_route() {
     let (app, dim) = make_app(0.92);
 
-    // The batch route itself: prove it works in the same router as the
-    // numeric note-id routes below (the routing invariant this test
-    // guards). Its returned id is now a `sync_id` (not the row id), so
-    // it is not usable against the numeric route below by design.
     let (batch_status, batch_body) = post_batch(
         app.clone(),
         "sibling-proj",
@@ -226,11 +223,10 @@ async fn note_id_routes_still_work_alongside_batch_route() {
         "seed: {batch_body}"
     );
 
-    // A real numeric row id, minted via the single-note POST route.
     let embedding = vec![1.0; dim as usize];
     let (note_status, note_body) = post_note(app.clone(), "sibling-proj", "B", embedding).await;
     assert_eq!(note_status, http::StatusCode::CREATED, "seed: {note_body}");
-    let id = note_body["id"].as_i64().expect("created id");
+    let id = note_body["id"].as_str().expect("created id");
 
     let req = Request::builder()
         .method("GET")
@@ -241,6 +237,6 @@ async fn note_id_routes_still_work_alongside_batch_route() {
     assert_eq!(
         resp.status(),
         http::StatusCode::OK,
-        "GET /memory/{{note_id}} must still resolve for a real numeric id"
+        "GET /memory/{{note_id}} must still resolve for a real note identity"
     );
 }

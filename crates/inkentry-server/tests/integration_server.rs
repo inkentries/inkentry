@@ -183,7 +183,7 @@ async fn archive_note_hides_it_from_list() {
         .await
         .unwrap();
     let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let id = created["id"].as_i64().unwrap();
+    let id = created["id"].as_str().unwrap();
 
     let archive_resp = send(
         state.clone(),
@@ -223,7 +223,7 @@ async fn delete_note_removes_it() {
         .await
         .unwrap();
     let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let id = created["id"].as_i64().unwrap();
+    let id = created["id"].as_str().unwrap();
 
     let del = send(
         state.clone(),
@@ -338,21 +338,22 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         .unwrap();
     let project_id = db.conn.last_insert_rowid();
 
-    // Note at t=1000.
-    db.conn
-        .execute(
-            "INSERT INTO notes (project_id, kind, title, body, created_at) VALUES (?1, 'note', 'old note', '', 1000)",
-            rusqlite::params![project_id],
-        )
-        .unwrap();
-
-    // Note at t=2000.
-    db.conn
-        .execute(
-            "INSERT INTO notes (project_id, kind, title, body, created_at) VALUES (?1, 'note', 'new note', '', 2000)",
-            rusqlite::params![project_id],
-        )
-        .unwrap();
+    // Seeded directly rather than through `add_note` so `created_at` is
+    // controlled; the identity has to be minted here for the same reason.
+    for (title, created_at) in [("old note", 1000_i64), ("new note", 2000)] {
+        db.conn
+            .execute(
+                "INSERT INTO notes (project_id, kind, title, body, created_at, sync_id)
+                 VALUES (?1, 'note', ?2, '', ?3, ?4)",
+                rusqlite::params![
+                    project_id,
+                    title,
+                    created_at,
+                    inkentry_server::uuid_v7::uuid_v7_at(created_at)
+                ],
+            )
+            .unwrap();
+    }
 
     let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
     let state = AppState {
