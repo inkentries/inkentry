@@ -554,9 +554,10 @@ fn insert_server_note_with_id(
 }
 
 #[test]
-fn supersede_edge_resolves_across_a_rowid_renumber() {
-    // Two independent reasons a rowid-based edge breaks here, both live:
-    //  1. the source rows sit at ids 101/102 while memory.db numbers them 2/3;
+fn supersede_edge_resolves_across_differing_ids() {
+    // Two independent reasons an id-positional edge breaks here, both live:
+    //  1. the source rows sit at server ids 101/102 while memory.db mints its
+    //     own ids for them;
     //  2. an earlier note is already imported, so the pair's position among the
     //     *candidates* differs from its position in the *import set*.
     // Resolved by entity_id, the edge is immune to both.
@@ -624,16 +625,16 @@ fn supersede_edge_resolves_across_a_rowid_renumber() {
         .success();
 
     let mem = Connection::open(&mem_path).unwrap();
-    let (old_id, old_succ): (i64, Option<i64>) = mem
+    let (old_id, old_succ): (String, Option<String>) = mem
         .query_row(
-            "SELECT id, superseded_by FROM notes WHERE title = 'Old approach'",
+            "SELECT uuid, superseded_by FROM notes WHERE title = 'Old approach'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    let new_id: i64 = mem
+    let new_id: String = mem
         .query_row(
-            "SELECT id FROM notes WHERE title = 'New approach'",
+            "SELECT uuid FROM notes WHERE title = 'New approach'",
             [],
             |r| r.get(0),
         )
@@ -641,13 +642,14 @@ fn supersede_edge_resolves_across_a_rowid_renumber() {
 
     // Guard the premise: local ids must actually differ from the server's.
     assert!(
-        old_id != 101 && new_id != 102,
-        "memory.db must have renumbered ({old_id}, {new_id}) — otherwise this proves nothing"
+        old_id != "101" && new_id != "102",
+        "memory.db must have minted its own ids ({old_id}, {new_id}) — \
+         otherwise this proves nothing"
     );
     assert_eq!(
         old_succ,
         Some(new_id),
-        "the supersede edge must point at the successor's local rowid"
+        "the supersede edge must point at the successor's local id"
     );
 }
 

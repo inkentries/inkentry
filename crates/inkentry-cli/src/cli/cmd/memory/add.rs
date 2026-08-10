@@ -7,8 +7,9 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        GitNotesBackend, MemoryBackend, NoteId, NoteInput, NoteRecord, RewriteRefStatus,
+        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
         append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
+        unresolvable_id_message,
     },
 };
 
@@ -142,23 +143,24 @@ pub(super) async fn memory_add(
     // ── Relate-to pre-flight ─────────────────────────────────────────────────
     // Like the supersede pre-flight above, the `--relates-to` target is checked
     // to exist *before* the new entry is written, so a bad id fails cleanly
-    // instead of leaving an orphaned new note with a dangling edge (SQLite's
-    // `memory_edges` FK is not enforced, so nothing else would catch it).
+    // instead of leaving an orphaned new note with a dangling edge. The
+    // `memory_edges` foreign key would refuse it too, but a pre-flight names
+    // the entry the user got wrong instead of surfacing a constraint error.
     // Unlike supersede this does NOT require the target to be `active` and never
     // archives it — a relates_to link is non-superseding. Skipped pre-init
     // (there is no local graph to read or to hold an edge). Reuses/opens
     // `backend_for_add` so the backend is opened at most once.
-    if let Some(rel_id) = args.relates_to
+    if let Some(rel_id) = args.relates_to.as_ref()
         && !pre_init_notes
     {
         let backend = match backend_for_add.take() {
             Some(backend) => backend,
             None => open_memory_backend(cfg, mem_path, backend_override).await?,
         };
-        let target_exists = backend.get(NoteId::from_i64(rel_id)).await?.is_some();
+        let target_exists = backend.get(rel_id.clone()).await?.is_some();
         backend_for_add = Some(backend);
         if !target_exists {
-            anyhow::bail!("No memory entry with id {rel_id} to relate to.");
+            anyhow::bail!("{}", unresolvable_id_message(rel_id));
         }
     }
 
@@ -173,7 +175,7 @@ pub(super) async fn memory_add(
     // primary store).
     let mut primary_backend: Option<Box<dyn MemoryBackend + Send>> = None;
     let (id, created) = if pre_init_notes {
-        (NoteId::from_i64(now_millis()), true)
+        (crate::storage::carrier_token(now_millis()), true)
     } else {
         let backend = match backend_for_add.take() {
             Some(backend) => backend,
@@ -207,15 +209,14 @@ pub(super) async fn memory_add(
     // the git-notes and remote backends report edge ops unsupported/no-op, so
     // this is confined to the SQLite backend (and skipped pre-init). The
     // target's existence was validated in the pre-flight above.
-    if let Some(rel_id) = args.relates_to
+    if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
         && backend.backend_kind() == "sqlite"
-        && let Some(new_id) = id.as_i64()
     {
         backend
-            .add_edge(new_id, rel_id, "relates_to")
+            .add_edge(&id, rel_id, "relates_to")
             .await
-            .with_context(|| format!("recording relates_to edge to #{rel_id}"))?;
+            .with_context(|| format!("recording relates_to edge to {rel_id}"))?;
     }
 
     // ── Git-notes write-through carrier ──────────────────────────────────────
@@ -231,7 +232,7 @@ pub(super) async fn memory_add(
         let new_entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
         let record = NoteRecord {
             schema_version: 1,
-            id: id.as_i64().unwrap_or_else(now_millis),
+            id: id.as_str().parse().unwrap_or_else(|_| now_millis()),
             kind: args.kind.clone(),
             title: title.clone(),
             body: body.clone(),

@@ -1,13 +1,27 @@
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 
-use super::{MemoryStore, Note, NoteId};
+use super::{MemoryStore, Note, NoteId, uuid_v7::uuid_v7_at};
+use std::str::FromStr;
+
+/// Every note-selecting query uses this column list, so the row mappers below
+/// can index positionally. `uuid` leads: it is the identity, and `id` is a
+/// storage surrogate that never reaches a `Note`.
+pub(super) const NOTE_COLUMNS: &str = "uuid, kind, title, body, tags, linked_files, \
+     created_at, status, superseded_by, source_ref, valid_at, invalid_at";
+
+fn note_id_at(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NoteId> {
+    let raw: String = row.get(idx)?;
+    NoteId::from_str(&raw).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, e.into())
+    })
+}
 
 // ── row mappers ──────────────────────────────────────────────────────────────
 
 pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     Ok(Note {
-        id: NoteId::from_i64(row.get(0)?),
+        id: note_id_at(row, 0)?,
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
@@ -15,7 +29,13 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
         created_at: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get::<_, Option<i64>>(8)?.map(NoteId::from_i64),
+        superseded_by: row
+            .get::<_, Option<String>>(8)?
+            .map(|s| NoteId::from_str(&s))
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, e.into())
+            })?,
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,
@@ -30,7 +50,7 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
 
 pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     Ok(Note {
-        id: NoteId::from_i64(row.get(0)?),
+        id: note_id_at(row, 0)?,
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
@@ -38,7 +58,13 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
         created_at: row.get(6)?,
         status: row.get(7)?,
-        superseded_by: row.get::<_, Option<i64>>(8)?.map(NoteId::from_i64),
+        superseded_by: row
+            .get::<_, Option<String>>(8)?
+            .map(|s| NoteId::from_str(&s))
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, e.into())
+            })?,
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,
@@ -83,9 +109,7 @@ pub(super) fn split_csv(s: Option<&str>) -> Vec<String> {
 impl MemoryStore {
     /// Insert a note and return `(id, created)`. `created` is `true` when a
     /// genuinely new row was inserted, `false` when the insert collided with
-    /// an existing row's `entity_id` (only possible once `idx_notes_entity_id`
-    /// has been promoted to UNIQUE, see `entity_id_migration.rs`) and that
-    /// existing row was reused instead. Does not store an embedding on a fresh
+    /// an existing row's `entity_id` and that existing row was reused instead. Does not store an embedding on a fresh
     /// insert; call `insert_embedding` afterwards if the embedder is available.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note(
@@ -97,13 +121,15 @@ impl MemoryStore {
         linked_files: &[&str],
         source_ref: Option<&str>,
         valid_at: Option<i64>,
-    ) -> Result<(i64, bool)> {
+    ) -> Result<(NoteId, bool)> {
+        let created_at = crate::storage::note_record::now_secs();
         let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
         let result = self.conn.execute(
             "INSERT INTO notes \
-             (kind, title, body, tags, linked_files, source_ref, valid_at, entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (uuid, kind, title, body, tags, linked_files, source_ref, valid_at, created_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
+                uuid_v7_at(created_at),
                 kind,
                 title,
                 body,
@@ -111,6 +137,7 @@ impl MemoryStore {
                 linked_files.join(","),
                 source_ref,
                 valid_at,
+                created_at,
                 entity_id,
             ],
         );
@@ -135,13 +162,14 @@ impl MemoryStore {
         source_ref: Option<&str>,
         status: &str,
         created_at: i64,
-    ) -> Result<(i64, bool)> {
+    ) -> Result<(NoteId, bool)> {
         let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
         let result = self.conn.execute(
             "INSERT INTO notes \
-             (kind, title, body, tags, linked_files, source_ref, status, created_at, entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (uuid, kind, title, body, tags, linked_files, source_ref, status, created_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
+                uuid_v7_at(created_at),
                 kind,
                 title,
                 body,
@@ -157,10 +185,9 @@ impl MemoryStore {
     }
 
     /// Shared insert-then-recover tail for `add_note`/`add_note_with_created_at`.
-    /// A UNIQUE-constraint failure here can only be `idx_notes_entity_id`:
-    /// neither function populates `uuid` or `remote_id`, and both of those
-    /// indexes are partial (`WHERE ... IS NOT NULL`), so NULL never collides.
-    /// Recovers by merging `tags`/`linked_files` into the existing row
+    /// A UNIQUE-constraint failure here can only be `entity_id`: the `uuid`
+    /// each caller mints is fresh, and `remote_id` is NULL on these paths and
+    /// so never collides. Recovers by merging `tags`/`linked_files` into the existing row
     /// (add-wins, via `union_tags_and_files`) and returning its id with
     /// `created = false`. Leaves `status`/`superseded_by` untouched, unlike
     /// `dedupe.rs`'s fuller merge (that collapses two rows already diverged
@@ -172,21 +199,27 @@ impl MemoryStore {
         entity_id: &str,
         tags: &[&str],
         linked_files: &[&str],
-    ) -> Result<(i64, bool)> {
+    ) -> Result<(NoteId, bool)> {
         match insert_result {
-            Ok(_) => Ok((self.conn.last_insert_rowid(), true)),
+            Ok(_) => {
+                let id = self
+                    .uuid_for_rowid(self.conn.last_insert_rowid())?
+                    .ok_or_else(|| anyhow::anyhow!("inserted note vanished before it was read"))?;
+                Ok((id, true))
+            }
             Err(rusqlite::Error::SqliteFailure(err, _))
                 if err.code == rusqlite::ErrorCode::ConstraintViolation
                     && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
             {
-                let existing_id: i64 = self.conn.query_row(
-                    "SELECT id FROM notes WHERE entity_id = ?1",
+                let existing_id: String = self.conn.query_row(
+                    "SELECT uuid FROM notes WHERE entity_id = ?1",
                     rusqlite::params![entity_id],
                     |r| r.get(0),
                 )?;
+                let existing_id = NoteId::from_str(&existing_id).map_err(|e| anyhow::anyhow!(e))?;
                 let owned_tags: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
                 let owned_files: Vec<String> = linked_files.iter().map(|s| s.to_string()).collect();
-                self.union_tags_and_files(existing_id, &owned_tags, &owned_files)?;
+                self.union_tags_and_files(&existing_id, &owned_tags, &owned_files)?;
                 Ok((existing_id, false))
             }
             Err(e) => Err(e.into()),
@@ -205,11 +238,9 @@ impl MemoryStore {
     /// "earliest created, ties broken by first inserted" as the definition
     /// every caller relies on.
     pub fn all_notes_for_dedup(&self) -> Result<Vec<Note>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, \
-             superseded_by, source_ref, valid_at, invalid_at \
-             FROM notes ORDER BY created_at ASC, id ASC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {NOTE_COLUMNS} FROM notes ORDER BY created_at ASC, id ASC"
+        ))?;
         let notes = stmt
             .query_map([], super::notes::row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -226,13 +257,13 @@ impl MemoryStore {
     /// Returns `true` when the row changed.
     pub fn union_tags_and_files(
         &self,
-        note_id: i64,
+        note_id: &NoteId,
         tags: &[String],
         linked_files: &[String],
     ) -> Result<bool> {
         let (cur_tags, cur_files): (Option<String>, Option<String>) = self.conn.query_row(
-            "SELECT tags, linked_files FROM notes WHERE id = ?1",
-            rusqlite::params![note_id],
+            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
+            rusqlite::params![note_id.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
 
@@ -246,18 +277,18 @@ impl MemoryStore {
         }
 
         self.conn.execute(
-            "UPDATE notes SET tags = ?1, linked_files = ?2 WHERE id = ?3",
-            rusqlite::params![merged_tags, merged_files, note_id],
+            "UPDATE notes SET tags = ?1, linked_files = ?2 WHERE uuid = ?3",
+            rusqlite::params![merged_tags, merged_files, note_id.as_str()],
         )?;
         Ok(true)
     }
 
     /// Update an existing note's `superseded_by` link (used by reconcile to
     /// resolve supersede chains after batch import).
-    pub fn set_superseded_by(&self, note_id: i64, successor_id: i64) -> Result<()> {
+    pub fn set_superseded_by(&self, note_id: &NoteId, successor_id: &NoteId) -> Result<()> {
         self.conn.execute(
-            "UPDATE notes SET superseded_by = ?1 WHERE id = ?2",
-            rusqlite::params![successor_id, note_id],
+            "UPDATE notes SET superseded_by = ?1 WHERE uuid = ?2",
+            rusqlite::params![successor_id.as_str(), note_id.as_str()],
         )?;
         Ok(())
     }
@@ -265,21 +296,21 @@ impl MemoryStore {
     /// Clear an existing note's `superseded_by` link back to NULL. Used by
     /// `memory dedupe`'s self-edge guard: a rewrite that would otherwise point
     /// a row at itself drops the link instead.
-    pub fn clear_superseded_by(&self, note_id: i64) -> Result<()> {
+    pub fn clear_superseded_by(&self, note_id: &NoteId) -> Result<()> {
         self.conn.execute(
-            "UPDATE notes SET superseded_by = NULL WHERE id = ?1",
-            rusqlite::params![note_id],
+            "UPDATE notes SET superseded_by = NULL WHERE uuid = ?1",
+            rusqlite::params![note_id.as_str()],
         )?;
         Ok(())
     }
 
     /// Ids of every row whose `superseded_by` points at `target_id`.
-    pub fn notes_pointing_at(&self, target_id: i64) -> Result<Vec<i64>> {
+    pub fn notes_pointing_at(&self, target_id: &NoteId) -> Result<Vec<NoteId>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id FROM notes WHERE superseded_by = ?1")?;
+            .prepare("SELECT uuid FROM notes WHERE superseded_by = ?1")?;
         let ids = stmt
-            .query_map(rusqlite::params![target_id], |r| r.get(0))?
+            .query_map(rusqlite::params![target_id.as_str()], |r| note_id_at(r, 0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
     }
@@ -287,10 +318,10 @@ impl MemoryStore {
     /// Used only by `memory dedupe`, after a duplicate-group loser's
     /// tags/linked_files/superseded_by have been folded into the survivor
     /// and any edges pointing at it rewritten.
-    pub fn delete_note(&self, note_id: i64) -> Result<()> {
+    pub fn delete_note(&self, note_id: &NoteId) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM notes WHERE id = ?1",
-            rusqlite::params![note_id],
+            "DELETE FROM notes WHERE uuid = ?1",
+            rusqlite::params![note_id.as_str()],
         )?;
         Ok(())
     }
@@ -299,15 +330,21 @@ impl MemoryStore {
     /// duplicate-group loser: two vectors have no meaningful union, so the
     /// embedding is dropped rather than merged; the survivor's own
     /// embedding is untouched.
-    pub fn delete_note_embedding(&self, note_id: i64) -> Result<()> {
+    pub fn delete_note_embedding(&self, note_id: &NoteId) -> Result<()> {
+        let Some(rowid) = self.rowid_for(note_id)? else {
+            return Ok(());
+        };
         self.conn.execute(
             "DELETE FROM note_embeddings WHERE note_id = ?1",
-            rusqlite::params![note_id],
+            rusqlite::params![rowid],
         )?;
         Ok(())
     }
 
-    pub fn insert_embedding(&self, note_id: i64, blob: &[u8]) -> Result<()> {
+    pub fn insert_embedding(&self, note_id: &NoteId, blob: &[u8]) -> Result<()> {
+        let rowid = self.rowid_for(note_id)?.ok_or_else(|| {
+            anyhow::anyhow!("no memory entry with id '{note_id}' to attach an embedding to")
+        })?;
         // `note_embeddings` is a sqlite-vec `vec0` virtual table, which does not
         // honour `INSERT OR REPLACE`/`ON CONFLICT` — a repeated `note_id` raises
         // a hard UNIQUE-constraint error instead of overwriting. Emulate replace
@@ -317,11 +354,11 @@ impl MemoryStore {
         let write = |conn: &rusqlite::Connection| -> rusqlite::Result<()> {
             conn.execute(
                 "DELETE FROM note_embeddings WHERE note_id = ?1",
-                rusqlite::params![note_id],
+                rusqlite::params![rowid],
             )?;
             conn.execute(
                 "INSERT INTO note_embeddings (note_id, embedding) VALUES (?1, ?2)",
-                rusqlite::params![note_id, blob],
+                rusqlite::params![rowid, blob],
             )?;
             Ok(())
         };
@@ -341,14 +378,14 @@ impl MemoryStore {
     /// index and uses the same `LEFT JOIN <vec0> ... WHERE ... IS NULL` idiom,
     /// which is proven to filter correctly against a vec0 virtual table.
     ///
-    /// Returns `(note_id, title, body)`: exactly the fields the add-time embed
+    /// Returns `(id, title, body)`: exactly the fields the add-time embed
     /// document (`title: {title} | text: {body}`) is rebuilt from, so a
     /// backfilled vector matches an add-time one. `ORDER BY n.id` is
     /// deterministic, so a resumed re-query is stable.
     pub fn notes_missing_embeddings(
         &self,
         include_archived: bool,
-    ) -> Result<Vec<(i64, String, String)>> {
+    ) -> Result<Vec<(NoteId, String, String)>> {
         // Only string literals are interpolated here; there are no user-supplied
         // values in this query, so no bind params are needed.
         let status_clause = if include_archived {
@@ -357,7 +394,7 @@ impl MemoryStore {
             "AND n.status = 'active'"
         };
         let sql = format!(
-            "SELECT n.id, n.title, n.body \
+            "SELECT n.uuid, n.title, n.body \
              FROM notes n \
              LEFT JOIN note_embeddings e ON e.note_id = n.id \
              WHERE e.note_id IS NULL {status_clause} \
@@ -366,7 +403,7 @@ impl MemoryStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
             Ok((
-                r.get::<_, i64>(0)?,
+                note_id_at(r, 0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
             ))
@@ -382,17 +419,17 @@ impl MemoryStore {
     pub fn all_active_notes_for_reembed(
         &self,
         include_archived: bool,
-    ) -> Result<Vec<(i64, String, String)>> {
+    ) -> Result<Vec<(NoteId, String, String)>> {
         let status_clause = if include_archived {
             ""
         } else {
             "WHERE status = 'active'"
         };
-        let sql = format!("SELECT id, title, body FROM notes {status_clause} ORDER BY id");
+        let sql = format!("SELECT uuid, title, body FROM notes {status_clause} ORDER BY id");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
             Ok((
-                r.get::<_, i64>(0)?,
+                note_id_at(r, 0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
             ))
@@ -461,8 +498,7 @@ impl MemoryStore {
         }
 
         let sql = format!(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, source_ref, valid_at, invalid_at
-             FROM notes {conditions} ORDER BY created_at DESC LIMIT {limit}"
+            "SELECT {NOTE_COLUMNS} FROM notes {conditions} ORDER BY created_at DESC LIMIT {limit}"
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
@@ -526,8 +562,7 @@ impl MemoryStore {
         }
 
         let sql = format!(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, source_ref, valid_at, invalid_at
-             FROM notes {conditions} ORDER BY created_at DESC LIMIT {limit}"
+            "SELECT {NOTE_COLUMNS} FROM notes {conditions} ORDER BY created_at DESC LIMIT {limit}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -539,21 +574,24 @@ impl MemoryStore {
     }
 
     /// Mark an entry as archived (hidden from search and ask context).
-    pub fn archive(&self, id: i64) -> Result<bool> {
+    pub fn archive(&self, id: &NoteId) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE notes SET status = 'archived' WHERE id = ?1 AND status = 'active'",
-            rusqlite::params![id],
+            "UPDATE notes SET status = 'archived' WHERE uuid = ?1 AND status = 'active'",
+            rusqlite::params![id.as_str()],
         )?;
         Ok(changed > 0)
     }
 
     /// Retrieve the raw embedding blob for a note (for use by `memory push`).
-    pub fn get_embedding(&self, note_id: i64) -> Result<Option<Vec<u8>>> {
+    pub fn get_embedding(&self, note_id: &NoteId) -> Result<Option<Vec<u8>>> {
+        let Some(rowid) = self.rowid_for(note_id)? else {
+            return Ok(None);
+        };
         let blob: Option<Vec<u8>> = self
             .conn
             .query_row(
                 "SELECT embedding FROM note_embeddings WHERE note_id = ?1",
-                rusqlite::params![note_id],
+                rusqlite::params![rowid],
                 |r| r.get(0),
             )
             .optional()?;
@@ -611,12 +649,11 @@ impl MemoryStore {
         Ok(count > 0)
     }
 
-    pub fn get(&self, id: i64) -> Result<Option<Note>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, source_ref, valid_at, invalid_at
-             FROM notes WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(rusqlite::params![id], row_to_note)?;
+    pub fn get(&self, id: &NoteId) -> Result<Option<Note>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {NOTE_COLUMNS} FROM notes WHERE uuid = ?1"))?;
+        let mut rows = stmt.query_map(rusqlite::params![id.as_str()], row_to_note)?;
         Ok(rows.next().transpose()?)
     }
 }

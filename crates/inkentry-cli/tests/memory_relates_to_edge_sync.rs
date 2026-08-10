@@ -12,7 +12,7 @@
 // harness, and `memory_relates_to_edge.rs` for the `memory add` driving.
 
 mod plumbing_helpers;
-use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec, write_project_server_config};
+use plumbing_helpers::{inkentry_bin_in, write_project_server_config};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -113,7 +113,7 @@ fn add_note(
     mem_db: &Path,
     title: &str,
     extra: &[&str],
-) -> i64 {
+) -> String {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
         .env_remove("INKENTRY_SERVER_URL")
@@ -141,27 +141,22 @@ fn add_note(
     parse_stored_id(&String::from_utf8_lossy(&out.stdout))
 }
 
-fn parse_stored_id(stdout: &str) -> i64 {
+// Ids are UUIDs, so the token in `Stored [note] #<id>: <title>` runs to the
+// colon that separates it from the title.
+fn parse_stored_id(stdout: &str) -> String {
     let hash = stdout
         .find('#')
         .unwrap_or_else(|| panic!("no id marker in stored output: {stdout:?}"));
     let rest = &stdout[hash + 1..];
     let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end]
-        .parse()
-        .unwrap_or_else(|_| panic!("could not parse id from stored output: {stdout:?}"))
-}
-
-fn uuid_of(mem_db: &Path, id: i64) -> String {
-    register_sqlite_vec();
-    let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row("SELECT uuid FROM notes WHERE id = ?1", [id], |r| {
-        r.get::<_, Option<String>>(0)
-    })
-    .expect("read uuid")
-    .expect("uuid must be minted after sync")
+        .find(':')
+        .unwrap_or_else(|| panic!("no id terminator in stored output: {stdout:?}"));
+    let id = &rest[..end];
+    assert!(
+        uuid::Uuid::parse_str(id).is_ok(),
+        "stored id must be a UUID, got {id:?} in: {stdout:?}"
+    );
+    id.to_string()
 }
 
 #[tokio::test]
@@ -195,7 +190,7 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
         &cfg,
         &mem_db,
         "Follow-up observation",
-        &["--relates-to", &target.to_string()],
+        &["--relates-to", &target],
     );
 
     // Sync from the project dir, so `server_url` + `project_id` are discovered
@@ -214,9 +209,9 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
         "sync must succeed: {stdout:?}"
     );
 
-    // The two entries' cloud external_ids (their local uuids, minted on sync).
-    let from_ext = uuid_of(&mem_db, linker);
-    let to_ext = uuid_of(&mem_db, target);
+    // The two entries' cloud external_ids are their own ids.
+    let from_ext = linker;
+    let to_ext = target;
 
     // Exactly one edge-only `/memory/batch` was posted, keyed by external_id.
     let reqs = server.received_requests().await.unwrap();

@@ -4,7 +4,7 @@ use super::super::color::cprintln;
 use super::{MemoryGraphArgs, backend_err};
 use crate::{
     config::Config,
-    storage::{NoteId, open_memory_backend},
+    storage::{NoteId, open_memory_backend, unresolvable_id_message},
 };
 
 pub(super) async fn memory_graph(
@@ -15,17 +15,17 @@ pub(super) async fn memory_graph(
 ) -> Result<()> {
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let root = backend
-        .get(NoteId::from_i64(args.id))
+        .get(args.id.clone())
         .await?
-        .ok_or_else(|| anyhow::anyhow!("No memory entry with id {}.", args.id))?;
+        .ok_or_else(|| anyhow::anyhow!(unresolvable_id_message(&args.id)))?;
 
-    let (outgoing, incoming) = backend.get_edges(args.id).await.map_err(backend_err)?;
+    let (outgoing, incoming) = backend.get_edges(&args.id).await.map_err(backend_err)?;
 
     if crate::utils::effective_format(&args.format) == "json" {
         #[derive(serde::Serialize)]
         struct EdgeJson {
-            from_id: i64,
-            to_id: i64,
+            from_id: NoteId,
+            to_id: NoteId,
             kind: String,
         }
         #[derive(serde::Serialize)]
@@ -41,16 +41,16 @@ pub(super) async fn memory_graph(
             outgoing: outgoing
                 .iter()
                 .map(|e| EdgeJson {
-                    from_id: e.from_id,
-                    to_id: e.to_id,
+                    from_id: e.from_id.clone(),
+                    to_id: e.to_id.clone(),
                     kind: e.kind.clone(),
                 })
                 .collect(),
             incoming: incoming
                 .iter()
                 .map(|e| EdgeJson {
-                    from_id: e.from_id,
-                    to_id: e.to_id,
+                    from_id: e.from_id.clone(),
+                    to_id: e.to_id.clone(),
                     kind: e.kind.clone(),
                 })
                 .collect(),
@@ -59,7 +59,7 @@ pub(super) async fn memory_graph(
         return Ok(());
     }
 
-    cprintln!("\x1b[1m#{} [{}] {}\x1b[0m", root.id, root.kind, root.title);
+    cprintln!("\x1b[1m{} [{}] {}\x1b[0m", root.id, root.kind, root.title);
 
     if outgoing.is_empty() && incoming.is_empty() {
         println!("  (no relationships)");
@@ -68,7 +68,7 @@ pub(super) async fn memory_graph(
 
     for e in &outgoing {
         let target_title = backend
-            .get(NoteId::from_i64(e.to_id))
+            .get(e.to_id.clone())
             .await?
             .map(|n| n.title)
             .unwrap_or_else(|| "(deleted)".to_string());
@@ -78,11 +78,11 @@ pub(super) async fn memory_graph(
             "contradicts" => "\x1b[31m─[contradicts]→\x1b[0m",
             k => &format!("─[{k}]→"),
         };
-        cprintln!("  {arrow}  #{} {target_title}", e.to_id);
+        cprintln!("  {arrow}  {} {target_title}", e.to_id);
     }
     for e in &incoming {
         let src_title = backend
-            .get(NoteId::from_i64(e.from_id))
+            .get(e.from_id.clone())
             .await?
             .map(|n| n.title)
             .unwrap_or_else(|| "(deleted)".to_string());
@@ -92,7 +92,7 @@ pub(super) async fn memory_graph(
             "contradicts" => "\x1b[31m←[contradicted by]\x1b[0m",
             k => &format!("←[{k}]"),
         };
-        cprintln!("  {arrow}  #{} {src_title}", e.from_id);
+        cprintln!("  {arrow}  {} {src_title}", e.from_id);
     }
     Ok(())
 }

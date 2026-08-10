@@ -168,10 +168,11 @@ fn spawn_tls_server(
     port
 }
 
-// The OSS team server's memory list body: a bare array of i64-keyed entries.
+// The OSS team server's memory list body: a bare array of entries. Entry ids
+// are opaque string tokens on the wire (ADR-078).
 fn oss_memory_list() -> serde_json::Value {
     serde_json::json!([{
-        "id": 42,
+        "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33",
         "kind": "note",
         "title": SERVER_TITLE,
         "body": "b",

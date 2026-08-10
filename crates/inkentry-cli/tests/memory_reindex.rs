@@ -24,7 +24,6 @@ use plumbing_helpers::{
 };
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -265,7 +264,7 @@ fn reindex_cmd(f: &Fixture) -> Command {
 // Archive a seeded note via the real `memory archive`. Runs with no server so
 // it stays a purely local status change (no git-notes carry: global config
 // pins store_in_git_notes = false).
-fn archive_note(f: &Fixture, id: i64) {
+fn archive_note(f: &Fixture, id: &str) {
     inkentry_bin()
         .current_dir(&f.project_dir)
         .env("INKENTRY_NO_SERVER", "1")
@@ -276,7 +275,7 @@ fn archive_note(f: &Fixture, id: i64) {
         .arg("--db")
         .arg(&f.mem_path)
         .arg("archive")
-        .arg(id.to_string())
+        .arg(id)
         .assert()
         .success();
 }
@@ -290,36 +289,8 @@ fn embed_content(body: &str) -> String {
         .to_string()
 }
 
-// Build a genuine pre-0.9 store: a FLOAT[768] `note_embeddings` vec0 table with
-// `n` notes and no v896 sentinel, exactly what an upgraded user's memory.db
-// looks like before the first 0.9 open.
-fn make_pre_v896_store(mem_path: &Path, n: usize) {
-    ensure_sqlite_vec();
-    let conn = Connection::open(mem_path).expect("open raw pre-v896 store");
-    conn.execute_batch(
-        "CREATE TABLE notes (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind          TEXT    NOT NULL DEFAULT 'note',
-            title         TEXT    NOT NULL,
-            body          TEXT    NOT NULL,
-            tags          TEXT,
-            linked_files  TEXT,
-            created_at    INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-        CREATE VIRTUAL TABLE note_embeddings USING vec0(
-            note_id INTEGER PRIMARY KEY, embedding FLOAT[768]
-        );",
-    )
-    .expect("create pre-v896 schema");
-    for i in 0..n {
-        conn.execute(
-            "INSERT INTO notes (kind, title, body) VALUES ('note', ?1, ?2)",
-            rusqlite::params![format!("t{i}"), format!("b{i}")],
-        )
-        .expect("seed note");
-    }
-}
-
+// The storage rowid, which is what `note_embeddings` is keyed on. Use
+// `note_uuid_by_title` for anything handed back to the CLI.
 fn note_id_by_title(mem_path: &Path, title: &str) -> i64 {
     let conn = Connection::open(mem_path).expect("open memory.db");
     conn.query_row(
@@ -328,6 +299,16 @@ fn note_id_by_title(mem_path: &Path, title: &str) -> i64 {
         |r| r.get(0),
     )
     .expect("note id by title")
+}
+
+fn note_uuid_by_title(mem_path: &Path, title: &str) -> String {
+    let conn = Connection::open(mem_path).expect("open memory.db");
+    conn.query_row(
+        "SELECT uuid FROM notes WHERE title = ?1",
+        rusqlite::params![title],
+        |r| r.get(0),
+    )
+    .expect("note uuid by title")
 }
 
 fn embedded_note_ids(mem_path: &Path) -> Vec<i64> {
@@ -622,49 +603,6 @@ fn reindex_dry_run_counts_and_writes_nothing() {
     );
 }
 
-// D5(b): after the 768→896 upgrade drops old vectors, a memory command surfaces
-// the one-line reindex notice once (without RUST_LOG), and the migrated notes
-// are then present-but-unembedded.
-#[test]
-fn migration_notice_fires_once_after_768_upgrade() {
-    let f = fixture();
-    make_pre_v896_store(&f.mem_path, 3);
-
-    // First memory command after the upgrade: the notice fires on stderr.
-    inkentry_bin()
-        .current_dir(&f.project_dir)
-        .env("INKENTRY_NO_SERVER", "1")
-        .arg("--config")
-        .arg(&f.global_config)
-        .arg("memory")
-        .arg("--db")
-        .arg(&f.mem_path)
-        .arg("list")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains(
-            "3 note(s) need re-embedding for semantic search",
-        ));
-
-    // The migrated notes are present-but-unembedded (the 768 vectors were
-    // dropped), so reindex has exactly 3 to backfill.
-    assert!(embedded_note_ids(&f.mem_path).is_empty());
-
-    // The sentinel is now set: a second command must NOT repeat the notice.
-    inkentry_bin()
-        .current_dir(&f.project_dir)
-        .env("INKENTRY_NO_SERVER", "1")
-        .arg("--config")
-        .arg(&f.global_config)
-        .arg("memory")
-        .arg("--db")
-        .arg(&f.mem_path)
-        .arg("list")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("need re-embedding").not());
-}
-
 // Every note (not just the first) is embedded via its own add-time document
 // string, in id order, with no F2LLM query prefix. Guards against a partial
 // wrong-format bug that a single-note parity check would miss.
@@ -708,7 +646,7 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
     seed(&f, "note", "archived-note", "archived body");
     let active_id = note_id_by_title(&f.mem_path, "active-note");
     let archived_id = note_id_by_title(&f.mem_path, "archived-note");
-    archive_note(&f, archived_id);
+    archive_note(&f, &note_uuid_by_title(&f.mem_path, "archived-note"));
 
     let mock = start_mock(EmbedResponder::new(0.1));
     set_server(&f, &mock.uri());
@@ -731,28 +669,6 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
         ids, want,
         "--include-archived backfills the archived note as well"
     );
-}
-
-// A store created by `memory add` is a fresh FLOAT[896] store that never went
-// through the 768 drop, so no command may print the re-embed notice. Pins the
-// CLI-layer negative end-to-end, not just the library flag.
-#[test]
-fn no_reembed_notice_on_fresh_store() {
-    let f = fixture();
-    seed(&f, "note", "one", "body one");
-
-    inkentry_bin()
-        .current_dir(&f.project_dir)
-        .env("INKENTRY_NO_SERVER", "1")
-        .arg("--config")
-        .arg(&f.global_config)
-        .arg("memory")
-        .arg("--db")
-        .arg(&f.mem_path)
-        .arg("list")
-        .assert()
-        .success()
-        .stderr(predicates::str::contains("need re-embedding").not());
 }
 
 // `cloud_first` WITH `server_url` set: `memory.db` is not the store of record

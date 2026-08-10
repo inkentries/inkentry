@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::entity_id::entity_id;
@@ -58,9 +59,20 @@ impl NoteRecord {
     }
 }
 
+/// The git-notes carrier's record id, as the opaque token it is.
+///
+/// ADR-059 froze the carrier format, and its `id` field is an integer that the
+/// carrier itself documents as non-identity. It is rendered rather than
+/// reinterpreted: minting a UUID here would produce a different one on every
+/// read, since the carrier has nowhere to persist it.
+pub fn carrier_token(id: i64) -> NoteId {
+    NoteId::from_str(&id.to_string())
+        .unwrap_or_else(|e| unreachable!("an integer never renders as an empty token: {e}"))
+}
+
 pub fn record_to_note(r: NoteRecord) -> Note {
     Note {
-        id: NoteId::from_i64(r.id),
+        id: carrier_token(r.id),
         kind: r.kind,
         title: r.title,
         body: r.body,
@@ -68,7 +80,7 @@ pub fn record_to_note(r: NoteRecord) -> Note {
         linked_files: r.linked_files,
         created_at: r.created_at,
         status: r.status,
-        superseded_by: r.superseded_by.map(NoteId::from_i64),
+        superseded_by: r.superseded_by.map(carrier_token),
         source_ref: r.source_ref,
         valid_at: r.valid_at,
         invalid_at: r.invalid_at,

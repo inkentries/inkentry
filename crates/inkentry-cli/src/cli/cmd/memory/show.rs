@@ -3,10 +3,7 @@ use anyhow::Result;
 use super::super::color::{color_enabled, cprintln};
 use super::super::status::format_age;
 use super::MemoryShowArgs;
-use crate::{
-    config::Config,
-    storage::{NoteId, open_memory_backend},
-};
+use crate::{config::Config, storage::open_memory_backend};
 
 pub(super) async fn memory_show(
     args: MemoryShowArgs,
@@ -60,10 +57,7 @@ pub(super) async fn memory_show(
                 println!();
                 println!("{}", n.body);
 
-                let (outgoing, incoming) = match n.id.as_i64() {
-                    Some(rowid) => backend.get_edges(rowid).await?,
-                    None => (vec![], vec![]),
-                };
+                let (outgoing, incoming) = backend.get_edges(&n.id).await?;
                 if !outgoing.is_empty() || !incoming.is_empty() {
                     println!();
                     cprintln!("\x1b[2m── relationships ──\x1b[0m");
@@ -75,11 +69,11 @@ pub(super) async fn memory_show(
                             _ => "→",
                         };
                         let target_title = backend
-                            .get(NoteId::from_i64(e.to_id))
+                            .get(e.to_id.clone())
                             .await?
                             .map(|n| n.title)
                             .unwrap_or_else(|| "(deleted)".to_string());
-                        cprintln!("  {label}  #{} {target_title}", e.to_id);
+                        cprintln!("  {label}  {} {target_title}", e.to_id);
                     }
                     for e in &incoming {
                         let label = match e.kind.as_str() {
@@ -89,11 +83,11 @@ pub(super) async fn memory_show(
                             _ => "←",
                         };
                         let src_title = backend
-                            .get(NoteId::from_i64(e.from_id))
+                            .get(e.from_id.clone())
                             .await?
                             .map(|n| n.title)
                             .unwrap_or_else(|| "(deleted)".to_string());
-                        cprintln!("  {label}  #{} {src_title}", e.from_id);
+                        cprintln!("  {label}  {} {src_title}", e.from_id);
                     }
                 }
             }

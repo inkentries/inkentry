@@ -481,7 +481,7 @@ async fn documented_self_hosted_cloud_first_config_round_trips() {
         .and(path("/v1/projects/my-awesome-app/memory"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                "id": 42,
+                "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42",
                 "kind": "decision",
                 "title": "Use sqlite-vec",
                 "body": "no separate vector db",
@@ -502,7 +502,7 @@ async fn documented_self_hosted_cloud_first_config_round_trips() {
 
     let notes = be.list(None, 10, false, None).await.unwrap();
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].id, NoteId::from_i64(42));
+    assert_eq!(notes[0].id.as_str(), "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42");
     assert_eq!(notes[0].title, "Use sqlite-vec");
 
     assert_no_project_lookup(&server).await;
@@ -517,7 +517,7 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
     mount_stats(&server, "my-awesome-app", 1).await;
 
     let note = serde_json::json!({
-        "id": 42,
+        "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42",
         "kind": "decision",
         "title": "Use sqlite-vec",
         "body": "no separate vector db",
@@ -532,14 +532,18 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
         (
             "POST",
             format!("{base}/memory"),
-            serde_json::json!({ "id": 42 }),
+            serde_json::json!({ "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42" }),
         ),
         (
             "GET",
             format!("{base}/memory"),
             serde_json::json!([note.clone()]),
         ),
-        ("GET", format!("{base}/memory/42"), note.clone()),
+        (
+            "GET",
+            format!("{base}/memory/0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42"),
+            note.clone(),
+        ),
         (
             "POST",
             format!("{base}/memory/search"),
@@ -547,12 +551,12 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
         ),
         (
             "POST",
-            format!("{base}/memory/42/archive"),
+            format!("{base}/memory/0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42/archive"),
             serde_json::json!({ "changed": true }),
         ),
         (
             "POST",
-            format!("{base}/memory/42/supersede"),
+            format!("{base}/memory/0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42/supersede"),
             serde_json::json!({ "changed": true }),
         ),
         (
@@ -584,18 +588,25 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
         valid_at: None,
         supersedes: None,
     };
-    assert_eq!(be.add(input).await.unwrap().0, NoteId::from_i64(42));
-    assert_eq!(be.list(None, 10, false, None).await.unwrap().len(), 1);
     assert_eq!(
-        be.get(NoteId::from_i64(42)).await.unwrap().unwrap().id,
-        NoteId::from_i64(42)
+        be.add(input).await.unwrap().0.as_str(),
+        "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42"
+    );
+    assert_eq!(be.list(None, 10, false, None).await.unwrap().len(), 1);
+    let entry_id: NoteId = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42".parse().unwrap();
+    assert_eq!(
+        be.get(entry_id.clone()).await.unwrap().unwrap().id,
+        entry_id
     );
     assert_eq!(be.search(&[], "sqlite", 5, None).await.unwrap().len(), 1);
-    assert!(be.archive(NoteId::from_i64(42)).await.unwrap());
+    assert!(be.archive(entry_id.clone()).await.unwrap());
     assert!(
-        be.supersede(NoteId::from_i64(42), NoteId::from_i64(43))
-            .await
-            .unwrap()
+        be.supersede(
+            entry_id,
+            "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e43".parse().unwrap()
+        )
+        .await
+        .unwrap()
     );
     assert_eq!(be.count().await.unwrap(), 1);
     assert!(be.harvested_shas().await.unwrap().contains("deadbeef"));

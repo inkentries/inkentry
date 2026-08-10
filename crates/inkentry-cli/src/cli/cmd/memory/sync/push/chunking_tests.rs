@@ -144,7 +144,7 @@ async fn push_chunks_cover_every_entry_exactly_once() {
         .rows_for_sync(false)
         .unwrap()
         .into_iter()
-        .map(|r| r.uuid)
+        .map(|r| r.id.to_string())
         .collect();
     assert_eq!(want.len(), 120);
 
@@ -200,7 +200,7 @@ async fn multi_chunk_push_threads_slug_into_every_request_path() {
         .rows_for_sync(false)
         .unwrap()
         .into_iter()
-        .map(|r| r.uuid)
+        .map(|r| r.id.to_string())
         .collect();
 
     // The mock ONLY matches the percent-encoded slug path, so an all-created
@@ -390,8 +390,8 @@ async fn interrupted_push_skips_the_tombstone_delete_pass() {
         let (id, _) = store
             .add_note("note", tag, "body", &[], &[], None, None)
             .unwrap();
-        store.set_remote_id(id, &format!("cloud-{tag}")).unwrap();
-        assert!(store.archive(id).unwrap());
+        store.set_remote_id(&id, &format!("cloud-{tag}")).unwrap();
+        assert!(store.archive(&id).unwrap());
     }
 
     let server = MockServer::start().await;
@@ -434,19 +434,19 @@ async fn overlapping_repush_tallies_skipped_and_leaves_no_duplicates() {
 
     let rows = store.rows_for_sync(false).unwrap();
     // First two rows are the overlap (already server-side → skipped); the last
-    // two are genuinely new (created). Keyed by uuid, so row order is irrelevant.
+    // two are genuinely new (created). Keyed by id, so row order is irrelevant.
     let mut status: HashMap<String, &str> = HashMap::new();
-    status.insert(rows[0].uuid.clone(), "skipped");
-    status.insert(rows[1].uuid.clone(), "skipped");
-    status.insert(rows[2].uuid.clone(), "created");
-    status.insert(rows[3].uuid.clone(), "created");
+    status.insert(rows[0].id.to_string(), "skipped");
+    status.insert(rows[1].id.to_string(), "skipped");
+    status.insert(rows[2].id.to_string(), "created");
+    status.insert(rows[3].id.to_string(), "created");
     let results: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
             serde_json::json!({
-                "status": status[&r.uuid],
-                "external_id": r.uuid,
-                "id": format!("cloud-{}", r.uuid),
+                "status": status[&r.id.to_string()],
+                "external_id": r.id,
+                "id": format!("cloud-{}", r.id),
             })
         })
         .collect();
@@ -598,12 +598,11 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
         .add_note("note", "Two", "second", &[], &[], None, None)
         .unwrap();
 
-    // Learn the lazily-minted external_ids up front so the mock can echo
-    // them back with distinct cloud ids; `ensure_uuid` is idempotent, so the
-    // push below re-derives the same uuids.
+    // Learn the external_ids up front so the mock can echo them back with
+    // distinct cloud ids.
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 2);
-    let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+    let (ext_a, ext_b) = (rows[0].id.to_string(), rows[1].id.to_string());
     let cloud_a = "01890000-0000-7000-8000-0000000000a1";
     let cloud_b = "01890000-0000-7000-8000-0000000000a2";
 
@@ -628,11 +627,11 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
     assert_eq!((s1.attempted, s1.created, s1.skipped), (2, 2, 0));
     assert_eq!(
         store.note_id_for_remote_id(cloud_a).unwrap(),
-        Some(rows[0].local_id)
+        Some(rows[0].id.clone())
     );
     assert_eq!(
         store.note_id_for_remote_id(cloud_b).unwrap(),
-        Some(rows[1].local_id)
+        Some(rows[1].id.clone())
     );
     // The pull cursor is now the newest stamped id.
     assert_eq!(store.max_remote_id().unwrap().as_deref(), Some(cloud_b));

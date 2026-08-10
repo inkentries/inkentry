@@ -12,8 +12,8 @@ use super::*;
 // consults the gate, which the `maybe_attach_vector` unit test cannot.
 
 // Insert an active note plus a valid L2-normalised fp32/896 embedding,
-// returning its local id + external uuid.
-fn note_with_embedding(store: &MemoryStore) -> (i64, String) {
+// returning its id (which is also the external id on the wire).
+fn note_with_embedding(store: &MemoryStore) -> NoteId {
     store
         .add_note("decision", "One", "first", &[], &[], None, None)
         .unwrap();
@@ -22,8 +22,8 @@ fn note_with_embedding(store: &MemoryStore) -> (i64, String) {
     let blob = inkentry_core::embeddings::vec_to_blob(&vec);
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 1);
-    store.insert_embedding(rows[0].local_id, &blob).unwrap();
-    (rows[0].local_id, rows[0].uuid.clone())
+    store.insert_embedding(&rows[0].id, &blob).unwrap();
+    rows[0].id.clone()
 }
 
 #[tokio::test]
@@ -35,14 +35,14 @@ async fn push_local_attaches_vector_when_server_accepts() {
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
-    let (_id, uuid) = note_with_embedding(&store);
+    let id = note_with_embedding(&store);
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory/batch"))
         .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
             "created": 1, "skipped": 0, "failed": 0,
-            "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+            "results": [{"status": "created", "external_id": id.to_string(), "id": "cloud-1"}]
         })))
         .mount(&server)
         .await;
@@ -74,14 +74,14 @@ async fn push_local_stays_text_only_when_server_declines() {
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
-    let (_id, uuid) = note_with_embedding(&store);
+    let id = note_with_embedding(&store);
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory/batch"))
         .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
             "created": 1, "skipped": 0, "failed": 0,
-            "results": [{"status": "created", "external_id": uuid, "id": "cloud-1"}]
+            "results": [{"status": "created", "external_id": id.to_string(), "id": "cloud-1"}]
         })))
         .mount(&server)
         .await;
@@ -101,7 +101,7 @@ async fn push_local_stays_text_only_when_server_declines() {
 }
 
 // `note_embeddings` is a `vec0` virtual table with a `FLOAT[896]` column
-// (migration `004_memory.sql`): sqlite-vec enforces that exact
+// (migration `memory_001_initial.sql`): sqlite-vec enforces that exact
 // dimension AT INSERT TIME, for every write path (there is only one:
 // `insert_embedding`). So a "leftover pre-896 768-dim row" (unlike the
 // code-chunk `embeddings` table, which DID have a legacy 768-dim era
@@ -125,7 +125,7 @@ async fn insert_embedding_rejects_wrong_dimension_vector() {
 
     let stale_768_blob = inkentry_core::embeddings::vec_to_blob(&vec![1.0f32; 768]);
     let err = store
-        .insert_embedding(rows[0].local_id, &stale_768_blob)
+        .insert_embedding(&rows[0].id, &stale_768_blob)
         .unwrap_err();
     assert!(
         err.to_string().contains("896") && err.to_string().contains("768"),

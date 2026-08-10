@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, SyncEdgePush};
+use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, NoteId, SyncEdgePush};
 
 mod local_embed;
 
@@ -168,7 +168,7 @@ async fn push_local_reporting(
     // reached the cloud this round. A `relates_to` edge becomes pushable in the
     // round its second endpoint lands, so only edges touching this set are new
     // and worth posting (see `push_relates_to_edges`).
-    let mut just_synced: HashSet<i64> = HashSet::new();
+    let mut just_synced: HashSet<NoteId> = HashSet::new();
     // Set once a chunk fails: the loop stops and the tombstone pass is skipped.
     let mut interrupted: Option<String> = None;
 
@@ -192,8 +192,8 @@ async fn push_local_reporting(
     // Progress is only worth emitting when the push actually spans multiple
     // chunks; a single-chunk push stays quiet (no noise on small pushes).
     let multi_chunk = attempted.div_ceil(PUSH_BATCH_CHUNK_SIZE) > 1;
-    // Map external_id (local uuid) → local_id so we can record the cloud-minted
-    // id returned in the 207 result back onto the local row.
+    // The external_id a result carries is the entry's own id, so the
+    // cloud-minted id in the 207 result lands straight back on the right row.
     for chunk in live.chunks(PUSH_BATCH_CHUNK_SIZE) {
         let mut items: Vec<BatchPushItem> = Vec::with_capacity(chunk.len());
         for r in chunk {
@@ -203,7 +203,7 @@ async fn push_local_reporting(
             // wrong-length or missing embedding falls back to text-only rather
             // than poisoning the whole batch with a 4xx.
             let vector = if accepts_pushed_vectors {
-                usable_vector(local.get_embedding(r.local_id)?)
+                usable_vector(local.get_embedding(&r.id)?)
             } else {
                 None
             };
@@ -216,7 +216,7 @@ async fn push_local_reporting(
                     } else {
                         Some(r.body.clone())
                     },
-                    external_id: r.uuid.clone(),
+                    external_id: r.id.to_string(),
                     source_commit: r.source_ref.clone(),
                     vector: None,
                     vector_model: None,
@@ -276,10 +276,10 @@ async fn push_local_reporting(
             if durably_persisted
                 && let (Some(ext), Some(cloud_id)) =
                     (item.external_id.as_deref(), item.id.as_deref())
-                && let Some(row) = chunk.iter().find(|r| r.uuid == ext)
+                && let Some(row) = chunk.iter().find(|r| r.id.as_str() == ext)
             {
-                local.set_remote_id(row.local_id, cloud_id)?;
-                just_synced.insert(row.local_id);
+                local.set_remote_id(&row.id, cloud_id)?;
+                just_synced.insert(row.id.clone());
             }
             if item.status == "failed" {
                 eprintln!(
@@ -340,7 +340,7 @@ async fn push_local_reporting(
 
 /// Push the local `relates_to` edges completed by this round's entry push.
 ///
-/// `just_synced` is the set of local row ids whose `remote_id` this push
+/// `just_synced` is the set of entry ids whose `remote_id` this push
 /// stamped (the entries that reached the cloud this round). An edge is
 /// propagated when it touches one of those rows and BOTH its endpoints are
 /// synced, so each edge is posted exactly in the round its second endpoint
@@ -359,7 +359,7 @@ async fn push_local_reporting(
 async fn push_relates_to_edges(
     local: &MemoryStore,
     client: &CloudSyncClient,
-    just_synced: &HashSet<i64>,
+    just_synced: &HashSet<NoteId>,
 ) -> Result<usize> {
     if just_synced.is_empty() {
         return Ok(0);
@@ -367,10 +367,10 @@ async fn push_relates_to_edges(
     let edges: Vec<SyncEdgePush> = local
         .relates_to_edges_for_sync()?
         .into_iter()
-        .filter(|e| just_synced.contains(&e.from_local_id) || just_synced.contains(&e.to_local_id))
+        .filter(|e| just_synced.contains(&e.from_id) || just_synced.contains(&e.to_id))
         .map(|e| SyncEdgePush {
-            from_external_id: e.from_external_id,
-            to_external_id: e.to_external_id,
+            from_external_id: e.from_id.to_string(),
+            to_external_id: e.to_id.to_string(),
             kind: "relates_to",
         })
         .collect();

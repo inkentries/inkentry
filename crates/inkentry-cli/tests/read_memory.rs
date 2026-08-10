@@ -152,12 +152,16 @@ fn read_memory_by_id_returns_single_note() {
         .clone();
 
     let rows = parse_jsonl(&list_output);
-    let first_id = rows[0]["id"].as_i64().expect("id should be integer");
+    let first_id = rows[0]["id"].as_str().expect("id should be a string");
+    assert!(
+        uuid::Uuid::parse_str(first_id).is_ok(),
+        "an emitted id must be a UUID, got {first_id:?}"
+    );
 
     let output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--id")
-        .arg(first_id.to_string())
+        .arg(first_id)
         .assert()
         .success()
         .get_output()
@@ -166,7 +170,7 @@ fn read_memory_by_id_returns_single_note() {
 
     let detail_rows = parse_jsonl(&output);
     assert_eq!(detail_rows.len(), 1, "expected exactly one note for --id");
-    assert_eq!(detail_rows[0]["id"].as_i64(), Some(first_id));
+    assert_eq!(detail_rows[0]["id"].as_str(), Some(first_id));
 }
 
 // ── no results (exit 1) ───────────────────────────────────────────────────────

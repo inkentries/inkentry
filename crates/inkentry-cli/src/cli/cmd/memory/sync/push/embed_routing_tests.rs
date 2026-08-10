@@ -20,8 +20,8 @@ fn add_note(store: &MemoryStore, title: &str) -> String {
     rows.iter()
         .find(|r| r.title == title)
         .expect("note added")
-        .uuid
-        .clone()
+        .id
+        .to_string()
 }
 
 async fn mount_batch_created(server: &MockServer, uuid: &str) {
@@ -288,7 +288,7 @@ async fn one_row_embed_failure_leaves_the_rest_of_the_push_intact() {
     );
     let rows = store.rows_for_sync(false).unwrap();
     for r in &rows {
-        let embedded = store.get_embedding(r.local_id).unwrap().is_some();
+        let embedded = store.get_embedding(&r.id).unwrap().is_some();
         assert_eq!(
             embedded,
             r.title == "Fine",
@@ -343,7 +343,7 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
         "a skipped repair must not report counts, or warn"
     );
     let rows = store.rows_for_sync(false).unwrap();
-    assert!(store.get_embedding(rows[0].local_id).unwrap().is_none());
+    assert!(store.get_embedding(&rows[0].id).unwrap().is_none());
     let loopback_paths = paths(&loopback.server.received_requests().await.unwrap());
     assert!(
         !loopback_paths.iter().any(|p| p.ends_with("/index/embed")),

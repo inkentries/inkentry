@@ -71,22 +71,6 @@ struct Expect {
     #[serde(default)]
     note_count: i64,
     #[serde(default)]
-    active_note_count: i64,
-    #[serde(default)]
-    archived_title: String,
-    #[serde(default)]
-    superseded_title: String,
-    #[serde(default)]
-    successor_title: String,
-    #[serde(default)]
-    memory_fts_query: String,
-    #[serde(default)]
-    note_vector_count: i64,
-    // Whether the captured artifact already had the ADR-068 column. False marks
-    // a wing whose whole purpose is to make the backfill run.
-    #[serde(default)]
-    entity_id_present: bool,
-    #[serde(default)]
     project_count: i64,
     #[serde(default)]
     dep_count: i64,
@@ -185,6 +169,7 @@ fn row_count(conn: &rusqlite::Connection, table: &str) -> i64 {
         .unwrap_or_else(|e| panic!("counting {table}: {e}"))
 }
 
+#[allow(dead_code)]
 fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
     let sql = format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1");
     conn.query_row(&sql, rusqlite::params![column], |r| r.get::<_, i64>(0))
@@ -393,165 +378,53 @@ fn every_index_wing_migrates_with_its_rows_and_content_intact() {
     }
 }
 
-#[tokio::test]
+#[test]
 #[serial_test::serial]
-async fn every_memory_wing_migrates_with_its_entries_chains_and_archives_intact() {
+fn every_memory_wing_is_refused_rather_than_opened_in_place() {
     register_sqlite_vec();
     let m = manifest();
     let memory_wings = wings_of_kind(&m, "memory");
     assert!(!memory_wings.is_empty(), "corpus has no memory.db wing");
-    assert!(
-        memory_wings.iter().any(|w| !w.expect.entity_id_present),
-        "every memory wing was captured after entity_id already existed, so the \
-         backfill asserted below never actually runs on anything"
-    );
 
     for wing in memory_wings {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = checkout(wing, tmp.path());
 
-        // Confirm the artifact is the era it claims before the upgrade touches
-        // it. Without this an accidentally pre-migrated fixture would make the
-        // backfill assertions below pass with the backfill never running.
-        assert_eq!(
-            has_column(&raw(&db_path), "notes", "entity_id"),
-            wing.expect.entity_id_present,
-            "wing {}: the captured artifact is not the entity_id era it is \
-             recorded as",
+        // Confirm the artifact really is an older-era store before asserting
+        // that it is refused, so a pre-migrated fixture cannot make this pass
+        // for the wrong reason.
+        let before = raw(&db_path);
+        assert!(
+            row_count(&before, "notes") > 0,
+            "wing {}: the captured artifact holds no entries, so refusing it proves nothing",
+            wing.id
+        );
+        drop(before);
+
+        // Memory stores no longer climb a migration ladder: identity, the
+        // supersede column and both edge endpoints changed shape, and the
+        // crossing is an export/import rather than an in-place conversion.
+        // Opening one anyway would half-apply a schema over real entries.
+        let msg = match MemoryStore::open(&db_path) {
+            Ok(_) => panic!(
+                "wing {}: a store from an older product must not be opened in place",
+                wing.id
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("memory import"),
+            "wing {}: the refusal must name the way across, got: {msg}",
             wing.id
         );
 
-        let store = MemoryStore::open(&db_path)
-            .unwrap_or_else(|e| panic!("opening wing {} with the current build: {e}", wing.id));
-
-        let all = store.list(None, 500, true).expect("listing all entries");
+        // Refused, not damaged: the artifact must still hold every entry it
+        // arrived with, so the export half has something to read.
+        let after = raw(&db_path);
         assert_eq!(
-            all.len() as i64,
+            row_count(&after, "notes"),
             wing.expect.note_count,
-            "wing {}: entry count changed across the upgrade",
-            wing.id
-        );
-
-        let active = store
-            .list(None, 500, false)
-            .expect("listing active entries");
-        assert_eq!(
-            active.len() as i64,
-            wing.expect.active_note_count,
-            "wing {}: the archived entry stopped being hidden from the default list",
-            wing.id
-        );
-
-        let archived = all
-            .iter()
-            .find(|n| n.title == wing.expect.archived_title)
-            .unwrap_or_else(|| {
-                panic!(
-                    "wing {}: archived entry {:?} vanished in the upgrade",
-                    wing.id, wing.expect.archived_title
-                )
-            });
-        assert_eq!(
-            archived.status, "archived",
-            "wing {}: entry {:?} lost its archived status",
-            wing.id, wing.expect.archived_title
-        );
-
-        let superseded = all
-            .iter()
-            .find(|n| n.title == wing.expect.superseded_title)
-            .unwrap_or_else(|| {
-                panic!(
-                    "wing {}: superseded entry {:?} vanished in the upgrade",
-                    wing.id, wing.expect.superseded_title
-                )
-            });
-        // `MemoryStore` is the local store, so its ids are always rowids.
-        let successor_id = superseded
-            .superseded_by
-            .as_ref()
-            .and_then(|id| id.as_i64())
-            .unwrap_or_else(|| {
-                panic!(
-                    "wing {}: entry {:?} lost its supersede link",
-                    wing.id, wing.expect.superseded_title
-                )
-            });
-        let successor = store
-            .get(successor_id)
-            .expect("reading the successor entry")
-            .unwrap_or_else(|| {
-                panic!(
-                    "wing {}: supersede chain points at id {successor_id}, which no longer exists",
-                    wing.id
-                )
-            });
-        assert_eq!(
-            successor.title, wing.expect.successor_title,
-            "wing {}: the supersede chain now points at the wrong entry",
-            wing.id
-        );
-
-        let hits = store
-            .search_text(&wing.expect.memory_fts_query, 10, None)
-            .expect("full-text search over upgraded memory");
-        assert!(
-            !hits.is_empty(),
-            "wing {}: memory FTS for {:?} returned nothing after the upgrade",
-            wing.id,
-            wing.expect.memory_fts_query
-        );
-
-        let body = store
-            .get(superseded.id.as_i64().expect("local rowid"))
-            .expect("re-reading the superseded entry")
-            .expect("superseded entry present")
-            .body;
-        assert!(
-            !body.is_empty(),
-            "wing {}: entry bodies did not survive the upgrade",
-            wing.id
-        );
-
-        drop(store);
-        let conn = raw(&db_path);
-
-        // The ADR-068 backfill. This is the reason a pre-entity-id wing exists
-        // at all, and it is invisible to every assertion above: entries list,
-        // read and search perfectly well with the column left NULL, and only
-        // start colliding later, once something tries to key on it.
-        assert!(
-            has_column(&conn, "notes", "entity_id"),
-            "wing {}: the entity_id column is missing after the upgrade",
-            wing.id
-        );
-        assert_eq!(
-            conn.query_row(
-                "SELECT count(*) FROM notes WHERE entity_id IS NULL OR trim(entity_id) = ''",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .expect("counting entries without an entity id"),
-            0,
-            "wing {}: the entity_id backfill left entries without one",
-            wing.id
-        );
-        assert_eq!(
-            conn.query_row("SELECT count(DISTINCT entity_id) FROM notes", [], |r| r
-                .get::<_, i64>(0))
-                .expect("counting distinct entity ids"),
-            wing.expect.note_count,
-            "wing {}: entity ids are not distinct per entry, so the unique index \
-             they are meant to carry cannot be promoted",
-            wing.id
-        );
-
-        // Note vectors are as expensive to rebuild as index vectors and just as
-        // invisible to a list or a search-by-text.
-        assert_eq!(
-            row_count(&conn, "note_embeddings_rowids"),
-            wing.expect.note_vector_count,
-            "wing {}: note vectors were discarded across the upgrade",
+            "wing {}: a refused open must leave the store untouched",
             wing.id
         );
     }
@@ -827,7 +700,15 @@ fn upgrading_a_wing_twice_changes_nothing_the_second_time() {
     register_sqlite_vec();
     let m = manifest();
 
-    for wing in m.wings.iter().filter(|w| w.kind != "git-notes") {
+    // Memory wings are excluded: a memory store from an earlier product is
+    // refused rather than opened in place (see
+    // `every_memory_wing_is_refused_rather_than_opened_in_place`), so there is
+    // no in-place upgrade whose idempotency could be measured.
+    for wing in m
+        .wings
+        .iter()
+        .filter(|w| w.kind != "git-notes" && w.kind != "memory")
+    {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = checkout(wing, tmp.path());
 
@@ -918,15 +799,8 @@ fn upgraded_project(tmp: &Path) -> PathBuf {
         .into_iter()
         .find(|w| w.expect.vector_storage != "float768")
         .expect("corpus has no int8 index wing to upgrade");
-    let memory_wing = wings_of_kind(&m, "memory")
-        .into_iter()
-        .next()
-        .expect("corpus has no memory wing to upgrade");
-
     let staged_index = checkout(index_wing, tmp);
     std::fs::rename(&staged_index, dot.join("index.db")).unwrap();
-    let staged_memory = checkout(memory_wing, tmp);
-    std::fs::rename(&staged_memory, dot.join("memory.db")).unwrap();
 
     // A git repo, because the CLI resolves a project from one.
     for args in [
@@ -953,9 +827,27 @@ fn upgraded_project(tmp: &Path) -> PathBuf {
 
     register_sqlite_vec();
     Database::open(&dot.join("index.db")).expect("upgrading the index wing to current");
-    MemoryStore::open(&dot.join("memory.db")).expect("upgrading the memory wing to current");
+    // A corpus memory wing cannot be staged here: an earlier product's store is
+    // refused, never opened in place. The old binary is being asked to read a
+    // CURRENT memory.db, so the current build writes one.
+    let store = MemoryStore::open(&dot.join("memory.db")).expect("creating a current memory wing");
+    store
+        .add_note(
+            "decision",
+            MEMORY_ENTRY_TITLE,
+            "captured so the old binary has an entry to list",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .expect("seeding the memory wing");
     project
 }
+
+// The one memory entry `upgraded_project` seeds, which the old binary must
+// list back.
+const MEMORY_ENTRY_TITLE: &str = "Index must stay usable without a network";
 
 fn table_counts(dot: &Path) -> (i32, i64, i64, i32, i64) {
     let index = raw(&dot.join("index.db"));
@@ -1040,8 +932,7 @@ fn a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data() {
         String::from_utf8_lossy(&listing.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&listing.stdout)
-            .contains("Index must stay usable without a network"),
+        String::from_utf8_lossy(&listing.stdout).contains(MEMORY_ENTRY_TITLE),
         "the old binary read a current memory.db but not its entries"
     );
 

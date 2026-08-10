@@ -51,8 +51,8 @@ fn dry_run_reports_counts_and_writes_nothing() {
     let (before_tags, _): (String, String) = store
         .conn
         .query_row(
-            "SELECT tags, linked_files FROM notes WHERE id = ?1",
-            rusqlite::params![survivor],
+            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
+            rusqlite::params![survivor.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
@@ -67,8 +67,8 @@ fn dry_run_reports_counts_and_writes_nothing() {
     let (after_tags, _): (String, String) = store
         .conn
         .query_row(
-            "SELECT tags, linked_files FROM notes WHERE id = ?1",
-            rusqlite::params![survivor],
+            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
+            rusqlite::params![survivor.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
@@ -93,8 +93,8 @@ fn real_run_collapses_group_survivor_is_earliest_created() {
         1,
         "row count must drop by rows_collapsed"
     );
-    assert!(store.get(survivor).unwrap().is_some(), "survivor remains");
-    assert!(store.get(loser).unwrap().is_none(), "loser is gone");
+    assert!(store.get(&survivor).unwrap().is_some(), "survivor remains");
+    assert!(store.get(&loser).unwrap().is_none(), "loser is gone");
 }
 
 // ── AC12 + AC13: tags/linked_files union add-wins, no survivor value dropped ─
@@ -130,7 +130,7 @@ fn tags_and_linked_files_union_add_wins() {
     assert_eq!(summary.tags_merged, 1, "only the genuinely-new tag counts");
     assert_eq!(summary.linked_files_merged, 1);
 
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert!(note.tags.contains(&"keep".to_string()));
     assert!(note.tags.contains(&"new".to_string()));
     assert!(note.linked_files.contains(&"keep.rs".to_string()));
@@ -149,7 +149,7 @@ fn any_archived_row_makes_survivor_archived() {
         .unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(note.status, "archived");
 }
 
@@ -165,7 +165,7 @@ fn no_archived_row_leaves_survivor_status_unchanged() {
         .unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(note.status, "active");
 }
 
@@ -182,11 +182,11 @@ fn survivor_adopts_lone_superseded_by_from_group() {
     let (loser, _) = store
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 200)
         .unwrap();
-    store.set_superseded_by(loser, elsewhere).unwrap();
+    store.set_superseded_by(&loser, &elsewhere).unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
-    let note = store.get(survivor).unwrap().unwrap();
-    assert_eq!(note.superseded_by, sup(elsewhere));
+    let note = store.get(&survivor).unwrap().unwrap();
+    assert_eq!(note.superseded_by, sup(&elsewhere));
 }
 
 // ── AC17: conflicting superseded_by values -> earliest wins, warn, no error ─
@@ -206,15 +206,15 @@ fn conflicting_superseded_by_earliest_wins_no_error() {
     let (loser, _) = store
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 200)
         .unwrap();
-    store.set_superseded_by(survivor, target_a).unwrap();
-    store.set_superseded_by(loser, target_b).unwrap();
+    store.set_superseded_by(&survivor, &target_a).unwrap();
+    store.set_superseded_by(&loser, &target_b).unwrap();
 
     let result = store.dedupe_entity_ids(false);
     assert!(result.is_ok(), "a conflicting value must never error");
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(target_a),
+        sup(&target_a),
         "the earliest-created row's (survivor's own) value must win"
     );
 }
@@ -232,12 +232,12 @@ fn edge_elsewhere_pointing_at_loser_is_repointed_to_survivor() {
     let (dependent, _) = store
         .add_note("note", "points at loser", "b", &[], &[], None, None)
         .unwrap();
-    store.set_superseded_by(dependent, loser).unwrap();
+    store.set_superseded_by(&dependent, &loser).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.supersede_edges_repointed, 1);
-    let note = store.get(dependent).unwrap().unwrap();
-    assert_eq!(note.superseded_by, sup(survivor));
+    let note = store.get(&dependent).unwrap().unwrap();
+    assert_eq!(note.superseded_by, sup(&survivor));
 }
 
 // ── AC19: a rewrite that would self-point is dropped to NULL instead ────
@@ -251,11 +251,11 @@ fn rewrite_that_would_self_point_is_dropped_to_null() {
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 200)
         .unwrap();
     // The survivor itself already points at its own duplicate-group loser.
-    store.set_superseded_by(survivor, loser).unwrap();
+    store.set_superseded_by(&survivor, &loser).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.supersede_self_edges_dropped, 1);
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by, None,
         "a self-pointing rewrite must drop to NULL rather than self-loop"
@@ -276,18 +276,18 @@ fn loser_embedding_deleted_survivor_embedding_untouched() {
     let vec_a = vec![0u8; 896 * 4];
     let mut vec_b = vec![0u8; 896 * 4];
     vec_b[0] = 1;
-    store.insert_embedding(survivor, &vec_a).unwrap();
-    store.insert_embedding(loser, &vec_b).unwrap();
+    store.insert_embedding(&survivor, &vec_a).unwrap();
+    store.insert_embedding(&loser, &vec_b).unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
-    assert!(has_embedding(&store, survivor), "survivor embedding kept");
+    assert!(has_embedding(&store, &survivor), "survivor embedding kept");
     assert_eq!(
-        store.get_embedding(survivor).unwrap().as_deref(),
+        store.get_embedding(&survivor).unwrap().as_deref(),
         Some(vec_a.as_slice()),
         "survivor's embedding bytes must be provably untouched, not merely present"
     );
     assert!(
-        store.get_embedding(loser).unwrap().is_none(),
+        store.get_embedding(&loser).unwrap().is_none(),
         "loser's embedding row must be gone (loser row itself is deleted too)"
     );
 }
@@ -378,8 +378,8 @@ fn injected_fault_mid_group_after_partial_loser_deletion_rolls_back_byte_for_byt
     // external's supersede edge points at loser_a; a fully-correct
     // rollback must restore both the notes.superseded_by column AND this
     // memory_edges row exactly as they were.
-    store.supersede(external, loser_a).unwrap();
-    store.insert_embedding(loser_a, &[7u8; 896 * 4]).unwrap();
+    store.supersede(&external, &loser_a).unwrap();
+    store.insert_embedding(&loser_a, &[7u8; 896 * 4]).unwrap();
 
     let before = full_db_snapshot(&store);
     assert_eq!(before.0.len(), 4, "precondition: 4 notes seeded");
@@ -406,10 +406,10 @@ fn injected_fault_mid_group_after_partial_loser_deletion_rolls_back_byte_for_byt
     // Sanity: the row that would have been deleted is genuinely still
     // present with its original content (not just "some 4 rows exist").
     assert!(
-        store.get(loser_a).unwrap().is_some(),
+        store.get(&loser_a).unwrap().is_some(),
         "loser_a survives rollback"
     );
-    let restored_survivor = store.get(survivor).unwrap().unwrap();
+    let restored_survivor = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         restored_survivor.tags,
         vec!["orig".to_string()],
@@ -450,9 +450,9 @@ fn dry_run_leaves_full_db_state_byte_for_byte_unchanged() {
     let (external, _) = store
         .add_note("note", "external", "b", &[], &[], None, None)
         .unwrap();
-    store.supersede(external, loser).unwrap();
-    store.insert_embedding(survivor, &[1u8; 896 * 4]).unwrap();
-    store.insert_embedding(loser, &[2u8; 896 * 4]).unwrap();
+    store.supersede(&external, &loser).unwrap();
+    store.insert_embedding(&survivor, &[1u8; 896 * 4]).unwrap();
+    store.insert_embedding(&loser, &[2u8; 896 * 4]).unwrap();
 
     let before = full_db_snapshot(&store);
     let summary = store.dedupe_entity_ids(true).unwrap();
@@ -490,26 +490,26 @@ fn multiple_external_rows_pointing_at_different_losers_all_repoint_to_survivor()
     let (dep_b, _) = store
         .add_note("note", "points at loser_b", "b", &[], &[], None, None)
         .unwrap();
-    store.set_superseded_by(dep_a, loser_a).unwrap();
-    store.set_superseded_by(dep_b, loser_b).unwrap();
+    store.set_superseded_by(&dep_a, &loser_a).unwrap();
+    store.set_superseded_by(&dep_b, &loser_b).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.supersede_edges_repointed, 2);
     assert_eq!(
-        store.get(dep_a).unwrap().unwrap().superseded_by,
-        sup(survivor),
+        store.get(&dep_a).unwrap().unwrap().superseded_by,
+        sup(&survivor),
         "dep_a's edge to loser_a must repoint to the survivor"
     );
     assert_eq!(
-        store.get(dep_b).unwrap().unwrap().superseded_by,
-        sup(survivor),
+        store.get(&dep_b).unwrap().unwrap().superseded_by,
+        sup(&survivor),
         "dep_b's edge to loser_b must repoint to the survivor, independently of dep_a"
     );
 }
 
-// ── Adversarial: delete_edges_for_note must remove edges in *both*
-// directions for a loser (edges the loser points from, and edges other
-// notes point at the loser), leaving no orphan. ─────────────────────────
+// ── Adversarial: deleting a loser must remove edges in *both* directions
+// (edges the loser points from, and edges other notes point at the loser),
+// leaving no orphan. ────────────────────────────────────────────────────
 #[test]
 fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
     let store = open_store();
@@ -526,8 +526,8 @@ fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
         .add_note("note", "b", "b", &[], &[], None, None)
         .unwrap();
     // loser -> other_a (loser is from_id) and other_b -> loser (loser is to_id).
-    store.add_edge(loser, other_a, "relates_to").unwrap();
-    store.add_edge(other_b, loser, "relates_to").unwrap();
+    store.add_edge(&loser, &other_a, "relates_to").unwrap();
+    store.add_edge(&other_b, &loser, "relates_to").unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
 
@@ -535,7 +535,7 @@ fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
         .conn
         .query_row(
             "SELECT COUNT(*) FROM memory_edges WHERE from_id = ?1 OR to_id = ?1",
-            rusqlite::params![loser],
+            rusqlite::params![loser.as_str()],
             |r| r.get(0),
         )
         .unwrap();
@@ -546,9 +546,9 @@ fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
     let _ = survivor;
 }
 
-// Adversarial: relates_to/contradicts edges to a loser are dropped by
-// delete_edges_for_note, not repointed, unlike tags/linked_files/
-// superseded_by. ADR-068's third amendment only specifies a merge rule
+// Adversarial: relates_to/contradicts edges to a loser are dropped with the
+// row, not repointed, unlike tags/linked_files/superseded_by. ADR-068's
+// third amendment only specifies a merge rule
 // for superseded_by, not the memory_edges graph, so this pins the
 // current (lossy) behavior as a known gap rather than a spec violation.
 #[test]
@@ -563,11 +563,11 @@ fn relates_to_edge_to_external_note_is_dropped_not_repointed_known_gap() {
     let (external, _) = store
         .add_note("note", "external relation", "b", &[], &[], None, None)
         .unwrap();
-    store.add_edge(loser, external, "relates_to").unwrap();
+    store.add_edge(&loser, &external, "relates_to").unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
 
-    let (survivor_out, _) = store.get_edges(survivor).unwrap();
+    let (survivor_out, _) = store.get_edges(&survivor).unwrap();
     assert!(
         !survivor_out.iter().any(|e| e.to_id == external),
         "documents current behavior: the loser's relates_to edge to an \

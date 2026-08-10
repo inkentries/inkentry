@@ -134,7 +134,7 @@ pub(super) async fn repair_local_embeddings(
 
     let mut missing: Vec<&SyncRow> = Vec::new();
     for r in live {
-        if usable_vector(local.get_embedding(r.local_id)?).is_none() {
+        if usable_vector(local.get_embedding(&r.id)?).is_none() {
             missing.push(r);
         }
     }
@@ -170,13 +170,13 @@ pub(super) async fn repair_local_embeddings(
             Ok(vec) => {
                 // Committed per row, so an interrupted push keeps every vector
                 // it minted and a re-run embeds only the remainder.
-                local.insert_embedding(r.local_id, &vec_to_blob(&vec))?;
+                local.insert_embedding(&r.id, &vec_to_blob(&vec))?;
                 embedded += 1;
             }
             Err(e) => {
                 // One row's embed failure must not abort a push that is
                 // otherwise fine; it ships text-only and is counted instead.
-                tracing::warn!("embedding note #{} before push failed: {e:#}", r.local_id);
+                tracing::warn!("embedding note {} before push failed: {e:#}", r.id);
                 without_vector += 1;
             }
         }

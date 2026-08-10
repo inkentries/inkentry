@@ -19,8 +19,8 @@ mod common;
 
 use inkentry_core::storage::GitNotesBackend;
 use inkentry_core::storage::MemoryBackend;
-use inkentry_core::storage::NoteId;
 use inkentry_core::storage::NoteInput;
+use inkentry_core::storage::{NoteId, carrier_token};
 use serial_test::serial;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -339,11 +339,16 @@ async fn git_notes_unsupported_methods_return_errors() {
     assert!(backend.search_timeline(&[], "q", 5).await.is_err());
     assert!(backend.harvested_shas().await.is_err());
     assert!(backend.has_source_ref("abc123").await.is_err());
-    assert!(backend.add_edge(1, 2, "relates_to").await.is_err());
-    assert!(backend.get_edges(1).await.is_err());
     assert!(
         backend
-            .supersede(NoteId::from_i64(1), NoteId::from_i64(2))
+            .add_edge(&carrier_token(1), &carrier_token(2), "relates_to")
+            .await
+            .is_err()
+    );
+    assert!(backend.get_edges(&carrier_token(1)).await.is_err());
+    assert!(
+        backend
+            .supersede(carrier_token(1), carrier_token(2))
             .await
             .is_err()
     );
@@ -725,9 +730,9 @@ async fn git_notes_adr_conformance_read_skips_prose() {
     let notes = backend.list(None, 100, false, None).await.expect("list");
 
     assert_eq!(notes.len(), 3, "three records, prose skipped");
-    assert_eq!(notes[0].id, NoteId::from_i64(1));
-    assert_eq!(notes[1].id, NoteId::from_i64(2));
-    assert_eq!(notes[2].id, NoteId::from_i64(3));
+    assert_eq!(notes[0].id, carrier_token(1));
+    assert_eq!(notes[1].id, carrier_token(2));
+    assert_eq!(notes[2].id, carrier_token(3));
     assert_eq!(notes[0].title, "use stripe for payment processing");
     assert_eq!(
         notes[2].title,
@@ -782,9 +787,9 @@ async fn git_notes_add_preserves_prose_and_siblings() {
     // Four records now readable, originals intact and in order.
     let notes = backend.list(None, 100, false, None).await.expect("list");
     assert_eq!(notes.len(), 4, "three original + one appended");
-    assert_eq!(notes[0].id, NoteId::from_i64(1));
-    assert_eq!(notes[1].id, NoteId::from_i64(2));
-    assert_eq!(notes[2].id, NoteId::from_i64(3));
+    assert_eq!(notes[0].id, carrier_token(1));
+    assert_eq!(notes[1].id, carrier_token(2));
+    assert_eq!(notes[2].id, carrier_token(3));
     assert_eq!(notes[3].title, "a fourth decision");
 }
 
@@ -799,7 +804,7 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
 
     let backend = GitNotesBackend::with_root(root.to_path_buf());
     let archived = backend
-        .archive(NoteId::from_i64(2))
+        .archive(carrier_token(2))
         .await
         .expect("archive middle");
     assert!(archived, "middle record archived");
@@ -817,7 +822,7 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     let active_ids: Vec<NoteId> = active.iter().map(|n| n.id.clone()).collect();
     assert_eq!(
         active_ids,
-        vec![NoteId::from_i64(1), NoteId::from_i64(3)],
+        vec![carrier_token(1), carrier_token(3)],
         "only the middle record is hidden"
     );
 
@@ -825,7 +830,7 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(all.len(), 3, "all three records still present");
     let rec2 = all
         .iter()
-        .find(|n| n.id == NoteId::from_i64(2))
+        .find(|n| n.id == carrier_token(2))
         .expect("record 2 present");
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }
@@ -878,7 +883,7 @@ async fn git_notes_backend_archive_appends_never_rewrites() {
     let update: NoteRecord = serde_json::from_str(lines[1]).expect("parse appended record");
     assert_eq!(update.status, "archived");
     assert_ne!(
-        NoteId::from_i64(update.id),
+        carrier_token(update.id),
         id.clone(),
         "the appended state-update mints its own id, never reusing the \
          original rowid"
@@ -3710,7 +3715,7 @@ use inkentry_core::storage::memory::Note;
 /// created — the shape `append_state_update`'s `base` parameter expects.
 fn note_for(title: &str, id: i64, created_at: i64) -> Note {
     Note {
-        id: NoteId::from_i64(id),
+        id: carrier_token(id),
         kind: "decision".to_string(),
         title: title.to_string(),
         body: format!("body for {title}"),

@@ -97,7 +97,7 @@
     "read-memory": {
       "$comment": "inkentry_core::storage::memory::Note. The optional fields carry serde skip_serializing_if.",
       "required": {
-        "id": "integer",
+        "id": "string",
         "kind": "string",
         "title": "string",
         "body": "string",
@@ -107,7 +107,7 @@
         "status": "string"
       },
       "optional": {
-        "superseded_by": "integer",
+        "superseded_by": "string",
         "source_ref": "string",
         "valid_at": "integer",
         "invalid_at": "integer",

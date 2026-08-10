@@ -91,10 +91,10 @@ async fn already_synced_rows_are_left_unembedded() {
         .add_note("decision", "Synced", "body", &[], &[], None, None)
         .unwrap();
     let rows = store.rows_for_sync(false).unwrap();
-    let id = rows[0].local_id;
+    let id = rows[0].id.clone();
     // Outside the push set: the cloud already has it. Repairing these rows is
     // the pull-side follow-up, deliberately not this change.
-    store.set_remote_id(id, "cloud-1").unwrap();
+    store.set_remote_id(&id, "cloud-1").unwrap();
 
     let team = MockServer::start().await;
     mount_batch_ok(&team).await;
@@ -117,7 +117,7 @@ async fn already_synced_rows_are_left_unembedded() {
         embed_count(&loopback.server.received_requests().await.unwrap()),
         0
     );
-    assert!(store.get_embedding(id).unwrap().is_none());
+    assert!(store.get_embedding(&id).unwrap().is_none());
     drop(loopback);
 }
 
@@ -130,9 +130,9 @@ async fn archived_rows_are_not_embedded_but_still_tombstone() {
         .add_note("decision", "Gone", "body", &[], &[], None, None)
         .unwrap();
     let rows = store.rows_for_sync(false).unwrap();
-    let id = rows[0].local_id;
-    store.set_remote_id(id, "cloud-1").unwrap();
-    store.archive(id).unwrap();
+    let id = rows[0].id.clone();
+    store.set_remote_id(&id, "cloud-1").unwrap();
+    store.archive(&id).unwrap();
 
     let team = MockServer::start().await;
     mount_batch_ok(&team).await;
@@ -172,7 +172,7 @@ async fn archived_rows_are_not_embedded_but_still_tombstone() {
             .any(|p| p == "DELETE /v1/projects/proj/memory/cloud-1"),
         "the tombstone must still propagate: {team_paths:?}"
     );
-    assert!(store.get_embedding(id).unwrap().is_none());
+    assert!(store.get_embedding(&id).unwrap().is_none());
     drop(loopback);
 }
 
@@ -190,8 +190,8 @@ async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
     other
         .add_note("decision", "Untouched", "body", &[], &[], None, None)
         .unwrap();
-    let source_id = source.rows_for_sync(false).unwrap()[0].local_id;
-    let other_id = other.rows_for_sync(false).unwrap()[0].local_id;
+    let source_id = source.rows_for_sync(false).unwrap()[0].id.clone();
+    let other_id = other.rows_for_sync(false).unwrap()[0].id.clone();
 
     let team = MockServer::start().await;
     mount_batch_ok(&team).await;
@@ -208,9 +208,9 @@ async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
     .await
     .unwrap();
 
-    assert!(source.get_embedding(source_id).unwrap().is_some());
+    assert!(source.get_embedding(&source_id).unwrap().is_some());
     assert!(
-        other.get_embedding(other_id).unwrap().is_none(),
+        other.get_embedding(&other_id).unwrap().is_none(),
         "only the pushed store may be repaired"
     );
     drop(other_tmp);

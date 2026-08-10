@@ -29,9 +29,8 @@ pub trait MemoryBackend: Send {
     /// Returns `(id, created)`. `created` is `true` for a genuinely new entry,
     /// `false` when the write collided with an existing entry's `entity_id`
     /// and that entry was reused instead (only possible on a local SQLite
-    /// backend whose `idx_notes_entity_id` has been promoted to UNIQUE, see
-    /// `MemoryStore::add_note`). Backends that cannot detect this (git notes,
-    /// remote) always return `true`.
+    /// backend, see `MemoryStore::add_note`). Backends that cannot detect this
+    /// (git notes, remote) always return `true`.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)>;
     /// Topic-filtered search over ALL notes (incl. archived), ordered by
     /// valid_at/created_at ASC — the `memory timeline` retrieval.
@@ -97,9 +96,9 @@ pub trait MemoryBackend: Send {
     async fn has_source_ref(&self, sha: &str) -> Result<bool>;
     /// Insert a directed edge between two notes.
     /// `kind` must be one of: supersedes, relates_to, contradicts.
-    async fn add_edge(&self, from_id: i64, to_id: i64, kind: &str) -> Result<()>;
+    async fn add_edge(&self, from_id: &NoteId, to_id: &NoteId, kind: &str) -> Result<()>;
     /// Return `(outgoing, incoming)` edges for a note.
-    async fn get_edges(&self, id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)>;
+    async fn get_edges(&self, id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)>;
 
     /// Stable identifier for the concrete backend implementation, used for
     /// diagnostics (`inkentry status`/`check --format json`). One of:
@@ -108,23 +107,6 @@ pub trait MemoryBackend: Send {
 }
 
 // ── Local SQLite backend ──────────────────────────────────────────────────────
-
-/// Narrow an opaque [`NoteId`] to the integer a locally-keyed store uses.
-///
-/// The SQLite store keys on a rowid and the git-notes carrier keys on a
-/// creation-time integer; neither can resolve a token minted elsewhere. A
-/// non-numeric id here therefore means the caller aimed a cloud-minted id at a
-/// local store, so the message says that rather than reporting the entry as
-/// missing.
-pub(crate) fn numeric_note_id(id: &NoteId) -> Result<i64> {
-    id.as_i64().ok_or_else(|| {
-        anyhow::anyhow!(
-            "'{id}' is not an id this project's memory store can resolve: it numbers \
-             entries with integers, and this id was minted by a cloud-hosted project. \
-             Run `inkentry memory list` to see the ids this project actually uses."
-        )
-    })
-}
 
 /// Wraps `MemoryStore` in a `tokio::sync::Mutex` so `LocalMemoryBackend: Send + Sync`,
 /// satisfying the `async-trait` Send constraint without needing spawn_blocking.
@@ -147,7 +129,6 @@ impl MemoryBackend for LocalMemoryBackend {
         let tags: Vec<&str> = input.tags.iter().map(String::as_str).collect();
         let files: Vec<&str> = input.linked_files.iter().map(String::as_str).collect();
         let (id, created) = if let Some(supersedes_id) = input.supersedes {
-            let supersedes_id = numeric_note_id(&supersedes_id)?;
             store.add_note_superseding(
                 &input.kind,
                 &input.title,
@@ -155,7 +136,7 @@ impl MemoryBackend for LocalMemoryBackend {
                 &tags,
                 &files,
                 input.valid_at,
-                supersedes_id,
+                &supersedes_id,
             )?
         } else {
             store.add_note(
@@ -169,9 +150,9 @@ impl MemoryBackend for LocalMemoryBackend {
             )?
         };
         if let Some(blob) = &input.embedding {
-            store.insert_embedding(id, blob)?;
+            store.insert_embedding(&id, blob)?;
         }
-        Ok((NoteId::from_i64(id), created))
+        Ok((id, created))
     }
 
     async fn search_timeline(
@@ -245,7 +226,7 @@ impl MemoryBackend for LocalMemoryBackend {
     }
 
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
-        self.store.lock().await.get(numeric_note_id(&id)?)
+        self.store.lock().await.get(&id)
     }
 
     async fn count(&self) -> Result<i64> {
@@ -253,12 +234,11 @@ impl MemoryBackend for LocalMemoryBackend {
     }
 
     async fn archive(&self, id: NoteId) -> Result<bool> {
-        self.store.lock().await.archive(numeric_note_id(&id)?)
+        self.store.lock().await.archive(&id)
     }
 
     async fn supersede(&self, old_id: NoteId, new_id: NoteId) -> Result<bool> {
-        let (old_id, new_id) = (numeric_note_id(&old_id)?, numeric_note_id(&new_id)?);
-        self.store.lock().await.supersede(old_id, new_id)
+        self.store.lock().await.supersede(&old_id, &new_id)
     }
 
     async fn harvested_shas(&self) -> Result<HashSet<String>> {
@@ -269,11 +249,11 @@ impl MemoryBackend for LocalMemoryBackend {
         self.store.lock().await.has_source_ref(sha)
     }
 
-    async fn add_edge(&self, from_id: i64, to_id: i64, kind: &str) -> Result<()> {
+    async fn add_edge(&self, from_id: &NoteId, to_id: &NoteId, kind: &str) -> Result<()> {
         self.store.lock().await.add_edge(from_id, to_id, kind)
     }
 
-    async fn get_edges(&self, id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
+    async fn get_edges(&self, id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
         self.store.lock().await.get_edges(id)
     }
 

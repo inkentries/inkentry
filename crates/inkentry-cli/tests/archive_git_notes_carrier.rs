@@ -123,8 +123,8 @@ fn record_field(line: &str, key: &str) -> String {
 
 // The `id` inkentry assigned locally (in `dir`'s own `memory.db`) to the entry
 // titled `title`. Distinct from the `id` on a git-notes record: two clones
-// mint their own rowids for the same entity independently.
-fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> i64 {
+// mint their own ids for the same entity independently.
+fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> String {
     let out = bin(home, dir)
         .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
         .output()
@@ -140,7 +140,7 @@ fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> i64 {
         .find_map(|line| {
             let v: serde_json::Value = serde_json::from_str(line).ok()?;
             (v.get("title")?.as_str()? == title)
-                .then(|| v.get("id")?.as_i64())
+                .then(|| Some(v.get("id")?.as_str()?.to_string()))
                 .flatten()
         })
         .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
@@ -212,7 +212,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         .success();
     let seeded = inkentry_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
-    let x_id = record_field(&seeded[0], "id");
+    let x_id = local_id_for_title(home_a.path(), &a, "clone-a-archives-me");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B adopts X onto its own working ref before diverging: without a prior
@@ -338,7 +338,7 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
         .success();
     let seeded = inkentry_note_lines(&a);
     assert_eq!(seeded.len(), 1, "setup: A's own add");
-    let a_id = record_field(&seeded[0], "id");
+    let a_id = local_id_for_title(home_a.path(), &a, "double-archived-entry");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
     // B needs its own local (SQLite) copy of X to archive it through the
@@ -354,7 +354,7 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
 
     // B archives its own copy — unaware A hasn't pushed an archive yet.
     bin(&b, &b)
-        .args(["memory", "archive", &b_id.to_string()])
+        .args(["memory", "archive", &b_id])
         .assert()
         .success();
 
@@ -436,7 +436,7 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
     }
 
     let out = bin(home.path(), &dir)
-        .args(["memory", "archive", &id.to_string()])
+        .args(["memory", "archive", &id])
         .output()
         .expect("spawn inkentry memory archive");
 

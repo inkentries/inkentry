@@ -20,14 +20,14 @@ fn adoption_must_not_selfloop_when_a_loser_points_at_the_survivor() {
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 200)
         .unwrap();
     // loser was (per this row) "superseded by" the survivor itself.
-    store.set_superseded_by(loser, survivor).unwrap();
+    store.set_superseded_by(&loser, &survivor).unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
 
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_ne!(
         note.superseded_by,
-        sup(survivor),
+        sup(&survivor),
         "BUG: the survivor's superseded_by must never be adopted as its \
          own id, that is a self-loop. The adoption step at dedupe.rs's \
          `first_non_null` handling has no self-edge guard, unlike the \
@@ -54,7 +54,7 @@ fn adoption_must_not_dangle_when_a_loser_points_at_a_fellow_loser() {
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 300)
         .unwrap();
     // loser_a points at fellow loser loser_b: in-group, not external.
-    store.set_superseded_by(loser_a, loser_b).unwrap();
+    store.set_superseded_by(&loser_a, &loser_b).unwrap();
 
     let result = store.dedupe_entity_ids(false);
 
@@ -72,8 +72,8 @@ fn adoption_must_not_dangle_when_a_loser_points_at_a_fellow_loser() {
     // A future fix must not merely trade the hard error for a silent
     // dangling pointer.
     if result.is_ok() {
-        let note = store.get(survivor).unwrap().unwrap();
-        if let Some(target) = note.superseded_by.as_ref().and_then(|id| id.as_i64()) {
+        let note = store.get(&survivor).unwrap().unwrap();
+        if let Some(target) = note.superseded_by.as_ref() {
             assert!(
                 store.get(target).unwrap().is_some(),
                 "survivor.superseded_by ({target}) must not point at a \
@@ -109,17 +109,17 @@ fn adoption_survivor_own_in_group_pointer_does_not_clobber_fallthrough_adoption(
         .unwrap();
     // Survivor's own value points at fellow duplicate loser_x: in-group,
     // must not be adopted verbatim.
-    store.set_superseded_by(survivor, loser_x).unwrap();
+    store.set_superseded_by(&survivor, &loser_x).unwrap();
     // loser_y's value is genuinely external: the fall-through adoption
     // target once the in-group value is filtered out.
-    store.set_superseded_by(loser_y, external).unwrap();
+    store.set_superseded_by(&loser_y, &external).unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
 
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(external),
+        sup(&external),
         "BUG: the survivor's own pre-existing in-group pointer (at loser_x) \
          should be filtered out of adoption and fall through to loser_y's \
          genuinely-external value, same as any other in-group candidate. \
@@ -155,17 +155,17 @@ fn fallthrough_adoption_skips_intragroup_dangling_candidate_and_adopts_later_ext
         .unwrap();
     // loser_a (first candidate in iteration order) points at a fellow
     // loser: intra-group-dangling, must be skipped.
-    store.set_superseded_by(loser_a, loser_b).unwrap();
+    store.set_superseded_by(&loser_a, &loser_b).unwrap();
     // loser_c (later in iteration order) carries the only valid external
     // candidate.
-    store.set_superseded_by(loser_c, external).unwrap();
+    store.set_superseded_by(&loser_c, &external).unwrap();
 
     store.dedupe_entity_ids(false).unwrap();
 
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(external),
+        sup(&external),
         "the intra-group-dangling candidate from loser_a must be skipped \
          and the later, genuinely-external candidate from loser_c adopted"
     );
@@ -188,8 +188,8 @@ fn adoption_resolves_to_none_when_every_candidate_is_intragroup() {
         .unwrap();
     // loser_a -> loser_b -> survivor: every candidate resolves to a
     // fellow group member, none external.
-    store.set_superseded_by(loser_a, loser_b).unwrap();
-    store.set_superseded_by(loser_b, survivor).unwrap();
+    store.set_superseded_by(&loser_a, &loser_b).unwrap();
+    store.set_superseded_by(&loser_b, &survivor).unwrap();
 
     let result = store.dedupe_entity_ids(false);
     assert!(
@@ -197,7 +197,7 @@ fn adoption_resolves_to_none_when_every_candidate_is_intragroup() {
         "an all-intra-group candidate set must not error: {:?}",
         result.as_ref().err()
     );
-    let note = store.get(survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by, None,
         "with zero valid external candidates in the group, the survivor \
@@ -227,7 +227,7 @@ fn later_loser_pointing_at_earlier_fellow_loser_must_not_break_deletion_order() 
     // loser_late (deleted second, per created_at ASC) points at
     // loser_early (deleted first): the referencing row outlives, in
     // deletion order, the row it references.
-    store.set_superseded_by(loser_late, loser_early).unwrap();
+    store.set_superseded_by(&loser_late, &loser_early).unwrap();
 
     let result = store.dedupe_entity_ids(false);
 
@@ -261,8 +261,8 @@ fn mutually_referencing_fellow_losers_must_not_break_deletion_order() {
     let (loser_b, _) = store
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 300)
         .unwrap();
-    store.set_superseded_by(loser_a, loser_b).unwrap();
-    store.set_superseded_by(loser_b, loser_a).unwrap();
+    store.set_superseded_by(&loser_a, &loser_b).unwrap();
+    store.set_superseded_by(&loser_b, &loser_a).unwrap();
 
     let result = store.dedupe_entity_ids(false);
 
@@ -291,7 +291,7 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
     let (external_b, _) = store
         .add_note("note", "external b", "b", &[], &[], None, None)
         .unwrap();
-    let (_survivor, _) = store
+    let (survivor, _) = store
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 100)
         .unwrap();
     let (loser1, _) = store
@@ -305,20 +305,20 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
         .unwrap();
     // loser1 chains to fellow loser2: in-group, skipped for adoption,
     // must not break deletion order.
-    store.set_superseded_by(loser1, loser2).unwrap();
+    store.set_superseded_by(&loser1, &loser2).unwrap();
     // loser2 itself carries a genuinely-external value.
-    store.set_superseded_by(loser2, external_a).unwrap();
+    store.set_superseded_by(&loser2, &external_a).unwrap();
     // loser3 carries a different external value (conflict case).
-    store.set_superseded_by(loser3, external_b).unwrap();
+    store.set_superseded_by(&loser3, &external_b).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     // Resolution order (created_at ASC): loser1's in-group edge is
     // dropped, loser2's external_a wins over loser3's conflicting
     // external_b.
-    let note = store.get(_survivor).unwrap().unwrap();
+    let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(external_a),
+        sup(&external_a),
         "the earliest-created external candidate (from loser2) must win, \
          with loser1's in-group chain to loser2 correctly excluded"
     );
@@ -345,14 +345,14 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
     let (loser3b, _) = store2
         .add_note_with_created_at("decision", "dup", "body", &[], &[], None, "active", 400)
         .unwrap();
-    store2.set_superseded_by(loser1b, loser2b).unwrap();
-    store2.set_superseded_by(loser2b, external_a2).unwrap();
-    store2.set_superseded_by(loser3b, external_b2).unwrap();
+    store2.set_superseded_by(&loser1b, &loser2b).unwrap();
+    store2.set_superseded_by(&loser2b, &external_a2).unwrap();
+    store2.set_superseded_by(&loser3b, &external_b2).unwrap();
     store2.dedupe_entity_ids(false).unwrap();
-    let note2 = store2.get(survivor2).unwrap().unwrap();
+    let note2 = store2.get(&survivor2).unwrap().unwrap();
     assert_eq!(
         note2.superseded_by,
-        sup(external_a2),
+        sup(&external_a2),
         "the resolution must be deterministic across independent runs \
          on an equivalent input shape, not HashMap-iteration-order- \
          dependent"
@@ -387,7 +387,7 @@ fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_corr
         .unwrap();
     // external_x is a loser in group B, but its own pre-existing
     // superseded_by points at loser_a, a member of the unrelated group A.
-    store.set_superseded_by(external_x, loser_a).unwrap();
+    store.set_superseded_by(&external_x, &loser_a).unwrap();
 
     let result = store.dedupe_entity_ids(false);
 
@@ -404,10 +404,10 @@ fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_corr
     );
     if let Ok(summary) = &result {
         assert_eq!(summary.rows_collapsed, 2, "both groups' losers collapsed");
-        let sb = store.get(survivor_b).unwrap().unwrap();
+        let sb = store.get(&survivor_b).unwrap().unwrap();
         assert_eq!(
             sb.superseded_by,
-            sup(survivor_a),
+            sup(&survivor_a),
             "survivor_b must end up pointing at survivor_a (the row \
              loser_a was merged into), not the deleted loser_a, and not \
              be left dangling"
@@ -416,12 +416,8 @@ fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_corr
 }
 
 // AC24 (structural): dedupe is never reachable except via this method.
-// Covered by construction: `MemoryStore::open` only ever calls
-// `backfill_entity_ids`/`promote_entity_id_unique_index` (see
-// `entity_id_migration.rs`), never `dedupe_entity_ids`. See also
-// `entity_id_migration::tests::promote_with_duplicates_leaves_index_non_unique_and_does_not_error`,
-// which proves opening a store with duplicates present does not collapse
-// them.
+// Covered by construction: `MemoryStore::open` only creates (or verifies)
+// the schema, and no path from it reaches `dedupe_entity_ids`.
 
 // Adversarial (round-5 re-verification, whole-run restructuring): a
 // CHAINED cross-group reference. Group A's survivor points at a loser of
@@ -451,8 +447,8 @@ fn chained_cross_group_reference_resolves_one_hop_not_to_intermediate_loser() {
         .unwrap();
     // A's survivor points at B's loser; B's survivor independently
     // points at C's loser. Two separate edges, not a transitive chain.
-    store.set_superseded_by(survivor_a, loser_b).unwrap();
-    store.set_superseded_by(survivor_b, loser_c).unwrap();
+    store.set_superseded_by(&survivor_a, &loser_b).unwrap();
+    store.set_superseded_by(&survivor_b, &loser_c).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(
@@ -460,22 +456,22 @@ fn chained_cross_group_reference_resolves_one_hop_not_to_intermediate_loser() {
         "one loser each in groups B and C"
     );
 
-    let a = store.get(survivor_a).unwrap().unwrap();
+    let a = store.get(&survivor_a).unwrap().unwrap();
     assert_eq!(
         a.superseded_by,
-        sup(survivor_b),
+        sup(&survivor_b),
         "A's edge to B's loser must resolve to B's survivor id directly, \
          not the raw (now-deleted) loser_b id"
     );
-    let b = store.get(survivor_b).unwrap().unwrap();
+    let b = store.get(&survivor_b).unwrap().unwrap();
     assert_eq!(
         b.superseded_by,
-        sup(survivor_c),
+        sup(&survivor_c),
         "B's own edge to C's loser must resolve to C's survivor \
          independently of A's edge into B"
     );
     assert!(
-        store.get(loser_b).unwrap().is_none() && store.get(loser_c).unwrap().is_none(),
+        store.get(&loser_b).unwrap().is_none() && store.get(&loser_c).unwrap().is_none(),
         "both losers must actually be gone"
     );
 }
@@ -517,7 +513,7 @@ fn ordinary_note_outside_every_group_pointing_at_a_loser_is_rewritten_and_counte
     let (ordinary, _) = store
         .add_note("note", "ordinary unique note", "body", &[], &[], None, None)
         .unwrap();
-    store.set_superseded_by(ordinary, loser_b).unwrap();
+    store.set_superseded_by(&ordinary, &loser_b).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.rows_collapsed, 3, "one loser in each of 3 groups");
@@ -526,10 +522,10 @@ fn ordinary_note_outside_every_group_pointing_at_a_loser_is_rewritten_and_counte
         "the ordinary note's edge into group B's loser must count as a \
          genuine (non-same-group) repoint"
     );
-    let note = store.get(ordinary).unwrap().unwrap();
+    let note = store.get(&ordinary).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(survivor_b),
+        sup(&survivor_b),
         "BUG CHECK: an ordinary note with no group membership at all must \
          still be rewritten by rewrite_cross_references; note_group_of.get \
          returning None for this row must not be mistaken for group \
@@ -568,9 +564,9 @@ fn three_group_reference_cycle_resolves_identically_under_two_processing_orders(
     let (loser_c1, _) = store1
         .add_note_with_created_at("decision", "dup-c", "body", &[], &[], None, "active", 310)
         .unwrap();
-    store1.set_superseded_by(survivor_a1, loser_b1).unwrap();
-    store1.set_superseded_by(survivor_b1, loser_c1).unwrap();
-    store1.set_superseded_by(survivor_c1, loser_a1).unwrap();
+    store1.set_superseded_by(&survivor_a1, &loser_b1).unwrap();
+    store1.set_superseded_by(&survivor_b1, &loser_c1).unwrap();
+    store1.set_superseded_by(&survivor_c1, &loser_a1).unwrap();
 
     let summary1 = store1.dedupe_entity_ids(false).unwrap();
 
@@ -595,9 +591,9 @@ fn three_group_reference_cycle_resolves_identically_under_two_processing_orders(
     let (loser_b2, _) = store2
         .add_note_with_created_at("decision", "dup-b", "body", &[], &[], None, "active", 310)
         .unwrap();
-    store2.set_superseded_by(survivor_a2, loser_b2).unwrap();
-    store2.set_superseded_by(survivor_b2, loser_c2).unwrap();
-    store2.set_superseded_by(survivor_c2, loser_a2).unwrap();
+    store2.set_superseded_by(&survivor_a2, &loser_b2).unwrap();
+    store2.set_superseded_by(&survivor_b2, &loser_c2).unwrap();
+    store2.set_superseded_by(&survivor_c2, &loser_a2).unwrap();
 
     let summary2 = store2.dedupe_entity_ids(false).unwrap();
 
@@ -612,23 +608,23 @@ fn three_group_reference_cycle_resolves_identically_under_two_processing_orders(
     // Same relational outcome under both physical orderings: each
     // survivor ends up pointing at the *next* group's survivor around
     // the cycle, in both variants.
-    let a1 = store1.get(survivor_a1).unwrap().unwrap();
-    let b1 = store1.get(survivor_b1).unwrap().unwrap();
-    let c1 = store1.get(survivor_c1).unwrap().unwrap();
-    assert_eq!(a1.superseded_by, sup(survivor_b1));
-    assert_eq!(b1.superseded_by, sup(survivor_c1));
-    assert_eq!(c1.superseded_by, sup(survivor_a1));
+    let a1 = store1.get(&survivor_a1).unwrap().unwrap();
+    let b1 = store1.get(&survivor_b1).unwrap().unwrap();
+    let c1 = store1.get(&survivor_c1).unwrap().unwrap();
+    assert_eq!(a1.superseded_by, sup(&survivor_b1));
+    assert_eq!(b1.superseded_by, sup(&survivor_c1));
+    assert_eq!(c1.superseded_by, sup(&survivor_a1));
 
-    let a2 = store2.get(survivor_a2).unwrap().unwrap();
-    let b2 = store2.get(survivor_b2).unwrap().unwrap();
-    let c2 = store2.get(survivor_c2).unwrap().unwrap();
+    let a2 = store2.get(&survivor_a2).unwrap().unwrap();
+    let b2 = store2.get(&survivor_b2).unwrap().unwrap();
+    let c2 = store2.get(&survivor_c2).unwrap().unwrap();
     assert_eq!(
         a2.superseded_by,
-        sup(survivor_b2),
+        sup(&survivor_b2),
         "identical relational outcome under the C, A, B physical/vector order"
     );
-    assert_eq!(b2.superseded_by, sup(survivor_c2));
-    assert_eq!(c2.superseded_by, sup(survivor_a2));
+    assert_eq!(b2.superseded_by, sup(&survivor_c2));
+    assert_eq!(c2.superseded_by, sup(&survivor_a2));
 }
 
 // Adversarial (round-5 re-verification): hand-derive every summary count
@@ -677,9 +673,9 @@ fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
         .add_note("note", "ordinary unique note", "body", &[], &[], None, None)
         .unwrap();
 
-    store.set_superseded_by(loser_a1, loser_a2).unwrap();
-    store.set_superseded_by(survivor_a, loser_c1).unwrap();
-    store.set_superseded_by(ordinary, loser_b1).unwrap();
+    store.set_superseded_by(&loser_a1, &loser_a2).unwrap();
+    store.set_superseded_by(&survivor_a, &loser_c1).unwrap();
+    store.set_superseded_by(&ordinary, &loser_b1).unwrap();
 
     let summary = store.dedupe_entity_ids(false).unwrap();
 
@@ -701,14 +697,14 @@ fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
 
     // Cross-check the actual field values agree with the hand-derived
     // counts, not just the counts in isolation.
-    let a = store.get(survivor_a).unwrap().unwrap();
-    assert_eq!(a.superseded_by, sup(survivor_c));
-    let b = store.get(survivor_b).unwrap().unwrap();
+    let a = store.get(&survivor_a).unwrap().unwrap();
+    assert_eq!(a.superseded_by, sup(&survivor_c));
+    let b = store.get(&survivor_b).unwrap().unwrap();
     assert_eq!(b.superseded_by, None);
-    let c = store.get(survivor_c).unwrap().unwrap();
+    let c = store.get(&survivor_c).unwrap().unwrap();
     assert_eq!(c.superseded_by, None);
-    let o = store.get(ordinary).unwrap().unwrap();
-    assert_eq!(o.superseded_by, sup(survivor_b));
+    let o = store.get(&ordinary).unwrap().unwrap();
+    assert_eq!(o.superseded_by, sup(&survivor_b));
     assert_eq!(note_count(&store), 4, "8 - 4 collapsed = 4 remaining rows");
 }
 
@@ -718,12 +714,14 @@ fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
 // batch import or two calls landing in the same unixepoch() second).
 // `all_notes_for_dedup` orders `ORDER BY created_at ASC` with no
 // secondary key, so a tie's resolution order is query-plan-dependent,
-// not guaranteed stable by the SQL standard. Pin id as an explicit
-// secondary tie-break (lower id = inserted first = survivor) so the
-// choice is a documented invariant rather than an accident of the query
-// planner, and prove it holds across repeated runs.
+// not guaranteed stable by the SQL standard. The storage surrogate
+// (`notes.id`) is pinned as an explicit secondary tie-break, so the
+// first-inserted row is the survivor by documented invariant rather than
+// by accident of the query planner. The surrogate is not observable from
+// here, so this asserts the outcome it produces: identity, not ordering,
+// across repeated runs.
 #[test]
-fn tied_created_at_breaks_deterministically_on_lower_id() {
+fn tied_created_at_breaks_deterministically_on_the_first_inserted_row() {
     for _ in 0..5 {
         let store = open_store();
         let (first, _) = store
@@ -750,21 +748,21 @@ fn tied_created_at_breaks_deterministically_on_lower_id() {
                 500,
             )
             .unwrap();
-        assert!(
-            first < second,
-            "precondition: insertion order gives first the lower id"
+        assert_ne!(
+            first, second,
+            "precondition: two distinct rows, not one reused row"
         );
 
         let summary = store.dedupe_entity_ids(false).unwrap();
         assert_eq!(summary.rows_collapsed, 1);
         assert!(
-            store.get(first).unwrap().is_some(),
-            "the lower-id (first-inserted) row must be the deterministic \
-             survivor when created_at ties, on every run"
+            store.get(&first).unwrap().is_some(),
+            "the first-inserted row must be the deterministic survivor \
+             when created_at ties, on every run"
         );
         assert!(
-            store.get(second).unwrap().is_none(),
-            "the higher-id row must be the loser when created_at ties"
+            store.get(&second).unwrap().is_none(),
+            "the later-inserted row must be the loser when created_at ties"
         );
     }
 }
@@ -772,22 +770,17 @@ fn tied_created_at_breaks_deterministically_on_lower_id() {
 // Test-engineer adversarial: dedupe interacting with rows built via
 // `add_note_superseding` (ADR-068 fifth amendment E1), not just
 // `add_note`/`add_note_with_created_at` as every prior test in this file
-// does. Pre-promotion, two independent `add_note_superseding` calls for
-// byte-identical content (each superseding a different OLD row) create
-// two distinct rows sharing one entity_id, a duplicate group whose
-// members both carry an *inbound* edge from an OLD row's own
-// superseded_by. Verifies `dedupe_entity_ids` repoints those inbound
-// edges to the survivor exactly like any other external reference,
-// proving E1's supersede path and the third amendment's dedupe compose
-// correctly.
+// does. With `idx_notes_entity_id` dropped (see `test_support::open_store`),
+// two independent `add_note_superseding` calls for byte-identical content
+// (each superseding a different OLD row) create two distinct rows sharing
+// one entity_id: a duplicate group whose members both carry an *inbound*
+// edge from an OLD row's own superseded_by. Verifies `dedupe_entity_ids`
+// repoints those inbound edges to the survivor exactly like any other
+// external reference, proving E1's supersede path and the third
+// amendment's dedupe compose correctly.
 #[test]
 fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor() {
     let store = open_store();
-    assert!(
-        !index_is_unique_for_test(&store),
-        "precondition: not yet promoted, so add_note_superseding can \
-         still create two distinct rows for identical content"
-    );
 
     let (old1, _) = store
         .add_note("decision", "old one", "old body one", &[], &[], None, None)
@@ -804,10 +797,10 @@ fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor(
             &[],
             &[],
             None,
-            old1,
+            &old1,
         )
         .unwrap();
-    assert!(created1, "pre-promotion: fresh row");
+    assert!(created1, "fresh row");
     let (new2, created2) = store
         .add_note_superseding(
             "decision",
@@ -816,147 +809,113 @@ fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor(
             &[],
             &[],
             None,
-            old2,
+            &old2,
         )
         .unwrap();
     assert!(
         created2,
-        "pre-promotion: identical content still creates a second, \
-         distinct row (the duplicate-group precondition for this test)"
+        "with the entity_id unique index dropped, identical content still \
+         creates a second, distinct row (the duplicate-group precondition \
+         for this test)"
     );
     assert_ne!(new1, new2);
 
     // Precondition: each OLD row now points at its own distinct
     // successor - new1 and new2, which are themselves a duplicate group.
-    assert_eq!(store.get(old1).unwrap().unwrap().superseded_by, sup(new1));
-    assert_eq!(store.get(old2).unwrap().unwrap().superseded_by, sup(new2));
+    assert_eq!(store.get(&old1).unwrap().unwrap().superseded_by, sup(&new1));
+    assert_eq!(store.get(&old2).unwrap().unwrap().superseded_by, sup(&new2));
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.duplicate_groups, 1, "new1/new2 form one group");
     assert_eq!(summary.rows_collapsed, 1);
 
     // new1 (earlier created_at) survives; new2 is the loser.
-    assert!(store.get(new1).unwrap().is_some());
-    assert!(store.get(new2).unwrap().is_none());
+    assert!(store.get(&new1).unwrap().is_some());
+    assert!(store.get(&new2).unwrap().is_none());
 
     // old2's superseded_by, which pointed at the now-deleted new2, must
     // be repointed to the survivor new1: the cross-reference rewrite
     // exercising an edge that originated from the supersede path rather
     // than a plain add_note/set_superseded_by call.
     assert_eq!(
-        store.get(old2).unwrap().unwrap().superseded_by,
-        sup(new1),
+        store.get(&old2).unwrap().unwrap().superseded_by,
+        sup(&new1),
         "old2's supersede edge, created by add_note_superseding, must be \
          repointed off the deleted duplicate onto the survivor"
     );
     assert_eq!(
-        store.get(old1).unwrap().unwrap().superseded_by,
-        sup(new1),
+        store.get(&old1).unwrap().unwrap().superseded_by,
+        sup(&new1),
         "old1's own edge already pointed at the survivor and must be \
          unaffected"
     );
 }
 
-// Step A's collision-skip leaves a colliding row's entity_id column NULL
-// rather than erroring. dedupe_entity_ids recomputes entity_id fresh from
-// {kind,title,body} on every call rather than reading the stored column, so
-// a row Step A was forced to skip is still discoverable and collapsible by
-// inkentry memory dedupe. Proves that end to end, with the skipped row
-// simultaneously the target of an unrelated row's superseded_by.
+// `dedupe_entity_ids` recomputes entity_id fresh from {kind,title,body} on
+// every call rather than reading the stored column, so a hand-edited row
+// whose stored `entity_id` disagrees with its own content is still
+// discoverable and collapsible by `inkentry memory dedupe`. Proves that end
+// to end, with the stray row simultaneously the target of an unrelated
+// row's superseded_by.
 #[test]
-fn step_a_skipped_row_that_is_a_supersede_target_is_still_collapsed_by_dedupe() {
+fn row_with_a_stale_stored_entity_id_is_still_collapsed_by_dedupe() {
     let store = open_store();
     let (existing_id, _) = store
-        .add_note(
+        .add_note_with_created_at(
             "decision",
             "dup entry",
             "same content",
             &[],
             &[],
             None,
-            None,
+            "active",
+            100,
         )
         .unwrap();
-    store.promote_entity_id_unique_index().unwrap();
-    assert!(
-        index_is_unique_for_test(&store),
-        "precondition: index promoted"
-    );
 
-    // A stray NULL-entity_id row colliding with `existing_id` (simulating
-    // a pre-E1 add_note_superseding row, or any other latent NULL-id
-    // insert path): bypasses add_note's own recovery entirely.
+    // Byte-identical content to `existing_id`, but its stored entity_id
+    // column names entirely different content: only a hand-edited store (or
+    // an import carrying a foreign column verbatim) can be in this shape.
+    let stray_uuid = crate::storage::memory::uuid_v7_at(200);
     store
         .conn
         .execute(
-            "INSERT INTO notes (kind, title, body) VALUES ('decision', 'dup entry', 'same content')",
-            [],
+            "INSERT INTO notes (uuid, kind, title, body, created_at, entity_id) \
+             VALUES (?1, 'decision', 'dup entry', 'same content', 200, ?2)",
+            rusqlite::params![
+                stray_uuid,
+                crate::storage::entity_id::entity_id("note", "unrelated", "content"),
+            ],
         )
         .unwrap();
-    let stray_id = store.conn.last_insert_rowid();
+    let stray_id: NoteId = stray_uuid.parse().unwrap();
 
     // A third, unrelated row whose superseded_by points AT the stray
     // row: the stray is simultaneously a supersede target.
     let (pointer_id, _) = store
         .add_note("note", "points at stray", "b", &[], &[], None, None)
         .unwrap();
-    store.set_superseded_by(pointer_id, stray_id).unwrap();
+    store.set_superseded_by(&pointer_id, &stray_id).unwrap();
 
-    // Step A must skip the stray row without error.
-    store
-        .backfill_entity_ids()
-        .expect("Step A must not hard-fail on the collision");
-    let stray_eid: Option<String> = store
-        .conn
-        .query_row(
-            "SELECT entity_id FROM notes WHERE id = ?1",
-            rusqlite::params![stray_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        stray_eid, None,
-        "precondition: Step A left the colliding row's entity_id NULL"
-    );
-
-    // `inkentry memory dedupe` must still find and collapse it, even
-    // though the stored `entity_id` column never got populated: it
-    // recomputes entity_id from {kind,title,body}, not from the column.
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(
         summary.duplicate_groups, 1,
-        "dedupe must discover the group despite the stray row's NULL \
-         stored entity_id column"
+        "dedupe must discover the group despite the stray row's stored \
+         entity_id column naming different content"
     );
     assert_eq!(summary.rows_collapsed, 1);
     assert!(
-        store.get(existing_id).unwrap().is_some(),
+        store.get(&existing_id).unwrap().is_some(),
         "existing_id (earlier-created) survives"
     );
     assert!(
-        store.get(stray_id).unwrap().is_none(),
+        store.get(&stray_id).unwrap().is_none(),
         "the stray row is collapsed away"
     );
     assert_eq!(
-        store.get(pointer_id).unwrap().unwrap().superseded_by,
-        sup(existing_id),
+        store.get(&pointer_id).unwrap().unwrap().superseded_by,
+        sup(&existing_id),
         "pointer_id's edge to the now-deleted stray row must be \
-         repointed to the survivor, proving the promised \
-         Step-A-skip-then-dedupe recovery path actually closes the loop"
+         repointed to the survivor"
     );
-}
-
-// Test-only helper mirroring `entity_id_migration.rs`'s private
-// `index_is_unique`, needed here since this module's tests also drive
-// `promote_entity_id_unique_index` directly.
-fn index_is_unique_for_test(store: &MemoryStore) -> bool {
-    let sql: String = store
-        .conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_notes_entity_id'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    sql.to_uppercase().contains("UNIQUE")
 }

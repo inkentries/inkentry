@@ -2,10 +2,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use super::super::backend::{MemoryBackend, NoteInput, numeric_note_id};
+use super::super::backend::{MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
 use super::GitNotesBackend;
+
+/// The carrier keys on the frozen integer record id, so an id minted anywhere
+/// else simply does not exist here — a miss, not an error.
+fn carrier_id(id: &NoteId) -> Option<i64> {
+    id.as_str().parse().ok()
+}
 
 #[async_trait]
 impl MemoryBackend for GitNotesBackend {
@@ -37,7 +43,7 @@ impl MemoryBackend for GitNotesBackend {
 
         // Git notes are append-only: this backend never detects or collapses
         // a collision, so every add is reported as a fresh insert.
-        Ok((NoteId::from_i64(id), true))
+        Ok((crate::storage::note_record::carrier_token(id), true))
     }
 
     async fn list(
@@ -88,7 +94,9 @@ impl MemoryBackend for GitNotesBackend {
     /// `superseded_by_entity_id`, which callers checking "is OLD still
     /// active" (ADR-068 E4) depend on.
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
-        let id = numeric_note_id(&id)?;
+        let Some(id) = carrier_id(&id) else {
+            return Ok(None);
+        };
         Ok(self
             .folded_records()
             .await?
@@ -114,7 +122,9 @@ impl MemoryBackend for GitNotesBackend {
     /// rewrite mutates an already-written line's bytes, breaking that
     /// invariant even on a single machine with no other clone involved.
     async fn archive(&self, id: NoteId) -> Result<bool> {
-        let id = numeric_note_id(&id)?;
+        let Some(id) = carrier_id(&id) else {
+            return Ok(false);
+        };
         let mut found = None;
         for (commit, _) in self.noted_commits().await? {
             let blob = self.read_note_blob(&commit).await?;
@@ -188,11 +198,11 @@ impl MemoryBackend for GitNotesBackend {
         Err(crate::error::InkentryError::BackendUnsupported("has_source_ref".into()).into())
     }
 
-    async fn add_edge(&self, _from_id: i64, _to_id: i64, _kind: &str) -> Result<()> {
+    async fn add_edge(&self, _from_id: &NoteId, _to_id: &NoteId, _kind: &str) -> Result<()> {
         Err(crate::error::InkentryError::BackendUnsupported("add_edge".into()).into())
     }
 
-    async fn get_edges(&self, _id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
+    async fn get_edges(&self, _id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
         Err(crate::error::InkentryError::BackendUnsupported("get_edges".into()).into())
     }
 

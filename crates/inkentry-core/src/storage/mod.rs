@@ -30,9 +30,10 @@ pub use git_notes::{
 pub use graph::GraphEdge;
 pub use memory::{
     DedupeSummary, MemoryEdge, MemoryStore, NoteId, NotesImportMarker, SyncEdge, SyncRow,
+    unresolvable_id_message, uuid_v7_at,
 };
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
-pub use note_record::{NoteRecord, now_millis, now_secs};
+pub use note_record::{NoteRecord, carrier_token, now_millis, now_secs};
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
     RemoteMemoryBackend, SyncEdgePush,

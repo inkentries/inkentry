@@ -2,9 +2,10 @@
 //!
 //! Identity model. Two stable identifiers bridge the local and cloud stores:
 //!
-//! * `uuid` — the entry's local identity (a fresh UUIDv7, Founder decision §3).
-//!   Pushed to the cloud as `external_id`; the cloud-api batch endpoint dedupes
-//!   on it, so re-pushing the same entry is idempotent (skipped server-side).
+//! * `uuid` — the entry's identity, a UUIDv7 assigned when the entry is
+//!   created. Pushed to the cloud as `external_id`; the cloud-api batch
+//!   endpoint dedupes on it, so re-pushing the same entry is idempotent
+//!   (skipped server-side).
 //! * `remote_id` — the cloud-minted entry id. cloud-api mints its own UUIDv7
 //!   `id`, independent of our `external_id`. We record it on push (from the 207
 //!   batch result) and on pull. **Pull dedupes on `remote_id`**, so an entry
@@ -12,13 +13,13 @@
 //!   feed.
 //!
 //! Every method here keys on these stable ids, never the machine-local
-//! autoincrement `id`, which is what makes a re-run of `sync` a no-op.
+//! autoincrement rowid, which is what makes a re-run of `sync` a no-op.
 
 use anyhow::Result;
 use rusqlite::OptionalExtension;
-use uuid::Uuid;
+use std::str::FromStr;
 
-use super::MemoryStore;
+use super::{MemoryStore, NoteId, uuid_v7::uuid_v7_at};
 
 /// A local note prepared for push to the cloud.
 ///
@@ -28,10 +29,8 @@ use super::MemoryStore;
 /// vector would reintroduce the embedding-space mismatch that conformance removed.
 #[derive(Debug, Clone)]
 pub struct SyncRow {
-    /// Local autoincrement id (for recording the cloud id after a push).
-    pub local_id: i64,
-    /// Stable local identity (UUIDv7) → cloud `external_id`.
-    pub uuid: String,
+    /// The entry's identity (a UUIDv7), pushed as the cloud `external_id`.
+    pub id: NoteId,
     /// Cloud-minted id, once known (set after a prior push/pull).
     pub remote_id: Option<String>,
     pub kind: String,
@@ -45,70 +44,28 @@ pub struct SyncRow {
 /// A local `relates_to` edge ready to propagate to the cloud.
 ///
 /// Both endpoints are already synced (each carries a cloud `remote_id`), so the
-/// server knows them by their `external_id` (the entry's stable `uuid`), the
-/// only id the batch edge route resolves. The local row ids are kept so the
-/// caller can push only edges touching entries synced in the current round.
+/// server knows them by their `external_id`, which is the entry's own id — the
+/// only id the batch edge route resolves.
 #[derive(Debug, Clone)]
 pub struct SyncEdge {
-    pub from_local_id: i64,
-    pub to_local_id: i64,
-    pub from_external_id: String,
-    pub to_external_id: String,
+    pub from_id: NoteId,
+    pub to_id: NoteId,
 }
 
 impl MemoryStore {
-    /// Assign a fresh UUIDv7 to `note_id` if it lacks one; return the entry's
-    /// UUID. Idempotent. This is the Founder-decided backfill (§3) — a *fresh*
-    /// UUIDv7 minted on first sync, not a content-derived UUIDv5 — so identity is
-    /// uniform with cloud-api's UUIDv7 default.
-    pub fn ensure_uuid(&self, note_id: i64) -> Result<String> {
-        if let Some(existing) = self.uuid_for(note_id)? {
-            return Ok(existing);
-        }
-        let uuid = Uuid::now_v7().to_string();
-        self.conn.execute(
-            "UPDATE notes SET uuid = ?1 WHERE id = ?2 AND uuid IS NULL",
-            rusqlite::params![uuid, note_id],
-        )?;
-        Ok(self.uuid_for(note_id)?.unwrap_or(uuid))
-    }
-
-    /// Return the UUID for a local note id, if assigned.
-    pub fn uuid_for(&self, note_id: i64) -> Result<Option<String>> {
-        let uuid: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT uuid FROM notes WHERE id = ?1",
-                rusqlite::params![note_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(uuid)
-    }
-
-    /// Local note id carrying the given stable `uuid` (the local identity
-    /// pushed as the cloud `external_id`), if any. The forward counterpart to
-    /// [`Self::uuid_for`]; used to apply a relayed push-ack (`external_id` ->
-    /// `remote_id`) back onto the originating row.
-    pub fn note_id_for_uuid(&self, uuid: &str) -> Result<Option<i64>> {
-        let id: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM notes WHERE uuid = ?1",
-                rusqlite::params![uuid],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(id)
+    /// Whether this store holds an entry with the given id. Used to apply a
+    /// relayed push-ack (`external_id` -> `remote_id`) back onto the
+    /// originating row.
+    pub fn has_note(&self, id: &NoteId) -> Result<bool> {
+        Ok(self.rowid_for(id)?.is_some())
     }
 
     /// Record the cloud-minted id for a local note (after a successful push or
     /// when first seen on pull). Idempotent.
-    pub fn set_remote_id(&self, note_id: i64, remote_id: &str) -> Result<()> {
+    pub fn set_remote_id(&self, note_id: &NoteId, remote_id: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE notes SET remote_id = ?1 WHERE id = ?2 AND remote_id IS NULL",
-            rusqlite::params![remote_id, note_id],
+            "UPDATE notes SET remote_id = ?1 WHERE uuid = ?2 AND remote_id IS NULL",
+            rusqlite::params![remote_id, note_id.as_str()],
         )?;
         Ok(())
     }
@@ -123,9 +80,8 @@ impl MemoryStore {
         Ok(n > 0)
     }
 
-    /// Collect local notes that are candidates to push, backfilling a fresh
-    /// UUIDv7 on any that lack one. Returns text-only rows (no vectors) ordered
-    /// oldest-first.
+    /// Collect local notes that are candidates to push. Returns text-only rows
+    /// (no vectors) ordered oldest-first.
     ///
     /// Per decision #183 the caller pushes only the rows `WHERE remote_id IS
     /// NULL` (live entries not yet on the cloud), and tombstones archived rows
@@ -140,64 +96,33 @@ impl MemoryStore {
         } else {
             "WHERE status = 'active'"
         };
-        // Read candidate ids first (immutable borrow), then mint UUIDs (mutating),
-        // then build rows — avoids holding a statement across the UUID UPDATE.
-        let ids: Vec<i64> = {
-            let sql =
-                format!("SELECT id FROM notes {status_clause} ORDER BY created_at ASC, id ASC");
-            let mut stmt = self.conn.prepare(&sql)?;
-            stmt.query_map([], |r| r.get::<_, i64>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            self.ensure_uuid(id)?;
-            if let Some(row) = self.sync_row(id)? {
-                out.push(row);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Build a [`SyncRow`] for a single note id (UUID must already be assigned).
-    fn sync_row(&self, note_id: i64) -> Result<Option<SyncRow>> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT id, uuid, remote_id, kind, title, body, source_ref, status \
-                 FROM notes WHERE id = ?1",
-                rusqlite::params![note_id],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                        r.get::<_, String>(5)?,
-                        r.get::<_, Option<String>>(6)?,
-                        r.get::<_, String>(7)?,
-                    ))
-                },
-            )
-            .optional()?;
-
-        let Some((local_id, uuid, remote_id, kind, title, body, source_ref, status)) = row else {
-            return Ok(None);
-        };
-        let Some(uuid) = uuid else { return Ok(None) };
-
-        Ok(Some(SyncRow {
-            local_id,
-            uuid,
-            remote_id,
-            kind,
-            title,
-            body,
-            source_ref,
-            archived: status == "archived",
-        }))
+        let sql = format!(
+            "SELECT uuid, remote_id, kind, title, body, source_ref, status \
+             FROM notes {status_clause} ORDER BY created_at ASC, id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let raw: String = r.get(0)?;
+                let id = NoteId::from_str(&raw).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        e.into(),
+                    )
+                })?;
+                Ok(SyncRow {
+                    id,
+                    remote_id: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    source_ref: r.get(5)?,
+                    archived: r.get::<_, String>(6)? == "archived",
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Idempotently apply a note pulled from the cloud, keyed by `remote_id`
@@ -233,7 +158,7 @@ impl MemoryStore {
         if let Some(existing_id) = self.note_id_for_remote_id(remote_id)? {
             if archived {
                 // Never un-archive (Add-Wins keeps the archive).
-                self.archive(existing_id)?;
+                self.archive(&existing_id)?;
             }
             return Ok(false);
         }
@@ -241,9 +166,10 @@ impl MemoryStore {
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<bool> {
             let status = if archived { "archived" } else { "active" };
-            // A pulled entry gets a fresh local `uuid` too, so a later push of
-            // this store still has a stable external_id for it.
-            let uuid = Uuid::now_v7().to_string();
+            // The cloud's own id is not this store's identity, so the entry is
+            // assigned one here, seeded from its creation time rather than the
+            // wall clock so a batch pull of old entries keeps its ordering.
+            let uuid = uuid_v7_at(created_at);
             let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
             let insert_result = self.conn.execute(
                 "INSERT INTO notes \
@@ -256,9 +182,9 @@ impl MemoryStore {
             let (row_id, created) =
                 self.recover_from_entity_id_collision(insert_result, &entity_id, &[], &[])?;
             if !created {
-                self.set_remote_id(row_id, remote_id)?;
+                self.set_remote_id(&row_id, remote_id)?;
                 if archived {
-                    self.archive(row_id)?;
+                    self.archive(&row_id)?;
                 }
             }
             Ok(created)
@@ -275,17 +201,18 @@ impl MemoryStore {
         }
     }
 
-    /// Local note id carrying the given cloud `remote_id`, if any.
-    pub fn note_id_for_remote_id(&self, remote_id: &str) -> Result<Option<i64>> {
-        let id: Option<i64> = self
+    /// The id of the entry carrying the given cloud `remote_id`, if any.
+    pub fn note_id_for_remote_id(&self, remote_id: &str) -> Result<Option<NoteId>> {
+        let raw: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM notes WHERE remote_id = ?1",
+                "SELECT uuid FROM notes WHERE remote_id = ?1",
                 rusqlite::params![remote_id],
                 |r| r.get(0),
             )
             .optional()?;
-        Ok(id)
+        raw.map(|r| NoteId::from_str(&r).map_err(|e| anyhow::anyhow!(e)))
+            .transpose()
     }
 
     /// The pull cursor: the max cloud `remote_id` already synced locally
@@ -314,27 +241,32 @@ impl MemoryStore {
     /// Only `relates_to` is enumerated: a `supersedes` edge already travels
     /// with its entry's lifecycle on push, and `contradicts` is server-derived
     /// and never pushed up. An edge with an unsynced endpoint is omitted here,
-    /// so it is skipped until a later sync lands that endpoint. The row ids are
-    /// returned so the caller can narrow to edges touching entries synced in
-    /// the current round.
+    /// so it is skipped until a later sync lands that endpoint.
     pub fn relates_to_edges_for_sync(&self) -> Result<Vec<SyncEdge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.from_id, e.to_id, nf.uuid, nt.uuid \
+            "SELECT e.from_id, e.to_id \
              FROM memory_edges e \
-             JOIN notes nf ON nf.id = e.from_id \
-             JOIN notes nt ON nt.id = e.to_id \
+             JOIN notes nf ON nf.uuid = e.from_id \
+             JOIN notes nt ON nt.uuid = e.to_id \
              WHERE e.kind = 'relates_to' \
                AND nf.remote_id IS NOT NULL AND nt.remote_id IS NOT NULL \
-               AND nf.uuid IS NOT NULL AND nt.uuid IS NOT NULL \
              ORDER BY e.created_at, e.from_id, e.to_id",
         )?;
+        let endpoint = |r: &rusqlite::Row<'_>, idx: usize| -> rusqlite::Result<NoteId> {
+            let raw: String = r.get(idx)?;
+            NoteId::from_str(&raw).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    idx,
+                    rusqlite::types::Type::Text,
+                    e.into(),
+                )
+            })
+        };
         let rows = stmt
             .query_map([], |r| {
                 Ok(SyncEdge {
-                    from_local_id: r.get(0)?,
-                    to_local_id: r.get(1)?,
-                    from_external_id: r.get(2)?,
-                    to_external_id: r.get(3)?,
+                    from_id: endpoint(r, 0)?,
+                    to_id: endpoint(r, 1)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

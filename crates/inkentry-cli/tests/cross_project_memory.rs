@@ -128,53 +128,26 @@ impl TestRegistry {
 
 // ── memory-db helpers ─────────────────────────────────────────────────────────
 
-/// Open and migrate a `memory.db` at `path`, returning the raw `Connection`
-/// for direct seeding of test data.
+// Create a `memory.db` at `path`, returning the raw `Connection` for direct
+// seeding of test data.
 fn open_memory_db(path: &Path) -> Connection {
     register_sqlite_vec();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create memory db parent");
     }
     let conn = Connection::open(path).expect("open memory db");
-    // Verbatim migrations from MemoryStore::migrate.
+    conn.execute_batch("PRAGMA foreign_keys = ON")
+        .expect("foreign keys");
     conn.execute_batch(include_str!(
-        "../../../crates/inkentry-core/migrations/004_memory.sql"
+        "../../../crates/inkentry-core/migrations/memory_001_initial.sql"
     ))
-    .expect("004_memory migration");
-    for stmt in [
-        "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-        "ALTER TABLE notes ADD COLUMN superseded_by INTEGER REFERENCES notes(id)",
-        "ALTER TABLE notes ADD COLUMN source_ref TEXT",
-    ] {
-        match conn.execute_batch(stmt) {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => panic!("migration failed: {e}"),
-        }
-    }
-    conn.execute_batch(include_str!(
-        "../../../crates/inkentry-core/migrations/012_memory_fts.sql"
-    ))
-    .expect("012_memory_fts migration");
-    for stmt in [
-        "ALTER TABLE notes ADD COLUMN valid_at INTEGER",
-        "ALTER TABLE notes ADD COLUMN invalid_at INTEGER",
-        "CREATE INDEX IF NOT EXISTS idx_memory_invalid_at ON notes(invalid_at)",
-    ] {
-        match conn.execute_batch(stmt) {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => panic!("migration failed: {e}"),
-        }
-    }
-    conn.execute_batch(include_str!(
-        "../../../crates/inkentry-core/migrations/015_memory_edges.sql"
-    ))
-    .expect("015_memory_edges migration");
+    .expect("memory schema");
+    conn.execute_batch("PRAGMA user_version = 1")
+        .expect("stamp schema version");
     conn
 }
 
-/// Insert a note directly into a `memory.db`.  Returns the row id.
+// Insert a note directly into a `memory.db`. Returns its id.
 fn seed_note(
     conn: &Connection,
     kind: &str,
@@ -182,14 +155,23 @@ fn seed_note(
     body: &str,
     tags: &[&str],
     status: &str,
-) -> i64 {
+) -> String {
+    let uuid = inkentry_core::storage::uuid_v7_at(1_700_000_000);
     conn.execute(
-        "INSERT INTO notes (kind, title, body, tags, status)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![kind, title, body, tags.join(","), status],
+        "INSERT INTO notes (uuid, kind, title, body, tags, status, entity_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            uuid,
+            kind,
+            title,
+            body,
+            tags.join(","),
+            status,
+            inkentry_core::storage::entity_id(kind, title, body)
+        ],
     )
     .expect("seed note");
-    conn.last_insert_rowid()
+    uuid
 }
 
 // ── project setup helpers ─────────────────────────────────────────────────────
@@ -1392,7 +1374,7 @@ fn memory_store_list_excludes_archived_by_default() {
     let (archived_id, _) = store
         .add_note("decision", "Archived note", "body", &[], &[], None, None)
         .expect("add to-be-archived note");
-    store.archive(archived_id).expect("archive note");
+    store.archive(&archived_id).expect("archive note");
 
     let notes = store
         .list(Some("decision"), 100, false)

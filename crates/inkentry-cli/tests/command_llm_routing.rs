@@ -459,6 +459,22 @@ fn toplevel_harvest_cmd(
     cmd
 }
 
+// Replace every `#<uuid>` id token with a fixed placeholder.
+fn mask_ids(out: &str) -> String {
+    out.split('#')
+        .enumerate()
+        .map(|(i, seg)| {
+            if i == 0 {
+                return seg.to_string();
+            }
+            match seg.split_once(':') {
+                Some((id, rest)) if uuid::Uuid::parse_str(id).is_ok() => format!("#<id>:{rest}"),
+                _ => format!("#{seg}"),
+            }
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
     let loopback = server_mock(Some(harvest_payload())).await;
@@ -504,9 +520,12 @@ async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
     );
 
     // Identical stdout: the promotion is a rename, not a behaviour change.
+    // The stored entry's id is a freshly minted UUID, so it differs between
+    // two independent runs by construction and is masked before comparing.
     assert_eq!(
-        top_out, alias_out,
-        "the two spellings must produce byte-identical stdout"
+        mask_ids(&top_out),
+        mask_ids(&alias_out),
+        "the two spellings must produce identical stdout once ids are masked"
     );
 
     // Exactly one deprecation line, on the alias's stderr only, naming the
