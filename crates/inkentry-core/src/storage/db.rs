@@ -12,7 +12,7 @@ pub struct Database {
 /// The runner in `Database::open` gates each migration on this via
 /// `PRAGMA user_version`; steps are numbered in the order they run (the field
 /// order), not filename order.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 15;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 16;
 
 /// One entry in the migration runner: (target version, migration body).
 type MigrationStep = (i32, fn(&Database) -> Result<()>);
@@ -93,6 +93,7 @@ impl Database {
             (13, Self::apply_drop_snapshots_migration),
             (14, Self::apply_index_meta_migration),
             (15, Self::apply_file_mtime_migration),
+            (16, Self::apply_embed_pending_migration),
         ];
         debug_assert_eq!(
             steps.last().map(|(v, _)| *v),
@@ -177,7 +178,7 @@ impl Database {
             Ok(false)
         };
 
-        let ladder: [(i32, bool); 15] = [
+        let ladder: [(i32, bool); 16] = [
             (1, has_table("chunks")?),
             (2, has_table("embeddings")?),
             (3, has_table("graph_edges")?),
@@ -193,6 +194,7 @@ impl Database {
             (13, !has_table("snapshots")?),
             (14, has_table("index_meta")?),
             (15, files_has_column("mtime")?),
+            (16, chunks_has_column("embed_pending")?),
         ];
         // Highest version whose predicate and all lower ones hold.
         let mut version = 0;
@@ -412,6 +414,78 @@ impl Database {
         Ok(())
     }
 
+    /// Add the `chunks.embed_pending` dirty flag and, on the one-time transition
+    /// to the structural-summary composition, null the stale (LLM-scheme) summary
+    /// on every already-embedded chunk and mark it for in-place re-embedding.
+    /// Nulling the summary is what lets the structural recompose and tier-3
+    /// selection — both gated on `summary IS NULL` — actually run; otherwise the
+    /// chunk would re-embed from its old summary yet be stamped as the new scheme.
+    ///
+    /// This deliberately departs from the FLOAT→INT8 precedent
+    /// ([`apply_dim_upgrade_migration`](Self::apply_dim_upgrade_migration)),
+    /// which dropped the vector table so search went dark until re-index. Here
+    /// only the embedding *input text* changed, not the vector space, so every
+    /// existing vector is kept and re-embedded in place (delete-then-insert per
+    /// chunk under the batch transaction); coverage never regresses to zero.
+    ///
+    /// The marking is gated on the **absence** of the `summary_scheme` marker,
+    /// stamped in the same transaction as the marking, so it runs exactly once
+    /// per index and is idempotent across reopens (and across a crash between
+    /// the two writes). A DB already stamped with a *different* scheme — an
+    /// index written by a newer binary, opened by this one — is left untouched:
+    /// same-space input drift is a warning, never a downgrade or a hard error.
+    /// A fresh index has no embedded chunks, so it is only stamped, never marks
+    /// anything.
+    pub fn apply_embed_pending_migration(&self) -> Result<()> {
+        match self
+            .conn
+            .execute_batch(include_str!("../../migrations/026_embed_pending.sql"))
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e).context("running embed_pending migration"),
+        }
+
+        if self.summary_scheme()?.is_none() {
+            let tx = self.conn.unchecked_transaction()?;
+            // Invalidate any old-scheme summary (LLM prose, or `""` from a
+            // failed LLM batch) on already-embedded chunks. The structural
+            // recompose and tier-3 selection are both gated on `summary IS NULL`,
+            // so without this an existing LLM-summary index would re-embed from
+            // its stale summary and get mislabelled `structural_v1`. Named chunks
+            // then recompose structurally; title-less ones re-enter tier-3.
+            tx.execute(
+                "UPDATE chunks SET summary = NULL \
+                 WHERE id IN (SELECT chunk_id FROM embeddings)",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE chunks SET embed_pending = 1 \
+                 WHERE id IN (SELECT chunk_id FROM embeddings)",
+                [],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('summary_scheme', ?1)",
+                rusqlite::params![crate::indexer::summariser::SUMMARY_SCHEME],
+            )?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Read the recorded embedding-input composition scheme
+    /// (`summariser::SUMMARY_SCHEME`), or `None` if never stamped.
+    pub fn summary_scheme(&self) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM index_meta WHERE key = 'summary_scheme'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("reading summary_scheme")
+    }
+
     /// Read the recorded embedding model id, or `None` if never stamped (a DB
     /// predating provenance, treated as "matches anything" until first write).
     pub fn embedding_model(&self) -> Result<Option<String>> {
@@ -530,6 +604,14 @@ impl Database {
                 "INSERT INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
                 rusqlite::params![chunk_id, blob],
             )?;
+            // The stored vector now reflects the current input, so the chunk is
+            // no longer pending re-embed. Clearing it here — in the same
+            // transaction as the vector write — means a kill between the two
+            // rolls back both, and a re-embed re-queues cleanly.
+            conn.execute(
+                "UPDATE chunks SET embed_pending = 0 WHERE id = ?1",
+                rusqlite::params![chunk_id],
+            )?;
             Ok(())
         };
         if self.conn.is_autocommit() {
@@ -564,6 +646,14 @@ impl Database {
             tx.execute(
                 "INSERT INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
                 rusqlite::params![chunk_id, blob],
+            )?;
+            // Same-transaction clear of the re-embed flag: the batch commit that
+            // persists the new vector also marks it current, so a kill mid-batch
+            // rolls back both and `chunks_missing_embeddings` re-queues the whole
+            // batch (including any pending re-embeds) cleanly.
+            tx.execute(
+                "UPDATE chunks SET embed_pending = 0 WHERE id = ?1",
+                rusqlite::params![chunk_id],
             )?;
         }
         // Held before commit (not after): the crash-safety suite needs the
@@ -1023,6 +1113,314 @@ mod tests {
         db.conn
             .query_row("SELECT count(*) FROM embeddings", [], |r| r.get(0))
             .unwrap()
+    }
+
+    fn chunk_pending(db: &Database, chunk_id: i64) -> i64 {
+        db.conn
+            .query_row(
+                "SELECT embed_pending FROM chunks WHERE id = ?1",
+                rusqlite::params![chunk_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// A fresh index is stamped with the current summary scheme and marks nothing
+    /// pending — the flag never fires on the fresh path.
+    #[test]
+    fn fresh_open_stamps_summary_scheme_and_marks_nothing_pending() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+        assert_eq!(
+            db.summary_scheme().unwrap().as_deref(),
+            Some(crate::indexer::summariser::SUMMARY_SCHEME)
+        );
+        assert_eq!(db.refresh_pending_count().unwrap(), 0);
+    }
+
+    /// The one-time structural-summary transition marks every already-embedded
+    /// chunk (and only those — a never-embedded chunk is coverage-pending, not
+    /// refresh-pending), stamps the scheme, and never re-marks on a re-run.
+    #[test]
+    fn embed_pending_migration_marks_embedded_chunks_once_then_is_idempotent() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let embedded = db
+            .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
+            .unwrap();
+        let never_embedded = db
+            .insert_chunk(file_id, "function", Some("b"), 3, 4, "fn b(){}", None, 4)
+            .unwrap();
+        db.insert_embedding(embedded, &vec![0.1f32; dim]).unwrap();
+
+        // Model a pre-scheme existing index: no marker, nothing flagged yet.
+        db.conn
+            .execute("DELETE FROM index_meta WHERE key = 'summary_scheme'", [])
+            .unwrap();
+        db.conn
+            .execute("UPDATE chunks SET embed_pending = 0", [])
+            .unwrap();
+
+        db.apply_embed_pending_migration().unwrap();
+        assert_eq!(
+            chunk_pending(&db, embedded),
+            1,
+            "an already-embedded chunk is marked for in-place re-embed"
+        );
+        assert_eq!(
+            chunk_pending(&db, never_embedded),
+            0,
+            "a never-embedded chunk is coverage-pending, not refresh-pending"
+        );
+        assert_eq!(db.refresh_pending_count().unwrap(), 1);
+        assert_eq!(
+            db.summary_scheme().unwrap().as_deref(),
+            Some(crate::indexer::summariser::SUMMARY_SCHEME)
+        );
+
+        // Re-running after a partial drain must not re-mark: the marker gates it.
+        db.conn
+            .execute("UPDATE chunks SET embed_pending = 0", [])
+            .unwrap();
+        db.apply_embed_pending_migration().unwrap();
+        assert_eq!(
+            db.refresh_pending_count().unwrap(),
+            0,
+            "the marker is stamped, so a re-run marks nothing (idempotent)"
+        );
+    }
+
+    /// The transition off an LLM-summary index must NULL each embedded chunk's
+    /// stale summary, not just flag it. The structural recompose is gated on
+    /// `summary IS NULL`; if the migration left the old LLM prose in place, the
+    /// chunk would re-embed from that stale, non-deterministic summary yet be
+    /// stamped `structural_v1`. After the migration the chunk must (a) have a
+    /// NULL summary, (b) re-appear as a recompose candidate, and (c) recompose
+    /// to a deterministic structural summary that is not the old prose.
+    #[test]
+    fn embed_pending_migration_nulls_stale_llm_summaries_so_they_recompose() {
+        use crate::indexer::graph::{Edge, EdgeKind};
+        use crate::indexer::summariser::compose_structural_summary;
+
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let content = "pub fn parse_config(path: &str) { open(path); read(path); }";
+        let metadata = r#"{"docstring":"Parses the config file.","parent_scope":null}"#;
+        let chunk = db
+            .insert_chunk(
+                file_id,
+                "function",
+                Some("parse_config"),
+                1,
+                2,
+                content,
+                Some(metadata),
+                12,
+            )
+            .unwrap();
+        db.replace_edges(
+            "a.rs",
+            &[
+                Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("parse_config".to_string()),
+                    target_name: "open".to_string(),
+                    kind: EdgeKind::Calls,
+                    line: 1,
+                },
+                Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("parse_config".to_string()),
+                    target_name: "read".to_string(),
+                    kind: EdgeKind::Calls,
+                    line: 1,
+                },
+            ],
+        )
+        .unwrap();
+        db.insert_embedding(chunk, &vec![0.1f32; dim]).unwrap();
+
+        // Model a pre-scheme LLM-summary index: a non-NULL prose summary the old
+        // path wrote, and no scheme marker yet.
+        let stale_prose = "This function does some configuration parsing, probably.";
+        db.update_chunk_summary(chunk, stale_prose).unwrap();
+        db.conn
+            .execute("DELETE FROM index_meta WHERE key = 'summary_scheme'", [])
+            .unwrap();
+        db.conn
+            .execute("UPDATE chunks SET embed_pending = 0", [])
+            .unwrap();
+
+        db.apply_embed_pending_migration().unwrap();
+
+        // (a) the stale summary is nulled, and the chunk is flagged for re-embed.
+        let summary_after: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM chunks WHERE id = ?1",
+                rusqlite::params![chunk],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            summary_after, None,
+            "the migration must NULL the stale LLM summary, not leave it in place"
+        );
+        assert_eq!(chunk_pending(&db, chunk), 1);
+
+        // (b) it re-enters the structural recompose queue.
+        let candidates: Vec<i64> = db
+            .named_chunks_needing_summary()
+            .unwrap()
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert!(
+            candidates.contains(&chunk),
+            "a nulled summary must make the chunk a recompose candidate again"
+        );
+
+        // (c) it recomposes to the deterministic structural form, not the prose,
+        // and that form is byte-identical across runs.
+        let callees = db.callees_for_symbol("parse_config").unwrap();
+        let recomposed = compose_structural_summary(
+            "parse_config",
+            Some("Parses the config file."),
+            &callees,
+            content,
+        );
+        assert_ne!(
+            recomposed, stale_prose,
+            "the recomposed summary must be the structural form, not the old prose"
+        );
+        assert!(recomposed.contains("Parses the config file."));
+        assert!(recomposed.contains("parse config"));
+        assert_eq!(
+            recomposed,
+            compose_structural_summary(
+                "parse_config",
+                Some("Parses the config file."),
+                &callees,
+                content
+            ),
+            "the structural recompose must be byte-identical across runs"
+        );
+    }
+
+    /// A DB stamped with a newer, unknown scheme (a newer binary wrote it, this
+    /// one opened it) is left untouched: no downgrade, no marking, no error —
+    /// same-space input drift warns and continues, never the hard
+    /// `embedding_model` error.
+    #[test]
+    fn embed_pending_migration_leaves_a_newer_scheme_untouched() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let c = db
+            .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
+            .unwrap();
+        db.insert_embedding(c, &vec![0.1f32; dim]).unwrap();
+        db.conn
+            .execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('summary_scheme', 'structural_v99')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("UPDATE chunks SET embed_pending = 0", [])
+            .unwrap();
+
+        db.apply_embed_pending_migration()
+            .expect("an unknown newer scheme must not error");
+        assert_eq!(
+            db.summary_scheme().unwrap().as_deref(),
+            Some("structural_v99"),
+            "a newer scheme must not be downgraded"
+        );
+        assert_eq!(
+            db.refresh_pending_count().unwrap(),
+            0,
+            "a newer scheme must not trigger a re-mark"
+        );
+    }
+
+    /// A legacy index built by the previous binary (no `embed_pending` column,
+    /// no `summary_scheme` marker, `user_version` reset) is inferred at 15 and
+    /// only step 16 runs to bring it current — adding the column and, since it
+    /// has embedded chunks, marking them for one in-place re-embed.
+    #[test]
+    fn legacy_v15_index_infers_15_and_applies_only_embed_pending_step() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let embedded;
+        {
+            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
+            let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+            embedded = db
+                .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
+                .unwrap();
+            db.insert_embedding(embedded, &vec![0.1f32; dim]).unwrap();
+            // Roll back to the pre-026 shape: drop the column and the marker,
+            // reset the stamp so the runner must re-infer from shape.
+            db.conn
+                .execute_batch(
+                    "ALTER TABLE chunks DROP COLUMN embed_pending; \
+                     DELETE FROM index_meta WHERE key = 'summary_scheme'; \
+                     PRAGMA user_version = 0;",
+                )
+                .expect("roll back to pre-embed_pending shape");
+            assert_eq!(
+                Database::infer_legacy_version(&db).unwrap(),
+                15,
+                "with every v1..15 predicate true and only the embed_pending rung false, \
+                 inference must land at 15"
+            );
+        }
+
+        let db = Database::open(tmp.path()).expect("reopen legacy v15 DB");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            chunk_pending(&db, embedded),
+            1,
+            "the embedded chunk is marked once by the inferred upgrade"
+        );
+        assert_eq!(
+            db.summary_scheme().unwrap().as_deref(),
+            Some(crate::indexer::summariser::SUMMARY_SCHEME)
+        );
+    }
+
+    /// The re-embed flag is cleared in the same transaction as the vector write:
+    /// a batch that re-embeds a pending chunk both persists the new vector and
+    /// clears `embed_pending`, atomically.
+    #[test]
+    fn insert_embeddings_clears_embed_pending_in_the_same_transaction() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        let dim = crate::embeddings::EMBEDDING_DIM;
+        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        let c = db
+            .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE chunks SET embed_pending = 1 WHERE id = ?1",
+                rusqlite::params![c],
+            )
+            .unwrap();
+
+        db.insert_embeddings(&[(c, vec![0.1f32; dim])]).unwrap();
+        assert_eq!(
+            chunk_pending(&db, c),
+            0,
+            "a re-embed must clear the pending flag alongside the vector write"
+        );
     }
 
     /// The batch insert writes every row of a batch in one call.

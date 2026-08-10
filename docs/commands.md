@@ -107,8 +107,7 @@ inkentry index <path> [options]
 | `--batch-size <n>` | 0 (auto) | Cap on the embedding batch size (chunks per server request); the embed phase calibrates the actual size from measured throughput, up to this cap. 0 leaves the cap at the server's own 256-chunk limit |
 | `--force` | false | Force full re-index (ignore change detection) |
 | `--recount` | false | Backfill `token_count` for existing chunks and exit |
-| `--no-summaries` | false | Skip LLM summary generation, and the notice explaining why it was skipped, even when an LLM is available |
-| `--summary-batch-size <n>` | 10 | Chunks per LLM summary request |
+| `--no-summaries` | false | Skip the structural summary pass (the deterministic, offline composition of each chunk's `summary:` slot, and the tier-3 MMR slot for title-less chunks) |
 | `--detach` | false | Re-exec in the background and return immediately (used by git hooks) |
 | `--detach-embed` | false | Parse in the foreground, then run the embedding phase in a detached background process and return the prompt (`inkentry init` does this automatically) |
 
