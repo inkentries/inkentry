@@ -314,7 +314,7 @@ mod harvest_claude;
 mod list;
 pub(crate) mod outbox;
 pub(crate) mod reconcile;
-mod reindex;
+pub(crate) mod reindex;
 mod show;
 mod supersede;
 pub mod sync;
@@ -398,7 +398,7 @@ async fn resolve_memory_store(
 /// (ADR-004/067/068). `allow_pre_init_carrier` is the ADR-068 D3 narrowing:
 /// `true` only for `add`/`list`, which ride the git-notes carrier pre-`init`
 /// instead of failing closed. Harvest passes `false` and keeps failing closed.
-pub(super) async fn resolve_store_path(
+pub(crate) async fn resolve_store_path(
     db: Option<PathBuf>,
     allow_pre_init_carrier: bool,
     cfg: &crate::config::Config,

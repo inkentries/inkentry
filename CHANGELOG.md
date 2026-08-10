@@ -50,6 +50,34 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `plumbing graph-edges`, `search --only-memory`, and the corpus filters instead
   of leaving the caller to guess. `memory search` in particular no longer draws
   clap's did-you-mean suggestion of the unrelated `memory archive`.
+- **`inkentry import <dump>`** reads a [portable dump](docs/dump-format.md) into
+  this project: memory entries and their relationships, plus any projects and
+  recorded commands the dump carries. This is how an existing store crosses
+  into a store this build created — nothing is opened in place.
+
+  The dump is verified **whole** before anything is written. Record counts and
+  the digest are both recomputed, and any mismatch refuses the entire file: a
+  truncated dump, one altered byte, records in a different order, a
+  relationship naming an entity that is not there, or a record kind this build
+  does not know. There is no partial import. Record order is otherwise
+  unconstrained — a relationship may appear before the entities it names.
+
+  Entries arriving with an identifier keep it. Entries without one are assigned
+  a UUIDv7 seeded from their own creation time, so a back catalogue keeps its
+  ordering rather than being stamped with the instant it was imported.
+
+  **Embeddings are not carried in a dump.** The import writes in one
+  transaction with no embedding inside it, then runs `memory reindex`'s pass.
+  With no embedder reachable the import still succeeds and reports how many
+  entries are waiting plus the command that finishes the job; `--no-embed`
+  skips the attempt and reports the same. This is worth stating plainly: the
+  default search mode is hybrid, so unembedded entries are still returned by
+  the full-text half, and semantic recall would otherwise degrade with nothing
+  to show for it.
+
+- `inkentry status` reports memory entries that are not yet in semantic search,
+  in both the text and JSON views (`memory_embedding_pending`), naming
+  `inkentry memory reindex` as the fix.
 
 - **Deterministic structural chunk summaries, in the built-in tier.** The
   `summary:` slot folded into each chunk's embedding input is now composed

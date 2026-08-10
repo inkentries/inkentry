@@ -96,6 +96,15 @@ pub(super) fn stub_vector() -> Vec<f32> {
 // auto-discovery at it. `failing_title_marker`, when given, makes the embed
 // route 500 for any request whose body contains it, so a single row's embed
 // failure can be exercised without failing the rest.
+//
+// This mutates `INKENTRY_STATE_DIR` and `INKENTRY_NO_SERVER`, which are
+// process-global. Every caller must carry
+// `#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]`:
+// those are the keys the rest of the crate guards these two variables under,
+// and serial_test's unnamed key is a *separate* lock, so a bare `#[serial]`
+// leaves a caller racing the probe and daemon tests. A concurrent probe then
+// reads this test's `server.port` and hits this test's mock, which is exactly
+// what breaks the "no embed calls" assertions.
 pub(super) async fn spawn_loopback_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,

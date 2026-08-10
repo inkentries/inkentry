@@ -34,7 +34,7 @@ fn embed_count(reqs: &[wiremock::Request]) -> usize {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn an_empty_push_set_makes_no_embed_calls() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -83,7 +83,7 @@ async fn an_empty_push_set_makes_no_embed_calls() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn already_synced_rows_are_left_unembedded() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -122,7 +122,7 @@ async fn already_synced_rows_are_left_unembedded() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn archived_rows_are_not_embedded_but_still_tombstone() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -177,7 +177,7 @@ async fn archived_rows_are_not_embedded_but_still_tombstone() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     // Two stores in separate directories: only the one handed to the push (what
@@ -218,7 +218,7 @@ async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_repair_does_not_alter_or_re_screen_entry_content() {
     // The secret gate lives at `memory add` time. This repair reads the stored
     // title/body to build an embed document and writes back only a vector, so

@@ -989,6 +989,50 @@ the code index. See
 
 ---
 
+## inkentry import
+
+```bash
+inkentry import project.dump
+inkentry import project.dump --format json
+inkentry import project.dump --no-embed
+```
+
+Read a [portable dump](dump-format.md) into this project's stores: memory
+entries and the relationships between them, plus any projects and recorded
+commands the dump carries. This is how an existing store crosses into a store
+this build created — nothing is opened in place.
+
+The dump is read and checked **whole** before anything is written. Its record
+counts and its digest are both recomputed, and any mismatch — a truncated file,
+a single altered byte, records in a different order, a relationship naming an
+entity that is not there, a record kind this build does not know — refuses the
+entire file. There is no partial import, because importing most of a damaged
+dump and saying nothing is the worst available outcome.
+
+Entries arriving with an identifier keep it. Entries without one are assigned a
+UUIDv7 seeded from their own creation time, so a back catalogue keeps its
+ordering instead of being stamped with the instant it was imported.
+
+**Embeddings are not carried in a dump**, so imported entries are not in
+semantic search until they are embedded. The import runs its writes in one
+transaction with no embedding inside it, then runs `memory reindex`'s pass
+afterwards. If no embedder is reachable the import still succeeds and reports
+how many entries are waiting, along with the command that finishes the job;
+`inkentry status` carries the same count. Pass `--no-embed` to skip the attempt
+and just be told.
+
+This matters more than it looks: the default search mode is hybrid, so
+unembedded entries are still returned by the full-text half. Semantic recall
+degrades while the store looks like it is working.
+
+| Flag | Meaning |
+|---|---|
+| `--db <PATH>` | Memory database to import into (overrides auto-detect) |
+| `--no-embed` | Import without embedding; still reports what is pending |
+| `--format <FMT>` | `text` (default) or `json` |
+
+---
+
 ## inkentry sync
 
 Two-way sync (shorthand for `inkentry memory sync`): push your local memory

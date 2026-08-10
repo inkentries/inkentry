@@ -42,7 +42,7 @@ fn paths(reqs: &[wiremock::Request]) -> Vec<String> {
 // ── the never-route-to-server_url invariant ─────────────────────────────────
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn embed_traffic_goes_to_loopback_and_never_to_the_team_server_url() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -89,7 +89,7 @@ async fn embed_traffic_goes_to_loopback_and_never_to_the_team_server_url() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn a_push_speaks_only_to_loopback_and_the_configured_team_server() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -240,7 +240,7 @@ async fn no_local_embedder_sends_no_embed_request_to_the_team_server() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn one_row_embed_failure_leaves_the_rest_of_the_push_intact() {
     let loopback = spawn_loopback_embedder("proj", Some("Poison")).await;
     let (tmp, store) = fresh_store();
@@ -302,7 +302,7 @@ async fn one_row_embed_failure_leaves_the_rest_of_the_push_intact() {
 // ── applicability ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn cloud_first_with_server_url_skips_the_repair_entirely() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -361,7 +361,7 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
 // silently, leaving a push repairing a store `reindex` refuses to touch (or
 // vice versa).
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_repair_applies_exactly_where_reindex_does() {
     use crate::cli::cmd::memory::MemoryReindexArgs;
     use crate::cli::cmd::memory::reindex::memory_reindex;

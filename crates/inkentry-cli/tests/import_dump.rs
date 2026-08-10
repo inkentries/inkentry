@@ -1,0 +1,428 @@
+// End-to-end coverage for `inkentry import`: what lands in the store, what is
+// refused outright, and what the user is told about the part that is not done
+// yet.
+
+mod plumbing_helpers;
+use plumbing_helpers::{inkentry_bin, parse_jsonl, write_config};
+
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// Build a well-formed dump from body lines, computing the footer the way the
+// format document specifies: per-record SHA-256 as lowercase hex, folded as
+// ASCII text in file order, header included, footer excluded.
+fn dump(body: &[&str], counts: &str) -> String {
+    let header = r#"{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"test/1.0.0"}"#;
+    let mut lines = vec![header.to_string()];
+    lines.extend(body.iter().map(|s| s.to_string()));
+
+    let mut fold = Sha256::new();
+    for line in &lines {
+        fold.update(hex(&Sha256::digest(line.as_bytes())).as_bytes());
+    }
+    let digest = format!("sha256:{}", hex(&fold.finalize()));
+    lines.push(format!(
+        r#"{{"record":"footer","counts":{counts},"digest":"{digest}"}}"#
+    ));
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+fn entry(dump_ref: &str, title: &str, created_at: i64, extra: &str) -> String {
+    format!(
+        r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"{title}","body":"body of {title}","created_at":{created_at}{extra}}}"#
+    )
+}
+
+struct Project {
+    _tmp: TempDir,
+    mem_path: std::path::PathBuf,
+    config_path: std::path::PathBuf,
+    root: std::path::PathBuf,
+}
+
+fn project() -> Project {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("inkentry.db");
+    let mem_path = db_path.with_file_name("memory.db");
+    // Port 1 is never listening, so nothing here can reach an embedder: the
+    // import must succeed regardless.
+    let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
+    // Offline, so nothing auto-discovers a loopback embedder that happens to
+    // be running on the developer's machine: these tests are about what the
+    // import does when it cannot embed.
+    let mut cfg = std::fs::read_to_string(&config_path).unwrap();
+    cfg.push_str("mode = \"offline\"\n");
+    std::fs::write(&config_path, cfg).unwrap();
+    let root = tmp.path().to_path_buf();
+    Project {
+        _tmp: tmp,
+        mem_path,
+        config_path,
+        root,
+    }
+}
+
+impl Project {
+    fn import(&self, contents: &str) -> assert_cmd::Command {
+        let path = self.root.join("project.dump");
+        std::fs::write(&path, contents).unwrap();
+        let mut cmd = inkentry_bin();
+        cmd.current_dir(&self.root)
+            .arg("--config")
+            .arg(&self.config_path)
+            .arg("import")
+            .arg(&path)
+            .arg("--db")
+            .arg(&self.mem_path);
+        cmd
+    }
+
+    fn entries(&self) -> Vec<serde_json::Value> {
+        let out = inkentry_bin()
+            .current_dir(&self.root)
+            .arg("--config")
+            .arg(&self.config_path)
+            .arg("memory")
+            .arg("--db")
+            .arg(&self.mem_path)
+            .arg("list")
+            .arg("--archived")
+            .arg("--format")
+            .arg("jsonl")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        parse_jsonl(&out)
+    }
+
+    fn sql<T: rusqlite::types::FromSql>(&self, query: &str) -> T {
+        let conn = rusqlite::Connection::open(&self.mem_path).unwrap();
+        conn.query_row(query, [], |r| r.get(0)).unwrap()
+    }
+}
+
+// ── what lands ───────────────────────────────────────────────────────────────
+
+#[test]
+fn entries_and_their_relationship_land_together() {
+    let p = project();
+    let d = dump(
+        &[
+            &entry("e1", "old", 1000, r#","status":"archived""#),
+            &entry("e2", "new", 2000, ""),
+            r#"{"record":"relationship","type":"supersedes","from":"e2","to":"e1","created_at":2500}"#,
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{"supersedes":1}}"#,
+    );
+    p.import(&d).assert().success();
+
+    let rows = p.entries();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(p.sql::<i64>("SELECT count(*) FROM memory_edges"), 1);
+}
+
+#[test]
+fn an_entry_arriving_with_an_identity_keeps_it_verbatim() {
+    let p = project();
+    let carried = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";
+    let d = dump(
+        &[&entry(
+            "e1",
+            "carried",
+            1000,
+            &format!(r#","uuid":"{carried}""#),
+        )],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+
+    let rows = p.entries();
+    assert_eq!(rows[0]["id"].as_str(), Some(carried));
+}
+
+#[test]
+fn an_entry_arriving_without_one_is_identified_from_its_own_creation_time() {
+    let p = project();
+    // Listed newest-first by the dump, and imported in file order, so an
+    // identifier derived from import order would come out in the wrong
+    // sequence. It must follow created_at instead.
+    let d = dump(
+        &[
+            &entry("e3", "newest", 3_000_000_000, ""),
+            &entry("e1", "oldest", 1_000_000_000, ""),
+            &entry("e2", "middle", 2_000_000_000, ""),
+        ],
+        r#"{"entity":{"memory_entry":3},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+
+    let conn = rusqlite::Connection::open(&p.mem_path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT title FROM notes ORDER BY uuid")
+        .unwrap();
+    let by_identifier: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        by_identifier,
+        vec!["oldest", "middle", "newest"],
+        "assigned identifiers must sort in creation order, not import order"
+    );
+}
+
+#[test]
+fn a_relationship_before_its_entities_imports_the_same_way() {
+    let p = project();
+    let d = dump(
+        &[
+            r#"{"record":"relationship","type":"relates_to","from":"e2","to":"e1"}"#,
+            &entry("e1", "first", 1000, ""),
+            &entry("e2", "second", 2000, ""),
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{"relates_to":1}}"#,
+    );
+    p.import(&d).assert().success();
+    assert_eq!(p.sql::<i64>("SELECT count(*) FROM memory_edges"), 1);
+}
+
+// ── supersede ────────────────────────────────────────────────────────────────
+
+#[test]
+fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
+    let p = project();
+    let d = dump(
+        &[
+            &entry("e1", "predecessor", 1000, r#","status":"archived""#),
+            &entry("e2", "successor", 2000, ""),
+            r#"{"record":"relationship","type":"supersedes","from":"e2","to":"e1"}"#,
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{"supersedes":1}}"#,
+    );
+    p.import(&d).assert().success();
+
+    // `from` is the successor, so it is the PREDECESSOR that carries the link
+    // forward. Getting this backwards is the sharpest trap in the format.
+    let pointing: String = p.sql("SELECT n.title FROM notes n WHERE n.superseded_by IS NOT NULL");
+    assert_eq!(pointing, "predecessor");
+    let target: String = p.sql(
+        "SELECT t.title FROM notes n JOIN notes t ON t.uuid = n.superseded_by \
+         WHERE n.superseded_by IS NOT NULL",
+    );
+    assert_eq!(target, "successor");
+}
+
+#[test]
+fn the_same_supersede_fact_twice_yields_one_edge_and_one_column_value() {
+    let p = project();
+    // A source holding supersession both as a column and as an edge emits it
+    // twice; the exporter already inverts the column form, so the two arrive
+    // as the identical triple.
+    let rel = r#"{"record":"relationship","type":"supersedes","from":"e2","to":"e1"}"#;
+    let d = dump(
+        &[
+            &entry("e1", "predecessor", 1000, r#","status":"archived""#),
+            &entry("e2", "successor", 2000, ""),
+            rel,
+            rel,
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{"supersedes":2}}"#,
+    );
+    // The reported count, not just the stored one: `INSERT OR IGNORE` and an
+    // idempotent supersede column would both absorb a duplicate silently, so
+    // the row counts alone cannot tell whether the reader deduplicated.
+    let out = p
+        .import(&d)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        summary["memory_edges"].as_u64(),
+        Some(1),
+        "the same fact twice is one relationship, not two applied twice"
+    );
+    assert_eq!(summary["supersede_links"].as_u64(), Some(1));
+
+    assert_eq!(p.sql::<i64>("SELECT count(*) FROM memory_edges"), 1);
+    assert_eq!(
+        p.sql::<i64>("SELECT count(*) FROM notes WHERE superseded_by IS NOT NULL"),
+        1
+    );
+}
+
+#[test]
+fn an_entry_with_no_supersede_relationship_has_no_supersede_link() {
+    let p = project();
+    let d = dump(
+        &[&entry("e1", "alone", 1000, "")],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+    assert_eq!(
+        p.sql::<i64>("SELECT count(*) FROM notes WHERE superseded_by IS NOT NULL"),
+        0
+    );
+}
+
+// ── refusal is total ─────────────────────────────────────────────────────────
+
+#[test]
+fn an_altered_dump_is_refused_and_nothing_is_written() {
+    let p = project();
+    let good = dump(
+        &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let tampered = good.replace("body of two", "body of TWO");
+    assert_ne!(good, tampered);
+
+    p.import(&tampered)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("digest"));
+
+    assert!(
+        !p.mem_path.exists() || p.sql::<i64>("SELECT count(*) FROM notes") == 0,
+        "a refused import must leave nothing behind"
+    );
+}
+
+#[test]
+fn a_relationship_endpoint_that_does_not_resolve_refuses_the_whole_dump() {
+    let p = project();
+    let d = dump(
+        &[
+            &entry("e1", "one", 1000, ""),
+            r#"{"record":"relationship","type":"relates_to","from":"e1","to":"ghost"}"#,
+        ],
+        r#"{"entity":{"memory_entry":1},"relationship":{"relates_to":1}}"#,
+    );
+    p.import(&d).assert().failure();
+    assert!(
+        !p.mem_path.exists() || p.sql::<i64>("SELECT count(*) FROM notes") == 0,
+        "the entity must not be imported when a relationship cannot resolve"
+    );
+}
+
+#[test]
+fn an_unrecognised_record_kind_is_refused_not_skipped() {
+    let p = project();
+    let d = dump(
+        &[
+            &entry("e1", "one", 1000, ""),
+            r#"{"record":"annotation","text":"something new"}"#,
+        ],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    p.import(&d).assert().failure();
+    assert!(
+        !p.mem_path.exists() || p.sql::<i64>("SELECT count(*) FROM notes") == 0,
+        "an unknown record kind refuses the file rather than importing the rest"
+    );
+}
+
+// ── what is deliberately not carried ─────────────────────────────────────────
+
+#[test]
+fn the_git_notes_import_cursor_is_not_carried_across() {
+    let p = project();
+    let d = dump(
+        &[&entry("e1", "one", 1000, "")],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+
+    // The cursor is keyed on notes-ref OIDs a rename invalidates. Carrying it
+    // would suppress the first git-notes import after the crossing; starting
+    // empty costs one redundant walk.
+    assert_eq!(
+        p.sql::<i64>("SELECT count(*) FROM notes_import_state"),
+        0,
+        "the import cursor must start empty, not arrive with the dump"
+    );
+}
+
+// ── the part that is not done yet ────────────────────────────────────────────
+
+#[test]
+fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
+    let p = project();
+    let d = dump(
+        &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    // No embedder is reachable. Semantic search would otherwise degrade in the
+    // worst way: the default mode is hybrid, so full-text still answers and
+    // the store looks like it works.
+    p.import(&d)
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("semantic search"))
+        .stderr(predicates::str::contains("inkentry memory reindex"));
+}
+
+#[test]
+fn status_reports_the_entries_still_waiting_to_be_embedded() {
+    let p = project();
+    // `status` reads the project's own store, so the project has to exist
+    // before the import lands in it.
+    inkentry_bin()
+        .current_dir(&p.root)
+        .arg("--config")
+        .arg(&p.config_path)
+        .arg("init")
+        .arg("--no-index")
+        .assert()
+        .success();
+    let project_mem = p.root.join(".inkentry").join("memory.db");
+
+    let d = dump(
+        &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let dump_path = p.root.join("project.dump");
+    std::fs::write(&dump_path, &d).unwrap();
+    inkentry_bin()
+        .current_dir(&p.root)
+        .arg("--config")
+        .arg(&p.config_path)
+        .arg("import")
+        .arg(&dump_path)
+        .arg("--db")
+        .arg(&project_mem)
+        .assert()
+        .success();
+
+    let out = inkentry_bin()
+        .current_dir(&p.root)
+        .arg("--config")
+        .arg(&p.config_path)
+        .arg("status")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        status["memory_embedding_pending"].as_u64(),
+        Some(2),
+        "status must surface the pending count, not leave it to be discovered"
+    );
+}

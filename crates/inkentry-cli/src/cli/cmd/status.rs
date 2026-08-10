@@ -48,10 +48,16 @@ use crate::{
 ///
 /// Additional fields (`tier`, `mode`, `sync_pending`, `sync_last_synced_at`,
 /// `server_url`, `capabilities`, `embedder_state`, `embedding_count`,
-/// `embedding_pending`, `embedding_refresh_pending`, `summary_scheme`,
-/// `embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`) are
-/// present for backward compatibility and richer tooling; treat them as unstable
-/// extensions.
+/// `embedding_pending`, `embedding_refresh_pending`, `memory_embedding_pending`,
+/// `summary_scheme`, `embed_worker_alive`, `embed_tokens`, `drift_candidates`,
+/// `usage_7d`) are present for backward compatibility and richer tooling; treat
+/// them as unstable extensions.
+///
+/// `memory_embedding_pending` counts memory entries with no vector — the set
+/// `inkentry memory reindex` fills. `null` when there is no readable local
+/// store. Worth consuming: the default search mode is hybrid, so those entries
+/// still come back from the full-text half and semantic recall degrades with
+/// nothing else to show for it.
 ///
 /// `sync_pending`/`sync_last_synced_at` (ADR-037 P2) are `null` unless `mode`
 /// is `"local_first"`: the outbox pending count and the local relay's last
@@ -130,6 +136,14 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             } else {
                 (None, None)
             };
+
+        // Entries the vector index cannot see. Worth surfacing because the
+        // failure is silent: the default search mode is hybrid, so full-text
+        // still returns them and recall looks complete while it is not.
+        let memory_embedding_pending: Option<usize> = MemoryStore::open(&mem_path)
+            .ok()
+            .and_then(|s| s.notes_missing_embeddings(false).ok())
+            .map(|v| v.len());
 
         // has_semantic_search: true only when a Server tier is reachable and it
         // advertises the search.semantic capability.
@@ -236,6 +250,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 // ── Extensions (backward-compat, may change) ─────────────────
                 "tier": tier_str,
                 "mode": cfg.resolve_mode().as_str(),
+                "memory_embedding_pending": memory_embedding_pending,
                 "sync_pending": sync_pending,
                 "sync_last_synced_at": sync_last_synced_at,
                 "server_url": tier_url,
@@ -399,6 +414,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         ) {
             cprintln!("{line}");
         }
+    }
+    if let Some(line) = memory_embedding_line(&mem_path_text) {
+        cprintln!("{line}");
     }
     if let Some(ts) = s.last_indexed {
         println!("Last index: {}", format_age(ts));
@@ -675,6 +693,31 @@ fn humanize_eta(eta: std::time::Duration) -> String {
 /// percentage serving both questions is the defect this replaces. On an index
 /// whose token counts are not backfilled (total 0) the work clause is omitted
 /// rather than fabricated.
+/// One line naming memory entries the vector index cannot see, and the command
+/// that fixes it. `None` when there are none, or when there is no local store.
+///
+/// Worth a line of its own rather than a footnote: the default search mode is
+/// hybrid, so these entries are still returned by the full-text half. Recall
+/// degrades with nothing to show for it, which is worse than an empty result.
+fn memory_embedding_line(mem_path: &std::path::Path) -> Option<String> {
+    if !mem_path.exists() {
+        return None;
+    }
+    let pending = MemoryStore::open(mem_path)
+        .ok()?
+        .notes_missing_embeddings(false)
+        .ok()?
+        .len();
+    if pending == 0 {
+        return None;
+    }
+    Some(format!(
+        "\x1b[33m[Memory: {pending} entr{} not in semantic search; \
+         run 'inkentry memory reindex']\x1b[0m",
+        if pending == 1 { "y" } else { "ies" }
+    ))
+}
+
 fn embedding_state_line(
     worker_alive: bool,
     embedder_unavailable: bool,

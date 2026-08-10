@@ -1,5 +1,6 @@
 pub mod config;
 pub mod conventions;
+pub mod dump;
 pub mod embeddings;
 pub mod error;
 pub mod indexer;

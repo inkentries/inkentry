@@ -40,7 +40,7 @@ enum Outcome {
     Done,
 }
 
-pub(super) async fn memory_reindex(
+pub(crate) async fn memory_reindex(
     args: MemoryReindexArgs,
     mem_path: &std::path::Path,
     cfg: &Config,

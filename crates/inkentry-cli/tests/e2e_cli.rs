@@ -849,6 +849,7 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "embedding_dim",
         "has_semantic_search",
         "last_indexed_at",
+        "memory_embedding_pending",
         "memory_entries",
         "memory_backend",
         "tier",

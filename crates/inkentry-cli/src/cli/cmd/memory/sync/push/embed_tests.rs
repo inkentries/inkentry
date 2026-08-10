@@ -57,7 +57,7 @@ fn embed_docs(reqs: &[wiremock::Request]) -> Vec<String> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -101,7 +101,7 @@ async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn push_embeds_the_same_document_string_reindex_does() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -131,7 +131,7 @@ async fn push_embeds_the_same_document_string_reindex_does() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -179,7 +179,7 @@ async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn locally_embedded_row_ships_its_vector_when_the_server_accepts_vectors() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -214,7 +214,7 @@ async fn locally_embedded_row_ships_its_vector_when_the_server_accepts_vectors()
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -250,7 +250,7 @@ async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -289,7 +289,7 @@ async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn a_second_push_run_issues_no_embed_calls() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -333,7 +333,7 @@ async fn a_second_push_run_issues_no_embed_calls() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn reindex_has_nothing_pending_for_rows_a_push_just_repaired() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
@@ -364,7 +364,7 @@ async fn reindex_has_nothing_pending_for_rows_a_push_just_repaired() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn vectors_minted_before_an_interrupted_chunk_stay_durable() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
