@@ -130,7 +130,7 @@ the matching notes (nearest-neighbour ordered); `total` is their count in this
 response (already `limit`-capped, not a project-wide total).
 
 ```json
-{ "entries": [ { "id": 42, "kind": "decision", "title": "…" } ], "total": 1 }
+{ "entries": [ { "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33", "kind": "decision", "title": "…" } ], "total": 1 }
 ```
 
 `GET /v1/projects/{project_id}/memory` (list) uses the same `{entries, total}`
@@ -278,6 +278,24 @@ assumptions about message content. `capabilities` array gains `"llm.complete"`.
 is added. Server-side memory KNN continues to use the text-query
 `/memory/search` form above.
 
+### Note identity
+
+Every memory entry this server stores has one identity: a **UUIDv7**, minted by
+the server when the entry arrives. It is what `id` carries on every route, what
+`superseded_by` points at, what `{note_id}` addresses, and what the `since_id`
+delta-pull cursor orders by. It is minted once and never re-minted, so it is
+safe to store on the other side of the wire.
+
+The `notes.id` integer rowid the server keys its own table on is a storage
+surrogate — the embedding table is a `vec0` virtual table that can only join on
+an integer — and is not exposed on any route. See
+[ADR-078](../adr/078-uuidv7-memory-entry-identity.md).
+
+`remote_id` is a different thing and is not an identity: it is the *pushing
+client's* own `external_id`, carried so `POST …/memory/batch` can be idempotent.
+It is absent on entries created through the single-note route, and it is unique
+only within a project.
+
 ### Conflict detection on write
 
 `POST /v1/projects/{project_id}/memory` checks whether a semantically similar
@@ -288,9 +306,9 @@ body:
 ```json
 {
   "stored": true,
-  "id": 42,
+  "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33",
   "conflicts": [
-    { "id": 37, "title": "Previous similar entry", "similarity": 0.97 }
+    { "id": "0199a0ee-1b77-7f04-8c62-3d51ba90c7a1", "title": "Previous similar entry", "similarity": 0.97 }
   ]
 }
 ```

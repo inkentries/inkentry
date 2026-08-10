@@ -6,6 +6,18 @@ use uuid::Uuid;
 
 use inkentry_core::embeddings::blob_to_vec;
 
+use crate::uuid_v7::uuid_v7_at;
+
+/// The `ServerNote` projection, in [`row_to_note`]'s column order.
+///
+/// `n` is the entry, `s` its successor: `notes.superseded_by` stores a rowid,
+/// and the wire carries the successor's exported identity, so the join is what
+/// keeps the rowid inside this module (ADR-078).
+const NOTE_COLUMNS: &str = "n.sync_id, n.kind, n.title, n.body, n.tags, n.linked_files, \
+                            n.created_at, n.status, s.sync_id, n.remote_id";
+
+const NOTE_SOURCE: &str = "notes n LEFT JOIN notes s ON s.id = n.superseded_by";
+
 /// Typed error for an embedding-dimension mismatch on a project. Kept distinct
 /// from `anyhow::Error` so callers (the HTTP layer) can map it to a safe,
 /// specific 400 response without sniffing the error message for substrings —
@@ -78,7 +90,12 @@ pub struct Project {
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct ServerNote {
-    pub id: i64,
+    // Stored as `notes.sync_id`. The `notes.id` rowid beside it is a join key
+    // for `note_embeddings` and never leaves this module (ADR-078); the doc
+    // comment below is published in the OpenAPI document, so it stays on the
+    // API's side of that line.
+    /// The entry's identity: a UUIDv7 minted by this server.
+    pub id: String,
     /// Kind: `decision`, `requirement`, `note`, `question`, `handoff`, or `intent`.
     pub kind: String,
     pub title: String,
@@ -89,8 +106,9 @@ pub struct ServerNote {
     pub created_at: i64,
     /// `active` or `archived`.
     pub status: String,
+    /// Identity of the entry that superseded this one, or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub superseded_by: Option<i64>,
+    pub superseded_by: Option<String>,
     /// Canonical cross-machine id (uuid). Optional and additive; `None` for
     /// rows never assigned one. Absent on the wire when `None`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -98,6 +116,18 @@ pub struct ServerNote {
     /// Cosine distance from query (only present in search results).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance: Option<f64>,
+}
+
+/// A near-duplicate found by [`ServerDb::search_notes_for_conflicts`].
+///
+/// Carries both identities on purpose: `id` is what the 409 body reports,
+/// `rowid` is what the `contradicts` edge is drawn on.
+#[derive(Debug)]
+pub struct ConflictCandidate {
+    pub rowid: i64,
+    pub id: String,
+    pub title: String,
+    pub distance: f64,
 }
 
 /// A row from [`ServerDb::notes_since_id`] — the `since_id` cursor-mode
@@ -190,27 +220,42 @@ impl ServerDb {
             Err(e) => return Err(e).context("server migration 007"),
         }
         self.backfill_missing_sync_ids()?;
+        // Migration 008 promotes `sync_id` to the exported identity. It runs
+        // after the backfill so the unique index it creates is unconditional
+        // rather than partial, and so the NOT NULL triggers never see a row
+        // the backfill was still going to heal.
+        self.conn
+            .execute_batch(include_str!("../migrations/server_008.sql"))
+            .context("server migration 008")?;
         Ok(())
     }
 
-    /// Assign a fresh `sync_id` to every row that predates migration 007.
+    /// Assign a `sync_id` to every row that predates migration 007.
+    ///
     /// Idempotent and cheap once caught up (the `WHERE sync_id IS NULL` scan
     /// returns nothing). Runs unconditionally on every open so a legacy
-    /// database is fully backfilled before any `since_id` cursor pull is
-    /// served. Ordered by `id ASC` so the minted ids stay relatively ordered
-    /// among themselves, matching original insertion order.
+    /// database is fully backfilled before any request is served — `sync_id`
+    /// is the note's exported identity (ADR-078), so a row without one is a
+    /// note the HTTP API cannot name.
+    ///
+    /// Each id's v7 timestamp is seeded from that row's own `created_at`, not
+    /// the wall clock. A server that has held team data since before migration
+    /// 007 backfills its whole back catalogue in one pass; minting from the
+    /// clock would stamp every historical row with the same instant and
+    /// discard the ordering v7 exists to carry, irreversibly and for all of
+    /// history at once.
     fn backfill_missing_sync_ids(&self) -> Result<()> {
-        let stale_ids: Vec<i64> = {
-            let mut stmt = self
-                .conn
-                .prepare_cached("SELECT id FROM notes WHERE sync_id IS NULL ORDER BY id ASC")?;
-            stmt.query_map([], |row| row.get(0))?
+        let stale: Vec<(i64, i64)> = {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT id, created_at FROM notes WHERE sync_id IS NULL ORDER BY id ASC",
+            )?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
-        for id in stale_ids {
+        for (id, created_at) in stale {
             self.conn.execute(
                 "UPDATE notes SET sync_id = ?1 WHERE id = ?2",
-                rusqlite::params![Uuid::now_v7().to_string(), id],
+                rusqlite::params![uuid_v7_at(created_at), id],
             )?;
         }
         Ok(())
@@ -342,12 +387,23 @@ impl ServerDb {
 
     // ── Notes ─────────────────────────────────────────────────────────────────
 
-    /// Returns `(note_id, sync_id)`: the local autoincrement row id, and the
-    /// stable `sync_id` UUIDv7 minted for it. A caller that hands an id back
-    /// across the wire (e.g. `push_memory_batch`'s ack) must use `sync_id`,
-    /// not `note_id`: `/memory/since` cursors on `sync_id`, and a wire id that
-    /// doesn't match what that endpoint returns breaks pull cursoring for
-    /// whoever stores it.
+    /// Resolve an exported note identity to the rowid the storage layer joins
+    /// on. `None` when no live-or-archived row in this project carries it.
+    fn resolve_rowid(&self, project_id: i64, note_id: &str) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT id FROM notes WHERE sync_id = ?1 AND project_id = ?2",
+                rusqlite::params![note_id, project_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("resolving note id")
+    }
+
+    /// Returns `(rowid, note_id)`: the internal join key, and the entry's
+    /// exported UUIDv7 identity. Every caller that hands an id across the wire
+    /// uses the second — the first addresses `note_embeddings` and nothing
+    /// else (ADR-078).
     #[allow(clippy::too_many_arguments)]
     pub fn add_note(
         &self,
@@ -437,11 +493,13 @@ impl ServerDb {
         Ok(map)
     }
 
-    pub fn get_note(&self, project_id: i64, note_id: i64) -> Result<Option<ServerNote>> {
+    pub fn get_note(&self, project_id: i64, note_id: &str) -> Result<Option<ServerNote>> {
         self.conn
             .query_row(
-                "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
-                 FROM notes WHERE id = ?1 AND project_id = ?2",
+                &format!(
+                    "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
+                     WHERE n.sync_id = ?1 AND n.project_id = ?2"
+                ),
                 rusqlite::params![note_id, project_id],
                 row_to_note,
             )
@@ -460,29 +518,28 @@ impl ServerDb {
         let status_clause = if include_archived {
             ""
         } else {
-            "AND status = 'active'"
+            "AND n.status = 'active'"
         };
-        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(kind) =
-            kind_filter
-        {
-            (
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(kind) = kind_filter {
+                (
                     format!(
-                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
-                         FROM notes WHERE project_id = ?1 AND kind = ?2 {status_clause}
-                         ORDER BY created_at DESC LIMIT {limit}"
+                        "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
+                     WHERE n.project_id = ?1 AND n.kind = ?2 {status_clause}
+                     ORDER BY n.created_at DESC LIMIT {limit}"
                     ),
                     vec![Box::new(project_id), Box::new(kind.to_string())],
                 )
-        } else {
-            (
+            } else {
+                (
                     format!(
-                        "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
-                         FROM notes WHERE project_id = ?1 {status_clause}
-                         ORDER BY created_at DESC LIMIT {limit}"
+                        "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
+                     WHERE n.project_id = ?1 {status_clause}
+                     ORDER BY n.created_at DESC LIMIT {limit}"
                     ),
                     vec![Box::new(project_id)],
                 )
-        };
+            };
         let mut stmt = self.conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let notes = stmt
@@ -505,10 +562,10 @@ impl ServerDb {
                  FROM   note_embeddings
                  WHERE  embedding MATCH ?1 AND k = {limit}
              )
-             SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
-                    n.created_at, n.status, n.superseded_by, n.remote_id, CAST(k.distance AS REAL)
+             SELECT {NOTE_COLUMNS}, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
+             LEFT   JOIN notes s ON s.id = n.superseded_by
              WHERE  n.project_id = ?2 AND n.status = 'active'
              ORDER  BY k.distance"
         );
@@ -524,15 +581,20 @@ impl ServerDb {
 
     /// Search for existing active notes that are semantically close to the given embedding.
     /// Returns notes with cosine distance ≤ `max_distance` (i.e. similarity ≥ `1 - max_distance`),
-    /// excluding `exclude_id` (the note just written).
+    /// excluding `exclude_rowid` (the note just written).
+    ///
+    /// Yields [`ConflictCandidate`] rather than [`ServerNote`] because the
+    /// caller both reports the match over the wire (needing its identity) and
+    /// draws a `contradicts` edge to it (needing its rowid); re-resolving one
+    /// from the other per hit would be a query per conflict.
     pub fn search_notes_for_conflicts(
         &self,
         project_id: i64,
         query_vec: &[f32],
         max_distance: f32,
-        exclude_id: i64,
+        exclude_rowid: i64,
         limit: usize,
-    ) -> Result<Vec<ServerNote>> {
+    ) -> Result<Vec<ConflictCandidate>> {
         let limit = limit.min(50);
         let blob = inkentry_core::embeddings::vec_to_blob(query_vec);
         // We search with a generous k (limit + 1 for the excluded entry) and filter in Rust.
@@ -543,8 +605,7 @@ impl ServerDb {
                  FROM   note_embeddings
                  WHERE  embedding MATCH ?1 AND k = {search_limit}
              )
-             SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
-                    n.created_at, n.status, n.superseded_by, n.remote_id, CAST(k.distance AS REAL)
+             SELECT n.id, n.sync_id, n.title, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
              WHERE  n.project_id = ?2
@@ -555,13 +616,20 @@ impl ServerDb {
              LIMIT  {limit}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let notes = stmt
+        let candidates = stmt
             .query_map(
-                rusqlite::params![blob, project_id, exclude_id, max_distance as f64],
-                row_to_note_with_distance,
+                rusqlite::params![blob, project_id, exclude_rowid, max_distance as f64],
+                |row| {
+                    Ok(ConflictCandidate {
+                        rowid: row.get(0)?,
+                        id: row.get(1)?,
+                        title: row.get(2)?,
+                        distance: row.get(3)?,
+                    })
+                },
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(notes)
+        Ok(candidates)
     }
 
     /// Insert a directed edge between two server notes.
@@ -604,19 +672,27 @@ impl ServerDb {
         Ok(shas)
     }
 
-    pub fn archive_note(&self, project_id: i64, note_id: i64) -> Result<bool> {
+    pub fn archive_note(&self, project_id: i64, note_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE notes SET status = 'archived' WHERE id = ?1 AND project_id = ?2 AND status = 'active'",
+            "UPDATE notes SET status = 'archived'
+             WHERE sync_id = ?1 AND project_id = ?2 AND status = 'active'",
             rusqlite::params![note_id, project_id],
         )?;
         Ok(changed > 0)
     }
 
-    pub fn supersede_note(&self, project_id: i64, old_id: i64, new_id: i64) -> Result<bool> {
+    /// `superseded_by` stores the successor's rowid, so the successor must be
+    /// resolved before the write: foreign keys are enforced on this connection
+    /// and an unresolvable successor would otherwise be a constraint error
+    /// rather than the "nothing matched" the caller can act on.
+    pub fn supersede_note(&self, project_id: i64, old_id: &str, new_id: &str) -> Result<bool> {
+        let Some(new_rowid) = self.resolve_rowid(project_id, new_id)? else {
+            return Ok(false);
+        };
         let changed = self.conn.execute(
             "UPDATE notes SET status = 'archived', superseded_by = ?3
-             WHERE id = ?1 AND project_id = ?2 AND status = 'active'",
-            rusqlite::params![old_id, project_id, new_id],
+             WHERE sync_id = ?1 AND project_id = ?2 AND status = 'active'",
+            rusqlite::params![old_id, project_id, new_rowid],
         )?;
         Ok(changed > 0)
     }
@@ -630,13 +706,12 @@ impl ServerDb {
         limit: i64,
     ) -> Result<Vec<ServerNote>> {
         let limit = limit.clamp(1, 500);
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, kind, title, body, tags, linked_files, created_at, status, superseded_by, remote_id
-             FROM notes
-             WHERE project_id = ?1 AND created_at > ?2 AND status != 'archived'
-             ORDER BY created_at ASC
-             LIMIT ?3",
-        )?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
+             WHERE n.project_id = ?1 AND n.created_at > ?2 AND n.status != 'archived'
+             ORDER BY n.created_at ASC
+             LIMIT ?3"
+        ))?;
         let notes = stmt
             .query_map(
                 rusqlite::params![project_id, since_secs, limit],
@@ -678,14 +753,19 @@ impl ServerDb {
         Ok(rows)
     }
 
-    pub fn delete_note(&self, project_id: i64, note_id: i64) -> Result<bool> {
+    pub fn delete_note(&self, project_id: i64, note_id: &str) -> Result<bool> {
+        let Some(rowid) = self.resolve_rowid(project_id, note_id)? else {
+            return Ok(false);
+        };
+        // `note_embeddings` is a vec0 virtual table with no foreign key, so
+        // nothing cascades into it; the row has to go explicitly.
         self.conn.execute(
             "DELETE FROM note_embeddings WHERE note_id = ?1",
-            rusqlite::params![note_id],
+            rusqlite::params![rowid],
         )?;
         let changed = self.conn.execute(
             "DELETE FROM notes WHERE id = ?1 AND project_id = ?2",
-            rusqlite::params![note_id, project_id],
+            rusqlite::params![rowid, project_id],
         )?;
         Ok(changed > 0)
     }
@@ -985,7 +1065,7 @@ mod tests {
             .expect("open in-memory server db");
         let project = db.upsert_project("team/a", 4, "test-model").expect("proj");
 
-        let (id, sync_id) = db
+        let (_rowid, sync_id) = db
             .add_note(
                 project.id,
                 "note",
@@ -1006,7 +1086,7 @@ mod tests {
             "live note must be found"
         );
 
-        db.archive_note(project.id, id).expect("archive");
+        db.archive_note(project.id, &sync_id).expect("archive");
         let found_after = db
             .find_by_remote_ids(project.id, &["archived-id".to_string()])
             .expect("lookup after archive");
@@ -1135,10 +1215,26 @@ mod tests {
         assert_canonical_uuid(&rows[0].sync_id);
     }
 
-    /// A pre-existing row created before migration 007 (simulated by
-    /// inserting directly with `sync_id` left NULL) is backfilled with a
-    /// fresh `sync_id` on the next open, so legacy data is not stranded
-    /// outside the `since_id` cursor.
+    /// Seed a row with `sync_id` left NULL, as a server that predates
+    /// migration 007 would hold it. Migration 008's trigger refuses such an
+    /// insert, so it is dropped for the duration; the next open recreates it.
+    fn seed_legacy_row(db: &ServerDb, project_id: i64, title: &str, created_at: i64) {
+        db.conn
+            .execute_batch("DROP TRIGGER IF EXISTS notes_sync_id_required_on_insert")
+            .expect("drop the not-null trigger to model a pre-008 database");
+        db.conn
+            .execute(
+                "INSERT INTO notes (project_id, kind, title, body, created_at)
+                 VALUES (?1, 'note', ?2, 'b', ?3)",
+                rusqlite::params![project_id, title, created_at],
+            )
+            .expect("seed legacy row with no sync_id");
+    }
+
+    /// A pre-existing row created before migration 007 is backfilled on the
+    /// next open, so legacy data is not stranded outside the `since_id`
+    /// cursor — and, since `sync_id` is now the exported identity, so that it
+    /// is addressable over HTTP at all.
     #[test]
     fn reopen_backfills_sync_id_for_legacy_rows() {
         register_sqlite_vec();
@@ -1150,15 +1246,7 @@ mod tests {
             let project = db
                 .upsert_project("acme/widget", 4, "test-model")
                 .expect("project");
-            // Simulate a genuinely legacy row: insert directly, bypassing
-            // add_note (which now always mints a sync_id), to model a note
-            // written before migration 007 existed.
-            db.conn
-                .execute(
-                    "INSERT INTO notes (project_id, kind, title, body) VALUES (?1, 'note', 'legacy', 'b')",
-                    rusqlite::params![project.id],
-                )
-                .expect("seed legacy row with no sync_id");
+            seed_legacy_row(&db, project.id, "legacy", 1_600_000_000);
         }
 
         // Reopening re-runs migrate(), which must backfill the stray NULL.
@@ -1170,6 +1258,176 @@ mod tests {
         assert_eq!(rows.len(), 1, "the backfilled legacy row must surface");
         assert_eq!(rows[0].title, "legacy");
         assert_canonical_uuid(&rows[0].sync_id);
+
+        let note = db
+            .get_note(project.id, &rows[0].sync_id)
+            .expect("get by backfilled identity")
+            .expect("the backfilled row must be addressable by its new identity");
+        assert_eq!(note.title, "legacy");
+    }
+
+    /// The backfill seeds each id's v7 timestamp from that row's own
+    /// `created_at`. Minting from the wall clock would stamp a whole back
+    /// catalogue with the migration instant, collapsing the ordering v7
+    /// exists to carry — irreversibly, since ids are never re-minted.
+    #[test]
+    fn backfilled_ids_sort_in_creation_order_not_migration_order() {
+        register_sqlite_vec();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("server.db");
+
+        {
+            let db = ServerDb::open(&path, 4, "test-model").expect("first open");
+            let project = db
+                .upsert_project("acme/widget", 4, "test-model")
+                .expect("project");
+            // Inserted newest-first, so a wall-clock backfill (which walks
+            // rowid ascending) would order them backwards.
+            seed_legacy_row(&db, project.id, "newest", 1_700_000_000);
+            seed_legacy_row(&db, project.id, "middle", 1_600_000_000);
+            seed_legacy_row(&db, project.id, "oldest", 1_500_000_000);
+        }
+
+        let db = ServerDb::open(&path, 4, "test-model").expect("reopen");
+        let project = db.get_project("acme/widget").expect("get").expect("exists");
+        let rows = db
+            .notes_since_id(project.id, "00000000-0000-0000-0000-000000000000", 100)
+            .expect("cursor query after backfill");
+        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["oldest", "middle", "newest"],
+            "backfilled ids must sort by created_at, not by migration order"
+        );
+    }
+
+    /// The exported identity cannot be null: a write path that skipped
+    /// minting one would store a note the HTTP API has no way to name.
+    #[test]
+    fn a_note_cannot_be_stored_without_an_exported_identity() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+
+        let err = db
+            .conn
+            .execute(
+                "INSERT INTO notes (project_id, kind, title, body) VALUES (?1, 'note', 't', 'b')",
+                rusqlite::params![project.id],
+            )
+            .expect_err("an insert with no sync_id must be refused");
+        assert!(
+            err.to_string().contains("must not be null"),
+            "unexpected error: {err}"
+        );
+
+        let (_rowid, note_id) = db
+            .add_note(project.id, "note", "t", "b", &[], &[], None, None)
+            .expect("add note");
+        let err = db
+            .conn
+            .execute(
+                "UPDATE notes SET sync_id = NULL WHERE sync_id = ?1",
+                rusqlite::params![note_id],
+            )
+            .expect_err("clearing an identity must be refused");
+        assert!(
+            err.to_string().contains("must not be null"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `notes.id` is a storage surrogate for the vec0 join, not an identity:
+    /// nothing a caller can reach exposes it (ADR-078).
+    #[test]
+    fn the_integer_rowid_is_not_addressable_over_the_query_surface() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+        let (rowid, note_id) = db
+            .add_note(project.id, "note", "t", "b", &[], &[], None, None)
+            .expect("add note");
+
+        assert!(
+            db.get_note(project.id, &rowid.to_string())
+                .expect("get by rowid")
+                .is_none(),
+            "the rowid must not resolve a note"
+        );
+        assert!(
+            !db.archive_note(project.id, &rowid.to_string())
+                .expect("archive by rowid"),
+            "the rowid must not archive a note"
+        );
+        assert!(
+            db.get_note(project.id, &note_id)
+                .expect("get by identity")
+                .is_some(),
+            "the exported identity must resolve"
+        );
+    }
+
+    /// `superseded_by` stores a rowid and exports the successor's identity.
+    #[test]
+    fn supersede_links_the_pair_by_exported_identity() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+        let (_, old_id) = db
+            .add_note(project.id, "note", "old", "b", &[], &[], None, None)
+            .expect("add old");
+        let (_, new_id) = db
+            .add_note(project.id, "note", "new", "b", &[], &[], None, None)
+            .expect("add new");
+
+        assert!(
+            db.supersede_note(project.id, &old_id, &new_id)
+                .expect("supersede")
+        );
+        let old = db
+            .get_note(project.id, &old_id)
+            .expect("get old")
+            .expect("old exists");
+        assert_eq!(old.status, "archived");
+        assert_eq!(
+            old.superseded_by.as_deref(),
+            Some(new_id.as_str()),
+            "superseded_by must carry the successor's identity, not its rowid"
+        );
+    }
+
+    /// A successor that does not resolve is "nothing matched", not a foreign
+    /// key error escaping as a 500.
+    #[test]
+    fn superseding_by_an_unknown_identity_changes_nothing() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+        let (_, old_id) = db
+            .add_note(project.id, "note", "old", "b", &[], &[], None, None)
+            .expect("add old");
+
+        assert!(
+            !db.supersede_note(project.id, &old_id, "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33")
+                .expect("supersede with an unknown successor")
+        );
+        let old = db
+            .get_note(project.id, &old_id)
+            .expect("get old")
+            .expect("old exists");
+        assert_eq!(old.status, "active", "the entry must be untouched");
     }
 
     /// `notes_since_id` orders by `sync_id` (arrival order at this server),
@@ -1240,7 +1498,7 @@ mod tests {
         let project = db
             .upsert_project("acme/widget", 4, "test-model")
             .expect("project");
-        let (id, _sync_id) = db
+        let (_rowid, note_id) = db
             .add_note(
                 project.id,
                 "note",
@@ -1252,7 +1510,7 @@ mod tests {
                 None,
             )
             .expect("add note");
-        db.archive_note(project.id, id).expect("archive");
+        db.archive_note(project.id, &note_id).expect("archive");
 
         let nil = "00000000-0000-0000-0000-000000000000";
         let rows = db

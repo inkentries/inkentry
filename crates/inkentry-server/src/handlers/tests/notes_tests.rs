@@ -29,7 +29,7 @@ async fn conflict_detection_identical_embeddings_returns_409() {
         http::StatusCode::CREATED,
         "first write must be 201; body: {body1}"
     );
-    let first_id = body1["id"].as_i64().expect("id in response");
+    let first_id = body1["id"].as_str().expect("id in response").to_string();
     assert_eq!(body1["stored"], json!(true));
 
     // Second entry with identical embedding: must be 409.
@@ -55,9 +55,9 @@ async fn conflict_detection_identical_embeddings_returns_409() {
         .as_array()
         .expect("conflicts array in 409 body");
     assert!(!conflicts.is_empty(), "conflicts must not be empty");
-    let conflicting_ids: Vec<i64> = conflicts.iter().filter_map(|c| c["id"].as_i64()).collect();
+    let conflicting_ids: Vec<&str> = conflicts.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(
-        conflicting_ids.contains(&first_id),
+        conflicting_ids.contains(&first_id.as_str()),
         "first entry's id ({first_id}) must appear in conflicts; got: {conflicting_ids:?}"
     );
 

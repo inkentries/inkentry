@@ -7,6 +7,7 @@ pub mod rate_limiter;
 pub mod relay;
 pub mod relay_handlers;
 pub mod security;
+pub mod uuid_v7;
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;

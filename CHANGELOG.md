@@ -49,6 +49,35 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Breaking: a self-hosted `inkentry-server` identifies memory entries by
+  UUIDv7, and every route that carries a note id now speaks strings.** `id`,
+  `superseded_by`, `conflicts[].id`, the `new_id` supersede body and the
+  `{note_id}` path segment were `integer`/`int64` and are now `string`; the
+  OpenAPI document is regenerated to match. This completes ADR-078: the CLI, a
+  self-hosted server and the hosted API now agree on id *shape*, not only on id
+  version, which is what lets the id type stop carrying two.
+
+  Nothing new is minted for this. The server has been minting a UUIDv7 per
+  entry since it gained the `since_id` delta-pull cursor, and already returned
+  it as `id` from `GET …/memory/since` and `POST …/memory/batch` — the note
+  routes were the ones out of step, handing out a rowid for the same entry that
+  the cursor routes named by UUID. That contradiction is gone rather than
+  papered over.
+
+  The integer rowid remains internal, because the embedding table is a `vec0`
+  virtual table that can only join on one. It is not exposed on any route.
+
+  Existing servers upgrade in place: entries predating the cursor are assigned
+  an identity on the next start, with each id's timestamp seeded from that
+  entry's own creation time so a back catalogue keeps its ordering rather than
+  collapsing onto the upgrade instant. Ids already assigned are never re-minted.
+  A client holding an integer id from an older server will not resolve it —
+  there is no mapping, and no compatibility path is offered.
+
+- The `external_id` the CLI mints when pushing an entry to the hosted API is now
+  a UUIDv7 rather than a v4, matching the hosted schema's stated intent and
+  every other identifier this product mints.
+
 - **Team memory sharing now has a single everyday verb: `inkentry sync`**
   (two-way convergence). This is a **surface change only.** `inkentry sync`'s
   behaviour, the sync-mode table (`offline` / `local_first` / `cloud_first`), the

@@ -76,9 +76,12 @@ async fn add_always_mints_an_external_id() {
     let req = &server.received_requests().await.unwrap()[0];
     let body: Value = serde_json::from_slice(&req.body).unwrap();
     let ext = body["external_id"].as_str().expect("external_id sent");
-    assert!(
-        uuid::Uuid::parse_str(ext).is_ok(),
-        "external_id must be a UUID, got {ext}"
+    let parsed = uuid::Uuid::parse_str(ext).unwrap_or_else(|e| panic!("not a UUID: {ext} ({e})"));
+    assert_eq!(
+        parsed.get_version_num(),
+        7,
+        "every identifier this product mints is time-ordered (ADR-078), and the hosted \
+         API's schema states the same intent for this field; got {ext}"
     );
 }
 

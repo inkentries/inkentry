@@ -39,8 +39,8 @@ pub struct AddNoteRequest {
 pub struct AddNoteResponse {
     /// Whether the note was stored (always true for 201/409).
     pub stored: bool,
-    /// ID of the created note.
-    pub id: i64,
+    /// Identity of the created note: a UUIDv7 minted by this server.
+    pub id: String,
     /// Conflicting entries (only present on 409).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<ConflictEntry>,
@@ -49,7 +49,7 @@ pub struct AddNoteResponse {
 /// A single conflicting memory entry returned in a 409 response.
 #[derive(Serialize, ToSchema)]
 pub struct ConflictEntry {
-    pub id: i64,
+    pub id: String,
     pub title: String,
     /// Cosine similarity to the new entry (0.0–1.0).
     pub similarity: f32,
@@ -104,8 +104,8 @@ pub struct NoteListResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub struct SupersedeRequest {
-    /// ID of the new note that replaces the superseded one.
-    pub new_id: i64,
+    /// Identity of the new note that replaces the superseded one.
+    pub new_id: String,
 }
 
 // ── Memory CRUD ───────────────────────────────────────────────────────────────
@@ -201,10 +201,7 @@ pub async fn add_note(
     let model = db.embedding_model.clone();
     let project = db.upsert_project(&project_id, dim, &model)?;
 
-    // The single-note response reports the local row id (unchanged wire
-    // shape); `sync_id` is irrelevant here since this path never round-trips
-    // through `/memory/since` cursoring the way a batch push ack does.
-    let (id, _sync_id) = db.add_note(
+    let (rowid, note_id) = db.add_note(
         project.id,
         &body.kind,
         &body.title,
@@ -223,33 +220,30 @@ pub async fn add_note(
         && threshold < 1.0
     {
         let max_distance = 1.0 - threshold;
-        let nearby = db.search_notes_for_conflicts(project.id, vec, max_distance, id, 5)?;
+        let nearby = db.search_notes_for_conflicts(project.id, vec, max_distance, rowid, 5)?;
         if !nearby.is_empty() {
             // Insert `contradicts` edges for each conflict.
-            for note in &nearby {
-                if let Err(e) = db.add_edge(id, note.id, "contradicts") {
-                    tracing::warn!("failed to insert contradicts edge {id}→{}: {e}", note.id);
+            for candidate in &nearby {
+                if let Err(e) = db.add_edge(rowid, candidate.rowid, "contradicts") {
+                    tracing::warn!(
+                        "failed to insert contradicts edge {note_id}→{}: {e}",
+                        candidate.id
+                    );
                 }
             }
             let conflicts: Vec<ConflictEntry> = nearby
                 .into_iter()
-                .map(|n| {
-                    let similarity = n
-                        .distance
-                        .map(|d| (1.0 - d as f32).clamp(0.0, 1.0))
-                        .unwrap_or(0.0);
-                    ConflictEntry {
-                        id: n.id,
-                        title: n.title,
-                        similarity,
-                    }
+                .map(|c| ConflictEntry {
+                    id: c.id,
+                    title: c.title,
+                    similarity: (1.0 - c.distance as f32).clamp(0.0, 1.0),
                 })
                 .collect();
             return Ok((
                 StatusCode::CONFLICT,
                 Json(AddNoteResponse {
                     stored: true,
-                    id,
+                    id: note_id,
                     conflicts,
                 }),
             )
@@ -261,7 +255,7 @@ pub async fn add_note(
         StatusCode::CREATED,
         Json(AddNoteResponse {
             stored: true,
-            id,
+            id: note_id,
             conflicts: vec![],
         }),
     )
@@ -310,7 +304,7 @@ pub async fn list_notes(
     path = "/v1/projects/{project_id}/memory/{note_id}",
     params(
         ("project_id" = String, Path, description = "Project slug"),
-        ("note_id" = i64, Path, description = "Note ID"),
+        ("note_id" = String, Path, description = "Note identity (UUIDv7)"),
     ),
     responses(
         (status = 200, description = "Note found", body = crate::db::ServerNote),
@@ -322,11 +316,11 @@ pub async fn list_notes(
 )]
 pub async fn get_note(
     State(state): State<AppState>,
-    Path((project_id, note_id)): Path<(String, i64)>,
+    Path((project_id, note_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    match db.get_note(project.id, note_id)? {
+    match db.get_note(project.id, &note_id)? {
         Some(note) => Ok(Json(note).into_response()),
         None => Err(AppError::NotFound),
     }
@@ -396,7 +390,7 @@ pub async fn search_notes(
     path = "/v1/projects/{project_id}/memory/{note_id}",
     params(
         ("project_id" = String, Path, description = "Project slug"),
-        ("note_id" = i64, Path, description = "Note ID"),
+        ("note_id" = String, Path, description = "Note identity (UUIDv7)"),
     ),
     responses(
         (status = 200, description = "Deletion result", body = BoolResponse),
@@ -408,11 +402,11 @@ pub async fn search_notes(
 )]
 pub async fn delete_note(
     State(state): State<AppState>,
-    Path((project_id, note_id)): Path<(String, i64)>,
+    Path((project_id, note_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    let changed = db.delete_note(project.id, note_id)?;
+    let changed = db.delete_note(project.id, &note_id)?;
     Ok(Json(BoolResponse { changed }))
 }
 
@@ -423,7 +417,7 @@ pub async fn delete_note(
     path = "/v1/projects/{project_id}/memory/{note_id}/archive",
     params(
         ("project_id" = String, Path, description = "Project slug"),
-        ("note_id" = i64, Path, description = "Note ID"),
+        ("note_id" = String, Path, description = "Note identity (UUIDv7)"),
     ),
     responses(
         (status = 200, description = "Archive result", body = BoolResponse),
@@ -435,11 +429,11 @@ pub async fn delete_note(
 )]
 pub async fn archive_note(
     State(state): State<AppState>,
-    Path((project_id, note_id)): Path<(String, i64)>,
+    Path((project_id, note_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    let changed = db.archive_note(project.id, note_id)?;
+    let changed = db.archive_note(project.id, &note_id)?;
     Ok(Json(BoolResponse { changed }))
 }
 
@@ -450,7 +444,7 @@ pub async fn archive_note(
     path = "/v1/projects/{project_id}/memory/{note_id}/supersede",
     params(
         ("project_id" = String, Path, description = "Project slug"),
-        ("note_id" = i64, Path, description = "Note ID to supersede"),
+        ("note_id" = String, Path, description = "Identity of the note to supersede (UUIDv7)"),
     ),
     request_body = SupersedeRequest,
     responses(
@@ -463,11 +457,11 @@ pub async fn archive_note(
 )]
 pub async fn supersede_note(
     State(state): State<AppState>,
-    Path((project_id, note_id)): Path<(String, i64)>,
+    Path((project_id, note_id)): Path<(String, String)>,
     Json(body): Json<SupersedeRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
-    let changed = db.supersede_note(project.id, note_id, body.new_id)?;
+    let changed = db.supersede_note(project.id, &note_id, &body.new_id)?;
     Ok(Json(BoolResponse { changed }))
 }
