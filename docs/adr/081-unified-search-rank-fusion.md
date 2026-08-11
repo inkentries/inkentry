@@ -10,6 +10,20 @@ partial-index behaviour builds on ADR-080's coverage/freshness/tier model (the
 shared re-embed work) and does not invent a parallel one. Memory results carry
 the UUIDv7 identity fixed by [ADR-078](078-uuidv7-memory-entry-identity.md).
 
+> **Amended 2026-08-11 by
+> [ADR-083](083-memory-relevance-gate-in-unified-search.md).** Two sections of
+> this record are superseded: *"The 1:1 interleave — accepted for v1"* and the
+> *"Per-corpus weighted RRF in v1"* entry under *Alternatives considered*.
+> Memory is now gated on its own absolute relevance before it reaches fusion,
+> so it appears only when relevant. Everything else here stands and is
+> reaffirmed by ADR-083 — two query embeds, rank-only cross-corpus fusion,
+> `RRF_K = 60`, the code-before-memory tie-break, the result envelope, and the
+> partial-index semantics. In particular §3's proof that `k` is inert
+> cross-corpus, and its prohibition on comparing a code distance to a memory
+> distance, are unchanged: ADR-083's threshold is compared only to a memory
+> distance in the memory embedding space, never to a code distance. ADR-083 also
+> **corrects point 5 of *Partial-index semantics*** below, on measurement.
+
 ## Context
 
 The product thesis for `search` is one result that answers both halves of a
@@ -115,7 +129,20 @@ benchmark can tune `k`; it cannot rescue a raw-score merge across two prefixes.
    stops a future maintainer from "tuning cross-corpus k" to fix an
    interleave-ratio problem that only a weight can fix.
 
-### The 1:1 interleave — accepted for v1
+### The 1:1 interleave — accepted for v1 — SUPERSEDED by ADR-083
+
+> **Superseded 2026-08-11 by
+> [ADR-083](083-memory-relevance-gate-in-unified-search.md).** The measurement
+> this section deferred has been taken (PR #44) and is worse than predicted:
+> memory took **exactly** half of the top 10 on **all 500** benchmark queries,
+> unconditionally, costing ~45% of code recall — because the memory side runs
+> vector KNN and returns a full page regardless of relevance. The interleave is
+> reversed. ADR-083 also records why the follow-up this section anticipated
+> could not be the one it named: the benchmark that now exists is a
+> *code-retrieval* benchmark, and code recall is monotone in a corpus weight, so
+> that instrument can measure the harm but cannot choose a weight. The section
+> is kept below unedited, because its reasoning was sound on its own terms and
+> ADR-083's argument is a response to it.
 
 Because the equal-weight merge is a pure rank interleave, a **thin memory store
 still contributes roughly half of a small result set**: the top slots split
@@ -142,6 +169,11 @@ corpus filter makes one unnecessary, the second is **elided**:
 | `--only-text` | skipped | skipped | FTS over in-scope corpora (0 embeds) |
 
 `--only-code` and `--only-memory` are mutually exclusive.
+[ADR-083](083-memory-relevance-gate-in-unified-search.md) adds one row: the
+memory embed is also elided when the memory store holds **no embedded notes**,
+since it cannot then produce a vector candidate — and per its measurement of the
+memory FTS matcher, nothing else can either (see the amendment on point 5
+below).
 
 **Cost.** This takes the per-search embed count from 1 → 2 (elided to 1 under
 `--only-*`, to 0 under `--only-text`). The added work is one extra
@@ -217,6 +249,18 @@ count), kept distinct from coverage.
    FTS half (`memory_fts`) covers unembedded notes. No new memory-coverage
    subsystem is built.
 
+   > **Corrected 2026-08-11 by
+   > [ADR-083](083-memory-relevance-gate-in-unified-search.md): this point is
+   > true of the code path and false of the outcome.** `memory_fts` is matched
+   > through `fts5_quote_literal` — the entire query as one contiguous phrase —
+   > where the code FTS half uses the OR-of-terms `fts5_match_query`. Measured
+   > over 500 natural-language queries, the memory FTS half returned **zero**
+   > matches. An unembedded note is therefore *not* reachable in practice, and
+   > **memory coverage is effectively binary on embedding**, unlike the code
+   > corpus, which does degrade continuously as this section claims. Fixing the
+   > matcher is out of scope for ADR-083, which records a binding constraint on
+   > whoever does.
+
 ## What breaks
 
 - **Every search now issues up to two embeds** instead of one (bounded below by
@@ -237,6 +281,12 @@ count), kept distinct from coverage.
 - **Per-corpus weighted RRF in v1.** Rejected as premature: weights can only be
   set honestly against a retrieval baseline. Deferred to a benchmark-driven
   follow-up; equal-weight RRF is the honest default meanwhile.
+  **Superseded by [ADR-083](083-memory-relevance-gate-in-unified-search.md)**,
+  which rejects a per-corpus weight outright rather than deferring it — a
+  query-independent multiplier cannot express "only when relevant", and the
+  code-retrieval benchmark is monotone in the weight, so it has no interior
+  optimum to find. The equal-weight fusion itself is kept; what changes is
+  which memory candidates reach it.
 - **Leave `k` to the implementer.** Rejected: a copied-from-a-paper magic
   number becomes undocumented and untunable. Fixing it to 60 with a stated
   reason keeps behaviour deterministic and, later, tunable in exactly one place.
@@ -244,7 +294,9 @@ count), kept distinct from coverage.
 ## Consequences
 
 - **One tunable number** for the whole ranking system, hoisted to a shared
-  `RRF_K`.
+  `RRF_K`. (ADR-083 adds a second constant, `MEMORY_MAX_QA_DISTANCE`, but not to
+  the ranking: it governs *admission* to the memory corpus, is compared only
+  within the memory embedding space, and never enters the merge.)
 - **Determinism.** The fused order is a total, stable order — `fused_score`
   descending, then code-before-memory, then a stable per-corpus id — so the same
   query over an unchanged, fully-fresh index yields byte-identical ordering.
