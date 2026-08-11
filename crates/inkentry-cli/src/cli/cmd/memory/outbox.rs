@@ -729,7 +729,16 @@ mod tests {
             let prev = std::env::current_dir().expect("cwd");
             let dir = TempDir::new().unwrap();
             std::env::set_current_dir(dir.path()).expect("set cwd");
-            Self { prev, _dir: dir }
+            let guard = Self { prev, _dir: dir };
+            // Constructed first so a failure here still restores the CWD. A
+            // `TMPDIR` inside a checkout would put the ambient ref back in
+            // reach and silently undo the isolation, so assert rather than
+            // assume the temp dir has no `.git` ancestor.
+            assert!(
+                crate::storage::NotesRefs::discover(None).is_none(),
+                "TMPDIR resolves inside a git repo, so the CWD guard isolates nothing"
+            );
+            guard
         }
     }
     impl Drop for CwdOutsideAnyRepo {

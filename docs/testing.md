@@ -276,6 +276,45 @@ isolation entirely.
 
 ---
 
+## Ambient git notes in tests
+
+Config is not the only thing a test inherits from the contributor's checkout.
+`refs/notes/inkentry` is the memory carrier, and the memory **read** path
+discovers which repo owns it from the **process CWD**:
+`refresh_read_path_from_git_notes` -> `NotesRefs::discover(None)`, which walks
+up from the CWD looking for a `.git`. For an in-process test that is the
+checkout the test binary was launched from, so `memory list`/`search`/`show`
+and `context` import whatever entries happen to be sitting on that ref into the
+store under test — as unsynced rows, which a relay then pushes onward.
+
+No configuration suppresses this. `store_in_git_notes` is read only by
+`add.rs`/`archive.rs`/`supersede.rs`, the write-through carrier; nothing on the
+read path consults it. The CWD is the only lever.
+
+Two rules follow, by how the test reaches the read path:
+
+- **Spawns the binary**: set `.current_dir(...)` on the `Command`, pointing at
+  the temp dir the test owns. The child then discovers from there, not from the
+  checkout the runner started in.
+- **Calls a read command in process**: move the CWD outside any git repo for
+  the test's duration. `outbox.rs`'s `CwdOutsideAnyRepo` is the worked example.
+  It chdirs into a fresh `TempDir`, asserts discovery genuinely finds no repo
+  from there — a `TMPDIR` inside a checkout would otherwise silently reinstate
+  the ambient read the guard exists to remove — and restores the previous CWD
+  on drop, before the `TempDir` is removed.
+
+The CWD is process-global, so an in-process test must also join the
+`process_cwd` `#[serial]` group. That is redundant under nextest's
+process-per-test model (see above), but `cargo test` shares one process per
+binary, and the key gives the next CWD-sensitive test something to serialise
+against.
+
+Treat a non-hermetic test here as worse than a failing one: its result tracks
+the state of whichever checkout it ran in rather than the code, and a test that
+reads real notes is one edit away from a test that writes them.
+
+---
+
 ## What is intentionally not tested
 
 | Area | Reason |
