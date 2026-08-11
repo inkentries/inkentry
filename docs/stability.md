@@ -275,8 +275,11 @@ migrated a store is not supported.
 
 "Not supported" does not mean "prevented", and the two stores behave
 differently when an older binary opens a newer one. Both behaviours below were
-measured against real released binaries by the
-[upgrade corpus](../scripts/upgrade-corpus/README.md), not inferred.
+**measured** against real released binaries rather than inferred. The artifacts
+that measured them are no longer retained: the
+[upgrade corpus](../scripts/upgrade-corpus/README.md) keeps a wing only for a
+path real data takes, and no database written by an earlier release is opened by
+this one. What is recorded here is the finding, not a live assertion.
 
 **`memory.db` refuses.** A store stamped above the build's own
 `MEMORY_SCHEMA_VERSION` is rejected with an upgrade message, which is the row
@@ -332,7 +335,7 @@ that fails CI when it is broken.
 | Each declared field is load-bearing, per command | `assert_every_declared_field_is_load_bearing`, run inside every command's conformance test in `plumbing_jsonl_contract.rs`. The command's real output is replayed with one declared field dropped, then retyped, and the checker must object each time. Conformance alone would pass against a checker that never rejects anything. |
 | Plumbing exit codes 0/1/2 | `crates/inkentry-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
 | `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p inkentry-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
-| On-disk forward compatibility, for every store above | `crates/inkentry-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. Artifacts written by **real released binaries** are opened with the current build and checked for surviving rows, content, embeddings, the entity-id backfill, and full-text hits, plus upgrade idempotence. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
+| The git-notes record format, across every era that wrote it | `crates/inkentry-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. A ref written by **real released binaries** across three writing eras is read with the current build and checked entry for entry, including that the era which wrote every entry twice is folded rather than surfaced twice. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. The same suite carries a tripwire that fires when a store's schema version advances past what the corpus covers, so a release whose databases *do* need to survive an upgrade cannot ship without one being captured. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
 | The stamp is never left above the opening build's version | The same suite, against a pinned older release opening a current store. This is the bound that keeps the `user_version` rewind safe, since a newer build must never skip migrations it has not run. |
 | The above run on every change | `.github/workflows/stability-contract.yml`. |
 

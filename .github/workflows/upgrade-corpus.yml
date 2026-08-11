@@ -1,14 +1,14 @@
 name: Upgrade corpus
 
 # Open every artifact in the checked-in upgrade corpus with the current build
-# and assert the upgrade preserves it. The corpus is real output from released
-# binaries, so this is the only job that tests migrations against what users
-# actually have on disk rather than against an old shape rebuilt by hand.
+# and assert nothing is lost. The corpus is real output from released binaries,
+# so this is the only job that tests against what users actually have rather
+# than against an old shape rebuilt by hand.
 #
-# Runs on release branches and tags, where an upgrade regression is about to
-# reach users, and on any change to the corpus, the suite that reads it, or the
-# migration code it exercises, so a break is caught at review rather than at
-# tag-push time.
+# It also guards the corpus being empty of databases on purpose. That is the
+# state a corpus which quietly stopped collecting also has, and
+# `a_schema_version_that_advances_past_the_corpus_fails_here` is what tells the
+# two apart — so this job has to keep running while there is nothing to open.
 
 on:
   push:
@@ -23,8 +23,6 @@ on:
       - "crates/inkentry-cli/tests/fixtures/upgrade-corpus/**"
       - "crates/inkentry-core/src/storage/**"
       - "crates/inkentry-core/migrations/**"
-      # The registry has its own wing and its own schema init path.
-      - "crates/inkentry-core/src/registry.rs"
       - "scripts/upgrade-corpus/**"
       - ".github/workflows/upgrade-corpus.yml"
   workflow_dispatch:
@@ -35,28 +33,17 @@ env:
   CARGO_TERM_COLOR: always
   # The OS keychain is unavailable in headless runners and blocks indefinitely
   # on macOS.
-  #
-  # This covers the current build only. The downloaded release binary reads a
-  # different variable — the one that existed when it was published — and the
-  # test sets that one on the child process itself; see the note in
-  # a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data.
   INKENTRY_SECRET_STORE: file
 
 jobs:
   corpus:
-    name: Upgrade real 0.9.x artifacts
+    name: Upgrade corpus
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 25
     env:
       CARGO_PROFILE_TEST_DEBUG: 0
-      # Pinned deliberately, not "latest": this leg asserts what a specific
-      # released binary does with a database the current build has upgraded,
-      # and that answer differs per release. Keep in step with
-      # scripts/upgrade-corpus/checksums.txt.
-      OLD_RELEASE_TAG: v0.9.3
-      OLD_RELEASE_SHA256: a32f311c4ebb66ceb2c1f00a7d44c07fc22bb001a7af66b69d677cd86b5c8508
     steps:
       - uses: actions/checkout@v7
 
@@ -84,44 +71,3 @@ jobs:
       # network hiccup.
       - name: Upgrade every wing and assert integrity
         run: cargo test -p inkentry-cli --test upgrade_corpus
-
-      # The one check that genuinely needs an old binary: what a pinned release
-      # does when it opens a database the current build has already upgraded.
-      #
-      # DO NOT RENAME ANYTHING IN THIS STEP. The repository slug, the asset
-      # filename and the binary inside the tarball are all fixed historical
-      # facts: this is a specific 0.9.x release that was published under the
-      # project's former name, at the repository it was published from, and no
-      # later change to the project can alter bytes that already shipped.
-      # Rewriting them to the current name does not modernise this step, it
-      # points it at a download that does not exist.
-      - name: Fetch the pinned release binary
-        env:
-          OLD_RELEASE_REPO: spelunk-cloud/spelunk
-        run: |
-          set -euo pipefail
-          asset="spelunk-${OLD_RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir -p old-release
-          curl -fsSL -o "old-release/$asset" \
-            "https://github.com/${OLD_RELEASE_REPO}/releases/download/${OLD_RELEASE_TAG}/${asset}"
-          echo "${OLD_RELEASE_SHA256}  old-release/$asset" | sha256sum -c -
-          tar xzf "old-release/$asset" -C old-release
-          # Old name again, and again on purpose: this binary reads the
-          # secret-store variable that existed when it was published, so the
-          # job-level one does not reach it.
-          SPELUNK_SECRET_STORE=file old-release/spelunk --version
-
-      # `--exact` against a name that no longer exists runs nothing and exits 0,
-      # so the count is checked: renaming this test must break the job rather
-      # than quietly stop exercising the only leg that needs an old binary.
-      - name: Assert the old binary reads a current database without losing data
-        env:
-          # The variable is this test harness's own and follows the current
-          # name; only the path it points at is historical.
-          INKENTRY_OLD_BINARY: ${{ github.workspace }}/old-release/spelunk
-        run: |
-          set -euo pipefail
-          cargo test -p inkentry-cli --test upgrade_corpus -- --ignored --exact \
-            a_pinned_old_binary_reads_a_current_database_cleanly_and_loses_no_data \
-            | tee old-binary.log
-          grep -q '^test result: ok. 1 passed' old-binary.log

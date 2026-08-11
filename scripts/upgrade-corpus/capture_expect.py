@@ -178,25 +178,37 @@ def git_notes_expect(path):
         subprocess.run(
             ["git", "clone", "--quiet", path, repo], check=True, capture_output=True
         )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                repo,
-                "fetch",
-                "--quiet",
-                "origin",
-                "refs/notes/inkentry:refs/notes/inkentry",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        listing = subprocess.run(
-            ["git", "-C", repo, "notes", "--ref=inkentry", "list"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
+        # `git clone` of a bundle brings the branches but leaves notes behind:
+        # refs/notes/* is outside the default refspec. Which ref they are on is
+        # a property of the binaries that wrote them, and the bundle in the
+        # corpus was written by releases that pre-date the rename — so the ref
+        # is read off the bundle rather than assumed. Naming the current
+        # project's ref here is what silently broke recapture of this wing.
+        refs = [
+            line.split()[1]
+            for line in subprocess.run(
+                ["git", "ls-remote", "--refs", path, "refs/notes/*"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            if line.strip()
+        ]
+        if not refs:
+            raise SystemExit(f"{path} carries no refs/notes/* ref to read")
+        listing = ""
+        for ref in refs:
+            subprocess.run(
+                ["git", "-C", repo, "fetch", "--quiet", "origin", f"{ref}:{ref}"],
+                check=True,
+                capture_output=True,
+            )
+            listing += subprocess.run(
+                ["git", "-C", repo, "notes", f"--ref={ref}", "list"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
         # Keyed by the record id the writing binary assigned, not by title.
         # A released binary really does repeat a line in its log (0.9.3 writes
         # each entry twice), so the number of distinct entries a reader owes

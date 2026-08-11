@@ -77,18 +77,26 @@ export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 
 # wing-id | release tag | producer role
 #
-# The tags are not arbitrary. v0.9.2 is the last release before index.db grew
-# PRAGMA user_version, so it is the only way to capture a field DB whose
-# version has to be inferred from its table shapes. v0.8.3 is the last release
-# that wrote FLOAT[768] vectors. v0.9.3 is the last before memory entries grew
-# a content-addressed entity_id. v0.7.1 wrote one JSON object per note and
-# overwrote it on each add, the era before the ref became an append-only log.
+# One entry, and the reason there is only one is the point. A wing earns its
+# place by covering a path a real user's data actually takes, and neither local
+# database is such a path: index.db is not carried at all (the user reindexes)
+# and memory.db crosses as a portable dump into a store the current binary
+# creates. Wings for those covered migrations nothing performs, and they were
+# removed with the ladders they were defending.
+#
+# The notes ref is the exception. It is renamed in place rather than exported,
+# so the blobs a migrating user's ref carries arrive at the current reader
+# exactly as the old binaries wrote them. This wing spans three writing eras:
+# v0.7.1 wrote one JSON object per note and overwrote it on each add; v0.9.3
+# wrote JSON lines without entity ids, and wrote each entry twice; v0.9.5 wrote
+# the entity-keyed event log. All three must still read.
+#
+# Adding a wing is not a matter of picking a release. It is answering yes to:
+# does a user's database at some shipped version have to survive the move to a
+# newer one? Until that is true there is nothing here worth capturing, and
+# `a_schema_version_that_advances_past_the_corpus_fails_here` is what asks the
+# question at the moment it stops being hypothetical.
 WINGS=(
-  "index-v0.8.3-float768|v0.8.3|index"
-  "index-v0.9.2-pre-user-version|v0.9.2|index"
-  "memory-v0.9.3-pre-entity-id|v0.9.3|memory"
-  "memory-v0.9.5|v0.9.5|memory"
-  "registry-v0.9.5|v0.9.5|registry"
   "git-notes-eras|v0.9.5|git-notes"
 )
 
