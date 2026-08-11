@@ -708,6 +708,38 @@ mod tests {
         }
     }
 
+    // Points the process CWD at a fresh directory with no `.git` ancestor for
+    // the guard's lifetime, restoring the previous one on drop.
+    //
+    // `memory list`'s read path imports `refs/notes/inkentry` from the repo
+    // discovered off the CWD (`refresh_read_path_from_git_notes` ->
+    // `NotesRefs::discover(None)`), which for an in-process test is this very
+    // checkout. Whatever another test left on that ref is then imported into
+    // the store under test as an unsynced row, pushed to the team server on the
+    // next relay nudge, and its remote id advances `since_cursor` past the
+    // entry the test is waiting for — so the pull never delivers it. No config
+    // suppresses this: `store_in_git_notes` gates only the write-through
+    // carrier, never the read path.
+    struct CwdOutsideAnyRepo {
+        prev: std::path::PathBuf,
+        _dir: TempDir,
+    }
+    impl CwdOutsideAnyRepo {
+        fn enter() -> Self {
+            let prev = std::env::current_dir().expect("cwd");
+            let dir = TempDir::new().unwrap();
+            std::env::set_current_dir(dir.path()).expect("set cwd");
+            Self { prev, _dir: dir }
+        }
+    }
+    impl Drop for CwdOutsideAnyRepo {
+        fn drop(&mut self) {
+            // Runs before the TempDir field drops, so its removal never races
+            // a CWD still pointing inside it.
+            let _ = std::env::set_current_dir(&self.prev);
+        }
+    }
+
     // ── item 20: SSE-driven live pull, two local instances, one team server ─
     //
     // Uses a REAL `inkentry-server` router as the team server (not a wiremock
@@ -718,9 +750,12 @@ mod tests {
     // module's pull loop consumes, not just `/memory/since` polling.
 
     #[tokio::test]
-    #[serial(server_state_dir_env)]
+    #[serial(server_state_dir_env, process_cwd)]
     async fn entry_added_on_instance_a_becomes_visible_on_instance_b_via_live_pull() {
         let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        // Held for the whole body: this test drives a real `memory list`, whose
+        // git-notes import is keyed off the CWD.
+        let _cwd = CwdOutsideAnyRepo::enter();
         let team_addr = spawn_inkentry_server().await;
         let team_uri = format!("http://{}", team_addr);
 
