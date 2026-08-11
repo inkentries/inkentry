@@ -98,7 +98,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    timeout-minutes: 30
+    # Windows gets 60, everything else 30, and the extra half hour is
+    # diagnostic rather than generous. That leg was switched off because it
+    # would run for around half an hour and then die with no consistent failing
+    # test to point at — which is what being killed AT a ceiling looks like, not
+    # what a failing test looks like. Measured wall-clock on two instrumented
+    # attempts was 937s and 1258s, outside the 19-run baseline range, so a whole
+    # run is sometimes uniformly ~1.6x slower there for reasons still
+    # unexplained (^347; the Defender-exclusion hypothesis was tested and
+    # disproved). At 30 those runs are indistinguishable from a hang. At 60 a
+    # slow run finishes and says what it found, and anything still hitting the
+    # ceiling is a real hang worth chasing. Lower it once ^347 explains the
+    # slowdown.
+    #
+    # Expressed over `matrix.os` rather than as a matrix key, because a matrix
+    # key becomes part of the job name and would rename every existing check.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     env:
       # Test binaries don't need full debug info; this shrinks compile times
       # and cache size for this job without affecting check/build.
@@ -121,33 +136,16 @@ jobs:
             #
             # This leg used to run on macOS. Nothing about the feature
             # combination is platform-specific, so it moved to Linux where the
-            # rest of the matrix already runs; the macOS entry below is
-            # deliberately not carrying it any more, to avoid reinstating a
-            # duplicate when that platform comes back.
+            # rest of the matrix already runs; the macOS entry below
+            # deliberately does not carry it, to avoid a duplicate.
             test-flags: "--no-default-features"
-          # TEMPORARILY NOT RUN — macOS and Windows are both switched off while
-          # their platform-specific problems are worked separately: the Windows
-          # leg runs for around half an hour and then fails or is killed with no
-          # consistent failing test to point at, and macOS was the only other
-          # entry, so it is off with it rather than standing alone as a
-          # half-matrix. Every *configuration* the matrix covered is still
-          # covered by the two Linux entries above; what is missing is
-          # platform-specific coverage, and that returns before the first
-          # release, since both are supported targets that the release build
-          # produces artifacts for.
-          #
-          # Both entries are kept verbatim rather than deleted, so restoring a
-          # platform is uncommenting its lines. Note that macOS must come back
-          # with `test-flags: ""`, not `--no-default-features`: that
-          # configuration now lives on Linux, above.
-          #
-          # - os: macos-latest
-          #   test-flags: ""
-          # - os: windows-latest
-          #   # Windows keeps default features: the embed-native default builds
-          #   # the candle (CPU) embedder, which links cleanly. The
-          #   # inkentry-server tests use embedder: None and never load the model.
-          #   test-flags: ""
+          - os: macos-latest
+            test-flags: ""
+          - os: windows-latest
+            # Windows keeps default features: the embed-native default builds
+            # the candle (CPU) embedder, which links cleanly. The
+            # inkentry-server tests use embedder: None and never load the model.
+            test-flags: ""
     steps:
       - uses: actions/checkout@v7
 
@@ -155,11 +153,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libdbus-1-dev pkg-config
 
-      # One command per step: this job's matrix covers windows-latest (see the
-      # entry above, currently not run), and a Windows step's exit status does
-      # not reflect a failing native executable (only a failing PowerShell
-      # cmdlet), so chaining two rustup invocations in one run block would mask
-      # a failure in the first.
+      # One command per step: this job's matrix covers windows-latest, and a
+      # Windows step's exit status does not reflect a failing native executable
+      # (only a failing PowerShell cmdlet), so chaining two rustup invocations
+      # in one run block would mask a failure in the first.
       - name: Update stable toolchain
         run: rustup update stable
 
