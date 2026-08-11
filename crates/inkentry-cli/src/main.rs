@@ -8,7 +8,7 @@ mod server_client;
 use cli::cmd::plumbing::PlumbingCommand;
 use cli::{Cli, Command};
 use inkentry_core::{
-    config, conventions, embeddings, error, indexer, registry, search, storage, utils,
+    config, conventions, dump, embeddings, error, indexer, registry, search, storage, utils,
 };
 
 #[tokio::main]
@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
         Command::Autoclean => cli::cmd::autoclean(cfg),
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
         Command::Harvest(args) => cli::cmd::harvest(args, cfg).await,
+        Command::Import(args) => cli::cmd::import(args, cfg).await,
         Command::Hooks(args) => cli::cmd::hooks(args),
         Command::Links(args) => cli::cmd::links(args, cfg).await,
         Command::Plumbing(args) => {

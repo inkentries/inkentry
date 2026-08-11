@@ -5,6 +5,7 @@ use std::path::Path;
 
 mod dedupe;
 mod edges;
+mod import;
 mod import_state;
 mod note_id;
 mod notes;

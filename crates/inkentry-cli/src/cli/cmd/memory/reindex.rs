@@ -40,11 +40,23 @@ enum Outcome {
     Done,
 }
 
-pub(super) async fn memory_reindex(
+/// Whether this pass owns stdout.
+///
+/// `memory reindex` run as itself does; run as another command's finishing pass
+/// it does not, and printing anyway puts a second document on a stdout the
+/// caller has already written one JSON document to.
+#[derive(PartialEq, Eq)]
+pub(crate) enum Summary {
+    Printed,
+    Suppressed,
+}
+
+pub(crate) async fn memory_reindex(
     args: MemoryReindexArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
     backend_override: Option<&str>,
+    summary_output: Summary,
 ) -> Result<()> {
     // Embeddings are a sqlite-vec concern; git notes hold no vectors.
     if backend_override == Some("git-notes") {
@@ -112,11 +124,11 @@ pub(super) async fn memory_reindex(
     // count/no-op never requires a running server.
     if args.dry_run {
         summary.would_embed = candidates.len();
-        emit_summary(&summary, json, Outcome::DryRun);
+        emit_summary(&summary, json, Outcome::DryRun, &summary_output);
         return Ok(());
     }
     if candidates.is_empty() {
-        emit_summary(&summary, json, Outcome::NothingToDo);
+        emit_summary(&summary, json, Outcome::NothingToDo, &summary_output);
         return Ok(());
     }
 
@@ -165,11 +177,14 @@ pub(super) async fn memory_reindex(
 
     summary.embedded = embedded;
     summary.remaining = total - embedded;
-    emit_summary(&summary, json, Outcome::Done);
+    emit_summary(&summary, json, Outcome::Done, &summary_output);
     Ok(())
 }
 
-fn emit_summary(s: &ReindexSummary, json: bool, outcome: Outcome) {
+fn emit_summary(s: &ReindexSummary, json: bool, outcome: Outcome, output: &Summary) {
+    if *output == Summary::Suppressed {
+        return;
+    }
     if json {
         println!("{}", serde_json::to_string(s).unwrap_or_default());
         return;

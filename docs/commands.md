@@ -989,6 +989,73 @@ the code index. See
 
 ---
 
+## inkentry import
+
+```bash
+inkentry import project.dump
+inkentry import project.dump --format json
+inkentry import project.dump --no-embed
+```
+
+Read a [portable dump](dump-format.md) into this project's stores: memory
+entries and the relationships between them, plus any projects and recorded
+commands the dump carries. This is how an existing store crosses into a store
+this build created — nothing is opened in place.
+
+The dump is read and checked **whole** before anything is written. Its record
+counts and its digest are both recomputed, and any mismatch — a truncated file,
+a single altered byte, records in a different order, a relationship naming an
+entity that is not there, a record kind this build does not know, two entries
+claiming one `uuid` or one `remote_id`, an entry carrying a blank one — refuses
+the entire file. There is no
+partial import, because importing most of a damaged dump and saying nothing is
+the worst available outcome. The refusal covers **every** store the import
+would touch: memory entries, the project registry and the recorded-command
+table are written under one refusal, so a dump that is rejected leaves all
+three exactly as it found them.
+
+Entries arriving with an identifier keep it. Entries without one are assigned a
+UUIDv7 seeded from their own creation time, so a back catalogue keeps its
+ordering instead of being stamped with the instant it was imported.
+
+**Import writes to the local memory store, so it refuses to run when that is not
+where this project's memory lives.** Under `mode = "cloud_first"` with a
+`server_url`, the server is the store of record and every memory command reads
+it; a local write there would report success and leave the whole dump in a file
+the project never opens. Import into the local store first
+(`INKENTRY_MODE=local_first`), then `inkentry sync` to carry it up.
+
+**Entries are identified by their content, so the count is of rows, not of
+records.** A memory entry's convergence key is computed over its kind, title
+and body, and the store declares that key unique — so two records carrying one
+key are one entry, whatever the dump says. Two harvested entries with the same
+text from different commits are exactly that case, and they differ only in
+`source_ref`. The earliest-created one survives (its tags and linked files
+gaining the other's), and the summary reports the fold separately from the
+entries that landed rather than counting both. Records whose entry is already
+in this store — a second run of the same import — are reported apart again, so
+"imported" never includes something that was already there.
+
+**Embeddings are not carried in a dump**, so imported entries are not in
+semantic search until they are embedded. The import runs its writes in one
+transaction with no embedding inside it, then runs `memory reindex`'s pass
+afterwards. If no embedder is reachable the import still succeeds and reports
+how many entries are waiting, along with the command that finishes the job;
+`inkentry status` carries the same count. Pass `--no-embed` to skip the attempt
+and just be told.
+
+This matters more than it looks: the default search mode is hybrid, so
+unembedded entries are still returned by the full-text half. Semantic recall
+degrades while the store looks like it is working.
+
+| Flag | Meaning |
+|---|---|
+| `--db <PATH>` | Memory database to import into (overrides auto-detect) |
+| `--no-embed` | Import without embedding; still reports what is pending |
+| `--format <FMT>` | `text` (default) or `json` |
+
+---
+
 ## inkentry sync
 
 Two-way sync (shorthand for `inkentry memory sync`): push your local memory

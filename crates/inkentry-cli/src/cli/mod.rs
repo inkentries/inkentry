@@ -10,6 +10,7 @@ pub use cmd::auth::AuthArgs;
 pub use cmd::context::ContextArgs;
 pub use cmd::harvest::HarvestArgs;
 pub use cmd::hooks::HooksArgs;
+pub use cmd::import::ImportArgs;
 pub use cmd::index::IndexArgs;
 pub use cmd::init::InitArgs;
 pub use cmd::link::{LinkArgs, UnlinkArgs};
@@ -74,6 +75,8 @@ pub enum Command {
     Memory(MemoryArgs),
     /// Capture memory from git history and session logs (backfill + continuous)
     Harvest(HarvestArgs),
+    /// Import a portable dump into this project (see docs/dump-format.md)
+    Import(ImportArgs),
     /// Manage git hooks (post-commit auto-index and harvest)
     Hooks(HooksArgs),
     /// Manage and inspect cross-project links
