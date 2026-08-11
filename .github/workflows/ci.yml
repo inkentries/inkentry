@@ -198,8 +198,15 @@ jobs:
       # --lib --bins --tests --benches (not the nextest default, which also
       # builds examples): examples are never part of the regular test gate,
       # see the Check & Lint job's Clippy step comment above.
+      #
+      # --no-fail-fast: nextest otherwise cancels the run on the first failure,
+      # so a single failing test hides the state of every test ordered after it
+      # and each fix costs another full push-and-wait to learn what else is
+      # broken. The matrix already sets `fail-fast: false` for the same reason
+      # one leg shouldn't cancel the others. A red run now costs a full suite
+      # duration, which the 30-minute job timeout has to cover.
       - name: Run tests
-        run: cargo nextest run --lib --bins --tests --benches ${{ matrix.test-flags }}
+        run: cargo nextest run --no-fail-fast --lib --bins --tests --benches ${{ matrix.test-flags }}
 
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}

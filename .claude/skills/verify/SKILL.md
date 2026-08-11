@@ -91,12 +91,42 @@ INKENTRY_SECRET_STORE=file cargo build --lib --bins --tests --benches --features
 ## 4. Tests + doctests
 
 ```bash
-INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo nextest run --lib --bins --tests --benches
+INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo nextest run --no-fail-fast --lib --bins --tests --benches
 INKENTRY_SECRET_STORE=file INKENTRY_CONFIG_DIR=$(mktemp -d) cargo test --doc
 ```
 
 Scope to the crate you touched while iterating (`-p inkentry-cli`), but run the full suite before
 the PR.
+
+### `--no-fail-fast`, and read the Summary count against the total
+
+nextest cancels the whole run on the first failure unless you pass `--no-fail-fast`. One
+environmentally-broken test therefore stops the suite wherever it happens to land, and everything
+after it silently never runs. `cargo test --doc` needs no equivalent flag; libtest already runs
+every test before reporting.
+
+**The only tell is a slash in the Summary line.** A cancelled run reports `N/TOTAL tests run`; a
+complete one reports `TOTAL tests run` with no slash. The tests that never ran are not counted
+anywhere — not as failures, not as `skipped`:
+
+```
+Summary [   3.022s] 2/21 tests run: 1 passed, 1 failed, 0 skipped     <- cancelled: 19 never ran
+Summary [  30.359s] 21 tests run: 20 passed, 1 failed, 0 skipped      <- complete
+```
+
+That `0 skipped` on the cancelled run is not reassurance; it is the count of nextest's own skips,
+and it reads identically either way.
+
+This is not hypothetical. A machine with something already listening on `127.0.0.1:7777` makes
+`inference_url` resolve to `Local(...)`, which fails
+`capability::llm_route::tests::nothing_configured_anywhere_reports_no_llm_not_offline`. Measured on
+this suite: the default run cancelled at `597/2286`, leaving 1689 tests unexecuted; the same run
+with `--no-fail-fast` completed 2286 with 2285 passing. Both exit non-zero, so exit status alone
+does not distinguish "one known failure, everything else green" from "1689 tests whose state you do
+not know".
+
+So: check the number before the `/` against the total. A green-looking run you did not count is a
+run you did not watch pass.
 
 ### Isolate the suite from your own inkentry config
 
