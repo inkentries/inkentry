@@ -86,6 +86,7 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
             summary.projects,
             if summary.projects == 1 { "" } else { "s" },
         );
+        report_records_that_did_not_become_rows(&summary);
     }
 
     finish_embeddings(
@@ -97,6 +98,48 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
     )
     .await;
     Ok(())
+}
+
+/// Say what happened to the records that did not become a row.
+///
+/// The count above is rows, not records, and on a one-way move the difference
+/// is the number a user would otherwise have to go and count themselves. A
+/// merge in particular loses the folded entry's own `source_ref`, `created_at`
+/// and status, so it is the one outcome that must not pass in silence.
+fn report_records_that_did_not_become_rows(summary: &inkentry_core::dump::ImportSummary) {
+    if summary.memory_entries_merged > 0 {
+        println!(
+            "{} further entr{} shared an identity with one of them and {} folded in: \
+             entries are identified by their content, so one identity is one entry.",
+            summary.memory_entries_merged,
+            if summary.memory_entries_merged == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            if summary.memory_entries_merged == 1 {
+                "was"
+            } else {
+                "were"
+            },
+        );
+    }
+    if summary.memory_entries_already_present > 0 {
+        println!(
+            "{} w{} already in this store and {} added again.",
+            summary.memory_entries_already_present,
+            if summary.memory_entries_already_present == 1 {
+                "as"
+            } else {
+                "ere"
+            },
+            if summary.memory_entries_already_present == 1 {
+                "was not"
+            } else {
+                "were not"
+            },
+        );
+    }
 }
 
 /// Bring the imported entries into semantic search, using `memory reindex`'s

@@ -1005,13 +1005,28 @@ this build created — nothing is opened in place.
 The dump is read and checked **whole** before anything is written. Its record
 counts and its digest are both recomputed, and any mismatch — a truncated file,
 a single altered byte, records in a different order, a relationship naming an
-entity that is not there, a record kind this build does not know — refuses the
-entire file. There is no partial import, because importing most of a damaged
-dump and saying nothing is the worst available outcome.
+entity that is not there, a record kind this build does not know, two entries
+claiming one `uuid` or one `remote_id` — refuses the entire file. There is no
+partial import, because importing most of a damaged dump and saying nothing is
+the worst available outcome. The refusal covers **every** store the import
+would touch: memory entries, the project registry and the recorded-command
+table are written under one refusal, so a dump that is rejected leaves all
+three exactly as it found them.
 
 Entries arriving with an identifier keep it. Entries without one are assigned a
 UUIDv7 seeded from their own creation time, so a back catalogue keeps its
 ordering instead of being stamped with the instant it was imported.
+
+**Entries are identified by their content, so the count is of rows, not of
+records.** A memory entry's convergence key is computed over its kind, title
+and body, and the store declares that key unique — so two records carrying one
+key are one entry, whatever the dump says. Two harvested entries with the same
+text from different commits are exactly that case, and they differ only in
+`source_ref`. The earliest-created one survives (its tags and linked files
+gaining the other's), and the summary reports the fold separately from the
+entries that landed rather than counting both. Records whose entry is already
+in this store — a second run of the same import — are reported apart again, so
+"imported" never includes something that was already there.
 
 **Embeddings are not carried in a dump**, so imported entries are not in
 semantic search until they are embedded. The import runs its writes in one

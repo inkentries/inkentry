@@ -19,9 +19,13 @@ impl MemoryStore {
     /// identity policy in the wrong place — it belongs to whatever read the
     /// dump, which is the only thing that knows whether one arrived.
     ///
-    /// An entry whose `entity_id` collides with one already imported is the
-    /// same entry twice: its tags and linked files are merged add-wins into
-    /// the row already present, and that row's id is returned.
+    /// Returns `(id, created)`. `created` is `false` when the entry was already
+    /// in this store under the same convergence key — a second import of the
+    /// same dump, or of an overlapping one — in which case its tags and linked
+    /// files are merged add-wins into the row already present and that row's id
+    /// is returned. The caller reports the two cases apart, because "imported"
+    /// and "was already here" are different answers to the question a user asks
+    /// after a one-way move.
     #[allow(clippy::too_many_arguments)]
     pub fn import_entry(
         &self,
@@ -38,7 +42,7 @@ impl MemoryStore {
         invalid_at: Option<i64>,
         entity_id: Option<&str>,
         remote_id: Option<&str>,
-    ) -> Result<NoteId> {
+    ) -> Result<(NoteId, bool)> {
         // Carried verbatim when present. Recomputing a key the writer already
         // holds would fork the entry from every other copy of it the moment
         // the two sides hash anything differently.
@@ -68,13 +72,58 @@ impl MemoryStore {
             ],
         );
 
-        let (id, _created) = self.recover_from_entity_id_collision(
+        // A UNIQUE violation here is not necessarily the convergence key: this
+        // entry also carries a `uuid` and possibly a `remote_id`, and either
+        // can collide with a row already in the store. Those are not the same
+        // entry arriving twice — they are two entries claiming one identity —
+        // so they are named rather than handed to the collision recovery,
+        // which would look for a convergence key that is not there and let
+        // SQLite's own "Query returned no rows" reach the user instead.
+        if let Err(rusqlite::Error::SqliteFailure(err, _)) = &insert
+            && err.code == rusqlite::ErrorCode::ConstraintViolation
+            && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            && self.note_id_for_entity_id(&entity_id)?.is_none()
+        {
+            return Err(self.identity_already_taken(uuid, remote_id));
+        }
+
+        self.recover_from_entity_id_collision(
             insert,
             &entity_id,
             &tags.iter().map(String::as_str).collect::<Vec<_>>(),
             &linked_files.iter().map(String::as_str).collect::<Vec<_>>(),
-        )?;
-        Ok(id)
+        )
+    }
+
+    /// Which identity this store already holds, said in the dump's terms.
+    fn identity_already_taken(&self, uuid: &str, remote_id: Option<&str>) -> anyhow::Error {
+        let taken = |column: &str, value: &str| -> bool {
+            self.conn
+                .query_row(
+                    &format!("SELECT 1 FROM notes WHERE {column} = ?1"),
+                    rusqlite::params![value],
+                    |_| Ok(()),
+                )
+                .is_ok()
+        };
+        if taken("uuid", uuid) {
+            return anyhow::anyhow!(
+                "this store already holds a different entry under the identity {uuid:?}. \
+                 Refusing to import any of it."
+            );
+        }
+        if let Some(remote) = remote_id
+            && taken("remote_id", remote)
+        {
+            return anyhow::anyhow!(
+                "this store already holds a different entry under the remote id {remote:?}. \
+                 Refusing to import any of it."
+            );
+        }
+        anyhow::anyhow!(
+            "the entry collides with one already in this store on an identity the dump \
+             declares. Refusing to import any of it."
+        )
     }
 
     /// Insert an edge from a dump, preserving its recorded timestamp.

@@ -299,6 +299,115 @@ fn two_entities_sharing_a_reference_refuse_the_dump() {
 }
 
 #[test]
+fn two_entities_sharing_a_uuid_refuse_the_dump() {
+    let uuid = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";
+    let a = format!(
+        r#"{{"record":"entity","type":"memory_entry","ref":"a","uuid":"{uuid}","kind":"note","title":"one","body":"b1","created_at":10}}"#
+    );
+    let b = format!(
+        r#"{{"record":"entity","type":"memory_entry","ref":"b","uuid":"{uuid}","kind":"note","title":"two","body":"b2","created_at":20}}"#
+    );
+    let dump = dump_with(
+        &[&a, &b],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let err = read(&dump).expect_err("one entry has one identity");
+    let msg = err.to_string();
+    assert!(msg.contains(uuid), "the message must name it: {msg}");
+    assert!(
+        msg.contains("Refusing to import any of it"),
+        "and refuse the whole file: {msg}"
+    );
+}
+
+#[test]
+fn two_entities_sharing_a_remote_id_refuse_the_dump() {
+    let a = r#"{"record":"entity","type":"memory_entry","ref":"a","remote_id":"rem-9","kind":"note","title":"one","body":"b1","created_at":10}"#;
+    let b = r#"{"record":"entity","type":"memory_entry","ref":"b","remote_id":"rem-9","kind":"note","title":"two","body":"b2","created_at":20}"#;
+    let dump = dump_with(
+        &[a, b],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let err = read(&dump).expect_err("a remote id names one entry on the server it came from");
+    assert!(err.to_string().contains("rem-9"), "{err}");
+}
+
+// ── entries that share a convergence key ─────────────────────────────────────
+
+#[test]
+fn entries_sharing_a_convergence_key_are_folded_into_the_earliest_and_counted() {
+    // Emitted newest-first, so a survivor chosen by file order would be the
+    // later one. Same kind/title/body, so the key is the same for both even
+    // though neither carries one.
+    let late = r#"{"record":"entity","type":"memory_entry","ref":"late","kind":"note","title":"One","body":"same","created_at":20,"tags":["b"],"source_ref":"commit:bbb"}"#;
+    let early = r#"{"record":"entity","type":"memory_entry","ref":"early","kind":"note","title":"One","body":"same","created_at":10,"tags":["a"],"source_ref":"commit:aaa"}"#;
+    let dump = read(&dump_with(
+        &[late, early],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    ))
+    .expect("a store may legitimately hold two entries with one key");
+
+    assert_eq!(dump.entities.len(), 1);
+    assert_eq!(dump.merged_memory_entries, 1);
+    let Entity::MemoryEntry(kept) = &dump.entities[0] else {
+        panic!("expected a memory entry")
+    };
+    assert_eq!(kept.created_at, 10, "the earliest-created entry survives");
+    assert_eq!(kept.tags, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn an_explicit_convergence_key_is_what_groups_when_one_is_carried() {
+    // Different text, one carried key: the key is authoritative and is never
+    // recomputed, so these are one entry.
+    let a = r#"{"record":"entity","type":"memory_entry","ref":"a","kind":"note","title":"One","body":"x","created_at":10,"entity_id":"ent-1"}"#;
+    let b = r#"{"record":"entity","type":"memory_entry","ref":"b","kind":"note","title":"Two","body":"y","created_at":20,"entity_id":"ent-1"}"#;
+    let dump = read(&dump_with(
+        &[a, b],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    ))
+    .unwrap();
+    assert_eq!(dump.entities.len(), 1);
+    assert_eq!(dump.merged_memory_entries, 1);
+}
+
+#[test]
+fn a_relationship_between_two_entries_that_fold_together_is_dropped() {
+    let a = r#"{"record":"entity","type":"memory_entry","ref":"a","kind":"note","title":"One","body":"same","created_at":10}"#;
+    let b = r#"{"record":"entity","type":"memory_entry","ref":"b","kind":"note","title":"One","body":"same","created_at":20}"#;
+    let rel = r#"{"record":"relationship","type":"relates_to","from":"a","to":"b"}"#;
+    let dump = read(&dump_with(
+        &[a, b, rel],
+        r#"{"entity":{"memory_entry":2},"relationship":{"relates_to":1}}"#,
+    ))
+    .unwrap();
+    assert!(
+        dump.relationships.is_empty(),
+        "an entry does not relate to itself once its two halves are one row"
+    );
+}
+
+#[test]
+fn two_relationships_that_the_fold_makes_identical_become_one() {
+    let a = r#"{"record":"entity","type":"memory_entry","ref":"a","kind":"note","title":"One","body":"same","created_at":10}"#;
+    let b = r#"{"record":"entity","type":"memory_entry","ref":"b","kind":"note","title":"One","body":"same","created_at":20}"#;
+    let other = r#"{"record":"entity","type":"memory_entry","ref":"c","kind":"note","title":"Other","body":"z","created_at":30}"#;
+    let r1 = r#"{"record":"relationship","type":"relates_to","from":"a","to":"c"}"#;
+    let r2 = r#"{"record":"relationship","type":"relates_to","from":"b","to":"c","created_at":99}"#;
+    let dump = read(&dump_with(
+        &[a, b, other, r1, r2],
+        r#"{"entity":{"memory_entry":3},"relationship":{"relates_to":2}}"#,
+    ))
+    .unwrap();
+    assert_eq!(dump.relationships.len(), 1);
+    assert_eq!(
+        dump.relationships[0].created_at,
+        Some(99),
+        "a recorded timestamp is still preferred over its absence"
+    );
+}
+
+#[test]
 fn a_dump_carries_no_field_that_could_hold_a_credential() {
     // A property of the format, not a filtering step a writer performs. If a
     // secret-bearing field is ever added, this fails.

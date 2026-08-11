@@ -47,6 +47,15 @@ impl Registry {
         Ok(reg)
     }
 
+    /// Execute a raw SQL batch on the registry connection.
+    ///
+    /// Exposed for transaction management by a caller that has to keep this
+    /// store and another in step — `inkentry import`, whose refusal covers
+    /// every store the dump touches, not only `memory.db`.
+    pub fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        self.conn.execute_batch(sql)
+    }
+
     fn init(&self) -> Result<()> {
         self.conn
             .execute_batch(

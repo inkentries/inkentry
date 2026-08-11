@@ -58,13 +58,32 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   The dump is verified **whole** before anything is written. Record counts and
   the digest are both recomputed, and any mismatch refuses the entire file: a
   truncated dump, one altered byte, records in a different order, a
-  relationship naming an entity that is not there, or a record kind this build
-  does not know. There is no partial import. Record order is otherwise
-  unconstrained — a relationship may appear before the entities it names.
+  relationship naming an entity that is not there, a record kind this build
+  does not know, or two entries claiming one `uuid` or one `remote_id`. There
+  is no partial import. Record order is otherwise unconstrained — a
+  relationship may appear before the entities it names.
+
+  **The refusal covers every store the import touches**, not just `memory.db`:
+  memory entries, the project registry and the recorded-command table are
+  written under one transaction each, opened together and rolled back together,
+  so a rejected dump leaves all three as it found them. A store the dump needs
+  and this machine cannot offer refuses the file before anything is written,
+  rather than dropping the records that would have gone there while counting
+  them as imported.
 
   Entries arriving with an identifier keep it. Entries without one are assigned
   a UUIDv7 seeded from their own creation time, so a back catalogue keeps its
   ordering rather than being stamped with the instant it was imported.
+
+  **The reported count is of entries that landed.** A memory entry's identity
+  is its content, and the store declares that convergence key unique, so two
+  records carrying one key are one entry — the case of two harvested entries
+  with the same text from different commits, differing only in `source_ref`.
+  The earliest-created one survives, gaining the other's tags and linked files,
+  and the fold is reported on its own line instead of being counted as a second
+  import. Records whose entry was already in the store are reported apart
+  again, so re-running an import says nothing new landed rather than repeating
+  the original number.
 
   **Embeddings are not carried in a dump.** The import writes in one
   transaction with no embedding inside it, then runs `memory reindex`'s pass.

@@ -3,7 +3,7 @@
 // yet.
 
 mod plumbing_helpers;
-use plumbing_helpers::{inkentry_bin, parse_jsonl, write_config};
+use plumbing_helpers::{inkentry_bin_in, parse_jsonl, write_config};
 
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -41,6 +41,10 @@ fn entry(dump_ref: &str, title: &str, created_at: i64, extra: &str) -> String {
 
 struct Project {
     _tmp: TempDir,
+    // One home, and one registry inside it, for every command a test runs:
+    // the import writes to the registry and a later assertion has to be able
+    // to read what it wrote.
+    home: TempDir,
     mem_path: std::path::PathBuf,
     config_path: std::path::PathBuf,
     root: std::path::PathBuf,
@@ -48,6 +52,7 @@ struct Project {
 
 fn project() -> Project {
     let tmp = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
     // Port 1 is never listening, so nothing here can reach an embedder: the
@@ -62,6 +67,7 @@ fn project() -> Project {
     let root = tmp.path().to_path_buf();
     Project {
         _tmp: tmp,
+        home,
         mem_path,
         config_path,
         root,
@@ -69,10 +75,16 @@ fn project() -> Project {
 }
 
 impl Project {
+    fn bin(&self) -> assert_cmd::Command {
+        let mut cmd = inkentry_bin_in(self.home.path());
+        cmd.env("INKENTRY_REGISTRY_DIR", self.home.path());
+        cmd
+    }
+
     fn import(&self, contents: &str) -> assert_cmd::Command {
         let path = self.root.join("project.dump");
         std::fs::write(&path, contents).unwrap();
-        let mut cmd = inkentry_bin();
+        let mut cmd = self.bin();
         cmd.current_dir(&self.root)
             .arg("--config")
             .arg(&self.config_path)
@@ -84,7 +96,8 @@ impl Project {
     }
 
     fn entries(&self) -> Vec<serde_json::Value> {
-        let out = inkentry_bin()
+        let out = self
+            .bin()
             .current_dir(&self.root)
             .arg("--config")
             .arg(&self.config_path)
@@ -106,6 +119,16 @@ impl Project {
     fn sql<T: rusqlite::types::FromSql>(&self, query: &str) -> T {
         let conn = rusqlite::Connection::open(&self.mem_path).unwrap();
         conn.query_row(query, [], |r| r.get(0)).unwrap()
+    }
+
+    fn registered_projects(&self) -> i64 {
+        let path = self.home.path().join("registry.db");
+        if !path.exists() {
+            return 0;
+        }
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+            .unwrap_or(0)
     }
 }
 
@@ -380,7 +403,7 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
     let p = project();
     // `status` reads the project's own store, so the project has to exist
     // before the import lands in it.
-    inkentry_bin()
+    p.bin()
         .current_dir(&p.root)
         .arg("--config")
         .arg(&p.config_path)
@@ -396,7 +419,7 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
     );
     let dump_path = p.root.join("project.dump");
     std::fs::write(&dump_path, &d).unwrap();
-    inkentry_bin()
+    p.bin()
         .current_dir(&p.root)
         .arg("--config")
         .arg(&p.config_path)
@@ -407,7 +430,8 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
         .assert()
         .success();
 
-    let out = inkentry_bin()
+    let out = p
+        .bin()
         .current_dir(&p.root)
         .arg("--config")
         .arg(&p.config_path)
@@ -424,5 +448,264 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
         status["memory_embedding_pending"].as_u64(),
         Some(2),
         "status must surface the pending count, not leave it to be discovered"
+    );
+}
+
+// ── entries that share one identity ──────────────────────────────────────────
+
+// Two harvested entries with the same kind/title/body from different commits
+// differ only in `source_ref` — and the store's convergence key is computed
+// over kind/title/body, so both land on one key and one row. That collapse is
+// forced by the schema (`entity_id` is UNIQUE), but the count must describe
+// what landed, because "2 entries imported" is the number a user checks on a
+// move they make once.
+#[test]
+fn two_entries_that_collapse_into_one_are_counted_as_one() {
+    let p = project();
+    let same = |dump_ref: &str, source_ref: &str| {
+        format!(
+            r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"Retry with backoff","body":"same text","created_at":1000,"source_ref":"{source_ref}"}}"#
+        )
+    };
+    let d = dump(
+        &[&same("e1", "commit:aaa"), &same("e2", "commit:bbb")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let out = p
+        .import(&d)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary: serde_json::Value = serde_json::from_slice(&out).unwrap();
+
+    assert_eq!(
+        p.sql::<i64>("SELECT count(*) FROM notes"),
+        1,
+        "one convergence key is one row"
+    );
+    assert_eq!(
+        summary["memory_entries"].as_u64(),
+        Some(1),
+        "the reported count must be the number of entries that landed: {summary}"
+    );
+    assert_eq!(
+        summary["memory_entries_merged"].as_u64(),
+        Some(1),
+        "and the one that folded into it must be reported, not dropped in silence: {summary}"
+    );
+}
+
+// The survivor is the earliest-created entry in the group, not whichever the
+// writer happened to emit first: dump record order is explicitly unconstrained
+// by the format, so ordering the outcome by it would make the result depend on
+// the writer.
+#[test]
+fn the_surviving_entry_is_the_earliest_created_one_whatever_the_dump_order() {
+    let survivor_of = |body_order: [(&str, i64, &str); 2]| {
+        let p = project();
+        let lines: Vec<String> = body_order
+            .iter()
+            .map(|(dump_ref, created_at, tag)| {
+                format!(
+                    r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"One","body":"same text","created_at":{created_at},"tags":["{tag}"]}}"#
+                )
+            })
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let d = dump(&refs, r#"{"entity":{"memory_entry":2},"relationship":{}}"#);
+        p.import(&d).assert().success();
+        p.sql::<i64>("SELECT created_at FROM notes")
+    };
+
+    assert_eq!(survivor_of([("e1", 1000, "a"), ("e2", 2000, "b")]), 1000);
+    assert_eq!(
+        survivor_of([("e2", 2000, "b"), ("e1", 1000, "a")]),
+        1000,
+        "reversing the dump order must not change which entry survives"
+    );
+}
+
+// Both copies' tags survive the collapse: the merge is add-wins, exactly as it
+// is when a fresh entry collides with one already in the store.
+#[test]
+fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
+    let p = project();
+    let tagged = |dump_ref: &str, created_at: i64, tag: &str| {
+        format!(
+            r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"One","body":"same text","created_at":{created_at},"tags":["{tag}"]}}"#
+        )
+    };
+    let d = dump(
+        &[&tagged("e1", 1000, "keep"), &tagged("e2", 2000, "alsokeep")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+    let tags: String = p.sql("SELECT tags FROM notes");
+    assert!(tags.contains("keep") && tags.contains("alsokeep"), "{tags}");
+}
+
+// Re-running the same import is how a user recovers from an interrupted one.
+// Nothing new lands, and the summary has to say so rather than repeat the
+// original count.
+#[test]
+fn re_importing_the_same_dump_reports_that_nothing_new_landed() {
+    let p = project();
+    let d = dump(
+        &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    p.import(&d).assert().success();
+
+    let out = p
+        .import(&d)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(p.sql::<i64>("SELECT count(*) FROM notes"), 2);
+    assert_eq!(
+        summary["memory_entries"].as_u64(),
+        Some(0),
+        "nothing was added the second time: {summary}"
+    );
+    assert_eq!(
+        summary["memory_entries_already_present"].as_u64(),
+        Some(2),
+        "and the entries that were already there must be named as such: {summary}"
+    );
+}
+
+// ── refusal reaches every store, not just memory.db ──────────────────────────
+
+// Projects go to the registry and recorded commands to index.db, both outside
+// the memory transaction. "No partial import" is a claim about the whole dump,
+// so a refusal has to leave all three stores as it found them.
+#[test]
+fn a_refused_dump_leaves_the_registry_untouched_too() {
+    let p = project();
+    let before = p.registered_projects();
+    let d = dump(
+        &[
+            r#"{"record":"entity","type":"project","ref":"p1","root_path":"/tmp/imported-alpha"}"#,
+            &entry("e1", "one", 1000, ""),
+            // A relates_to between a project and a memory entry cannot be
+            // stored; the dump is not internally consistent and is refused.
+            r#"{"record":"relationship","type":"relates_to","from":"p1","to":"e1"}"#,
+        ],
+        r#"{"entity":{"memory_entry":1,"project":1},"relationship":{"relates_to":1}}"#,
+    );
+    p.import(&d).assert().failure();
+
+    assert!(
+        !p.mem_path.exists() || p.sql::<i64>("SELECT count(*) FROM notes") == 0,
+        "no memory entry may survive a refusal"
+    );
+    assert_eq!(
+        p.registered_projects(),
+        before,
+        "and no project may survive it either"
+    );
+}
+
+// ── identity collisions the dump itself declares ─────────────────────────────
+
+#[test]
+fn two_entities_sharing_a_uuid_are_refused_with_a_message_about_the_dump() {
+    let p = project();
+    let uuid = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";
+    let d = dump(
+        &[
+            &entry("e1", "one", 1000, &format!(r#","uuid":"{uuid}""#)),
+            &entry("e2", "two", 2000, &format!(r#","uuid":"{uuid}""#)),
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    p.import(&d)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("share the identity"))
+        .stderr(predicates::str::contains(uuid));
+}
+
+#[test]
+fn two_entities_sharing_a_remote_id_are_refused_with_a_message_about_the_dump() {
+    let p = project();
+    let d = dump(
+        &[
+            &entry("e1", "one", 1000, r#","remote_id":"rem-9""#),
+            &entry("e2", "two", 2000, r#","remote_id":"rem-9""#),
+        ],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    p.import(&d)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("rem-9"))
+        .stderr(predicates::str::contains("Refusing to import any of it"));
+}
+
+// ── the refusal that sends a user here names a command that exists ───────────
+
+// Asserted against clap rather than against the literal in the message: a test
+// that pins the string is exactly what let `inkentry memory import` — which is
+// not a command — survive in the refusal an older store gets.
+#[test]
+fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
+    let p = project();
+    let legacy = p.root.join("legacy-memory.db");
+    {
+        let conn = rusqlite::Connection::open(&legacy).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT); PRAGMA user_version = 10;",
+        )
+        .unwrap();
+    }
+
+    let out = p
+        .bin()
+        .current_dir(&p.root)
+        .arg("--config")
+        .arg(&p.config_path)
+        .arg("memory")
+        .arg("--db")
+        .arg(&legacy)
+        .arg("list")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let message = String::from_utf8_lossy(&out).into_owned();
+
+    let named = message
+        .split('`')
+        .nth(1)
+        .unwrap_or_else(|| panic!("the refusal must name a command in backticks: {message}"));
+    let mut words = named.split_whitespace();
+    assert_eq!(words.next(), Some("inkentry"), "{message}");
+    let subcommand: Vec<&str> = words.collect();
+    assert!(!subcommand.is_empty(), "{message}");
+
+    let probe = p
+        .bin()
+        .args(&subcommand)
+        .arg("--help")
+        .assert()
+        .get_output()
+        .stderr
+        .clone();
+    let probe = String::from_utf8_lossy(&probe).into_owned();
+    assert!(
+        !probe.contains("unrecognized subcommand") && !probe.contains("unexpected argument"),
+        "the refusal sends the user to `inkentry {}`, which this binary does not accept: {probe}",
+        subcommand.join(" ")
     );
 }

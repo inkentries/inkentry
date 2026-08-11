@@ -20,6 +20,10 @@ use super::record::{
 pub struct Dump {
     pub entities: Vec<Entity>,
     pub relationships: Vec<ResolvedRelationship>,
+    /// Memory entries that shared a convergence key with another entry in the
+    /// same dump and were folded into it. Carried so the import can report a
+    /// count that describes what landed rather than what it read.
+    pub merged_memory_entries: usize,
 }
 
 #[derive(Debug)]
@@ -77,12 +81,19 @@ pub fn read(bytes: &[u8]) -> Result<Dump> {
     verify_counts(&footer.counts, &entities, &relationships)?;
     verify_digest(&footer.digest, &lines[..last])?;
 
+    let by_ref = index_by_ref(&entities)?;
+    refuse_repeated_identities(&entities)?;
+
     let relationships = dedupe(relationships);
-    let relationships = resolve(&entities, relationships)?;
+    let relationships = resolve(&by_ref, relationships)?;
+
+    let collapsed = collapse_by_convergence_key(entities);
+    let relationships = redirect_to_survivors(relationships, &collapsed.remap);
 
     Ok(Dump {
-        entities,
+        entities: collapsed.entities,
         relationships,
+        merged_memory_entries: collapsed.merged,
     })
 }
 
@@ -184,10 +195,7 @@ fn dedupe(relationships: Vec<Relationship>) -> Vec<Relationship> {
     out
 }
 
-fn resolve(
-    entities: &[Entity],
-    relationships: Vec<Relationship>,
-) -> Result<Vec<ResolvedRelationship>> {
+fn index_by_ref(entities: &[Entity]) -> Result<HashMap<&str, usize>> {
     let mut by_ref: HashMap<&str, usize> = HashMap::new();
     let mut duplicates: HashSet<&str> = HashSet::new();
     for (i, e) in entities.iter().enumerate() {
@@ -202,7 +210,187 @@ fn resolve(
              Refusing to import any of it."
         );
     }
+    Ok(by_ref)
+}
 
+/// Refuse a dump in which two entries claim the same `uuid` or the same
+/// `remote_id`.
+///
+/// Both are stable, cross-store identities the format says a writer carries and
+/// never mints, so two records under one of them contradict each other — the
+/// same class of error as a repeated `ref`, and it belongs to the same reading
+/// pass. Without this the contradiction reaches the UNIQUE index mid-write and
+/// surfaces as SQLite's own words, which describe neither the dump nor what to
+/// do about it.
+fn refuse_repeated_identities(entities: &[Entity]) -> Result<()> {
+    let mut uuids: HashSet<&str> = HashSet::new();
+    let mut remote_ids: HashSet<&str> = HashSet::new();
+    for e in entities {
+        let Entity::MemoryEntry(m) = e else { continue };
+        if let Some(uuid) = m.uuid.as_deref()
+            && !uuids.insert(uuid)
+        {
+            bail!(
+                "two entities share the identity {uuid:?}; one entry has one identity, \
+                 so this dump describes a state no store can hold. \
+                 Refusing to import any of it."
+            );
+        }
+        if let Some(remote) = m.remote_id.as_deref()
+            && !remote_ids.insert(remote)
+        {
+            bail!(
+                "two entities share the remote id {remote:?}; it names one entry on the \
+                 server they came from, so this dump describes a state no store can hold. \
+                 Refusing to import any of it."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The result of folding entries that share a convergence key into one.
+struct Collapsed {
+    entities: Vec<Entity>,
+    /// Original entity index → its index in `entities`. A folded entry maps to
+    /// the survivor it was folded into.
+    remap: Vec<usize>,
+    merged: usize,
+}
+
+/// Fold memory entries sharing an `entity_id` into one.
+///
+/// The store keys entries on that convergence key, `NOT NULL` and UNIQUE, so
+/// two entries carrying one key cannot both exist there. The collapse is
+/// therefore forced rather than chosen — and it is reachable from real data:
+/// the key is computed over kind/title/body, so two harvested entries differing
+/// only in `source_ref` land on it. Refusing such a dump would make a
+/// legitimate store impossible to move, on a move that happens once.
+///
+/// The survivor is the earliest-created member, ties broken by `ref`. Taking
+/// the first in file order instead would make the outcome depend on the
+/// writer's emission order, which the format explicitly leaves unconstrained.
+/// Tags and linked files are unioned add-wins from every member, matching what
+/// the store does when a fresh entry collides with one already in it.
+fn collapse_by_convergence_key(mut entities: Vec<Entity>) -> Collapsed {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        if let Entity::MemoryEntry(m) = e {
+            let key = m.entity_id.clone().unwrap_or_else(|| {
+                crate::storage::entity_id::entity_id(&m.kind, &m.title, &m.body)
+            });
+            groups.entry(key).or_default().push(i);
+        }
+    }
+
+    let mut folded_into: HashMap<usize, usize> = HashMap::new();
+    let mut inherits: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for members in groups.into_values() {
+        if members.len() == 1 {
+            continue;
+        }
+        let mut ordered = members;
+        ordered.sort_by_key(|&i| {
+            let Entity::MemoryEntry(m) = &entities[i] else {
+                unreachable!("only memory entries are grouped")
+            };
+            (m.created_at, m.dump_ref.clone())
+        });
+        let survivor = ordered[0];
+        for &loser in &ordered[1..] {
+            folded_into.insert(loser, survivor);
+            inherits.entry(survivor).or_default().push(loser);
+        }
+    }
+
+    for (survivor, losers) in &inherits {
+        let mut tags: Vec<String> = vec![];
+        let mut files: Vec<String> = vec![];
+        for &loser in losers {
+            let Entity::MemoryEntry(m) = &entities[loser] else {
+                unreachable!("only memory entries are grouped")
+            };
+            tags.extend(m.tags.iter().cloned());
+            files.extend(m.linked_files.iter().cloned());
+        }
+        let Entity::MemoryEntry(keeper) = &mut entities[*survivor] else {
+            unreachable!("only memory entries are grouped")
+        };
+        for t in tags {
+            if !keeper.tags.contains(&t) {
+                keeper.tags.push(t);
+            }
+        }
+        for f in files {
+            if !keeper.linked_files.contains(&f) {
+                keeper.linked_files.push(f);
+            }
+        }
+    }
+
+    let merged = folded_into.len();
+    let mut remap = vec![usize::MAX; entities.len()];
+    let mut kept: Vec<Entity> = Vec::with_capacity(entities.len() - merged);
+    let mut kept_index_of: HashMap<usize, usize> = HashMap::new();
+
+    for (i, entity) in entities.into_iter().enumerate() {
+        if folded_into.contains_key(&i) {
+            continue;
+        }
+        kept_index_of.insert(i, kept.len());
+        remap[i] = kept.len();
+        kept.push(entity);
+    }
+    for (&loser, &survivor) in &folded_into {
+        remap[loser] = kept_index_of[&survivor];
+    }
+
+    Collapsed {
+        entities: kept,
+        remap,
+        merged,
+    }
+}
+
+/// Point every endpoint at the entity that survived the collapse, then drop
+/// what the redirect made meaningless: a relationship whose two endpoints
+/// folded into one entry now names that entry twice, and a redirect can make
+/// two relationships identical.
+fn redirect_to_survivors(
+    relationships: Vec<ResolvedRelationship>,
+    remap: &[usize],
+) -> Vec<ResolvedRelationship> {
+    let mut seen: HashMap<(RelationshipKind, usize, usize), usize> = HashMap::new();
+    let mut out: Vec<ResolvedRelationship> = Vec::new();
+    for r in relationships {
+        let (from, to) = (remap[r.from], remap[r.to]);
+        if from == to {
+            continue;
+        }
+        match seen.get(&(r.kind, from, to)) {
+            Some(&at) => {
+                if out[at].created_at.is_none() {
+                    out[at].created_at = r.created_at;
+                }
+            }
+            None => {
+                seen.insert((r.kind, from, to), out.len());
+                out.push(ResolvedRelationship {
+                    kind: r.kind,
+                    from,
+                    to,
+                    created_at: r.created_at,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn resolve(
+    by_ref: &HashMap<&str, usize>,
+    relationships: Vec<Relationship>,
+) -> Result<Vec<ResolvedRelationship>> {
     relationships
         .into_iter()
         .map(|r| {
