@@ -63,7 +63,7 @@ async fn push_local_propagates_a_relates_to_edge_keyed_by_external_id() {
     let (linker, _) = store
         .add_note("note", "Linker", "linker body", &[], &[], None, None)
         .unwrap();
-    store.add_edge(linker, target, "relates_to").unwrap();
+    store.add_edge(&linker, &target, "relates_to").unwrap();
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -82,9 +82,9 @@ async fn push_local_propagates_a_relates_to_edge_keyed_by_external_id() {
         "the relates_to edge must land once both endpoints synced in the same round"
     );
 
-    // The push minted a stable uuid (the cloud external_id) for each endpoint.
-    let from_ext = store.uuid_for(linker).unwrap().unwrap();
-    let to_ext = store.uuid_for(target).unwrap().unwrap();
+    // An entry's own id is the cloud external_id.
+    let from_ext = linker.to_string();
+    let to_ext = target.to_string();
 
     let reqs = server.received_requests().await.unwrap();
     let bodies = edge_batch_bodies(&reqs);
@@ -117,7 +117,7 @@ async fn a_second_push_with_nothing_new_does_not_repost_the_edge() {
     let (linker, _) = store
         .add_note("note", "Linker", "linker body", &[], &[], None, None)
         .unwrap();
-    store.add_edge(linker, target, "relates_to").unwrap();
+    store.add_edge(&linker, &target, "relates_to").unwrap();
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))

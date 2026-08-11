@@ -439,8 +439,10 @@ async fn has_source_ref_matches_on_source_commit() {
 async fn edge_queries_stay_empty_as_on_every_remote_backend() {
     let server = MockServer::start().await;
     let be = backend(&server);
-    assert!(be.add_edge(1, 2, "relates_to").await.is_ok());
-    let (outgoing, incoming) = be.get_edges(1).await.unwrap();
+    let a: crate::storage::NoteId = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e42".parse().unwrap();
+    let b: crate::storage::NoteId = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e43".parse().unwrap();
+    assert!(be.add_edge(&a, &b, "relates_to").await.is_ok());
+    let (outgoing, incoming) = be.get_edges(&a).await.unwrap();
     assert!(outgoing.is_empty() && incoming.is_empty());
 }
 

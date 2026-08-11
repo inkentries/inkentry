@@ -345,7 +345,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
     );
 }
 
-// ── identity survives a rowid renumber ────────────────────────────────────────
+// ── identity does not depend on the carrier's record id ─────────────────────
 
 /// The value of `key` in a JSON-Lines record.
 fn record_field(line: &str, key: &str) -> String {
@@ -357,9 +357,35 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-/// Re-`init` recreates memory.db, resetting its autoincrement rowid to 1. Two
-/// different entries then land in one notes ref stamped `"id":1` — the observed
-/// collision. Their `entity_id`s must still tell them apart.
+// The id the local SQLite store holds for the entry titled `title`. A
+// git-notes record's own `id` is a per-write stamp of the frozen carrier
+// format (ADR-059) and never resolves against the store.
+fn local_id_for_title(home: &Path, repo: &Path, title: &str) -> String {
+    let out = bin(home, repo)
+        .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
+        .output()
+        .expect("spawn inkentry memory list");
+    assert!(
+        out.status.success(),
+        "memory list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    stdout
+        .lines()
+        .find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            (v.get("title")?.as_str()? == title)
+                .then(|| Some(v.get("id")?.as_str()?.to_string()))
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
+}
+
+// Re-`init` recreates memory.db, so nothing about a carrier record's `id`
+// survives it — the field is a per-write stamp, not identity, and two
+// different entries can land in one notes ref carrying the same one. Their
+// `entity_id`s must still tell them apart.
 #[test]
 fn reinit_between_adds_yields_distinct_entity_ids() {
     let home = TempDir::new().unwrap();
@@ -375,12 +401,11 @@ fn reinit_between_adds_yields_distinct_entity_ids() {
             .success();
     };
 
-    // A local `.inkentry/` makes SQLite the primary, so the rowid is a real
-    // autoincrement rather than the pre-init timestamp id.
+    // A local `.inkentry/` makes SQLite the primary.
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
     add("first decision", "body one");
 
-    // Re-init: the store is recreated, so the rowid counter restarts.
+    // Re-init: the store is recreated, so nothing carries over from the first add.
     std::fs::remove_dir_all(repo.path().join(".inkentry")).unwrap();
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
     add("second decision", "body two");
@@ -388,18 +413,11 @@ fn reinit_between_adds_yields_distinct_entity_ids() {
     let lines = inkentry_note_lines(repo.path());
     assert_eq!(lines.len(), 2, "both adds carried into the notes ref");
 
-    // The collision is real, not hypothetical: assert it before asserting the fix.
-    assert_eq!(
-        record_field(&lines[0], "id"),
-        record_field(&lines[1], "id"),
-        "re-init must reset the rowid — otherwise this test proves nothing"
-    );
-
     let first = record_field(&lines[0], "entity_id");
     let second = record_field(&lines[1], "entity_id");
     assert_ne!(
         first, second,
-        "two different decisions must have distinct entity_ids despite the rowid collision"
+        "two different decisions must have distinct entity_ids across the re-init"
     );
     assert_eq!(first.len(), 64, "entity_id is hex sha256: {first}");
     assert_eq!(second.len(), 64, "entity_id is hex sha256: {second}");
@@ -991,7 +1009,7 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
         .success();
     let old_lines = inkentry_note_lines(repo.path());
     assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
-    let old_id = record_field(&old_lines[0], "id");
+    let old_id = local_id_for_title(home.path(), repo.path(), "old-decision");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
 
     bin(home.path(), repo.path())
@@ -1081,8 +1099,8 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
 
     let seeded = inkentry_note_lines(repo.path());
     assert_eq!(seeded.len(), 2, "setup: two independent adds");
-    let old_id = record_field(&seeded[0], "id");
-    let new_id = record_field(&seeded[1], "id");
+    let old_id = local_id_for_title(home.path(), repo.path(), "old-via-supersede");
+    let new_id = local_id_for_title(home.path(), repo.path(), "new-via-supersede");
     let new_entity_id = record_field(&seeded[1], "entity_id");
 
     bin(home.path(), repo.path())
@@ -1224,7 +1242,8 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
         .assert()
         .success();
     let old_lines = inkentry_note_lines(repo.path());
-    let old_id = record_field(&old_lines[0], "id");
+    assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
+    let old_id = local_id_for_title(home.path(), repo.path(), "old-decision");
 
     bin(home.path(), repo.path())
         .args([

@@ -180,6 +180,30 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING: every memory-entry id is now a UUID string.** A memory entry's
+  identity is a UUIDv7 rather than a per-store counter, so `id` and
+  `superseded_by` are JSON **strings** on every command that emits them
+  (`memory list --format json`, `memory show`, `memory graph`, `plumbing
+  read-memory`), and both endpoints of a `memory graph` edge are strings too.
+  A script parsing an integer `id` out of JSON breaks and must be updated.
+
+  Ids are now stable across machines rather than restarting at 1 in every
+  store, so two installations no longer mint colliding ids, and an entry keeps
+  its id when it is edited. `memory graph`, `memory add --relates-to` and
+  `plumbing read-memory --id` accept a UUID where they previously took an
+  integer.
+
+  **Old numeric ids no longer resolve.** This is deliberate: the crossing is
+  one-way and the old numbering did not survive it. A numeric id is answered
+  with a message saying entries are identified by UUID and pointing at
+  `inkentry memory list`, rather than a bare "not found". See ADR-078.
+
+- Memory entry relationships are stored by entry id rather than by an internal
+  row number, and the memory store now declares foreign-key enforcement itself
+  instead of inheriting it from whichever SQLite the build happened to link
+  against. An edge naming an entry that does not exist is refused on every
+  build, not just the ones that bundle their own SQLite.
+
 - **Breaking: a self-hosted `inkentry-server` identifies memory entries by
   UUIDv7, and every route that carries a note id now speaks strings.** `id`,
   `superseded_by`, `conflicts[].id`, the `new_id` supersede body and the
@@ -230,6 +254,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   re-installed. Removal will be a separate change in a later release.
 
 ### Removed
+
+- The memory store's schema-migration ladder, and with it the two maintenance
+  routines that ran on every open to backfill the content-addressed
+  convergence key and promote its index to unique. The store is now created at
+  its final shape — the key is `NOT NULL` and uniquely indexed from the first
+  row — so both routines had nothing left to do. A memory database written by
+  an older product is no longer opened in place; it is refused with a message
+  pointing at the import path — including one carrying a schema stamp from a
+  released binary, which continues to be recognised as older rather than
+  mistaken for a store from a newer build. The stamp this build writes
+  therefore continues the ladder's numbering rather than restarting.
 
 - **`inkentry check` has been removed.** Its three jobs are served better
   elsewhere, so the command no longer carried a unique one: index freshness by

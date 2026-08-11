@@ -329,9 +329,21 @@ fn show_surfaces_fetched_teammate_note_on_default_path() {
     let team = setup_team();
     one_note_reaches_reader(&team);
 
-    // The imported note is the first (and only) row, so it takes id 1. `show`
-    // must itself trigger the import — nothing read the store before this.
-    let out = read_memory(&team.reader, &["show", "1"]);
+    // Ids are minted on import, so the id has to be read back rather than
+    // assumed. This first list is also what triggers the import.
+    let listed = stdout_of(&read_memory(
+        &team.reader,
+        &["list", "--local-only", "--format", "jsonl"],
+    ));
+    let id = listed
+        .lines()
+        .find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            Some(v.get("id")?.as_str()?.to_string())
+        })
+        .unwrap_or_else(|| panic!("no imported entry to show in:\n{listed}"));
+
+    let out = read_memory(&team.reader, &["show", &id]);
     assert!(
         stdout_of(&out).contains(MARKER),
         "memory show on the DEFAULT backend must surface the fetched note by id"

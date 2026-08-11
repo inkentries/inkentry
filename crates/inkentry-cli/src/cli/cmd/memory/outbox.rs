@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::storage::MemoryStore;
+use crate::storage::{MemoryStore, NoteId};
 
 /// Bound on both the nudge and poll HTTP calls to the local relay: high
 /// enough for a loopback round trip, low enough that an absent/wedged local
@@ -176,7 +176,7 @@ async fn register_and_push(
             } else {
                 Some(r.body.clone())
             },
-            external_id: r.uuid.clone(),
+            external_id: r.id.to_string(),
             source_commit: r.source_ref.clone(),
         })
         .collect();
@@ -262,9 +262,9 @@ pub(crate) async fn poll_and_apply(
         if !durably_persisted {
             continue;
         }
-        if let (Some(remote_id), Ok(Some(local_id))) =
-            (&r.remote_id, local.note_id_for_uuid(&r.external_id))
-            && local.set_remote_id(local_id, remote_id).is_ok()
+        if let (Some(remote_id), Ok(local_id)) = (&r.remote_id, r.external_id.parse::<NoteId>())
+            && local.has_note(&local_id).unwrap_or(false)
+            && local.set_remote_id(&local_id, remote_id).is_ok()
         {
             applied_pushes += 1;
             acked_push_ids.push(r.external_id.clone());
@@ -458,7 +458,7 @@ mod tests {
         store
             .add_note("decision", "T", "body", &[], &[], None, None)
             .unwrap();
-        let uuid = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        let uuid = store.rows_for_sync(false).unwrap()[0].id.to_string();
         drop(store);
 
         let team_server = MockServer::start().await;
@@ -506,7 +506,7 @@ mod tests {
         let store = open_store(&mem_path);
         assert_eq!(
             store.note_id_for_remote_id("cloud-1").unwrap(),
-            store.note_id_for_uuid(&uuid).unwrap(),
+            Some(uuid.parse().unwrap()),
             "the row must carry the cloud-assigned remote_id after the poll applies it"
         );
         assert_eq!(
@@ -1129,7 +1129,7 @@ mod tests {
             store
                 .add_note("decision", "T", "body", &[], &[], None, None)
                 .unwrap();
-            store.rows_for_sync(false).unwrap()[0].uuid.clone()
+            store.rows_for_sync(false).unwrap()[0].id.to_string()
         };
 
         let team_server = MockServer::start().await;

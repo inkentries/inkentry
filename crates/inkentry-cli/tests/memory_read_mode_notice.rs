@@ -31,7 +31,7 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
 
 /// Seed one local memory entry (no `server_url`: solo/local write path) and
 /// return `(tmp, mem_path, id)`.
-fn seeded_project() -> (TempDir, PathBuf, i64) {
+fn seeded_project() -> (TempDir, PathBuf, String) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
@@ -58,12 +58,16 @@ fn seeded_project() -> (TempDir, PathBuf, i64) {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     // "Stored [note] #<id>: <title>"
-    let id: i64 = stdout
+    let id = stdout
         .split('#')
         .nth(1)
         .and_then(|s| s.split(':').next())
-        .and_then(|s| s.trim().parse().ok())
+        .map(|s| s.trim().to_string())
         .unwrap_or_else(|| panic!("could not parse stored id from: {stdout}"));
+    assert!(
+        uuid::Uuid::parse_str(&id).is_ok(),
+        "stored id must be a UUID, got {id:?}"
+    );
     (tmp, mem_path, id)
 }
 
@@ -170,7 +174,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
         .arg(&cfg)
         .args(["memory", "--db"])
         .arg(&mem_path)
-        .args(["show", &id.to_string()])
+        .args(["show", &id])
         .output()
         .unwrap();
     assert_clean(&show, "memory show");

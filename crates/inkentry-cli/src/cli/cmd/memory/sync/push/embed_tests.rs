@@ -20,13 +20,13 @@ fn team_cfg() -> Config {
     }
 }
 
-fn add_note(store: &MemoryStore, title: &str, body: &str) -> (i64, String) {
+fn add_note(store: &MemoryStore, title: &str, body: &str) -> NoteId {
     store
         .add_note("decision", title, body, &[], &[], None, None)
         .unwrap();
     let rows = store.rows_for_sync(true).unwrap();
     let row = rows.iter().find(|r| r.title == title).expect("note added");
-    (row.local_id, row.uuid.clone())
+    row.id.clone()
 }
 
 async fn mount_batch_created(server: &MockServer, uuids: &[&str]) {
@@ -61,8 +61,9 @@ fn embed_docs(reqs: &[wiremock::Request]) -> Vec<String> {
 async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id, uuid) = add_note(&store, "Unembedded", "first");
-    assert!(store.get_embedding(id).unwrap().is_none());
+    let id = add_note(&store, "Unembedded", "first");
+    let uuid = id.to_string();
+    assert!(store.get_embedding(&id).unwrap().is_none());
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -88,7 +89,7 @@ async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
     drop(store);
     let reopened = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
     let blob = reopened
-        .get_embedding(id)
+        .get_embedding(&id)
         .unwrap()
         .expect("push must leave the row embedded in memory.db");
     assert_eq!(
@@ -104,7 +105,7 @@ async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
 async fn push_embeds_the_same_document_string_reindex_does() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (_id, uuid) = add_note(&store, "Cache policy", "we cache for 5m");
+    let uuid = add_note(&store, "Cache policy", "we cache for 5m").to_string();
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -134,9 +135,11 @@ async fn push_embeds_the_same_document_string_reindex_does() {
 async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id_a, uuid_a) = add_note(&store, "Already", "embedded");
-    let (id_b, uuid_b) = add_note(&store, "Also already", "embedded");
-    for id in [id_a, id_b] {
+    let id_a = add_note(&store, "Already", "embedded");
+    let uuid_a = id_a.to_string();
+    let id_b = add_note(&store, "Also already", "embedded");
+    let uuid_b = id_b.to_string();
+    for id in [&id_a, &id_b] {
         store
             .insert_embedding(id, &inkentry_core::embeddings::vec_to_blob(&stub_vector()))
             .unwrap();
@@ -180,7 +183,7 @@ async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
 async fn locally_embedded_row_ships_its_vector_when_the_server_accepts_vectors() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (_id, uuid) = add_note(&store, "Unembedded", "first");
+    let uuid = add_note(&store, "Unembedded", "first").to_string();
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -215,7 +218,8 @@ async fn locally_embedded_row_ships_its_vector_when_the_server_accepts_vectors()
 async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id, uuid) = add_note(&store, "Unembedded", "first");
+    let id = add_note(&store, "Unembedded", "first");
+    let uuid = id.to_string();
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -239,7 +243,7 @@ async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
         "a server without the capability must still get a text-only push: {body}"
     );
     assert!(
-        store.get_embedding(id).unwrap().is_some(),
+        store.get_embedding(&id).unwrap().is_some(),
         "the local store must be repaired regardless of what the destination accepts"
     );
     drop(loopback);
@@ -250,7 +254,8 @@ async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
 async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id, uuid) = add_note(&store, "Title only", "");
+    let id = add_note(&store, "Title only", "");
+    let uuid = id.to_string();
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -273,7 +278,7 @@ async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
         vec!["title: Title only | text: "],
         "an empty body must still produce the well-formed document string"
     );
-    assert!(store.get_embedding(id).unwrap().is_some());
+    assert!(store.get_embedding(&id).unwrap().is_some());
     let reqs = team.received_requests().await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert!(
@@ -288,7 +293,7 @@ async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
 async fn a_second_push_run_issues_no_embed_calls() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (_id, uuid) = add_note(&store, "Unembedded", "first");
+    let uuid = add_note(&store, "Unembedded", "first").to_string();
 
     let team = MockServer::start().await;
     mount_batch_created(&team, &[&uuid]).await;
@@ -332,7 +337,7 @@ async fn a_second_push_run_issues_no_embed_calls() {
 async fn reindex_has_nothing_pending_for_rows_a_push_just_repaired() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (_id, uuid) = add_note(&store, "Unembedded", "first");
+    let uuid = add_note(&store, "Unembedded", "first").to_string();
     assert_eq!(store.notes_missing_embeddings(false).unwrap().len(), 1);
 
     let team = MockServer::start().await;
@@ -363,7 +368,7 @@ async fn reindex_has_nothing_pending_for_rows_a_push_just_repaired() {
 async fn vectors_minted_before_an_interrupted_chunk_stay_durable() {
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
-    let (id, _uuid) = add_note(&store, "Unembedded", "first");
+    let id = add_note(&store, "Unembedded", "first");
 
     // The batch route is never mounted, so `push_batch` fails and the push
     // reports itself interrupted after the repair has already run.
@@ -389,7 +394,7 @@ async fn vectors_minted_before_an_interrupted_chunk_stay_durable() {
     drop(store);
     let reopened = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
     assert!(
-        reopened.get_embedding(id).unwrap().is_some(),
+        reopened.get_embedding(&id).unwrap().is_some(),
         "a vector minted before the failing chunk must survive it"
     );
     drop(loopback);

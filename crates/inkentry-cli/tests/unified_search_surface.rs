@@ -800,13 +800,17 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
             "frobnicator design",
         ],
     );
+    // "Stored [decision] #<uuid>: <title>"
     let a_id: String = a
         .split('#')
         .nth(1)
-        .expect("stored output carries an id")
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+        .and_then(|s| s.split(':').next())
+        .map(|s| s.trim().to_string())
+        .expect("stored output carries an id");
+    assert!(
+        uuid::Uuid::parse_str(&a_id).is_ok(),
+        "stored id must be a UUID, got {a_id:?}"
+    );
     // B relates to A but shares no query terms with it.
     memory_add(
         home.path(),

@@ -150,15 +150,15 @@ pub(super) async fn memory_reindex(
                 // (`insert_embedding` commits per call), so a re-run resumes the
                 // remainder rather than starting over.
                 return Err(e.context(format!(
-                    "embedding note #{id} ({embedded} of {total} done and durably stored; \
+                    "embedding note {id} ({embedded} of {total} done and durably stored; \
                      re-run 'inkentry memory reindex' to resume the rest)"
                 )));
             }
         };
         let blob = vec_to_blob(&vec);
         store
-            .insert_embedding(*id, &blob)
-            .with_context(|| format!("storing embedding for note #{id}"))?;
+            .insert_embedding(id, &blob)
+            .with_context(|| format!("storing embedding for note {id}"))?;
         embedded += 1;
         eprintln!("[inkentry] embedded {embedded}/{total}…");
     }

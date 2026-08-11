@@ -219,7 +219,7 @@ async fn list_sends_query_parameters_the_oss_server_silently_drops() {
 
 fn note_json(title: &str) -> serde_json::Value {
     serde_json::json!({
-        "id": 1,
+        "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01",
         "kind": "decision",
         "title": title,
         "body": "b",

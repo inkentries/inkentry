@@ -70,7 +70,7 @@ fn note_tags(mem_db: &Path, id: i64) -> String {
 
 // Parse every `{"id": ..., ...}` JSONL record out of `git notes --ref=inkentry
 // show HEAD`, returning each record's `id` field in file order.
-fn git_note_record_ids(dir: &Path) -> Vec<i64> {
+fn git_note_record_entity_ids(dir: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(dir)
@@ -87,7 +87,10 @@ fn git_note_record_ids(dir: &Path) -> Vec<i64> {
         .map(|l| {
             let v: serde_json::Value = serde_json::from_str(l)
                 .unwrap_or_else(|e| panic!("git note line is not valid JSON: {l:?}: {e}"));
-            v["id"].as_i64().expect("record has an id field")
+            v["entity_id"]
+                .as_str()
+                .expect("record has an entity_id field")
+                .to_string()
         })
         .collect()
 }
@@ -177,11 +180,13 @@ fn second_identical_add_merges_tags_into_the_existing_row() {
     );
 }
 
-// ── Criterion 34: the git-notes write-through carrier is unconditional:
-// it appends on a reused row exactly as on a fresh one, using the SAME id ───
+// ── Criterion 34: the git-notes write-through carrier is unconditional: it
+// appends on a reused row exactly as on a fresh one, under the SAME identity.
+// The carrier's own `id` field is a per-write stamp of the frozen ADR-059
+// format and is not identity; `entity_id` is what a reader resolves on ───
 
 #[test]
-fn second_identical_add_still_writes_through_to_git_notes_with_the_same_id() {
+fn second_identical_add_still_writes_through_to_git_notes_with_the_same_entity_id() {
     let tmp = TempDir::new().unwrap();
     init_git_repo(tmp.path());
     let mem_db = tmp.path().join("memory.db");
@@ -204,7 +209,7 @@ fn second_identical_add_still_writes_through_to_git_notes_with_the_same_id() {
         .success()
         .stdout(predicate::str::contains("Already recorded as"));
 
-    let ids = git_note_record_ids(tmp.path());
+    let ids = git_note_record_entity_ids(tmp.path());
     assert_eq!(
         ids.len(),
         2,
@@ -213,9 +218,9 @@ fn second_identical_add_still_writes_through_to_git_notes_with_the_same_id() {
     );
     assert_eq!(
         ids[0], ids[1],
-        "criterion 34: both records must carry the SAME id, the reused \
-         row's, not a fresh one, so a later reader can't see two different \
-         ids for what SQLite considers a single entry"
+        "criterion 34: both records must carry the SAME entity_id, the \
+         reused row's, so a later reader can't see two different identities \
+         for what SQLite considers a single entry"
     );
 
     // SQLite itself agrees there is exactly one row.

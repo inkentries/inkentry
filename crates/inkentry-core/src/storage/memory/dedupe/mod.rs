@@ -19,20 +19,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-use super::{MemoryStore, Note};
-use crate::storage::backend::numeric_note_id;
-
-// Dedupe is a local-SQLite-only maintenance pass, so every `Note` it sees was
-// read straight out of `memory.db` and its id is always a rowid. The narrowing
-// is still fallible rather than an unwrap so a future caller handing it
-// remote-minted notes fails with the shared message instead of panicking.
-fn rowid(n: &Note) -> anyhow::Result<i64> {
-    numeric_note_id(&n.id)
-}
-
-fn superseded_rowid(n: &Note) -> Option<i64> {
-    n.superseded_by.as_ref().and_then(|id| id.as_i64())
-}
+use super::{MemoryStore, Note, NoteId};
 use crate::storage::entity_id::note_entity_id;
 
 // Summary of one `dedupe_entity_ids` run (or dry-run estimate).
@@ -154,17 +141,17 @@ impl MemoryStore {
         // it's identical regardless of processing order.
         // note_group_of: id -> group index, used only to classify a rewrite
         // as "external" for reporting, not for correctness.
-        let mut loser_to_survivor: HashMap<i64, i64> = HashMap::new();
-        let mut note_group_of: HashMap<i64, usize> = HashMap::new();
-        let mut survivor_ids: HashSet<i64> = HashSet::new();
+        let mut loser_to_survivor: HashMap<NoteId, NoteId> = HashMap::new();
+        let mut note_group_of: HashMap<NoteId, usize> = HashMap::new();
+        let mut survivor_ids: HashSet<NoteId> = HashSet::new();
         for (gi, group) in duplicate_groups.iter().enumerate() {
-            let survivor_id = rowid(group[0])?;
-            survivor_ids.insert(survivor_id);
+            let survivor_id = group[0].id.clone();
+            survivor_ids.insert(survivor_id.clone());
             for n in group {
-                note_group_of.insert(rowid(n)?, gi);
+                note_group_of.insert(n.id.clone(), gi);
             }
             for loser in &group[1..] {
-                loser_to_survivor.insert(rowid(loser)?, survivor_id);
+                loser_to_survivor.insert(loser.id.clone(), survivor_id.clone());
             }
         }
 
@@ -210,9 +197,7 @@ impl MemoryStore {
             // cleared every live reference to these ids.
             for group in &duplicate_groups {
                 for (li, loser) in group[1..].iter().enumerate() {
-                    let loser_id = rowid(loser)?;
-                    self.delete_note_embedding(loser_id)?;
-                    self.delete_edges_for_note(loser_id)?;
+                    let loser_id = &loser.id;
                     self.delete_note(loser_id)?;
                     if loser_fault_due(li) {
                         anyhow::bail!(
@@ -251,13 +236,13 @@ impl MemoryStore {
     fn collapse_group_survivor(
         &self,
         group: &[&Note],
-        loser_to_survivor: &HashMap<i64, i64>,
+        loser_to_survivor: &HashMap<NoteId, NoteId>,
         summary: &mut DedupeSummary,
         apply: bool,
     ) -> Result<()> {
         let survivor = group[0];
         let losers = &group[1..];
-        let survivor_id = rowid(survivor)?;
+        let survivor_id = &survivor.id;
 
         // tags / linked_files: union, add-wins
         let mut new_tags: Vec<String> = Vec::new();
@@ -285,25 +270,25 @@ impl MemoryStore {
         // group's survivor (no-op if not doomed). If that target is *this*
         // group's own survivor, it's self-referential and dropped; otherwise
         // it's a genuine external value (possibly another group's survivor).
-        let resolve = |v: i64| -> Option<i64> {
-            let target = loser_to_survivor.get(&v).copied().unwrap_or(v);
+        let resolve = |v: &NoteId| -> Option<NoteId> {
+            let target = loser_to_survivor.get(v).unwrap_or(v);
             if target == survivor_id {
                 None
             } else {
-                Some(target)
+                Some(target.clone())
             }
         };
 
-        let external_values: Vec<i64> = group
+        let external_values: Vec<NoteId> = group
             .iter()
-            .filter_map(|n| superseded_rowid(n).and_then(resolve))
+            .filter_map(|n| n.superseded_by.as_ref().and_then(&resolve))
             .collect();
-        let resolved_survivor_target = external_values.first().copied();
-        if let Some(val) = resolved_survivor_target {
-            let conflicting = external_values.iter().any(|v| *v != val);
+        let resolved_survivor_target = external_values.first().cloned();
+        if let Some(val) = resolved_survivor_target.as_ref() {
+            let conflicting = external_values.iter().any(|v| v != val);
             if conflicting {
                 tracing::warn!(
-                    "memory dedupe: duplicate-entity_id group for survivor #{} carries \
+                    "memory dedupe: duplicate-entity_id group for survivor {} carries \
                      conflicting superseded_by values; the earliest-created row's value \
                      ({val}) wins",
                     survivor.id
@@ -314,7 +299,7 @@ impl MemoryStore {
         // resolving to nothing; losers' references are handled (and not
         // counted) by rewrite_cross_references, since those rows are deleted.
         let survivor_self_edge_dropped =
-            matches!(superseded_rowid(survivor).map(resolve), Some(None));
+            matches!(survivor.superseded_by.as_ref().map(&resolve), Some(None));
         if survivor_self_edge_dropped {
             summary.supersede_self_edges_dropped += 1;
         }
@@ -333,8 +318,8 @@ impl MemoryStore {
             self.archive(survivor_id)?;
         }
         match resolved_survivor_target {
-            Some(val) if superseded_rowid(survivor) != Some(val) => {
-                self.set_superseded_by(survivor_id, val)?;
+            Some(val) if survivor.superseded_by.as_ref() != Some(&val) => {
+                self.set_superseded_by(survivor_id, &val)?;
             }
             None if survivor.superseded_by.is_some() => {
                 // Resolved to nothing (self-referential) with no external
@@ -357,27 +342,27 @@ impl MemoryStore {
     fn rewrite_cross_references(
         &self,
         all_notes: &[Note],
-        survivor_ids: &HashSet<i64>,
-        loser_to_survivor: &HashMap<i64, i64>,
-        note_group_of: &HashMap<i64, usize>,
+        survivor_ids: &HashSet<NoteId>,
+        loser_to_survivor: &HashMap<NoteId, NoteId>,
+        note_group_of: &HashMap<NoteId, usize>,
         summary: &mut DedupeSummary,
         apply: bool,
     ) -> Result<()> {
         for note in all_notes {
-            let note_id = rowid(note)?;
-            if survivor_ids.contains(&note_id) {
+            let note_id = &note.id;
+            if survivor_ids.contains(note_id) {
                 continue; // the survivor's own field is resolved separately
             }
-            let Some(v) = superseded_rowid(note) else {
+            let Some(v) = note.superseded_by.as_ref() else {
                 continue;
             };
-            let Some(&target) = loser_to_survivor.get(&v) else {
+            let Some(target) = loser_to_survivor.get(v) else {
                 continue; // not a doomed id: nothing to do
             };
             // In-group rewrites are inert clean-up (target is deleted
             // regardless), so only cross-group rewrites count as a "repoint".
             let same_group = matches!(
-                (note_group_of.get(&note_id), note_group_of.get(&v)),
+                (note_group_of.get(note_id), note_group_of.get(v)),
                 (Some(a), Some(b)) if a == b
             );
             if !same_group {

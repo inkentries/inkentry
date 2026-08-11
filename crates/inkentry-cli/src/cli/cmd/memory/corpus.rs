@@ -64,24 +64,21 @@ pub(crate) async fn memory_corpus_search(
     let mut attachments: Vec<Note> = vec![];
 
     if expand_graph {
-        let mut seen: std::collections::HashSet<i64> =
-            notes.iter().filter_map(|n| n.id.as_i64()).collect();
+        let mut seen: std::collections::HashSet<NoteId> =
+            notes.iter().map(|n| n.id.clone()).collect();
         for n in &notes {
-            let Some(rowid) = n.id.as_i64() else {
-                continue;
-            };
-            let (outgoing, incoming) = backend.get_edges(rowid).await.map_err(backend_err)?;
+            let (outgoing, incoming) = backend.get_edges(&n.id).await.map_err(backend_err)?;
             for e in outgoing.iter().chain(incoming.iter()) {
                 if e.kind != "relates_to" {
                     continue;
                 }
-                let neighbour_id = if e.from_id == rowid {
-                    e.to_id
+                let neighbour_id = if e.from_id == n.id {
+                    e.to_id.clone()
                 } else {
-                    e.from_id
+                    e.from_id.clone()
                 };
-                if seen.insert(neighbour_id)
-                    && let Some(nb) = backend.get(NoteId::from_i64(neighbour_id)).await?
+                if seen.insert(neighbour_id.clone())
+                    && let Some(nb) = backend.get(neighbour_id).await?
                 {
                     attachments.push(nb);
                 }

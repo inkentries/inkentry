@@ -475,7 +475,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let ext = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        let ext = store.rows_for_sync(false).unwrap()[0].id.to_string();
 
         let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -617,7 +617,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let ext = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        let ext = store.rows_for_sync(false).unwrap()[0].id.to_string();
         assert!(
             store.max_remote_id().unwrap().is_none(),
             "the crash means this row's remote_id was never durably stamped locally"

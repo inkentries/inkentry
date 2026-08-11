@@ -719,7 +719,7 @@ mod tests {
         store
             .add_note("decision", "T1", "own new entry", &[], &[], None, None)
             .unwrap();
-        let ext = store.rows_for_sync(false).unwrap()[0].uuid.clone();
+        let ext = store.rows_for_sync(false).unwrap()[0].id.to_string();
         let cloud_id = "01890000-0000-7000-8000-0000000000b1";
 
         let server = MockServer::start().await;

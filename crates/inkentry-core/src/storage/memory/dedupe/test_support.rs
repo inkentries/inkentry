@@ -1,7 +1,7 @@
 // Shared test-only helpers for `dedupe`'s `tests` and `superseded_by_tests`
 // submodules.
 
-use super::MemoryStore;
+use super::{MemoryStore, NoteId};
 use std::sync::OnceLock;
 
 fn register_sqlite_vec() {
@@ -16,24 +16,31 @@ fn register_sqlite_vec() {
     });
 }
 
-// A store built via the schema-only path: `migrate()` creates the
-// (non-unique) `idx_notes_entity_id` but skips the automatic Step A/B
-// pipeline a real `MemoryStore::open` runs. `dedupe_entity_ids` itself
-// doesn't care whether Step A/B ran: it groups by recomputing
-// `note_entity_id` in Rust regardless of the stored column or index
-// state, but these tests need to seed duplicate-content rows directly,
-// which a real `open()` on a fresh (zero-row, zero-duplicate) store
-// would already have promoted to a UNIQUE index, rejecting the seed.
+// A real store with `idx_notes_entity_id` dropped, so these tests can seed
+// the duplicate-content rows `dedupe_entity_ids` exists to collapse. The
+// initial schema declares that index UNIQUE, so a store this binary created
+// cannot hold such rows — but a hand-edited database can, and the collapse
+// logic (particularly its `superseded_by` rewriting) is worth keeping covered.
+// `dedupe_entity_ids` never reads the index: it groups by recomputing
+// `note_entity_id` in Rust.
 pub(super) fn open_store() -> MemoryStore {
     register_sqlite_vec();
     let conn = rusqlite::Connection::open(std::path::Path::new(":memory:"))
         .expect("open in-memory sqlite");
-    let store = MemoryStore {
-        conn,
-        reembed_needed: None,
-        dropped_768: std::cell::Cell::new(false),
-    };
-    store.run_migrations().expect("schema migration");
+    let store = MemoryStore { conn };
+    // Four tests below exist only to prove dedupe never leaves a live foreign-key
+    // reference to a row it is about to delete; with enforcement off they pass
+    // vacuously. Declared here for the same reason `MemoryStore::open` declares
+    // it, rather than inherited from the bundled SQLite's compile flags.
+    store
+        .conn
+        .execute_batch("PRAGMA foreign_keys = ON")
+        .expect("foreign-key enforcement");
+    store.create_schema().expect("schema creation");
+    store
+        .conn
+        .execute_batch("DROP INDEX idx_notes_entity_id")
+        .expect("dropping the entity_id unique index");
     store
 }
 
@@ -44,7 +51,7 @@ pub(super) fn note_count(store: &MemoryStore) -> i64 {
         .unwrap()
 }
 
-pub(super) fn has_embedding(store: &MemoryStore, note_id: i64) -> bool {
+pub(super) fn has_embedding(store: &MemoryStore, note_id: &NoteId) -> bool {
     store.get_embedding(note_id).unwrap().is_some()
 }
 
@@ -86,7 +93,7 @@ pub(super) fn full_db_snapshot(
     )
 }
 
-// Expected `Note::superseded_by` for a store-minted rowid.
-pub(super) fn sup(id: i64) -> Option<crate::storage::memory::NoteId> {
-    Some(crate::storage::memory::NoteId::from_i64(id))
+// Expected `Note::superseded_by` for a store-minted id.
+pub(super) fn sup(id: &NoteId) -> Option<NoteId> {
+    Some(id.clone())
 }

@@ -27,7 +27,7 @@ async fn push_local_does_not_stamp_remote_id_for_a_failed_status_item() {
 
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 1);
-    let ext_a = rows[0].uuid.clone();
+    let ext_a = rows[0].id.to_string();
     // The server hands back an `id` even though the entry was not
     // durably persisted (`created: 0`, status "failed").
     let cloud_a = "01890000-0000-7000-8000-0000000000b1";
@@ -88,7 +88,7 @@ async fn push_local_reconciles_counts_from_results_not_aggregate_ints() {
         .unwrap();
 
     let rows = store.rows_for_sync(false).unwrap();
-    let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+    let (ext_a, ext_b) = (rows[0].id.to_string(), rows[1].id.to_string());
     let cloud_a = "01890000-0000-7000-8000-0000000000c1";
     let cloud_b = "01890000-0000-7000-8000-0000000000c2";
 
@@ -118,11 +118,11 @@ async fn push_local_reconciles_counts_from_results_not_aggregate_ints() {
     );
     assert_eq!(
         store.note_id_for_remote_id(cloud_a).unwrap(),
-        Some(rows[0].local_id)
+        Some(rows[0].id.clone())
     );
     assert_eq!(
         store.note_id_for_remote_id(cloud_b).unwrap(),
-        Some(rows[1].local_id)
+        Some(rows[1].id.clone())
     );
 }
 
@@ -149,7 +149,7 @@ async fn push_local_partial_failure_reports_the_real_successes() {
         .unwrap();
 
     let rows = store.rows_for_sync(false).unwrap();
-    let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+    let (ext_a, ext_b) = (rows[0].id.to_string(), rows[1].id.to_string());
     let cloud_a = "01890000-0000-7000-8000-0000000000d1";
     let cloud_b = "01890000-0000-7000-8000-0000000000d2";
 
@@ -179,7 +179,7 @@ async fn push_local_partial_failure_reports_the_real_successes() {
     // The successful row is stamped...
     assert_eq!(
         store.note_id_for_remote_id(cloud_a).unwrap(),
-        Some(rows[0].local_id)
+        Some(rows[0].id.clone())
     );
     // ...the failed one is not, and remains retryable.
     assert_eq!(store.note_id_for_remote_id(cloud_b).unwrap(), None);
@@ -217,7 +217,7 @@ async fn push_local_total_failure_reports_zero_created_and_skipped() {
         .unwrap();
 
     let rows = store.rows_for_sync(false).unwrap();
-    let (ext_a, ext_b) = (rows[0].uuid.clone(), rows[1].uuid.clone());
+    let (ext_a, ext_b) = (rows[0].id.to_string(), rows[1].id.to_string());
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))

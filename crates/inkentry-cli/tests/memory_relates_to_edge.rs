@@ -48,7 +48,7 @@ fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
 
 // Run `memory add --kind note --title <title> --body … <extra…>`; assert
 // success and return the id printed in `Stored [<kind>] #<id>: <title>`.
-fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) -> i64 {
+fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) -> String {
     let mut cmd = memory_cmd(dir, cfg, mem_db);
     cmd.arg("add")
         .arg("--kind")
@@ -70,18 +70,22 @@ fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) 
     parse_stored_id(&stdout)
 }
 
-// Extract the integer id from a `Stored [note] #<id>: <title>` line.
-fn parse_stored_id(stdout: &str) -> i64 {
+// Extract the id from a `Stored [note] #<id>: <title>` line. Ids are UUIDs,
+// so the token runs to the colon that separates it from the title.
+fn parse_stored_id(stdout: &str) -> String {
     let hash = stdout
         .find('#')
         .unwrap_or_else(|| panic!("no id marker in stored output: {stdout:?}"));
     let rest = &stdout[hash + 1..];
     let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end]
-        .parse()
-        .unwrap_or_else(|_| panic!("could not parse id from stored output: {stdout:?}"))
+        .find(':')
+        .unwrap_or_else(|| panic!("no id terminator in stored output: {stdout:?}"));
+    let id = &rest[..end];
+    assert!(
+        uuid::Uuid::parse_str(id).is_ok(),
+        "stored id must be a UUID, got {id:?} in: {stdout:?}"
+    );
+    id.to_string()
 }
 
 // Count notes rows; 0 if the DB doesn't exist yet.
@@ -94,23 +98,25 @@ fn note_row_count(mem_db: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-fn note_status(mem_db: &Path, id: i64) -> String {
+fn note_status(mem_db: &Path, id: &str) -> String {
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row("SELECT status FROM notes WHERE id = ?1", [id], |r| {
+    conn.query_row("SELECT status FROM notes WHERE uuid = ?1", [id], |r| {
         r.get::<_, String>(0)
     })
     .expect("note status")
 }
 
-fn superseded_by(mem_db: &Path, id: i64) -> Option<i64> {
+fn superseded_by(mem_db: &Path, id: &str) -> Option<String> {
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
-    conn.query_row("SELECT superseded_by FROM notes WHERE id = ?1", [id], |r| {
-        r.get::<_, Option<i64>>(0)
-    })
+    conn.query_row(
+        "SELECT superseded_by FROM notes WHERE uuid = ?1",
+        [id],
+        |r| r.get::<_, Option<String>>(0),
+    )
     .expect("superseded_by")
 }
 
-fn edge_count(mem_db: &Path, from_id: i64, to_id: i64, kind: &str) -> i64 {
+fn edge_count(mem_db: &Path, from_id: &str, to_id: &str, kind: &str) -> i64 {
     let conn = rusqlite::Connection::open(mem_db).expect("open memory db");
     conn.query_row(
         "SELECT COUNT(*) FROM memory_edges WHERE from_id = ?1 AND to_id = ?2 AND kind = ?3",
@@ -132,10 +138,10 @@ fn total_edges(mem_db: &Path) -> i64 {
 }
 
 // `memory graph <id> --format json` parsed into a serde_json Value.
-fn graph_json(dir: &Path, cfg: &Path, mem_db: &Path, id: i64) -> Value {
+fn graph_json(dir: &Path, cfg: &Path, mem_db: &Path, id: &str) -> Value {
     let out = memory_cmd(dir, cfg, mem_db)
         .arg("graph")
-        .arg(id.to_string())
+        .arg(id)
         .arg("--format")
         .arg("json")
         .output()
@@ -148,12 +154,12 @@ fn graph_json(dir: &Path, cfg: &Path, mem_db: &Path, id: i64) -> Value {
     serde_json::from_slice(&out.stdout).expect("parse memory graph json")
 }
 
-fn has_edge(edges: &Value, endpoint_field: &str, other: i64, kind: &str) -> bool {
+fn has_edge(edges: &Value, endpoint_field: &str, other: &str, kind: &str) -> bool {
     edges
         .as_array()
         .map(|arr| {
             arr.iter()
-                .any(|e| e[endpoint_field].as_i64() == Some(other) && e["kind"] == kind)
+                .any(|e| e[endpoint_field].as_str() == Some(other) && e["kind"] == kind)
         })
         .unwrap_or(false)
 }
@@ -172,7 +178,7 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
         &cfg,
         &mem_db,
         "Contradicting observation",
-        &["--relates-to", &target.to_string()],
+        &["--relates-to", &target],
     );
 
     // Exactly one edge: directed linker -> target, kind relates_to.
@@ -182,36 +188,36 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
         "expected exactly one edge after --relates-to"
     );
     assert_eq!(
-        edge_count(&mem_db, linker, target, "relates_to"),
+        edge_count(&mem_db, &linker, &target, "relates_to"),
         1,
         "expected a relates_to edge #{linker} -> #{target}"
     );
 
     // Non-superseding: neither entry archived, neither superseded_by set.
     assert_eq!(
-        note_status(&mem_db, target),
+        note_status(&mem_db, &target),
         "active",
         "target must stay active"
     );
     assert_eq!(
-        note_status(&mem_db, linker),
+        note_status(&mem_db, &linker),
         "active",
         "linker must stay active"
     );
-    assert_eq!(superseded_by(&mem_db, target), None);
-    assert_eq!(superseded_by(&mem_db, linker), None);
+    assert_eq!(superseded_by(&mem_db, &target), None);
+    assert_eq!(superseded_by(&mem_db, &linker), None);
 
     // Visible from the linker: an outgoing relates_to -> target.
-    let from_linker = graph_json(tmp.path(), &cfg, &mem_db, linker);
+    let from_linker = graph_json(tmp.path(), &cfg, &mem_db, &linker);
     assert!(
-        has_edge(&from_linker["outgoing"], "to_id", target, "relates_to"),
+        has_edge(&from_linker["outgoing"], "to_id", &target, "relates_to"),
         "graph from #{linker} must show outgoing relates_to -> #{target}: {from_linker}"
     );
 
     // Visible from the target: an incoming relates_to from the linker.
-    let from_target = graph_json(tmp.path(), &cfg, &mem_db, target);
+    let from_target = graph_json(tmp.path(), &cfg, &mem_db, &target);
     assert!(
-        has_edge(&from_target["incoming"], "from_id", linker, "relates_to"),
+        has_edge(&from_target["incoming"], "from_id", &linker, "relates_to"),
         "graph from #{target} must show incoming relates_to from #{linker}: {from_target}"
     );
 }
@@ -236,9 +242,7 @@ fn relates_to_a_missing_target_is_rejected_and_stores_nothing() {
         .arg("999")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "No memory entry with id 999 to relate to",
-        ));
+        .stderr(predicate::str::contains("'999' is not a memory entry id"));
 
     // The new entry must not be written (no orphan) and no edge created.
     assert_eq!(
@@ -268,35 +272,29 @@ fn supersedes_still_archives_while_relates_to_does_not() {
         &cfg,
         &mem_db,
         "New decision",
-        &["--supersedes", &old.to_string()],
+        &["--supersedes", &old],
     );
     assert_eq!(
-        note_status(&mem_db, old),
+        note_status(&mem_db, &old),
         "archived",
         "--supersedes must archive OLD"
     );
-    assert_eq!(superseded_by(&mem_db, old), Some(new));
-    assert_eq!(edge_count(&mem_db, new, old, "supersedes"), 1);
+    assert_eq!(superseded_by(&mem_db, &old), Some(new.clone()));
+    assert_eq!(edge_count(&mem_db, &new, &old, "supersedes"), 1);
 
     // --relates-to on the same store: no archiving, a relates_to edge, and NOT
     // a supersedes edge.
     let a = add_note(tmp.path(), &cfg, &mem_db, "Note A", &[]);
-    let b = add_note(
-        tmp.path(),
-        &cfg,
-        &mem_db,
-        "Note B",
-        &["--relates-to", &a.to_string()],
-    );
+    let b = add_note(tmp.path(), &cfg, &mem_db, "Note B", &["--relates-to", &a]);
     assert_eq!(
-        note_status(&mem_db, a),
+        note_status(&mem_db, &a),
         "active",
         "--relates-to must NOT archive its target"
     );
-    assert_eq!(note_status(&mem_db, b), "active");
-    assert_eq!(edge_count(&mem_db, b, a, "relates_to"), 1);
+    assert_eq!(note_status(&mem_db, &b), "active");
+    assert_eq!(edge_count(&mem_db, &b, &a, "relates_to"), 1);
     assert_eq!(
-        edge_count(&mem_db, b, a, "supersedes"),
+        edge_count(&mem_db, &b, &a, "supersedes"),
         0,
         "--relates-to must not write a supersedes edge"
     );

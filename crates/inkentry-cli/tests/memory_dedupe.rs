@@ -54,35 +54,29 @@ fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 // Seed `mem_path` with two rows sharing `{kind, title, body}` (a duplicate
-// entity_id group) via a schema-only connection, bypassing the CLI's own
-// `MemoryStore::open` pipeline so the seed isn't rejected: a fresh,
-// zero-duplicate store would otherwise already have promoted the index to
-// UNIQUE by the time we try to insert the second row.
+// entity_id group). The initial schema declares `idx_notes_entity_id` UNIQUE,
+// so a store this binary created cannot hold such rows; the seed drops that
+// index to reproduce a hand-edited database, which is the only way the
+// condition `memory dedupe` exists for can still arise.
 fn seed_duplicate_group(mem_path: &Path) {
     ensure_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .inkentry dir");
+    drop(inkentry_core::storage::MemoryStore::open(mem_path).expect("create memory.db"));
     let conn = Connection::open(mem_path).expect("open memory.db");
-    conn.execute_batch(include_str!(
-        "../../inkentry-core/migrations/004_memory.sql"
-    ))
-    .expect("base memory schema");
-    conn.execute_batch(
-        "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
-         ALTER TABLE notes ADD COLUMN superseded_by INTEGER REFERENCES notes(id);
-         ALTER TABLE notes ADD COLUMN source_ref TEXT;
-         ALTER TABLE notes ADD COLUMN valid_at INTEGER;
-         ALTER TABLE notes ADD COLUMN invalid_at INTEGER;
-         ALTER TABLE notes ADD COLUMN uuid TEXT;
-         ALTER TABLE notes ADD COLUMN remote_id TEXT;
-         ALTER TABLE notes ADD COLUMN entity_id TEXT;
-         CREATE INDEX IF NOT EXISTS idx_notes_entity_id ON notes(entity_id) WHERE entity_id IS NOT NULL;",
-    )
-    .expect("lifecycle/uuid/entity_id columns");
+    conn.execute_batch("DROP INDEX idx_notes_entity_id;")
+        .expect("drop the uniqueness the seed violates");
 
-    for created_at in [1_700_000_001_i64, 1_700_000_002_i64] {
+    for (i, created_at) in [1_700_000_001_i64, 1_700_000_002_i64]
+        .into_iter()
+        .enumerate()
+    {
         conn.execute(
-            "INSERT INTO notes (kind, title, body, created_at) VALUES ('decision', 'dup', 'body', ?1)",
-            rusqlite::params![created_at],
+            "INSERT INTO notes (uuid, kind, title, body, created_at, entity_id) \
+             VALUES (?1, 'decision', 'dup', 'body', ?2, 'duplicate-entity-id')",
+            rusqlite::params![
+                format!("0199a0f1-4d3c-7c2a-9b1e-00000000000{i}"),
+                created_at
+            ],
         )
         .expect("seed duplicate row");
     }

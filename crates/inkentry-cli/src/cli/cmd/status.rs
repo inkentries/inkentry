@@ -1116,11 +1116,11 @@ mod tests {
             store
                 .add_note("decision", "One", "b", &[], &[], None, None)
                 .unwrap();
-            store.rows_for_sync(false).unwrap()[0].uuid.clone()
+            store.rows_for_sync(false).unwrap()[0].id.to_string()
         };
-        // Mounted with this note's actual uuid so the push handler's ack
+        // Mounted with this note's actual id so the push handler's ack
         // round-trips onto the real row (matching `poll_and_apply`'s
-        // `note_id_for_uuid` lookup).
+        // `has_note` lookup).
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/v1/projects/proj/memory/batch"))
             .respond_with(

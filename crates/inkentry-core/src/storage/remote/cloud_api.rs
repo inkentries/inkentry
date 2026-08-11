@@ -380,11 +380,11 @@ impl MemoryBackend for CloudApiMemoryBackend {
     }
 
     /// Edges are a local-graph-only feature; no remote backend supports them.
-    async fn add_edge(&self, _from_id: i64, _to_id: i64, _kind: &str) -> Result<()> {
+    async fn add_edge(&self, _from_id: &NoteId, _to_id: &NoteId, _kind: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn get_edges(&self, _id: i64) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
+    async fn get_edges(&self, _id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
         Ok((vec![], vec![]))
     }
 

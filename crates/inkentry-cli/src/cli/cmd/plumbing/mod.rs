@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use inkentry_core::storage::NoteId;
 
 #[derive(Args, Debug)]
 pub struct PlumbingArgs {
@@ -111,7 +112,7 @@ pub struct PlumbingReadMemoryArgs {
 
     /// Fetch a single entry by id
     #[arg(long)]
-    pub id: Option<i64>,
+    pub id: Option<NoteId>,
 
     /// Maximum number of entries (default: 50)
     #[arg(long, default_value = "50")]

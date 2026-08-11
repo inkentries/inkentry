@@ -142,6 +142,34 @@ fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
 /// The `--supersedes` state-update carry for the OLD entity (a separate call
 /// site from the main record write) must also be scoped to the `--db` target,
 /// not the CWD repo.
+// The id the `--db` store holds for the entry titled `title`. A git-notes
+// record's own `id` belongs to the frozen carrier format and never resolves
+// against the store.
+fn local_id_for_title(home: &Path, cwd: &Path, db_path: &Path, title: &str) -> String {
+    let out = bin(home, cwd)
+        .arg("memory")
+        .arg("--db")
+        .arg(db_path)
+        .args(["list", "--format", "jsonl", "--limit", "100"])
+        .output()
+        .expect("spawn inkentry memory list");
+    assert!(
+        out.status.success(),
+        "memory list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    stdout
+        .lines()
+        .find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            (v.get("title")?.as_str()? == title)
+                .then(|| Some(v.get("id")?.as_str()?.to_string()))
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
+}
+
 #[test]
 fn supersedes_state_update_also_scoped_to_db_target_repo() {
     let tmp = TempDir::new().unwrap();
@@ -173,7 +201,7 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
         .success();
     let old_lines = inkentry_note_lines(&project_repo).expect("first add wrote a note");
     assert_eq!(old_lines.len(), 1);
-    let old_id = record_field(&old_lines[0], "id");
+    let old_id = local_id_for_title(home.path(), &host_repo, &db_path, "old-entry");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
 
     bin(home.path(), &host_repo)

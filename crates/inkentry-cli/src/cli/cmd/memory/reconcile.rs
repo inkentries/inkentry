@@ -29,7 +29,7 @@ use crate::{
     capability::inkentry_state_dir,
     config::Config,
     server_client::ServerInferenceClient,
-    storage::{MemoryStore, entity_id, note_entity_id},
+    storage::{MemoryStore, NoteId, entity_id, note_entity_id},
 };
 
 // ── Candidate row from server.db ──────────────────────────────────────────────
@@ -359,12 +359,11 @@ async fn reconcile_project(
     // A store can already hold several rows under one entity_id — the previous
     // key folded in created_at, so same-text entries stayed distinct. They are
     // left alone; the oldest is the stable edge target.
-    let mut entity_to_local: HashMap<String, i64> = HashMap::new();
+    let mut entity_to_local: HashMap<String, NoteId> = HashMap::new();
     for n in &existing_notes {
-        // Read straight out of memory.db, so every id here is a rowid.
-        if let Some(rowid) = n.id.as_i64() {
-            entity_to_local.entry(note_entity_id(n)).or_insert(rowid);
-        }
+        entity_to_local
+            .entry(note_entity_id(n))
+            .or_insert_with(|| n.id.clone());
     }
 
     // ── Step 4: build reconcile set (source rows not in memory.db) ───────────
@@ -391,11 +390,11 @@ async fn reconcile_project(
     // linked_files the stored copy may lack. Add-wins: merge them in rather than
     // dropping them with the duplicate.
     for m in &present {
-        let Some(&local_id) = entity_to_local.get(&m.entity_id) else {
+        let Some(local_id) = entity_to_local.get(&m.entity_id) else {
             continue;
         };
         if let Err(e) = mem_store.union_tags_and_files(local_id, &m.tags, &m.linked_files) {
-            tracing::warn!("reconcile: could not merge tags into #{local_id}: {e}");
+            tracing::warn!("reconcile: could not merge tags into {local_id}: {e}");
         }
     }
 
@@ -431,7 +430,7 @@ async fn reconcile_project(
             // Every entity now in the store, keyed by its content-addressed id:
             // the successor may be a row we just imported or one already held.
             for (note, local_id) in to_import.iter().zip(imported_ids.iter()) {
-                entity_to_local.insert(note.entity_id.clone(), *local_id);
+                entity_to_local.insert(note.entity_id.clone(), local_id.clone());
             }
 
             // The edge is content-addressed on both ends, so it resolves even
@@ -446,17 +445,17 @@ async fn reconcile_project(
                 let Some(succ_entity_id) = supersede_edges.get(&note.entity_id) else {
                     continue;
                 };
-                let Some(&succ_local_id) = entity_to_local.get(succ_entity_id) else {
+                let Some(succ_local_id) = entity_to_local.get(succ_entity_id) else {
                     unresolved += 1;
                     continue;
                 };
                 // Collapse can point an entry at itself when a supersede pair
                 // shares its text; a self-edge is a cycle, not a chain.
-                if succ_local_id == *local_id {
+                if succ_local_id == local_id {
                     continue;
                 }
-                if let Err(e) = mem_store.set_superseded_by(*local_id, succ_local_id) {
-                    tracing::warn!("reconcile: could not set superseded_by for #{local_id}: {e}");
+                if let Err(e) = mem_store.set_superseded_by(local_id, succ_local_id) {
+                    tracing::warn!("reconcile: could not set superseded_by for {local_id}: {e}");
                     unresolved += 1;
                 }
             }
@@ -539,7 +538,7 @@ fn import_batch(
     store: &MemoryStore,
     notes: &[MergedNote],
     embeddings: &[Option<Vec<u8>>],
-) -> Result<Vec<i64>> {
+) -> Result<Vec<NoteId>> {
     store
         .execute_batch("BEGIN IMMEDIATE")
         .context("beginning import transaction")?;
@@ -567,11 +566,10 @@ fn import_batch(
                 status,
                 note.created_at,
             )?;
-            ids.push(id);
-
             if let Some(blob) = embedding {
-                store.insert_embedding(id, blob)?;
+                store.insert_embedding(&id, blob)?;
             }
+            ids.push(id);
         }
         Ok(())
     })();

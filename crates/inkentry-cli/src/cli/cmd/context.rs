@@ -445,9 +445,18 @@ mod tests {
     use crate::conventions::ConventionRecord;
     use clap::Parser;
 
+    // A distinct, ordering-preserving id per test entry. These tests assert
+    // which entries survive trimming, so the ids only need to be stable and
+    // comparable, not real UUIDs.
+    fn test_id(n: i64) -> NoteId {
+        format!("test-entry-{n:04}")
+            .parse()
+            .expect("a non-empty id")
+    }
+
     fn note(id: i64, kind: &str, title: &str, body: &str) -> Note {
         Note {
-            id: NoteId::from_i64(id),
+            id: test_id(id),
             kind: kind.to_string(),
             title: title.to_string(),
             body: body.to_string(),
@@ -522,7 +531,7 @@ mod tests {
         )];
         cap_sections(&mut sections, None);
         assert_eq!(sections[0].1.len(), 10);
-        assert_eq!(sections[0].1.first().unwrap().id, NoteId::from_i64(0));
+        assert_eq!(sections[0].1.first().unwrap().id, test_id(0));
     }
 
     #[test]
@@ -671,7 +680,7 @@ mod tests {
         assert_eq!(sections[0].1.len(), 1);
         assert_eq!(
             sections[0].1[0].id,
-            NoteId::from_i64(1),
+            test_id(1),
             "the smaller later entry survives"
         );
         assert_eq!(used, 101);
@@ -840,13 +849,13 @@ mod tests {
         for (idx, expected) in (0..8).enumerate() {
             assert_eq!(
                 kept[idx].id,
-                NoteId::from_i64(expected),
+                test_id(expected),
                 "local {expected} must survive"
             );
         }
         // ...and only the first two dep notes (the overflow tail is trimmed).
-        assert_eq!(kept[8].id, NoteId::from_i64(100));
-        assert_eq!(kept[9].id, NoteId::from_i64(101));
+        assert_eq!(kept[8].id, test_id(100));
+        assert_eq!(kept[9].id, test_id(101));
     }
 
     #[test]

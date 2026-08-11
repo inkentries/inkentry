@@ -26,7 +26,7 @@ impl MemoryStore {
                  WHERE  embedding MATCH ?1
                    AND  k = {limit}
              )
-             SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
+             SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
                     n.valid_at, n.invalid_at, CAST(k.distance AS REAL)
              FROM   knn k
@@ -59,7 +59,7 @@ impl MemoryStore {
             "n.status = 'active'"
         };
         let sql = format!(
-            "SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
+            "SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
                     n.valid_at, n.invalid_at, bm25(memory_fts) AS bm25_score
              FROM memory_fts
@@ -171,11 +171,11 @@ impl MemoryStore {
         // before the LIMIT means a store with more than `limit` matches keeps
         // the most relevant entries, not merely the oldest ones.
         let sql = format!(
-            "SELECT id, kind, title, body, tags, linked_files,
+            "SELECT uuid, kind, title, body, tags, linked_files,
                     created_at, status, superseded_by, source_ref,
                     valid_at, invalid_at
              FROM (
-                 SELECT n.id, n.kind, n.title, n.body, n.tags, n.linked_files,
+                 SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                         n.created_at, n.status, n.superseded_by, n.source_ref,
                         n.valid_at, n.invalid_at
                  FROM   memory_fts
@@ -460,7 +460,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            store.archive(id).expect("archive ok"),
+            store.archive(&id).expect("archive ok"),
             "note should archive"
         );
 

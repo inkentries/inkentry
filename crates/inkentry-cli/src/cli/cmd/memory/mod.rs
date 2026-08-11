@@ -54,7 +54,7 @@ pub enum MemoryCommand {
 #[derive(Args, Debug)]
 pub struct MemoryGraphArgs {
     /// Entry ID to show the relationship graph for
-    pub id: i64,
+    pub id: NoteId,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -120,7 +120,7 @@ pub struct MemoryAddArgs {
 
     /// ID of an existing entry this entry relates to (creates a relates_to edge).
     #[arg(long, value_name = "ID")]
-    pub relates_to: Option<i64>,
+    pub relates_to: Option<NoteId>,
 }
 
 #[derive(Args, Debug)]
@@ -332,7 +332,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
     // carrier mode downstream (add skips the absent SQLite primary; list reads
     // from `refs/notes/inkentry`). Store priority is otherwise unchanged (ADR-004).
     let (mem_path, pre_init_notes) = resolve_memory_store(&args, &cfg, be).await?;
-    maybe_emit_reembed_notice(&mem_path, pre_init_notes, be);
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be, pre_init_notes).await,
@@ -355,32 +354,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         MemoryCommand::Reconcile(a) => reconcile::memory_reconcile(a, &mem_path, &cfg).await,
         MemoryCommand::Reindex(a) => reindex::memory_reindex(a, &mem_path, &cfg, be).await,
         MemoryCommand::Dedupe(a) => dedupe::memory_dedupe(a, &mem_path).await,
-    }
-}
-
-/// One-line, `RUST_LOG`-free notice pointing the user at `memory reindex` when
-/// the 768→896 store upgrade just dropped their prior note vectors (D5(b)).
-///
-/// `MemoryStore::open` sets `reembed_needed` only on the single open where that
-/// drop ran, so this fires once, not on every command. Skipped for the
-/// git-notes carrier / `--backend git-notes` paths (no local sqlite store) and
-/// for a path that does not yet exist, so we never create a store just to check
-/// (the CloudFirst placeholder path never has a local store to open here).
-fn maybe_emit_reembed_notice(
-    mem_path: &std::path::Path,
-    pre_init_notes: bool,
-    be: Option<&'static str>,
-) {
-    if pre_init_notes || be == Some("git-notes") || !mem_path.exists() {
-        return;
-    }
-    if let Ok(store) = crate::storage::MemoryStore::open(mem_path)
-        && let Some(n) = store.reembed_needed
-    {
-        eprintln!(
-            "[inkentry] {n} note(s) need re-embedding for semantic search; \
-             run 'inkentry memory reindex'."
-        );
     }
 }
 
@@ -479,8 +452,7 @@ pub(super) async fn run_harvest(
 ) -> Result<()> {
     cfg.validate()?;
     let be = backend_override(backend);
-    let (mem_path, pre_init_notes) = resolve_store_path(db, false, cfg, be).await?;
-    maybe_emit_reembed_notice(&mem_path, pre_init_notes, be);
+    let (mem_path, _pre_init_notes) = resolve_store_path(db, false, cfg, be).await?;
     harvest::memory_harvest(args, &mem_path, cfg, be).await
 }
 
