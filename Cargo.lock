@@ -3525,7 +3525,6 @@ name = "inkentry-core"
 version = "0.9.8"
 dependencies = [
  "anyhow",
- "ast-grep-core",
  "ast-grep-language",
  "async-trait",
  "blake3",

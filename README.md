@@ -7,8 +7,8 @@
 **Code intelligence for AI agents — zero infrastructure required.** Persistent memory, code graph, and search that work straight from the CLI.
 
 ```bash
-inkentry graph validate_token                       # trace callers, callees, imports
-inkentry search "error handling" --mode text        # full-text search, no server needed
+inkentry search "validate_token" --graph            # ranked results plus callers and callees
+inkentry search "error handling" --only-text        # full-text search, no server needed
 inkentry memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
 ```
 
@@ -27,29 +27,29 @@ curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/ma
 > [releases page](https://github.com/spelunk-cloud/spelunk/releases). See
 > [Getting Started](docs/getting-started.md) for all install paths.
 
-**2. Use it immediately — no setup required**
+**2. Initialise the project**
 
 From inside any git repository:
 
 ```bash
-inkentry graph validate_token                       # trace callers and callees
-inkentry search "error handling" --mode text        # full-text search
+inkentry init                                       # index + autostart server in one step
+```
+
+`inkentry init` indexes your project and starts the bundled server, so semantic
+search works with no extra setup. Full-text results are available as soon as the
+tree is parsed, while semantic ranking builds in the background.
+
+**3. Use it**
+
+```bash
+inkentry search "error handling in the HTTP layer"  # code and memory, best available ranking
+inkentry search "validate_token" --graph            # with callers and callees
+inkentry search "error handling" --only-text        # full-text search, no server needed
 inkentry memory add --kind decision \
   --title "Chose token bucket for rate limiting" \
   --body "Simpler than sliding window; sufficient for <1k RPS"
 inkentry memory list --kind decision
 inkentry context                                    # agent session entry point
-```
-
-**3. Add semantic search**
-
-`inkentry init` indexes your project and starts the bundled server, so semantic
-search works with no extra setup:
-
-```bash
-inkentry init                                       # index + autostart server in one step
-inkentry search "error handling in the HTTP layer"  # semantic search
-inkentry search "database migrations" --graph       # with callers/callees
 ```
 
 ## Why inkentry?
@@ -58,7 +58,7 @@ AI coding agents lose context between sessions and can't trace how code connects
 
 - **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
 - **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
-- **Works without any server** — memory, code graph, and full-text/structural (ast-grep) search work with just the binary. No API keys, no configuration.
+- **Works without any server** — memory, code graph, and full-text search work with just the binary and a local index (`inkentry init`). No API keys, no configuration.
 - **Semantic search built in** — a local `inkentry-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
 - **100% local** — your code never leaves your machine. The server is self-hosted (local by default). This claim is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
@@ -69,8 +69,8 @@ AI coding agents lose context between sessions and can't trace how code connects
 |---|---|
 | Find an exact function name | `rg "fn validate_token"` |
 | Find code related to a concept | `inkentry search "request authentication"` |
-| See what calls a function | `inkentry graph validate_token` |
-| Remember why a decision was made | `inkentry memory search "why sqlite-vec"` |
+| See what calls a function | `inkentry search validate_token --graph` |
+| Remember why a decision was made | `inkentry search "why sqlite-vec" --only-memory` |
 | Store a design decision for future sessions | `inkentry memory add --kind decision ...` |
 | Share context across a team | `inkentry-server` + `server_url` |
 
@@ -84,7 +84,7 @@ Store decisions, requirements, and context that persist across sessions — in g
 inkentry memory add --kind decision --title "Chose sqlite-vec over pgvector" \
   --body "Must run without a Postgres server. Revisit if we need filtering + ANN."
 inkentry memory list --kind decision --limit 10
-inkentry memory search "why did we choose this database"
+inkentry search "why did we choose this database" --only-memory
 inkentry harvest          # auto-extract decisions from recent commits (server with LLM backend)
 inkentry sync             # two-way sync of local memory with the configured server (push + pull)
 ```
@@ -96,28 +96,38 @@ across a team.
 ### Code graph
 
 ```bash
-inkentry graph RagPipeline                        # all edges for a symbol
-inkentry graph src/storage/db.rs --kind imports   # imports in a file
+inkentry search RagPipeline --graph                         # the symbol's chunk + its 1-hop neighbours
+inkentry plumbing graph-edges --symbol RagPipeline          # exact edges as JSONL
+inkentry plumbing graph-edges --file src/storage/db.rs      # every edge in a file
 ```
 
-inkentry extracts import, call, extends, and implements edges from the AST. No index or server needed.
+inkentry extracts import, call, extends, and implements edges from the AST at index time. No server needed.
 
 ### Search
 
+One command over both corpora: code chunks and memory entries interleaved into a
+single ranked list, with no mode to choose.
+
 ```bash
-inkentry search "handleRequest" --mode text       # full-text, no server needed
-inkentry search "how are errors propagated"       # semantic (requires server + index)
+inkentry search "how are errors propagated"       # code and memory, best available ranking
+inkentry search "handleRequest" --only-text       # full-text only, no server needed
 inkentry search "auth middleware" --graph         # expand with 1-hop callers/callees
+inkentry search "why sqlite-vec" --only-memory    # memory corpus only
 inkentry search "request handling" --budget 4000  # fit results within a token budget
 ```
+
+`search` needs the index built by `inkentry init`; an uninitialised directory
+funnels you there. With `--format json`/`jsonl` each result is an envelope
+naming the corpus it came from: `{type, fused_rank, fused_score, corpus_rank,
+code|memory}`.
 
 ### Multi-hop exploration (run the loop yourself)
 
 There is no `explore` command. inkentry retrieves context; your agent reasons over
 it. For a question that needs tracing across files, loop over the primitives
-yourself — `search` (add `--graph`), `graph <symbol>`, `chunks <file>` — refining
-the query each pass. See the "Exploring: multi-hop retrieval" section of
-[`SKILL.md`](SKILL.md).
+yourself — `search` (add `--graph`), `plumbing graph-edges --symbol <symbol>`,
+`chunks <file>` — refining the query each pass. See the "Exploring: multi-hop
+retrieval" section of [`SKILL.md`](SKILL.md).
 
 ### Multi-project search
 
@@ -132,8 +142,8 @@ Set `AGENT=true` for JSON output on every command:
 
 ```bash
 AGENT=true inkentry memory list --kind decision
-AGENT=true inkentry graph validate_token
-AGENT=true inkentry search "auth flow" | jq '.[0].file_path'
+AGENT=true inkentry plumbing graph-edges --symbol validate_token
+AGENT=true inkentry search "auth flow" | jq '.[0].code.file_path'
 ```
 
 Install git hooks to auto-harvest memory on every commit:

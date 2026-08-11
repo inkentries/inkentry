@@ -165,33 +165,6 @@ fn test_check_porcelain_flags_are_gone() {
         .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
-/// regression: `inkentry search --as-of <sha>` (snapshot search) was removed
-/// outright — the flag no longer exists on the top-level `search` command.
-/// `inkentry search --help` must not mention `--as-of`.
-///
-/// This is deliberately scoped to top-level `search --help` only. It must NOT
-/// be confused with the unrelated, still-live `--as-of <date>` flag on
-/// `memory list` / `memory search` / `memory failures` (point-in-time memory
-/// queries, untouched by the snapshot removal) — asserting its absence there
-/// would be wrong.
-#[test]
-fn test_search_help_does_not_list_as_of() {
-    inkentry_bin()
-        .args(["search", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--as-of").not());
-
-    // Sanity check the disambiguation itself: the sibling `memory search
-    // --as-of` flag is untouched and must still be listed, so this test can't
-    // pass by accident (e.g. if `--help` output were empty/broken).
-    inkentry_bin()
-        .args(["memory", "search", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--as-of"));
-}
-
 #[test]
 fn test_invalid_command() {
     let mut cmd = inkentry_bin();
@@ -533,7 +506,7 @@ async fn test_status_shows_offline_tier() {
         .success()
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Offline"))
-        .stdout(predicate::str::contains("ast-grep + text"))
+        .stdout(predicate::str::contains("search          text"))
         // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
         // default), not a tier-derived git-notes label.
         .stdout(predicate::str::contains("sqlite (local)"))
@@ -944,7 +917,7 @@ async fn test_index_prints_note_when_no_server_configured() {
         // Structural summaries are offline and always run, so there is no
         // "skipping summaries" notice any more. Offline, the actionable note is
         // that semantic search needs a local server; the index still succeeds
-        // (chunks are stored for text/ast-grep search).
+        // (chunks are stored for full-text search).
         .stderr(predicate::str::contains("inkentry server start"));
 }
 
@@ -997,15 +970,13 @@ fn test_status_json_offline_tier() {
 // ── Issue #284: search falls back to structural matching when no index / no embedder ───
 
 /// When there is no .inkentry/index.db, `inkentry search` in auto mode must
-/// succeed (via the in-process structural fallback) rather than printing an
-/// opaque error. Runs on every platform: the fallback is now compiled into the
-/// `inkentry` binary (ast-grep-core), so it no longer requires `ast-grep` on PATH.
+// With no index, `inkentry search` requires one: it funnels to `inkentry init`
+// rather than a silent empty result or the old index-free ast-grep scan.
 #[test]
-fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
+fn test_search_no_index_funnels_to_init() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
-    // Write a small Rust file so ast-grep has something to scan.
     fs::write(
         project_dir.join("lib.rs"),
         "pub fn greet(name: &str) -> String { format!(\"hello {name}\") }",
@@ -1023,29 +994,23 @@ fn test_search_no_index_falls_back_to_ast_grep_or_clean_message() {
     )
     .unwrap();
 
-    // With no index, auto mode must not fail with a hard error.
-    // It either returns ast-grep results or a clean "No results found." message.
+    // No `.inkentry/` project here: search must fail closed and point at `init`.
     let mut cmd = inkentry_bin();
-    let assert = cmd
+    cmd.env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("search")
-        .arg("greet") // simple pattern ast-grep can match
+        .arg("greet")
         .assert()
-        .success();
-
-    // Must not print the old opaque error message.
-    assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
+        .failure()
+        .stderr(predicate::str::contains("inkentry init"));
 }
 
-/// When the index exists but there is no embedder (api_base_url points
-/// nowhere), `inkentry search` in auto mode must fall back to structural search
-/// and succeed, not bail out with a hard error.
-/// Runs on every platform: the in-process fallback (ast-grep-core) is compiled
-/// into the `inkentry` binary and no longer requires `ast-grep` on PATH.
+// When the index exists but there is no embedder (no reachable server),
+// `inkentry search` degrades to full-text search and succeeds, not a hard error.
 #[test]
-fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
+fn test_search_index_but_no_embedder_falls_back_to_full_text() {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1079,9 +1044,12 @@ fn test_search_index_but_no_embedder_falls_back_to_ast_grep() {
         .assert()
         .success();
 
-    // Now search in auto mode: embedder is unavailable, so fallback kicks in.
+    // Now search with no reachable embedder: the full-text degrade kicks in.
+    // INKENTRY_NO_SERVER pins "no embedder" so the result does not depend on
+    // whatever may be listening on the default loopback port.
     let mut cmd = inkentry_bin();
     let assert = cmd
+        .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
@@ -1462,7 +1430,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
-        .args(["memory", "search", "unified memory storage"])
+        .args(["search", "unified memory storage", "--only-memory"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -1563,7 +1531,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
         .current_dir(&project_dir)
         .arg("--config")
         .arg(&config_path)
-        .args(["memory", "search", "local first cloud server_url"])
+        .args(["search", "local first cloud server_url", "--only-memory"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -2099,12 +2067,12 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     );
 }
 
-/// ADR-070 D3, zero-coverage auto cell, end to end: an offline-built index has
-/// chunks but no embeddings; `search` in auto mode must fall back to the live
-/// search with a stderr notice naming warmup - never a bare `No results
-/// found.` over a corpus KNN never saw.
+// Zero-coverage cell, end to end: an offline-built index has chunks but no
+// embeddings; `search` degrades to full-text search (which covers every chunk
+// from parse time) with a stderr warmup notice, never a bare `No results found.`
+// over a corpus the vector half never saw and never the removed ast-grep scan.
 #[test]
-fn test_search_auto_zero_coverage_falls_back_with_warmup_notice() {
+fn test_search_zero_coverage_degrades_to_full_text_with_warmup_notice() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
@@ -2116,67 +2084,16 @@ fn test_search_auto_zero_coverage_falls_back_with_warmup_notice() {
         .args(["search", "compute"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("semantic search is warming up"))
+        .stderr(predicate::str::contains("warmup"))
         .stderr(predicate::str::contains("0/"))
-        .stderr(predicate::str::contains("ast-grep"));
+        .stderr(predicate::str::contains("full-text search"))
+        .stderr(predicate::str::contains("ast-grep").not());
 }
 
-/// ADR-070 D3, zero-coverage explicit cell, end to end: with a reachable
-/// server but an index whose embeddings have not been built yet, an explicit
-/// `--mode semantic` search must be an actionable error naming warmup and the
-/// resume command - never `No results found.`.
-#[tokio::test]
-async fn test_search_explicit_semantic_zero_coverage_is_actionable_error() {
-    let mock = MockServer::start().await;
-    plumbing_helpers::mount_health(&mock).await;
-
-    let home = tempfile::TempDir::new().unwrap();
-    let (project_dir, _config_path) = offline_indexed_project(home.path());
-
-    // Same project, but a config that names the (mock) server, so the search
-    // runs at Tier 1 and reaches the coverage gate instead of the Tier-0
-    // text fallback. Under the default `local_first` a bare `server_url`
-    // never serves inference (that's a loopback-only path), so this test
-    // opts into `cloud_first` explicitly to keep exercising the mock's
-    // `/v1/health`, the same way `test_index_and_status` does.
-    let db_ignored = home.path().join("unused.db");
-    let server_config = write_config_with_server(
-        home.path(),
-        &db_ignored,
-        &mock.uri(),
-        &mock.uri(),
-        &project_dir,
-    );
-
-    let assert = inkentry_bin_in(home.path())
-        .current_dir(&project_dir)
-        .env("INKENTRY_MODE", "cloud_first")
-        .arg("--config")
-        .arg(&server_config)
-        .args(["search", "--mode", "semantic", "compute"])
-        .assert()
-        .failure();
-    let output = assert.get_output();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stderr.contains("warming up"),
-        "error must name warmup, got stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("inkentry index ."),
-        "error must name the resume command, got stderr: {stderr}"
-    );
-    assert!(
-        !stdout.contains("No results found"),
-        "never the empty-result claim over an unsearched corpus, got stdout: {stdout}"
-    );
-}
-
-/// ADR-070 D3, partial-coverage cell, end to end: embed everything, then add a
-/// file and re-index offline so coverage is partial. An auto search must emit
-/// the one-line stderr warmup notice carrying the coverage AND its
-/// front-loaded shape, while `--format json` stdout stays machine-clean.
+// Partial-coverage cell, end to end: embed everything, then add a
+// file and re-index offline so coverage is partial. An auto search must emit
+// the one-line stderr warmup notice carrying the coverage AND its
+// front-loaded shape, while `--format json` stdout stays machine-clean.
 #[tokio::test]
 async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     let mock = MockServer::start().await;

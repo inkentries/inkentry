@@ -175,17 +175,6 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
         .unwrap();
     assert_clean(&show, "memory show");
 
-    let search = inkentry_bin()
-        .current_dir(tmp.path())
-        .arg("--config")
-        .arg(&cfg)
-        .args(["memory", "--db"])
-        .arg(&mem_path)
-        .args(["search", LOCAL_TITLE, "--mode", "text"])
-        .output()
-        .unwrap();
-    assert_clean(&search, "memory search");
-
     let timeline = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")

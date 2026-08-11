@@ -180,29 +180,32 @@ fn color_never_flag_suppresses_color() {
 // regression that reverts one call site back to `println!` fails here even
 // if `memory list` still passes.
 
-/// `inkentry graph <symbol> --live` needs no index or config: it runs an
-/// in-process ast-grep scan over the given directory (see
-/// `crates/inkentry-cli/src/cli/cmd/graph.rs::graph_live`). Its header line
-/// (`\x1b[1m...\x1b[0m`) and the `calls`/location fields go through
-/// `cprintln!` independently of `memory list`'s call site.
-fn graph_live_project() -> TempDir {
+// `inkentry search` prints each result line through `cprintln!` (the unified
+// text output's `[code]`/`[memory]` header), independently of `memory list`'s
+// call site. Indexed offline so the full-text path returns a hit with no server.
+fn indexed_search_project() -> TempDir {
     let tmp = TempDir::new().unwrap();
     std::fs::write(
         tmp.path().join("a.rs"),
         "fn helper_fn() {}\nfn caller() { helper_fn(); }\n",
     )
     .unwrap();
+    inkentry_bin()
+        .current_dir(tmp.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .args(["index", "."])
+        .assert()
+        .success();
     tmp
 }
 
 #[test]
-fn graph_live_default_has_no_ansi_on_non_tty_stdout() {
-    let tmp = graph_live_project();
+fn search_default_has_no_ansi_on_non_tty_stdout() {
+    let tmp = indexed_search_project();
     let out = inkentry_bin()
         .current_dir(tmp.path())
-        .arg("graph")
-        .arg("helper_fn")
-        .arg("--live")
+        .env("INKENTRY_NO_SERVER", "1")
+        .args(["search", "helper_fn", "--only-text", "--no-stale-check"])
         .assert()
         .success()
         .get_output()
@@ -212,15 +215,14 @@ fn graph_live_default_has_no_ansi_on_non_tty_stdout() {
 }
 
 #[test]
-fn graph_live_color_always_has_ansi() {
-    let tmp = graph_live_project();
+fn search_color_always_has_ansi() {
+    let tmp = indexed_search_project();
     let out = inkentry_bin()
         .current_dir(tmp.path())
+        .env("INKENTRY_NO_SERVER", "1")
         .arg("--color")
         .arg("always")
-        .arg("graph")
-        .arg("helper_fn")
-        .arg("--live")
+        .args(["search", "helper_fn", "--only-text", "--no-stale-check"])
         .assert()
         .success()
         .get_output()

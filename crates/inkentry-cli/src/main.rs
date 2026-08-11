@@ -5,7 +5,6 @@ mod capability;
 mod cli;
 mod server_client;
 
-use clap::Parser;
 use cli::cmd::plumbing::PlumbingCommand;
 use cli::{Cli, Command};
 use inkentry_core::{
@@ -30,7 +29,7 @@ async fn main() -> Result<()> {
         .with(EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_or_exit();
     cli::cmd::set_color_choice(cli.color);
 
     // Config loads before dispatch, so `--best-effort` has to be honoured here
@@ -59,7 +58,6 @@ async fn main() -> Result<()> {
         Command::Status(args) => cli::cmd::status(args, cfg).await,
         Command::Context(args) => cli::cmd::context(args, cfg).await,
         Command::Languages => cli::cmd::languages(),
-        Command::Graph(args) => cli::cmd::graph(args, cfg),
         Command::Chunks(args) => cli::cmd::chunks(args, cfg),
         Command::Link(args) => cli::cmd::link(args, cfg),
         Command::Unlink(args) => cli::cmd::unlink(args, cfg),

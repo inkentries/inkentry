@@ -155,7 +155,7 @@ fn embed_skipped_lines(
     use capability::EmbedderState;
     match embedder_state {
         Some(EmbedderState::Loading) => vec![
-            "Note: the embedder is still warming up — chunks indexed for text/ast-grep search."
+            "Note: the embedder is still warming up — chunks indexed for full-text search."
                 .to_string(),
             "Re-run `inkentry index` in a moment to add embeddings (check `inkentry server status`)."
                 .to_string(),
@@ -164,13 +164,13 @@ fn embed_skipped_lines(
             Some(url) => vec![
                 format!(
                     "Warning: the embedder failed to load on team server {url}; chunks indexed \
-                     for text/ast-grep search only."
+                     for full-text search only."
                 ),
                 "Check that server's own logs for the load error, then re-run `inkentry index`."
                     .to_string(),
             ],
             None => vec![
-                "Warning: the embedder failed to load; chunks indexed for text/ast-grep search \
+                "Warning: the embedder failed to load; chunks indexed for full-text search \
                  only."
                     .to_string(),
                 "See `inkentry server logs` for the load error, then re-run `inkentry index`."
@@ -180,7 +180,7 @@ fn embed_skipped_lines(
         // Reachable server without a ready embedder for any other reason
         // (`disabled`, or an older server that never advertised `index.embed`).
         Some(_) => vec![
-            "Note: this server has no embedder — chunks indexed for text/ast-grep search only."
+            "Note: this server has no embedder — chunks indexed for full-text search only."
                 .to_string(),
         ],
         // Offline: no server reachable. Reaching this arm with `server_url`
@@ -204,7 +204,7 @@ fn embed_skipped_lines(
                     );
                 }
                 lines.push(
-                    "Chunks are indexed for text/ast-grep search. Re-run `inkentry index` once \
+                    "Chunks are indexed for full-text search. Re-run `inkentry index` once \
                      the server is reachable to add embeddings."
                         .to_string(),
                 );

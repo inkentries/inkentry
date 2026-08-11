@@ -180,7 +180,7 @@ async fn search_text_mode_zero_egress() {
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), empty_state_dir.path());
     trap.wire(&mut cmd);
-    cmd.arg("search").arg("greet").arg("--mode").arg("text");
+    cmd.arg("search").arg("greet").arg("--only-text");
     cmd.assert().success();
 
     trap.assert_clean().await;
@@ -212,7 +212,10 @@ async fn search_semantic_zero_egress() {
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
-    cmd.arg("search").arg("greet").arg("--mode").arg("semantic");
+    // Default best-available ranking over the code corpus: the query embed goes
+    // to the loopback server, never off-box. --only-code keeps this to the one
+    // code-prefix embed the test is about.
+    cmd.arg("search").arg("greet").arg("--only-code");
     cmd.assert().success();
 
     trap.assert_clean().await;
@@ -258,7 +261,7 @@ async fn memory_add_list_zero_egress() {
     trap.assert_clean().await;
 }
 
-// ── memory search (hybrid, loopback-embedded query) ─────────────────────
+// ── memory-corpus search (hybrid, loopback-embedded query) ─────────────────────
 
 #[tokio::test]
 async fn memory_search_zero_egress() {
@@ -294,39 +297,44 @@ async fn memory_search_zero_egress() {
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
-    cmd.arg("memory").arg("search").arg("egress");
+    // Memory-only unified search: the QA query embed goes to the loopback server,
+    // the note KNN runs locally, and no index.db is required for `--only-memory`.
+    cmd.arg("search").arg("egress").arg("--only-memory");
     cmd.assert().success();
 
     trap.assert_clean().await;
 }
 
-// ── graph (works live, no index needed) ─────────────────────────────────
+// ── graph edges (index-backed, local reads) ─────────────────────────────
 
 #[tokio::test]
-async fn graph_live_zero_egress() {
+async fn graph_edges_zero_egress() {
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
     let state_dir = TempDir::new().expect("state dir");
     init_git_repo(project.path());
     write_project(project.path());
-    // `write_project`'s two functions never call each other, so a live scan
-    // of it alone finds zero call sites: a no-op that never actually
-    // exercises the structural matcher. A real caller makes this a genuine
-    // symbol lookup instead.
+    // A real caller so the extracted call graph has an edge into `greet`.
     std::fs::write(
         project.path().join("src").join("caller.rs"),
         "pub fn call_it() -> String {\n    greet(\"world\")\n}\n",
     )
     .expect("write caller.rs");
 
+    // Index offline (no loopback state ⇒ no server): parsing extracts the call
+    // graph without embedding, which is all `plumbing graph-edges` needs.
+    local_tier_cmd(home.path(), project.path(), state_dir.path())
+        .arg("index")
+        .arg(".")
+        .assert()
+        .success();
+
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
-    cmd.arg("graph").arg("greet").arg("--live");
-    // `graph_live` (crates/inkentry-cli/src/cli/cmd/graph.rs) always returns
-    // `Ok(())`, matches or not, so a bare `.success()` would pass even on a
-    // silent no-op; assert the real call site in `caller.rs` was actually
-    // found.
+    // The graph capability's machine surface after the top-level `graph`
+    // porcelain was removed: exact-edge lookup, JSONL, index-backed, local-only.
+    cmd.args(["plumbing", "graph-edges", "--symbol", "greet"]);
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("caller.rs"));

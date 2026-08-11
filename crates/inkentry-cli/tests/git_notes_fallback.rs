@@ -668,9 +668,9 @@ fn non_add_list_subcommands_stay_fail_closed_inside_git_repo() {
     init_git_repo_with_commit(repo.path());
 
     // A representative spread of the non-carrier subcommands, each needing no
-    // server: read (search, timeline) and mutate (supersede).
+    // server: read (show, timeline) and mutate (supersede).
     let invocations: [&[&str]; 3] = [
-        &["memory", "search", "anything"],
+        &["memory", "show", "1"],
         &["memory", "timeline", "anything"],
         &["memory", "supersede", "1", "2"],
     ];

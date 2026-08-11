@@ -22,8 +22,6 @@ pub struct MemoryArgs {
 pub enum MemoryCommand {
     /// Store a memory entry (decision, requirement, note, question, handoff, intent, antipattern, etc.)
     Add(MemoryAddArgs),
-    /// Semantic search over stored memory
-    Search(MemorySearchArgs),
     /// List memory entries (newest first)
     List(MemoryListArgs),
     /// Show the full content of a memory entry
@@ -123,36 +121,6 @@ pub struct MemoryAddArgs {
     /// ID of an existing entry this entry relates to (creates a relates_to edge).
     #[arg(long, value_name = "ID")]
     pub relates_to: Option<i64>,
-}
-
-#[derive(Args, Debug)]
-pub struct MemorySearchArgs {
-    /// Natural language query
-    pub query: String,
-
-    /// Number of results to return
-    #[arg(short, long, default_value = "10")]
-    pub limit: usize,
-
-    /// Output format: text or json
-    #[arg(long, default_value = "text")]
-    pub format: String,
-
-    /// Search mode: hybrid (default), semantic, text
-    #[arg(long, default_value = "hybrid")]
-    pub mode: String,
-
-    /// Return only entries valid at this point in time (ISO 8601, e.g. 2026-03-15 or 2026-03-15T10:00:00)
-    #[arg(long, value_name = "DATE")]
-    pub as_of: Option<String>,
-
-    /// Expand results by 1 hop along relates_to edges
-    #[arg(long)]
-    pub expand_graph: bool,
-
-    /// Search only the local project's memory, skipping linked project stores
-    #[arg(long)]
-    pub local_only: bool,
 }
 
 #[derive(Args, Debug)]
@@ -336,6 +304,7 @@ use super::status::format_age;
 
 mod add;
 mod archive;
+mod corpus;
 pub(crate) mod cross_project;
 mod dedupe;
 mod failures;
@@ -346,11 +315,12 @@ mod list;
 pub(crate) mod outbox;
 pub(crate) mod reconcile;
 mod reindex;
-mod search;
 mod show;
 mod supersede;
 pub mod sync;
 mod timeline;
+
+pub(crate) use corpus::{MemoryCorpus, memory_corpus_search};
 
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
@@ -365,7 +335,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
     maybe_emit_reembed_notice(&mem_path, pre_init_notes, be);
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be, pre_init_notes).await,
-        MemoryCommand::Search(a) => search::memory_search(a, &mem_path, &cfg, be).await,
         MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg, be).await,
         MemoryCommand::Harvest(a) => {

@@ -16,9 +16,10 @@ inkentry index .                                   # bring the index up to date 
 
 **Before reading any file, search first:**
 ```bash
-inkentry graph <symbol>                            # trace callers/callees (works live even without an index)
-inkentry search "<topic>" --mode text              # full-text search (always works)
-inkentry search "<topic>"                          # semantic search (if indexed + server running)
+inkentry search "<topic>"                           # unified search over code + memory (best available)
+inkentry search "<symbol>" --graph                  # a symbol's chunk plus its 1-hop call-graph neighbours
+inkentry search "<topic>" --only-text               # full-text only (no embedding, no server needed)
+inkentry plumbing graph-edges --symbol <symbol>     # exact call-graph edges as JSONL (for scripts/agents)
 ```
 
 inkentry retrieves context — you synthesise the answer.
@@ -45,7 +46,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 `inkentry` is a Rust CLI and context retrieval engine for AI agents.
 
-**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. Full-text search and `inkentry graph <symbol>` run live even in an uninitialized directory; the index-backed paths (`chunks`, memory, and `graph` on a file path) need `inkentry init` first.
+**Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. `search` requires an index: an uninitialised directory funnels to `inkentry init`. Once `init` has parsed the tree, full-text search is available immediately (over both code and memory) while semantic ranking builds in the background; the call graph is surfaced through `search --graph` and `inkentry plumbing graph-edges`.
 
 **Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
@@ -154,8 +155,9 @@ storage/
     tests.rs       — #[cfg(test)] tests for URL encoding and search wire format
 
 search/
-  mod.rs         — SearchResult struct
-  live.rs        — in-process structural-search fallback (ast-grep-core)
+  mod.rs         — SearchResult struct; RRF_K, the one reciprocal-rank-fusion
+                   constant shared by both within-corpus hybrid fusions and the
+                   cross-corpus code+memory fusion (ADR-081)
   rag.rs         — linearrag_search: LinearRAG two-stage retrieval (entity
                    activation + personalised PageRank)
   tokens.rs      — token-budget helpers
@@ -196,7 +198,7 @@ cli/
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
                    three, pinned so nothing is left to inheritance)
-    graph.rs     — `inkentry graph` handler
+    fusion.rs    — cross-corpus rank fusion + the unified code/memory result envelope (ADR-081)
     harvest.rs   — `inkentry harvest` handler (top-level; capture memory from
                    git history + session logs). Shares its implementation and
                    memory-store resolution with the deprecated `memory harvest`
@@ -206,7 +208,7 @@ cli/
     link.rs      — `inkentry link/unlink/autoclean` handlers
     links.rs     — `inkentry links` handler
     misc.rs      — `inkentry chunks` / `inkentry languages` handlers
-    search.rs    — `inkentry search` handler
+    search.rs    — `inkentry search` handler (unified code+memory, RRF fusion, corpus filters)
     server.rs    — `inkentry server start/stop/status/logs` daemon management
     status.rs    — `inkentry status` handler
     ui.rs        — TUI helpers (private)
@@ -227,9 +229,10 @@ cli/
                         implementation (harvest_clients), reused by the top-level
                         `inkentry harvest`
       harvest_claude.rs — harvest from ~/.claude/history.jsonl (Claude Code sessions)
+      corpus.rs       — memory-corpus retrieval for unified search (the folded-in
+                        former `memory search`: hybrid/FTS + expand-graph + cross-project)
       list.rs         — memory list subcommand
       reconcile.rs    — memory reconcile subcommand (import from server.db)
-      search.rs       — memory search subcommand
       show.rs         — memory show subcommand
       supersede.rs    — memory supersede subcommand
       timeline.rs     — memory timeline subcommand
@@ -382,7 +385,11 @@ F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:
 Document format is produced by `Chunk::embedding_text()` in
 `crates/inkentry-core/src/indexer/chunker.rs`. Query prefixes are applied by
 `handlers.rs` (server-side code search), `embed_query_vec()` in `helpers.rs`
-(CLI-side memory search), and `embed_cmd.rs` (plumbing embed --query).
+(the CLI-side memory/QA embed), and `embed_cmd.rs` (plumbing embed --query).
+Unified `search` embeds the one query under **both** prefixes — the code prefix
+(server `/search`) and the QA prefix (`embed_query_vec`) — and fuses the two
+per-corpus ranked lists by reciprocal rank fusion (ADR-081); the second embed is
+elided when `--only-code`/`--only-memory`/`--only-text` makes it redundant.
 
 ### SQLite + sqlite-vec
 No separate vector DB. The sqlite-vec extension adds a `vec0` virtual table
@@ -404,7 +411,7 @@ Changed files: delete old chunks + embeddings, reparse, re-embed.
 ### Multi-project registry
 `~/.config/inkentry/registry.db` tracks all indexed projects and their
 dependency links. `inkentry search` automatically queries all linked project DBs
-and merges results by distance. Additionally, `inkentry memory search`,
+and merges results by rank. Additionally, `inkentry search` (its memory corpus),
 `inkentry memory list`, and `inkentry context` surface `locked`- or
 `cross-project`-tagged `decision` and `requirement` entries from linked
 projects' memory stores (ADR-003). Each cross-project result is tagged with its
@@ -425,7 +432,7 @@ machine unless a team `server_url` is explicitly configured (see above); the sca
 the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted)
 by accident. That boundary is enforced by `crates/inkentry-cli/tests/egress_containment.rs`, which
 traps every outbound connection across local-tier CLI flows (`init`, `index`, `search`, `memory`,
-`graph --live`, plumbing) and fails loudly, naming the destination, on any escape past loopback.
+`plumbing graph-edges`, plumbing) and fails loudly, naming the destination, on any escape past loopback.
 
 ---
 
@@ -491,7 +498,8 @@ cargo run -p inkentry-cli -- index ./some/project
 cargo run -p inkentry-cli -- search "how does authentication work"
 cargo run -p inkentry-cli -- status
 cargo run -p inkentry-cli -- status --all
-cargo run -p inkentry-cli -- graph <symbol>
+cargo run -p inkentry-cli -- search <symbol> --graph
+cargo run -p inkentry-cli -- plumbing graph-edges --symbol <symbol>
 cargo run -p inkentry-cli -- chunks src/some/file.rs
 cargo run -p inkentry-cli -- languages
 cargo run -p inkentry-cli -- sync              # two-way: push local memory to server, pull teammates' entries down
@@ -525,8 +533,9 @@ cargo audit
   ast-grep-language doesn't ship them, so they stay on the standalone
   `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
   `tree-sitter` core, check that `ast-grep-language` (and the two standalone
-  grammars) still resolve to the same runtime line. `ast-grep-core` provides the
-  in-process structural-search fallback (`crates/inkentry-core/src/search/live.rs`).
+  grammars) still resolve to the same runtime line. (The `ast-grep-core`
+  structural-search engine is gone: `search` degrades to full-text, never a
+  working-tree scan.)
 - `sqlite-vec` is loaded at runtime via `sqlite3_auto_extension` (see
   `crates/inkentry-cli/src/main.rs` and `crates/inkentry-server/src/main.rs`).
   The extension binary is bundled by the crate — no system install needed.

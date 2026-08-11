@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 
 pub mod cmd;
+mod removed;
 
 // Re-export top-level Args types so callers can use `crate::cli::XxxArgs`.
 // Sub-command Args types (Memory*Args, Plumbing*Args, etc.) are accessed via
 // their owning modules (e.g. `crate::cli::cmd::memory::MemoryAddArgs`) when needed.
 pub use cmd::auth::AuthArgs;
 pub use cmd::context::ContextArgs;
-pub use cmd::graph::GraphArgs;
 pub use cmd::harvest::HarvestArgs;
 pub use cmd::hooks::HooksArgs;
 pub use cmd::index::IndexArgs;
@@ -54,7 +54,7 @@ pub enum Command {
     Init(InitArgs),
     /// Index a codebase directory
     Index(IndexArgs),
-    /// Semantic search over the index
+    /// Unified search over code and memory (interleaved, best-available ranking)
     Search(SearchArgs),
     /// Show index statistics (for current project or all registered projects)
     Status(StatusArgs),
@@ -62,8 +62,6 @@ pub enum Command {
     Context(ContextArgs),
     /// List supported languages
     Languages,
-    /// Query the code graph (imports, calls, extends/implements)
-    Graph(GraphArgs),
     /// Show the raw indexed chunks for a file (useful for debugging/agent use)
     Chunks(ChunksArgs),
     /// Add a dependency: current project also searches another project's index
@@ -94,4 +92,26 @@ pub enum Command {
     Org(OrgArgs),
     /// Manage per-server bearer credentials (`set-key`, `list-servers`)
     Auth(AuthArgs),
+}
+
+impl Cli {
+    /// Parse argv, substituting a migration hint for clap's error when the
+    /// invocation names a surface this release removed (ADR-082). Diverges on
+    /// any parse failure, exactly as `Cli::parse` does, so `--help` and
+    /// `--version` keep clap's own exit path.
+    pub fn parse_or_exit() -> Self {
+        match Self::try_parse() {
+            Ok(cli) => cli,
+            Err(err) => {
+                let argv: Vec<String> = std::env::args().collect();
+                match removed::hint(&argv) {
+                    Some(msg) => {
+                        eprintln!("{msg}");
+                        std::process::exit(2);
+                    }
+                    None => err.exit(),
+                }
+            }
+        }
+    }
 }

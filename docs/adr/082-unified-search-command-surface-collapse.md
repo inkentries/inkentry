@@ -97,6 +97,10 @@ does after ADR-079:
 - `inkentry search --mode …` (any value) → clap's unexpected-argument error,
   because the flag no longer exists.
 
+(Amended at implementation: these three still exit 2 and are still absent from
+the command tree, but the message names the replacement. See the amendment at
+the end of this record.)
+
 The pre-v1 rename window is the migration; the `--help` output and the docs
 carry the current surface. The **one** message that is not a removal error is
 the **uninitialised-directory funnel**: `search` still exists, so running it
@@ -139,7 +143,8 @@ move to the envelope.
   favour of bare clap errors, matching the rest of the release. A maintained
   per-surface migration message is itself a stub to build, ship, and later
   delete; the clean-break precedent (`explore` falling through to clap's
-  unknown-subcommand error) is the established shape.
+  unknown-subcommand error) is the established shape. **Partly revised at
+  implementation — see the amendment below.**
 - **Add `--only-graph` (edges as a result type) in v1.** Rejected: a third
   output shape in a command whose value is one envelope; speculative until a
   consumer needs edges-as-a-result. A post-v1 task.
@@ -165,3 +170,34 @@ move to the envelope.
 Docs-only decision; not yet implemented. Implementation is gated on sign-off of
 this ADR and ADR-081, plus the shared retrieval-benchmark baseline noted in
 ADR-081.
+
+## Amendment (2026-08-10, at implementation): the three removed surfaces name their replacement
+
+The decision above rests on a premise that the implementation did not hold up:
+"the `--help` output and the docs carry the current surface." They did not.
+`SKILL.md` — the file an agent reads to learn how to drive this tool — shipped 17
+invocations of the removed surfaces, and `README.md` 11, including the multi-hop
+loop that `docs/agent-guide.md` redirects readers to. An agent following that
+loop hit a bare `unrecognized subcommand` with no way to tell that its guidance,
+not its invocation, was wrong.
+
+Worse, one of the errors was not bare. `search` is one edit from `archive`, so
+clap's did-you-mean answered `inkentry memory search` with
+
+```
+tip: a similar subcommand exists: 'archive'
+```
+
+pointing at an unrelated command. A wrong pointer is worse than no pointer, and
+it is not the "clap's standard unknown-subcommand error" this record specified.
+
+So: the docs are fixed, **and** the three surfaces this ADR removes exit 2 with a
+message naming their replacement. What the original rejection was protecting
+against is still avoided — nothing is registered with clap, nothing appears in
+`--help`, there is no runnable stub, and no per-surface code path. The whole
+migration surface is one table matched against argv at the single parse site
+(`cli/removed.rs`), which is deleted in one edit when the rename window closes.
+
+This amendment covers only `graph`, `memory search` and `search --mode`. The
+earlier clean-break removals (`explore`, `ask`, `check`, the memory-sync
+porcelain) keep their bare clap errors; nothing here reopens them.

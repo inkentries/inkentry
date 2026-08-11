@@ -19,7 +19,7 @@ Use plumbing commands when you are:
 Use porcelain commands for:
 
 - **Day-to-day developer use:** `inkentry search`, `inkentry memory list` are readable and interactive.
-- **Multi-hop exploration** — loop `inkentry search` + `inkentry graph` + `inkentry chunks` yourself for questions that span files (see `SKILL.md`).
+- **Multi-hop exploration** — loop `inkentry search` + `inkentry search <symbol> --graph` + `inkentry chunks` yourself for questions that span files (see `SKILL.md`).
 - **Quick status checks** — `inkentry status` gives a human-readable health report.
 
 ## Exit code convention

@@ -315,6 +315,22 @@ fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Pat
     cmd
 }
 
+// Build a base `inkentry search` command for the primary project. Unified
+// search derives the memory store from the resolved index.db's sibling, so it
+// needs no explicit `--db`: cwd + `--config` (db_path = index.db) resolve both.
+fn search_cmd(home: &Path, primary_root: &Path, config: &Path) -> Command {
+    let mut cmd = inkentry_bin_in(home);
+    cmd.env("HOME", home)
+        .env("INKENTRY_REGISTRY_DIR", registry_dir(home))
+        .env_remove("XDG_CONFIG_HOME")
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(primary_root)
+        .arg("--config")
+        .arg(config)
+        .arg("search");
+    cmd
+}
+
 /// Build a base `inkentry context` command for the primary project.
 fn context_cmd(
     home: &Path,
@@ -480,10 +496,9 @@ fn local_note_has_no_source_project_field() {
 /// needed.  Per ADR-003 §3, the dep pass appends ALL cross-cutting entries
 /// regardless of the FTS search query.
 #[test]
-fn memory_search_text_appends_locked_dep_decisions() {
-    let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
+fn search_only_memory_text_appends_locked_dep_decisions() {
+    let (_tmp, home, primary_root, _primary_index, primary_config, _dep_root, dep_mem) =
         setup_linked_projects();
-    let primary_mem = primary_index.with_file_name("memory.db");
 
     let dep_conn = open_memory_db(&dep_mem);
     seed_note(
@@ -495,16 +510,26 @@ fn memory_search_text_appends_locked_dep_decisions() {
         "active",
     );
 
-    let output = memory_cmd(&home, &primary_root, &primary_config, &primary_mem)
-        .args(["search", "--mode", "text", "--format", "json", "anything"])
+    let output = search_cmd(&home, &primary_root, &primary_config)
+        .args([
+            "--only-memory",
+            "--only-text",
+            "--format",
+            "json",
+            "anything",
+        ])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
 
-    let notes: Vec<serde_json::Value> = serde_json::from_slice(&output).expect("valid JSON");
-    let titles: Vec<&str> = notes.iter().filter_map(|n| n["title"].as_str()).collect();
+    // Unified envelope: each memory result nests the Note under `memory`.
+    let results: Vec<serde_json::Value> = serde_json::from_slice(&output).expect("valid JSON");
+    let titles: Vec<&str> = results
+        .iter()
+        .filter_map(|r| r["memory"]["title"].as_str())
+        .collect();
     assert!(
         titles.contains(&"Auth uses JWT tokens"),
         "locked dep decision must be appended by dep pass; got: {titles:?}"
@@ -885,12 +910,11 @@ fn memory_list_local_only_suppresses_dep_results() {
     );
 }
 
-/// `memory search --local-only` suppresses the dep pass.
+// `search --local-only` suppresses the memory dep pass.
 #[test]
-fn memory_search_local_only_suppresses_dep_results() {
-    let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
+fn search_local_only_suppresses_dep_memory_results() {
+    let (_tmp, home, primary_root, _primary_index, primary_config, _dep_root, dep_mem) =
         setup_linked_projects();
-    let primary_mem = primary_index.with_file_name("memory.db");
 
     let dep_conn = open_memory_db(&dep_mem);
     seed_note(
@@ -902,8 +926,13 @@ fn memory_search_local_only_suppresses_dep_results() {
         "active",
     );
 
-    let stdout = memory_cmd(&home, &primary_root, &primary_config, &primary_mem)
-        .args(["search", "--mode", "text", "--local-only", "dep decision"])
+    let stdout = search_cmd(&home, &primary_root, &primary_config)
+        .args([
+            "--only-memory",
+            "--only-text",
+            "--local-only",
+            "dep decision",
+        ])
         .assert()
         .success()
         .get_output()

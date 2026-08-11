@@ -2,11 +2,11 @@
 
 `inkentry` is designed to work as infrastructure for AI coding agents, not just as a human developer tool. This guide covers the patterns that make agents most effective when paired with `inkentry`.
 
-**The key mental model**: inkentry retrieves context; you reason over it. Use `inkentry graph` and `inkentry search` to find the right code, read the results, then synthesise the answer yourself. inkentry is a persistent memory store and code navigation tool, not an oracle.
+**The key mental model**: inkentry retrieves context; you reason over it. Use `inkentry search` — with `--graph` to pull in call-graph neighbours — to find the right code, read the results, then synthesise the answer yourself. inkentry is a persistent memory store and code navigation tool, not an oracle.
 
-**What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text and ast-grep search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
+**What's built-in:** memory (local SQLite `memory.db`, optionally mirrored to git-notes), code graph, full-text search, and extracted conventions work with just the CLI binary — no server needed. A project's memory always lives in its local `memory.db`; that is the canonical store of record for every memory command.
 
-**What's server-backed:** semantic/hybrid search (`inkentry search --mode auto|semantic|hybrid`) and `inkentry harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For `memory search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to text/ast-grep search or error clearly, and all memory commands operate on `memory.db`.
+**What's server-backed:** semantic/hybrid search (the default `inkentry search` ranking) and `inkentry harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For the memory corpus of `inkentry search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to full-text search or error clearly, and all memory commands operate on `memory.db`.
 
 **Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
@@ -29,10 +29,10 @@ Set `AGENT=true` and every `inkentry` command returns JSON:
 ```bash
 export AGENT=true
 
-inkentry search "error handling"          # → JSON array of results
+inkentry search "error handling"          # → interleaved code + memory results (JSON envelopes)
 inkentry status                           # → { files, chunks, embeddings, ... }
 inkentry memory list                      # → JSON array of notes
-inkentry memory search "auth decisions"   # → JSON array of notes with distance scores
+inkentry search "auth decisions" --only-memory   # → memory notes with distance scores
 ```
 
 You can also use `--format json` on individual commands.
@@ -105,10 +105,10 @@ Before modifying any file, search for related code:
 
 ```bash
 # Trace the call graph around a symbol (no server needed)
-AGENT=true inkentry graph validate_token
+AGENT=true inkentry plumbing graph-edges --symbol validate_token
 
 # Full-text search (no server needed)
-AGENT=true inkentry search "authentication middleware" --mode text
+AGENT=true inkentry search "authentication middleware" --only-text
 
 # Get the raw chunks for a specific file (requires index)
 AGENT=true inkentry chunks src/auth/middleware.rs
@@ -117,16 +117,16 @@ AGENT=true inkentry chunks src/auth/middleware.rs
 AGENT=true inkentry search "authentication middleware" --graph
 ```
 
-The `--graph` flag adds 1-hop callers and callees to the result set — the right context for understanding blast radius before a change.
+The `--graph` flag appends the symbol's chunk and its 1-hop callers and callees after the ranked results — the right context for understanding blast radius before a change.
 
 ## Retrieving targeted context
 
-Use `inkentry graph` and `inkentry search` to find relevant code, then read and reason over the results yourself:
+Use `inkentry search` (with `--graph` for call-graph neighbours) to find relevant code, then read and reason over the results yourself:
 
 ```bash
 # Trace call chains (no server needed)
-AGENT=true inkentry graph handle_request
-AGENT=true inkentry search "request lifecycle middleware" --mode text --limit 20 --format json
+AGENT=true inkentry plumbing graph-edges --symbol handle_request
+AGENT=true inkentry search "request lifecycle middleware" --only-text --limit 20 --format json
 
 # Semantic search (requires embedding server + index)
 AGENT=true inkentry search "embedding format storage" --graph --format json
@@ -136,25 +136,25 @@ For open-ended questions that require synthesis across multiple code paths, run 
 
 ```bash
 AGENT=true inkentry search "how does incremental indexing decide which files to skip?" --graph
-inkentry graph <symbol> --kind calls        # follow callers/callees the results surfaced
+inkentry plumbing graph-edges --symbol <symbol>   # follow callers/callees the results surfaced
 inkentry chunks <file>                       # read the exact indexed code
 ```
 
-Two or three passes usually suffice: search, trace with `graph`, read with `chunks` (or your own file-read tool for lines outside a chunk), then decide whether you have enough context or need a sharper query. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
+Two or three passes usually suffice: search, trace with `plumbing graph-edges`, read with `chunks` (or your own file-read tool for lines outside a chunk), then decide whether you have enough context or need a sharper query. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
 
 ## After making changes
 
 ```bash
-# Confirm call sites still match using the code graph (symbol queries work live even without an index)
-inkentry graph validate_token --kind calls
+# Confirm call sites still match using the code graph (needs the index built by init)
+inkentry plumbing graph-edges --symbol validate_token
 
-# If the project is indexed: re-index changed files (incremental, blake3-gated)
+# Re-index changed files so search and its --graph view stay current (incremental, blake3-gated)
 inkentry index .
 ```
 
 To exclude files or directories from indexing, add a `.inkentryignore` file (same syntax as `.gitignore`) at any directory. It takes higher precedence than `.gitignore`. Indexing also applies a built-in filter that skips generated, vendored, minified, and machine-data files (lockfiles, `node_modules/`, `*.min.js`, protobuf codegen, and files that self-declare `@generated`); tune it with the `[index]` table in config. See [File filtering](commands.md#file-filtering).
 
-**Note:** Indexing is optional and only needed if you use semantic search. If you only use `inkentry graph` and full-text search, there's nothing to rebuild after changes.
+**Note:** `search` (and its `--graph` view) needs the index built by `inkentry init`. After changes, `inkentry index .` refreshes it — incremental and blake3-gated, so it is cheap: full-text and call-graph edges update as files are re-parsed, and the semantic ranking re-embeds in the background.
 
 ## Storing decisions
 
@@ -171,7 +171,7 @@ inkentry memory add \
 Doing this consistently means future agents (and future you) can retrieve the rationale:
 
 ```bash
-inkentry memory search "why did we choose sqlite-vec"
+inkentry search "why did we choose sqlite-vec" --only-memory
 ```
 
 **git-notes write-through:** with `store_in_git_notes` enabled (the default),
@@ -593,19 +593,19 @@ inkentry context --budget 4000                               # cap total output 
 AGENT=true inkentry context --format json                    # machine-readable
 
 # Before writing code — retrieve context, reason yourself
-AGENT=true inkentry graph <symbol>                             # call graph
-AGENT=true inkentry search "<topic>" --mode text              # full-text search
-AGENT=true inkentry search "<topic>"                          # semantic (requires server)
-AGENT=true inkentry search "<topic>" --graph                  # semantic + call graph
-AGENT=true inkentry memory search "<topic>"                   # search prior decisions
+AGENT=true inkentry plumbing graph-edges --symbol <symbol>   # call-graph edges (JSONL)
+AGENT=true inkentry search "<topic>" --only-text             # full-text (no server)
+AGENT=true inkentry search "<topic>"                         # unified code + memory (best available)
+AGENT=true inkentry search "<topic>" --graph                 # ranked results + call-graph neighbours
+AGENT=true inkentry search "<topic>" --only-memory           # search prior decisions
 
-# Optional: If your project is indexed
+# Fit results within a token budget
 inkentry search "<topic>" --budget 4000                        # fit within token limit
-# For multi-hop questions, loop search + graph + chunks yourself (see SKILL.md)
+# For multi-hop questions, loop search + graph-edges + chunks yourself (see SKILL.md)
 
-# After changes — verify call graph integrity
-inkentry graph <symbol> --kind calls
-inkentry index .                                              # only if using semantic search
+# After changes — refresh the index and verify call sites
+inkentry plumbing graph-edges --symbol <symbol>
+inkentry index .                                              # incremental, blake3-gated
 
 # Session end — store decisions for next session
 inkentry memory add --title "Decision: ..." --kind decision

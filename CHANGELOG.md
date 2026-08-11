@@ -11,6 +11,46 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Unified `search` over code and memory.** One `search` command now returns
+  code chunks and memory entries interleaved into a single ranked list — the
+  function and the decision that governs it, together. The query is embedded
+  twice (the code-search prefix via the server `/search` path, the QA prefix via
+  the local embed path), each corpus runs its existing pipeline to a ranked
+  list, and the two lists are fused by reciprocal rank fusion on rank position
+  alone (`RRF_K = 60`, code-before-memory tie-break) — the incomparable
+  per-corpus relevance magnitudes are never compared. The fused order is total
+  and deterministic: the same query over an unchanged, fully-fresh index yields
+  byte-identical ordering. See ADR-081.
+- **Corpus filters `--only-code` / `--only-memory` / `--only-text`.**
+  `--only-code` is the escape hatch for code alone; `--only-memory` searches
+  memory alone; `--only-text` runs full-text over the in-scope corpora with no
+  embedding and no server. `--only-code` and `--only-memory` are mutually
+  exclusive. The second query embed is elided whenever a filter makes it
+  redundant (`--only-*` issues one embed, `--only-text` none).
+- **Typed, nested result envelope.** `search --format json`/`jsonl` emits one
+  object per result carrying a `type` discriminator (`code`/`memory`), its
+  `fused_rank`/`fused_score`/`corpus_rank`, and the existing `SearchResult` or
+  `Note` nested under a `code`/`memory` key. The human format interleaves in
+  fused order with a per-result `[code]`/`[memory]` label.
+- **Attachments are unranked on both sides of the envelope.** `--graph`
+  call-graph neighbours, `--expand-graph` relates-to neighbours and
+  cross-project entries are appended after the ranked members with
+  `fused_rank`/`fused_score`/`corpus_rank` all `null`. None of them was ranked
+  against the query — a relates-to neighbour was reached from a hit, a
+  cross-project entry was selected by its tags — so none can take a ranked
+  position or displace a matched result. Memory attachments are labelled
+  `[memory · attached]` in the human format.
+- **Memory-only modifiers on `search`.** `--as-of <date>` (point-in-time over
+  the memory corpus) and `--expand-graph` (relates_to 1-hop) carry onto `search`
+  from the former `memory search`; `--local-only` disables the cross-project
+  dependency pass on both corpora.
+- **The three removed search surfaces name their replacement.** `inkentry graph`,
+  `inkentry memory search` and `inkentry search --mode` still exit 2 and are
+  still absent from `--help`, but the error points at `search --graph` /
+  `plumbing graph-edges`, `search --only-memory`, and the corpus filters instead
+  of leaving the caller to guess. `memory search` in particular no longer draws
+  clap's did-you-mean suggestion of the unrelated `memory archive`.
+
 - **Deterministic structural chunk summaries, in the built-in tier.** The
   `summary:` slot folded into each chunk's embedding input is now composed
   offline from signals already present after parse — docstring first sentence,
@@ -42,6 +82,24 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`search --format json`/`jsonl` is the nested code/memory envelope, not a
+  flat `SearchResult[]`.** Consumers that parsed the top-level array, or that
+  re-sorted results by `distance`, must move to the emitted order / `fused_rank`;
+  the per-corpus `distance`/`score` survive as within-corpus diagnostics but are
+  not comparable across corpora (ADR-081).
+- **`search` now refreshes the memory read path, so it can write.** Folding the
+  memory corpus in brings `memory list`/`context`'s git-notes refresh with it: a
+  plain `inkentry search` may run `git notes merge` and update `memory.db` when
+  a teammate's entries have arrived, which is what makes them searchable without
+  a re-init. It is OID-gated and does no work when nothing changed, but `search`
+  is no longer a pure read.
+- **`search` requires an index.** The zero-setup "returns results with nothing
+  indexed" affordance is gone: an uninitialised directory funnels to
+  `inkentry init`. Full-text results are available immediately once `init` has
+  parsed the tree, while semantic ranking builds in the background; the
+  zero-coverage / embedder-unavailable / stale-empty paths degrade to full-text
+  search (which covers every chunk from parse time), not a structural scan.
+
 - **PageRank now runs before the embed phase**, so a cold first index embeds
   PageRank-central code first (previously the rank was computed after embedding,
   so the first index fell back to modification-time order). Structural summaries
@@ -60,6 +118,21 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   warns and continues rather than erroring, since the vector space is unchanged.
 
 ### Removed
+
+- **The `--mode` flag on `search`** (`auto`/`text`/`semantic`/`hybrid`/
+  `ast-grep`). Corpus selection is now the `--only-code`/`--only-memory`/
+  `--only-text` filters over one best-available pipeline; `--mode text` maps to
+  `--only-text`, and `semantic`/`hybrid`/`auto` to the default. Invoking `--mode`
+  is now a plain argument error (ADR-082).
+- **The top-level `graph` command.** The code-graph capability ships as
+  `search <symbol> --graph` (the symbol's chunk plus its 1-hop neighbours) and
+  `plumbing graph-edges --symbol <name>` / `--file <path>` (exact edges, JSONL).
+  `memory graph` (relationships from a memory entry) is unaffected.
+- **`memory search`.** Folded into `search --only-memory` (with `--as-of` /
+  `--expand-graph` carried over). The rest of the `memory` family is unchanged.
+- **The in-process ast-grep structural-search engine** (`search/live.rs`) and the
+  `ast-grep-core` dependency. Tree-sitter grammars (`ast-grep-language`) that back
+  parsing/chunking stay.
 
 - **LLM-generated chunk summaries.** `inkentry index` no longer calls an LLM for
   summaries (the built-in structural summary above replaces it), and the

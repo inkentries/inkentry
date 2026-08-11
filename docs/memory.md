@@ -84,7 +84,7 @@ the same old entry.
 inside a git repository: with no `.inkentry/` project, `add` rides the same
 write-through carrier (there is no SQLite primary yet) and `list` reads entries
 back from `refs/notes/inkentry`. Because it is the same write path pre- and
-post-`init`, every note carries an identical record shape. `memory search` and
+post-`init`, every note carries an identical record shape. `inkentry search` and
 `context` remain gated to projects with `.inkentry/` (they need the index to
 search and embed).
 
@@ -162,7 +162,7 @@ with the server instead of waiting on the background drain; for a one-way
 transfer (seeding, CI) reach for the plumbing forms `inkentry plumbing push`
 (local → server) and `inkentry plumbing pull` (server → local). Both the sync
 and push paths also embed the entries they push into the local `memory.db`
-first, so a pushed entry stays findable by semantic `memory search` on your own
+first, so a pushed entry stays findable by semantic `search` on your own
 machine (see [Repair during push and sync](#repair-during-push-and-sync)).
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
@@ -356,7 +356,7 @@ init` **hydrates** the new `memory.db` from those notes: every entry not already
 present is imported, and `inkentry memory list` then shows the repo's recorded
 history. The import is idempotent (re-running `init` imports nothing) and copies
 entry content only, not embeddings, so imported entries appear in `memory list`
-and full-text search right away; semantic `memory search` finds them once they
+and full-text search right away; semantic `search` finds them once they
 are embedded, which you can do with
 [`inkentry memory reindex`](#backfilling-missing-embeddings). This is a local import: the notes must already
 be present in your clone. Their cross-machine arrival still depends on your git
@@ -516,20 +516,24 @@ This is opt-in by design: the script only runs if you've placed it at that exact
 
 ## Searching memory
 
+Memory is searched through the unified `inkentry search` command; there is no
+separate `memory search` subcommand. By default `search` interleaves code and
+memory results into one ranked list — pass `--only-memory` to restrict it to the
+memory corpus. `--as-of` and `--expand-graph` are memory-only modifiers.
+
 ```bash
-# Semantic search — finds entries by meaning
-inkentry memory search "why did we choose sqlite"
-inkentry memory search "authentication decisions" --limit 5
+# Search memory only — finds entries by meaning
+inkentry search "why did we choose sqlite" --only-memory
+inkentry search "authentication decisions" --only-memory --limit 5
 
 # Also surface 1-hop relates_to neighbours of each result
-inkentry memory search "authentication decisions" --expand-graph
+inkentry search "authentication decisions" --only-memory --expand-graph
 
-# Search mode: hybrid (default), semantic, text
-inkentry memory search "auth" --mode semantic
-inkentry memory search "auth" --mode text
+# Full-text over memory only, no embedding or server needed
+inkentry search "auth" --only-memory --only-text
 
 # Point-in-time: only entries that were valid at this date
-inkentry memory search "auth decisions" --as-of 2026-01-01
+inkentry search "auth decisions" --only-memory --as-of 2026-01-01
 ```
 
 ## Tracking topic evolution
@@ -573,7 +577,7 @@ given in full or as a prefix.
 
 ## Cross-project visibility
 
-When projects are linked with `inkentry link`, `inkentry memory search`,
+When projects are linked with `inkentry link`, `inkentry search`,
 `inkentry memory list`, and `inkentry context` automatically surface relevant
 memory from linked projects alongside local results. This is how settled
 decisions recorded in one project (for example, a Cloud-only architecture
@@ -612,11 +616,11 @@ counted against the limit.
 
 ### Skipping the dep pass
 
-Pass `--local-only` to any of `memory search`, `memory list`, or `context` to
+Pass `--local-only` to any of `search`, `memory list`, or `context` to
 query only the primary project's memory store:
 
 ```bash
-inkentry memory search "auth decisions" --local-only
+inkentry search "auth decisions" --only-memory --local-only
 inkentry memory list --kind decision --local-only
 inkentry context --local-only
 ```
@@ -847,10 +851,10 @@ during push and sync](#repair-during-push-and-sync)). A note that misses both
 moments, because no embedder was reachable, or because the store was upgraded
 across the 768→896 embedding-dimension change (which drops the old vectors and
 rebuilds `note_embeddings` empty), stays in `memory.db` **present but
-unembedded**. Such a note is still found by text
-search (`--mode text`), `memory list`, `memory timeline`, and `context`; it is
-only missing from *semantic* `memory search`, because semantic ranking is a KNN
-over the embedding vectors and this note has none.
+unembedded**. Such a note is still found by full-text
+search (`--only-text`), `memory list`, `memory timeline`, and `context`; it is
+only missing from the *semantic* ranking of `inkentry search`, because semantic
+ranking is a KNN over the embedding vectors and this note has none.
 
 `inkentry memory reindex` is the recovery command: it embeds the notes that have
 no vector, using the same embedder `memory add` uses. In the default
@@ -908,7 +912,7 @@ Before the batch is built, every entry in the push set that has no usable local
 vector is embedded through the local loopback embedder, using the same document
 text and the same document-side embedding call `inkentry memory reindex` uses,
 and each vector is committed to `memory.db` as it completes. A pushed entry is
-therefore findable by semantic `memory search` on your own machine afterwards,
+therefore findable by semantic `search` on your own machine afterwards,
 with no separate `reindex` step. Previously a push left `memory.db` exactly as
 it found it, so entries it had just pushed stayed invisible to local semantic
 search and nothing said so.
@@ -935,7 +939,7 @@ Scope and limits:
   exactly as it did before, every entry text-only. It prints one warning:
 
   ```
-  warning: 2 entries pushed without a local embedding, so `inkentry memory search` cannot surface them in this project until `inkentry memory reindex` is run.
+  warning: 2 entries pushed without a local embedding, so `inkentry search` cannot surface them in this project until `inkentry memory reindex` is run.
   ```
 
   A single entry's embed failure behaves the same way: that entry goes out
@@ -953,7 +957,7 @@ Scope and limits:
 
 ## Using memory as context
 
-`inkentry memory search` results are best consumed alongside `inkentry search` results — they answer the *why* while the code search answers the *how*. Pass both to your reasoning model for a complete picture.
+`inkentry search` interleaves memory and code results in one ranked list — memory answers the *why* while the code answers the *how*. Use `--only-memory` when you want just the decisions or `--only-code` for just the code; the default hands your reasoning model both at once for a complete picture.
 
 ## Machine-readable output
 
@@ -961,7 +965,7 @@ All memory commands support `--format json`, and setting `AGENT=true` forces JSO
 
 ```bash
 AGENT=true inkentry memory list --kind question
-AGENT=true inkentry memory search "database decisions"
+AGENT=true inkentry search "database decisions" --only-memory
 ```
 
 ## Tips
