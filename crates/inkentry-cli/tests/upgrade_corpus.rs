@@ -413,7 +413,7 @@ fn every_memory_wing_is_refused_rather_than_opened_in_place() {
             Err(e) => e.to_string(),
         };
         assert!(
-            msg.contains("memory import"),
+            msg.contains("inkentry import"),
             "wing {}: the refusal must name the way across, got: {msg}",
             wing.id
         );

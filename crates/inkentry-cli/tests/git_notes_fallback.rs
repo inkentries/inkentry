@@ -357,9 +357,9 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-/// The id the local SQLite store holds for the entry titled `title`. A
-/// git-notes record's own `id` is a per-write stamp of the frozen carrier
-/// format (ADR-059) and never resolves against the store.
+// The id the local SQLite store holds for the entry titled `title`. A
+// git-notes record's own `id` is a per-write stamp of the frozen carrier
+// format (ADR-059) and never resolves against the store.
 fn local_id_for_title(home: &Path, repo: &Path, title: &str) -> String {
     let out = bin(home, repo)
         .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
@@ -382,10 +382,10 @@ fn local_id_for_title(home: &Path, repo: &Path, title: &str) -> String {
         .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
 }
 
-/// Re-`init` recreates memory.db, so nothing about a carrier record's `id`
-/// survives it — the field is a per-write stamp, not identity, and two
-/// different entries can land in one notes ref carrying the same one. Their
-/// `entity_id`s must still tell them apart.
+// Re-`init` recreates memory.db, so nothing about a carrier record's `id`
+// survives it — the field is a per-write stamp, not identity, and two
+// different entries can land in one notes ref carrying the same one. Their
+// `entity_id`s must still tell them apart.
 #[test]
 fn reinit_between_adds_yields_distinct_entity_ids() {
     let home = TempDir::new().unwrap();

@@ -198,12 +198,6 @@ impl MemoryStore {
             for group in &duplicate_groups {
                 for (li, loser) in group[1..].iter().enumerate() {
                     let loser_id = &loser.id;
-                    // Incident edges go with the row: `memory_edges` declares
-                    // ON DELETE CASCADE and the store declares the enforcement
-                    // that makes it live. The embedding does not — vec0 is a
-                    // virtual table with no foreign key to cascade — so it is
-                    // dropped explicitly.
-                    self.delete_note_embedding(loser_id)?;
                     self.delete_note(loser_id)?;
                     if loser_fault_due(li) {
                         anyhow::bail!(

@@ -135,15 +135,14 @@ fn open_memory_db(path: &Path) -> Connection {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create memory db parent");
     }
+    // Created through the store itself rather than by replaying the schema
+    // file and stamping a literal: a hand-written stamp is a claim about what
+    // this build writes, and a wrong one makes the store read as an older
+    // product's and be refused.
+    drop(inkentry_core::storage::MemoryStore::open(path).expect("create memory db"));
     let conn = Connection::open(path).expect("open memory db");
     conn.execute_batch("PRAGMA foreign_keys = ON")
         .expect("foreign keys");
-    conn.execute_batch(include_str!(
-        "../../../crates/inkentry-core/migrations/memory_001_initial.sql"
-    ))
-    .expect("memory schema");
-    conn.execute_batch("PRAGMA user_version = 1")
-        .expect("stamp schema version");
     conn
 }
 

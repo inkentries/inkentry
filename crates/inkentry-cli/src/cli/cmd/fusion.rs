@@ -155,10 +155,9 @@ mod tests {
         }
     }
 
-    fn note(id: i64, distance: f64) -> Note {
-        use inkentry_core::storage::NoteId;
+    fn note(id: &str, distance: f64) -> Note {
         Note {
-            id: NoteId::from_i64(id),
+            id: id.parse().unwrap(),
             kind: "decision".into(),
             title: format!("note {id}"),
             body: "body".into(),
@@ -184,15 +183,15 @@ mod tests {
     fn interleaves_code_before_memory_at_equal_rank() {
         let out = fuse(
             vec![code(10, 0.1), code(11, 0.2)],
-            vec![note(20, 5.0), note(21, 6.0)],
+            vec![note("m20", 5.0), note("m21", 6.0)],
             10,
         );
         let types: Vec<&str> = out.iter().map(|u| u.kind).collect();
         assert_eq!(types, vec!["code", "memory", "code", "memory"]);
         assert_eq!(out[0].code.as_ref().unwrap().chunk_id, 10);
-        assert_eq!(out[1].memory.as_ref().unwrap().id.to_string(), "20");
+        assert_eq!(out[1].memory.as_ref().unwrap().id.to_string(), "m20");
         assert_eq!(out[2].code.as_ref().unwrap().chunk_id, 11);
-        assert_eq!(out[3].memory.as_ref().unwrap().id.to_string(), "21");
+        assert_eq!(out[3].memory.as_ref().unwrap().id.to_string(), "m21");
         let ranks: Vec<Option<usize>> = out.iter().map(|u| u.fused_rank).collect();
         assert_eq!(ranks, vec![Some(1), Some(2), Some(3), Some(4)]);
     }
@@ -201,7 +200,7 @@ mod tests {
     // rank 1 therefore carry the SAME fused_score (the tie the priority breaks).
     #[test]
     fn fused_score_is_one_over_k_plus_corpus_rank() {
-        let out = fuse(vec![code(1, 0.0)], vec![note(2, 0.0)], 10);
+        let out = fuse(vec![code(1, 0.0)], vec![note("m2", 0.0)], 10);
         let expect_r1 = 1.0 / (60.0 + 1.0);
         assert!((out[0].fused_score.unwrap() - expect_r1).abs() < 1e-12);
         assert_eq!(out[0].corpus_rank, Some(1));
@@ -214,7 +213,7 @@ mod tests {
     // tiny distance but corpus_rank 1 — the raw magnitudes are never compared.
     #[test]
     fn orders_by_rank_not_by_incomparable_distance() {
-        let out = fuse(vec![code(1, 999.0)], vec![note(2, 0.0001)], 10);
+        let out = fuse(vec![code(1, 999.0)], vec![note("m2", 0.0001)], 10);
         assert_eq!(out[0].kind, "code");
         assert_eq!(out[0].fused_rank, Some(1));
     }
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn memory_only_corpus_yields_pure_memory_list() {
-        let out = fuse(vec![], vec![note(1, 1.0), note(2, 2.0)], 10);
+        let out = fuse(vec![], vec![note("m1", 1.0), note("m2", 2.0)], 10);
         assert!(out.iter().all(|u| u.kind == "memory"));
         assert_eq!(out.len(), 2);
     }
@@ -237,7 +236,7 @@ mod tests {
     fn truncates_to_limit() {
         let out = fuse(
             vec![code(1, 0.1), code(2, 0.2)],
-            vec![note(3, 1.0), note(4, 2.0)],
+            vec![note("m3", 1.0), note("m4", 2.0)],
             3,
         );
         assert_eq!(out.len(), 3);
@@ -252,7 +251,7 @@ mod tests {
         let build = || {
             fuse(
                 vec![code(1, 0.5), code(2, 0.1), code(3, 0.9)],
-                vec![note(4, 3.0), note(5, 1.0)],
+                vec![note("m4", 3.0), note("m5", 1.0)],
                 10,
             )
         };
@@ -265,7 +264,7 @@ mod tests {
     // fields, and exactly one of code/memory is present, matching `type`.
     #[test]
     fn ranked_member_envelope_shape() {
-        let out = fuse(vec![code(1, 0.1)], vec![note(2, 1.0)], 10);
+        let out = fuse(vec![code(1, 0.1)], vec![note("m2", 1.0)], 10);
         for u in &out {
             let v = serde_json::to_value(u).unwrap();
             assert!(v.get("type").is_some());
@@ -284,7 +283,7 @@ mod tests {
     // graph neighbour: no corpus_rank, so it cannot displace a ranked result.
     #[test]
     fn memory_appendix_members_are_unranked_memory() {
-        let out = memory_appendix(vec![note(7, 1.0)]);
+        let out = memory_appendix(vec![note("m7", 1.0)]);
         let v = serde_json::to_value(&out[0]).unwrap();
         assert_eq!(v.get("type").unwrap(), "memory");
         assert!(v.get("fused_rank").unwrap().is_null());

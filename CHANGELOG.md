@@ -261,7 +261,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   its final shape — the key is `NOT NULL` and uniquely indexed from the first
   row — so both routines had nothing left to do. A memory database written by
   an older product is no longer opened in place; it is refused with a message
-  pointing at the import path.
+  pointing at the import path — including one carrying a schema stamp from a
+  released binary, which continues to be recognised as older rather than
+  mistaken for a store from a newer build. The stamp this build writes
+  therefore continues the ladder's numbering rather than restarting.
 
 - **`inkentry check` has been removed.** Its three jobs are served better
   elsewhere, so the command no longer carried a unique one: index freshness by

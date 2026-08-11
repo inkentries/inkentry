@@ -566,7 +566,7 @@ Emit memory entries as JSONL. Use `--kind` to filter by entry type or `--id` to 
 | Flag | Description |
 |------|-------------|
 | `--kind <kind>` | Filter by memory kind: `decision`, `question`, `note`, `answer`, `requirement`, `handoff`, `antipattern`. |
-| `--id <n>` | Fetch a single entry by its integer id. Exits `1` if not found. |
+| `--id <uuid>` | Fetch a single entry by its UUID. Exits `1` if not found. |
 | `--limit N` | Maximum number of entries (default: `50`). |
 
 Exit codes: `0` = entries found, `1` = no entries matched, `2` = error.

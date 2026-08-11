@@ -1,7 +1,7 @@
 -- Initial memory schema. Declares the final shape directly: there is no
 -- ladder to climb, because this binary opens no memory store it did not
 -- create itself. A store carrying data from an earlier product is crossed
--- with `inkentry memory import`, never opened in place (ADR-078).
+-- with `inkentry import`, never opened in place (ADR-078).
 
 -- `uuid` is the exported identity (a UUIDv7), NOT NULL and uniquely indexed
 -- from creation. `id` is a storage surrogate: `memory_fts` is an FTS5
@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_edges_to   ON memory_edges(to_id);
 -- One row (id = 0) records the OIDs seen at the last merge and the last import,
 -- so a read whose notes refs have not moved since skips both the merge
 -- subprocess and the import walk. Derived state, and keyed on OIDs that a ref
--- rename invalidates, so `memory import` deliberately does not populate it:
+-- rename invalidates, so `inkentry import` deliberately does not populate it:
 -- the cost of starting empty is one redundant walk.
 CREATE TABLE IF NOT EXISTS notes_import_state (
     id INTEGER PRIMARY KEY CHECK (id = 0),

@@ -61,13 +61,10 @@ fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
 fn seed_duplicate_group(mem_path: &Path) {
     ensure_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .inkentry dir");
+    drop(inkentry_core::storage::MemoryStore::open(mem_path).expect("create memory.db"));
     let conn = Connection::open(mem_path).expect("open memory.db");
-    conn.execute_batch(include_str!(
-        "../../inkentry-core/migrations/memory_001_initial.sql"
-    ))
-    .expect("memory schema");
-    conn.execute_batch("PRAGMA user_version = 1; DROP INDEX idx_notes_entity_id;")
-        .expect("stamp version and drop the uniqueness the seed violates");
+    conn.execute_batch("DROP INDEX idx_notes_entity_id;")
+        .expect("drop the uniqueness the seed violates");
 
     for (i, created_at) in [1_700_000_001_i64, 1_700_000_002_i64]
         .into_iter()

@@ -315,10 +315,26 @@ impl MemoryStore {
         Ok(ids)
     }
 
+    /// Delete an entry and everything keyed on it.
+    ///
     /// Used only by `memory dedupe`, after a duplicate-group loser's
-    /// tags/linked_files/superseded_by have been folded into the survivor
-    /// and any edges pointing at it rewritten.
+    /// tags/linked_files/superseded_by have been folded into the survivor and
+    /// any edges pointing at it rewritten.
+    ///
+    /// Incident edges go with the row: `memory_edges` declares `ON DELETE
+    /// CASCADE` and the store declares the enforcement that makes it live. The
+    /// embedding does not — `note_embeddings` is a vec0 virtual table with no
+    /// foreign key to cascade — so it is dropped here, before the row, rather
+    /// than left to the caller.
+    ///
+    /// Leaving it to the caller is what made this worth folding in. The rowid
+    /// the vector is keyed on is reusable in principle; `AUTOINCREMENT` on
+    /// `notes.id` is what stops SQLite handing it to the next entry along with
+    /// the previous occupant's vector (ADR-078). That is a second line of
+    /// defence, and it should not be the first: an orphaned vector left behind
+    /// by one forgetful caller is what it has to catch.
     pub fn delete_note(&self, note_id: &NoteId) -> Result<()> {
+        self.delete_note_embedding(note_id)?;
         self.conn.execute(
             "DELETE FROM notes WHERE uuid = ?1",
             rusqlite::params![note_id.as_str()],
@@ -326,10 +342,8 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// No-op if absent. Used by `memory dedupe` when deleting a
-    /// duplicate-group loser: two vectors have no meaningful union, so the
-    /// embedding is dropped rather than merged; the survivor's own
-    /// embedding is untouched.
+    /// No-op if absent. Called by [`Self::delete_note`]; separate because
+    /// re-embedding drops the old vector without touching the row.
     pub fn delete_note_embedding(&self, note_id: &NoteId) -> Result<()> {
         let Some(rowid) = self.rowid_for(note_id)? else {
             return Ok(());

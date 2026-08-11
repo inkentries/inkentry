@@ -27,10 +27,30 @@ mod tests;
 ///
 /// There is no migration ladder. Every store this binary opens was created by
 /// this binary at the shape `memory_001_initial.sql` declares; data from an
-/// earlier product crosses via `inkentry memory import`, which imports into a
-/// store created the same way (ADR-078). The constant survives so a store
-/// written by a future build is refused rather than silently misread.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 1;
+/// earlier product crosses via `inkentry import`, which imports into a store
+/// created the same way (ADR-078). The constant survives so a store written by
+/// a future build is refused rather than silently misread.
+///
+/// It continues the ladder's numbering rather than restarting at 1, and that is
+/// the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version` is one i32
+/// per file, shared with every stamp the ladder ever wrote, so a fresh
+/// numbering would make an old product's store read as a *newer* one.
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 11;
+
+/// The highest `user_version` the migration ladder ever stamped, across every
+/// released binary (0.9.6 stamped 9; 0.9.7 and 0.9.8 stamped 10).
+///
+/// A store carrying any stamp at or below this was written by an older product
+/// and must be told to export and import — not to upgrade, which is advice that
+/// can never work. Nothing may reclaim this range: `MEMORY_SCHEMA_VERSION` only
+/// ever moves up from here.
+pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 10;
+
+const _: () = assert!(
+    MEMORY_SCHEMA_VERSION > LAST_LEGACY_SCHEMA_VERSION,
+    "the memory schema version must stay above every stamp the old ladder wrote, or a store \
+     from an older product is misread as one from a newer build"
+);
 
 pub struct MemoryStore {
     pub(super) conn: Connection,
@@ -120,9 +140,12 @@ impl MemoryStore {
     /// with it.
     ///
     /// There is no ladder: `memory_001_initial.sql` declares the final shape.
-    /// A file carrying tables but no stamp was written by something that is not
-    /// this schema, and is refused rather than half-covered with a shape its
-    /// rows do not fit.
+    /// Anything else is refused rather than half-covered with a shape its rows
+    /// do not fit — and *which* refusal matters, because the two say opposite
+    /// things. A store from an older product must be told to export and import;
+    /// only a store from a genuinely newer build can be told to upgrade. The
+    /// old ladder's stamps are what separate them, which is why this build's
+    /// stamp continues that numbering instead of restarting.
     fn create_schema(&self) -> Result<()> {
         let version: i32 = self
             .conn
@@ -138,11 +161,18 @@ impl MemoryStore {
                  supports (max {MEMORY_SCHEMA_VERSION}); upgrade inkentry to open this store."
             );
         }
-        if !self.is_empty_file()? {
+        // Below this build's stamp: a store the old ladder stamped, or one
+        // predating the stamp entirely and recognisable only by holding tables.
+        if version > 0 || !self.is_empty_file()? {
+            let stamp = if version > 0 {
+                format!(" (schema version {version})")
+            } else {
+                String::new()
+            };
             anyhow::bail!(
-                "this memory store was written by an older product and cannot be opened in \
-                 place. Export it with the migration tool, then run `inkentry memory import` \
-                 to bring it across."
+                "this memory store was written by an older product{stamp} and cannot be \
+                 opened in place. Export it with the migration tool, then run \
+                 `inkentry import` to bring it across."
             );
         }
 

@@ -653,8 +653,8 @@ are not queried by the dep pass in v1.
 ## Showing a single entry
 
 ```bash
-inkentry memory show 42
-inkentry memory show 42 --format json
+inkentry memory show 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
+inkentry memory show 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 ```
 
 `memory show` displays the full body plus any incoming and outgoing relationship edges (supersedes, relates_to, contradicts) with linked entry titles.
@@ -663,10 +663,10 @@ inkentry memory show 42 --format json
 
 ```bash
 # Show all edges for an entry (text)
-inkentry memory graph 42
+inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 
 # Machine-readable
-inkentry memory graph 42 --format json
+inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 ```
 
 ## Harvesting from git history

@@ -91,6 +91,34 @@ fn deleting_an_entry_cascades_to_its_edges() {
     );
 }
 
+// `note_embeddings` is a vec0 virtual table keyed on the rowid, so no foreign
+// key can cascade into it. `AUTOINCREMENT` on `notes.id` is what stops a reused
+// rowid handing a new entry the previous occupant's vector — a second line of
+// defence that only matters once an orphan exists, so no orphan may be left.
+#[test]
+fn deleting_an_entry_takes_its_embedding_with_it() {
+    let (_dir, store) = store();
+    let keep = add(&store, "keep");
+    let gone = add(&store, "gone");
+    for (id, fill) in [(&keep, 0.25f32), (&gone, 0.5)] {
+        store
+            .insert_embedding(id, &crate::embeddings::vec_to_blob(&vec![fill; 896]))
+            .expect("embed");
+    }
+
+    store.delete_note(&gone).expect("delete");
+
+    let left: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM note_embeddings", [], |r| r.get(0))
+        .expect("counting vectors");
+    assert_eq!(
+        left, 1,
+        "the deleted entry's vector must go with it rather than survive as an orphan \
+         keyed on a rowid no row holds"
+    );
+}
+
 // ── identity ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -249,9 +277,44 @@ fn a_store_from_an_older_product_is_refused_rather_than_half_migrated() {
         Err(e) => e,
     };
     assert!(
-        err.to_string().contains("memory import"),
+        err.to_string().contains("inkentry import"),
         "the refusal should name the way across: {err}"
     );
+}
+
+// A store from a *released* product carries a stamp, and `user_version` is one
+// counter per file shared with every stamp the old ladder wrote. Restarting
+// this build's numbering below those made every such store read as "from the
+// future", so three shipped releases were told to upgrade — advice that can
+// never work, on the one move a user makes once.
+#[test]
+fn a_store_stamped_by_a_released_binary_is_sent_to_export_and_import() {
+    register_sqlite_vec();
+    for stamp in 1..=super::LAST_LEGACY_SCHEMA_VERSION {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT); \
+                 PRAGMA user_version = {stamp};"
+            ))
+            .unwrap();
+        }
+        let err = match MemoryStore::open(&path) {
+            Ok(_) => panic!("a stamp of {stamp} is an older product's store, not this build's"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("older product") && err.contains("inkentry import"),
+            "stamp {stamp}: the refusal must name the crossing, got: {err}"
+        );
+        assert!(
+            !err.contains("upgrade inkentry"),
+            "stamp {stamp}: telling the user to upgrade is the opposite of the truth, \
+             and no build exists that would open this: {err}"
+        );
+    }
 }
 
 #[test]
@@ -263,7 +326,10 @@ fn a_store_from_a_future_build_is_refused() {
         let store = MemoryStore::open(&path).unwrap();
         store
             .conn
-            .execute_batch("PRAGMA user_version = 99")
+            .execute_batch(&format!(
+                "PRAGMA user_version = {}",
+                super::MEMORY_SCHEMA_VERSION + 1
+            ))
             .unwrap();
     }
     let err = match MemoryStore::open(&path) {
