@@ -65,9 +65,22 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # Shared with the openapi-snapshot job below, which builds the same
+          # workspace on the same runner. Deliberately NOT shared with the test
+          # job: this builds `--features rich-formats` under
+          # CARGO_PROFILE_DEV_DEBUG=0 and the test job builds default features
+          # under CARGO_PROFILE_TEST_DEBUG=0, so one `target/` would have each
+          # invalidating the other's artifacts on every run — costing more than
+          # the ~1 GiB the duplication takes.
+          #
+          # Carries the same `-v3` generation marker as the test job's key so
+          # both can be abandoned in lockstep. A cache has had to be abandoned
+          # wholesale twice (v1 -> v2 for poisoned macOS native-embedder caches,
+          # v2 -> v3 for stale candle artifacts) and this key had no marker to
+          # bump either time.
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v3-
 
       - name: Disk usage (after cache restore)
         run: df -h
@@ -308,9 +321,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # Shared with the Check & Lint job above; see the comment on its key.
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v3-
 
       - name: Generate OpenAPI spec
         run: cargo run -p inkentry-server -- --print-openapi > /tmp/openapi-generated.json

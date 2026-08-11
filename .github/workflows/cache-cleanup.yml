@@ -1,0 +1,88 @@
+name: Cache cleanup
+
+# GitHub Actions gives a repository 10 GiB of cache and evicts least-recently-
+# used entries once it is over. Eviction is not free here: a leg whose cache is
+# gone rebuilds the whole dependency tree, which turns into a run that is
+# uniformly slower rather than a test that fails — the shape of ^347.
+#
+# The repo hit 11.38 GiB on 2026-08-11, with the Windows entry (1.85 GiB) the
+# largest single item in it and so the most attractive eviction target, on the
+# one leg already known to be running out of time. Pruning by hand brought it to
+# 5.57 GiB, but that is a reprieve rather than a fix, because of how it
+# accumulates:
+#
+#   - every Cargo.lock change mints a fresh cache per leg, and with four legs
+#     that is ~5.2 GiB (1.85 Windows + 1.40 macOS + 0.99 + 0.97 Linux), so two
+#     lockfile bumps in flight are enough to go back over;
+#   - a cache written by a pull request is scoped to that PR's merge ref, and
+#     GitHub keeps it for seven days after the PR closes even though nothing can
+#     read it once the branch is gone. On a repo with stacked PRs that is the
+#     larger of the two accumulators.
+#
+# This workflow removes the second one on the same day rather than the seventh.
+# Superseded-lockfile entries are left to GitHub's own LRU: they stay readable
+# through `restore-keys` prefix matching until something newer displaces them,
+# so deleting them early costs a cold run for no gain.
+
+on:
+  pull_request:
+    types: [closed]
+  # Manual sweep, for when a burst of merges has left the repo near the ceiling
+  # and waiting for the next PR to close is not soon enough.
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Prune caches for the closed PR
+    runs-on: ubuntu-latest
+    permissions:
+      # Deleting a cache is an Actions write, and it is the only write any job
+      # in this repo takes.
+      actions: write
+    timeout-minutes: 5
+    steps:
+      - name: Delete caches scoped to this PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -euo pipefail
+
+          # `--jq` on the paginated endpoint, not `gh cache list`: the ref of an
+          # entry is what selects it here, and the REST shape is stable.
+          ids=$(gh api --paginate \
+            "/repos/$REPO/actions/caches" \
+            --jq ".actions_caches[] | select(.ref == \"$REF\") | .id")
+
+          if [ -z "$ids" ]; then
+            echo "No caches scoped to $REF."
+            exit 0
+          fi
+
+          for id in $ids; do
+            # Keep going on a failure. A cache can be deleted between the list
+            # and the delete (a concurrent run of this workflow, or GitHub's own
+            # eviction), and that race is not a reason to fail the job.
+            if gh api --method DELETE "/repos/$REPO/actions/caches/$id" >/dev/null 2>&1; then
+              echo "deleted $id"
+            else
+              echo "could not delete $id (already gone?)"
+            fi
+          done
+
+      - name: Report usage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The usage endpoint is eventually consistent and lags deletions by
+          # minutes, so count the listing instead: that is the authority.
+          gh api --paginate "/repos/$REPO/actions/caches" \
+            --jq '.actions_caches[] | .size_in_bytes' \
+            | awk '{ n++; total += $1 }
+                   END { printf "%d caches, %.2f GiB of 10 GiB\n", n, total/1073741824 }'
