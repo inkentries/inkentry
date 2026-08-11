@@ -37,6 +37,14 @@
 # the current name breaks regeneration in ways that surface much later, as a
 # corpus that no longer matches MANIFEST.json.
 #
+# Which vocabulary a release speaks is a property OF THAT RELEASE, not of this
+# script: v0.9.8 is the first release built under the current name, and it is
+# published from a different repository under different asset names, ships a
+# differently-named binary, and reads INKENTRY_* rather than SPELUNK_*.
+# `release_repo` and `release_name` below are the single place that boundary is
+# encoded; every site that touches a released binary asks them rather than
+# hardcoding either name.
+#
 # The CI job that consumes the corpus needs none of this. It reads the
 # checked-in fixtures only.
 #
@@ -47,7 +55,8 @@
 
 set -euo pipefail
 
-REPO_SLUG="spelunk-cloud/spelunk"
+LEGACY_REPO_SLUG="spelunk-cloud/spelunk"
+CURRENT_REPO_SLUG="inkentries/inkentry"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CORPUS_DIR="$REPO_ROOT/crates/inkentry-cli/tests/fixtures/upgrade-corpus"
@@ -59,9 +68,11 @@ STUB="$SCRIPT_DIR/embed_stub.py"
 STUB_PORT="${INKENTRY_CORPUS_STUB_PORT:-7799}"
 
 # An old binary predates the file secret-store default and would otherwise
-# reach the OS keychain and block on an interactive prompt. Old name: this is
-# the variable those releases read.
+# reach the OS keychain and block on an interactive prompt. Both spellings are
+# exported because the releases captured here straddle the rename and each one
+# reads only its own.
 export SPELUNK_SECRET_STORE=file
+export INKENTRY_SECRET_STORE=file
 
 # Pinned so git-level metadata is not a source of churn between regeneration
 # runs. This does not make a wing byte-reproducible: note ids are epoch millis
@@ -83,14 +94,60 @@ export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 # that wrote FLOAT[768] vectors. v0.9.3 is the last before memory entries grew
 # a content-addressed entity_id. v0.7.1 wrote one JSON object per note and
 # overwrote it on each add, the era before the ref became an append-only log.
+#
+# The list has to reach the STAMPED era too, and for four releases it did not:
+# every wing above was captured at user_version 0, so nothing here had ever
+# opened a store whose header carries a version at all — a hole that a defect
+# walked straight through, since the stamped path is the one every user is on.
+# What a stamp decides differs by store. index.db trusts the header, skips
+# `infer_legacy_version`, and runs only the steps above it. memory.db no longer
+# migrates at all, and the stamp decides which of the two refusals the user is
+# handed. The boundaries in that era:
+#
+#   v0.9.4  last release writing index.db at user_version 14, before `files`
+#           grew an mtime column; two steps below the current build, so the
+#           runner has to resume mid-ladder from a header it trusts.
+#   v0.9.8  newest release, index.db at 15 — the shape sitting in almost every
+#           project directory in use today.
+#   v0.9.6  the one and only release writing memory.db at user_version 9, the
+#           last before entries grew import state.
+#   v0.9.8  memory.db at 10, the highest stamp any release ever wrote and so the
+#           store most users are holding. This build stamps 11 and refuses
+#           everything at or below 10, which makes this the wing that shows the
+#           refusal firing where it will be met most often — and naming the
+#           version it found, rather than telling the user to upgrade to a build
+#           that cannot exist.
+#
+# v0.9.7 gets no wing: it stamps 15/10, exactly what v0.9.8 already provides for
+# both stores. This is a list of boundaries, not a list of releases.
 WINGS=(
   "index-v0.8.3-float768|v0.8.3|index"
   "index-v0.9.2-pre-user-version|v0.9.2|index"
+  "index-v0.9.4-pre-file-mtime|v0.9.4|index"
+  "index-v0.9.8|v0.9.8|index"
   "memory-v0.9.3-pre-entity-id|v0.9.3|memory"
   "memory-v0.9.5|v0.9.5|memory"
+  "memory-v0.9.6-pre-import-state|v0.9.6|memory"
+  "memory-v0.9.8|v0.9.8|memory"
   "registry-v0.9.5|v0.9.5|registry"
   "git-notes-eras|v0.9.5|git-notes"
 )
+
+# Which repository published a release, and the name that release spells
+# itself with. See A NOTE ON NAMES above: v0.9.8 is where this flips.
+release_repo() {
+  case "$1" in
+    v0.9.8) echo "$CURRENT_REPO_SLUG" ;;
+    *) echo "$LEGACY_REPO_SLUG" ;;
+  esac
+}
+
+release_name() {
+  case "$1" in
+    v0.9.8) echo "inkentry" ;;
+    *) echo "spelunk" ;;
+  esac
+}
 
 # Wire shape and dimension the stub must speak for a given release.
 stub_profile() {
@@ -125,17 +182,20 @@ log() { echo "==> $*"; }
 # checksum. An unpinned asset is a hard stop, not a warning: the corpus is only
 # evidence about a real release if the bytes are the ones that release shipped.
 fetch_release() {
-  local tag="$1" triple asset dest actual expected
+  local tag="$1" triple asset dest actual expected name slug
   triple="$(host_triple)"
-  # Old name: the published filename of an already-shipped release.
-  asset="spelunk-${tag}-${triple}.tar.gz"
+  name="$(release_name "$tag")"
+  slug="$(release_repo "$tag")"
+  # The published filename of an already-shipped release, spelled the way that
+  # release spelled itself.
+  asset="${name}-${tag}-${triple}.tar.gz"
   dest="$CACHE_DIR/$asset"
 
   if [[ ! -f "$dest" ]]; then
     mkdir -p "$CACHE_DIR"
-    gh release download "$tag" --repo "$REPO_SLUG" --pattern "$asset" \
+    gh release download "$tag" --repo "$slug" --pattern "$asset" \
       --dir "$CACHE_DIR" --clobber \
-      || die "could not download $asset from $REPO_SLUG $tag"
+      || die "could not download $asset from $slug $tag"
   fi
 
   actual="$(shasum -a 256 "$dest" | awk '{print $1}')"
@@ -154,14 +214,15 @@ EOF
   [[ "$actual" == "$expected" ]] \
     || die "$asset checksum mismatch: expected $expected, got $actual"
 
-  # Old name: the executable inside an already-shipped tarball.
+  # The executable inside an already-shipped tarball carries that release's
+  # own name, which is not necessarily the current one.
   local unpacked="$CACHE_DIR/$tag"
-  if [[ ! -x "$unpacked/spelunk" ]]; then
+  if [[ ! -x "$unpacked/$name" ]]; then
     mkdir -p "$unpacked"
     tar xzf "$dest" -C "$unpacked"
   fi
-  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no CLI binary"
-  echo "$unpacked/spelunk"
+  [[ -x "$unpacked/$name" ]] || die "$asset contains no CLI binary named $name"
+  echo "$unpacked/$name"
 }
 
 # ── sample repo ─────────────────────────────────────────────────────────────
@@ -223,20 +284,22 @@ trap stop_stub EXIT
 # binary demand a project_id for any memory write, which the git-notes wing does
 # not have and does not need: note records are plain JSON, no embedding involved.
 #
-# Old names throughout: the config directory and the two overrides are the ones
-# the released binaries resolve. Pointing them at the current name would leave
-# the old binary reading the real HOME this function exists to isolate it from.
+# The config directory and the two overrides are spelled with the CAPTURING
+# RELEASE's name, which is why `name` is a parameter rather than a constant:
+# spelling them any other way leaves that binary reading the real HOME this
+# function exists to isolate it from.
 sandbox_env() {
-  local home="$1" want_server="${2:-server}"
-  mkdir -p "$home/.config/spelunk"
+  local home="$1" name="$2" want_server="${3:-server}" prefix
+  prefix="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+  mkdir -p "$home/.config/$name"
   if [[ "$want_server" == "server" ]]; then
-    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/spelunk/config.toml"
+    printf 'server_url = "http://127.0.0.1:%s"\n' "$STUB_PORT" > "$home/.config/$name/config.toml"
   else
-    : > "$home/.config/spelunk/config.toml"
+    : > "$home/.config/$name/config.toml"
   fi
   export HOME="$home"
-  export SPELUNK_CONFIG_DIR="$home/.config/spelunk"
-  export SPELUNK_REGISTRY_DIR="$home/.config/spelunk"
+  export "${prefix}_CONFIG_DIR=$home/.config/$name"
+  export "${prefix}_REGISTRY_DIR=$home/.config/$name"
 }
 
 # Fold the write-ahead log back into the main file and store the result gzipped.
@@ -256,20 +319,21 @@ stage_db() {
 
 build_index_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
-  local bin dim wire
+  local bin dim wire name
   bin="$(fetch_release "$tag")"
+  name="$(release_name "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"
   start_stub "$dim" "$wire"
 
   local home="$work/home" repo="$work/repo"
   mkdir -p "$home"
   make_sample_repo "$repo"
-  ( sandbox_env "$home"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
+  ( sandbox_env "$home" "$name"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
   stop_stub
 
-  # Old name: the project directory the released binary writes into.
-  [[ -f "$repo/.spelunk/index.db" ]] || die "$tag produced no index.db"
-  stage_db "$repo/.spelunk/index.db" "$out/index.db.gz"
+  # The project directory the released binary writes into, under its own name.
+  [[ -f "$repo/.$name/index.db" ]] || die "$tag produced no index.db"
+  stage_db "$repo/.$name/index.db" "$out/index.db.gz"
 }
 
 # Add one entry and echo the id the binary assigned it, parsed from the
@@ -284,8 +348,9 @@ add_memory_entry() {
 
 build_memory_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
-  local bin dim wire
+  local bin dim wire name
   bin="$(fetch_release "$tag")"
+  name="$(release_name "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"
   start_stub "$dim" "$wire"
 
@@ -293,7 +358,7 @@ build_memory_wing() {
   mkdir -p "$home"
   make_sample_repo "$repo"
   (
-    sandbox_env "$home"
+    sandbox_env "$home" "$name"
     cd "$repo"
     "$bin" init >/dev/null 2>&1 || true
     # Entry ids are assigned by the binary (epoch millis on 0.9.x), so they
@@ -324,8 +389,9 @@ build_memory_wing() {
 
 build_registry_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
-  local bin dim wire
+  local bin dim wire name
   bin="$(fetch_release "$tag")"
+  name="$(release_name "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"
   start_stub "$dim" "$wire"
 
@@ -334,15 +400,15 @@ build_registry_wing() {
   make_sample_repo "$primary"
   make_sample_repo "$library"
   (
-    sandbox_env "$home"
+    sandbox_env "$home" "$name"
     cd "$library" && "$bin" index . --force --no-summaries >/dev/null
     cd "$primary" && "$bin" index . --force --no-summaries >/dev/null
     cd "$primary" && "$bin" link "$library" >/dev/null
   )
   stop_stub
 
-  # Old name, matching sandbox_env above.
-  local reg="$home/.config/spelunk/registry.db"
+  # Matching sandbox_env above, under the capturing release's own name.
+  local reg="$home/.config/$name/registry.db"
   [[ -f "$reg" ]] || die "$tag produced no registry.db"
   stage_db "$reg" "$out/registry.db.gz"
 }
@@ -372,14 +438,15 @@ build_git_notes_wing() {
              "v0.9.3|JSON lines era without entity ids|2" \
              "v0.9.5|entity keyed event log era|2"; do
     IFS='|' read -r era_tag era_title era_entries <<<"$era"
-    local bin
+    local bin era_name
     bin="$(fetch_release "$era_tag")"
+    era_name="$(release_name "$era_tag")"
     # A fresh commit per era, so this era's writer cannot clobber the last.
     echo "// $era_title" >> "$repo/src/lib.rs"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m "$era_title"
     (
-      sandbox_env "$home" no-server
+      sandbox_env "$home" "$era_name" no-server
       cd "$repo"
       local n
       for n in $(seq 1 "$era_entries"); do
@@ -390,9 +457,18 @@ build_git_notes_wing() {
     )
   done
 
-  # Old names: the ref the released binaries write, and the body text they
-  # record, both of which MANIFEST.json asserts against verbatim.
-  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all refs/notes/spelunk
+  # Bundle whichever notes ref the era binaries actually wrote rather than a
+  # hardcoded one: today all three eras pre-date the rename and write
+  # refs/notes/spelunk, and a post-rename era added later would write another
+  # ref and otherwise be silently left out of the bundle. The ref name and the
+  # body text the old binaries record are both asserted verbatim by
+  # MANIFEST.json, so neither may be modernised.
+  local note_refs=() ref
+  while IFS= read -r ref; do
+    note_refs+=("$ref")
+  done < <(git -C "$repo" for-each-ref --format='%(refname)' refs/notes/)
+  [[ ${#note_refs[@]} -gt 0 ]] || die "the era binaries wrote no refs/notes/* ref"
+  git -C "$repo" bundle create --quiet "$out/notes.bundle" --all "${note_refs[@]}"
 }
 
 # ── driver ──────────────────────────────────────────────────────────────────

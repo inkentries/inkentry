@@ -12,6 +12,16 @@ Vector tables are vec0 virtual tables, which a plain sqlite3 cannot query, so
 row counts come from the `<table>_rowids` shadow table the extension maintains.
 
 Usage: capture_expect.py <wings-dir> <manifest-path> <wing-id|tag|kind>...
+       capture_expect.py <wings-dir> <manifest-path> --refresh
+
+`--refresh` re-reads every wing already checked in and rewrites its
+expectations from the artifact on disk. It exists so a newly recorded
+expectation can be filled in for the older wings without regenerating them:
+regeneration is not byte-reproducible (entry ids are epoch millis, created_at
+is wall-clock), so rebuilding a wing to add a field would churn its bytes and
+its sha256 for no reason. A refresh reads the same bytes the same way, so
+every value it writes — including the digest — comes out unchanged apart from
+the field being added.
 """
 
 import contextlib
@@ -66,6 +76,17 @@ def scalar(conn, sql, default=0):
     return row[0] if row and row[0] is not None else default
 
 
+def user_version(conn):
+    """The schema version stamped in the file header by the capturing release.
+
+    0 means the release pre-dates the stamp on that ladder, and the current
+    build has to infer the version from table shapes instead of trusting the
+    header. Which of the two paths a wing exercises is not visible in any row
+    count, so it is recorded rather than re-derived.
+    """
+    return scalar(conn, "PRAGMA user_version")
+
+
 def table_sql(conn, name):
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)
@@ -93,6 +114,7 @@ def index_expect(path):
             fts_query = words[0]
 
     expect = {
+        "schema_version": user_version(conn),
         "file_count": scalar(conn, "SELECT count(*) FROM files"),
         "chunk_count": scalar(conn, "SELECT count(*) FROM chunks"),
         "embedding_count": scalar(conn, "SELECT count(*) FROM embeddings_rowids"),
@@ -142,6 +164,7 @@ def memory_expect(path):
     columns = [r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()]
 
     expect = {
+        "schema_version": user_version(conn),
         "note_count": len(notes),
         "active_note_count": sum(1 for n in notes if n[2] == "active"),
         "archived_title": archived[1] if archived else "",
@@ -178,25 +201,37 @@ def git_notes_expect(path):
         subprocess.run(
             ["git", "clone", "--quiet", path, repo], check=True, capture_output=True
         )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                repo,
-                "fetch",
-                "--quiet",
-                "origin",
-                "refs/notes/inkentry:refs/notes/inkentry",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        listing = subprocess.run(
-            ["git", "-C", repo, "notes", "--ref=inkentry", "list"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
+        # `git clone` of a bundle brings the branches but leaves notes behind:
+        # refs/notes/* is outside the default refspec. Which ref they are on is
+        # a property of the binaries that wrote them, and the bundle in the
+        # corpus was written by releases that pre-date the rename — so the ref
+        # is read off the bundle rather than assumed. Naming the current
+        # project's ref here is what silently broke recapture of this wing.
+        refs = [
+            line.split()[1]
+            for line in subprocess.run(
+                ["git", "ls-remote", "--refs", path, "refs/notes/*"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            if line.strip()
+        ]
+        if not refs:
+            raise SystemExit(f"{path} carries no refs/notes/* ref to read")
+        listing = ""
+        for ref in refs:
+            subprocess.run(
+                ["git", "-C", repo, "fetch", "--quiet", "origin", f"{ref}:{ref}"],
+                check=True,
+                capture_output=True,
+            )
+            listing += subprocess.run(
+                ["git", "-C", repo, "notes", f"--ref={ref}", "list"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
         # Keyed by the record id the writing binary assigned, not by title.
         # A released binary really does repeat a line in its log (0.9.3 writes
         # each entry twice), so the number of distinct entries a reader owes
@@ -243,6 +278,25 @@ ARTIFACTS = {
 }
 
 
+def record(wings_dir, wing_id, tag, kind):
+    artifact, reader = ARTIFACTS[kind]
+    path = os.path.join(wings_dir, wing_id, artifact)
+    with unpacked(path) as readable:
+        expect = reader(readable)
+    return {
+        "id": wing_id,
+        "producer": tag.lstrip("v"),
+        "kind": kind,
+        "artifact": artifact,
+        # checksums.txt pins the release binaries, which says nothing about
+        # the artifacts. This pins the artifacts, so a wing that changes
+        # without its expectations being recaptured is a test failure
+        # rather than something a reviewer has to notice in a binary diff.
+        "sha256": sha256(path),
+        "expect": expect,
+    }
+
+
 def main():
     wings_dir, manifest_path = sys.argv[1], sys.argv[2]
     built = sys.argv[3:]
@@ -253,24 +307,14 @@ def main():
             for wing in json.load(fh).get("wings", []):
                 existing[wing["id"]] = wing
 
+    if built == ["--refresh"]:
+        built = [
+            f"{w['id']}|{w['producer']}|{w['kind']}" for w in existing.values()
+        ]
+
     for entry in built:
         wing_id, tag, kind = entry.split("|")
-        artifact, reader = ARTIFACTS[kind]
-        path = os.path.join(wings_dir, wing_id, artifact)
-        with unpacked(path) as readable:
-            expect = reader(readable)
-        existing[wing_id] = {
-            "id": wing_id,
-            "producer": tag.lstrip("v"),
-            "kind": kind,
-            "artifact": artifact,
-            # checksums.txt pins the release binaries, which says nothing about
-            # the artifacts. This pins the artifacts, so a wing that changes
-            # without its expectations being recaptured is a test failure
-            # rather than something a reviewer has to notice in a binary diff.
-            "sha256": sha256(path),
-            "expect": expect,
-        }
+        existing[wing_id] = record(wings_dir, wing_id, tag, kind)
 
     manifest = {
         "schema": SCHEMA,

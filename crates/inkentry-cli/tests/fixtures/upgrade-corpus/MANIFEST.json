@@ -46,6 +46,7 @@
         "fts_expect_path": "README.md",
         "fts_query": "corpus",
         "graph_edge_count": 23,
+        "schema_version": 0,
         "vector_storage": "float768"
       },
       "id": "index-v0.8.3-float768",
@@ -62,12 +63,47 @@
         "fts_expect_path": "README.md",
         "fts_query": "corpus",
         "graph_edge_count": 23,
+        "schema_version": 0,
         "vector_storage": "int8"
       },
       "id": "index-v0.9.2-pre-user-version",
       "kind": "index",
       "producer": "0.9.2",
       "sha256": "ffb9e7a988a5c6d0054735824fa4401fa0ccc1f11d21c83263f3e8d903eab9ae"
+    },
+    {
+      "artifact": "index.db.gz",
+      "expect": {
+        "chunk_count": 3,
+        "embedding_count": 3,
+        "file_count": 2,
+        "fts_expect_path": "README.md",
+        "fts_query": "corpus",
+        "graph_edge_count": 23,
+        "schema_version": 14,
+        "vector_storage": "int8"
+      },
+      "id": "index-v0.9.4-pre-file-mtime",
+      "kind": "index",
+      "producer": "0.9.4",
+      "sha256": "a03976646cdbc5d79f6d502746e2fab435cb766558f13d8dc0a2977bd30e2c5d"
+    },
+    {
+      "artifact": "index.db.gz",
+      "expect": {
+        "chunk_count": 3,
+        "embedding_count": 3,
+        "file_count": 2,
+        "fts_expect_path": "README.md",
+        "fts_query": "corpus",
+        "graph_edge_count": 22,
+        "schema_version": 15,
+        "vector_storage": "int8"
+      },
+      "id": "index-v0.9.8",
+      "kind": "index",
+      "producer": "0.9.8",
+      "sha256": "5b66c54a7bf2e3ed104e4c2af6b45da154f76ca0ad37080bdacbc41636b8ccb8"
     },
     {
       "artifact": "memory.db.gz",
@@ -78,6 +114,7 @@
         "memory_fts_query": "Supersedes",
         "note_count": 4,
         "note_vector_count": 4,
+        "schema_version": 0,
         "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
         "superseded_title": "Chunk with tree-sitter named nodes"
       },
@@ -95,6 +132,7 @@
         "memory_fts_query": "Supersedes",
         "note_count": 4,
         "note_vector_count": 4,
+        "schema_version": 0,
         "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
         "superseded_title": "Chunk with tree-sitter named nodes"
       },
@@ -102,6 +140,42 @@
       "kind": "memory",
       "producer": "0.9.5",
       "sha256": "2bb5198402ca2e783cf9de0c1c6ba2f7ebcfc8c72c5c904e024db3b962fa6536"
+    },
+    {
+      "artifact": "memory.db.gz",
+      "expect": {
+        "active_note_count": 2,
+        "archived_title": "Retired plan for a separate vector store",
+        "entity_id_present": true,
+        "memory_fts_query": "Supersedes",
+        "note_count": 4,
+        "note_vector_count": 4,
+        "schema_version": 9,
+        "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
+        "superseded_title": "Chunk with tree-sitter named nodes"
+      },
+      "id": "memory-v0.9.6-pre-import-state",
+      "kind": "memory",
+      "producer": "0.9.6",
+      "sha256": "0995c0b130ae6698d6d19cb9e3d241583c2ad44ce08da05fba476c64fab1d4ce"
+    },
+    {
+      "artifact": "memory.db.gz",
+      "expect": {
+        "active_note_count": 2,
+        "archived_title": "Retired plan for a separate vector store",
+        "entity_id_present": true,
+        "memory_fts_query": "Supersedes",
+        "note_count": 4,
+        "note_vector_count": 4,
+        "schema_version": 10,
+        "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
+        "superseded_title": "Chunk with tree-sitter named nodes"
+      },
+      "id": "memory-v0.9.8",
+      "kind": "memory",
+      "producer": "0.9.8",
+      "sha256": "5dcdecde22c4084dafbc7addbf4ea7bb83b2a18ac2258d4eab0ca569c86fb3a0"
     },
     {
       "artifact": "registry.db.gz",

@@ -105,10 +105,25 @@ scripts/upgrade-corpus/                                   the generator
 .github/workflows/upgrade-corpus.yml                      CI job
 ```
 
-Six wings, all produced by actual releases, covering the pre-`user_version`
-`index.db` whose version has to be inferred from its table shapes, a real
-`FLOAT[768]` vector table, memory stores either side of the entity-id backfill,
-a registry with a dependency link, and all three git-notes eras on one ref.
+Ten wings, all produced by actual releases, covering the pre-`user_version`
+`index.db` whose version has to be inferred from its table shapes, an `index.db`
+stamped mid-ladder and one at the newest release's version, a real `FLOAT[768]`
+vector table, memory stores either side of the entity-id backfill and at the
+highest stamp any release ever wrote, a registry with a dependency link, and all
+three git-notes eras on one ref.
+
+The two stores are asserted against different contracts, because they behave
+differently: an `index.db` migrates in place and must land on the version a
+fresh install produces with its rows intact, while a `memory.db` from the older
+product is refused rather than opened — this build stamps 11 and everything at
+or below 10 has to cross via export and `inkentry import` (ADR-078).
+
+The wing list is change-boundary driven — one wing per "last release before X
+changed" — and it once stopped advancing without anything noticing, leaving the
+stamped-store path uncovered for four releases while the suite stayed green.
+`a_schema_version_that_advances_past_the_corpus_fails_here` now fails when
+either store's schema version moves past what the corpus covers, and separately
+when the wing at the highest released memory stamp goes missing.
 
 ```sh
 INKENTRY_SECRET_STORE=file cargo test -p inkentry-cli --test upgrade_corpus

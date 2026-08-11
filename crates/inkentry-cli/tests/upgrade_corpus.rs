@@ -52,6 +52,14 @@ struct Wing {
 
 #[derive(Debug, Default, Deserialize)]
 struct Expect {
+    // `PRAGMA user_version` as the capturing release left it. 0 marks a wing
+    // from before anything stamped that store; anything higher is a wing whose
+    // header a current build can read. The distinction decides what happens to
+    // the artifact — which index migrations run, and which of the two memory
+    // refusals the user is given — and no row count reveals it, which is why
+    // the corpus records it.
+    #[serde(default)]
+    schema_version: i32,
     #[serde(default)]
     file_count: i64,
     #[serde(default)]
@@ -143,6 +151,13 @@ fn fresh_index_schema_version() -> i32 {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("fresh.db");
     Database::open(&path).expect("opening fresh index db");
+    read_user_version(&raw(&path))
+}
+
+fn fresh_memory_schema_version() -> i32 {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("fresh-memory.db");
+    MemoryStore::open(&path).expect("opening fresh memory db");
     read_user_version(&raw(&path))
 }
 
@@ -247,6 +262,203 @@ fn unbundle(bundle: &Path, into: &Path) {
     assert!(status.success(), "fetching notes ref failed");
 }
 
+// ── The corpus has to keep up with both stores ──────────────────────────────
+//
+// `index.db` climbs a migration ladder and `memory.db` no longer does, but the
+// two are the same shape of problem here: each is gated by one version
+// constant, each advances by editing it, and nothing used to connect either
+// edit to this corpus. So the wing list stopped at the last release before
+// `user_version` existed and stayed there while four more releases shipped:
+// every wing was captured at version 0, no wing had ever exercised the stamped
+// path, and the suite went on passing, because a suite can only test the wings
+// it has. A stamped store is not an edge case — after those four releases it is
+// what every user has.
+//
+// The numbers below are an acknowledgement, not a derivation. Deriving them
+// from the crate constants would make the check tautological. Deriving them
+// from the wings would make it fail permanently whenever the build legitimately
+// runs ahead of the newest release — which is where both sit: index.db is at 16
+// against a newest release of 15, and memory.db is at 11 against a released
+// range that ends, permanently, at 10.
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 16;
+const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 11;
+
+// The highest `user_version` any released binary stamped into a `memory.db`
+// (0.9.6 wrote 9; 0.9.7 and 0.9.8 wrote 10). Unlike the constant above, this
+// one is finished: the product that wrote those stamps has shipped its last
+// release, so no artifact can ever carry a higher one. The corpus has to hold a
+// wing at exactly this stamp, because that is the store most users are holding
+// when they first meet the refusal — and nothing else here would notice if it
+// were dropped, since the older stamped wing satisfies every other check.
+const NEWEST_RELEASED_MEMORY_STAMP: i32 = 10;
+
+fn newest_wing<'a>(m: &'a Manifest, kind: &str) -> &'a Wing {
+    wings_of_kind(m, kind)
+        .into_iter()
+        .max_by_key(|w| w.expect.schema_version)
+        .unwrap_or_else(|| panic!("the corpus has no {kind} wing"))
+}
+
+// One store's coverage claim: the version last checked, what to do when the
+// build moves past it, and what each of its two capture eras is there to
+// exercise. The remedies differ because the stores do: an index.db behind the
+// releases is fixed by capturing a newer one, and a memory.db never can be.
+struct StoreCoverage {
+    store: &'static str,
+    kind: &'static str,
+    constant: &'static str,
+    current: i32,
+    covered: i32,
+    remedy: String,
+    stamped_route: &'static str,
+    unstamped_route: &'static str,
+    // Only set where the released range is closed, so a fixed stamp is a
+    // requirement rather than a moving target.
+    newest_released_stamp: Option<i32>,
+}
+
+// This tripwire lives in the corpus test rather than in a file of its own or a
+// CI step, for three reasons. It reads the manifest and probes a fresh
+// database, which is this file's machinery and nothing else's. It has to fire
+// in the same run as the tests it protects: the moment worth interrupting is
+// the one where someone bumps a schema constant and runs this suite, not a
+// separate CI stage they read later with the reasoning gone. And it needs no
+// CI wiring to reach the pull requests that matter, because
+// .github/workflows/upgrade-corpus.yml already runs this suite on any change
+// under crates/inkentry-core/src/storage/ — which is where both constants live.
+#[test]
+#[serial_test::serial]
+fn a_schema_version_that_advances_past_the_corpus_fails_here() {
+    register_sqlite_vec();
+    let m = manifest();
+
+    let index_newest = newest_wing(&m, "index");
+    let memory_newest = newest_wing(&m, "memory");
+    let index_current = fresh_index_schema_version();
+    let memory_current = fresh_memory_schema_version();
+
+    for store in [
+        StoreCoverage {
+            store: "index.db",
+            kind: "index",
+            constant: "CORPUS_COVERS_INDEX_SCHEMA",
+            current: index_current,
+            covered: CORPUS_COVERS_INDEX_SCHEMA,
+            remedy: format!(
+                "1. If a release has shipped that writes user_version above {stamp}, the \
+                 corpus is genuinely behind. Add a wing for it: append to the WINGS table in \
+                 scripts/upgrade-corpus/generate.sh, put the boundary reasoning in the \
+                 comment above that table, pin the release asset in \
+                 scripts/upgrade-corpus/checksums.txt, and re-run the script.\n\
+                 \n\
+                 2. If no release writes that version yet, then no artifact can exist for it, \
+                 and `{wing}` is still the newest index a user can be holding. Check that \
+                 opening it with this build lands on {current} and keeps its rows — the tests \
+                 in this file do exactly that — and record the new version.",
+                stamp = index_newest.expect.schema_version,
+                wing = index_newest.id,
+                current = index_current,
+            ),
+            stamped_route: "the route a current field database takes: its header is trusted \
+                            and only the migration steps above it run",
+            unstamped_route: "the route where the version has to be inferred from table \
+                              shapes because nothing stamped it",
+            newest_released_stamp: None,
+        },
+        StoreCoverage {
+            store: "memory.db",
+            kind: "memory",
+            constant: "CORPUS_COVERS_MEMORY_SCHEMA",
+            current: memory_current,
+            covered: CORPUS_COVERS_MEMORY_SCHEMA,
+            remedy: format!(
+                "No new wing can answer this one. The product that stamped memory.db below \
+                 this build has shipped its last release, so {stamp} is the highest stamp any \
+                 artifact will ever carry and `{wing}` stays the newest store a user can be \
+                 holding.\n\
+                 \n\
+                 What moved is this build's own shape — and that is the boundary the refusal \
+                 is drawn at. Check that every memory wing is still refused, still names the \
+                 way across, and is still left with its rows intact \
+                 (`every_memory_wing_is_refused_rather_than_opened_in_place` does exactly \
+                 that), then record the new version.\n\
+                 \n\
+                 If a wing has started opening instead, do not record it. A store from the \
+                 older product has just been opened in place over rows whose identity, \
+                 supersede column and edge endpoints are every one of them a different shape.",
+                stamp = memory_newest.expect.schema_version,
+                wing = memory_newest.id,
+            ),
+            stamped_route: "the refusal that reads a stamp and can tell the user which \
+                            version it found",
+            unstamped_route: "the refusal that has only the tables to go on, because the \
+                              store predates the stamp entirely",
+            newest_released_stamp: Some(NEWEST_RELEASED_MEMORY_STAMP),
+        },
+    ] {
+        let StoreCoverage {
+            store: name,
+            kind,
+            constant,
+            current,
+            covered,
+            remedy,
+            stamped_route,
+            unstamped_route,
+            newest_released_stamp,
+        } = store;
+        let newest = newest_wing(&m, kind);
+
+        assert_eq!(
+            current,
+            covered,
+            "\n\
+             The {name} schema version is now {current}. The upgrade corpus was last checked \
+             against version {covered}.\n\
+             \n\
+             Its newest {kind} wing is `{wing}`, produced by release {producer}, whose store \
+             was captured stamped at user_version {stamp}. Nothing in this corpus was written \
+             by a binary that knows about version {current}.\n\
+             \n\
+             Do this, then set {constant} in {file} to {current}:\n\
+             \n\
+             {remedy}\n\
+             \n\
+             Do not delete this assertion. It is the only thing that notices when the corpus \
+             stops covering the versions users actually have.\n",
+            wing = newest.id,
+            producer = newest.producer,
+            stamp = newest.expect.schema_version,
+            file = "crates/inkentry-cli/tests/upgrade_corpus.rs",
+        );
+
+        // Both capture eras have to stay represented. Dropping either is how
+        // this coverage was lost the first time, and it is invisible in every
+        // other test here: the wings that remain all pass.
+        let wings = wings_of_kind(&m, kind);
+        assert!(
+            wings.iter().any(|w| w.expect.schema_version > 0),
+            "no {kind} wing was captured with a stamped user_version, so nothing exercises \
+             {stamped_route}"
+        );
+        assert!(
+            wings.iter().any(|w| w.expect.schema_version == 0),
+            "no {kind} wing was captured before anything stamped a version, so nothing \
+             exercises {unstamped_route}"
+        );
+
+        if let Some(released) = newest_released_stamp {
+            assert!(
+                wings.iter().any(|w| w.expect.schema_version == released),
+                "no {kind} wing is stamped at {released}, the highest version any release \
+                 ever wrote. That is the store most users are holding, and every other check \
+                 in this file is satisfied by the older stamped wing, so dropping it costs \
+                 the coverage silently"
+            );
+        }
+    }
+}
+
 // Criterion 1: every wing opens, migrates, and keeps its rows and content.
 
 #[test]
@@ -307,6 +519,20 @@ fn every_index_wing_migrates_with_its_rows_and_content_intact() {
     for wing in index_wings {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = checkout(wing, tmp.path());
+
+        // The era claim, checked before the upgrade can rewrite it. A wing
+        // recorded as unstamped that arrives already stamped (a fixture opened
+        // by a current build and committed back) exercises the trusted-header
+        // path while the manifest still says it covers the inference path, and
+        // every assertion below passes either way.
+        assert_eq!(
+            read_user_version(&raw(&db_path)),
+            wing.expect.schema_version,
+            "wing {}: the captured artifact is not stamped at the schema \
+             version it is recorded as",
+            wing.id
+        );
+
         let db = Database::open(&db_path)
             .unwrap_or_else(|e| panic!("opening wing {} with the current build: {e}", wing.id));
 
@@ -399,6 +625,13 @@ fn every_memory_wing_is_refused_rather_than_opened_in_place() {
             "wing {}: the captured artifact holds no entries, so refusing it proves nothing",
             wing.id
         );
+        assert_eq!(
+            read_user_version(&before),
+            wing.expect.schema_version,
+            "wing {}: the captured artifact is not stamped at the schema \
+             version it is recorded as",
+            wing.id
+        );
         drop(before);
 
         // Memory stores no longer climb a migration ladder: identity, the
@@ -417,6 +650,26 @@ fn every_memory_wing_is_refused_rather_than_opened_in_place() {
             "wing {}: the refusal must name the way across, got: {msg}",
             wing.id
         );
+
+        // A stamped store and an unstamped one reach the same refusal down
+        // different branches, and only the stamped branch can say which
+        // version it found. That number is the one thing distinguishing a
+        // store this product could once open from one it never could, so it
+        // has to reach the user rather than being computed and dropped.
+        if wing.expect.schema_version > 0 {
+            assert!(
+                msg.contains(&format!("schema version {}", wing.expect.schema_version)),
+                "wing {}: the refusal dropped the stamp it found, got: {msg}",
+                wing.id
+            );
+        } else {
+            assert!(
+                !msg.contains("schema version"),
+                "wing {}: the refusal claims a schema version for an artifact that \
+                 was never stamped, got: {msg}",
+                wing.id
+            );
+        }
 
         // Refused, not damaged: the artifact must still hold every entry it
         // arrived with, so the export half has something to read.
