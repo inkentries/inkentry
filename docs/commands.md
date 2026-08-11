@@ -331,12 +331,20 @@ improves multi-hop recall over raw KNN. `--only-text` needs no embedding model
 or server; it still runs over the full-text index, so it needs `inkentry init`
 first like every `search`.
 
-`--only-text` scores the query's words as **independent terms** (BM25): a
-multi-word query ranks chunks that contain the terms in **any order** — a chunk
-containing more of the terms ranks above one containing fewer — rather than
-requiring them to appear as one contiguous phrase. Matching is case-insensitive
-and not stemmed (`bursts` matches `bursts`, not `burst`), following the FTS
-tokenizer.
+Over the **code corpus**, `--only-text` scores the query's words as
+**independent terms** (BM25): a multi-word query ranks chunks that contain the
+terms in **any order** — a chunk containing more of the terms ranks above one
+containing fewer — rather than requiring them to appear as one contiguous
+phrase. Matching is case-insensitive and not stemmed (`bursts` matches `bursts`,
+not `burst`), following the FTS tokenizer.
+
+The **memory corpus** does not behave this way. Its text matcher quotes the
+whole query as a single FTS5 phrase, so a multi-word query matches only entries
+containing those words adjacent and in order: `"error handling"` matches, and
+`"handling error"` matches nothing. `memory timeline` shares that matcher. Text
+matching over memory is therefore a narrow exact tool, not a general way to
+reach an entry — reach for `memory list` or `context`, which take no query and
+so return entries regardless of wording, when a phrase would miss.
 
 `--graph` is the porcelain call-graph view: it appends the queried symbol's own
 chunk and its 1-hop callers/callees after the ranked results. For exact edges as
@@ -348,9 +356,19 @@ envelope naming the corpus it came from — exactly one of `code`/`memory`,
 matching `type`:
 
 ```json
-{"type":"code","fused_rank":1,"fused_score":0.91,"corpus_rank":1,"code":{"chunk_id":42,"file_path":"src/auth/middleware.rs","name":"validate_token","start_line":18,"end_line":54,"content":"...","score":0.88}}
-{"type":"memory","fused_rank":2,"fused_score":0.87,"corpus_rank":1,"memory":{"id":17,"kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"...","score":0.84}}
+{"type":"code","fused_rank":1,"fused_score":0.0163,"corpus_rank":1,"code":{"chunk_id":42,"file_path":"src/auth/middleware.rs","language":"rust","node_type":"function","name":"validate_token","start_line":18,"end_line":54,"content":"...","distance":0.41,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
+{"type":"memory","fused_rank":2,"fused_score":0.0163,"corpus_rank":1,"memory":{"id":17,"kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"...","tags":["storage"],"linked_files":[],"created_at":1786441691,"status":"active","distance":0.38}}
 ```
+
+Relevance is reported as `distance` (lower is better), not a score. `fused_score`
+is `1 / (RRF_K + corpus_rank)`, so it is a function of rank position only and its
+magnitude is not comparable to `distance`.
+
+`--graph` neighbours are appended **after** the ranked members with
+`fused_rank`, `fused_score` and `corpus_rank` all `null` and `code.from_graph`
+`true`; the same is true of the memory attachments `--expand-graph` and the
+cross-project pass bring in. A consumer that assumes every element carries a
+`fused_rank` will read `null` on those.
 
 **Example:**
 
@@ -487,9 +505,10 @@ AGENT=true inkentry context        # JSON for machine processing
 
 ## Graph queries (moved)
 
-The top-level `inkentry graph <symbol>` command has been removed; invoking it
-errors as an unknown subcommand. The code-graph capability now lives in two
-places:
+The top-level `inkentry graph <symbol>` command has been removed. Nothing is
+registered with clap and it does not appear in `--help`; invoking it exits `2`
+with a migration hint naming its two replacements. The code-graph capability now
+lives in those two places:
 
 - **Porcelain:** `inkentry search <symbol> --graph` appends the symbol's chunk
   and its 1-hop call-graph neighbours (imports, calls, extends/implements) after
@@ -975,9 +994,11 @@ local content, same as `memory add`.
 any entry in the set they are about to push that still lacks one. A note that misses both, added
 while the embedder was down and never pushed, or carried
 through the 768→896 embedding-dimension upgrade (which drops the old vectors),
-stays present-but-unembedded: still found by full-text `search`, `list`,
-`timeline`, and `context`, but absent from the semantic ranking of `inkentry
-search`. `inkentry memory reindex` re-embeds those notes against the local
+stays present-but-unembedded: still listed by `memory list` and `context`, but
+absent from the semantic ranking of `inkentry search`. Text search is not a
+dependable fallback for it — the memory text matcher requires the query as a
+contiguous phrase (see [`inkentry search`](#inkentry-search)).
+`inkentry memory reindex` re-embeds those notes against the local
 embedder (the same path
 `memory add` uses), so it needs a reachable embedder and exits non-zero if none
 is; it commits each vector as it goes, so an interrupted run resumes on re-run.

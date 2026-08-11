@@ -26,8 +26,8 @@ GIT_NOTES_REF=refs/notes/inkentry git notes show HEAD
 for memory and `.inkentry/memory.db` as the queryable *index* built over it. Every
 `memory add` appends its entry to the carrier through one write-through path;
 `inkentry init` hydrates the index by importing those notes: `memory list` and
-text search see them immediately, and `inkentry memory reindex` adds the
-embeddings semantic search needs. Both live in the repo, and the store of record stays local
+`context` see them immediately, and `inkentry memory reindex` adds the
+embeddings the semantic ranking of `inkentry search` needs. Both live in the repo, and the store of record stays local
 unless you configure a team `server_url` with `mode = "cloud_first"` (see [Team
 server and sync modes](#team-server-and-sync-modes)). The carrier reaches teammates only once
 the notes ref is pushed and fetched (see [Sharing memory across clones via
@@ -356,7 +356,7 @@ init` **hydrates** the new `memory.db` from those notes: every entry not already
 present is imported, and `inkentry memory list` then shows the repo's recorded
 history. The import is idempotent (re-running `init` imports nothing) and copies
 entry content only, not embeddings, so imported entries appear in `memory list`
-and full-text search right away; semantic `search` finds them once they
+and `context` right away; `inkentry search` ranks them once they
 are embedded, which you can do with
 [`inkentry memory reindex`](#backfilling-missing-embeddings). This is a local import: the notes must already
 be present in your clone. Their cross-machine arrival still depends on your git
@@ -535,6 +535,14 @@ inkentry search "auth" --only-memory --only-text
 # Point-in-time: only entries that were valid at this date
 inkentry search "auth decisions" --only-memory --as-of 2026-01-01
 ```
+
+**Text matching over memory is phrase-exact.** Unlike the code corpus, where
+`--only-text` is BM25 over independent terms, the memory matcher quotes the
+whole query as a single FTS5 phrase: it matches only entries whose text contains
+those words adjacent and in that order. `"auth decisions"` matches; `"decisions
+auth"` matches nothing. Semantic ranking has no such constraint, so a
+server-backed `search` is the general way to find an entry by wording you did
+not use; `memory list` and `context` take no query at all.
 
 ## Tracking topic evolution
 
@@ -851,10 +859,15 @@ during push and sync](#repair-during-push-and-sync)). A note that misses both
 moments, because no embedder was reachable, or because the store was upgraded
 across the 768→896 embedding-dimension change (which drops the old vectors and
 rebuilds `note_embeddings` empty), stays in `memory.db` **present but
-unembedded**. Such a note is still found by full-text
-search (`--only-text`), `memory list`, `memory timeline`, and `context`; it is
-only missing from the *semantic* ranking of `inkentry search`, because semantic
-ranking is a KNN over the embedding vectors and this note has none.
+unembedded**. Such a note is still listed by `memory list` and `context`, which
+take no query. It is missing from the *semantic* ranking of `inkentry search`,
+because that ranking is a KNN over the embedding vectors and this note has none.
+
+Do not count on text search to reach it in the meantime. The memory text matcher
+treats the whole query as one contiguous phrase (see
+[Searching memory](#searching-memory)), so it finds an unembedded note only when
+you happen to type a phrase that appears in it verbatim. `memory reindex` is the
+fix, not a text query.
 
 `inkentry memory reindex` is the recovery command: it embeds the notes that have
 no vector, using the same embedder `memory add` uses. In the default

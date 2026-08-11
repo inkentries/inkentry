@@ -11,13 +11,13 @@ The agent receives a task: "Add rate limiting to the API."
 AGENT=true inkentry memory list --kind question  # no open questions
 AGENT=true inkentry memory list --kind handoff --limit 3  # no handoffs yet
 
-# Understand the codebase
-AGENT=true inkentry graph Router --kind calls    # trace middleware wiring
-AGENT=true inkentry search "HTTP middleware handler" --mode text --format json
+# Understand the codebase (search and graph-edges both read the index;
+# run `inkentry init` once if this project has none)
+AGENT=true inkentry plumbing graph-edges --symbol Router   # trace middleware wiring
+AGENT=true inkentry search "HTTP middleware handler" --only-text --format json
 
-# With server: richer search + agentic exploration
+# With server: semantic ranking over code and memory in one list
 # AGENT=true inkentry search "HTTP middleware handler" --graph --format json
-# AGENT=true inkentry graph <handler-symbol> --kind calls --format json   # trace the HTTP layer yourself
 ```
 
 The agent writes a plan as a plain markdown checklist (e.g. in `docs/plans/`):
@@ -72,14 +72,14 @@ inkentry memory add \
   --kind answer --tags ratelimit,api
 
 # Check existing middleware patterns
-AGENT=true inkentry search "middleware router registration" --mode text --format json
-AGENT=true inkentry graph Router --kind calls   # trace how middleware is wired
+AGENT=true inkentry search "middleware router registration" --only-text --format json
+AGENT=true inkentry plumbing graph-edges --symbol Router   # trace how middleware is wired
 ```
 
 The agent implements `src/ratelimit/bucket.rs` and wires the middleware.
 
 ```bash
-# Re-index if project uses semantic search (skippable otherwise)
+# Re-index so search and the call graph see the new code (incremental)
 inkentry index .
 ```
 
@@ -99,20 +99,20 @@ inkentry memory add \
 ```bash
 # Orient from handoff
 AGENT=true inkentry memory list --kind handoff --limit 1
-AGENT=true inkentry memory search "rate limiting decisions" --limit 5
+AGENT=true inkentry search "rate limiting decisions" --only-memory --limit 5
 
 # Find existing test patterns
-AGENT=true inkentry search "unit test tokio test mock" --mode text --format json
-AGENT=true inkentry graph RateLimiter --kind calls   # find what already calls into it
+AGENT=true inkentry search "unit test tokio test mock" --only-text --format json
+AGENT=true inkentry plumbing graph-edges --symbol RateLimiter   # what already calls into it
 
-# With server: loop search + graph + chunks yourself to synthesise
+# With server: loop search + graph-edges + chunks yourself to synthesise
 # AGENT=true inkentry search "testing patterns; how middleware components are tested" --graph
 ```
 
 The agent writes tests, updates docs, marks remaining checklist items complete.
 
 ```bash
-inkentry index .   # only if project is indexed
+inkentry index .   # keep the index current
 # Mark the remaining checklist items complete in the plan markdown file
 ```
 

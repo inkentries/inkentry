@@ -22,7 +22,7 @@ If a surface is not listed here, treat it as **internal**.
 Stating this first, because it is the part most often assumed:
 
 - **Porcelain output.** The human-readable text of `search`, `status`, `context`,
-  `graph`, `memory`, and every other non-plumbing command. Colours, column
+  `memory`, and every other non-plumbing command. Colours, column
   widths, wording, ordering, and summary lines all change freely. Parsing them
   with `grep`/`awk` will break. Use the plumbing commands instead, or one of the
   structured `--format` modes covered under
@@ -94,12 +94,18 @@ follow the plumbing convention.
 
 Most porcelain commands take a `--format` flag that switches stdout from the
 human-readable text above to a machine-readable shape: `json` everywhere,
-plus `jsonl` on `search`, `graph`, and `memory list`. This is a **different
+plus `jsonl` on `search` and `memory list`. This is a **different
 surface** from the text output, and a different one again from plumbing JSONL:
 none of it is covered by the plumbing golden schema.
 
+`search --format json`/`jsonl` changed shape in this release: results are now
+per-corpus envelopes (`{type, fused_rank, fused_score, corpus_rank,
+code|memory}`) rather than a flat array of code hits. Consumers of the old shape
+must migrate; see [`inkentry search`](commands.md#inkentry-search).
+
 (`memory since` and `memory watch` were removed from the CLI; `memory since`'s
-`--format jsonl` therefore left this list. One-way transfer moved to the
+`--format jsonl` therefore left this list, as did `graph`'s when the top-level
+`graph` porcelain was removed. One-way transfer moved to the
 test-enforced plumbing surface — `inkentry plumbing push`/`pull` — and the
 former `memory push`/`pull` were removed outright with no alias. The server
 routes those commands used are unchanged — see the changelog.)
