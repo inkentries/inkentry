@@ -80,20 +80,26 @@ Concretely, in the memory retrieval pipeline
 (`crates/inkentry-core/src/storage/memory/search.rs`), applied to the
 **candidate pool, before** the within-corpus RRF:
 
-1. **The vector door.** A candidate from the note KNN half is admitted only if
-   its distance to the QA-prefixed query embedding is at most
-   `MEMORY_MAX_QA_DISTANCE`. `note_embeddings` is a `vec0` `FLOAT[896]` table
-   with the default L2 metric over L2-normalised vectors, so the reported
-   distance is `sqrt(2 - 2·cos)` and the constant is stated in the ADR and in
-   code as **both** the L2 value the query returns and its cosine equivalent.
-2. **The lexical door.** A candidate reached by the `memory_fts` BM25 half is
-   admitted on its lexical match. This door exists because it is the only way an
-   **unembedded** note is reachable at all, and ADR-081 §*Partial-index
-   semantics* (5) requires that path to keep working. It is safe **only while
-   the memory FTS matcher demands strong lexical evidence**: `search_text`
-   currently matches through `fts5_quote_literal`, i.e. the entire query as one
-   contiguous phrase, so a note that does not literally contain the query does
-   not match. See *The lexical door is coupled to the memory FTS matcher*.
+1. **The gate is a vector-distance floor.** A candidate from the note KNN half
+   is admitted only if its distance to the QA-prefixed query embedding is at
+   most `MEMORY_MAX_QA_DISTANCE = 1.2032`. `note_embeddings` is a `vec0`
+   `FLOAT[896]` table with the default L2 metric over L2-normalised vectors, so
+   the reported distance is `sqrt(2 - 2·cos)`; 1.2032 L2 is cosine 0.2762. Both
+   forms are stated in the constant's doc comment.
+   **Placement:** gate the output of `MemoryStore::search()` — the KNN half —
+   **not** the output of `search_hybrid`. `search_hybrid`'s result-mapping
+   closure sets `n.distance = Some(1.0 / rrf_score)`, destroying the raw vector
+   distance the gate needs. Gating upstream of that overwrite avoids plumbing a
+   new field through `Note`, and the spike confirmed it works.
+2. **There is no second door.** An earlier draft of this record admitted a
+   candidate on a `memory_fts` BM25 match as well, to keep unembedded notes
+   reachable per ADR-081 §*Partial-index semantics* (5). **Measurement retired
+   that door**: the memory FTS matcher requires the entire query as one
+   contiguous phrase (`fts5_quote_literal`), and across the calibration set it
+   matched **0 of 500** negative queries and **0 of 20** positive ones.
+   Disabling it outright changed no number. **The mechanism is vector-only**,
+   and the record says so rather than describing a two-door design that is one
+   door in practice. See *What the dead lexical path means*.
 3. **Survivors are ranked among themselves.** The within-corpus RRF runs over
    the admitted candidates only, so a memory `corpus_rank` of 1 means "the best
    entry that cleared the bar," not "the least-distant of twenty."
@@ -103,9 +109,11 @@ Concretely, in the memory retrieval pipeline
    page is an outcome, not a parameter** — if ten entries genuinely clear an
    absolute bar, ten entries deserve their slots, and that is the product thesis
    working rather than failing.
-5. **Scope.** The gate applies wherever memory competes for shared slots: the
-   default unified search and `--only-text` (whose memory half is FTS, governed
-   by door 2). `--only-memory` is **ungated** — with no code corpus in scope
+5. **Scope.** The gate applies wherever memory competes for shared slots — in
+   practice, the default unified search. `--only-text` needs no gate: its memory
+   half is the phrase matcher, which already returns nothing (point 2), so the
+   half-the-page problem never existed on that path.
+   `--only-memory` is **ungated** — with no code corpus in scope
    there are no slots to protect, the caller has explicitly asked to interrogate
    the memory store, and the full page is what they asked for. This is a
    difference in *admission*, not in *ranking*: the ordering rule is identical in
@@ -121,8 +129,9 @@ Concretely, in the memory retrieval pipeline
    calibrated against.
 7. **Corollary — elide the QA embed when the memory store holds no vectors.**
    A store with zero embedded notes cannot produce a vector candidate, so the
-   second embed is pure cost. Add that case to ADR-081's elision table. FTS still
-   runs, so an unembedded-but-present note stays reachable.
+   second embed is pure cost. Add that case to ADR-081's elision table. Since
+   the lexical path is inert (point 2), such a store contributes nothing to the
+   default search at all, and the elision costs no recall.
 
 ### The constant is a property of one embedding space, not a mixing ratio
 
@@ -141,46 +150,88 @@ because the doc comment names both.
 ## How the constant is chosen — from measurement
 
 The calibration does not use the retrieval harness and does not run the code
-pipeline. It is query-embed, note-embed, dot product.
+pipeline. It is query-embed, note-embed, distance. **It has been run**; the
+numbers below are results, not a plan.
 
-**The negative distribution is free and enormous.** The 500 CodeSearchNet
-queries are, by construction, irrelevant to every entry in the 20-entry memory
-store — they are Python docstrings; the entries are engineering notes from an
-unrelated project. That is **10,000 labelled true-negative (query, note) pairs**
-with no annotation effort and no judgement calls, embedded under the QA prefix
-by the shipped embedder.
+### The two labelled sets
 
-**The positive set is small and must be built deliberately.** For each memory
-entry, one question that entry answers, written as a paraphrase sharing at most
-one content word with the entry — otherwise the calibration measures lexical
-overlap rather than semantics, and door 2 already covers lexical overlap. Twenty
-paired positives. Commit both sets.
+**Negatives:** the 500 CodeSearchNet queries against the 20-entry memory store —
+Python docstrings against engineering notes from an unrelated project. 10,000
+(query, note) pairs, no annotation effort. **Positives:** 20 hand-written
+paraphrase questions, one per entry, each sharing at most one content word with
+the entry it targets, so the set measures semantics rather than lexical overlap.
+Both sets are committed.
 
-**Procedure.**
+### Result: the space separates
 
-1. Embed all queries under the QA prefix and all notes as documents. Record the
-   full 10,000-value negative distance distribution and the 20 paired positive
-   distances.
-2. Report the negative distribution's percentiles and the positive
-   distribution's quantiles side by side. **This is the test of the design
-   itself, before it is the choice of a number:** if the two overlap heavily,
-   an absolute floor cannot separate relevant from irrelevant memory in this
-   embedding space and the mechanism must be abandoned rather than tuned.
-   Publish the overlap in the PR that implements this.
-3. Set `MEMORY_MAX_QA_DISTANCE` at a **low percentile of the negative
-   distribution** — the 1st percentile is the starting proposal — and report the
-   positive set's recall at that value. Choosing off the negative side is the
-   right way round: the negative sample is 500× larger and label-free, and the
-   failure this ADR exists to fix is a false-positive failure.
-4. Report the behaviour across the whole band, not just at the chosen point. If
-   the negative 0.1st, 1st and 5th percentiles all give the same acceptance
-   outcome, the parameter is not on a knife edge and the middle of that band is
-   the value. If they do not, say so — that is the mechanism telling you it is
-   fragile.
+L2 over L2-normalised vectors, QA prefix on the queries:
 
-**Resolution.** Every step is a deterministic embed and a dot product, so the
-±1.4pt run-to-run noise in the recall harness does not constrain this choice at
-all. That is not a happy accident; see the next section.
+| | mean | sd |
+|---|---|---|
+| negatives (n = 10,000) | 1.4026 | 0.0457 |
+| positives (n = 20) | 1.0802 | 0.0707 |
+
+The nominal ranges overlap, but the **mass overlap is 0.13% — 13 pairs of
+10,000** — and the negative median sits 4.6 positive standard deviations above
+the positive median. **An absolute floor works in this embedding space.** This
+was the falsification test the design had to survive, and it survived it.
+
+### The threshold is a two-sided fit, not a percentile
+
+The natural-looking move — put the threshold at a low percentile of the negative
+distribution — **fails this ADR's own criterion A**, and the record states that
+plainly so nobody re-proposes it:
+
+| threshold | negative pairs admitted | mean memory in top 10 | vs criterion A (≤ 0.05) |
+|---|---|---|---|
+| negative p5 | far more | — | fails badly |
+| negative p1 | 100 / 10,000 | 0.20 | **fails, 4×** |
+| **T = 1.2032** | 11 / 10,000 | **0.0200** | passes |
+
+Criterion A caps admissions at roughly 25 of 10,000 — the **p0.25** percentile.
+The hoped-for outcome that "p0.1, p1 and p5 all give the same result" is simply
+not met, so the parameter is not chosen off one distribution at all.
+
+**The usable band is determined by criteria A and C jointly**: A bounds it from
+above (admit too much and memory reappears on irrelevant queries), C bounds it
+from below (admit too little and memory stops being reachable on the queries it
+answers). The measured band is
+
+> **L2 ∈ [1.1822, 1.2337]** — roughly 6 points of cosine —
+> with **`MEMORY_MAX_QA_DISTANCE` = 1.2032**, its midpoint.
+
+This two-sidedness is the point, and worth naming: **a constant pinned between
+two opposing acceptance criteria is not an untestable constant.** It cannot be
+moved in either direction without a named test failing, which is exactly the
+property ADR-081 demands and which a per-corpus weight cannot have — the
+code-retrieval benchmark bounds a weight from one side only, so a weight has an
+edge but no band.
+
+### The negative set is contaminated in its tail, and the bias is conservative
+
+The "10,000 label-free true negatives" framing is right in aggregate and
+**wrong exactly where the threshold is drawn.** Of the 11 pairs admitted at T,
+most are *genuinely relevant* retrievals: a docstring reading "Execute gerrit
+command with retry if it fails" matched against the retry-policy note; another
+about truncating to the correct timezone matched against the timezone note. At
+the band's upper edge (1.2337) only 1 of 24 admissions is an unrelated
+household note.
+
+Two consequences to carry forward:
+
+1. **The threshold is biased conservatively low.** The calibration scores
+   correct retrievals as false positives, so the gate is better than its own
+   numbers say, and criterion A is being met with room to spare rather than
+   exactly.
+2. **A later re-run must not read a rising admission count as regression.** It
+   may be recall. Anyone re-running this must inspect the admitted pairs, not
+   only count them.
+
+### Resolution
+
+Every step is a deterministic embed and a distance, so the retrieval harness's
+run-to-run noise does not constrain this choice at all. That is not a happy
+accident; see *On the harness*.
 
 ## Why the alternatives lose
 
@@ -219,7 +270,8 @@ this harness.
 The sensitivity is a third, lesser objection: on a 10-result page the whole
 usable range of `w` is roughly (0.85, 1.0], and 0.01 of `w` moves memory ~0.6
 positions. And per ADR-081 §3 a weight re-activates `k` as a cross-corpus lever,
-so a weight means tuning two coupled constants against a ±1.4pt instrument.
+so a weight means tuning two coupled constants against an instrument whose
+same-condition Recall@10 spread is 0.0180.
 
 ### A cap on memory's share of the page — rejected
 
@@ -269,9 +321,10 @@ sound, for four reasons:
    `(corpus_rank, corpus_priority)`, no float comparison) is unaffected.
 2. **A wrong threshold fails visibly, in one of two named directions**, each
    with a test below: too strict and criterion C fails; too loose and criterion A
-   fails. A wrong cross-corpus score merge — the thing ADR-081 forbids — fails
-   *silently*, which is the entire reason for the prohibition. Different failure
-   mode, different treatment.
+   fails. Those two bounds are measured, not asserted — they are what pins the
+   constant to [1.1822, 1.2337]. A wrong cross-corpus score merge — the thing
+   ADR-081 forbids — fails *silently*, which is the entire reason for the
+   prohibition. Different failure mode, different treatment.
 3. **Its calibration is deterministic and does not ride the noisy instrument.**
 4. **It is one constant, in one place, with its provenance in its doc comment.**
 
@@ -281,22 +334,35 @@ assumption ADR-081 made; this ADR makes it *conditional* rather than removing it
 If parity turns out to be wrong for entries that clear the bar, that is a
 separate finding and needs the joint benchmark described above.
 
-### The lexical door is coupled to the memory FTS matcher
+### What the dead lexical path means
 
-Door 2 admits on lexical match alone, which is safe only because the memory FTS
-half is strict. It currently matches through `fts5_quote_literal` — the whole
-query as one contiguous phrase — whereas the **code** FTS half uses
-`fts5_match_query`, which ORs the query's terms. That asymmetry is almost
-certainly an oversight in its own right (it means the memory hybrid's BM25 half
-is close to inert for multi-word natural-language questions, which is part of
-why the memory list observed in PR #44 is effectively pure KNN).
+The memory FTS half matches through `fts5_quote_literal` — the whole query as
+one contiguous phrase — whereas the **code** FTS half uses `fts5_match_query`,
+which ORs the query's terms. The calibration measured what that asymmetry
+costs: **0 of 500** negative queries and **0 of 20** positive ones produce any
+memory FTS match at all. The memory hybrid's BM25 half is not merely weak for
+multi-word natural-language questions; it is inert. That is why the memory list
+observed in PR #44 is effectively pure KNN, and why this ADR's gate is
+vector-only.
 
-**Binding constraint on whoever fixes it:** loosening the memory FTS matcher to
-OR-of-terms reopens this hole through the lexical door — a query sharing one
-common word with a note would admit it. The change that loosens the matcher must
-in the same change re-gate door 2, either with a BM25 floor or a minimum
-term-coverage requirement, and must re-run acceptance criterion A. Neither the
-matcher change nor its gate is in scope here.
+Two things follow that are not this ADR's to fix but must be on the record:
+
+- **ADR-081 §*Partial-index semantics* (5) is fictional in practice.** Its claim
+  that an unembedded note "stays reachable" through `memory_fts` is true of the
+  code path and false of the outcome: for realistic queries that path returns
+  nothing. Memory coverage is effectively binary on embedding, unlike the code
+  corpus, whose FTS half genuinely does degrade continuously.
+- **`--only-text` already returns zero memory results**, so the half-the-page
+  problem never existed on that path.
+
+**Binding constraint on whoever fixes the matcher, now stronger than an
+estimate.** Switching the memory side to `fts5_match_query` admits **7,146 of
+10,000** negative pairs — a mean of **14.3 notes per query**, i.e. effectively
+the entire store on every query. A lexical door opened onto that is not a door,
+it is the removed wall. The change that loosens the matcher must, in the same
+change, gate the lexical path (a BM25 floor or a minimum term-coverage
+requirement) and re-run acceptance criterion A. Neither the matcher change nor
+its gate is in scope here.
 
 ## Behaviour on the cases that motivated this
 
@@ -309,9 +375,10 @@ matcher change nor its gate is in scope here.
   contributes three results, one, or none depending entirely on the query. Both
   the weight and the cap behave *worst* exactly here, because they scale a share
   of a page rather than testing an entry.
-- **Entirely irrelevant store, the motivating case.** Every candidate fails both
-  doors, memory contributes nothing, and the fused list is the code list. On the
-  500-query benchmark this is the expected outcome for very nearly all 500.
+- **Entirely irrelevant store, the motivating case.** Every candidate fails the
+  floor, memory contributes nothing, and the fused list is the code list.
+  Measured on the 500-query benchmark: mean memory in the top 10 falls from
+  5.0000 to 0.0200.
 - **No notice is emitted when memory is suppressed.** It would fire on the
   majority of code queries and become noise, and stdout must stay
   machine-clean (ADR-081 §*Partial-index semantics* 3). Silence is the correct
@@ -349,48 +416,60 @@ stands unchanged.
 
 ## Acceptance criteria
 
-A reviewer can check every one of these. A, C, D and E are **exactly
-reproducible** — the memory pipeline is KNN + FTS with no PageRank stage, so it
-carries none of the ±1.4pt non-determinism that affects code recall. Only B
-touches the noisy instrument, and its thresholds are set outside the noise band.
+A reviewer can check every one of these. **A and C jointly determine the
+constant** (see *The threshold is a two-sided fit*) — they are not only pass/fail
+gates, they are the calibration. A, C, D and E are **exactly reproducible**: the
+memory pipeline is KNN + FTS with no PageRank stage, so it carries none of the
+non-determinism that affects code recall. Only B touches the noisy instrument.
+
+Measured results at `MEMORY_MAX_QA_DISTANCE = 1.2032`, 3 paired repeats, are
+given alongside each criterion.
 
 **A. Suppression (primary gate, noise-free).** Same 500 queries, same
 fully-embedded 575-chunk index, same 20 unrelated entries. Mean memory results
-in the top 10 of the unified default: **≤ 0.05** (baseline 5.0). Confirm the
-count is identical across 3 runs.
+in the top 10 of the unified default: **≤ 0.05** (baseline 5.0), identical
+across 3 runs. **Measured: 5.0000 → 0.0200, byte-identical across all three
+runs. Passes.**
 
 **B. Code recall restored (bounded by the noise floor).** Over **≥ 3 paired
 runs**, comparing medians of unified default against `--only-code`:
 
-| metric | required | current gap |
-|---|---|---|
-| Recall@10 | \|Δ\| ≤ 0.020 | 0.294 |
-| Recall@5 | \|Δ\| ≤ 0.020 | 0.172 |
-| MRR@10 | \|Δ\| ≤ 0.010 | 0.074 |
+| metric | required | pre-gate gap | measured |
+|---|---|---|---|
+| Recall@10 | \|Δ\| ≤ 0.020 | 0.294 | 0.6460 vs 0.6520 → 0.006 |
+| Recall@5 | \|Δ\| ≤ 0.020 | 0.172 | passes |
+| MRR@10 | \|Δ\| ≤ 0.010 | 0.074 | 0.1928 vs 0.1927 → 0.0001 |
 
-The recall thresholds sit above the measured ±0.014 run-to-run band. The MRR
-band has not been measured; the harness must print every run so the range is
-visible, and if MRR proves noisier than 0.010 the threshold moves to the
-measured band and the change is recorded here.
+**Read the limit of this criterion, not only its result.** The same-condition
+spread is now measured properly at n = 120: Recall@10 **0.0180**, MRR@10
+**0.0044**. The MRR threshold at 0.010 is safely outside its band. The recall
+threshold at 0.020 is **not** — it can distinguish "no regression" from "the
+0.294 regression" and nothing finer, so **criterion B cannot certify the absence
+of a regression smaller than about 0.015.** More repeats do not fix this: most
+of the spread is non-deterministic tie-breaking rather than sampling, so it does
+not average down. A passing B is evidence that the 45% cliff is gone, not proof
+that nothing was lost. That limit is tracked as its own defect.
 
 **C. Memory still reachable (the counter-gate — without this, deleting the
 memory corpus passes A and B).** With the committed positive fixture of ≥ 20
 (question, entry) pairs loaded alongside a code index, the unified default
 places the target entry in the **top 10 for ≥ 90%** of the questions and in the
-**top 3 for ≥ 70%**.
+**top 3 for ≥ 70%**. **Passes**, and it is this criterion that sets the band's
+lower bound at L2 1.1822.
 
 **D. Empty-store invariance.** With zero memory entries, unified default output
 is byte-identical to `--only-code` for the same query, and issues exactly one
 embed — asserted on request count against a mock, as
 `corpus_filters_elide_the_redundant_query_embed` already does.
 
-**E. Tiny-store invariance.** With a single entry that fails both doors, output
+**E. Tiny-store invariance.** With a single entry that fails the floor, output
 is byte-identical to the empty-store case.
 
 **F. Calibration is reproducible.** The calibration script and both labelled
-sets are committed. Re-running prints the negative percentiles, the positive
-recall at the chosen threshold, and the behaviour across the surrounding band,
-and yields the same `MEMORY_MAX_QA_DISTANCE`.
+sets are committed. Re-running reproduces the negative and positive
+distributions, the [1.1822, 1.2337] band, and the same
+`MEMORY_MAX_QA_DISTANCE`. Per *the negative set is contaminated in its tail*, a
+re-run must inspect the admitted pairs rather than only counting them.
 
 **G. The cross-corpus invariant is intact.** ADR-081's existing guards still
 pass unmodified — in particular `orders_by_rank_not_by_incomparable_distance`
@@ -404,22 +483,29 @@ that is a signal the gate has been put in the wrong place.
 non-determinism is not a prerequisite.** Stated plainly because the opposite
 would make the PageRank fix a blocker:
 
-- The threshold is calibrated on embeddings and dot products, not on recall@k,
-  so the ±1.4pt band does not constrain it.
-- The primary acceptance gate (A) is a count from a pipeline with no PageRank
-  stage, and is exact.
-- The counter-gate (C) is exact for the same reason.
-- Only B rides the noisy path, and its thresholds are 0.020 against a ±0.014
-  band, with the current failure at 0.294 — a factor of ~15 outside the noise.
+- The threshold is calibrated on embeddings and distances, not on recall@k, so
+  the harness's noise does not constrain it at all.
+- The primary gate (A) and the counter-gate (C) — which between them *determine*
+  the constant — both come from a pipeline with no PageRank stage and are exact.
+  A was byte-identical across three runs.
+- Only B rides the noisy path, and the failure it had to detect was 0.294
+  against a 0.0180 spread — a factor of ~16.
 
-Two things are nonetheless **asked of the harness**, neither blocking: report
-paired repeat runs as median plus range rather than single values (the ±1.4pt
-figure currently rests on n = 2), and report MRR@10 variance so criterion B's
-MRR threshold rests on a measured band rather than an assumed one.
+The two asks made of the harness in the draft of this record **have been met**:
+repeats are now paired and reported, and the noise floor is measured at n = 120
+rather than resting on n = 2. The numbers are Recall@10 spread **0.0180** and
+MRR@10 **0.0044**, replacing the earlier anecdotal ±1.4pt.
 
-The root cause of the variance — `HashMap`-ordered edge-list construction and
-f32 accumulation in the PageRank stage of `search/rag.rs` — is out of scope
-here and tracked separately.
+**What remains, and is a real limit rather than a wish:** criterion B's recall
+threshold (0.020) sits barely above that 0.0180 spread, so the harness cannot
+resolve a regression smaller than ~0.015, and repeats do not help because the
+spread is non-deterministic tie-breaking rather than sampling. Certifying a
+*small* retrieval regression needs the underlying non-determinism fixed. That is
+not required for this decision, whose effect size is an order of magnitude
+larger, and it is tracked as its own defect.
+
+The root cause — `HashMap`-ordered edge-list construction and f32 accumulation
+in the PageRank stage of `search/rag.rs` — is out of scope here.
 
 ## What breaks
 
@@ -435,8 +521,13 @@ here and tracked separately.
 
 ## Prerequisites
 
-Docs-only decision; not yet implemented. Implementation is gated on (a) sign-off
-of this record, and (b) the calibration in *How the constant is chosen* being run
-and its separation reported — because step 2 of that procedure is capable of
-falsifying the mechanism, and if it does, the right response is to come back
-here rather than to pick a threshold anyway.
+Docs-only decision; not yet implemented in the product. **The falsification test
+this record set itself has been run and passed** — a spike measured the two
+distributions, found 0.13% mass overlap, fitted the threshold against criteria A
+and C, and confirmed all three acceptance criteria on 3 paired repeats. The
+numbers throughout this record are that spike's.
+
+Implementation is therefore gated only on sign-off of this record. The spike's
+calibration script and both labelled sets ship with the implementation (criterion
+F), and its recommended gate placement — on `MemoryStore::search()`'s output,
+upstream of `search_hybrid`'s `1 / rrf_score` overwrite — is decision 1.

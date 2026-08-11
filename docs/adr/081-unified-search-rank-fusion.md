@@ -21,7 +21,8 @@ the UUIDv7 identity fixed by [ADR-078](078-uuidv7-memory-entry-identity.md).
 > partial-index semantics. In particular §3's proof that `k` is inert
 > cross-corpus, and its prohibition on comparing a code distance to a memory
 > distance, are unchanged: ADR-083's threshold is compared only to a memory
-> distance in the memory embedding space, never to a code distance.
+> distance in the memory embedding space, never to a code distance. ADR-083 also
+> **corrects point 5 of *Partial-index semantics*** below, on measurement.
 
 ## Context
 
@@ -170,8 +171,9 @@ corpus filter makes one unnecessary, the second is **elided**:
 `--only-code` and `--only-memory` are mutually exclusive.
 [ADR-083](083-memory-relevance-gate-in-unified-search.md) adds one row: the
 memory embed is also elided when the memory store holds **no embedded notes**,
-since it cannot then produce a vector candidate. FTS still runs, so an
-unembedded note stays reachable.
+since it cannot then produce a vector candidate — and per its measurement of the
+memory FTS matcher, nothing else can either (see the amendment on point 5
+below).
 
 **Cost.** This takes the per-search embed count from 1 → 2 (elided to 1 under
 `--only-*`, to 0 under `--only-text`). The added work is one extra
@@ -246,6 +248,18 @@ count), kept distinct from coverage.
 5. **The memory corpus follows the same honesty** using existing signals; its
    FTS half (`memory_fts`) covers unembedded notes. No new memory-coverage
    subsystem is built.
+
+   > **Corrected 2026-08-11 by
+   > [ADR-083](083-memory-relevance-gate-in-unified-search.md): this point is
+   > true of the code path and false of the outcome.** `memory_fts` is matched
+   > through `fts5_quote_literal` — the entire query as one contiguous phrase —
+   > where the code FTS half uses the OR-of-terms `fts5_match_query`. Measured
+   > over 500 natural-language queries, the memory FTS half returned **zero**
+   > matches. An unembedded note is therefore *not* reachable in practice, and
+   > **memory coverage is effectively binary on embedding**, unlike the code
+   > corpus, which does degrade continuously as this section claims. Fixing the
+   > matcher is out of scope for ADR-083, which records a binding constraint on
+   > whoever does.
 
 ## What breaks
 
