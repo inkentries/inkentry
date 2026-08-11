@@ -352,7 +352,9 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         MemoryCommand::Graph(a) => graph_cmd::memory_graph(a, &mem_path, &cfg, be).await,
         MemoryCommand::Failures(a) => failures::memory_failures(a, &mem_path, &cfg, be).await,
         MemoryCommand::Reconcile(a) => reconcile::memory_reconcile(a, &mem_path, &cfg).await,
-        MemoryCommand::Reindex(a) => reindex::memory_reindex(a, &mem_path, &cfg, be).await,
+        MemoryCommand::Reindex(a) => {
+            reindex::memory_reindex(a, &mem_path, &cfg, be, reindex::Summary::Printed).await
+        }
         MemoryCommand::Dedupe(a) => dedupe::memory_dedupe(a, &mem_path).await,
     }
 }

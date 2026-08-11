@@ -332,6 +332,42 @@ fn two_entities_sharing_a_remote_id_refuse_the_dump() {
     assert!(err.to_string().contains("rem-9"), "{err}");
 }
 
+#[test]
+fn an_entry_carrying_a_blank_identity_refuses_the_dump_and_names_the_record() {
+    for (field, value) in [
+        ("uuid", ""),
+        ("uuid", "   "),
+        ("remote_id", ""),
+        ("entity_id", ""),
+    ] {
+        let line = format!(
+            r#"{{"record":"entity","type":"memory_entry","ref":"a","{field}":"{value}","kind":"note","title":"the one","body":"b","created_at":10}}"#
+        );
+        let dump = dump_with(
+            &[&line],
+            r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+        );
+        let err = read(&dump).expect_err("a carried identity is meaningful or absent");
+        let msg = err.to_string();
+        assert!(msg.contains(&format!("blank {field}")), "{msg}");
+        assert!(msg.contains("\"a\"") && msg.contains("the one"), "{msg}");
+    }
+}
+
+// A blank identity is reported as blank rather than as a pair that repeats
+// itself: the second message describes a contradiction that is not the problem.
+#[test]
+fn two_entries_carrying_the_same_blank_identity_are_reported_as_blank() {
+    let a = r#"{"record":"entity","type":"memory_entry","ref":"a","uuid":"","kind":"note","title":"one","body":"b1","created_at":10}"#;
+    let b = r#"{"record":"entity","type":"memory_entry","ref":"b","uuid":"","kind":"note","title":"two","body":"b2","created_at":20}"#;
+    let dump = dump_with(
+        &[a, b],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let err = read(&dump).expect_err("an empty uuid is not an identity");
+    assert!(err.to_string().contains("blank uuid"), "{err}");
+}
+
 // ── entries that share a convergence key ─────────────────────────────────────
 
 #[test]

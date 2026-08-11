@@ -1006,7 +1006,8 @@ The dump is read and checked **whole** before anything is written. Its record
 counts and its digest are both recomputed, and any mismatch — a truncated file,
 a single altered byte, records in a different order, a relationship naming an
 entity that is not there, a record kind this build does not know, two entries
-claiming one `uuid` or one `remote_id` — refuses the entire file. There is no
+claiming one `uuid` or one `remote_id`, an entry carrying a blank one — refuses
+the entire file. There is no
 partial import, because importing most of a damaged dump and saying nothing is
 the worst available outcome. The refusal covers **every** store the import
 would touch: memory entries, the project registry and the recorded-command
@@ -1016,6 +1017,13 @@ three exactly as it found them.
 Entries arriving with an identifier keep it. Entries without one are assigned a
 UUIDv7 seeded from their own creation time, so a back catalogue keeps its
 ordering instead of being stamped with the instant it was imported.
+
+**Import writes to the local memory store, so it refuses to run when that is not
+where this project's memory lives.** Under `mode = "cloud_first"` with a
+`server_url`, the server is the store of record and every memory command reads
+it; a local write there would report success and leave the whole dump in a file
+the project never opens. Import into the local store first
+(`INKENTRY_MODE=local_first`), then `inkentry sync` to carry it up.
 
 **Entries are identified by their content, so the count is of rows, not of
 records.** A memory entry's convergence key is computed over its kind, title

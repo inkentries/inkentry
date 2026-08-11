@@ -41,6 +41,7 @@ pub struct ImportArgs {
 ///   worse than an empty result, because nothing signals the problem.
 pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
     cfg.validate()?;
+    refuse_when_memory_is_not_local(&cfg)?;
     let json = crate::utils::effective_format(&args.format) == "json";
 
     let bytes = std::fs::read(&args.path)
@@ -98,6 +99,39 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
     )
     .await;
     Ok(())
+}
+
+/// Refuse before reading the file when this project's memory does not live in
+/// a local SQLite store.
+///
+/// The import writes through `MemoryStore` directly. Under `cloud_first` with a
+/// `server_url`, `open_memory_backend` makes that server the store of record,
+/// so a local write would land in a file every memory command reads past —
+/// success reported, data gone, on a move designed to be made once. The
+/// condition mirrors `open_memory_backend`'s `route_remote` exactly:
+/// `cloud_first` with no `server_url` has nothing to route to and resolves
+/// local, so it imports normally.
+///
+/// Importing into the server instead is not an option this can take: the remote
+/// backend adds entries through `add`, which mints its own identity and carries
+/// neither `entity_id` nor `created_at` verbatim, and it has no transaction to
+/// roll back — the two properties the dump format and this command exist to
+/// preserve. A refusal that names the recovery path keeps both.
+fn refuse_when_memory_is_not_local(cfg: &Config) -> Result<()> {
+    use crate::config::SyncMode;
+
+    if cfg.resolve_mode() != SyncMode::CloudFirst {
+        return Ok(());
+    }
+    let Some(url) = cfg.server_url.as_deref() else {
+        return Ok(());
+    };
+    anyhow::bail!(
+        "this project's memory lives on {url} (mode = cloud_first), and 'inkentry import' \
+         writes to the local memory store. Importing here would leave every entry in a file \
+         this project never reads. Import into the local store first — re-run with \
+         INKENTRY_MODE=local_first — then 'inkentry sync' to carry it up to {url}."
+    );
 }
 
 /// Say what happened to the records that did not become a row.
@@ -170,9 +204,24 @@ async fn finish_embeddings(
         dry_run: false,
         format: args.format.clone(),
     };
-    if crate::cli::cmd::memory::reindex::memory_reindex(reindex, mem_path, cfg, None)
-        .await
-        .is_err()
+    // In json mode stdout carries exactly one document — the import summary
+    // printed above — so the finishing pass does not print its own. Anything
+    // it has to say about the part that is not done reaches the user through
+    // `report_pending`, on stderr.
+    let summary_output = if json {
+        crate::cli::cmd::memory::reindex::Summary::Suppressed
+    } else {
+        crate::cli::cmd::memory::reindex::Summary::Printed
+    };
+    if crate::cli::cmd::memory::reindex::memory_reindex(
+        reindex,
+        mem_path,
+        cfg,
+        None,
+        summary_output,
+    )
+    .await
+    .is_err()
     {
         report_pending(pending, json);
         return;

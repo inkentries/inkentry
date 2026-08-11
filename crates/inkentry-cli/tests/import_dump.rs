@@ -48,9 +48,26 @@ struct Project {
     mem_path: std::path::PathBuf,
     config_path: std::path::PathBuf,
     root: std::path::PathBuf,
+    // Loopback auto-discovery reads `server.port` from here. Isolated per
+    // fixture so step 3b's default port 7777 is never reached: a developer's
+    // own long-running server must not become the embedder under test.
+    state_dir: std::path::PathBuf,
 }
 
 fn project() -> Project {
+    let p = project_that_may_find_an_embedder();
+    // Offline, so nothing auto-discovers a loopback embedder that happens to
+    // be running on the developer's machine: these tests are about what the
+    // import does when it cannot embed.
+    let mut cfg = std::fs::read_to_string(&p.config_path).unwrap();
+    cfg.push_str("mode = \"offline\"\n");
+    std::fs::write(&p.config_path, cfg).unwrap();
+    p
+}
+
+// The same fixture with no `mode` pinned, so the capability probe runs its
+// normal loopback auto-discovery and `set_embedder` can point it somewhere.
+fn project_that_may_find_an_embedder() -> Project {
     let tmp = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
@@ -58,12 +75,8 @@ fn project() -> Project {
     // Port 1 is never listening, so nothing here can reach an embedder: the
     // import must succeed regardless.
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
-    // Offline, so nothing auto-discovers a loopback embedder that happens to
-    // be running on the developer's machine: these tests are about what the
-    // import does when it cannot embed.
-    let mut cfg = std::fs::read_to_string(&config_path).unwrap();
-    cfg.push_str("mode = \"offline\"\n");
-    std::fs::write(&config_path, cfg).unwrap();
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
     let root = tmp.path().to_path_buf();
     Project {
         _tmp: tmp,
@@ -71,14 +84,23 @@ fn project() -> Project {
         mem_path,
         config_path,
         root,
+        state_dir,
     }
 }
 
 impl Project {
     fn bin(&self) -> assert_cmd::Command {
         let mut cmd = inkentry_bin_in(self.home.path());
-        cmd.env("INKENTRY_REGISTRY_DIR", self.home.path());
+        cmd.env("INKENTRY_REGISTRY_DIR", self.home.path())
+            .env("INKENTRY_STATE_DIR", &self.state_dir);
         cmd
+    }
+
+    // Write the port file `inkentry server start` would write, which is how
+    // loopback auto-discovery finds an embedder (step 3a).
+    fn set_embedder(&self, uri: &str) {
+        let port = uri.rsplit(':').next().unwrap().trim_end_matches('/');
+        std::fs::write(self.state_dir.join("server.port"), format!("{port}\n")).unwrap();
     }
 
     fn import(&self, contents: &str) -> assert_cmd::Command {
@@ -707,5 +729,161 @@ fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
         !probe.contains("unrecognized subcommand") && !probe.contains("unexpected argument"),
         "the refusal sends the user to `inkentry {}`, which this binary does not accept: {probe}",
         subcommand.join(" ")
+    );
+}
+
+// ── an identity carried as an empty string ───────────────────────────────────
+
+// `""` passes every other check in the reader — it is not repeated, and the
+// type accepts it — and then fails at write time as an inserted note that
+// vanished, which names neither the problem nor the record.
+#[test]
+fn an_entry_carrying_a_blank_identity_is_refused_by_name() {
+    for (field, value) in [
+        ("uuid", ""),
+        ("uuid", "   "),
+        ("entity_id", ""),
+        ("remote_id", ""),
+    ] {
+        let p = project();
+        let d = dump(
+            &[&entry(
+                "e1",
+                "blank",
+                1000,
+                &format!(r#","{field}":"{value}""#),
+            )],
+            r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+        );
+        p.import(&d)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(format!("blank {field}")))
+            .stderr(predicates::str::contains("\"e1\""))
+            .stderr(predicates::str::contains("\"blank\""));
+
+        assert!(
+            !p.mem_path.exists() || p.sql::<i64>("SELECT count(*) FROM notes") == 0,
+            "a blank {field} must be refused before anything is written"
+        );
+    }
+}
+
+// ── memory that does not live in a local SQLite store ────────────────────────
+
+// `cloud_first` with a `server_url` makes that server the store of record for
+// every memory command. An import writing to `memory.db` there would report
+// success and leave the whole dump in a file the project never opens.
+#[test]
+fn a_project_whose_memory_lives_on_a_server_refuses_the_import() {
+    let p = project();
+    // `server_url` is honoured only from the project config or the
+    // environment, never from the global `--config` file.
+    let inkentry_dir = p.root.join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).unwrap();
+    std::fs::write(
+        inkentry_dir.join("config.toml"),
+        "server_url = \"http://127.0.0.1:1\"\nproject_id = \"team/proj\"\n",
+    )
+    .unwrap();
+    let cfg = std::fs::read_to_string(&p.config_path)
+        .unwrap()
+        .replace("mode = \"offline\"", "mode = \"cloud_first\"");
+    std::fs::write(&p.config_path, cfg).unwrap();
+
+    let d = dump(
+        &[&entry("e1", "one", 1000, "")],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    p.import(&d)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cloud_first"))
+        .stderr(predicates::str::contains("http://127.0.0.1:1"));
+
+    assert!(
+        !p.mem_path.exists(),
+        "the refusal must come before a local store is created"
+    );
+}
+
+// ── the run that reaches an embedder ─────────────────────────────────────────
+
+// Every other test in this file runs with no embedder reachable, so the
+// finishing pass never gets far enough to print anything and a single-document
+// parse of stdout passes for the wrong reason. This is the path a real user
+// hits.
+fn mock_embedder() -> (tokio::runtime::Runtime, wiremock::MockServer) {
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(async {
+        let server = MockServer::start().await;
+        plumbing_helpers::mount_health(&server).await;
+        // The server's wire format: raw little-endian f32, one 896-dim vector
+        // per requested chunk.
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_bytes(
+                        (0..896)
+                            .flat_map(|_| 0.01f32.to_le_bytes())
+                            .collect::<Vec<u8>>(),
+                    ),
+            )
+            .mount(&server)
+            .await;
+        server
+    });
+    (rt, server)
+}
+
+fn embedded_entries(mem_path: &std::path::Path) -> i64 {
+    plumbing_helpers::register_sqlite_vec();
+    let conn = rusqlite::Connection::open(mem_path).unwrap();
+    conn.query_row("SELECT count(*) FROM note_embeddings", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_json_import_that_reaches_an_embedder_writes_one_document_to_stdout() {
+    let p = project_that_may_find_an_embedder();
+    let (_rt, server) = mock_embedder();
+    p.set_embedder(&server.uri());
+
+    let d = dump(
+        &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
+        r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
+    );
+    let out = p
+        .import(&d)
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    // The finishing pass has its own json summary. Emitting it here would put
+    // a second document on stdout, and `from_slice` is exactly what a consumer
+    // does.
+    let summary: serde_json::Value = serde_json::from_slice(&out).unwrap_or_else(|e| {
+        panic!(
+            "stdout must be exactly one json document ({e}): {}",
+            String::from_utf8_lossy(&out)
+        )
+    });
+    assert_eq!(summary["memory_entries"], 2);
+
+    // Without this the test proves nothing: an unreachable embedder returns
+    // before the finishing pass prints, which is how the gap survived.
+    assert_eq!(
+        embedded_entries(&p.mem_path),
+        2,
+        "the embedder must actually have been reached"
     );
 }

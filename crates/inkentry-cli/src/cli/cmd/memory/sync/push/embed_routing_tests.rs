@@ -415,6 +415,7 @@ async fn the_repair_applies_exactly_where_reindex_does() {
             &mem_path,
             &cfg,
             None,
+            crate::cli::cmd::memory::reindex::Summary::Suppressed,
         )
         .await
         .is_err();

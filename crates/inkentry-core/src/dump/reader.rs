@@ -82,6 +82,9 @@ pub fn read(bytes: &[u8]) -> Result<Dump> {
     verify_digest(&footer.digest, &lines[..last])?;
 
     let by_ref = index_by_ref(&entities)?;
+    // Before the repeat check, so two blank identities are reported as blank
+    // rather than as a pair that contradicts itself.
+    refuse_blank_identities(&entities)?;
     refuse_repeated_identities(&entities)?;
 
     let relationships = dedupe(relationships);
@@ -211,6 +214,37 @@ fn index_by_ref(entities: &[Entity]) -> Result<HashMap<&str, usize>> {
         );
     }
     Ok(by_ref)
+}
+
+/// Refuse an entry whose carried identity is present but blank.
+///
+/// Each of these names the entry in the store it came from, and the format says
+/// a writer carries them rather than minting them — so each is either
+/// meaningful or absent, and `""` is neither. Nothing downstream can recover:
+/// a blank `uuid` reaches the store as a key it cannot look up and surfaces as
+/// an inserted note that vanished, and a blank `entity_id` silently collapses
+/// every entry carrying one into a single row. The type cannot carry this
+/// check, since `NoteId::from_str` accepts a whitespace-only token.
+fn refuse_blank_identities(entities: &[Entity]) -> Result<()> {
+    for e in entities {
+        let Entity::MemoryEntry(m) = e else { continue };
+        for (field, value) in [
+            ("uuid", m.uuid.as_deref()),
+            ("remote_id", m.remote_id.as_deref()),
+            ("entity_id", m.entity_id.as_deref()),
+        ] {
+            if value.is_some_and(|v| v.trim().is_empty()) {
+                bail!(
+                    "the entry {:?} ({:?}) carries a blank {field}; a carried identity names \
+                     an entry in the store it came from, so it is either meaningful or absent. \
+                     Refusing to import any of it.",
+                    m.dump_ref,
+                    m.title
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a dump in which two entries claim the same `uuid` or the same

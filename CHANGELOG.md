@@ -59,9 +59,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   the digest are both recomputed, and any mismatch refuses the entire file: a
   truncated dump, one altered byte, records in a different order, a
   relationship naming an entity that is not there, a record kind this build
-  does not know, or two entries claiming one `uuid` or one `remote_id`. There
-  is no partial import. Record order is otherwise unconstrained — a
-  relationship may appear before the entities it names.
+  does not know, two entries claiming one `uuid` or one `remote_id`, or an
+  entry carrying a blank `uuid`/`entity_id`/`remote_id`. There is no partial
+  import. Record order is otherwise unconstrained — a relationship may appear
+  before the entities it names.
+
+  **Import refuses to run when this project's memory does not live in the local
+  store.** Under `mode = "cloud_first"` with a `server_url` the server is the
+  store of record, so a local write would report success and leave the dump in
+  a file the project never opens; the refusal names the recovery path
+  (`INKENTRY_MODE=local_first`, then `inkentry sync`).
 
   **The refusal covers every store the import touches**, not just `memory.db`:
   memory entries, the project registry and the recorded-command table are
@@ -92,7 +99,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   skips the attempt and reports the same. This is worth stating plainly: the
   default search mode is hybrid, so unembedded entries are still returned by
   the full-text half, and semantic recall would otherwise degrade with nothing
-  to show for it.
+  to show for it. Under `--format json` the finishing pass prints nothing:
+  stdout carries exactly one document, the import summary, whether or not an
+  embedder was reachable.
 
 - `inkentry status` reports memory entries that are not yet in semantic search,
   in both the text and JSON views (`memory_embedding_pending`), naming

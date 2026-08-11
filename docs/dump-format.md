@@ -89,6 +89,13 @@ This is not cosmetic. The [footer digest](#footer-and-integrity) is computed ove
 the exact bytes of each line, so two writers that disagree about how to spell
 "absent" produce different digests for identical data.
 
+`""` is not a second spelling of absent either. A carried identity — `uuid`,
+`entity_id`, `remote_id` — names an entry in the store it came from, so it is
+either meaningful or omitted. A reader **refuses the whole dump** when one is
+present but blank or whitespace-only, naming the offending record: an empty
+identity is not a value any store can use, and it fails much later, describing
+neither the file nor the entry it came from.
+
 ## Header
 
 | Field | Type | Required | Meaning |
