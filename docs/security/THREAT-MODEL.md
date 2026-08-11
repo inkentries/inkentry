@@ -97,7 +97,7 @@ User filesystem
   │                                                            │ no secret scan on this path (*)       │
   │                                                            └──────────────────────────────────────┘
   │
-  └─ inkentry memory search
+  └─ inkentry search (memory corpus)
         ├─► embed query via HTTP ─► loopback inkentry-server (inference-only)
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
@@ -245,7 +245,7 @@ unauthenticated (no bearer required or sent).
 | Indexed source file contains adversarial LLM instructions | A | Low | Medium | XML delimiter isolation in `ask.rs`; angle-bracket escaping of retrieved context (issue #137) |
 | Indexed source file steers an in-process LLM `read_file` tool into reading an arbitrary path (e.g. `/Users/me/.ssh/id_rsa`, `../../etc/passwd`), exfiltrating file contents | A | — | — | **Surface removed** (ADR-079): the `explore` command that ran an in-process file-reading tool loop no longer exists, so there is no server-side `read_file` boundary to enforce. Multi-hop retrieval is now a caller-run skill; the equivalent norm — read only files inside the project — is documented as the caller's responsibility in `SKILL.md`. |
 | User query contains injection payload | A | Low | Low | Pre-flight check against known patterns (`ask.rs` lines 155–174) |
-| Memory note stored via team server contains injection payload, later surfaced to the caller's agent (e.g. via `inkentry memory search` / `context`) | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db`, not via the loopback server, so this attack requires access to the user's filesystem. Retrieved notes are untrusted content; the consuming agent must apply its own delimiter isolation / escaping when placing them into an LLM prompt. |
+| Memory note stored via team server contains injection payload, later surfaced to the caller's agent (e.g. via `inkentry search` / `context`) | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db`, not via the loopback server, so this attack requires access to the user's filesystem. Retrieved notes are untrusted content; the consuming agent must apply its own delimiter isolation / escaping when placing them into an LLM prompt. |
 
 **Residual risk:** Pre-flight only blocks known string patterns. Novel injection payloads in indexed content or memory notes could influence the LLM response.
 

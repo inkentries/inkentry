@@ -171,7 +171,7 @@ This scanner is **best-effort defense-in-depth, not a security boundary** — a 
 
 ### Multi-project registry
 
-`~/.config/inkentry/registry.db` tracks all indexed projects. `inkentry link` connects projects so that `inkentry search` queries multiple databases and merges results by vector distance.
+`~/.config/inkentry/registry.db` tracks all indexed projects. `inkentry link` connects projects so that `inkentry search` queries multiple databases and merges their code results by distance, before the code and memory corpora are fused by rank (ADR-081).
 
 ## Data flow: index
 

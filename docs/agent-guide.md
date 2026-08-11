@@ -29,11 +29,16 @@ Set `AGENT=true` and every `inkentry` command returns JSON:
 ```bash
 export AGENT=true
 
-inkentry search "error handling"          # → interleaved code + memory results (JSON envelopes)
+inkentry search "error handling"          # → [ { type, fused_rank, fused_score, corpus_rank, code|memory } ]
 inkentry status                           # → { files, chunks, embeddings, ... }
 inkentry memory list                      # → JSON array of notes
-inkentry search "auth decisions" --only-memory   # → memory notes with distance scores
+inkentry search "auth decisions" --only-memory   # → the same envelopes, every one type "memory"
 ```
+
+`search` always returns the envelope, never a bare array of hits: read the
+payload under `.code` or `.memory` according to `.type`. `--graph` neighbours
+and memory attachments are appended after the ranked members with `fused_rank`,
+`fused_score` and `corpus_rank` all `null`.
 
 You can also use `--format json` on individual commands.
 
@@ -328,7 +333,9 @@ inkentry link ../shared-utils
 inkentry link ../api-contracts
 ```
 
-Now `inkentry search` queries all three indexes and merges results by distance.
+Now `inkentry search` queries all three indexes and merges their code results by
+distance before fusing code and memory by rank. Pass `--local-only` to skip the
+linked projects.
 
 ## CI integration
 

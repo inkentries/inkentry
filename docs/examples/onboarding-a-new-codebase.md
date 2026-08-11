@@ -2,53 +2,63 @@
 
 You've been handed a large project you've never seen before. Here's how to get up to speed quickly with `inkentry`.
 
-> Steps marked **(requires server)** need an embedding model running. All other steps work with just the binary.
+> Steps marked **(requires server)** need an embedding model running. Everything else works with just the binary and an index.
 
-## Step 1: Understand the structure
+## Step 1: Read what previous contributors left behind
 
-Start with what's already committed — no indexing needed:
+`memory list` needs no index and no server, so start here:
 
 ```bash
-# Check if there are any stored memory entries from previous contributors
 inkentry memory list --kind context --limit 20
 inkentry memory list --kind decision --limit 10
 ```
 
 If someone has used inkentry on this repo before, you'll find architectural context here.
 
-## Step 2: Find the key entry points
+## Step 2: Build the index
+
+`search` and the code graph both read the index. One command sets both up:
 
 ```bash
-# Trace what the main symbols call and what calls them
-inkentry graph main
-inkentry graph Application --kind calls
+inkentry init
+```
 
+Full-text results are available as soon as the tree is parsed; semantic ranking
+builds in the background.
+
+## Step 3: Find the key entry points
+
+```bash
 # Full-text search for entry points
-inkentry search "main function application startup" --mode text
+inkentry search "main function application startup" --only-text
+
+# Trace what the main symbols call and what calls them
+inkentry search "main" --graph
+inkentry plumbing graph-edges --symbol Application
 ```
 
-## Step 3: Understand the data layer
+## Step 4: Understand the data layer
 
 ```bash
-inkentry graph Database --kind calls
-inkentry search "storage persistence database" --mode text
+inkentry search "storage persistence database" --only-text
+inkentry plumbing graph-edges --symbol Database
 ```
 
-## Step 4: Find the API surface
+## Step 5: Find the API surface
 
 ```bash
-inkentry search "HTTP handler route endpoint" --mode text
-inkentry graph Router --kind calls
+inkentry search "HTTP handler route endpoint" --only-text
+inkentry plumbing graph-edges --symbol Router
 ```
 
-## Step 5: Understand error handling
+## Step 6: Understand error handling
 
 ```bash
-inkentry search "error handling propagation" --mode text
-inkentry graph Error --kind extends
+inkentry search "error handling propagation" --only-text
+inkentry plumbing graph-edges --symbol Error
 ```
 
-## Step 6: Store what you've learned
+## Step 7: Store what you've learned
 
 ```bash
 inkentry memory add \
@@ -65,16 +75,17 @@ inkentry memory add \
 
 Future sessions (and future agents) start from your notes rather than re-discovering the same things.
 
-## Step 7: Check what tests exist
+## Step 8: Check what tests exist
 
 ```bash
-inkentry search "test suite integration unit" --mode text
-inkentry graph TestSuite --kind calls
+inkentry search "test suite integration unit" --only-text
+inkentry plumbing graph-edges --symbol TestSuite
 ```
 
-## Step 8: Semantic deep-dive (requires server)
+## Step 9: Semantic deep-dive (requires server)
 
-With a server running and a built index, these commands give richer results:
+Once the embedding pass has landed, the same command ranks by meaning and
+interleaves any recorded decisions on the topic:
 
 ```bash
 inkentry search "core interfaces abstractions domain objects" --graph
@@ -84,7 +95,8 @@ inkentry search "how the project is built and deployed" --graph
 ```
 
 For a synthesised answer, loop these primitives yourself — search, trace with
-`inkentry graph <symbol>`, read with `inkentry chunks <file>`, then refine the
-query and repeat. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
+`inkentry plumbing graph-edges --symbol <symbol>`, read with
+`inkentry chunks <file>`, then refine the query and repeat. See the
+"Exploring: multi-hop retrieval" section of `SKILL.md`.
 
 After this session you'll have a solid mental model and a set of memory entries that make every future session faster.
