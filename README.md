@@ -24,7 +24,7 @@ curl -fsSL https://get.inkentry.com/install.sh | sh
 
 > Also available via Homebrew (`brew install inkentries/inkentry/inkentry`), a
 > Debian `.deb`, or a tarball from the
-> [releases page](https://github.com/inkentries/inkentr/releases). See
+> [releases page](https://github.com/inkentries/inkentry/releases). See
 > [Getting Started](docs/getting-started.md) for all install paths.
 
 **2. Initialise the project**

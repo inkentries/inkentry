@@ -27,24 +27,24 @@ Windows `.zip`, and installs `inkentry.exe` and `inkentry-server.exe` to
 Open PowerShell and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1 | iex
+irm https://get.inkentry.com/install.ps1 | iex
 inkentry --version
 ```
 
 Preview what it would do without writing anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.ps1))) -DryRun
+& ([scriptblock]::Create((irm https://get.inkentry.com/install.ps1))) -DryRun
 ```
 
 #### Scoop
 
-The repo doubles as a [Scoop](https://scoop.sh) bucket, so `scoop` installs and
-updates `inkentry.exe` and `inkentry-server.exe` from the release `.zip` and keeps
-them current with `scoop update`:
+[Scoop](https://scoop.sh) installs and updates `inkentry.exe` and
+`inkentry-server.exe` from the release `.zip`, and keeps them current with
+`scoop update`:
 
 ```powershell
-scoop bucket add inkentry https://github.com/spelunk-cloud/spelunk
+scoop bucket add inkentry https://github.com/inkentries/scoop-inkentry
 scoop install inkentry
 inkentry --version
 ```
@@ -52,13 +52,13 @@ inkentry --version
 #### Manual `.zip` download
 
 Download the `.zip` for your platform from the
-[releases page](https://github.com/spelunk-cloud/spelunk/releases). The Windows
+[releases page](https://github.com/inkentries/inkentry/releases). The Windows
 archive is named `inkentry-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
 place `inkentry.exe` and `inkentry-server.exe` anywhere on your `PATH`
 (e.g. `C:\Users\<you>\bin\`).
 
 > **winget:** deferred, available on request. Track the
-> [releases page](https://github.com/spelunk-cloud/spelunk/releases) or the repo
+> [releases page](https://github.com/inkentries/inkentry/releases) or the repo
 > for updates.
 
 ---
@@ -76,20 +76,20 @@ downloads the matching tarball, and installs both binaries to `/usr/local/bin`
 (or `~/.local/bin` when not run as root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh
+curl -fsSL https://get.inkentry.com/install.sh | sh
 inkentry --version
 ```
 
 Preview what it would do without writing anything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh -s -- --dry-run
+curl -fsSL https://get.inkentry.com/install.sh | sh -s -- --dry-run
 ```
 
 #### Homebrew (macOS and Linux)
 
 ```bash
-brew install spelunk-cloud/spelunk/spelunk
+brew install inkentries/inkentry/inkentry
 inkentry --version
 ```
 
@@ -101,7 +101,7 @@ for `<version>` (e.g. `0.8.0`). The download path is pinned to the release tag
 `releases/latest/download/…` form 404s on a versioned asset name (see #340):
 
 ```bash
-curl -fsSLO https://github.com/spelunk-cloud/spelunk/releases/download/v<version>/inkentry_<version>_amd64.deb
+curl -fsSLO https://github.com/inkentries/inkentry/releases/download/v<version>/inkentry_<version>_amd64.deb
 sudo apt install ./inkentry_<version>_amd64.deb
 inkentry --version
 ```
@@ -131,7 +131,7 @@ binaries on your `$PATH`. Supported targets:
 
 ```bash
 # Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.9.0
-curl -L https://github.com/spelunk-cloud/spelunk/releases/download/<version>/inkentry-<version>-aarch64-apple-darwin.tar.gz \
+curl -L https://github.com/inkentries/inkentry/releases/download/<version>/inkentry-<version>-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x inkentry inkentry-server && sudo mv inkentry inkentry-server /usr/local/bin/
 
 # Verify

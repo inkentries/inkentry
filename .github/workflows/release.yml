@@ -471,27 +471,16 @@ jobs:
           git push origin main
 
   update-scoop-manifest:
-    name: Update Scoop bucket (bucket/inkentry.json)
+    name: Update Scoop bucket (inkentries/scoop-inkentry)
     needs: release
     # Skip pre-release tags (rc/beta/alpha) — the bucket only tracks stable releases.
     if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Serializes retries/manual re-runs for the same tag: two overlapping runs
-    # would both push to the same ci/scoop-manifest-<tag> branch and race on
-    # `gh pr create` (the loser errors "pull request already exists" and
-    # fails the job even though the PR the winner opened is fine).
-    concurrency:
-      group: scoop-manifest-${{ github.ref_name }}
-      cancel-in-progress: false
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
-      # Commit lands on main, not the tag ref.
       - uses: actions/checkout@v7
-        with:
-          ref: main
 
       - name: Read Windows sha256 digest from the GitHub release
         env:
@@ -508,50 +497,35 @@ jobs:
           echo "SHA_X86_64_WINDOWS=${SHA_X86_64_WINDOWS}" >> "$GITHUB_ENV"
           echo "VER=${VER}"                               >> "$GITHUB_ENV"
 
+      - name: Checkout scoop-inkentry bucket
+        uses: actions/checkout@v7
+        with:
+          repository: inkentries/scoop-inkentry
+          path: bucket-repo
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+
       - name: Regenerate bucket/inkentry.json
         run: |
           node .github/scripts/update-scoop-manifest.js \
             --version "$VER" \
             --sha-x86_64-windows "$SHA_X86_64_WINDOWS" \
-            --out bucket/inkentry.json
+            --out bucket-repo/bucket/inkentry.json
 
-          cat bucket/inkentry.json
+          cat bucket-repo/bucket/inkentry.json
 
-      # This repo doubles as the Scoop bucket (unlike the separate,
-      # unprotected homebrew-inkentry tap repo above), so main's ruleset
-      # applies: a direct `git push origin main` is rejected with GH013
-      # (pull_request rule violation). That ruleset's
-      # required_approving_review_count is 0 and it has no required status
-      # checks, so opening a PR and merging it immediately in this same job
-      # satisfies the rule with no human in the loop and no extra token:
-      # just the default GITHUB_TOKEN with pull-requests: write added above.
-      - name: Open and merge a PR updating bucket/inkentry.json
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit and push to the bucket
+        working-directory: bucket-repo
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- bucket/inkentry.json; then
-            echo "No changes to bucket/inkentry.json — skipping PR."
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/inkentry.json
+
+          if git diff --cached --quiet -- bucket/inkentry.json; then
+            echo "No changes to bucket/inkentry.json — skipping push."
             exit 0
           fi
 
-          BRANCH="ci/scoop-manifest-${{ github.ref_name }}"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add bucket/inkentry.json
           git commit -m "scoop: inkentry ${{ github.ref_name }}"
-          # -f: a retried run of this workflow (same tag) reuses the branch name.
-          git push -f origin "$BRANCH"
-
-          if ! gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            gh pr create \
-              --title "scoop: inkentry ${{ github.ref_name }}" \
-              --body "Automated Scoop bucket update for ${{ github.ref_name }}." \
-              --base main \
-              --head "$BRANCH"
-          fi
-
-          gh pr merge "$BRANCH" --merge --delete-branch
+          git push origin main
