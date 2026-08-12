@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-cli"
-version = "0.9.8"
+version = "1.0.0-rc0"
 edition = "2024"
 description = "inkentry — AI agent context retrieval CLI"
 license = "MIT"
