@@ -89,14 +89,31 @@ pub async fn resolve_llm_route(cfg: &Config, project_root: &Path) -> LlmRoute {
     }
 
     let inference_tier = get_inference_tier(cfg).await;
-    if let Some(route) = local_route(cfg, project_root, &inference_tier) {
+    if let Some(route) = route_without_probing_the_remote(cfg, project_root, &inference_tier) {
         return route;
     }
-
-    if cfg.server_url.is_none() {
-        return LlmRoute::Unavailable(NoLlmReason::NoLlmAnywhere);
-    }
     remote_route(cfg, project_root, get_tier(cfg).await)
+}
+
+/// Everything the rule decides before an explicit `server_url` is worth
+/// probing: steps 2 and 3, plus step 5 as reached when there is no remote to
+/// try. `None` means `server_url` is set and step 4 must probe it.
+///
+/// Split from [`resolve_llm_route`] so that terminal is reachable from a test
+/// without a loopback probe: auto-discovery falls back to port 7777, so on a
+/// machine running the local daemon there is no config that makes
+/// `resolve_llm_route` observe "no local server".
+fn route_without_probing_the_remote(
+    cfg: &Config,
+    project_root: &Path,
+    inference_tier: &Tier,
+) -> Option<LlmRoute> {
+    if let Some(route) = local_route(cfg, project_root, inference_tier) {
+        return Some(route);
+    }
+    cfg.server_url
+        .is_none()
+        .then_some(LlmRoute::Unavailable(NoLlmReason::NoLlmAnywhere))
 }
 
 /// Steps 2 and 3: decide from the local inference tier alone.
@@ -218,21 +235,6 @@ mod tests {
             std::fs::create_dir_all(&state_dir).expect("create state dir");
             std::fs::write(state_dir.join("server.port"), format!("{}\n", port_of(uri)))
                 .expect("write server.port");
-            let previous = std::env::var_os("INKENTRY_STATE_DIR");
-            unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
-            Self {
-                _tmp: tmp,
-                previous,
-            }
-        }
-
-        // An empty state dir: loopback auto-discovery finds nothing, and the
-        // machine's real daemon on the default port cannot be mistaken for the
-        // fixture because nothing is mounted for it either.
-        fn empty() -> Self {
-            let tmp = tempfile::TempDir::new().expect("temp state dir");
-            let state_dir = tmp.path().join("state");
-            std::fs::create_dir_all(&state_dir).expect("create state dir");
             let previous = std::env::var_os("INKENTRY_STATE_DIR");
             unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
             Self {
@@ -391,15 +393,27 @@ mod tests {
         );
     }
 
-    // No loopback, no `server_url`: nothing to route to, and the reason must be
-    // the actionable one rather than the offline one.
-    #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
-    async fn nothing_configured_anywhere_reports_no_llm_not_offline() {
-        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
-        let _state = StateDirGuard::empty();
+    // ── the two decision steps, exhaustively ─────────────────────────────────
+    //
+    // `get_tier` caches its probe in a process-wide cell with no reset hook, so
+    // the remote arm cannot be driven end to end from a unit test without
+    // making the result depend on test ordering. These cover the decision
+    // directly; `tests/command_llm_routing.rs` drives the same arms through a
+    // real `inkentry` process.
 
-        let route = resolve_llm_route(&Config::default(), root()).await;
+    // No local server, no `server_url`: nothing to route to, and the reason
+    // must be the actionable one rather than the offline one, which belongs
+    // only to the explicit opt-out the two tests above pin.
+    //
+    // Driven off `Tier::Offline` rather than a real probe: loopback
+    // auto-discovery falls back to port 7777, so an empty state dir does not
+    // mean "no local server" on a machine running the daemon this repo's own
+    // agent workflow encourages — it means the daemon answers and the route
+    // comes back `Local`.
+    #[test]
+    fn nothing_configured_anywhere_reports_no_llm_not_offline() {
+        let route = route_without_probing_the_remote(&Config::default(), root(), &Tier::Offline)
+            .expect("with no server_url there is nothing left to probe");
         assert_eq!(
             route.reason(),
             Some(NoLlmReason::NoLlmAnywhere),
@@ -407,13 +421,20 @@ mod tests {
         );
     }
 
-    // ── the two decision steps, exhaustively ─────────────────────────────────
-    //
-    // `get_tier` caches its probe in a process-wide cell with no reset hook, so
-    // the remote arm cannot be driven end to end from a unit test without
-    // making the result depend on test ordering. These cover the decision
-    // directly; `tests/index_llm_routing.rs` drives the same arms through a
-    // real `inkentry` process.
+    // The other half of that terminal: a configured `server_url` must not be
+    // swallowed by it, or step 4 would never run.
+    #[test]
+    fn a_configured_server_url_still_reaches_the_remote_step() {
+        let cfg = Config {
+            server_url: Some("https://team.example:7777".to_string()),
+            project_id: Some("team/proj".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            route_without_probing_the_remote(&cfg, root(), &Tier::Offline).is_none(),
+            "the remote arm must still be given its chance to probe"
+        );
+    }
 
     #[test]
     fn local_route_takes_the_local_llm_when_the_tier_advertises_one() {
