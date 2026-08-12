@@ -3,20 +3,31 @@
 #
 # The release job that uses the token only runs on stable tags, so without this
 # its first exercise would be the 1.0.0 tag itself — and a scope problem would
-# surface after the release was already published. Run this once after minting
-# or rotating the token.
+# surface after the release was already published.
 #
-# Deliberately a separate workflow rather than a `workflow_dispatch` on
-# release.yml: that would make every release job manually triggerable,
-# including the one that publishes a GitHub release.
+# Deliberately a separate workflow rather than a trigger on release.yml: adding
+# one there would make every release job runnable on demand, including the one
+# that publishes a GitHub release.
 name: Scoop bucket token check
 
 on:
+  # Runs on the pull request branch, so a token change is proved before it
+  # merges rather than after. Path-scoped because the answer only changes when
+  # the check or the job that shares its token changes.
+  pull_request:
+    paths:
+      - .github/workflows/scoop-bucket-token-check.yml
+      - .github/workflows/release.yml
+  # Kept so the token can be re-checked after a rotation without inventing a
+  # pull request that touches those paths.
   workflow_dispatch:
 
 jobs:
   check:
     name: Verify SCOOP_BUCKET_TOKEN against the bucket
+    # Pull requests from forks receive no secrets, so the token steps would
+    # fail for a reason that has nothing to do with the token.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
