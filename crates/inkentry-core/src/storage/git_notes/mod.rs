@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
@@ -319,6 +319,142 @@ pub async fn append_to_git_notes(
     Ok(AppendOutcome {
         rewrite_ref,
         lock_degradation,
+    })
+}
+
+/// What [`append_new_to_git_notes`] did.
+#[derive(Debug)]
+pub struct BatchAppendOutcome {
+    /// The carry-config status ensured along the way; a CLI caller announces
+    /// it once.
+    pub rewrite_ref: RewriteRefStatus,
+    /// Set when the write proceeded **without** the notes lock, exactly as
+    /// [`AppendOutcome::lock_degradation`].
+    pub lock_degradation: Option<String>,
+    /// Records appended to HEAD's note.
+    pub written: usize,
+    /// Records whose entity was already on the ref, so nothing was appended
+    /// for them.
+    pub already_carried: usize,
+}
+
+/// Append every record in `records` whose entity is not already on
+/// `refs/notes/inkentry`, as JSON lines on HEAD's note, in one
+/// read-modify-write under a single lock.
+///
+/// This is [`append_to_git_notes`] for a whole back catalogue arriving at once
+/// (`inkentry import`), and it differs from it in exactly two ways.
+///
+/// **One lock, one write.** Calling the single-record helper per entry would
+/// take and release the lock once per entry and rewrite the note N times, so a
+/// dump of a few hundred entries would hold and drop the lock a few hundred
+/// times while a concurrent `memory add` waits out its budget against each.
+/// The whole batch is one guarded section instead, which keeps ADR-069 D8's
+/// contract (hold the lock or write nothing) at a fraction of the contention.
+///
+/// **Records already on the ref are skipped.** A dump whose entries came off
+/// this carrier in the first place must not be written back to it. Appending
+/// them anyway would still converge — [`fold_records`] collapses copies by
+/// `entity_id` — but it would grow the ref by a full duplicate of the log on
+/// every re-import, and a reader inspecting the raw blob would see each entry
+/// twice. The gate is the ref's own entity set, never the local store's:
+/// presence in `memory.db` says nothing about presence here, and that gap is
+/// the whole reason imported memory did not travel.
+///
+/// A ref that cannot be read is an `Err` and nothing is written, matching the
+/// read-failure rule the single-record path already holds to: a writer that
+/// mistakes an unreadable ref for an empty one cannot tell a duplicate from a
+/// new entry.
+pub async fn append_new_to_git_notes(
+    git_root: Option<&std::path::Path>,
+    records: &[NoteRecord],
+) -> Result<BatchAppendOutcome> {
+    let rewrite_ref = ensure_notes_rewrite_ref(git_root).await;
+
+    let lock = writer_lock(git_root).await?;
+    let lock_degradation = match &lock {
+        WriterLock::Held { .. } => None,
+        WriterLock::Unlocked { path, reason } => Some(format!(
+            "wrote to git notes without the cross-process lock (lock file {} \
+             unusable: {reason}); concurrent memory writes in this repo can \
+             lose entries",
+            path.display()
+        )),
+    };
+
+    let backend = match git_root {
+        Some(root) => GitNotesBackend::with_root(root.to_path_buf()),
+        None => GitNotesBackend::new(),
+    };
+    // Every reachable note, not just HEAD's: an entry this dump carries may
+    // have been written on any commit in the history. Reads take no lock, so
+    // this cannot re-enter the one held above.
+    let carried: HashSet<String> = backend
+        .folded_records()
+        .await
+        .context("could not read the entries already on the notes ref, so not writing to it")?
+        .iter()
+        .map(NoteRecord::resolve_entity_id)
+        .collect();
+
+    let fresh: Vec<&NoteRecord> = records
+        .iter()
+        .filter(|r| !carried.contains(&r.resolve_entity_id()))
+        .collect();
+    let already_carried = records.len() - fresh.len();
+    if fresh.is_empty() {
+        return Ok(BatchAppendOutcome {
+            rewrite_ref,
+            lock_degradation,
+            written: 0,
+            already_carried,
+        });
+    }
+
+    let head = run_git(git_root, &["rev-parse", "HEAD"])
+        .await
+        .map(|s| s.trim().to_string())?;
+
+    let existing = read_note_body_with_retry(git_root, &head)
+        .await
+        .context("could not read the existing note, so not overwriting it")?;
+
+    let appended = fresh
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .join("\n");
+
+    let combined = match existing {
+        Some(body) if !body.trim().is_empty() => {
+            format!("{}\n{}", body.trim_end_matches('\n'), appended)
+        }
+        _ => appended,
+    };
+
+    // Body over stdin and `--` before the object, for the reasons
+    // `append_to_git_notes` sets out at its own write.
+    run_git_with_stdin(
+        git_root,
+        &[
+            "notes",
+            "--ref=inkentry",
+            "add",
+            "-f",
+            "-F",
+            "-",
+            "--",
+            &head,
+        ],
+        &combined,
+    )
+    .await?;
+
+    Ok(BatchAppendOutcome {
+        rewrite_ref,
+        lock_degradation,
+        written: fresh.len(),
+        already_carried,
     })
 }
 

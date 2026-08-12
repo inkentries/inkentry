@@ -58,7 +58,7 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
             .await
             .context("resolving where this project's memory lives")?;
 
-    let summary = {
+    let outcome = {
         let store = MemoryStore::open(&mem_path)
             .with_context(|| format!("opening memory store at {}", mem_path.display()))?;
         let registry = Registry::open().ok();
@@ -70,6 +70,12 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
         };
         dump::apply(&parsed, &targets)?
     };
+    let mut summary = outcome.summary;
+    let carried = carry_to_git_notes(&cfg, &mem_path, &outcome.carrier_records).await;
+    if let Some(carried) = &carried {
+        summary.memory_entries_carried = carried.written;
+        summary.memory_entries_already_carried = carried.already_carried;
+    }
 
     if json {
         println!("{}", serde_json::to_string(&summary)?);
@@ -88,6 +94,7 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
             if summary.projects == 1 { "" } else { "s" },
         );
         report_records_that_did_not_become_rows(&summary);
+        report_what_travels(carried.as_ref());
     }
 
     finish_embeddings(
@@ -132,6 +139,113 @@ fn refuse_when_memory_is_not_local(cfg: &Config) -> Result<()> {
          this project never reads. Import into the local store first — re-run with \
          INKENTRY_MODE=local_first — then 'inkentry sync' to carry it up to {url}."
     );
+}
+
+/// Append the imported entries to `refs/notes/inkentry`, so they clone with the
+/// repository like every other memory entry.
+///
+/// Runs **after** the import transaction commits, and is best-effort, exactly
+/// as `memory add`'s write-through is: the local store is the store of record
+/// and already holds the entries, so a failed carry is a warning rather than a
+/// reason to fail a crossing the user cannot easily repeat. Unlike `memory
+/// add`'s pre-`init` case there is no variant where the carrier is the sole
+/// store — an import always has a `memory.db` to write to first.
+///
+/// Returns `None` when there is nothing to carry to: `store_in_git_notes` is
+/// off, or this store does not sit inside a git repository (`--db` pointed
+/// outside one, or the project is not versioned). Neither is a failure, and
+/// neither has anything to report.
+///
+/// The repo is resolved from `mem_path`, never the process CWD: a `--db` naming
+/// another project's store must carry to that project's repo, not to whichever
+/// one the user happens to be standing in.
+async fn carry_to_git_notes(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    records: &[inkentry_core::storage::NoteRecord],
+) -> Option<inkentry_core::storage::BatchAppendOutcome> {
+    use inkentry_core::storage::{NotesRefs, append_new_to_git_notes};
+
+    if !cfg.store_in_git_notes || records.is_empty() {
+        return None;
+    }
+    let git_root = NotesRefs::discover(mem_path.parent())?
+        .workdir()?
+        .to_path_buf();
+
+    match append_new_to_git_notes(Some(&git_root), records).await {
+        Ok(outcome) => {
+            // Both warnings go to stderr rather than joining the counts on
+            // stdout, so they survive `--format json`, where stdout carries
+            // exactly one document.
+            //
+            // Visible without RUST_LOG: an unserialized write can lose a
+            // concurrent entry, and this is the only channel that reaches the
+            // user (ADR-069 D8).
+            if let Some(degradation) = &outcome.lock_degradation {
+                eprintln!("Warning: {degradation}");
+            }
+            if outcome.rewrite_ref == inkentry_core::storage::RewriteRefStatus::Failed {
+                eprintln!(
+                    "Warning: could not set git notes.rewriteRef, so memory may not survive \
+                     `git commit --amend` or `git rebase`. Set it with: \
+                     git config --add notes.rewriteRef refs/notes/inkentry"
+                );
+            }
+            Some(outcome)
+        }
+        // Visible without RUST_LOG: a swallowed carry failure is how imported
+        // memory silently stops traveling with the repo, which is the defect
+        // this write exists to close.
+        Err(e) => {
+            eprintln!(
+                "Warning: entries were imported into the local store, but the git-notes \
+                 carry failed, so they will not travel with the repo: {e:#}"
+            );
+            None
+        }
+    }
+}
+
+/// Say what will and will not clone with the repository.
+///
+/// The already-carried count is not noise: it is the answer for someone
+/// re-importing a dump that came off this repo's own notes ref, who would
+/// otherwise read "carried 0" as a failure.
+fn report_what_travels(carried: Option<&inkentry_core::storage::BatchAppendOutcome>) {
+    let Some(carried) = carried else { return };
+    if carried.written > 0 {
+        println!(
+            "Carried {} entr{} into git notes, so {} travel with the repository.",
+            carried.written,
+            if carried.written == 1 { "y" } else { "ies" },
+            if carried.written == 1 { "it" } else { "they" },
+        );
+    }
+    if carried.already_carried > 0 {
+        println!(
+            "{} w{} already in this repository's git notes and {} written again.",
+            carried.already_carried,
+            if carried.already_carried == 1 {
+                "as"
+            } else {
+                "ere"
+            },
+            if carried.already_carried == 1 {
+                "was not"
+            } else {
+                "were not"
+            },
+        );
+    }
+    // Announced only by the call that set it, so a repo says this once; the
+    // failure case is a warning and went to stderr with the others.
+    if carried.rewrite_ref == inkentry_core::storage::RewriteRefStatus::Configured {
+        println!(
+            "Configured git notes.rewriteRef in this repo, so memory now survives \
+             `git commit --amend` and `git rebase`."
+        );
+    }
 }
 
 /// Say what happened to the records that did not become a row.

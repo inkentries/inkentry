@@ -11,5 +11,5 @@ pub mod record;
 #[cfg(test)]
 mod reader_tests;
 
-pub use import::{ImportSummary, ImportTargets, apply};
+pub use import::{ImportOutcome, ImportSummary, ImportTargets, apply};
 pub use reader::{Dump, read};
