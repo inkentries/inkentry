@@ -10,8 +10,8 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    require_embedder, require_project, validate_embedding_dim, validate_project_slug,
-    validate_title_body,
+    embed_for_storage, require_embedder, require_project, validate_embedding_dim,
+    validate_project_slug, validate_title_body,
 };
 
 // ── Request / Response types ──────────────────────────────────────────────────
@@ -120,6 +120,8 @@ pub struct SupersedeRequest {
 /// close to one or more existing active entries (similarity ≥ conflict_threshold).
 /// The entry is still stored in both cases; the 409 is informational.
 /// Returns **422** when the entry contains prompt-injection patterns.
+/// Returns **429** (with `Retry-After`) when the entry needs server-side
+/// embedding and the embed admission queue is full.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory",
@@ -133,6 +135,7 @@ pub struct SupersedeRequest {
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
         (status = 422, description = "Entry rejected: prompt injection detected"),
+        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -173,23 +176,13 @@ pub async fn add_note(
     }
 
     // Server-side embedding: embed the entry when no client vector is supplied.
-    // Only the *ready* backend can embed; while the embedder is loading/unavailable
-    // we store the entry text-only (graceful: a memory write must not block on
-    // model warm-up), matching the existing "no embedder" degradation.
+    // Done before the DB lock is taken, under an admission permit: see
+    // `embed_for_storage`.
     let server_embedding: Option<Vec<f32>> = if body.embedding.is_none() {
-        if let Some(embedder) = state.embedder.backend() {
-            let text = format!("title: {} | text: {}", body.title, body.body);
-            match embedder.embed(&[text.as_str()]).await {
-                Ok(mut vecs) if !vecs.is_empty() => vecs.pop(),
-                Ok(_) => None,
-                Err(e) => {
-                    tracing::warn!("server-side embedding failed, storing without vector: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        let text = format!("title: {} | text: {}", body.title, body.body);
+        embed_for_storage(&state, &[text.as_str()])
+            .await?
+            .and_then(|mut vectors| vectors.pop())
     } else {
         None
     };

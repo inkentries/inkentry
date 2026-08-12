@@ -73,6 +73,11 @@ mod liveness_under_embed {
             cv.notify_all();
         }
 
+        fn count(counter: &(Mutex<usize>, Condvar)) -> usize {
+            let (lock, _) = counter;
+            *lock.lock().expect("gate counter")
+        }
+
         fn await_at_least(counter: &(Mutex<usize>, Condvar), target: usize, what: &str) {
             let (lock, cv) = counter;
             let mut count = lock.lock().expect("gate counter");
@@ -186,6 +191,39 @@ mod liveness_under_embed {
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap();
             app.oneshot(req).await.unwrap().status()
+        })
+    }
+
+    fn spawn_batch(app: &axum::Router, entries: usize) -> tokio::task::JoinHandle<(u16, Value)> {
+        let app = app.clone();
+        let payload: Vec<Value> = (0..entries)
+            .map(|i| {
+                json!({
+                    "kind": "note",
+                    "title": format!("entry {i}"),
+                    "body": "pushed by a routine sync",
+                    "external_id": format!("ext-{i}"),
+                })
+            })
+            .collect();
+        tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/projects/{PROJECT}/memory/batch"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({ "entries": payload })).unwrap(),
+                ))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
         })
     }
 
@@ -453,6 +491,72 @@ mod liveness_under_embed {
         assert!(
             elapsed < LIVENESS_BOUND,
             "health took {elapsed:?} once the abandoned embed drained"
+        );
+    }
+
+    // The global `ServerDb` mutex must not be held across an embed. A batch
+    // push is the route that makes this bite on the normal path: the CLI sends
+    // 50 text-only entries per chunk on every `sync`, so an embed awaited under
+    // that lock parks every other request on the server — memory CRUD,
+    // `/memory/stream`'s poll loop, project reads — for the whole batch, long
+    // past the request timeout once a real CPU embedder is behind it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_batch_push_holds_no_db_lock_while_it_embeds() {
+        let (app, gate) = parked_app(CapLocation::LockFreeField);
+        let batch = spawn_batch(&app, 3);
+        await_parked(&gate, 1).await;
+
+        // `GET /v1/projects` takes the same one `ServerDb` mutex the batch
+        // handler needs to write its entries, and touches no embedder.
+        let probe_app = app.clone();
+        let probe = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("GET")
+                .uri("/v1/projects")
+                .body(Body::empty())
+                .unwrap();
+            probe_app.oneshot(req).await.unwrap().status()
+        });
+        let probed = tokio::time::timeout(LIVENESS_BOUND, probe).await;
+
+        gate.release();
+        let status = probed
+            .unwrap_or_else(|_| {
+                panic!(
+                    "GET /v1/projects did not answer within {LIVENESS_BOUND:?} while a batch \
+                     push sat in the embedder: the handler is holding the global DB lock \
+                     across the embed and every other request is queued behind it"
+                )
+            })
+            .expect("probe task");
+        assert_eq!(status, http::StatusCode::OK);
+
+        let (batch_status, body) = batch.await.expect("batch task");
+        assert_eq!(
+            batch_status, 207,
+            "the batch itself must still complete normally: body {body}"
+        );
+        assert_eq!(body["created"], json!(3));
+    }
+
+    // One embed call for the whole batch, not one per entry: N serialized
+    // round-trips through the mutex-serialized embedder is what turns a routine
+    // 50-entry push into a multi-second request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_batch_push_embeds_every_entry_in_one_call() {
+        let (app, gate) = parked_app(CapLocation::LockFreeField);
+        let batch = spawn_batch(&app, 3);
+        await_parked(&gate, 1).await;
+        gate.release();
+
+        let (status, body) = batch.await.expect("batch task");
+        assert_eq!(status, 207, "body: {body}");
+        assert_eq!(body["created"], json!(3));
+        assert_eq!(
+            EmbedGate::count(&gate.queued),
+            1,
+            "a 3-entry batch reached the embedder more than once: entries must be \
+             embedded as one batched call"
         );
     }
 

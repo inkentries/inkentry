@@ -242,6 +242,56 @@ fn require_embedder(
     }
 }
 
+/// Embed memory-entry text for the storage routes (`add_note`,
+/// `push_memory_batch`), which store text-only rather than failing when no
+/// vector can be produced.
+///
+/// Two invariants live here rather than at each call site, where both have been
+/// broken silently:
+///
+/// - **Never called with the `ServerDb` lock held.** That lock is global and the
+///   embedder is serialized and slow, so an embed awaited under it stalls every
+///   other request on the server — memory CRUD, `/memory/stream`'s poll loop and
+///   liveness alike — until the whole batch finishes.
+/// - **Runs under an [`crate::EmbedAdmission`] permit**, like every other
+///   embed-consuming route, so a storage write cannot bypass the bound on how
+///   many callers may wait on the embedder. The permit is released when this
+///   returns.
+///
+/// The whole slice goes in one call: batching is both what keeps the lock-free
+/// window short and what makes the embed itself cheaper. `None` means "store
+/// these text-only": no ready backend, an embed error, or a vector count that
+/// does not line up with the input.
+async fn embed_for_storage(
+    state: &AppState,
+    texts: &[&str],
+) -> Result<Option<Vec<Vec<f32>>>, AppError> {
+    if texts.is_empty() {
+        return Ok(None);
+    }
+    // Only the *ready* backend embeds; loading/unavailable/disabled stores
+    // text-only, since a memory write must not block on model warm-up.
+    let Some(embedder) = state.embedder.backend() else {
+        return Ok(None);
+    };
+    let _admission = state.embed_admission.try_acquire()?;
+    match embedder.embed(texts).await {
+        Ok(vectors) if vectors.len() == texts.len() => Ok(Some(vectors)),
+        Ok(vectors) => {
+            tracing::warn!(
+                "server-side embedding returned {} vectors for {} entries, storing without vectors",
+                vectors.len(),
+                texts.len(),
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::warn!("server-side embedding failed, storing without vector: {e}");
+            Ok(None)
+        }
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn require_project(db: &crate::db::ServerDb, slug: &str) -> Result<crate::db::Project, AppError> {
