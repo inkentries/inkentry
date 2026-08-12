@@ -31,6 +31,19 @@ Two install paths live outside this workflow:
   pushes it to that repo's `main` branch directly, using the
   `HOMEBREW_TAP_TOKEN` secret (a token with `contents: write` on
   `homebrew-inkentry` — `GITHUB_TOKEN` only has access to this repo).
+- **Scoop bucket** lives in the separate `inkentries/scoop-inkentry` repo,
+  seeded at v0.9.8. `update-scoop-manifest` regenerates `bucket/inkentry.json`
+  there and pushes to its `main` directly, using a `SCOOP_BUCKET_TOKEN` secret
+  with `contents: write` on the bucket — `HOMEBREW_TAP_TOKEN` is scoped to the
+  tap and cannot be reused. It lived in this repo until the bucket was split
+  out; a pull request opened with `GITHUB_TOKEN` does not trigger workflows, so
+  the merge waited on someone approving a workflow run by hand, and the manifest
+  commit landed after the tag was cut and so opened the *next* release's
+  changelog carrying the *previous* version.
+
+  Both packaging jobs skip `-rc`/`-beta`/`-alpha` tags, so a release candidate
+  publishes neither a formula nor a manifest, and neither token is exercised
+  until the first stable tag.
 
 ## Supported platforms
 
@@ -76,7 +89,7 @@ on the support floor.
 real GitHub Release, or the Homebrew/Scoop publish steps. Those are only
 exercised by `.github/workflows/release.yml` at real tag-push time. The
 script has no code path that can create a GitHub release, push to the
-`homebrew-inkentry` tap, or write `bucket/inkentry.json`.
+`homebrew-inkentry` tap, or write the Scoop bucket's `bucket/inkentry.json`.
 
 Run it before tagging; a failure here is cheaper to fix than one discovered
 after a tag is already pushed.
