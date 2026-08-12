@@ -64,6 +64,6 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
         )),
         instance_id,
         started_by: None,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        relay: inkentry_server::relay::RelayRegistry::disabled(),
     }
 }

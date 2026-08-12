@@ -43,7 +43,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
         )),
         instance_id,
         started_by: None,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

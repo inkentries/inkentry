@@ -915,6 +915,21 @@ mod tests {
     // (no relay reachable — the clause must not depend on it for `pending`,
     // only for `last synced`).
 
+    // The relay only connects to team targets local configuration declares;
+    // these tests stand in for that config by declaring their mock team server.
+    fn relay_declaring(
+        server_url: &str,
+        project_id: &str,
+    ) -> inkentry_server::relay::RelayRegistry {
+        inkentry_server::relay::RelayRegistry::new(inkentry_server::relay::RelayPolicy::allowing(
+            vec![inkentry_core::config::TeamTarget {
+                server_url: server_url.to_string(),
+                project_id: project_id.to_string(),
+                server_ca: None,
+            }],
+        ))
+    }
+
     fn register_sqlite_vec_for_status_tests() {
         use std::sync::OnceLock;
         static INIT: OnceLock<()> = OnceLock::new();
@@ -1023,7 +1038,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
-            relay: inkentry_server::relay::RelayRegistry::new(),
+            relay: relay_declaring(&team_server.uri(), "proj"),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1134,7 +1149,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
-            relay: inkentry_server::relay::RelayRegistry::new(),
+            relay: relay_declaring(&team_server.uri(), "proj"),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

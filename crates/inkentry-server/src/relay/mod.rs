@@ -28,14 +28,31 @@
 //! agree on. This also sidesteps needing per-remote-flavour SSE payload
 //! parsing (cloud-api's own SSE event shape is not in this repo to test
 //! against).
+//!
+//! ## Why the request never picks the destination
+//!
+//! This module is the daemon's only *outbound* surface, which makes its
+//! destination a capability rather than a parameter: a `server_url` read out of
+//! a request body would let any process that can reach loopback make the daemon
+//! connect to a host of its choosing, from the daemon's network position,
+//! carrying a bearer of its choosing, retried for as long as the daemon lives.
+//! Every destination therefore comes from [`RelayPolicy`], which resolves it
+//! from local configuration; a request may only select among the pairs this
+//! machine already declares. See `policy.rs`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use inkentry_core::config::TeamTarget;
 use inkentry_core::storage::{BatchPushItem, CloudSyncClient, RemoteEntry};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+mod policy;
+
+pub use policy::RelayPolicy;
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -187,7 +204,33 @@ pub struct RelayPollResponse {
 /// distinct outstanding rows, not repeat re-fetches of the same one.
 const MAX_BUFFERED_ITEMS_PER_SESSION: usize = 10_000;
 
-#[derive(Default)]
+/// Cap on live sessions. [`RelayPolicy`] already bounds the key space to the
+/// pairs local configuration declares, which is a handful on a real machine;
+/// this is the backstop that keeps the bound a property of this module rather
+/// than of whatever config happens to be on disk. Each session costs a
+/// long-lived task, an HTTP client and up to
+/// [`MAX_BUFFERED_ITEMS_PER_SESSION`] buffered rows, so an uncapped registry
+/// was a memory/task-exhaustion primitive.
+const MAX_RELAY_SESSIONS: usize = 32;
+
+/// How long a session may go without a single CLI call (`push`/`poll`/`ack`)
+/// before it is retired: its pull loop returns and it is dropped from the
+/// registry. Nothing else ends that loop — it reconnects forever — so without
+/// this every session ever registered lived as long as the daemon.
+///
+/// Sized well past the interval at which a CLI in use touches the relay (every
+/// `memory` write and every read that polls), so an idle session means the
+/// project really is idle, not merely between commands.
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// What `last_error` reports for any failure of the remote hop. The underlying
+/// `reqwest` error distinguishes connection-refused from timed-out from
+/// TLS-failed per host and port, and this field is readable by any local
+/// process: reporting it verbatim turned the relay into a network probe with an
+/// oracle. The detail goes to the daemon log, which is the operator's.
+const REMOTE_HOP_FAILED: &str =
+    "sync with the configured team server failed; see `inkentry server logs` for details";
+
 struct RelayInner {
     bearer: Option<String>,
     /// The durable pull cursor for this session (a `remote_id`/`sync_id`
@@ -218,22 +261,63 @@ struct RelayInner {
     last_synced_at: Option<i64>,
     last_error: Option<String>,
     pull_task_started: bool,
+    /// When a CLI last called `push`/`poll`/`ack` for this session. Drives
+    /// retirement (see [`SESSION_IDLE_TIMEOUT`]); the session's own background
+    /// traffic deliberately does not refresh it, or a session whose team server
+    /// keeps emitting would never look idle no matter how long ago its CLI
+    /// stopped.
+    last_seen: Instant,
+}
+
+impl RelayInner {
+    fn new() -> Self {
+        Self {
+            bearer: None,
+            cursor: None,
+            last_event_id: None,
+            push_results: HashMap::new(),
+            pulled: HashMap::new(),
+            last_synced_at: None,
+            last_error: None,
+            pull_task_started: false,
+            last_seen: Instant::now(),
+        }
+    }
 }
 
 /// Per-(team-server, project) relay state.
 pub struct RelaySession {
+    key: RelayKey,
     server_url: String,
     project_id: String,
+    /// Custom CA trust anchor for this target, from the same local config that
+    /// declared it. Threading it here is what makes background convergence work
+    /// against an internal-CA team server; hardcoding `None` left `status`
+    /// showing a permanent sync error with only manual `inkentry sync` working.
+    server_ca: Option<PathBuf>,
+    idle_timeout: Duration,
     inner: Mutex<RelayInner>,
 }
 
 impl RelaySession {
-    fn new(server_url: String, project_id: String) -> Self {
+    fn new(key: RelayKey, target: &TeamTarget, idle_timeout: Duration) -> Self {
         Self {
-            server_url,
-            project_id,
-            inner: Mutex::new(RelayInner::default()),
+            key,
+            server_url: target.server_url.trim_end_matches('/').to_string(),
+            project_id: target.project_id.clone(),
+            server_ca: target.server_ca.clone(),
+            idle_timeout,
+            inner: Mutex::new(RelayInner::new()),
         }
+    }
+
+    /// Record CLI contact, holding off retirement.
+    async fn touch(&self) {
+        self.inner.lock().await.last_seen = Instant::now();
+    }
+
+    async fn idle_for(&self) -> Duration {
+        self.inner.lock().await.last_seen.elapsed()
     }
 
     async fn set_bearer(&self, bearer: Option<String>) {
@@ -256,11 +340,23 @@ impl RelaySession {
 
     async fn client(&self) -> anyhow::Result<CloudSyncClient> {
         let bearer = self.inner.lock().await.bearer.clone();
-        CloudSyncClient::new(&self.server_url, &self.project_id, bearer.as_deref(), None)
+        CloudSyncClient::new(
+            &self.server_url,
+            &self.project_id,
+            bearer.as_deref(),
+            self.server_ca.as_deref(),
+        )
     }
 
-    async fn record_error(&self, msg: String) {
-        self.inner.lock().await.last_error = Some(msg);
+    /// Log the real failure for the operator; report only
+    /// [`REMOTE_HOP_FAILED`] to the caller.
+    async fn record_error(&self, context: &str, err: impl std::fmt::Display) {
+        tracing::warn!(
+            server_url = %self.server_url,
+            project_id = %self.project_id,
+            "local relay {context}: {err}"
+        );
+        self.inner.lock().await.last_error = Some(REMOTE_HOP_FAILED.to_string());
     }
 
     /// Push `entries` to the team server via [`CloudSyncClient::push_batch`]
@@ -293,7 +389,8 @@ impl RelaySession {
         let client = match self.client().await {
             Ok(c) => c,
             Err(e) => {
-                self.record_error(e.to_string()).await;
+                self.record_error("could not build its push client", e)
+                    .await;
                 return;
             }
         };
@@ -345,7 +442,7 @@ impl RelaySession {
                     None
                 };
             }
-            Err(e) => self.record_error(e.to_string()).await,
+            Err(e) => self.record_error("push failed", e).await,
         }
     }
 
@@ -365,7 +462,8 @@ impl RelaySession {
         let client = match self.client().await {
             Ok(c) => c,
             Err(e) => {
-                self.record_error(e.to_string()).await;
+                self.record_error("could not build its pull client", e)
+                    .await;
                 return;
             }
         };
@@ -401,7 +499,7 @@ impl RelaySession {
                     None
                 };
             }
-            Err(e) => self.record_error(e.to_string()).await,
+            Err(e) => self.record_error("catch-up failed", e).await,
         }
     }
 
@@ -437,34 +535,144 @@ impl RelaySession {
     }
 }
 
+/// Why a relay call was refused. Always a fixed string: it travels back over
+/// the local HTTP surface, so it may describe the rule that was broken and
+/// nothing about the remote host.
+#[derive(Debug)]
+pub struct RelayRefused(&'static str);
+
+impl std::fmt::Display for RelayRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for RelayRefused {}
+
+const REFUSED_DISABLED: &str =
+    "the local relay is not available on this server (it is bound to a non-loopback address)";
+const REFUSED_UNDECLARED: &str = "no team target for that server_url/project_id is declared by this machine's \
+     local configuration; the relay only syncs projects configured in \
+     `.inkentry/config.toml` (or INKENTRY_SERVER_URL/INKENTRY_PROJECT_ID)";
+const REFUSED_AT_CAPACITY: &str = "the local relay is already tracking its maximum session count";
+
 /// Registry of active relay sessions, keyed by (team server, project).
 /// Cloneable handle (an `Arc` inside) so it lives on [`crate::AppState`].
-#[derive(Clone, Default)]
-pub struct RelayRegistry(Arc<Mutex<HashMap<RelayKey, Arc<RelaySession>>>>);
+#[derive(Clone)]
+pub struct RelayRegistry(Arc<RegistryInner>);
+
+struct RegistryInner {
+    /// `false` disables the whole surface: every call is refused and
+    /// [`crate::router`] does not mount the routes at all.
+    enabled: bool,
+    policy: RelayPolicy,
+    idle_timeout: Duration,
+    sessions: Mutex<HashMap<RelayKey, Arc<RelaySession>>>,
+}
 
 impl RelayRegistry {
-    pub fn new() -> Self {
-        Self::default()
+    /// A registry for a daemon bound to `host`. The relay surface is
+    /// documented local-only and is unauthenticated on the auto-spawned
+    /// daemon, so a non-loopback bind gets no relay at all — structurally,
+    /// not by asking each handler to check.
+    pub fn for_bind(host: &str, policy: RelayPolicy) -> Self {
+        if crate::host_is_loopback(host) {
+            Self::new(policy)
+        } else {
+            Self::disabled()
+        }
+    }
+
+    pub fn new(policy: RelayPolicy) -> Self {
+        Self::with_idle_timeout(policy, SESSION_IDLE_TIMEOUT)
+    }
+
+    /// No relay: refuses every call and is not routed. What a non-loopback
+    /// bind gets, and what a server embedding this crate gets by default.
+    pub fn disabled() -> Self {
+        Self(Arc::new(RegistryInner {
+            enabled: false,
+            policy: RelayPolicy::allowing(vec![]),
+            idle_timeout: SESSION_IDLE_TIMEOUT,
+            sessions: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    /// [`Self::new`] with an injectable idle timeout, so retirement can be
+    /// exercised without waiting out [`SESSION_IDLE_TIMEOUT`].
+    pub(crate) fn with_idle_timeout(policy: RelayPolicy, idle_timeout: Duration) -> Self {
+        Self(Arc::new(RegistryInner {
+            enabled: true,
+            policy,
+            idle_timeout,
+            sessions: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    /// Whether this daemon serves the local relay routes at all.
+    pub fn is_enabled(&self) -> bool {
+        self.0.enabled
     }
 
     /// Number of registered sessions. Item 18: zero means no outbound sync
     /// HTTP traffic and no SSE connections exist anywhere in this process —
     /// a session is only ever created by [`Self::push`], never eagerly.
     pub async fn session_count(&self) -> usize {
-        self.0.lock().await.len()
+        self.0.sessions.lock().await.len()
     }
 
-    async fn get_or_create(&self, server_url: &str, project_id: &str) -> Arc<RelaySession> {
-        let key = RelayKey::new(server_url, project_id);
-        let mut map = self.0.lock().await;
-        map.entry(key)
-            .or_insert_with(|| {
-                Arc::new(RelaySession::new(
-                    server_url.trim_end_matches('/').to_string(),
-                    project_id.to_string(),
-                ))
-            })
-            .clone()
+    /// Resolve a requested pair to a locally-declared target, or refuse. The
+    /// only path by which a `server_url` becomes a destination.
+    fn resolve(&self, server_url: &str, project_id: &str) -> Result<TeamTarget, RelayRefused> {
+        if !self.0.enabled {
+            return Err(RelayRefused(REFUSED_DISABLED));
+        }
+        let target = self
+            .0
+            .policy
+            .resolve(server_url.trim(), project_id.trim())
+            .ok_or(RelayRefused(REFUSED_UNDECLARED))?;
+        // Belt to `CloudSyncClient`'s braces: a declared target still may not be
+        // a plaintext non-loopback URL, and refusing here means the misconfigured
+        // project never gets a session or a pull loop in the first place.
+        if inkentry_core::config::validate_transport_url(&target.server_url).is_err() {
+            return Err(RelayRefused(
+                "the configured server_url for this project is plaintext http:// to a \
+                 non-loopback host; use https://",
+            ));
+        }
+        Ok(target)
+    }
+
+    async fn session_for(&self, target: &TeamTarget) -> Result<Arc<RelaySession>, RelayRefused> {
+        let key = RelayKey::new(&target.server_url, &target.project_id);
+        let mut map = self.0.sessions.lock().await;
+        if let Some(existing) = map.get(&key) {
+            return Ok(existing.clone());
+        }
+        if map.len() >= MAX_RELAY_SESSIONS {
+            return Err(RelayRefused(REFUSED_AT_CAPACITY));
+        }
+        let session = Arc::new(RelaySession::new(key.clone(), target, self.0.idle_timeout));
+        map.insert(key, session.clone());
+        Ok(session)
+    }
+
+    async fn lookup(&self, server_url: &str, project_id: &str) -> Option<Arc<RelaySession>> {
+        let key = RelayKey::new(server_url.trim(), project_id.trim());
+        self.0.sessions.lock().await.get(&key).cloned()
+    }
+
+    /// Drop a session that has gone idle, reporting whether it was actually
+    /// removed. Re-checks liveness while holding the map lock, so a CLI call
+    /// racing the retirement keeps the session its request just touched.
+    async fn retire_if_idle(&self, session: &Arc<RelaySession>) -> bool {
+        let mut map = self.0.sessions.lock().await;
+        if session.idle_for().await < self.0.idle_timeout {
+            return false;
+        }
+        map.remove(&session.key);
+        true
     }
 
     /// Handle `POST /local/relay/push`: register the session (starting its
@@ -475,11 +683,13 @@ impl RelayRegistry {
     /// CLI's nudge call only reaches this local loopback surface and
     /// returns; the network round trip to the team server happens here,
     /// independent of the CLI process's lifetime.
-    pub async fn push(&self, req: RelayPushRequest) -> anyhow::Result<()> {
-        if req.server_url.trim().is_empty() || req.project_id.trim().is_empty() {
-            anyhow::bail!("server_url and project_id are required");
-        }
-        let session = self.get_or_create(&req.server_url, &req.project_id).await;
+    ///
+    /// The request's `server_url` selects a target; it never becomes one. See
+    /// [`Self::resolve`] and the module docs.
+    pub async fn push(&self, req: RelayPushRequest) -> Result<(), RelayRefused> {
+        let target = self.resolve(&req.server_url, &req.project_id)?;
+        let session = self.session_for(&target).await?;
+        session.touch().await;
         session.set_bearer(req.bearer).await;
         session.seed_cursor(req.since_cursor).await;
         self.ensure_pull_task(session.clone()).await;
@@ -495,10 +705,11 @@ impl RelayRegistry {
     /// session without creating it (item 18: polling an unregistered project
     /// must not spawn anything). Non-destructive — see [`RelaySession::poll`].
     pub async fn poll(&self, server_url: &str, project_id: &str) -> RelayPollResponse {
-        let key = RelayKey::new(server_url, project_id);
-        let session = self.0.lock().await.get(&key).cloned();
-        match session {
-            Some(s) => s.poll().await,
+        match self.lookup(server_url, project_id).await {
+            Some(s) => {
+                s.touch().await;
+                s.poll().await
+            }
             None => RelayPollResponse::default(),
         }
     }
@@ -513,9 +724,8 @@ impl RelayRegistry {
         applied_push_external_ids: &[String],
         applied_pull_remote_ids: &[String],
     ) {
-        let key = RelayKey::new(server_url, project_id);
-        let session = self.0.lock().await.get(&key).cloned();
-        if let Some(s) = session {
+        if let Some(s) = self.lookup(server_url, project_id).await {
+            s.touch().await;
             s.ack(applied_push_external_ids, applied_pull_remote_ids)
                 .await;
         }
@@ -529,7 +739,7 @@ impl RelayRegistry {
             }
             inner.pull_task_started = true;
         }
-        tokio::spawn(run_pull_loop(session));
+        tokio::spawn(run_pull_loop(self.clone(), session));
     }
 }
 
@@ -553,20 +763,65 @@ impl RelayRegistry {
 /// so one project's relay failure cannot affect another session's task or
 /// crash the server; a task-local failure here also never blocks other
 /// requests, since it never holds any lock the request handlers need.
-async fn run_pull_loop(session: Arc<RelaySession>) {
+///
+/// The loop ends when its session goes idle for [`SESSION_IDLE_TIMEOUT`],
+/// which also drops the session from `registry`. It previously had no
+/// termination condition at all: a session, once created, held a task, a
+/// client and its buffers for the daemon's lifetime, reconnecting to its team
+/// server forever whether or not any CLI still cared.
+async fn run_pull_loop(registry: RelayRegistry, session: Arc<RelaySession>) {
     session.catch_up().await;
 
     let mut attempt: u32 = 0;
     loop {
-        match stream_once(&session).await {
-            Ok(()) => attempt = 0,
-            Err(e) => {
-                session.record_error(e.to_string()).await;
-                attempt = attempt.saturating_add(1);
+        // `biased` so an already-idle session is retired without first opening
+        // another connection.
+        tokio::select! {
+            biased;
+            _ = wait_until_idle(&session) => {
+                if registry.retire_if_idle(&session).await {
+                    tracing::debug!(
+                        server_url = %session.server_url,
+                        project_id = %session.project_id,
+                        "retiring idle local relay session"
+                    );
+                    return;
+                }
+                continue;
             }
+            outcome = stream_once(&session) => match outcome {
+                Ok(()) => attempt = 0,
+                Err(e) => {
+                    session.record_error("stream connection failed", e).await;
+                    attempt = attempt.saturating_add(1);
+                }
+            },
         }
         let backoff = 1u64.checked_shl(attempt.min(5)).unwrap_or(32).min(30);
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
+        tokio::select! {
+            biased;
+            _ = wait_until_idle(&session) => {
+                if registry.retire_if_idle(&session).await {
+                    return;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+        }
+    }
+}
+
+/// Resolves once the session has had no CLI contact for its idle timeout.
+/// Sleeps exactly to the deadline and re-checks rather than polling, so a
+/// session touched meanwhile simply extends the wait.
+async fn wait_until_idle(session: &RelaySession) {
+    loop {
+        let remaining = session
+            .idle_timeout
+            .saturating_sub(session.idle_for().await);
+        if remaining.is_zero() {
+            return;
+        }
+        tokio::time::sleep(remaining).await;
     }
 }
 
@@ -600,12 +855,22 @@ async fn stream_once(session: &Arc<RelaySession>) -> anyhow::Result<()> {
         let inner = session.inner.lock().await;
         (inner.bearer.clone(), inner.last_event_id.clone())
     };
-    let sync_client = CloudSyncClient::new(&server_url, &project_id, bearer.as_deref(), None)?;
+    let sync_client = CloudSyncClient::new(
+        &server_url,
+        &project_id,
+        bearer.as_deref(),
+        session.server_ca.as_deref(),
+    )?;
     let url = sync_client.stream_url();
 
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()?;
+    // The SSE leg needs its own client (`CloudSyncClient` is single-shot), so
+    // it needs the custom CA applied here too — a team server behind an
+    // internal CA otherwise pulls fine and never streams.
+    let http = inkentry_core::config::apply_server_ca(
+        reqwest::Client::builder().connect_timeout(Duration::from_secs(10)),
+        session.server_ca.as_deref(),
+    )?
+    .build()?;
     let mut req = http.get(&url);
     if let Some(b) = &bearer {
         req = req.header("Authorization", format!("Bearer {b}"));

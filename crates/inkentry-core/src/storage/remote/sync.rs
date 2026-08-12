@@ -272,12 +272,14 @@ impl CloudSyncClient {
         server_ca: Option<&std::path::Path>,
         timeout: Duration,
     ) -> Result<Self> {
-        // Fail closed before building the client: a bearer must never travel over
-        // plaintext http to a non-loopback host. Keyless
-        // loopback-dev construction is unaffected: nothing to leak.
-        if api_key.is_some() {
-            crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
-        }
+        // Fail closed before building the client. Enforced with or without a
+        // bearer: the credential is not the only thing at stake — a keyless
+        // client still carries this machine's memory to whatever host the URL
+        // names, over a hop anyone on the path can read and rewrite. Making the
+        // check conditional on `api_key` also left "omit the bearer" as a way to
+        // reach an arbitrary plaintext host through any caller that takes a URL
+        // from somewhere less trusted than the local config.
+        crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
         let client = crate::config::apply_server_ca(reqwest::Client::builder(), server_ca)?
             .timeout(timeout)
             .build()
@@ -920,8 +922,8 @@ mod tests {
     }
 
     // ── transport-scheme guard at construction ───────────────────────────────
-    // A bearer must never travel over plaintext http to a non-loopback host;
-    // keyless construction is unaffected. Mirrors config::validate_transport_url_*.
+    // Plaintext http to a non-loopback host is refused whether or not a bearer
+    // is set. Mirrors config::validate_transport_url_*.
 
     #[test]
     fn new_with_key_rejects_non_loopback_http() {
@@ -961,10 +963,19 @@ mod tests {
         }
     }
 
+    // Omitting the bearer used to skip the transport check entirely, which made
+    // "send no credential" a way to reach any plaintext host through a caller
+    // that does not choose the URL itself (the daemon's local relay took one
+    // straight from a request body). The guard no longer keys on the bearer.
     #[test]
-    fn new_keyless_construction_unaffected_by_transport() {
-        // No bearer to leak, so even a non-loopback plaintext dev server is fine.
-        assert!(CloudSyncClient::new("http://team-server:7777", "proj", None, None).is_ok());
+    fn keyless_construction_is_guarded_too() {
+        let err = match CloudSyncClient::new("http://team-server:7777", "proj", None, None) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("keyless non-loopback plaintext must be rejected as well"),
+        };
+        assert!(err.contains("plaintext http"), "err: {err}");
+        assert!(CloudSyncClient::new("https://team-server:7777", "proj", None, None).is_ok());
+        assert!(CloudSyncClient::new("http://127.0.0.1:7777", "proj", None, None).is_ok());
     }
 
     #[test]
