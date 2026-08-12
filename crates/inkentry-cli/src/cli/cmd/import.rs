@@ -354,9 +354,9 @@ async fn finish_embeddings(
 }
 
 /// Said on stderr, unconditionally — not through `tracing`, which is invisible
-/// without `RUST_LOG`. Semantic search degrades silently otherwise: the default
-/// search mode is hybrid, so these entries still come back from the full-text
-/// half and the store looks like it is working.
+/// without `RUST_LOG`. The gap is silent otherwise: these entries are still
+/// listed by `memory list` and `context`, so the store looks populated, and the
+/// phrase-exact memory text matcher is no fallback for the ranking they miss.
 fn report_pending(pending: usize, json: bool) {
     if json {
         eprintln!(
@@ -371,7 +371,7 @@ fn report_pending(pending: usize, json: bool) {
     }
     eprintln!(
         "[inkentry] {pending} imported entr{} not in semantic search yet. \
-         Full-text search already finds them, so results will look complete. \
+         Text search is phrase-exact, so it is no fallback for them. \
          Run 'inkentry memory reindex' with a server running to finish.",
         if pending == 1 { "y is" } else { "ies are" }
     );

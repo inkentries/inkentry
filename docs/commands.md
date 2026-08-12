@@ -1081,9 +1081,12 @@ how many entries are waiting, along with the command that finishes the job;
 `inkentry status` carries the same count. Pass `--no-embed` to skip the attempt
 and just be told.
 
-This matters more than it looks: the default search mode is hybrid, so
-unembedded entries are still returned by the full-text half. Semantic recall
-degrades while the store looks like it is working.
+Until they are, the imported entries are still listed by `memory list` and
+`context`, which take no query, but they are absent from the semantic ranking of
+`inkentry search`. Text search is not a dependable way to reach them either —
+the memory text matcher requires the query as a contiguous phrase (see
+[`inkentry search`](#inkentry-search)) — so `inkentry memory reindex` is what
+actually finishes the job.
 
 | Flag | Meaning |
 |---|---|
